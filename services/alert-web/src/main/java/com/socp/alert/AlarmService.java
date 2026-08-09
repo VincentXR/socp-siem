@@ -182,8 +182,8 @@ public class AlarmService {
             byRule.merge(a.getRuleId() == null ? "?" : a.getRuleId(), 1L, Long::sum);
             if (a.getOccurredAt() != null) {
                 String day = a.getOccurredAt().atZone(java.time.ZoneOffset.UTC).toLocalDate().toString();
+                // 只统计最近 7 天（byDay 已预填 7 个日期）；旧告警不入趋势，避免混入历史日期
                 if (byDay.containsKey(day)) byDay.merge(day, 1L, Long::sum);
-                else byDay.merge(day, 1L, Long::sum);
             }
         }
         List<Map<String, Object>> topRules = byRule.entrySet().stream()

@@ -732,21 +732,43 @@ function renderSitCharts() {
     // 概览页：近 7 日趋势（sparkline 风格，简洁单线）
     if (ovTrendEl.value && st?.trend7d) {
       const days = Object.keys(st.trend7d).sort()
+      const vals = days.map(d => st.trend7d[d])
       if (!chartOvTrend.value || chartOvTrend.value.isDisposed()) chartOvTrend.value = echarts.init(ovTrendEl.value, 'socp')
       chartOvTrend.value.setOption({
-        grid: { left: 8, right: 8, top: 12, bottom: 4, containLabel: false },
-        xAxis: { type: 'category', show: false, data: days },
-        yAxis: { type: 'value', show: false },
-        tooltip: { trigger: 'axis' },
+        grid: { left: 10, right: 10, top: 24, bottom: 6, containLabel: false },
+        xAxis: {
+          type: 'category', data: days,
+          axisLabel: { fontSize: 10.5, color: themeColor('label'), formatter: (v: string) => v.slice(5) },
+          axisLine: { lineStyle: { color: themeColor('axis') } },
+          axisTick: { show: false },
+        },
+        yAxis: { type: 'value', show: false, minInterval: 1 },
+        tooltip: {
+          trigger: 'axis',
+          formatter: (ps: Array<{ axisValue: string; value: number }>) => {
+            const p = ps[0]
+            return `${p.axisValue}<br/><b>${p.value}</b> 条告警`
+          },
+        },
         series: [{
-          type: 'line', smooth: true, symbol: 'none',
-          data: days.map(d => st.trend7d[d]),
-          lineStyle: { color: themeColor('label'), width: 2 },
+          type: 'line', smooth: true, symbol: 'circle', symbolSize: 6,
+          data: vals,
+          lineStyle: { color: themeColor('axis'), width: 0 },
+          itemStyle: { color: themeColor('label') },
+          label: {
+            show: true, position: 'top', fontSize: 10.5, color: themeColor('label'),
+            formatter: (p: { value: number }) => (p.value > 0 ? String(p.value) : ''),
+          },
           areaStyle: {
             color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-              { offset: 0, color: theme.value === 'dark' ? 'rgba(68,147,248,.35)' : 'rgba(9,105,218,.25)' },
+              { offset: 0, color: theme.value === 'dark' ? 'rgba(68,147,248,.4)' : 'rgba(9,105,218,.32)' },
               { offset: 1, color: 'rgba(0,0,0,0)' },
             ]),
+          },
+          markPoint: {
+            data: [{ type: 'max', name: '峰值' }],
+            symbolSize: 44, label: { fontSize: 10, color: '#fff', formatter: '{c}' },
+            itemStyle: { color: theme.value === 'dark' ? '#3fb950' : '#1a7f37' },
           },
         }],
       }, true)
