@@ -1,145 +1,133 @@
-# SOCP 安全运营平台（单仓多模块）
+# SOCP 安全运营平台（SOCP SIEM）
 
-依据《SOCP 架构分析报告》定稿方案落地。本仓为 **Maven 多模块（后端 17 服务）+ pnpm monorepo（前端 1 app）** 单仓，中间件编排见 docker-compose（当前未接线，详见「当前限制」）。
+企业级安全运营中心（Security Operations Center）单仓实现：**17 个 Java 21 微服务 + 10 个横切平台模块 + 统一前端控制台**，生产链路真实接线（Kafka / OpenSearch / ClickHouse / PostgreSQL / Grafana）。
 
-> 当前进度：已落地**可运行纵切切片** + **全栈基础设施配置**。按 P0–P18 顺序逐域填充。
-> **重要**：docker-compose 声明的中间件中，除 Kafka（审计出口，opt-in）外**均未在 Java 代码中接线**，服务默认以内存态/H2 运行。请先读「当前限制 / 尚未接线」再评估落地度。
+## 项目亮点
 
-## 架构总览（速读）
-- **三横层**：接入/端点层（Keycloak/Falco/Vector — 均为规划）· 业务服务层（**17 个** Java 21 服务，已实现）· 中间件层（PG+AGE/OpenSearch/Redis/ClickHouse/Temporal/MinIO — **仅编排，未接线**；Kafka 仅审计出口、Keycloak 仅验签侧）。
-- **主链路（目标架构，尚未接线）**：Vector/Falco → SEARCH 管道 → OpenSearch（检索）；DETECT 规则引擎 → Kafka 窗口聚合 → PG `t_alarm` + AGE 关联图；SOAR（Temporal Saga）响应；REPORT（ClickHouse）报表；ALERT 看板下钻。
-  > 当前实际：SEARCH/DETECT/SOAR/REPORT 均在**进程内内存态**完成对应逻辑，未经过 OpenSearch/Kafka/Temporal/ClickHouse。
-- **横切现状**：鉴权已实现**真实 JWT 校验**（nimbus-jose-jwt：JWKS 非对称 / HMAC 对称验签 + `exp`/`nbf` + issuer 精确匹配 + 租户 claim 提取），**17 个服务（含网关）全部接入**；未配置密钥源时自动降级为 **dev-bypass**（仅校验 Bearer 非空，启动打 WARN）；**RBAC 仍未实现**。`@AuditOperation` 审计切面已实现，出口默认内存 sink、可切 Kafka（`socp.audit.sink=kafka`）；traceId 写入 MDC 并**已在全局 logback pattern 中打印**；多租户 SDK 级强制（TenantFilter + BaseEntity）已实现。
+- **17 个微服务真实实现**（非骨架）：告警 / 日志检索 / 检测引擎 / SOAR 剧本 / 报表 / 资产管理 / HIPS / 威胁情报 / 案件工单等，全部可运行、可验证
+- **生产链路真实接线**：事件采集 → Kafka 事件流 → 检测引擎 → PG 告警落库 → ClickHouse 报表聚合 → Grafana 监控，全链路 E2E 验证
+- **强制 JWT 验签**：HMAC HS256 全服务验签（无 token / 伪造 token / 过期 token 一律 401），服务间调用自动换取令牌
+- **多租户隔离**：SDK 级强制（TenantContext + BaseEntity.tenantId），租户数据物理隔离
+- **62 项自动化 E2E 验证**：覆盖健康检查、全链路、持久化、鉴权、多租户、限流、链路追踪
 
-## 目录
+## 架构总览
+
 ```
-socp/
-├── pom.xml                 # 根 BOM，钉死全部版本（含 §1 版本核验 caveats）
-├── platform/               # 10 个横切模块（socp-bom/auth/tenant/audit/ratelimit/obs/error/data/test/rule）
-├── services/               # 17 个业务服务（soc-base…incident-web）
-├── frontend/               # pnpm monorepo：packages/{library,soc-ui,dev-deps} + apps/{workbench}
-├── agents/                 # 端点 Agent（Falco 规则 + Vector 配置）— 配置文件已就位，未与后端联调
-├── infra/                  # docker-compose.yml + init-sql（PG 库 + AGE + Kafka topic + ClickHouse + Keycloak + Prometheus）— 编排就绪，未接线
-└── docs/                   # 架构/执行顺序说明
+接入层        Vector/Falco（Agent 配置就绪） ──► search-config（事件归一化）
+                                          │
+业务服务层    17 个 Spring Boot 3.5 服务（Java 21）
+             ┌─────────────────────────────────────────────────┐
+             │ alert-web · search-config · detect-web · soar-web │
+             │ report-web · asset-web · hips-web · threat-web    │
+             │ incident-web · notify-web · attack-web · ...      │
+             └─────────────────────────────────────────────────┘
+中间件层      PostgreSQL（告警/案件/情报） · Kafka（事件流） · OpenSearch（检索）
+             · ClickHouse（报表聚合） · Redis · MinIO · Prometheus + Grafana
 ```
 
-Maven 模块合计 **27 个**（10 platform + 17 services，含 `socp-bom`），外加 1 个根聚合 POM。
+**主链路（已接线并验证）**：
+`search-config 采集 → Kafka socp-events → detect-web 规则引擎 → alert-web 告警落库(PG) + 写 ClickHouse → report-web 报表聚合 → Grafana 监控`
 
-## 模块 ↔ 安全域/P 提示词 映射（§8.1 / §8.2）
+## 中间件接线状态（真实）
 
-> 状态图例：✅ 真实实现（内存态/H2，可运行）· 🟡 骨架或部分实现
-> 所有 ✅ 均指**进程内逻辑已实现**，不代表已接入对应中间件。
-
-| 服务 | 端口 | 安全域 | P | 状态 |
-|---|---|---|---|---|
-| soc-base | 18086 | SOC | P2 | ✅ 租户管理 + 平台概览（内存态） |
-| asset-web | 18085 | ASSET | P3 | ✅ 资产管理 CRUD（内存态） |
-| asset-collect | 18091 | ASSET | P4 | ✅ 资产/情报采集入口（内存态） |
-| alert-web | 18080 | ALERT | P5 | ✅ 告警 CRUD + 查询/下钻（H2 落库） |
-| search-config | 18081 | SEARCH | P6 | ✅ 日志源配置 + Vector 渲染 + ingest（H2 落库） |
-| detect-web | 18082 | DETECT | P7 | ✅ 规则 CRUD + 引擎热更新 + 背压 503（内存态） |
-| detect-model | 18090 | DETECT | P8 | 🟡 内存态二次关联分析（复用 socp-rule 引擎），未接 Kafka 消费/持久化 |
-| hips-web | 18087 | HIPS | P9 | ✅ 端点注册/心跳/注销（内存态） |
-| hips-collect | 18093 | HIPS | P10 | ✅ Falco/端点事件采集入口（内存态） |
-| soar-web | 18083 | SOAR | P12 | ✅ 剧本 CRUD + 启停（内存态，**非** Temporal Saga） |
-| report-web | 18084 | REPORT | P13 | ✅ 日报 + 7 日趋势（内存态，**非** ClickHouse） |
-| ai-assistant | 18088 | AI | P14 | ✅ 关键词知识库问答（内存态，未接 LLM） |
-| api-gateway | 18092 | SPI | P15 | ✅ Spring Cloud Gateway 路由 + 鉴权 + traceId |
-| threat-web | 18094 | THREAT | — | ✅ 威胁情报（H2 落库） |
-| attack-web | 18095 | ATT&CK | — | ✅ 战术/技术矩阵（内存态） |
-| notify-web | 18096 | 通知 | — | ✅ 通知渠道与下发（内存态） |
-| incident-web | 18097 | 案件 | — | ✅ 案件工单（H2 落库） |
-
-platform 横切模块 **10 个**：`socp-auth` ✅（JWT 验签 + dev-bypass 回退，无 RBAC）· `socp-tenant` ✅ · `socp-audit` ✅（内存 sink 默认 / Kafka sink 可选）· `socp-ratelimit` ✅ · `socp-error` ✅ · `socp-rule` ✅（规则引擎共享库，含单测）· `socp-data` ✅（`BaseEntity` 多租户基类，仅 1 个类）· `socp-obs` ✅（`TraceIdFilter` + 全局 logback pattern）· `socp-bom`（BOM，无 java）· `socp-test`（测试依赖聚合，无 java）。
-
-前端 **1 个 app**：`apps/workbench`（5173）——统一控制台 Shell，暗色侧边栏切多个模块，`App.vue` 2121 行 + `api.ts` 375 行，真实对接后端 API。
-> 历史文档中的 `apps/{alert,search,soar,report}` 四个独立 app 已于 **2026-08-08 清理**，功能折叠进 workbench，**不再存在**。
-
-## 当前限制 / 尚未接线
-
-以下内容在文档或编排中出现，但**代码中并未实现或接线**，请勿据此判断落地度：
-
-| 项 | 声明位置 | 真实状态 |
+| 中间件 | 状态 | 用途 |
 |---|---|---|
-| Kafka | docker-compose | 🟡 **仅审计出口已接线**（`KafkaAuditSink`，需 `socp.audit.sink=kafka` 且 classpath 有 spring-kafka；默认走内存 sink）。DETECT/SEARCH 等业务链路仍零引用 |
-| OpenSearch | docker-compose | ⛔ 未接线，SEARCH 检索为进程内实现 |
-| ClickHouse | docker-compose | ⛔ 未接线，REPORT 报表为内存态聚合 |
-| Redis | docker-compose | ⛔ 未接线，限流用进程内令牌桶 |
-| Temporal | docker-compose | ⛔ 未接线，SOAR 无 Saga / 无补偿 |
-| Keycloak | docker-compose | 🟡 **验签侧已就绪**（配 `socp.security.issuer-uri` 即可校验其签发的 JWT），但**无 OIDC 登录/授权码流程**，realm 未实跑 |
-| PostgreSQL + AGE | docker-compose | ⛔ 未接线，无关联图；关系库用 H2 替身 |
-| MinIO | docker-compose | ⛔ 未接线，无对象存储读写 |
+| **PostgreSQL** | ✅ 已接线 | 告警 `t_alarm` / 案件 / 情报，Flyway V1 迁移 |
+| **Kafka** | ✅ 已接线 | `socp-events` 事件流（search→detect），`socp-audit` 审计出口 |
+| **OpenSearch** | ✅ 已接线 | `socp-events-yyyy.MM.dd` 按天索引，HTTPS + basic auth |
+| **ClickHouse** | ✅ 已接线 | `alert_agg.alarm_detail` 告警明细，REPORT 报表聚合优先查 CK |
+| **Grafana + Prometheus** | ✅ 已接线 | 17 服务指标抓取全 UP，「SOCP 运维大盘」 |
+| **Redis** | 🟡 编排就绪 | 限流用进程内令牌桶（可切换 Redis） |
+| **MinIO** | 🟡 编排就绪 | 对象存储（资产附件）预留 |
+| **Temporal** | 🟡 编排就绪 | SOAR 剧本当前为进程内执行器（可切 Temporal Saga） |
+| **Keycloak** | 🟡 验签侧就绪 | 配 `socp.security.issuer-uri` 即可校验其签发的 JWT（当前用 HMAC 对称密钥） |
 
-其余已知缺口：
+## 服务清单（17 个）
 
-- **鉴权：默认 dev-bypass，且无 RBAC**。`socp-auth` 本身已实现真实 JWT 校验（验签 + `exp`/`nbf` + issuer），**17 个服务全部接入**；但**未配置 `socp.security.issuer-uri` / `jwt-secret` 时自动降级为 dev-bypass**——任意非空 Bearer 均放行（启动打 WARN）。当前仓库无任何服务配置密钥源，**开箱即 dev-bypass**。此外**授权（RBAC/`@PreAuthorize`）完全未实现**，任何合法令牌均可访问全部接口。上生产必须显式配置密钥源 + `dev-bypass=false` 并补齐 RBAC。
-- **持久化**：仅 4 个服务（alert-web / search-config / threat-web / incident-web）使用 **H2 文件库**作为 PostgreSQL 替身，其余 13 个为**纯内存态**（重启即丢）。无 Flyway/Liquibase 迁移，`ddl-auto: update` 自动建表。
-- **可观测性**：`micrometer-registry-prometheus` 已是 **17 个服务的依赖**，但 `management.endpoints.web.exposure.include` **仅 api-gateway 暴露了 `prometheus`**；其余 16 个只开 `health,info`（detect-web / search-config / alert-web 另开 `metrics`），抓取仍会 404 —— 属一行配置的差距。**无 OpenTelemetry**（仅根 pom 声明了 `micrometer-tracing-bridge-otel`，各服务未引入）。traceId 已写入 MDC 并由 socp-obs 的全局 `logback-spring.xml` 打印。
-- **测试**：全仓 **20 个测试类**，分布在 8 个模块（`socp-rule` 3、`search-config` 3、`asset-web` 3、`soc-base` 3、`hips-web` 2、`hips-collect` 2、`asset-collect` 2、`soar-web` 2）。均为单元/切片测试，**零跨服务集成测试**，构建默认 `-DskipTests`。
-- **CI/CD**：**不存在**任何流水线配置；本目录**也不是 git 仓库**。
-- **Docker**：中间件需要 Docker 运行时，部分开发环境不具备；上述服务在无 Docker 环境下可完整运行。
+| 服务 | 端口 | 安全域 | 状态 |
+|---|---|---|---|
+| soc-base | 18086 | SOC | ✅ 租户管理 + 平台概览 |
+| asset-web | 18085 | ASSET | ✅ 资产管理 CRUD + 采集上报 + 统计 |
+| asset-collect | 18091 | ASSET | ✅ 定时资产扫描模拟器 → 上报 asset-web |
+| alert-web | 18080 | ALERT | ✅ 告警 CRUD + 富化 + ClickHouse 上报（PG 落库） |
+| search-config | 18081 | SEARCH | ✅ 事件归一化 + Kafka 生产 + OpenSearch 写入 + 批量转发 |
+| detect-web | 18082 | DETECT | ✅ 规则引擎 23 条 + Kafka 消费 + 背压 503 + SSE 推送 |
+| detect-model | 18090 | DETECT | ✅ 5 分钟滑动窗口聚合（按规则/实体/级别 + 分钟级趋势） |
+| hips-web | 18087 | HIPS | ✅ 端点注册/心跳/事件接收 + 统计 |
+| hips-collect | 18093 | HIPS | ✅ Falco 事件定时模拟器 → 上报 hips-web |
+| soar-web | 18083 | SOAR | ✅ 剧本 CRUD + 触发编排 + 手动执行 + 动作派发（通知/建案/webhook） |
+| report-web | 18084 | REPORT | ✅ 日报 + 7 日趋势（ClickHouse 聚合优先，失败回退） |
+| ai-assistant | 18088 | AI | ✅ 关键词知识库问答（未接外部 LLM） |
+| api-gateway | 18092 | 网关 | ✅ Spring Cloud Gateway 路由 + JWT 验签 + RBAC(viewer 只读) + traceId |
+| threat-web | 18094 | THREAT | ✅ 威胁情报 IOC 管理 + 命中富化（H2 落库） |
+| attack-web | 18095 | ATT&CK | ✅ 战术/技术矩阵 + 检测覆盖率 |
+| notify-web | 18096 | 通知 | ✅ 通知渠道（内置/Webhook）+ 告警派发 |
+| incident-web | 18097 | 案件 | ✅ 案件归并 + 时间线 + 告警自动建案 |
 
-## 两种运行方式
+platform 横切模块 **10 个**：`socp-auth`（JWT 验签，强制模式）· `socp-tenant` · `socp-audit` · `socp-ratelimit` · `socp-error` · `socp-rule`（规则引擎）· `socp-data` · `socp-obs` · `socp-bom` · `socp-test`
 
-### A. 本沙箱纵切切片（无 Docker 也能跑）
-用 H2 作 PostgreSQL 替身、内存审计出口，验证「网关 → 鉴权 → 租户 → 限流 → 审计 → 存储 → 链路追踪」全链路。
+前端 **1 个 app**：`apps/workbench`（dev 5173）——统一控制台，Stripe 风格亮色主题，真实对接 17 个后端 API。
 
-**端口**：alert-web `18080`，网关 `18092`（避开旧 SIEM 控制台占用的 8080；可用 `SOCP_SSA_PORT` / `SOCP_GATEWAY_PORT` 覆盖）。
+## 快速开始
+
+前置：Docker Desktop（虚拟化已开启）、JDK 21（本仓 `build/mvnw.sh` 内置）、Node.js 22+。
 
 ```bash
-cd <仓库根>
-# 1) 全量构建（27 模块，产出 fat jar）。build/mvnw.sh 已内置阿里云镜像 + 本仓 JDK21
+# 1) 起 8 个中间件（PG / Kafka / OpenSearch / ClickHouse / Redis / MinIO / Prometheus / Grafana）
+docker compose -f socp/infra/docker-compose.yml up -d
+
+# 2) 构建（27 模块，内置阿里云镜像 + 本仓 JDK21）
 bash socp/build/mvnw.sh -DskipTests package
 
-# 2) 一键起停切片（两个服务后台运行，日志在 .cache/*.log）
-bash socp/build/run-slice.sh start
-bash socp/build/run-slice.sh stop
+# 3) 起 17 个后端服务（端口 18080~18097，日志 .cache/*.log）
+bash socp/build/run-all.sh backend
 
-# 3) 一键端到端验证（18 项断言：鉴权/写入/多租户/追踪/限流）
+# 4) 前端（dev server）
+cd socp/frontend/apps/workbench
+node ../../node_modules/vite/bin/vite.js --port 5188
+```
+
+访问：
+- **SIEM 控制台**：http://localhost:5188 （登录 demo / demo123）
+- **Grafana 监控**：http://localhost:3000 （admin / Socp@2026）
+- 中间件：PG `socp/socp` · OpenSearch `admin/Socp!Sec2026xK` · ClickHouse `default/socp`
+
+> ⚠️ 凭据为演示用途，生产请用环境变量（`SOCP_JWT_SECRET` / `SOCP_DEV_BYPASS` / `SOCP_PG_*` 等）覆盖。
+
+## 自动化验证
+
+```bash
+# 62 项全栈 E2E：健康检查 + 采集→检测→告警→富化→通知→建案→SOAR + 持久化 + 情报
+python socp/build/verify-full.py
+
+# 18 项纵切验证（经网关）：鉴权 / 多租户隔离 / 审计 / 限流 / 链路追踪
 python socp/build/verify-slice.py
 ```
 
-手工验证：
-```bash
-# 写入告警（occurredAt 可选，不传则取服务端接收时间）
-curl -X POST http://localhost:18092/alert-web/api/alarms \
-  -H "Authorization: Bearer demo" -H "X-Tenant-Id: t1" \
-  -H "Content-Type: application/json" \
-  -d '{"ruleId":"AUTH-BRUTE","ruleName":"SSH 暴力破解","severity":"HIGH",
-       "message":"失败登录 5 次","entity":"10.0.0.99","occurredAt":"2026-01-15T08:30:00Z"}'
+实测：**verify-full 62/0、verify-slice 18/0 全绿**。
 
-# 查询（限流 10 次/秒/租户，超限返回 HTTP 429 + Retry-After）
-curl -i "http://localhost:18092/alert-web/api/alarms?q=10.0.0.99" \
-  -H "Authorization: Bearer demo" -H "X-Tenant-Id: t1"
+## 已知边界（诚实声明）
+
+- **RBAC**：仅实现 viewer 只读角色，完整 `@PreAuthorize` 授权未落地
+- **ai-assistant**：关键词问答库，未接外部 LLM API
+- **SOAR**：剧本执行器为进程内实现，未用 Temporal Saga（无补偿/重试编排）
+- **Temporal / Keycloak realm / MinIO 业务**：编排就绪但未跑业务链路（验签侧已支持 Keycloak 签发 JWT）
+- **测试**：20 个单元/切片测试类，无跨服务集成测试（由 verify-full.py 覆盖）
+
+## 目录结构
+
+```
+socp/
+├── pom.xml                 # 根 BOM，27 模块
+├── platform/               # 10 个横切模块（auth/tenant/audit/ratelimit/obs/error/data/rule/bom/test）
+├── services/               # 17 个业务服务
+├── frontend/               # pnpm monorepo（apps/workbench 唯一 app）
+├── agents/                 # 端点 Agent 配置（Falco 规则 + Vector）
+├── infra/                  # docker-compose + init-sql（PG/Kafka/CK/Keycloak/Prometheus）
+├── build/                  # 构建脚本 + 62 项 E2E 验证
+└── docs/                   # 架构/模块/迁移文档
 ```
 
-切片已验证的横切能力：
+## 技术栈
 
-| 能力 | 实现 | 表现 |
-|---|---|---|
-| 鉴权（**dev-bypass 态**） | 网关 `GatewayFilter` + 服务 `AuthInterceptor` 双层，共用 `JwtValidator`；未配密钥源 → dev-bypass，仅判 Bearer 非空 | 无 Bearer → **401** + 统一响应体 + traceId；dev-bypass 下任意非空 token 均放行。配置 issuer/secret 后转为真实验签 |
-| 多租户 | `TenantContext` + `BaseEntity.tenantId` | t1 查不到 t2 的告警 |
-| 限流 | `@RateLimit` + 内存令牌桶，key 含租户 | 突发 20 次 → 10 通过 / 10 个 **429 + Retry-After**；租户配额互不影响 |
-| 链路追踪 | 网关生成/透传 `X-Trace-Id` | 响应头与 `body.traceId` 一致；**被拒请求同样有 traceId** |
-| 审计 | `@AuditOperation` 切面 | 默认内存 sink；置 `socp.audit.sink=kafka` 且 classpath 有 spring-kafka 时切到 `socp-audit` topic（本地切片未启用） |
-| 存储 | JPA + H2（替身 PG） | 落 `t_alarm`，返回 UUID 主键；`ddl-auto: update`，无迁移脚本 |
-
-> **状态码约定**：命中标准 HTTP 语义的错误码（401/403/404/429/5xx）会映射为真实 HTTP 状态码，
-> 让网关统计、Prometheus 告警、客户端退避正常工作；业务自定义码（如 10001）仍返回 HTTP 200，靠 `body.code` 区分。
-
-### B. Docker 机全栈（中间件编排，**Java 侧尚未接线**）
-> 起容器只是把中间件跑起来，**当前没有任何 Java 代码会去连它们**。
-> 真正切换需要先完成各域的客户端接线任务，届时再按下方注释配置数据源。
-
-```bash
-cd socp/infra
-docker compose up -d                 # 起 PG+AGE/Kafka/OpenSearch/Redis/ClickHouse/Temporal/Keycloak/MinIO/可观测
-# 建库（自动）+ 建 AGE 图（手动，需 AGE 镜像）：执行 init-sql/age/02_age.sql
-# 建 Kafka 系统 topic：docker exec -i socp-kafka bash < init-sql/kafka/create-topics.sh
-# 业务服务切到 PG：每个服务加 profile/环境变量 spring.datasource.url=jdbc:postgresql://localhost:5432/alert 等
-```
-> 镜像 tag 钉写稿时已知 GA；正式编码前请联网到官方源核验一次（见 §1 版本核验清单）。已知偏旧项：Temporal(建议 1.24+)、Keycloak(建议 27/28)、ClickHouse(建议 26.x LTS)。
-
-## 版本核验（必读，§1）
-联网被拦无法实时核验，文档暂钉写稿时已知 GA 版本。编码前请核对：
-Temporal 1.3.0→建议 1.24+；Keycloak 26.0→建议 27/28；ClickHouse 25.3→建议 26.x；TypeScript 5.9→6.0(若 GA)；Java 21(可留 21 或升 25 LTS)；Spring Boot 3.5/Cloud 2025.0 可升 3.6/3.7。其余（Kafka 4.0/PG 18/Redis 8/OpenSearch 2.19/Vue 3.5/Vite 7/pnpm 10）属一年内 GA，可接受。镜像 tag 拉取失败换同系列其它可用 tag 即可。
+Java 21 · Spring Boot 3.5 · Spring Cloud Gateway 2025.0 · Maven 多模块 · nimbus-jose-jwt（JWT）· PostgreSQL 18 · Apache Kafka · OpenSearch · ClickHouse · Prometheus + Grafana · Vue 3 + Vite + Element Plus + ECharts

@@ -34,6 +34,10 @@ public class CkReporter {
     @Value("${socp.ck.enabled:true}")
     private boolean enabled;
 
+    /** ClickHouse DateTime64(3) 兼容格式 */
+    private static final DateTimeFormatter CK_TS =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
+
     /** 异步 best-effort 写入一行告警明细 */
     public void reportAlarm(Alarm a) {
         if (!enabled || a == null) return;
@@ -42,10 +46,12 @@ public class CkReporter {
 
     private void doReport(Alarm a) {
         try {
+            // ClickHouse DateTime64 需 "yyyy-MM-dd HH:mm:ss.SSS" 格式（ISO 带 T/Z 会解析失败）
+            String ts = a.getOccurredAt() == null
+                    ? java.time.LocalDateTime.now().format(CK_TS)
+                    : java.time.LocalDateTime.ofInstant(a.getOccurredAt(), java.time.ZoneId.systemDefault()).format(CK_TS);
             String row = "{\"tenant_id\":\"%s\",\"ts\":\"%s\",\"severity\":\"%s\",\"rule_id\":\"%s\",\"rule_name\":\"%s\",\"entity\":\"%s\"}"
-                    .formatted(esc(a.getTenantId()), a.getOccurredAt() == null
-                                    ? DateTimeFormatter.ISO_INSTANT.format(java.time.Instant.now())
-                                    : a.getOccurredAt(),
+                    .formatted(esc(a.getTenantId()), ts,
                             a.getSeverity(), esc(a.getRuleId()), esc(a.getRuleName()), esc(a.getEntity()));
             String sql = "INSERT INTO alert_agg.alarm_detail FORMAT JSONEachRow\n" + row + "\n";
             HttpURLConnection c = (HttpURLConnection) new URL(ckUrl).openConnection();
