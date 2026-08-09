@@ -45,30 +45,66 @@ import {
 // ---------- 导航 ----------
 const activeMenu = ref('overview')
 
-const MENU = [
-  { key: 'overview', label: '概览', icon: 'dashboard' },
-  { key: 'situation', label: '实时态势', icon: 'radar' },
-  { key: 'alarms', label: '告警查询', icon: 'alarm' },
-  { key: 'search', label: '日志检索', icon: 'search' },
-  { key: 'ingest', label: '日志接入', icon: 'ingest' },
-  { key: 'meta', label: '元数据', icon: 'meta' },
-  { key: 'detect', label: '检测规则', icon: 'detect' },
-  { key: 'ueba', label: 'UEBA 风险', icon: 'ueba' },
-  { key: 'soar', label: '编排响应', icon: 'soar' },
-  { key: 'report', label: '报表统计', icon: 'report' },
-  { key: 'assets', label: '资产管理', icon: 'assets' },
-  { key: 'endpoints', label: '端点防护', icon: 'endpoints' },
-  { key: 'ai', label: 'AI 助手', icon: 'ai' },
-  { key: 'threat-intel', label: '威胁情报', icon: 'threat' },
-  { key: 'attack', label: 'ATT&CK', icon: 'attack' },
-  { key: 'notify', label: '通知集成', icon: 'notify' },
-  { key: 'case', label: '案件管理', icon: 'case' },
-  { key: 'refset', label: '参考数据集', icon: 'refset' },
-  { key: 'compliance', label: '合规', icon: 'compliance' },
-  { key: 'health', label: '系统健康', icon: 'health' },
+/** 菜单分组（按安全域归类，减少导航噪音） */
+const MENU_GROUPS = [
+  {
+    group: '总览',
+    items: [
+      { key: 'overview', label: '概览', icon: 'dashboard' },
+      { key: 'situation', label: '实时态势', icon: 'radar' },
+    ],
+  },
+  {
+    group: '告警与事件',
+    items: [
+      { key: 'alarms', label: '告警查询', icon: 'alarm' },
+      { key: 'case', label: '案件管理', icon: 'case' },
+      { key: 'search', label: '日志检索', icon: 'search' },
+      { key: 'notify', label: '通知集成', icon: 'notify' },
+    ],
+  },
+  {
+    group: '检测与响应',
+    items: [
+      { key: 'detect', label: '检测规则', icon: 'detect' },
+      { key: 'ueba', label: 'UEBA 风险', icon: 'ueba' },
+      { key: 'soar', label: '编排响应', icon: 'soar' },
+      { key: 'attack', label: 'ATT&CK', icon: 'attack' },
+    ],
+  },
+  {
+    group: '资产与情报',
+    items: [
+      { key: 'assets', label: '资产管理', icon: 'assets' },
+      { key: 'endpoints', label: '端点防护', icon: 'endpoints' },
+      { key: 'threat-intel', label: '威胁情报', icon: 'threat' },
+      { key: 'refset', label: '参考数据集', icon: 'refset' },
+    ],
+  },
+  {
+    group: '接入与配置',
+    items: [
+      { key: 'ingest', label: '日志接入', icon: 'ingest' },
+      { key: 'meta', label: '元数据', icon: 'meta' },
+      { key: 'compliance', label: '合规', icon: 'compliance' },
+    ],
+  },
+  {
+    group: '系统',
+    items: [
+      { key: 'report', label: '报表统计', icon: 'report' },
+      { key: 'ai', label: 'AI 助手', icon: 'ai' },
+      { key: 'health', label: '系统健康', icon: 'health' },
+    ],
+  },
 ]
 // viewer（只读）角色隐藏配置/管理类菜单
 const MENU_VIEWER_HIDDEN = ['ingest', 'meta', 'detect', 'soar', 'notify', 'refset']
+/** 按角色过滤后的分组（隐藏整组若组内无可见项） */
+const MENU_VIEW = computed(() =>
+  MENU_GROUPS
+    .map(g => ({ ...g, items: g.items.filter(m => !MENU_VIEWER_HIDDEN.includes(m.key)) }))
+    .filter(g => g.items.length > 0))
 
 /** Apple 线条风格 SVG 图标（24×24 viewBox，stroke 1.6） */
 const MENU_ICONS: Record<string, string> = {
@@ -116,8 +152,6 @@ function initTheme() {
 const currentUser = ref<string>('')
 const currentRole = ref<string>('')
 const isAuthed = ref(false)
-const MENU_VIEW = computed(() =>
-  currentRole.value === 'viewer' ? MENU.filter(m => !MENU_VIEWER_HIDDEN.includes(m.key)) : MENU)
 const showLoginDialog = ref(false)
 const loginForm = ref({ username: 'demo', password: 'demo123' })
 const loginBusy = ref(false)
@@ -1027,11 +1061,14 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
     <aside class="socp-sider">
       <div class="socp-logo"><span class="dot" />SOCP 控制台</div>
       <nav class="socp-menu">
-        <div v-for="m in MENU_VIEW" :key="m.key"
-          :class="['socp-menu-item', { active: activeMenu === m.key }]"
-          @click="onMenuChange(m.key)">
-          <span class="icon" v-html="'<svg viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'currentColor\' stroke-width=\'1.6\' stroke-linecap=\'round\' stroke-linejoin=\'round\'>' + (MENU_ICONS[m.icon] || '') + '</svg>'"></span><span>{{ m.label }}</span>
-        </div>
+        <template v-for="g in MENU_VIEW" :key="g.group">
+          <div class="socp-menu-group">{{ g.group }}</div>
+          <div v-for="m in g.items" :key="m.key"
+            :class="['socp-menu-item', { active: activeMenu === m.key }]"
+            @click="onMenuChange(m.key)">
+            <span class="icon" v-html="'<svg viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'currentColor\' stroke-width=\'1.6\' stroke-linecap=\'round\' stroke-linejoin=\'round\'>' + (MENU_ICONS[m.icon] || '') + '</svg>'"></span><span>{{ m.label }}</span>
+          </div>
+        </template>
       </nav>
     </aside>
 

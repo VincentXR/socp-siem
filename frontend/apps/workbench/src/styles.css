@@ -16,7 +16,7 @@
   --el-color-warning: #9a6700;
   --el-color-danger: #cf222e;
   --el-color-error: #cf222e;
-  --el-border-radius-base: 8px;
+  --el-border-radius-base: 12px;
   /* 设计令牌 */
   --ns-bg: #ffffff;
   --ns-bg-subtle: #f6f8fa;
@@ -96,13 +96,13 @@ body {
 /* ============ 布局骨架 ============ */
 .socp-shell { display: flex; height: 100%; }
 .socp-sider {
-  width: 232px; flex: none;
+  width: 240px; flex: none;
   background: var(--ns-bg-subtle);
   border-right: 1px solid var(--ns-border);
   display: flex; flex-direction: column;
 }
 .socp-logo {
-  height: 60px; display: flex; align-items: center; gap: 10px; padding: 0 20px;
+  height: 64px; display: flex; align-items: center; gap: 10px; padding: 0 22px;
   font-weight: 600; font-size: 14.5px; letter-spacing: .2px; color: var(--ns-text);
   border-bottom: 1px solid var(--ns-border);
 }
@@ -113,7 +113,7 @@ body {
 .socp-menu { padding: 10px 8px; overflow-y: auto; flex: 1; }
 .socp-menu-item {
   display: flex; align-items: center; gap: 10px;
-  padding: 7px 10px; margin: 1px 0; border-radius: 7px;
+  padding: 8px 12px; margin: 1px 4px; border-radius: 12px;
   color: var(--ns-text-2); cursor: pointer; font-size: 13.5px; font-weight: 500;
   transition: background .12s ease, color .12s ease;
 }
@@ -145,8 +145,8 @@ body {
 
 .el-card {
   border: 1px solid var(--ns-border) !important;
-  border-radius: 10px !important;
-  box-shadow: none !important;
+  border-radius: 20px !important;
+  box-shadow: var(--ns-shadow) !important;
   background: var(--ns-surface) !important;
   color: var(--ns-text);
 }
@@ -162,7 +162,7 @@ body {
 .stat-card .label { color: var(--ns-text-3); font-size: 12.5px; margin-top: 3px; }
 
 /* ============ 按钮 ============ */
-.el-button { border-radius: 7px; font-weight: 500; }
+.el-button { border-radius: 999px; font-weight: 500; padding: 8px 18px; }
 .el-button:not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger) {
   background: var(--ns-surface); border-color: var(--ns-border-strong); color: var(--ns-text);
 }
@@ -200,7 +200,7 @@ body {
 /* ============ 弹窗 / 抽屉 ============ */
 .el-dialog {
   background: var(--ns-surface) !important;
-  border-radius: 12px !important;
+  border-radius: 20px !important;
   box-shadow: var(--ns-shadow-lg) !important;
   border: 1px solid var(--ns-border-strong);
 }
@@ -217,7 +217,7 @@ body {
 .el-input__wrapper, .el-textarea__inner {
   background: var(--ns-input-bg) !important;
   box-shadow: 0 0 0 1px var(--ns-border-strong) inset !important;
-  border-radius: 7px !important;
+  border-radius: 12px !important;
 }
 .el-input__inner { color: var(--ns-text) !important; }
 .el-input__wrapper.is-focus, .el-textarea__inner:focus {
@@ -243,6 +243,12 @@ body {
 .el-empty__description p { color: var(--ns-text-3); }
 .el-message { background: var(--ns-surface); border-color: var(--ns-border-strong); }
 
+.socp-menu-group {
+  padding: 14px 16px 4px; font-size: 11px; font-weight: 600; letter-spacing: .6px;
+  text-transform: uppercase; color: var(--ns-text-3);
+}
+.socp-menu { padding: 8px 6px 12px; }
+
 /* 段落小标题 */
 .sec-title { font-size: 13.5px; font-weight: 600; color: var(--ns-text); display: flex; align-items: center; gap: 8px; }
 .sec-title::before { content: ''; width: 3px; height: 14px; border-radius: 2px; background: var(--ns-accent); }
@@ -265,7 +271,7 @@ body {
 .sit-kpi {
   background: var(--ns-surface);
   border: 1px solid var(--ns-border);
-  border-radius: 10px; padding: 13px 15px; color: var(--ns-text);
+  border-radius: 16px; padding: 13px 15px; color: var(--ns-text);
 }
 .sit-kpi .k-num { font-size: 24px; font-weight: 600; line-height: 1.15; letter-spacing: -.4px; color: var(--ns-accent-fg); }
 .sit-kpi .k-label { font-size: 12px; color: var(--ns-text-3); margin-top: 3px; }
