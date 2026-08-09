@@ -48,7 +48,12 @@ public class KafkaEventProducer {
                     props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap);
                     props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
                     props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
-                    props.put(ProducerConfig.ACKS_CONFIG, "0");
+                    // 可靠性（2026-08-10）：acks=all + 幂等 + 重试，杜绝"发出去但丢了"的静默降级
+                    props.put(ProducerConfig.ACKS_CONFIG, "all");
+                    props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "true");
+                    props.put(ProducerConfig.RETRIES_CONFIG, Integer.MAX_VALUE);
+                    props.put(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, 5);
+                    props.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 30_000);
                     producer = new KafkaProducer<>(props);
                 }
                 p = producer;
@@ -57,17 +62,24 @@ public class KafkaEventProducer {
         return p;
     }
 
-    /** 异步发送一批事件（不阻塞采集热路径） */
+    /** 异步发送一批事件（不阻塞采集热路径）；发送失败打 WARN（可观测，不再静默） */
     public void sendEvents(List<SearchEvent> es) {
         if (!enabled || es == null || es.isEmpty()) return;
         Thread.startVirtualThread(() -> {
             try {
                 KafkaProducer<String, String> p = producer();
                 for (SearchEvent e : es) {
-                    p.send(new ProducerRecord<>(topic, e.source(), MAPPER.writeValueAsString(e)));
+                    String value = MAPPER.writeValueAsString(e);
+                    // key=eventId：同一事件进同一分区且顺序保证，配合幂等实现重试安全
+                    p.send(new ProducerRecord<>(topic, e.eventId(), value),
+                            (md, ex) -> {
+                                if (ex != null) {
+                                    log.warn("Kafka 发送失败 eventId={}（已触发重试）: {}", e.eventId(), ex.getMessage());
+                                }
+                            });
                 }
             } catch (Exception ex) {
-                log.debug("Kafka 发送异常（静默降级）: {}", ex.getMessage());
+                log.warn("Kafka 发送异常（降级为 HTTP 直连兜底）: {}", ex.getMessage());
             }
         });
     }

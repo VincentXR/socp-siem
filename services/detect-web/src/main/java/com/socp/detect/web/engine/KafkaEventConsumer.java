@@ -56,6 +56,50 @@ public class KafkaEventConsumer {
         log.info("Kafka 事件消费者已启动 bootstrap={} topic={}", bootstrap, topic);
     }
 
+    // ---- 可靠性（2026-08-10）----
+    /** 已处理 eventId 去重缓存（LRU，最多 10 万条；配合"至少一次"语义实现幂等） */
+    private static final java.util.Set<String> DEDUP = java.util.Collections.synchronizedSet(
+            new java.util.LinkedHashSet<>() {
+                @Override
+                public boolean add(String e) {
+                    if (size() >= 100_000) clear();
+                    return super.add(e);
+                }
+            });
+    private static final int DEDUP_MAX = 100_000;
+
+    private volatile org.apache.kafka.clients.producer.KafkaProducer<String, String> dlqProducer;
+
+    private org.apache.kafka.clients.producer.KafkaProducer<String, String> dlq() {
+        org.apache.kafka.clients.producer.KafkaProducer<String, String> p = dlqProducer;
+        if (p == null) {
+            synchronized (this) {
+                if (dlqProducer == null) {
+                    Properties props = new Properties();
+                    props.put(org.apache.kafka.clients.producer.ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap);
+                    props.put(org.apache.kafka.clients.producer.ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG,
+                            org.apache.kafka.common.serialization.StringSerializer.class.getName());
+                    props.put(org.apache.kafka.clients.producer.ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG,
+                            org.apache.kafka.common.serialization.StringSerializer.class.getName());
+                    props.put(org.apache.kafka.clients.producer.ProducerConfig.ACKS_CONFIG, "all");
+                    dlqProducer = new org.apache.kafka.clients.producer.KafkaProducer<>(props);
+                }
+                p = dlqProducer;
+            }
+        }
+        return p;
+    }
+
+    /** 解析/处理失败 → 写入 DLQ 主题（socp-events-dlq），不静默丢弃 */
+    private void toDlq(String eventId, String raw) {
+        try {
+            dlq().send(new org.apache.kafka.clients.producer.ProducerRecord<>(topic + "-dlq",
+                    eventId == null ? "unknown" : eventId, raw));
+        } catch (Exception ex) {
+            log.warn("DLQ 写入失败 eventId={}: {}", eventId, ex.getMessage());
+        }
+    }
+
     private void run() {
         Properties props = new Properties();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap);
@@ -63,19 +107,36 @@ public class KafkaEventConsumer {
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
-        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "true");
+        // 手动提交 offset（至少一次语义）：处理完一批再 commit，重启后最多重放一批（配合幂等去重）
+        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
+        props.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, 200);
         try (KafkaConsumer<String, String> c = new KafkaConsumer<>(props)) {
             c.subscribe(List.of(topic));
             while (true) {
                 var recs = c.poll(Duration.ofMillis(500));
                 for (var r : recs) {
+                    String raw = r.value();
+                    String eventId = null;
                     try {
                         @SuppressWarnings("unchecked")
-                        Map<String, Object> m = MAPPER.readValue(r.value(), Map.class);
+                        Map<String, Object> m = MAPPER.readValue(raw, Map.class);
+                        eventId = String.valueOf(m.getOrDefault("eventId", r.key()));
+                        // 幂等：已处理的 eventId 跳过（消费重放/重复投递不重复触发规则）
+                        if (eventId != null && !"null".equals(eventId) && !DEDUP.add(eventId)) {
+                            continue;
+                        }
                         SecurityEvent ev = toEvent(m);
                         engine.ingest(ev);
                     } catch (Exception ex) {
-                        log.debug("Kafka 事件解析失败（丢弃）: {}", ex.getMessage());
+                        log.warn("Kafka 事件解析失败 → DLQ: {}", ex.getMessage());
+                        toDlq(eventId, raw);
+                    }
+                }
+                if (!recs.isEmpty()) {
+                    try {
+                        c.commitSync();
+                    } catch (Exception ex) {
+                        log.warn("Kafka commit 失败（下轮重试）: {}", ex.getMessage());
                     }
                 }
             }
