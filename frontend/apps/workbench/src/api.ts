@@ -209,6 +209,7 @@ export const trend7d = () => get<{ days: string[]; counts: number[] }>('/report-
 export const listAssets = () => get<Asset[]>('/asset-web/api/v1/assets')
 export const createAsset = (a: Partial<Asset>) => post<Asset>('/asset-web/api/v1/assets', a)
 export const deleteAsset = (id: string) => del(`/asset-web/api/v1/assets/${id}`)
+export const assetStats = () => get<{ total: number; byType: Record<string, number>; byCriticality: Record<string, number> }>('/asset-web/api/v1/assets/stats')
 
 // ---------- SOC 底座 ----------
 export const listTenants = () => get<TenantInfo[]>('/soc-base/api/v1/tenants')
@@ -216,6 +217,11 @@ export const socOverview = () => get<Record<string, unknown>>('/soc-base/api/v1/
 
 // ---------- HIPS 端点 ----------
 export const listEndpoints = () => get<Endpoint[]>('/hips-web/api/v1/endpoints')
+export const endpointStats = () => get<{ total: number; online: number; byType: Record<string, number> }>('/hips-web/api/v1/endpoints/stats')
+
+// ---------- REPORT 归档（MinIO） ----------
+export const archiveReport = () => post<{ archived: boolean; day?: string; dailyKey?: string; error?: string }>('/report-web/api/v1/reports/archive')
+export const listArchive = (prefix = 'reports/') => get<{ prefix: string; count: number; objects: Array<{ key: string; size: number }> }>(`/report-web/api/v1/reports/archive?prefix=${encodeURIComponent(prefix)}`)
 export const deleteEndpoint = (id: string) => del(`/hips-web/api/v1/endpoints/${id}`)
 
 // ---------- 威胁情报 (threat-web) ----------

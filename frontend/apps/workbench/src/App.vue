@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
+import LoginView from './LoginView.vue'
 import {
   listAlarms, getDisposition, setDispositionStatus, assignAlarm, addAlarmNote,
   listSources, createSource, deleteSource, renderConfig,
@@ -14,9 +15,10 @@ import {
   splSearch,
   listPlaybooks, createPlaybook, deletePlaybook, togglePlaybook, listPlaybookExecutions,
   dailyReport, trend7d,
-  listAssets, deleteAsset,
+  listAssets, deleteAsset, assetStats,
   listTenants, socOverview,
-  listEndpoints, deleteEndpoint,
+  listEndpoints, deleteEndpoint, endpointStats,
+  archiveReport, listArchive,
   aiAsk, checkHealth, HEALTH_TARGETS,
   listIocs, createIoc, deleteIoc, tiMatch, tiStats,
   listTactics, listTechniques, attackCoverage,
@@ -44,39 +46,75 @@ import {
 const activeMenu = ref('overview')
 
 const MENU = [
-  { key: 'overview', label: '概览', icon: '📊' },
-  { key: 'situation', label: '实时态势', icon: '🛰️' },
-  { key: 'alarms', label: '告警查询', icon: '🚨' },
-  { key: 'search', label: '日志检索', icon: '🔎' },
-  { key: 'ingest', label: '日志接入', icon: '📡' },
-  { key: 'meta', label: '元数据', icon: '📋' },
-  { key: 'detect', label: '检测规则', icon: '🔍' },
-  { key: 'ueba', label: 'UEBA 风险', icon: '🧬' },
-  { key: 'soar', label: '编排响应', icon: '⚡' },
-  { key: 'report', label: '报表统计', icon: '📈' },
-  { key: 'assets', label: '资产管理', icon: '🖥️' },
-  { key: 'endpoints', label: '端点防护', icon: '🛡️' },
-  { key: 'ai', label: 'AI 助手', icon: '🤖' },
-  { key: 'threat-intel', label: '威胁情报', icon: '🦠' },
-  { key: 'attack', label: 'ATT&CK', icon: '🎯' },
-  { key: 'notify', label: '通知集成', icon: '🔔' },
-  { key: 'case', label: '案件管理', icon: '🗂️' },
-  { key: 'refset', label: '参考数据集', icon: '📑' },
-  { key: 'compliance', label: '合规', icon: '📜' },
-  { key: 'health', label: '系统健康', icon: '💓' },
+  { key: 'overview', label: '概览', icon: 'dashboard' },
+  { key: 'situation', label: '实时态势', icon: 'radar' },
+  { key: 'alarms', label: '告警查询', icon: 'alarm' },
+  { key: 'search', label: '日志检索', icon: 'search' },
+  { key: 'ingest', label: '日志接入', icon: 'ingest' },
+  { key: 'meta', label: '元数据', icon: 'meta' },
+  { key: 'detect', label: '检测规则', icon: 'detect' },
+  { key: 'ueba', label: 'UEBA 风险', icon: 'ueba' },
+  { key: 'soar', label: '编排响应', icon: 'soar' },
+  { key: 'report', label: '报表统计', icon: 'report' },
+  { key: 'assets', label: '资产管理', icon: 'assets' },
+  { key: 'endpoints', label: '端点防护', icon: 'endpoints' },
+  { key: 'ai', label: 'AI 助手', icon: 'ai' },
+  { key: 'threat-intel', label: '威胁情报', icon: 'threat' },
+  { key: 'attack', label: 'ATT&CK', icon: 'attack' },
+  { key: 'notify', label: '通知集成', icon: 'notify' },
+  { key: 'case', label: '案件管理', icon: 'case' },
+  { key: 'refset', label: '参考数据集', icon: 'refset' },
+  { key: 'compliance', label: '合规', icon: 'compliance' },
+  { key: 'health', label: '系统健康', icon: 'health' },
 ]
 // viewer（只读）角色隐藏配置/管理类菜单
 const MENU_VIEWER_HIDDEN = ['ingest', 'meta', 'detect', 'soar', 'notify', 'refset']
 
+/** Apple 线条风格 SVG 图标（24×24 viewBox，stroke 1.6） */
+const MENU_ICONS: Record<string, string> = {
+  dashboard: '<path d="M4 13h6V4H4v9Zm0 7h6v-5H4v5Zm10 0h6v-9h-6v9Zm0-16v5h6V4h-6Z"/>',
+  radar: '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3.5"/><path d="M12 3.5v4M12 16.5v4M3.5 12h4M16.5 12h4M6 6l2.8 2.8M15.2 15.2 18 18M18 6l-2.8 2.8M8.8 15.2 6 18"/>',
+  alarm: '<path d="M12 3a8 8 0 0 0-8 8c0 3.3-1 5-2 6h20c-1-1-2-2.7-2-6a8 8 0 0 0-8-8Z"/><path d="M10 21h4"/>',
+  search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/>',
+  ingest: '<path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 19h16"/>',
+  meta: '<path d="M4 4h16v6H4zM4 14h16v6H4z"/>',
+  detect: '<circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M19.1 4.9l-2.8 2.8M7.7 16.3l-2.8 2.8"/>',
+  ueba: '<circle cx="8" cy="9" r="4"/><path d="M2 20c1.2-3 3.4-4.5 6-4.5s4.8 1.5 6 4.5"/><path d="M17 5c2.5 1 4 3 4 6"/><path d="M18 3.5V7h-3.5"/>',
+  soar: '<path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z"/>',
+  report: '<path d="M4 4h16v16H4z"/><path d="M8 16V9M12 16V7M16 16v-4"/>',
+  assets: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 9h18M8 5v14"/>',
+  endpoints: '<path d="M12 2 4 6v6c0 5 3.4 8.6 8 10 4.6-1.4 8-5 8-10V6l-8-4Z"/><path d="M9 12l2 2 4-4"/>',
+  ai: '<rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 4v3M9 2v3M15 2v3M9.5 13h5M9.5 16h3"/>',
+  threat: '<path d="M12 2c-3.5 2-6 5-6 9v5l6 4 6-4v-5c0-4-2.5-7-6-9Z"/><path d="M8 13c1.5-1 3-1.5 4-3 1 1.5 2.5 2 4 3"/>',
+  attack: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none"/>',
+  notify: '<path d="M12 3a7 7 0 0 0-7 7c0 3-1 5-2.5 6.5h19C20 15 19 13 19 10a7 7 0 0 0-7-7Z"/><path d="M10 20h4"/>',
+  case: '<path d="M4 8h16v12H4z"/><path d="M8 8V5h8v3M4 12h16M10 15h4"/>',
+  refset: '<path d="M5 3h14a1 1 0 0 1 1 1v15l-3-2-3 2-3-2-3 2-3-2V4a1 1 0 0 1 1-1Z"/>',
+  compliance: '<path d="M6 4h12v16l-6-3-6 3V4Z"/><path d="m9 11 2 2 4-4"/>',
+  health: '<path d="M12 21C7 16.5 3 13 3 9a5 5 0 0 1 9-3 5 5 0 0 1 9 3c0 4-4 7.5-9 12Z"/><path d="M8.5 10h2l1.5-3 2 5 1.5-2h2"/>',
+}
+
+
 // ---------- 登录态（网关 JWT；未登录回退 demo-token 兼容演示） ----------
 const currentUser = ref<string>('')
 const currentRole = ref<string>('')
+const isAuthed = ref(false)
 const MENU_VIEW = computed(() =>
   currentRole.value === 'viewer' ? MENU.filter(m => !MENU_VIEWER_HIDDEN.includes(m.key)) : MENU)
 const showLoginDialog = ref(false)
 const loginForm = ref({ username: 'demo', password: 'demo123' })
 const loginBusy = ref(false)
 function openLoginDialog() { loginForm.value = { username: 'demo', password: 'demo123' }; showLoginDialog.value = true }
+/** 登录成功后回调（LoginView emit）：写状态 + 拉数据 */
+function onLoginDone(user: string, role: string) {
+  currentUser.value = user
+  currentRole.value = role
+  isAuthed.value = true
+  showLoginDialog.value = false
+  refreshOverview()
+  loadSituation()
+  openAlertStream()
+}
 async function doLogin() {
   if (loginBusy.value) return
   loginBusy.value = true
@@ -101,6 +139,7 @@ function doLogout() {
   clearToken()
   currentUser.value = ''
   currentRole.value = ''
+  isAuthed.value = false
   try {
     localStorage.removeItem('socp_user')
     localStorage.removeItem('socp_role')
@@ -466,13 +505,47 @@ async function loadReport() {
 
 // ---------- 资产 ----------
 const assets = ref<Asset[]>([])
-async function loadAssets() { assets.value = await listAssets() }
+const assetStat = ref<{ total: number; byType: Record<string, number>; byCriticality: Record<string, number> } | null>(null)
+async function loadAssets() {
+  const [a, s] = await Promise.allSettled([listAssets(), assetStats()])
+  if (a.status === 'fulfilled') assets.value = a.value
+  if (s.status === 'fulfilled') assetStat.value = s.value
+}
 async function removeAsset(id: string) { await deleteAsset(id); await loadAssets() }
 
 // ---------- 端点 ----------
 const endpoints = ref<Endpoint[]>([])
-async function loadEndpoints() { endpoints.value = await listEndpoints() }
+const endpointStat = ref<{ total: number; online: number; byType: Record<string, number> } | null>(null)
+async function loadEndpoints() {
+  const [e, s] = await Promise.allSettled([listEndpoints(), endpointStats()])
+  if (e.status === 'fulfilled') endpoints.value = e.value
+  if (s.status === 'fulfilled') endpointStat.value = s.value
+}
 async function removeEp(id: string) { await deleteEndpoint(id); await loadEndpoints() }
+
+// ---------- 报表归档（MinIO） ----------
+const archiveInfo = ref<{ count: number; objects: Array<{ key: string; size: number }> } | null>(null)
+const archiveBusy = ref(false)
+async function doArchive() {
+  if (archiveBusy.value) return
+  archiveBusy.value = true
+  try {
+    const r = await archiveReport()
+    if (r.archived) {
+      ElMessage.success(`报表已归档至 MinIO（${r.day}/${r.dailyKey}）`)
+    } else {
+      ElMessage.error(r.error || '归档失败')
+    }
+    await loadArchive()
+  } catch (e) {
+    ElMessage.error((e as Error).message || '归档失败')
+  } finally {
+    archiveBusy.value = false
+  }
+}
+async function loadArchive() {
+  try { archiveInfo.value = await listArchive() } catch { /* MinIO 未启用时静默 */ }
+}
 
 // ---------- SOC ----------
 const tenants = ref<TenantInfo[]>([]); const socInfo = ref<Record<string, unknown>>({})
@@ -773,7 +846,7 @@ function onMenuChange(key: string) {
     case 'detect': loadRules(); break
     case 'ueba': loadUeba(); break
     case 'soar': loadPlaybooks(); break
-    case 'report': loadReport(); break
+    case 'report': loadReport(); loadArchive(); break
     case 'assets': loadAssets(); break
     case 'endpoints': loadEndpoints(); break
     case 'threat-intel': loadTi(); break
@@ -790,11 +863,10 @@ onMounted(() => {
   try {
     currentUser.value = localStorage.getItem('socp_user') || ''
     currentRole.value = localStorage.getItem('socp_role') || ''
-  } catch { currentUser.value = ''; currentRole.value = '' }
-  // 无有效登录态 → 自动弹登录框（demo-token 兜底在强制验签下会 401，不能再静默空白）
-  if (!currentUser.value) {
-    showLoginDialog.value = true
-  }
+    isAuthed.value = !!(localStorage.getItem('socp_token') && currentUser.value)
+  } catch { currentUser.value = ''; currentRole.value = ''; isAuthed.value = false }
+  // 有登录态才拉数据；无登录态由 LoginView 接管（登录成功后回调再拉）
+  if (!isAuthed.value) return
   refreshOverview()
   refreshTimer = window.setInterval(refreshOverview, 10_000)
   window.addEventListener('resize', onWinResize)
@@ -931,7 +1003,8 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
 </script>
 
 <template>
-  <div class="socp-shell">
+  <LoginView v-if="!isAuthed" @done="onLoginDone" />
+  <div v-else class="socp-shell">
     <!-- 侧边栏 -->
     <aside class="socp-sider">
       <div class="socp-logo"><span class="dot" />SOCP 控制台</div>
@@ -939,7 +1012,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
         <div v-for="m in MENU_VIEW" :key="m.key"
           :class="['socp-menu-item', { active: activeMenu === m.key }]"
           @click="onMenuChange(m.key)">
-          <span class="icon">{{ m.icon }}</span><span>{{ m.label }}</span>
+          <span class="icon" v-html="'<svg viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'currentColor\' stroke-width=\'1.6\' stroke-linecap=\'round\' stroke-linejoin=\'round\'>' + (MENU_ICONS[m.icon] || '') + '</svg>'"></span><span>{{ m.label }}</span>
         </div>
       </nav>
     </aside>
@@ -1933,7 +2006,11 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
 
         <!-- 报表统计 -->
         <div v-else-if="activeMenu === 'report'" class="page-pad">
-          <div style="margin-bottom:12px"><el-button @click="loadReport">刷新</el-button></div>
+          <div style="margin-bottom:12px;display:flex;gap:10px;align-items:center">
+            <el-button @click="loadReport">刷新</el-button>
+            <el-button type="primary" :loading="archiveBusy" @click="doArchive">归档至 MinIO</el-button>
+            <span v-if="archiveInfo" style="font-size:12px;color:var(--ns-text-3)">已归档 {{ archiveInfo.count }} 个对象</span>
+          </div>
           <el-row :gutter="12" style="margin-bottom:14px" v-if="report">
             <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ report.total }}</div><div class="label">今日告警</div></div></el-card></el-col>
             <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#f56c6c">{{ report.bySeverity.CRITICAL ?? 0 }}</div><div class="label">CRITICAL</div></div></el-card></el-col>
@@ -1948,11 +2025,24 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
             <template #header>TOP 规则</template>
             <el-table :data="report.byRule" size="small"><el-table-column prop="rule" label="规则" /><el-table-column prop="count" label="告警数" width="120" /></el-table>
           </el-card>
+          <el-card shadow="never" style="margin-top:14px" v-if="archiveInfo?.objects.length">
+            <template #header>MinIO 归档对象</template>
+            <el-table :data="archiveInfo.objects" size="small">
+              <el-table-column prop="key" label="对象 Key" min-width="240" />
+              <el-table-column prop="size" label="大小" width="120"><template #default="{ row }">{{ (row.size / 1024).toFixed(1) }} KB</template></el-table-column>
+            </el-table>
+          </el-card>
         </div>
 
         <!-- 资产管理 -->
         <div v-else-if="activeMenu === 'assets'" class="page-pad">
           <div style="margin-bottom:12px"><el-button @click="loadAssets">刷新</el-button></div>
+          <el-row :gutter="12" style="margin-bottom:14px" v-if="assetStat">
+            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ assetStat.total }}</div><div class="label">资产总数</div></div></el-card></el-col>
+            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#f56c6c">{{ assetStat.byCriticality?.CRITICAL ?? 0 }}</div><div class="label">关键资产</div></div></el-card></el-col>
+            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#e6a23c">{{ assetStat.byCriticality?.HIGH ?? 0 }}</div><div class="label">高价值资产</div></div></el-card></el-col>
+            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ Object.keys(assetStat.byType || {}).length }}</div><div class="label">资产类型</div></div></el-card></el-col>
+          </el-row>
           <el-card shadow="never">
             <el-table :data="assets" size="small" stripe>
               <el-table-column prop="name" label="名称" width="140" />
@@ -1969,6 +2059,12 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
         <!-- 端点防护 -->
         <div v-else-if="activeMenu === 'endpoints'" class="page-pad">
           <div style="margin-bottom:12px"><el-button @click="loadEndpoints">刷新</el-button></div>
+          <el-row :gutter="12" style="margin-bottom:14px" v-if="endpointStat">
+            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ endpointStat.total }}</div><div class="label">端点总数</div></div></el-card></el-col>
+            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#30d158">{{ endpointStat.online }}</div><div class="label">在线端点</div></div></el-card></el-col>
+            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#e6a23c">{{ endpointStat.total - endpointStat.online }}</div><div class="label">离线端点</div></div></el-card></el-col>
+            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ Object.keys(endpointStat.byType || {}).length }}</div><div class="label">端点类型</div></div></el-card></el-col>
+          </el-row>
           <el-card shadow="never">
             <el-table :data="endpoints" size="small" stripe>
               <el-table-column prop="hostname" label="主机名" width="140" />
@@ -2290,20 +2386,4 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
       </main>
     </div>
   </div>
-
-  <el-dialog v-model="showLoginDialog" title="登录安全运营中心" width="380px">
-    <el-form label-width="72px" @submit.prevent="doLogin">
-      <el-form-item label="账号">
-        <el-input v-model="loginForm.username" placeholder="demo / admin" />
-      </el-form-item>
-      <el-form-item label="密码">
-        <el-input v-model="loginForm.password" type="password" show-password placeholder="demo123 / admin123" @keyup.enter="doLogin" />
-      </el-form-item>
-      <p style="font-size:12px;color:#9aa0aa;margin:0 0 12px 72px">登录后签发 JWT（30 分钟有效）；未登录自动使用演示令牌。</p>
-      <div style="display:flex;justify-content:flex-end;gap:10px">
-        <el-button @click="showLoginDialog = false">取消</el-button>
-        <el-button type="primary" :loading="loginBusy" @click="doLogin">登录</el-button>
-      </div>
-    </el-form>
-  </el-dialog>
 </template>
