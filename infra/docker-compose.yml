@@ -80,6 +80,9 @@ services:
       KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
       # 演示环境开 auto-create，避免容器重建后 topic 丢失需手动重建
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # 增强（2026-08-10）：新建 topic 默认 3 分区（事件可并行消费、支持多消费者实例扩展）。
+      # 副本因子保持 1（单 broker KRaft 演示环境；生产集群按 broker 数调整 replication.factor）。
+      KAFKA_NUM_PARTITIONS: "3"
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1

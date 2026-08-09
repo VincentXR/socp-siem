@@ -1,5 +1,13 @@
 package com.socp.platform.obs;
 
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanContext;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
+import io.opentelemetry.context.propagation.TextMapGetter;
+import io.opentelemetry.context.propagation.TextMapSetter;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -16,14 +24,14 @@ import java.util.HexFormat;
 import java.util.UUID;
 
 /**
- * 全链路 traceId（W3C traceparent 标准，2026-08-10 升级）：
+ * 全链路 traceId（2026-08-10 OTel 完整版）：
  * <ul>
- *   <li>入站：优先解析 W3C {@code traceparent} 头（{@code 00-<32hex trace-id>-<16hex span-id>-<flags>}），
- *       trace-id 写入 MDC("traceId")；兼容旧 {@code X-Trace-Id} 头；缺失则生成 32 hex trace-id。</li>
- *   <li>出站：响应回写 {@code traceparent}（trace-id 沿用、span-id 为本请求新 span）+ 兼容 {@code X-Trace-Id}。</li>
+ *   <li>SDK 初始化成功：用 OpenTelemetry W3C trace context propagator 提取/注入
+ *       {@code traceparent}，每个 HTTP 请求创建一个 Span（父子链路），trace-id 写入 MDC
+ *       → Jaeger 可视化（localhost:4317 OTLP）。</li>
+ *   <li>SDK 初始化失败（Jaeger 不可达）：回退手写 traceparent 解析/生成（协议兼容）。</li>
  * </ul>
- * traceId 由 socp-obs logback 打印，ApiResult 回填给前端；服务间 HTTP/Kafka 透传见各调用方。
- * 生产环境可替换为 OpenTelemetry SDK 的 propagation（本实现保持轻量可运行、协议兼容）。
+ * traceId 由 socp-obs logback 打印，ApiResult 回填给前端；服务间 HTTP/Kafka 透传 traceparent（W3C）。
  */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 1)
@@ -33,6 +41,12 @@ public class TraceIdFilter extends OncePerRequestFilter {
     public static final String TRACEPARENT = "traceparent";
 
     private static final SecureRandom RANDOM = new SecureRandom();
+
+    private final org.springframework.core.env.Environment env;
+
+    public TraceIdFilter(org.springframework.core.env.Environment env) {
+        this.env = env;
+    }
 
     /** 解析 W3C traceparent，返回 32-hex trace-id；格式非法返回 null。 */
     public static String parseTraceId(String traceparent) {
@@ -73,9 +87,78 @@ public class TraceIdFilter extends OncePerRequestFilter {
         return UUID.randomUUID().toString().replace("-", "").substring(0, 16);
     }
 
+    // ---- OTel propagation ----
+    private static final TextMapGetter<HttpServletRequest> GETTER = new TextMapGetter<>() {
+        @Override
+        public Iterable<String> keys(HttpServletRequest carrier) {
+            return java.util.Collections.list(carrier.getHeaderNames());
+        }
+
+        @Override
+        public String get(HttpServletRequest carrier, String key) {
+            return carrier.getHeader(key);
+        }
+    };
+
+    private static final TextMapSetter<HttpServletResponse> SETTER = (carrier, key, value) ->
+            carrier.setHeader(key, value);
+
     @Override
     protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain)
             throws ServletException, IOException {
+        OTelSetup.initIfNeeded(env == null ? "" : env.getProperty("spring.application.name", ""));
+        if (OTelSetup.isInitialized()) {
+            doWithOtel(req, res, chain);
+        } else {
+            doManual(req, res, chain);
+        }
+    }
+
+    /** OTel SDK 路径：propagator 提取父上下文 → 创建 Span → MDC → 响应注入。 */
+    private void doWithOtel(HttpServletRequest req, HttpServletResponse res, FilterChain chain)
+            throws IOException, ServletException {
+        Context parent = GlobalOpenTelemetry.getPropagators().getTextMapPropagator()
+                .extract(Context.current(), req, GETTER);
+        Span parentSpan = Span.fromContext(parent);
+        String traceId;
+        if (parentSpan.getSpanContext().isValid()) {
+            traceId = parentSpan.getSpanContext().getTraceId();
+        } else {
+            traceId = newTraceId();
+        }
+        MDC.put("traceId", traceId);
+        Tracer tracer = GlobalOpenTelemetry.getTracer("socp", "1.0.0");
+        String path = req.getRequestURI();
+        Span span = tracer.spanBuilder(req.getMethod() + " " + path)
+                .setParent(parent)
+                .startSpan();
+        SpanContext sc = span.getSpanContext();
+        if (sc.isValid()) {
+            MDC.put("traceId", sc.getTraceId());
+        }
+        res.setHeader(HEADER, MDC.get("traceId"));
+        try (Scope scope = span.makeCurrent()) {
+            chain.doFilter(req, res);
+            if (res.getStatus() >= 500) {
+                span.setStatus(io.opentelemetry.api.trace.StatusCode.ERROR);
+            }
+        } catch (Throwable t) {
+            span.recordException(t);
+            span.setStatus(io.opentelemetry.api.trace.StatusCode.ERROR);
+            throw t;
+        } finally {
+            span.end();
+            // 响应注入 W3C traceparent（若未由其他组件写入）
+            if (res.getHeader(TRACEPARENT) == null) {
+                GlobalOpenTelemetry.getPropagators().getTextMapPropagator().inject(Context.current(), res, SETTER);
+            }
+            MDC.remove("traceId");
+        }
+    }
+
+    /** 手写回退：解析/生成 traceparent（协议兼容 OTel W3C）。 */
+    private void doManual(HttpServletRequest req, HttpServletResponse res, FilterChain chain)
+            throws IOException, ServletException {
         String traceId = null;
         String traceparent = req.getHeader(TRACEPARENT);
         if (traceparent != null && !traceparent.isBlank()) {

@@ -34,11 +34,14 @@ public class DetectEngineService {
     private final AlertForwarder forwarder;
     private final Suppressor suppressor = new Suppressor(Duration.ofMinutes(5));
     private final AtomicReference<RuleEngine> engineRef;
+    private final RuleChangePublisher rulePublisher;
 
-    public DetectEngineService(RuleSpecStore store, RecentAlertSink sink, AlertForwarder forwarder) {
+    public DetectEngineService(RuleSpecStore store, RecentAlertSink sink, AlertForwarder forwarder,
+                               RuleChangePublisher rulePublisher) {
         this.store = store;
         this.sink = sink;
         this.forwarder = forwarder;
+        this.rulePublisher = rulePublisher;
         this.engineRef = new AtomicReference<>(buildEngine());
     }
 
@@ -76,6 +79,7 @@ public class DetectEngineService {
     public Map<String, Object> addRule(Map<String, Object> spec) {
         Map<String, Object> saved = store.save(spec);
         reload();
+        rulePublisher.publish(String.valueOf(saved.get("id")), "add");
         return saved;
     }
 
@@ -85,12 +89,16 @@ public class DetectEngineService {
         }
         Map<String, Object> saved = store.save(spec);
         reload();
+        rulePublisher.publish(String.valueOf(saved.get("id")), "update");
         return saved;
     }
 
     public boolean deleteRule(String id) {
         boolean removed = store.delete(id);
-        if (removed) reload();
+        if (removed) {
+            reload();
+            rulePublisher.publish(id, "delete");
+        }
         return removed;
     }
 

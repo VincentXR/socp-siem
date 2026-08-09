@@ -7,6 +7,18 @@ export default defineConfig({
   build: {
     // dist 由调用方负责清理（rm -rf），避免构建期删除触发运行时安全删除 shim 的路径问题
     emptyOutDir: false,
+    // 代码分割（2026-08-10）：echarts / element-plus / vue 框架 / 其余依赖 独立 chunk，
+    // 大依赖单独长缓存，首屏只加载用到的 chunk
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules/echarts') || id.includes('node_modules/zrender')) return 'echarts'
+          if (id.includes('node_modules/element-plus') || id.includes('node_modules/@element-plus')) return 'element-plus'
+          if (id.includes('node_modules/vue') || id.includes('node_modules/@vue')) return 'vue-vendor'
+          if (id.includes('node_modules')) return 'vendor'
+        },
+      },
+    },
   },
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
