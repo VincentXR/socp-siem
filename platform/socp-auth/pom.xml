@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.socp</groupId>
+        <artifactId>socp-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+    <groupId>com.socp.platform</groupId>
+    <artifactId>socp-auth</artifactId>
+    <name>SOCP Auth</name>
+    <description>鉴权横切：机机 OAuth2 client-credentials + 人机 Keycloak OIDC（stub，见 §0.3）</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-tenant</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-error</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- JWT 验签/解析核心：JwtValidator 只用它，不依赖 Spring Security 运行时 -->
+        <dependency>
+            <groupId>com.nimbusds</groupId>
+            <artifactId>nimbus-jose-jwt</artifactId>
+        </dependency>
+
+        <!-- Resource Server：为后续接 Keycloak 做 @PreAuthorize / SecurityFilterChain 预留。
+             【必须 optional】否则会传递到全部 17 个服务 → 引入 spring-security-core
+             → 触发 Boot 的 SecurityAutoConfiguration → 所有接口被 HTTP Basic 兜底锁死，
+             当前无 Keycloak 的本地切片会整体不可用。启用时在具体服务里显式引入并配 SecurityFilterChain。 -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-oauth2-resource-server</artifactId>
+            <optional>true</optional>
+        </dependency>
+    </dependencies>
+</project>

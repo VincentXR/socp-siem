@@ -1,0 +1,37 @@
+server:
+  port: 18094
+  servlet:
+    context-path: /threat-web
+
+spring:
+  application:
+    name: threat-web
+  datasource:
+    # 默认 PostgreSQL（真实数据库，库 threat）。回退 H2 用 --spring.profiles.active=h2。
+    url: jdbc:postgresql://${SOCP_PG_HOST:localhost}:${SOCP_PG_PORT:5432}/threat
+    driver-class-name: org.postgresql.Driver
+    username: ${SOCP_PG_USER:socp}
+    password: ${SOCP_PG_PASSWORD:socp}
+  jpa:
+    hibernate:
+      # Flyway 接管 schema，Hibernate 不再自动改表
+      ddl-auto: none
+    open-in-view: false
+  flyway:
+    enabled: true
+    # 老库（ddl-auto=update 建的表 + 数据）标记为 version 0 后再迁移，不清库
+    baseline-on-migrate: true
+    baseline-version: 0
+    locations: classpath:db/migration
+
+socp:
+  security:
+    # 生产鉴权（2026-08-09 启用）：HMAC HS256 验签，与网关 /auth/login 签发 secret 一致。
+    jwt-secret: ${SOCP_JWT_SECRET:socp-demo-jwt-secret-0123456789abcdef0123456789abcdef}
+    dev-bypass: ${SOCP_DEV_BYPASS:false}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus

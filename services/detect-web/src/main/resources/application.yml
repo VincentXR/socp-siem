@@ -1,0 +1,23 @@
+server:
+  port: 18082
+  servlet:
+    context-path: /detect-web
+
+spring:
+  application:
+    name: detect-web
+
+# 告警转发目标（ALERT 告警库）
+socp:
+  security:
+    # 生产鉴权（2026-08-09 启用）：HMAC HS256 验签，与网关 /auth/login 签发 secret 一致。
+    jwt-secret: ${SOCP_JWT_SECRET:socp-demo-jwt-secret-0123456789abcdef0123456789abcdef}
+    dev-bypass: ${SOCP_DEV_BYPASS:false}
+  alert:
+    url: http://localhost:18080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus

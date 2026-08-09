@@ -1,0 +1,247 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.socp</groupId>
+    <artifactId>socp-parent</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+    <name>SOCP Parent</name>
+    <description>SOCP 安全运营平台 - 单仓多模块父工程（P0）</description>
+
+    <properties>
+        <maven.compiler.release>21</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!-- 后端核心栈（定稿，见 architecture.md §1；版本核验见 §1 末尾清单） -->
+        <spring-boot.version>3.5.0</spring-boot.version>
+        <spring-cloud.version>2025.0.0</spring-cloud.version>
+        <mybatis-spring-boot.version>3.0.4</mybatis-spring-boot.version>
+        <pagehelper.version>6.1.0</pagehelper.version>
+        <redisson.version>3.37.0</redisson.version>
+        <opensearch-java.version>2.19.0</opensearch-java.version>
+        <clickhouse-jdbc.version>0.7.2</clickhouse-jdbc.version>
+        <!-- Temporal 服务端文档钉 1.3.0 已严重落后，建议升 1.24+；SDK 同步钉兼容 1.x（caveat §1） -->
+        <temporal-sdk.version>1.24.0</temporal-sdk.version>
+        <!-- LangChain4j 1.x（AI 网关） -->
+        <langchain4j.version>1.0.0</langchain4j.version>
+        <mapstruct.version>1.6.3</mapstruct.version>
+        <lombok.version>1.18.34</lombok.version>
+        <opentelemetry.version>1.45.0</opentelemetry.version>
+        <!-- JWT 校验（socp-auth）：spring-boot-dependencies 3.5.0 不管理该坐标，必须自己钉版本 -->
+        <nimbus-jose-jwt.version>9.48</nimbus-jose-jwt.version>
+        <testcontainers.version>1.20.4</testcontainers.version>
+        <archunit.version>1.3.0</archunit.version>
+    </properties>
+
+    <modules>
+        <!-- 横切平台 -->
+        <module>platform/socp-bom</module>
+        <module>platform/socp-auth</module>
+        <module>platform/socp-tenant</module>
+        <module>platform/socp-audit</module>
+        <module>platform/socp-ratelimit</module>
+        <module>platform/socp-obs</module>
+        <module>platform/socp-error</module>
+        <module>platform/socp-data</module>
+        <module>platform/socp-test</module>
+        <module>platform/socp-rule</module>
+
+        <!-- 13 个业务服务 -->
+        <module>services/soc-base</module>
+        <module>services/asset-web</module>
+        <module>services/asset-collect</module>
+        <module>services/alert-web</module>
+        <module>services/search-config</module>
+        <module>services/detect-web</module>
+        <module>services/detect-model</module>
+        <module>services/hips-web</module>
+        <module>services/hips-collect</module>
+        <module>services/soar-web</module>
+        <module>services/report-web</module>
+        <module>services/ai-assistant</module>
+        <module>services/api-gateway</module>
+        <module>services/threat-web</module>
+        <module>services/attack-web</module>
+        <module>services/notify-web</module>
+        <module>services/incident-web</module>
+    </modules>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- Spring Boot / Cloud BOM（钉死版本） -->
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.springframework.cloud</groupId>
+                <artifactId>spring-cloud-dependencies</artifactId>
+                <version>${spring-cloud.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>io.micrometer</groupId>
+                <artifactId>micrometer-tracing-bridge-otel</artifactId>
+                <version>1.5.0</version>
+            </dependency>
+
+            <!-- 内部平台模块版本（由本仓管理） -->
+            <dependency>
+                <groupId>com.socp.platform</groupId>
+                <artifactId>socp-auth</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.socp.platform</groupId>
+                <artifactId>socp-tenant</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.socp.platform</groupId>
+                <artifactId>socp-audit</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.socp.platform</groupId>
+                <artifactId>socp-ratelimit</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.socp.platform</groupId>
+                <artifactId>socp-obs</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.socp.platform</groupId>
+                <artifactId>socp-error</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.socp.platform</groupId>
+                <artifactId>socp-data</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.socp.platform</groupId>
+                <artifactId>socp-rule</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.socp.platform</groupId>
+                <artifactId>socp-test</artifactId>
+                <version>${project.version}</version>
+                <scope>test</scope>
+            </dependency>
+
+            <!-- 第三方（按需由具体模块引入） -->
+            <dependency>
+                <groupId>com.nimbusds</groupId>
+                <artifactId>nimbus-jose-jwt</artifactId>
+                <version>${nimbus-jose-jwt.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.mybatis.spring.boot</groupId>
+                <artifactId>mybatis-spring-boot-starter</artifactId>
+                <version>${mybatis-spring-boot.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.github.pagehelper</groupId>
+                <artifactId>pagehelper-spring-boot3-starter</artifactId>
+                <version>${pagehelper.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.redisson</groupId>
+                <artifactId>redisson-spring-boot-3-starter</artifactId>
+                <version>${redisson.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.opensearch</groupId>
+                <artifactId>opensearch-java</artifactId>
+                <version>${opensearch-java.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.clickhouse</groupId>
+                <artifactId>clickhouse-jdbc</artifactId>
+                <version>${clickhouse-jdbc.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.temporal</groupId>
+                <artifactId>temporal-sdk</artifactId>
+                <version>${temporal-sdk.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j</artifactId>
+                <version>${langchain4j.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.mapstruct</groupId>
+                <artifactId>mapstruct</artifactId>
+                <version>${mapstruct.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.projectlombok</groupId>
+                <artifactId>lombok</artifactId>
+                <version>${lombok.version}</version>
+            </dependency>
+
+            <!-- 测试 -->
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-bom</artifactId>
+                <version>${testcontainers.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>com.tngtech.archunit</groupId>
+                <artifactId>archunit</artifactId>
+                <version>${archunit.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.tngtech.archunit</groupId>
+                <artifactId>archunit-junit5</artifactId>
+                <version>${archunit.version}</version>
+                <scope>test</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                    <version>${spring-boot.version}</version>
+                    <!-- 本工程未继承 spring-boot-starter-parent，repackage 执行必须自己声明，
+                         否则 package 只产出瘦 jar（无 BOOT-INF / 无 Main-Class），java -jar 起不来 -->
+                    <executions>
+                        <execution>
+                            <id>repackage</id>
+                            <goals>
+                                <goal>repackage</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>3.13.0</version>
+                    <configuration>
+                        <release>${maven.compiler.release}</release>
+                        <parameters>true</parameters>
+                    </configuration>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+</project>

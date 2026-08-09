@@ -1,0 +1,7 @@
+{
+  "name": "@socp/library",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "types": "index.ts",
+  "dependencies": { "element-plus": "2.14.3" }
+}

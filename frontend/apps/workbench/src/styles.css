@@ -1,0 +1,274 @@
+/* ================================================================
+   Stripe 亮色极简主题 · Silicon Valley SaaS Style
+   白底 / 细边框 / 大留白 / 蓝紫渐变仅用于品牌强调
+   ================================================================ */
+:root {
+  color-scheme: light;
+  /* Element Plus 主色 → Stripe 紫蓝 */
+  --el-color-primary: #635bff;
+  --el-color-primary-light-3: #8680ff;
+  --el-color-primary-light-5: #aca7ff;
+  --el-color-primary-light-7: #d3d0ff;
+  --el-color-primary-light-8: #e4e2ff;
+  --el-color-primary-light-9: #f2f1ff;
+  --el-color-primary-dark-2: #4f47e6;
+  --el-border-radius-base: 8px;
+  /* 自定义设计令牌 */
+  --ns-bg: #f6f7f9;
+  --ns-card: #ffffff;
+  --ns-border: #e8eaee;
+  --ns-border-strong: #d8dbe1;
+  --ns-text: #1a1f36;
+  --ns-text-2: #6e7480;
+  --ns-text-3: #9aa0aa;
+  --ns-brand: #635bff;
+  --ns-brand-2: #00d4ff;
+  --ns-shadow: 0 1px 2px rgba(16, 24, 40, .05);
+  --ns-shadow-lg: 0 12px 32px rgba(16, 24, 40, .10), 0 2px 6px rgba(16, 24, 40, .04);
+}
+
+* { box-sizing: border-box; }
+html, body, #app { height: 100%; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  color: var(--ns-text);
+  background: var(--ns-bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ============ 布局骨架 ============ */
+.socp-shell { display: flex; height: 100%; }
+.socp-sider {
+  width: 224px; flex: none;
+  background: #fff;
+  border-right: 1px solid var(--ns-border);
+  display: flex; flex-direction: column;
+}
+.socp-logo {
+  height: 64px; display: flex; align-items: center; gap: 10px; padding: 0 20px;
+  font-weight: 700; font-size: 16px; letter-spacing: .2px; color: var(--ns-text);
+  border-bottom: 1px solid var(--ns-border);
+}
+.socp-logo .dot {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--ns-brand), var(--ns-brand-2));
+  flex: none;
+}
+.socp-menu { padding: 12px 0; overflow-y: auto; flex: 1; }
+.socp-menu-item {
+  position: relative;
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; margin: 2px 10px; border-radius: 8px;
+  color: var(--ns-text-2); cursor: pointer; font-size: 13.5px; font-weight: 500;
+  transition: background .15s ease, color .15s ease;
+}
+.socp-menu-item .icon { font-size: 15px; width: 18px; text-align: center; }
+.socp-menu-item:hover { background: #f3f4f7; color: var(--ns-text); }
+.socp-menu-item.active {
+  background: var(--el-color-primary-light-9);
+  color: var(--ns-brand);
+  font-weight: 600;
+}
+.socp-menu-item.active::before {
+  content: ''; position: absolute; left: -10px; top: 50%; transform: translateY(-50%);
+  width: 3px; height: 20px; border-radius: 2px;
+  background: linear-gradient(180deg, var(--ns-brand), var(--ns-brand-2));
+}
+
+.socp-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.socp-header {
+  height: 58px; display: flex; align-items: center; gap: 12px; padding: 0 24px;
+  background: rgba(255, 255, 255, .88);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--ns-border);
+  position: relative; z-index: 2;
+}
+.socp-header .header-sub { color: var(--ns-text-3); font-weight: 500; font-size: 12.5px; }
+.socp-content { flex: 1; overflow: auto; }
+
+/* 顶部渐变标题（仅品牌强调处使用） */
+.grad-text {
+  background: linear-gradient(120deg, var(--ns-brand), var(--ns-brand-2));
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  font-weight: 700;
+}
+
+/* ============ 卡片 ============ */
+.page-pad { padding: 20px; }
+.mono { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; }
+
+.el-card {
+  border: 1px solid var(--ns-border) !important;
+  border-radius: 12px !important;
+  box-shadow: var(--ns-shadow) !important;
+  background: var(--ns-card) !important;
+  color: var(--ns-text);
+}
+.el-card__header {
+  border-bottom: 1px solid var(--ns-border);
+  color: var(--ns-text); font-weight: 600; letter-spacing: .1px;
+  padding: 12px 16px; font-size: 14px;
+}
+.el-card__body { padding: 16px; }
+
+.stat-card { text-align: center; }
+.stat-card .num { font-size: 27px; font-weight: 700; color: var(--ns-text); line-height: 1.2; letter-spacing: -.5px; }
+.stat-card .label { color: var(--ns-text-3); font-size: 12.5px; margin-top: 4px; }
+
+/* ============ 按钮 ============ */
+.el-button { border-radius: 8px; font-weight: 500; }
+.el-button--primary {
+  background: var(--ns-brand); border-color: var(--ns-brand); color: #fff; font-weight: 600;
+  box-shadow: 0 1px 2px rgba(99, 91, 255, .35);
+  transition: background .15s ease, transform .1s ease, box-shadow .15s ease;
+}
+.el-button--primary:hover { background: #5851e6; border-color: #5851e6; transform: translateY(-1px); box-shadow: 0 3px 10px rgba(99, 91, 255, .4); }
+.el-button--primary:active { transform: translateY(0); }
+.el-button--success { background: #16a34a; border-color: #16a34a; font-weight: 600; }
+.el-button--success:hover { background: #15803d; border-color: #15803d; }
+.el-button--warning { background: #d97706; border-color: #d97706; color: #fff; font-weight: 600; }
+.el-button--warning:hover { background: #b45309; border-color: #b45309; color: #fff; }
+.el-button--danger { background: #dc2626; border-color: #dc2626; font-weight: 600; }
+.el-button--danger:hover { background: #b91c1c; border-color: #b91c1c; }
+
+/* ============ 表格 ============ */
+.el-table {
+  --el-table-border-color: var(--ns-border);
+  --el-table-header-bg-color: #f6f7f9;
+  --el-table-row-hover-bg-color: #fafbff;
+  --el-table-tr-bg-color: #fff;
+  color: var(--ns-text);
+  font-size: 13px;
+}
+.el-table th.el-table__cell { background: #f6f7f9 !important; color: var(--ns-text-2); font-weight: 600; }
+.el-table td.el-table__cell { border-bottom: 1px solid var(--ns-border); }
+.el-table .el-table__row { background: #fff; }
+.el-table .el-table__row:hover > td { background: #fafbff !important; }
+
+/* ============ 弹窗 / 抽屉 ============ */
+.el-dialog {
+  background: #fff !important;
+  border-radius: 14px !important;
+  box-shadow: var(--ns-shadow-lg) !important;
+  border: 1px solid var(--ns-border);
+}
+.el-dialog__title { color: var(--ns-text); font-weight: 700; font-size: 16px; }
+.el-dialog__header { border-bottom: 1px solid var(--ns-border); padding-bottom: 14px; }
+.el-drawer {
+  background: #fff !important;
+  border-left: 1px solid var(--ns-border);
+}
+.el-drawer__title, .el-drawer__header { color: var(--ns-text); font-weight: 600; }
+
+/* ============ 表单 ============ */
+.el-input__wrapper, .el-textarea__inner {
+  background: #fff !important;
+  box-shadow: 0 0 0 1px var(--ns-border-strong) inset !important;
+  border-radius: 8px !important;
+}
+.el-input__wrapper.is-focus, .el-textarea__inner:focus {
+  box-shadow: 0 0 0 1px var(--ns-brand) inset, 0 0 0 3px rgba(99, 91, 255, .15) !important;
+}
+.el-tag { font-weight: 500; }
+.el-descriptions__label { color: var(--ns-text-2) !important; background: transparent !important; }
+.el-descriptions__content { background: transparent !important; color: var(--ns-text); }
+
+/* 段落小标题 */
+.sec-title { font-size: 13.5px; font-weight: 600; color: var(--ns-text); display: flex; align-items: center; gap: 8px; }
+.sec-title::before { content: ''; width: 3px; height: 14px; border-radius: 2px; background: linear-gradient(180deg, var(--ns-brand), var(--ns-brand-2)); }
+
+/* 新增工具栏 */
+.add-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+.add-bar .spacer { flex: 1; }
+.add-bar .hint { font-size: 12px; color: var(--ns-text-3); }
+
+/* 滚动条 */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #d3d7dd; border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background: #b9bec6; }
+
+/* ============ 实时态势大屏 ============ */
+.sit-wrap .el-card__header { padding: 10px 14px; font-size: 12.5px; font-weight: 600; }
+.sit-card { height: 100%; }
+.sit-kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 12px; }
+.sit-kpi {
+  position: relative; overflow: hidden;
+  background: #fff;
+  border: 1px solid var(--ns-border);
+  border-radius: 12px; padding: 14px 16px; color: var(--ns-text);
+  box-shadow: var(--ns-shadow);
+}
+.sit-kpi .k-num {
+  font-size: 25px; font-weight: 700; line-height: 1.15; letter-spacing: -.4px;
+  background: linear-gradient(120deg, var(--ns-brand), var(--ns-brand-2));
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+.sit-kpi .k-label { font-size: 12px; color: var(--ns-text-3); margin-top: 4px; }
+
+.live-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--ns-brand); flex: none;
+  box-shadow: 0 0 0 0 rgba(99, 91, 255, .5); animation: livePulse 1.6s infinite;
+}
+.live-dot.off { background: #c3c8d0; animation: none; box-shadow: none; }
+@keyframes livePulse {
+  0%   { box-shadow: 0 0 0 0 rgba(99, 91, 255, .5); }
+  70%  { box-shadow: 0 0 0 7px rgba(99, 91, 255, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(99, 91, 255, 0); }
+}
+.feed { height: 368px; overflow-y: auto; }
+.feed-empty { color: var(--ns-text-3); font-size: 13px; text-align: center; padding: 60px 0; }
+.feed-item {
+  display: flex; gap: 8px; padding: 8px 4px; border-bottom: 1px solid #f0f1f4;
+  transition: background .5s;
+}
+.feed-item.fresh { background: linear-gradient(90deg, var(--el-color-primary-light-9), transparent); }
+.feed-bar { width: 3px; border-radius: 2px; flex: none; }
+.feed-body { flex: 1; min-width: 0; }
+.feed-top { display: flex; align-items: center; gap: 8px; }
+.feed-rule { font-size: 13px; font-weight: 600; color: var(--ns-text); }
+.feed-entity { font-size: 12px; color: var(--ns-brand); font-family: var(--el-font-family-mono, monospace); }
+.feed-time { font-size: 11px; color: var(--ns-text-3); margin-left: auto; }
+.feed-msg { font-size: 12px; color: var(--ns-text-2); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ============ UEBA 风险 ============ */
+.risk-pill {
+  display: inline-block; min-width: 34px; text-align: center; color: #fff;
+  border-radius: 10px; font-size: 12px; font-weight: 700; padding: 1px 7px; line-height: 18px;
+}
+.risk-pill.lg { min-width: 54px; font-size: 20px; line-height: 34px; border-radius: 8px; }
+.wl-card .el-card__header { padding: 10px 14px; }
+.wl-values { max-height: 116px; overflow-y: auto; }
+.bd-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.bd-label { width: 130px; font-size: 12px; color: var(--ns-text-2); flex: none; }
+.bd-bar { flex: 1; height: 10px; background: #eef0f4; border-radius: 6px; overflow: hidden; }
+.bd-fill { height: 100%; border-radius: 6px; background: linear-gradient(90deg, var(--ns-brand), var(--ns-brand-2)); transition: width .3s; }
+.bd-val { width: 42px; text-align: right; font-size: 12px; font-weight: 600; color: var(--ns-text); }
+
+/* ============ 接入任务 ============ */
+.test-out {
+  background: #f6f8fb; color: #374151; border-radius: 8px; border: 1px solid var(--ns-border);
+  padding: 10px 12px; font-size: 12px; max-height: 260px; overflow: auto; margin: 10px 0 0;
+}
+
+/* ============ ATT&CK 矩阵 ============ */
+.attack-matrix { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 8px; }
+.am-col { flex: 1 0 120px; min-width: 120px; display: flex; flex-direction: column; gap: 4px; }
+.am-head {
+  font-size: 12px; font-weight: 600; text-align: center; color: var(--ns-text);
+  background: #f3f4f7; border: 1px solid var(--ns-border); border-radius: 6px; padding: 6px 4px; line-height: 1.3;
+}
+.am-cov { display: block; font-size: 11px; font-weight: 500; color: var(--ns-brand); margin-top: 2px; }
+.am-cell {
+  position: relative; border: 1px solid var(--ns-border); border-radius: 5px; padding: 6px 4px;
+  font-size: 11px; cursor: pointer; text-align: center; transition: transform .08s, border-color .15s, box-shadow .15s; min-height: 30px;
+  display: flex; align-items: center; justify-content: center; background: #fff;
+}
+.am-cell:hover { transform: scale(1.05); border-color: var(--ns-brand); box-shadow: 0 2px 10px rgba(99, 91, 255, .15); z-index: 2; }
+.am-id { font-family: 'SFMono-Regular', Consolas, Menlo, monospace; }
+.am-badge {
+  position: absolute; top: -6px; right: -6px; background: #fff; color: #dc2626;
+  border: 1px solid #fca5a5; border-radius: 10px; font-size: 10px; font-weight: 700;
+  padding: 0 5px; line-height: 15px; min-width: 16px;
+}

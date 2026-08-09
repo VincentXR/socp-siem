@@ -1,0 +1,37 @@
+# ---- Maven / Java ----
+**/target/
+*.class
+*.jar
+*.war
+*.original
+
+# ---- 前端 ----
+frontend/node_modules/
+frontend/**/node_modules/
+frontend/dist/
+frontend/**/dist/
+.pnpm-store/
+frontend/.pnpm-store/
+
+# ---- IDE ----
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# ---- 本地运行残留 ----
+*.log
+*.mv.db
+.trace.db
+.cache/
+*.pid
+
+# ---- 系统 ----
+.DS_Store
+Thumbs.db
+
+# ---- 环境变量/密钥（如后续添加 .env 类文件） ----
+.env
+*.local

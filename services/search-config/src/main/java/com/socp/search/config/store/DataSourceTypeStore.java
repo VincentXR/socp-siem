@@ -1,0 +1,45 @@
+package com.socp.search.config.store;
+
+import com.socp.search.config.domain.DataSourceType;
+import org.springframework.stereotype.Component;
+
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+
+/**
+ * 数据源分类存储（元数据）。进程内；生产替换为 PG search.t_data_source_type。
+ */
+@Component
+public class DataSourceTypeStore {
+
+    private final ConcurrentHashMap<String, DataSourceType> map = new ConcurrentHashMap<>();
+
+    public DataSourceTypeStore() {
+        seed();
+    }
+
+    private void seed() {
+        save(DataSourceType.create("SYSLOG", "Syslog 协议", "标准 UDP/TCP 514 或自定义端口，网络设备/主机日志最常用", true));
+        save(DataSourceType.create("KAFKA", "Kafka 消息队列", "从消息队列消费日志，高吞吐接入（SOCP 生产主通道）", true));
+        save(DataSourceType.create("FILE", "文件采集", "监听本地/共享日志文件，支持多行合并与全量回放", true));
+        save(DataSourceType.create("SOCKET", "原始 TCP/UDP", "裸协议监听，保留完整原始行，适合自定义格式", true));
+        save(DataSourceType.create("WINDOWS_EVENT", "Windows 事件日志", "EventLog/ETW 通道，Winlogbeat 等采集器上报", true));
+        save(DataSourceType.create("AGENT", "端点 Agent", "HIPS/Falco Agent gRPC/WebSocket 推送运行时事件", true));
+        save(DataSourceType.create("HTTP_API", "HTTP/API 推送", "Webhook、SIEM API 上传、第三方平台对接", true));
+        save(DataSourceType.create("DATABASE", "数据库日志", "DB 日志表/CDC 变更流采集（Oracle/MySQL/PG）", false));
+        save(DataSourceType.create("CLOUD", "云平台日志", "AWS CloudTrail / 腾讯云 CLS / 阿里云 SLS 等", false));
+    }
+
+    public List<DataSourceType> list() {
+        return map.values().stream().toList();
+    }
+
+    public DataSourceType save(DataSourceType t) {
+        map.put(t.id(), t);
+        return t;
+    }
+
+    public boolean delete(String id) {
+        return map.remove(id) != null;
+    }
+}

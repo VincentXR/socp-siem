@@ -1,0 +1,15 @@
+{
+  "name": "socp-frontend",
+  "private": true,
+  "packageManager": "pnpm@10.0.0",
+  "scripts": {
+    "dev:all": "pnpm -r --parallel dev",
+    "dev": "pnpm --filter @socp/app-workbench dev",
+    "build": "pnpm --filter @socp/app-workbench build"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vite": "6.4.3",
+    "vue-tsc": "3.3.9"
+  }
+}

@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.socp</groupId>
+        <artifactId>socp-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+    <artifactId>alert-web</artifactId>
+    <name>ALERT Web</name>
+    <description>态势感知告警管理（SSAP5）：告警 CRUD + 查询/下钻，t_alarm 落入 PostgreSQL/H2（见 §8.1 / §8.2）</description>
+
+    <dependencies>
+    <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-error</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-tenant</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-auth</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-audit</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-obs</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-ratelimit</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-data</artifactId>
+        </dependency>
+        <!-- 威胁评分模型：与 DETECT 检测侧共用同一套评分口径，避免两边算出不同的分 -->
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-rule</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <!-- Flyway 接管 schema（ddl-auto=none）：H2 本地切片与 PG 生产用同一套 V1__init.sql -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <!-- 生产连 PostgreSQL 时 Flyway 需要单独的 PG 数据库模块
+             （flyway-core 11.x 只内置 H2/SQLite 社区库，不含 PG） -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

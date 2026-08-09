@@ -1,0 +1,46 @@
+{
+  "realm": "socp",
+  "enabled": true,
+  "sslRequired": "none",
+  "loginTheme": "keycloak",
+  "clients": [
+    {
+      "clientId": "socp-backend",
+      "name": "SOCP 机机客户端（client-credentials）",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "change-me-in-prod",
+      "standardFlowEnabled": false,
+      "serviceAccountsEnabled": true,
+      "authorizationServicesEnabled": true,
+      "directAccessGrantsEnabled": false
+    },
+    {
+      "clientId": "socp-spa",
+      "name": "SOCP 前端 SPA（PKCE）",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": ["http://localhost:5173/*", "http://localhost:18092/*"],
+      "webOrigins": ["+"]
+    }
+  ],
+  "users": [
+    {
+      "username": "soc_analyst",
+      "enabled": true,
+      "email": "analyst@socp.local",
+      "credentials": [{ "type": "password", "value": "Socp@2026", "temporary": false }],
+      "realmRoles": ["soc_analyst"]
+    }
+  ],
+  "roles": {
+    "realm": [
+      { "name": "soc_analyst" },
+      { "name": "admin" }
+    ]
+  }
+}

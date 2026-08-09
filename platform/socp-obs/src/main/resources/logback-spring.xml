@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  全局日志格式（socp-obs 提供，随依赖进入全部 17 个服务的 classpath）。
+
+  为什么放在这里：Boot 启动时会在 classpath 根查找 logback-spring.xml，socp-obs 是所有服务
+  的共同依赖，因此一份配置即可统一 17 个服务的日志格式，不必每个服务复制一遍。
+  某个服务需要定制时，在自己的 src/main/resources 下放同名文件即可覆盖（本模块的 jar 排在类路径后面）。
+
+  %X{traceId} 取自 MDC，由 TraceIdFilter 在请求入口写入（缺失时 defaultValue 打 "-"，
+  例如启动期日志、@Scheduled 任务、Kafka 消费线程等非 HTTP 上下文）。
+-->
+<configuration>
+    <!-- 引入 Boot 的默认转换器（CONSOLE_LOG_CHARSET / clr 彩色转换等），
+         否则自定义 pattern 里用不了 Boot 的扩展关键字 -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <!-- 允许各服务用 logging.pattern.console 覆盖；未设置时用平台统一格式。
+         %X{traceId:-none} 的 ":-none" 是 MDC 缺省值语法，非 HTTP 上下文打 none 而不是空白。 -->
+    <springProperty scope="context" name="SOCP_CONSOLE_PATTERN" source="logging.pattern.console"
+                    defaultValue="%d{ISO8601} [%X{traceId:-none}] %-5level %logger{36} - %msg%n"/>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${SOCP_CONSOLE_PATTERN}</pattern>
+            <charset>${CONSOLE_LOG_CHARSET:-UTF-8}</charset>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+
+    <!-- 平台横切模块的关键日志（dev-bypass 告警、鉴权失败）保持 INFO 可见 -->
+    <logger name="com.socp" level="INFO"/>
+</configuration>

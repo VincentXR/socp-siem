@@ -1,0 +1,7 @@
+# incident-web H2 回退配置：--spring.profiles.active=h2 时使用（本地无 Docker 切片）
+spring:
+  datasource:
+    url: jdbc:h2:file:${user.home}/.socp/incident;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""

@@ -1,0 +1,96 @@
+# SOCP Prometheus 抓取配置
+#
+# ⚠️ 现状说明（重要）
+#   1) 端口→服务映射已按 build/run-all.sh 的 BACKENDS 数组校准（此前的注释映射全部是错的）。
+#
+#   2) `micrometer-registry-prometheus` 是 **17 个服务的编译依赖**，且各服务的
+#      `management.endpoints.web.exposure.include` 已含 `prometheus`：
+#      - api-gateway（18092）无 context-path，走根路径 `/actuator/prometheus`；
+#      - 其余 16 个业务服务有 `server.servlet.context-path: /{服务名}`，
+#        指标真实路径为 `/{服务名}/actuator/prometheus`，由下方 `socp-services`
+#        job 的 relabel_configs 按 service 标签动态拼出 __metrics_path__。
+#      只要服务已用最新代码重新编译启动，两个 job 均能抓到数据。
+#
+#   3) 【已修正的路径 bug】16 个业务服务都配了 `server.servlet.context-path: /{服务名}`，
+#      其指标真实路径是 `/{服务名}/actuator/prometheus`；而 api-gateway 无 context-path，
+#      走根路径 `/actuator/prometheus`。原先单个 job 统一写死 `/actuator/prometheus`，
+#      即使端点启用了也会对 16 个服务全部 404。现拆成两个 job，业务服务用 relabel
+#      按 service 标签动态拼出带 context-path 的 __metrics_path__。
+#
+#   另注：代码中无 OpenTelemetry（根 pom 仅声明 micrometer-tracing-bridge-otel，各服务未引入）；
+#         traceId 已写入 MDC，并由 socp-obs 的全局 logback-spring.xml 打印。
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # ── 网关：无 context-path，指标走根路径。当前唯一真正暴露 prometheus 端点的服务 ──
+  - job_name: 'socp-gateway'
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['host.docker.internal:18092']
+        labels:
+          service: api-gateway
+
+  # ── 业务服务：16 个，容器内 8080 / 宿主 18080~18097 ──────────────
+  # 每个服务都有 server.servlet.context-path: /{服务名}，指标路径为
+  # /{服务名}/actuator/prometheus，由下方 relabel_configs 依据 service 标签动态生成。
+  # 端口分配以 build/run-all.sh 的 BACKENDS 数组为唯一事实来源。
+  # ⚠️ 这些服务当前未暴露 prometheus 端点，抓取会 404（见文件头说明）。
+  - job_name: 'socp-services'
+    static_configs:
+      - targets: ['host.docker.internal:18080']
+        labels: { service: alert-web }        # 告警 CRUD（H2）
+      - targets: ['host.docker.internal:18081']
+        labels: { service: search-config }     # 日志源配置 / ingest（H2）
+      - targets: ['host.docker.internal:18082']
+        labels: { service: detect-web }        # 规则引擎
+      - targets: ['host.docker.internal:18083']
+        labels: { service: soar-web }       # 剧本编排
+      - targets: ['host.docker.internal:18084']
+        labels: { service: report-web }        # 报表
+      - targets: ['host.docker.internal:18085']
+        labels: { service: asset-web }        # 资产管理
+      - targets: ['host.docker.internal:18086']
+        labels: { service: soc-base }       # 租户 / 平台概览
+      - targets: ['host.docker.internal:18087']
+        labels: { service: hips-web }       # 端点管理
+      - targets: ['host.docker.internal:18088']
+        labels: { service: ai-assistant }   # 安全问答
+      - targets: ['host.docker.internal:18090']
+        labels: { service: detect-model }      # 二次关联分析（未接 Kafka）
+      - targets: ['host.docker.internal:18091']
+        labels: { service: asset-collect }    # 资产采集入口
+      - targets: ['host.docker.internal:18093']
+        labels: { service: hips-collect }   # 端点事件采集入口
+      - targets: ['host.docker.internal:18094']
+        labels: { service: threat-web }         # 威胁情报（H2）
+      - targets: ['host.docker.internal:18095']
+        labels: { service: attack-web }     # ATT&CK 矩阵
+      - targets: ['host.docker.internal:18096']
+        labels: { service: notify-web }     # 通知渠道
+      - targets: ['host.docker.internal:18097']
+        labels: { service: incident-web }       # 安全案件（H2）
+    relabel_configs:
+      # 用 service 标签拼出带 context-path 的指标路径：/{服务名}/actuator/prometheus
+      - source_labels: [service]
+        regex: (.+)
+        target_label: __metrics_path__
+        replacement: /$1/actuator/prometheus
+    # 注：18089 未分配；18092（api-gateway）在上面的 socp-gateway job 中单独抓取。
+
+  # ── 中间件（均需对应 exporter 才能真正出指标，当前未部署 exporter） ──
+  # 下列 target 指的是中间件自身端口，不是 Prometheus 格式的 metrics 端点，
+  # 生产接入时应替换为 postgres_exporter / kafka_exporter / redis_exporter。
+  - job_name: 'socp-postgres'
+    static_configs:
+      - targets: ['postgres:5432']
+
+  - job_name: 'socp-kafka'
+    static_configs:
+      - targets: ['kafka:9092']
+
+  - job_name: 'socp-redis'
+    static_configs:
+      - targets: ['redis:6379']

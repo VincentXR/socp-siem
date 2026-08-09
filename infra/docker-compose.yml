@@ -1,0 +1,321 @@
+# SOCP 基础设施（P0）——docker-compose 一键起全栈中间件
+#
+# ⚠️ 重要前提（务必先读）
+#  1) 本文件声明的中间件**基本尚未在 Java 代码中接线**：
+#       - PostgreSQL / OpenSearch / Redis / ClickHouse / Temporal / MinIO：**零客户端引用**；
+#       - Kafka：仅 socp-audit 的 KafkaAuditSink 用到，且需显式配 `socp.audit.sink=kafka`（默认内存 sink）；
+#       - Keycloak：仅验签侧可用（socp-auth 的 JwtValidator 可拉其 JWKS），无 OIDC 登录流程。
+#     默认配置下起容器不会改变服务行为：17 个后端服务仍以**内存态**运行，其中 4 个
+#     （alert-web / search-config / threat-web / incident-web）用 **H2 文件库**作 PostgreSQL 替身。
+#  2) 本文件需要本机具备 **Docker 运行时**，并非所有开发环境都具备。
+#     无 Docker 时可直接 `bash socp/build/run-all.sh start` 全栈联调，功能不受影响。
+#  3) 因此本文件当前的定位是「**面向未来接线的编排基线**」，而非运行必需项。
+#
+# 其它说明：
+#  - 镜像 tag 钉写稿时已知 GA；正式编码前请联网到官方源核验一次（见架构报告 §1 版本核验清单）。
+#    已知可能偏旧：Temporal(建议升 1.24+)、Keycloak(建议 27/28)、ClickHouse(建议 26.x LTS)。
+#  - PostgreSQL 的 Apache AGE 扩展需带 AGE 的镜像（如 bitnine/age:PG18 或自构建），
+#    标准 postgres:18 不含 AGE；init-sql/02_age.sql 为可选，按需启用。
+#  - 业务服务容器内 8080；宿主端口 18080~18097（17 个服务，见 build/run-all.sh 的 BACKENDS 数组）。
+#  - 宿主端口冲突约定：避开 8080（旧 SIEM 控制台占用）；ClickHouse 原生口让位给 MinIO，见下。
+
+networks:
+  socp:
+    driver: bridge
+
+volumes:
+  pg-data:
+  os-data:
+  redis-data:
+  ck-data:
+  minio-data:
+  temporal-data:
+  kafka-data:
+
+services:
+  # ── 关系库 + 图（每租户一图，见 §4 / §8.2） ──────────────
+  # ⚠️ 未接线：4 个服务用 H2 文件库作替身，13 个服务纯内存态；AGE 关联图未使用。
+  #    另注：全仓无 Flyway/Liquibase，建表依赖 ddl-auto: update。
+  postgres:
+    image: postgres:18
+    container_name: socp-postgres
+    environment:
+      POSTGRES_USER: socp
+      POSTGRES_PASSWORD: socp
+      POSTGRES_DB: socp
+    ports:
+      - "5432:5432"
+    volumes:
+      # PG18+ 数据目录约定变更：挂载父目录 /var/lib/postgresql（数据落在其子目录），
+      # 挂 /var/lib/postgresql/data 会被容器判定为旧格式而拒绝启动。
+      - pg-data:/var/lib/postgresql
+      - ./init-sql/pg:/docker-entrypoint-initdb.d:ro
+    networks: [socp]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U socp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── 流式（KRaft，无 ZooKeeper，见 §5） ─────────────────
+  # 🟡 部分接线：@AuditOperation 的出口 KafkaAuditSink 已实现（topic 由 socp.audit.topic 指定，
+  #    默认 socp-audit），启用需 `socp.audit.sink=kafka` 且 classpath 含 spring-kafka（optional 依赖）。
+  #    默认仍是 InMemoryAuditSink。DETECT/SEARCH 等业务链路仍无任何 Kafka 生产/消费。
+  kafka:
+    # bitnami 镜像已从 Docker Hub 撤出，改用 Apache 官方镜像（KRaft 单节点）
+    image: apache/kafka:4.0.0
+    container_name: socp-kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      # 宿主可达：advertised 用 localhost（search/detect 等业务服务跑在宿主机，连 localhost:9092）
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      # 演示环境开 auto-create，避免容器重建后 topic 丢失需手动重建
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_HEAP_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "9092:9092"
+    volumes:
+      # KRaft 日志目录持久化（apache/kafka 镜像默认 log.dirs）
+      - kafka-data:/tmp/kraft-combined-logs
+    networks: [socp]
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # ── 检索引擎（统一服务端/客户端 OpenSearch 2.19，见 §8.2） ─
+  # ⚠️ 未接线：search-config 的检索/解析为进程内实现，不查 OpenSearch。
+  opensearch:
+    image: opensearchproject/opensearch:2.19.6
+    container_name: socp-opensearch
+    environment:
+      discovery.type: single-node
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: "Socp!Sec2026xK"
+      bootstrap.memory_lock: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - os-data:/usr/share/opensearch/data
+    networks: [socp]
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
+    healthcheck:
+      # OS 2.x 默认启用 TLS，健康检查须走 https 且忽略自签证书
+      test: ["CMD-SHELL", "curl -skfS https://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  opensearch-dashboards:
+    # 修正：镜像组织名为 opensearchproject（无连字符），与上方 opensearch 服务保持一致。
+    # 原写法 opensearch-project/... 在 Docker Hub 不存在，会导致 pull 失败。
+    image: opensearchproject/opensearch-dashboards:2.19.6
+    container_name: socp-dashboards
+    environment:
+      OPENSEARCH_HOSTS: '["http://opensearch:9200"]'
+      OPENSEARCH_DASHBOARDS_PASSWORD: "Socp@2026"
+    ports:
+      - "5601:5601"
+    depends_on: [opensearch]
+    networks: [socp]
+    profiles: ["extra"]
+
+  # ── 缓存 / 分布式锁（Redisson，见 §3 / P1） ───────────
+  # ⚠️ 未接线：socp-ratelimit 用的是进程内令牌桶，多实例间配额不共享。
+  redis:
+    image: redis:8
+    container_name: socp-redis
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "192mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks: [socp]
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── 报表聚合（ClickHouse 4 库，见 §8.1 REPORT） ──────────
+  # ⚠️ 未接线：report-web 目前为进程内内存态聚合，不连 ClickHouse。
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.3
+    container_name: socp-clickhouse
+    environment:
+      # 25.x 镜像默认启用认证，显式固定密码（业务代码 socp.ck.url 使用）
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: socp
+    ports:
+      - "8123:8123"    # HTTP 接口
+      # 端口冲突修正：原为 "9000:9000"，与 MinIO 的 S3 API 宿主端口 9000 冲突，
+      # 会导致 `docker compose up` 直接失败。此处让位，宿主改用 9010（容器内仍是 9000）。
+      # 原生 TCP 客户端连接串相应改为 localhost:9010。
+      - "9010:9000"    # 原生 TCP 协议
+    volumes:
+      - ck-data:/var/lib/clickhouse
+      - ./init-sql/clickhouse:/docker-entrypoint-initdb.d:ro
+    networks: [socp]
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── 对象存储（MinIO，见 §8.1 ASSET 附件） ───────────────
+  # ⚠️ 未接线：代码中无任何对象存储读写。
+  minio:
+    image: minio/minio:latest
+    container_name: socp-minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: socp
+      MINIO_ROOT_PASSWORD: Socp@2026
+    ports:
+      # MinIO 保留标准端口；ClickHouse 已让出宿主 9000（改为 9010），两者不再冲突。
+      - "9000:9000"    # S3 API
+      - "9001:9001"    # 控制台
+    volumes:
+      - minio-data:/data
+    networks: [socp]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # ── SOAR 编排引擎（Temporal Saga + 补偿，见 §8.2） ─────
+  # ⚠️ 未接线：soar-web 目前只是内存态剧本 CRUD + 启停，无 Saga、无补偿、无持久化工作流。
+  # 版本核验：建议升到与服务端兼容的 1.24+ GA（文档钉 1.3.0 已严重落后）
+  temporal:
+    image: temporalio/auto-setup:1.24.0
+    container_name: socp-temporal
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: socp
+      POSTGRES_PWD: socp
+      POSTGRES_SEEDS: postgres
+    ports:
+      - "7233:7233"
+    depends_on: [postgres]
+    networks: [socp]
+    profiles: ["extra"]
+
+  temporal-ui:
+    image: temporalio/ui:2.26.0
+    container_name: socp-temporal-ui
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    ports:
+      - "8088:8080"
+    depends_on: [temporal]
+    networks: [socp]
+    profiles: ["extra"]
+
+  # ── 鉴权（人机 OIDC / 机机 client-credentials，见 §0.3） ─
+  # 🟡 部分接线：socp-auth 的 JwtValidator 已支持从 Keycloak JWKS 拉公钥验签（RS/ES 系列）
+  #    + exp/nbf + issuer 精确匹配，17 个服务（含网关）全部接入。
+  #    但：① 无 OIDC 登录/授权码流程；② 仓库内未配 socp.security.issuer-uri，
+  #    故默认走 dev-bypass（任意非空 Bearer 放行）；③ 无 RBAC。
+  #    接线方式：给各服务配 socp.security.issuer-uri=http://localhost:8083/realms/socp
+  #             并设 socp.security.dev-bypass=false。
+  # 版本核验：26.0 大概率已过 OSS 维护期，建议升 27/28 主线
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    container_name: socp-keycloak
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: Socp@2026
+    ports:
+      # 宿主端口修正：原为 8080，与旧 SIEM 控制台占用的 8080 冲突
+      # （该控制台对任意路径返回 HTML，会造成健康检查假阳性）。
+      # 改为宿主 8083，容器内保持 8080。控制台地址：http://localhost:8083
+      - "8083:8080"
+      - "8443:8443"
+    volumes:
+      - ./init-sql/keycloak:/opt/keycloak/data/import:ro
+    networks: [socp]
+    profiles: ["extra"]
+
+  # ── 可观测栈（Prometheus + Grafana + Loki + Jaeger，P18） ─
+  # 🟡 部分就绪：micrometer-registry-prometheus 已是 17 个服务的依赖，但
+  #    /actuator/prometheus **目前只有 api-gateway 暴露**；其余 16 个服务的
+  #    management.endpoints.web.exposure.include 仅含 health,info
+  #    （detect-web / search-config / alert-web 另含 metrics），抓取会 404 —— 属预期。
+  #    开启方式：把 prometheus 加进各服务的 include 列表即可，无需改 prometheus.yml。
+  #    代码中无 OpenTelemetry（根 pom 仅声明 micrometer-tracing-bridge-otel，各服务未引入）；
+  #    架构图中提到的 OTel Collector 亦未纳入本编排，属规划项。
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: socp-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./init-sql/prometheus:/etc/prometheus:ro
+    networks: [socp]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: socp-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: Socp@2026
+    depends_on: [prometheus]
+    networks: [socp]
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ── 可选服务（默认不启动）：docker compose --profile extra up -d ──
+  loki:
+    image: grafana/loki:latest
+    container_name: socp-loki
+    ports:
+      - "3100:3100"
+    networks: [socp]
+    profiles: ["extra"]
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: socp-jaeger
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+    networks: [socp]
+    profiles: ["extra"]

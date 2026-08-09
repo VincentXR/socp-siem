@@ -1,0 +1,6 @@
+{
+  "name": "@socp/dev-deps",
+  "version": "1.0.0",
+  "private": true,
+  "devDependencies": { "typescript": "5.9.3", "vue-tsc": "3.3.9" }
+}

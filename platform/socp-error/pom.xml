@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.socp</groupId>
+        <artifactId>socp-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+    <groupId>com.socp.platform</groupId>
+    <artifactId>socp-error</artifactId>
+    <name>SOCP Error</name>
+    <description>统一响应 ApiResult + 全局异常处理（P1 横切）</description>
+
+    <dependencies>
+        <!-- 提供 spring-web / jackson / jakarta.servlet-api / slf4j；
+             @RestControllerAdvice + ResponseEntity + @JsonInclude + MDC 均依赖于此 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+    </dependencies>
+</project>

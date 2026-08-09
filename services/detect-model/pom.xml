@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.socp</groupId>
+        <artifactId>socp-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+    <artifactId>detect-model</artifactId>
+    <name>DetectModel</name>
+    <description>DETECT Model（Kafka 窗口聚合，GASP7）</description>
+
+    <dependencies>
+    <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-error</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-tenant</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-audit</artifactId>
+        </dependency>
+        <!-- 规则引擎共享库（窗口聚合的二次分析底座） -->
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-rule</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-auth</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-obs</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-ratelimit</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-data</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

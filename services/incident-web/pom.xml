@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.socp</groupId>
+        <artifactId>socp-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+    <artifactId>incident-web</artifactId>
+    <name>IncidentWeb</name>
+    <description>案件与调查时间线（事件归并/调查，IR-4）</description>
+
+    <dependencies>
+    <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-error</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+        <!-- Flyway 接管 schema（ddl-auto=none）：H2 本地切片与 PG 生产共用同一套 V1__init.sql -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <!-- 生产连 PostgreSQL 时 Flyway 需要单独的 PG 数据库模块
+             （flyway-core 11.x 只内置 H2/SQLite 社区库，不含 PG） -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-tenant</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-auth</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-audit</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-obs</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-ratelimit</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-data</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

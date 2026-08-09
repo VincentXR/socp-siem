@@ -1,0 +1,55 @@
+# ============================================================================
+# SOCP / 运行时检测 —— Falco 规则（端点 Agent 侧起点）
+#
+# 角色：Falco 在主机/容器运行时层做异常行为检测，输出事件经 Vector（或直接使用
+#       Falco 的 http_output）转发给 SEARCH ingest，进入与日志同源的归一化/规则/告警链路。
+# 完整规则集参考官方仓库：https://github.com/falcosecurity/rules
+# ============================================================================
+
+# ---- 自定义宏：标记 SOCP 平台自身进程，降低噪声 ----
+- macro: socp_platform_proc
+  condition: >
+    (proc.name in (java, vector, falco))
+
+# ---- 规则 1：容器内启动 shell（经典异常） ----
+- rule: SOCP Container Shell Spawn
+  desc: 在容器内派生 shell，可能预示入侵后操作
+  condition: >
+    spawned_process and container and
+    proc.name in (bash, sh, zsh, dash) and
+    not socp_platform_proc
+  output: "容器内启动 shell (user=%user.name command=%proc.cmdline container=%container.id)"
+  priority: WARNING
+  tags: [socp, container, mitre_execution]
+
+# ---- 规则 2：敏感文件读取（如 /etc/shadow） ----
+- rule: SOCP Read Sensitive File
+  desc: 读取特权账号或密钥文件
+  condition: >
+    (open_read or open_write) and
+    fd.name startswith /etc/shadow or
+    fd.name startswith /root/.ssh or
+    fd.name startswith /etc/kubernetes
+  output: "读取敏感文件 (file=%fd.name user=%user.name)"
+  priority: WARNING
+  tags: [socp, filesystem, mitre_credential_access]
+
+# ---- 规则 3：异常出站网络连接（C2 疑似） ----
+- rule: SOCP Unexpected Outbound
+  desc: 非平台进程发起对外网络连接
+  condition: >
+    outbound and not socp_platform_proc and
+    not fd.sip in (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
+  output: "异常出站连接 (proc=%proc.name dest=%fd.sip:%fd.sport)"
+  priority: NOTICE
+  tags: [socp, network, mitre_c2]
+
+# ---- 规则 4：特权容器/提权 ----
+- rule: SOCP Privilege Escalation
+  desc: 容器内执行 setuid 提权
+  condition: >
+    spawned_process and container and
+    (proc.name in (sudo, su) or evt.arg.flags contains S_ISUID)
+  output: "容器内提权尝试 (proc=%proc.name user=%user.name)"
+  priority: ERROR
+  tags: [socp, privilege, mitre_privilege_escalation]

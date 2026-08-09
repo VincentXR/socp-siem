@@ -1,0 +1,74 @@
+# ============================================================================
+# SOCP / SEARCH 采集流水线 —— Vector 配置（端点 Agent 侧）
+#
+# 角色：Vector 只做「采集 + 传输」，解析/检索/告警归 SEARCH 与 OpenSearch。
+# 本文件可由 search-config 服务动态渲染（POST /search-config/api/v1/render），
+# 这里保留的是「参考模板」，与渲染产物一致。
+#
+# 二进制：本仓同级 tooling/vector/bin/vector.exe（v0.57.0，MPL-2.0）
+# 校验：   vector validate --no-environment vector.toml
+# 启动：   vector --config vector.toml
+#
+# 数据流向：
+#   [sources] 文件尾部 / syslog / kafka
+#     → [transforms.gls_normalize] 规范化元数据
+#       → [sinks.gls_ingest] NDJSON POST 到 SEARCH /api/v1/ingest
+# ============================================================================
+
+# ---------- 数据源 1：文件尾部监听 ----------
+[sources.siem_files]
+type = "file"
+include = ["demo/sample.log"]
+read_from = "beginning"
+data_dir = ".cache/vector"
+
+# ---------- 数据源 2：syslog（TCP，避免 514 特权端口） ----------
+[sources.siem_syslog]
+type = "syslog"
+address = "0.0.0.0:5514"
+mode = "tcp"
+
+# ---------- 采集器自身指标 ----------
+[sources.siem_internal]
+type = "internal_metrics"
+
+# ---------- 归一化：整理元数据，正文保持原样（解析权归 SEARCH） ----------
+[transforms.gls_normalize]
+type = "remap"
+inputs = ["siem_files", "siem_syslog"]
+source = '''
+.message = string!(.message)
+if exists(.host) {
+  .collector_host = del(.host)
+}
+if !exists(.collector_host) {
+  .collector_host = "vector-local"
+}
+.ingested_at = format_timestamp!(now(), format: "%+")
+.parse_format = "auto"
+if exists(.port) { del(.port) }
+'''
+
+# ---------- 转发：NDJSON 批量 POST 给 SEARCH ingest ----------
+[sinks.gls_ingest]
+type = "http"
+inputs = ["gls_normalize"]
+uri = "http://localhost:18081/search-config/api/v1/ingest"
+method = "post"
+encoding.codec = "json"
+framing.method = "newline_delimited"
+healthcheck.enabled = false
+batch.max_events = 100
+batch.timeout_secs = 2
+request.retry_attempts = 5
+request.retry_backoff_secs = 2
+request.timeout_secs = 30
+buffer.type = "disk"
+buffer.max_size = 268435488
+buffer.when_full = "block"
+
+# ---------- 采集器自身指标（可选） ----------
+[sinks.siem_metrics]
+type = "prometheus_exporter"
+inputs = ["siem_internal"]
+address = "0.0.0.0:9598"

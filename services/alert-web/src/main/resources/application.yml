@@ -1,0 +1,59 @@
+server:
+  # Docker 环境每个服务容器内统一 8080；本地切片为避开已占用的 8080（旧 SIEM 控制台）
+  # 改用 18080，可用 --server.port=xxx 覆盖（命令行参数优先级高于环境变量）。
+  port: ${SOCP_SSA_PORT:18080}
+  servlet:
+    context-path: /alert-web
+
+spring:
+  application:
+    name: alert-web
+  datasource:
+    # 默认 PostgreSQL（真实数据库，Docker compose 的 socp-postgres，库 alert）。
+    # 需要回退 H2 时用 --spring.profiles.active=h2（见 application-h2.yml）。
+    url: jdbc:postgresql://${SOCP_PG_HOST:localhost}:${SOCP_PG_PORT:5432}/alert
+    driver-class-name: org.postgresql.Driver
+    username: ${SOCP_PG_USER:socp}
+    password: ${SOCP_PG_PASSWORD:socp}
+  jpa:
+    hibernate:
+      # Flyway 接管 schema，Hibernate 不再自动改表（避免两套 DDL 打架）
+      ddl-auto: none
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: false
+  flyway:
+    enabled: true
+    # 已存在的 ~/.socp/alert.mv.db 里可能已有 ddl-auto=update 建好的表和数据：
+    # baseline-on-migrate 把非空库标记为 version 0 后再往上迁移，不会清库；
+    # 配合 V1__init.sql 里的 IF NOT EXISTS，老库与全新库都能跑通。
+    baseline-on-migrate: true
+    baseline-version: 0
+    locations: classpath:db/migration
+
+socp:
+  security:
+    # 生产鉴权（2026-08-09 启用）：HMAC HS256 验签，与网关 /auth/login 签发 secret 一致。
+    jwt-secret: ${SOCP_JWT_SECRET:socp-demo-jwt-secret-0123456789abcdef0123456789abcdef}
+    dev-bypass: ${SOCP_DEV_BYPASS:false}
+  audit:
+    sink: memory          # 本地切片：内存；Docker 环境：kafka
+    topic: socp-audit
+  threat:
+    url: http://localhost:18094
+  notify:
+    url: http://localhost:18096
+  case:
+    url: http://localhost:18097
+  soar:
+    url: http://localhost:18083
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always

@@ -1,0 +1,26 @@
+{
+  "name": "@socp/app-workbench",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "vue": "3.5.41",
+    "vue-router": "4.4.0",
+    "pinia": "2.2.0",
+    "@tanstack/vue-query": "5.59.0",
+    "element-plus": "2.14.3",
+    "echarts": "5.5.0",
+    "@socp/soc-ui": "workspace:*",
+    "@socp/library": "workspace:*"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "6.0.8",
+    "typescript": "5.9.3",
+    "vite": "6.4.3",
+    "vue-tsc": "3.3.9"
+  }
+}
