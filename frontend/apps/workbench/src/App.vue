@@ -51,6 +51,7 @@ function registerChartTheme() {
 }
 registerChartTheme()
 import LoginView from './LoginView.vue'
+import AnimatedNumber from './AnimatedNumber.vue'
 import {
   listAlarms, getDisposition, setDispositionStatus, assignAlarm, addAlarmNote,
   listSources, createSource, deleteSource, renderConfig,
@@ -696,8 +697,9 @@ function openAlertStream() {
 }
 function closeAlertStream() { if (alertStream) { alertStream.close(); alertStream = null } }
 const gaugeEl = ref<HTMLElement>(); const donutEl = ref<HTMLElement>(); const sitTrendEl = ref<HTMLElement>(); const epsEl = ref<HTMLElement>()
+const ovTrendEl = ref<HTMLElement>()
 const chartGauge = shallowRef<echarts.ECharts>(); const chartDonut = shallowRef<echarts.ECharts>()
-const chartSitTrend = shallowRef<echarts.ECharts>(); const chartEps = shallowRef<echarts.ECharts>()
+const chartSitTrend = shallowRef<echarts.ECharts>(); const chartEps = shallowRef<echarts.ECharts>(); const chartOvTrend = shallowRef<echarts.ECharts>()
 
 const feedView = computed(() =>
   liveSevFilter.value ? liveFeed.value.filter(a => a.severity === liveSevFilter.value) : liveFeed.value)
@@ -727,6 +729,28 @@ function mergeFeed(incoming: GasAlert[]) {
 function renderSitCharts() {
   setTimeout(() => {
     const st = sitStats.value
+    // 概览页：近 7 日趋势（sparkline 风格，简洁单线）
+    if (ovTrendEl.value && st?.trend7d) {
+      const days = Object.keys(st.trend7d).sort()
+      if (!chartOvTrend.value || chartOvTrend.value.isDisposed()) chartOvTrend.value = echarts.init(ovTrendEl.value, 'socp')
+      chartOvTrend.value.setOption({
+        grid: { left: 8, right: 8, top: 12, bottom: 4, containLabel: false },
+        xAxis: { type: 'category', show: false, data: days },
+        yAxis: { type: 'value', show: false },
+        tooltip: { trigger: 'axis' },
+        series: [{
+          type: 'line', smooth: true, symbol: 'none',
+          data: days.map(d => st.trend7d[d]),
+          lineStyle: { color: themeColor('label'), width: 2 },
+          areaStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: theme.value === 'dark' ? 'rgba(68,147,248,.35)' : 'rgba(9,105,218,.25)' },
+              { offset: 1, color: 'rgba(0,0,0,0)' },
+            ]),
+          },
+        }],
+      }, true)
+    }
     if (gaugeEl.value) {
       if (!chartGauge.value || chartGauge.value.isDisposed()) chartGauge.value = echarts.init(gaugeEl.value, 'socp')
       chartGauge.value.setOption({
@@ -984,7 +1008,7 @@ onUnmounted(() => {
   if (healthTimer) clearInterval(healthTimer)
   stopLive()
   closeAlertStream()
-  for (const c of [chartBar, chartLine, chartGauge, chartDonut, chartSitTrend, chartEps, chartRiskBar]) {
+  for (const c of [chartBar, chartLine, chartGauge, chartDonut, chartSitTrend, chartEps, chartRiskBar, chartOvTrend]) {
     if (c.value && !c.value.isDisposed()) c.value.dispose()
   }
   window.removeEventListener('resize', onWinResize)
@@ -992,7 +1016,7 @@ onUnmounted(() => {
 
 /** 图表随窗口自适应：切页时实例可能未挂载，逐个判活再 resize */
 function onWinResize() {
-  for (const c of [chartBar, chartLine, chartGauge, chartDonut, chartSitTrend, chartEps, chartRiskBar]) {
+  for (const c of [chartBar, chartLine, chartGauge, chartDonut, chartSitTrend, chartEps, chartRiskBar, chartOvTrend]) {
     if (c.value && !c.value.isDisposed()) c.value.resize()
   }
 }
@@ -1107,6 +1131,21 @@ function openUrl(u: string) { if (u) window.open(u, '_blank') }
 // 严重级别颜色
 function sevColor(s: string) { return { CRITICAL: '#f56c6c', HIGH: '#e63946', MEDIUM: '#e6a23c', LOW: '#909399', INFO: '#909399' }[s] ?? '#909399' }
 function sevBg(s: string) { const c = sevColor(s); return `background:${c};color:#fff;border-radius:4px;padding:0 8px;font-size:12px;font-weight:600;display:inline-block;line-height:20px` }
+/** 相对时间：xx 分钟前 / x 小时前 / x 天前 */
+function relTime(iso?: string): string {
+  if (!iso) return '—'
+  const t = Date.parse(iso)
+  if (isNaN(t)) return iso
+  const diff = Math.max(0, Date.now() - t)
+  const min = Math.floor(diff / 60000)
+  if (min < 1) return '刚刚'
+  if (min < 60) return `${min} 分钟前`
+  const h = Math.floor(min / 60)
+  if (h < 24) return `${h} 小时前`
+  const d = Math.floor(h / 24)
+  if (d < 30) return `${d} 天前`
+  return iso.slice(0, 10)
+}
 </script>
 
 <template>
@@ -1145,38 +1184,100 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
       </header>
       <main class="socp-content">
         <!-- 概览 -->
-        <div v-if="activeMenu === 'overview'" class="page-pad">
-          <el-row :gutter="12" style="margin-bottom:14px">
-            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ stat.total }}</div><div class="label">告警总数</div></div></el-card></el-col>
-            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" :style="{color:'#f56c6c'}">{{ stat.critical + stat.high }}</div><div class="label">高危告警</div></div></el-card></el-col>
-            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" :style="{color:'#67c23a'}">{{ stat.online }}/11</div><div class="label">服务在线</div></div></el-card></el-col>
-            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ (socInfo.services as string[])?.length ?? 8 }}</div><div class="label">平台服务</div></div></el-card></el-col>
+        <div v-if="activeMenu === 'overview'" class="page-pad view-enter">
+          <!-- 主数字 Hero：总览焦点 -->
+          <div class="ov-hero">
+            <div class="ov-hero-main">
+              <div class="ov-hero-num"><AnimatedNumber :value="stat.total" /></div>
+              <div class="ov-hero-label">告警总数</div>
+              <div class="ov-hero-sub" v-if="sitStats">较昨日趋势
+                <span :style="{ color: (sitStats.trend7d as Record<string, number>)?.['2026'] !== undefined ? 'inherit' : 'inherit' }">{{ Object.keys(sitStats.trend7d ?? {}).length }} 天趋势可用</span>
+              </div>
+            </div>
+            <div class="ov-hero-side">
+              <div class="ov-side-item">
+                <div class="ov-side-num" style="color:#f85149"><AnimatedNumber :value="stat.critical + stat.high" /></div>
+                <div class="ov-side-label">高危告警（CRITICAL+HIGH）</div>
+              </div>
+              <div class="ov-side-item">
+                <div class="ov-side-num" style="color:#30d158">{{ stat.online }}/11</div>
+                <div class="ov-side-label">服务在线</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- severity 色带分布 -->
+          <el-card shadow="never" style="margin-top:14px" v-if="sitStats">
+            <template #header>告警级别分布</template>
+            <div class="sev-band">
+              <div v-for="s in ['CRITICAL','HIGH','MEDIUM','LOW']" :key="s"
+                class="sev-seg" :style="{ flex: (sitStats.bySeverity[s] ?? 0) + 0.01, background: sevColor(s) }"
+                :title="`${s}: ${sitStats.bySeverity[s] ?? 0}`" />
+            </div>
+            <div class="sev-legend">
+              <span v-for="s in ['CRITICAL','HIGH','MEDIUM','LOW']" :key="s" class="sev-legend-item">
+                <i class="sev-legend-dot" :style="{ background: sevColor(s) }" />{{ s }}
+                <b class="mono">{{ sitStats.bySeverity[s] ?? 0 }}</b>
+              </span>
+            </div>
+          </el-card>
+
+          <el-row :gutter="14" style="margin-top:14px">
+            <!-- 7 日趋势 -->
+            <el-col :span="16">
+              <el-card shadow="never" style="height:100%">
+                <template #header>近 7 日告警趋势</template>
+                <div ref="ovTrendEl" style="height:210px" />
+              </el-card>
+            </el-col>
+            <!-- 风险 Top -->
+            <el-col :span="8">
+              <el-card shadow="never" style="height:100%">
+                <template #header>最需处置</template>
+                <div v-if="(sitStats.topRisk ?? []).length" class="ov-risk">
+                  <div v-for="r in sitStats.topRisk.slice(0, 5)" :key="r.id" class="ov-risk-item">
+                    <span class="feed-dot" :style="{ background: sevColor(r.severity) }" />
+                    <div class="ov-risk-body">
+                      <div class="ov-risk-name">{{ r.ruleName }}</div>
+                      <div class="ov-risk-entity mono">{{ r.entity }}</div>
+                    </div>
+                    <span class="ov-risk-score mono">{{ r.riskScore ?? '—' }}</span>
+                  </div>
+                </div>
+                <div v-else class="feed-empty">暂无风险告警</div>
+              </el-card>
+            </el-col>
           </el-row>
-          <el-card shadow="never">
-            <template #header>后端服务健康</template>
-            <el-table :data="HEALTH_TARGETS" size="small">
-              <el-table-column prop="name" label="服务" />
-              <el-table-column prop="path" label="健康检查" show-overflow-tooltip />
-              <el-table-column label="状态" width="100">
-                <template #default="{ row }">
-                  <el-tag :type="healths[row.name] === 'up' ? 'success' : 'danger'" size="small">{{ healths[row.name] === 'up' ? 'UP' : 'DOWN' }}</el-tag>
-                </template>
-              </el-table-column>
-            </el-table>
-          </el-card>
-          <el-card shadow="never" style="margin-top:14px" v-if="filteredAlarms.length">
-            <template #header>最新告警</template>
-            <el-table :data="filteredAlarms.slice(0, 5)" size="small">
-              <el-table-column label="级别" width="100"><template #default="{ row }"><span :style="sevBg(row.severity)">{{ row.severity }}</span></template></el-table-column>
-              <el-table-column prop="ruleName" label="规则" min-width="150" />
-              <el-table-column prop="entity" label="实体" width="120" />
-              <el-table-column prop="message" label="消息" min-width="200" show-overflow-tooltip />
-            </el-table>
-          </el-card>
+
+          <el-row :gutter="14" style="margin-top:14px">
+            <el-col :span="16">
+              <el-card shadow="never">
+                <template #header>最新告警</template>
+                <el-table :data="filteredAlarms.slice(0, 5)" size="small">
+                  <el-table-column label="级别" width="100"><template #default="{ row }"><span :style="sevBg(row.severity)">{{ row.severity }}</span></template></el-table-column>
+                  <el-table-column prop="ruleName" label="规则" min-width="150" />
+                  <el-table-column prop="entity" label="实体" width="120" />
+                  <el-table-column prop="message" label="消息" min-width="200" show-overflow-tooltip />
+                </el-table>
+              </el-card>
+            </el-col>
+            <el-col :span="8">
+              <el-card shadow="never">
+                <template #header>后端服务健康</template>
+                <div class="ov-health">
+                  <div v-for="h in HEALTH_TARGETS" :key="h.name" class="ov-health-item">
+                    <span class="ov-health-dot" :class="healths[h.name] === 'up' ? 'up' : 'down'" />
+                    <span class="ov-health-name">{{ h.name }}</span>
+                    <span class="ov-health-state" :class="healths[h.name] === 'up' ? 'up' : 'down'">{{ healths[h.name] === 'up' ? 'UP' : 'DOWN' }}</span>
+                  </div>
+                </div>
+              </el-card>
+            </el-col>
+          </el-row>
         </div>
 
         <!-- 实时态势大屏 -->
-        <div v-else-if="activeMenu === 'situation'" class="page-pad sit-wrap">
+        <div v-else-if="activeMenu === 'situation'" class="page-pad view-enter sit-wrap">
           <!-- KPI 条 -->
           <div class="sit-kpis">
             <div class="sit-kpi">
@@ -1290,7 +1391,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
         </div>
 
         <!-- 告警查询 -->
-        <div v-else-if="activeMenu === 'alarms'" class="page-pad">
+        <div v-else-if="activeMenu === 'alarms'" class="page-pad view-enter">
           <div style="display:flex;gap:10px;margin-bottom:12px">
             <el-input v-model="alarmKeyword" placeholder="搜索规则/实体/消息" clearable style="width:280px" />
             <el-select v-model="alarmSeverity" placeholder="全部级别" clearable style="width:140px">
@@ -1301,23 +1402,24 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
             <el-button size="small" @click="exportAlarms('csv')">导出 CSV</el-button>
             <el-button size="small" @click="exportAlarms('json')">导出 JSON</el-button>
           </div>
-          <el-card shadow="never">
-            <el-table :data="filteredAlarms" size="small">
-              <el-table-column label="级别" width="100"><template #default="{ row }"><span :style="sevBg(row.severity)">{{ row.severity }}</span></template></el-table-column>
-              <el-table-column prop="ruleId" label="规则 ID" width="160" />
-              <el-table-column prop="ruleName" label="规则名称" min-width="150" />
-              <el-table-column prop="entity" label="实体" width="120" />
-              <el-table-column prop="message" label="消息" min-width="220" show-overflow-tooltip />
-              <el-table-column label="处置状态" width="110">
-                <template #default="{ row }">
-                  <el-tag :type="row.status === 'OPEN' ? 'danger' : row.status === 'INVESTIGATING' ? 'warning' : row.status === 'RESOLVED' ? 'success' : 'info'" size="small">{{ row.status }}</el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column label="操作" width="90">
-                <template #default="{ row }"><el-button link type="primary" size="small" @click="openAlarm(row)">查看/处置</el-button></template>
-              </el-table-column>
-            </el-table>
-          </el-card>
+          <!-- 告警微卡片列表（行=卡片：状态点 + 规则 + 实体 + 状态 + 相对时间 + 操作） -->
+          <div class="card-list">
+            <div v-for="a in filteredAlarms" :key="a.id" class="alarm-card" @click="openAlarm(a)">
+              <span class="alarm-sev-dot" :style="{ background: sevColor(a.severity) }" />
+              <div class="alarm-body">
+                <div class="alarm-top">
+                  <span class="alarm-sev-tag" :style="{ background: sevColor(a.severity) }">{{ a.severity }}</span>
+                  <span class="alarm-rule">{{ a.ruleName || a.ruleId }}</span>
+                  <span class="alarm-entity mono">{{ a.entity }}</span>
+                  <span class="alarm-status" :class="(a.status || 'OPEN').toLowerCase()">{{ a.status || 'OPEN' }}</span>
+                  <span class="alarm-time">{{ relTime(a.occurredAt) }}</span>
+                </div>
+                <div class="alarm-msg">{{ a.message }}</div>
+              </div>
+              <el-button link type="primary" size="small" @click.stop="openAlarm(a)">处置</el-button>
+            </div>
+            <div v-if="!filteredAlarms.length" class="feed-empty">暂无告警</div>
+          </div>
 
           <!-- 告警详情/处置抽屉 -->
           <el-drawer v-model="drawerVisible" :title="`告警处置 · ${currentAlarm?.ruleName ?? ''}`" size="480px">
@@ -1381,7 +1483,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
         </div>
 
         <!-- 日志检索（SPL） -->
-        <div v-else-if="activeMenu === 'search'" class="page-pad">
+        <div v-else-if="activeMenu === 'search'" class="page-pad view-enter">
           <el-card shadow="never" style="margin-bottom:14px">
             <div style="display:flex;gap:10px;align-items:center">
               <el-input v-model="searchQuery" placeholder='SPL 查询，如 source=auth severity=HIGH | top src_ip 5' clearable @keyup.enter="doSearch" style="flex:1" />
@@ -1425,7 +1527,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
         </div>
 
         <!-- 日志接入（接入任务 / 输入源 / 输出配置 / 解析规则） -->
-        <div v-else-if="activeMenu === 'ingest'" class="page-pad">
+        <div v-else-if="activeMenu === 'ingest'" class="page-pad view-enter">
           <el-tabs v-model="ingestTab" @tab-change="onIngestTab">
             <!-- 接入任务：配置 + 运行态一屏 -->
             <el-tab-pane label="接入任务" name="tasks">
@@ -1682,7 +1784,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
         </div>
 
         <!-- 元数据（数据源分类 / 日志类别 / 字段字典） -->
-        <div v-else-if="activeMenu === 'meta'" class="page-pad">
+        <div v-else-if="activeMenu === 'meta'" class="page-pad view-enter">
           <el-tabs v-model="metaTab" @tab-change="onMetaTab">
             <!-- 数据源分类 -->
             <el-tab-pane label="数据源分类" name="ds">
@@ -1796,7 +1898,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
         </div>
 
         <!-- 检测规则 -->
-        <div v-else-if="activeMenu === 'detect'" class="page-pad">
+        <div v-else-if="activeMenu === 'detect'" class="page-pad view-enter">
           <el-row :gutter="12" style="margin-bottom:14px">
             <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ gasStat.rules ?? 0 }}</div><div class="label">规则数</div></div></el-card></el-col>
             <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ gasStat.eventCount ?? 0 }}</div><div class="label">事件数</div></div></el-card></el-col>
@@ -1893,7 +1995,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
         </div>
 
         <!-- UEBA 风险看板 -->
-        <div v-else-if="activeMenu === 'ueba'" class="page-pad">
+        <div v-else-if="activeMenu === 'ueba'" class="page-pad view-enter">
           <el-row :gutter="12" style="margin-bottom:14px">
             <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num">{{ riskSummary?.entities ?? 0 }}</div><div class="label">画像实体数</div></div></el-card></el-col>
             <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#f56c6c">{{ riskSummary?.maxRisk ?? 0 }}</div><div class="label">最高风险分</div></div></el-card></el-col>
@@ -2081,7 +2183,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
         </div>
 
         <!-- 编排响应 -->
-        <div v-else-if="activeMenu === 'soar'" class="page-pad">
+        <div v-else-if="activeMenu === 'soar'" class="page-pad view-enter">
           <div style="margin-bottom:12px"><el-button type="primary" @click="showPbDialog = true">新建剧本</el-button><el-button @click="loadPlaybooks">刷新</el-button></div>
           <el-card shadow="never">
             <el-table :data="playbooks" size="small">
@@ -2119,7 +2221,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
         </div>
 
         <!-- 报表统计 -->
-        <div v-else-if="activeMenu === 'report'" class="page-pad">
+        <div v-else-if="activeMenu === 'report'" class="page-pad view-enter">
           <div style="margin-bottom:12px;display:flex;gap:10px;align-items:center">
             <el-button @click="loadReport">刷新</el-button>
             <el-button type="primary" :loading="archiveBusy" @click="doArchive">归档至 MinIO</el-button>
@@ -2149,7 +2251,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
         </div>
 
         <!-- 资产管理 -->
-        <div v-else-if="activeMenu === 'assets'" class="page-pad">
+        <div v-else-if="activeMenu === 'assets'" class="page-pad view-enter">
           <div style="margin-bottom:12px"><el-button @click="loadAssets">刷新</el-button></div>
           <el-row :gutter="12" style="margin-bottom:14px" v-if="assetStat">
             <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ assetStat.total }}</div><div class="label">资产总数</div></div></el-card></el-col>
@@ -2171,7 +2273,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
         </div>
 
         <!-- 端点防护 -->
-        <div v-else-if="activeMenu === 'endpoints'" class="page-pad">
+        <div v-else-if="activeMenu === 'endpoints'" class="page-pad view-enter">
           <div style="margin-bottom:12px"><el-button @click="loadEndpoints">刷新</el-button></div>
           <el-row :gutter="12" style="margin-bottom:14px" v-if="endpointStat">
             <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ endpointStat.total }}</div><div class="label">端点总数</div></div></el-card></el-col>
@@ -2192,7 +2294,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
         </div>
 
         <!-- AI 助手 -->
-        <div v-else-if="activeMenu === 'ai'" class="page-pad">
+        <div v-else-if="activeMenu === 'ai'" class="page-pad view-enter">
           <el-card shadow="never">
             <div style="display:flex;gap:10px;margin-bottom:16px">
               <el-input v-model="aiQuestion" placeholder="提问：如何检测暴力破解？端口扫描怎么处理？" @keyup.enter="doAsk" style="flex:1" />
@@ -2208,7 +2310,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
         </div>
 
         <!-- 威胁情报 (threat-web) -->
-        <div v-else-if="activeMenu === 'threat-intel'" class="page-pad">
+        <div v-else-if="activeMenu === 'threat-intel'" class="page-pad view-enter">
           <div style="display:flex;gap:16px;margin-bottom:14px;flex-wrap:wrap">
             <el-card shadow="never" :body-style="{ padding: '12px 18px' }">
               <div style="font-size:12px;color:#909399">情报总量</div>
@@ -2259,7 +2361,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
         </div>
 
         <!-- MITRE ATT&CK (attack-web) -->
-        <div v-else-if="activeMenu === 'attack'" class="page-pad">
+        <div v-else-if="activeMenu === 'attack'" class="page-pad view-enter">
           <el-card shadow="never" style="margin-bottom:14px">
             <div style="display:flex;gap:20px;align-items:center;flex-wrap:wrap">
               <div>
@@ -2302,7 +2404,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
         </div>
 
         <!-- 通知集成 (notify-web) -->
-        <div v-else-if="activeMenu === 'notify'" class="page-pad">
+        <div v-else-if="activeMenu === 'notify'" class="page-pad view-enter">
           <div class="add-bar">
             <el-button type="primary" @click="openChannelDialog">+ 新增通知渠道</el-button>
             <span class="hint">SLACK / WEBHOOK / EMAIL，告警触发后实时分发</span>
@@ -2347,7 +2449,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
         </div>
 
         <!-- 案件管理 (incident-web) -->
-        <div v-else-if="activeMenu === 'case'" class="page-pad">
+        <div v-else-if="activeMenu === 'case'" class="page-pad view-enter">
           <div style="display:flex;gap:16px;margin-bottom:14px;flex-wrap:wrap">
             <el-card shadow="never" :body-style="{ padding: '12px 18px' }">
               <div style="font-size:12px;color:#909399">案件总数</div><div style="font-size:22px;font-weight:700">{{ caseStat.total ?? 0 }}</div>
@@ -2398,7 +2500,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
         </div>
 
         <!-- 参考数据集 (search-config) -->
-        <div v-else-if="activeMenu === 'refset'" class="page-pad">
+        <div v-else-if="activeMenu === 'refset'" class="page-pad view-enter">
           <div class="add-bar">
             <el-button type="primary" @click="openRefSetDialog">+ 新建参考数据集</el-button>
             <span class="hint">可被规则 op=inlist / notinlist 引用的白名单 / 黑名单集合</span>
@@ -2433,7 +2535,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
         </div>
 
         <!-- 合规 (soc-base) -->
-        <div v-else-if="activeMenu === 'compliance'" class="page-pad">
+        <div v-else-if="activeMenu === 'compliance'" class="page-pad view-enter">
           <el-card shadow="never" style="margin-bottom:14px">
             <div style="display:flex;gap:20px;align-items:center;flex-wrap:wrap">
               <div>
@@ -2461,7 +2563,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
           </el-card>
         </div>
         <!-- 系统健康看板 -->
-        <div v-else-if="activeMenu === 'health'" class="page-pad">
+        <div v-else-if="activeMenu === 'health'" class="page-pad view-enter">
           <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:14px">
             <el-card shadow="never"><div class="stat-card"><div class="num" :style="{ color: healthUpCount === healthList.length ? '#16a34a' : '#dc2626' }">{{ healthUpCount }}/{{ healthList.length }}</div><div class="label">服务在线</div></div></el-card>
             <el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-accent-fg)">{{ healthEngine?.eventCount ?? 0 }}</div><div class="label">引擎累计事件</div></div></el-card>

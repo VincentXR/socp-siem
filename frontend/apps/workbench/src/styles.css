@@ -186,6 +186,18 @@ body {
 }
 .socp-header .header-sub { color: var(--ns-text-3); font-weight: 500; font-size: 12.5px; letter-spacing: .1px; }
 .socp-content { flex: 1; overflow: auto; }
+/* 内容区宽度约束：宽屏下居中，避免表格拉伸过宽发散 */
+.socp-content > .page-pad { max-width: 1500px; margin: 0 auto; width: 100%; }
+
+/* 页面切换过渡：视图块淡入 + 轻微上移 */
+.view-enter-active { animation: viewIn .28s cubic-bezier(.16, 1, .3, 1); }
+@keyframes viewIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* KPI 数字滚动容器（数字由 JS 动画，容器保证排版稳定） */
+.kpi-anim { font-variant-numeric: tabular-nums; }
 
 /* 顶部标题（单色，克制） */
 .grad-text { font-weight: 600; color: var(--ns-text); }
@@ -411,3 +423,76 @@ body {
   border: 1px solid var(--ns-border-strong); border-radius: 10px; font-size: 10px; font-weight: 700;
   padding: 0 5px; line-height: 15px; min-width: 16px;
 }
+
+/* ============ 概览页（信息层级） ============ */
+.ov-hero {
+  display: flex; gap: 16px; align-items: stretch;
+  background: linear-gradient(135deg, var(--ns-surface), var(--ns-bg-subtle));
+  border: 1px solid var(--ns-border);
+  border-radius: 20px; padding: 24px 28px;
+}
+.ov-hero-main { flex: 1; display: flex; flex-direction: column; justify-content: center; }
+.ov-hero-num { font-size: 56px; font-weight: 700; letter-spacing: -1.5px; color: var(--ns-text); line-height: 1.05; font-variant-numeric: tabular-nums; }
+.ov-hero-label { font-size: 13px; color: var(--ns-text-2); margin-top: 6px; font-weight: 500; }
+.ov-hero-sub { font-size: 11.5px; color: var(--ns-text-3); margin-top: 4px; }
+.ov-hero-side { display: flex; gap: 16px; align-items: stretch; }
+.ov-side-item {
+  min-width: 150px; display: flex; flex-direction: column; justify-content: center;
+  padding: 0 22px; border-left: 1px solid var(--ns-border);
+}
+.ov-side-num { font-size: 32px; font-weight: 700; letter-spacing: -.8px; font-variant-numeric: tabular-nums; }
+.ov-side-label { font-size: 11.5px; color: var(--ns-text-3); margin-top: 4px; font-weight: 500; }
+
+.sev-band { display: flex; height: 12px; border-radius: 8px; overflow: hidden; gap: 2px; }
+.sev-seg { border-radius: 4px; min-width: 6px; transition: flex .4s ease; }
+.sev-legend { display: flex; gap: 20px; margin-top: 10px; flex-wrap: wrap; }
+.sev-legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ns-text-2); }
+.sev-legend-dot { width: 8px; height: 8px; border-radius: 50%; }
+.sev-legend-item b { color: var(--ns-text); font-weight: 600; }
+
+.ov-risk { display: flex; flex-direction: column; gap: 2px; }
+.ov-risk-item { display: flex; align-items: center; gap: 10px; padding: 8px 6px; border-radius: 10px; transition: background .15s; }
+.ov-risk-item:hover { background: var(--ns-hover); }
+.ov-risk-body { flex: 1; min-width: 0; }
+.ov-risk-name { font-size: 13px; font-weight: 600; color: var(--ns-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-risk-entity { font-size: 11.5px; color: var(--ns-accent-fg); margin-top: 1px; }
+.ov-risk-score { font-size: 13px; font-weight: 700; color: var(--ns-text-2); }
+
+.ov-health { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; }
+.ov-health-item { display: flex; align-items: center; gap: 8px; padding: 4px 2px; }
+.ov-health-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.ov-health-dot.up { background: var(--ns-success); }
+.ov-health-dot.down { background: var(--ns-danger); }
+.ov-health-name { font-size: 12.5px; color: var(--ns-text-2); flex: 1; }
+.ov-health-state { font-size: 11px; font-weight: 700; letter-spacing: .4px; }
+.ov-health-state.up { color: var(--ns-success); }
+.ov-health-state.down { color: var(--ns-danger); }
+
+/* ============ 告警微卡片列表 ============ */
+.card-list { display: flex; flex-direction: column; gap: 8px; }
+.alarm-card {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 18px;
+  background: var(--ns-surface);
+  border: 1px solid var(--ns-border);
+  border-radius: 14px;
+  cursor: pointer;
+  transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
+}
+.alarm-card:hover { border-color: var(--ns-border-strong); box-shadow: var(--ns-shadow-lg); transform: translateY(-1px); }
+.alarm-sev-dot { width: 4px; height: 38px; border-radius: 3px; flex: none; }
+.alarm-body { flex: 1; min-width: 0; }
+.alarm-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.alarm-sev-tag {
+  color: #fff; font-size: 10.5px; font-weight: 700; letter-spacing: .5px;
+  border-radius: 5px; padding: 2px 7px; line-height: 15px; flex: none;
+}
+.alarm-rule { font-size: 13.5px; font-weight: 600; color: var(--ns-text); }
+.alarm-entity { font-size: 12px; color: var(--ns-accent-fg); }
+.alarm-status { font-size: 10.5px; font-weight: 700; letter-spacing: .4px; padding: 2px 8px; border-radius: 999px; }
+.alarm-status.open { background: rgba(248, 81, 73, .14); color: var(--ns-danger); }
+.alarm-status.investigating { background: rgba(210, 153, 34, .14); color: var(--ns-warning); }
+.alarm-status.resolved { background: rgba(63, 185, 80, .14); color: var(--ns-success); }
+.alarm-status.closed { background: rgba(145, 152, 161, .14); color: var(--ns-text-2); }
+.alarm-time { font-size: 11.5px; color: var(--ns-text-3); margin-left: auto; font-variant-numeric: tabular-nums; flex: none; }
+.alarm-msg { font-size: 12.5px; color: var(--ns-text-2); margin-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
