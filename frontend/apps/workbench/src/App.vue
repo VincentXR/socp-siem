@@ -138,7 +138,12 @@ function applyTheme(t: 'light' | 'dark') {
   document.documentElement.setAttribute('data-theme', t)
   try { localStorage.setItem('socp_theme', t) } catch { /* ignore */ }
 }
-function toggleTheme() { applyTheme(theme.value === 'light' ? 'dark' : 'light') }
+function toggleTheme() {
+  applyTheme(theme.value === 'light' ? 'dark' : 'light')
+  // 主题切换后重绘图表（echarts canvas 不跟随 CSS 变量）
+  loadSituation()
+  loadReport()
+}
 function initTheme() {
   let t: 'light' | 'dark' | null = null
   try { t = localStorage.getItem('socp_theme') as 'light' | 'dark' | null } catch { /* ignore */ }
@@ -530,6 +535,8 @@ const report = ref<ReportSummary | null>(null)
 const trend = ref<{ days: string[]; counts: number[] } | null>(null)
 const chartBar = shallowRef<echarts.ECharts>(); const chartLine = shallowRef<echarts.ECharts>()
 const barEl = ref<HTMLElement>(); const lineEl = ref<HTMLElement>()
+/** 主题感知取色：图表文字/轴线在深色下用浅灰、浅色下用深灰，避免白底黑字看不见 */
+function tc(light: string, dark: string): string { return theme.value === 'dark' ? dark : light }
 async function loadReport() {
   const [r, t] = await Promise.all([dailyReport(), trend7d()])
   report.value = r; trend.value = t
@@ -682,9 +689,9 @@ function renderSitCharts() {
           pointer: { width: 4, length: '62%' },
           axisTick: { distance: -14, length: 4, lineStyle: { color: 'transparent' } },
           splitLine: { distance: -14, length: 14, lineStyle: { color: 'transparent', width: 2 } },
-          axisLabel: { distance: 16, fontSize: 10, color: '#909399' },
-          detail: { valueAnimation: true, fontSize: 26, fontWeight: 700, offsetCenter: [0, '38%'], formatter: '{value}', color: '#303133' },
-          title: { offsetCenter: [0, '72%'], fontSize: 12, color: '#909399' },
+          axisLabel: { distance: 16, fontSize: 10, color: tc('#818b98', '#9198a1') },
+          detail: { valueAnimation: true, fontSize: 26, fontWeight: 700, offsetCenter: [0, '38%'], formatter: '{value}', color: tc('#1f2328', '#e6edf3') },
+          title: { offsetCenter: [0, '72%'], fontSize: 12, color: tc('#59636e', '#9198a1') },
           data: [{ value: st?.avgRisk ?? 0, name: '平均威胁分' }],
         }],
       })
@@ -999,8 +1006,8 @@ const attackMatrix = computed(() => {
 })
 function techStyle(t: { covered: boolean; count: number }) {
   if (t.count > 0) return 'background:#f56c6c;color:#fff;border-color:#f56c6c'
-  if (t.covered) return 'background:#e8f5e9;color:#2e7d32;border-color:#a5d6a7'
-  return 'background:#f5f5f5;color:#bdbdbd;border-color:#e0e0e0'
+  if (t.covered) return 'background:var(--ns-success);color:#fff;border-color:transparent'
+  return 'background:var(--ns-bg-inset);color:var(--ns-text-3);border-color:var(--ns-border)'
 }
 
 // ---------- 通知集成 (notify-web) ----------

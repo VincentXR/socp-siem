@@ -17,6 +17,30 @@
   --el-color-danger: #cf222e;
   --el-color-error: #cf222e;
   --el-border-radius-base: 12px;
+  /* Element Plus 根变量（浅色显式对齐 GitHub 配色） */
+  --el-bg-color: #ffffff;
+  --el-bg-color-page: #f6f8fa;
+  --el-bg-color-overlay: #ffffff;
+  --el-fill-color-blank: #ffffff;
+  --el-fill-color: #eaeef2;
+  --el-fill-color-light: #f0f3f6;
+  --el-fill-color-lighter: #f6f8fa;
+  --el-fill-color-extra-light: #fafbfc;
+  --el-fill-color-dark: #d8dee4;
+  --el-fill-color-darker: #c1c9d1;
+  --el-border-color: #d1d9e0;
+  --el-border-color-light: #d1d9e0;
+  --el-border-color-lighter: #d8dee4;
+  --el-border-color-extra-light: #eaeef2;
+  --el-border-color-dark: #b8c0c8;
+  --el-border-color-darker: #8c959f;
+  --el-text-color-primary: #1f2328;
+  --el-text-color-regular: #1f2328;
+  --el-text-color-secondary: #59636e;
+  --el-text-color-placeholder: #818b98;
+  --el-text-color-disabled: #b0b8c0;
+  --el-mask-color: rgba(31, 35, 40, .4);
+  --el-mask-color-extra-light: rgba(31, 35, 40, .15);
   /* 设计令牌 */
   --ns-bg: #ffffff;
   --ns-bg-subtle: #f6f8fa;
@@ -56,6 +80,33 @@
   --el-color-danger: #f85149;
   --el-color-error: #f85149;
   --el-border-radius-base: 8px;
+  /* Element Plus 根变量（深色全套，覆盖弹层/下拉/日期/表格固定列等默认白底） */
+  --el-bg-color: #161b22;
+  --el-bg-color-page: #0d1117;
+  --el-bg-color-overlay: #161b22;
+  --el-fill-color-blank: #010409;
+  --el-fill-color: #21262d;
+  --el-fill-color-light: #1c2128;
+  --el-fill-color-lighter: #21262d;
+  --el-fill-color-extra-light: #1c2128;
+  --el-fill-color-dark: #30363d;
+  --el-fill-color-darker: #3d444d;
+  --el-border-color: #30363d;
+  --el-border-color-light: #30363d;
+  --el-border-color-lighter: #30363d;
+  --el-border-color-extra-light: #21262d;
+  --el-border-color-dark: #3d444d;
+  --el-border-color-darker: #484f58;
+  --el-text-color-primary: #e6edf3;
+  --el-text-color-regular: #e6edf3;
+  --el-text-color-secondary: #9198a1;
+  --el-text-color-placeholder: #6e7681;
+  --el-text-color-disabled: #6e7681;
+  --el-mask-color: rgba(1, 4, 9, .6);
+  --el-mask-color-extra-light: rgba(1, 4, 9, .3);
+  --el-disabled-bg-color: #161b22;
+  --el-disabled-border-color: #30363d;
+  --el-disabled-text-color: #6e7681;
   /* 设计令牌 */
   --ns-bg: #0d1117;
   --ns-bg-subtle: #161b22;
