@@ -1191,7 +1191,7 @@ function relTime(iso?: string): string {
               <div class="ov-hero-num"><AnimatedNumber :value="stat.total" /></div>
               <div class="ov-hero-label">告警总数</div>
               <div class="ov-hero-sub" v-if="sitStats">较昨日趋势
-                <span :style="{ color: (sitStats.trend7d as Record<string, number>)?.['2026'] !== undefined ? 'inherit' : 'inherit' }">{{ Object.keys(sitStats.trend7d ?? {}).length }} 天趋势可用</span>
+                <span>{{ Object.keys(sitStats?.trend7d ?? {}).length }} 天趋势可用</span>
               </div>
             </div>
             <div class="ov-hero-side">
@@ -1234,8 +1234,8 @@ function relTime(iso?: string): string {
             <el-col :span="8">
               <el-card shadow="never" style="height:100%">
                 <template #header>最需处置</template>
-                <div v-if="(sitStats.topRisk ?? []).length" class="ov-risk">
-                  <div v-for="r in sitStats.topRisk.slice(0, 5)" :key="r.id" class="ov-risk-item">
+                <div v-if="(sitStats?.topRisk ?? []).length" class="ov-risk">
+                  <div v-for="r in (sitStats?.topRisk ?? []).slice(0, 5)" :key="r.id" class="ov-risk-item">
                     <span class="feed-dot" :style="{ background: sevColor(r.severity) }" />
                     <div class="ov-risk-body">
                       <div class="ov-risk-name">{{ r.ruleName }}</div>
