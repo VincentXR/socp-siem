@@ -12,21 +12,47 @@
 
 ## 架构总览
 
-```
-接入层        Vector/Falco（Agent 配置就绪） ──► search-config（事件归一化）
-                                          │
-业务服务层    17 个 Spring Boot 3.5 服务（Java 21）
-             ┌─────────────────────────────────────────────────┐
-             │ alert-web · search-config · detect-web · soar-web │
-             │ report-web · asset-web · hips-web · threat-web    │
-             │ incident-web · notify-web · attack-web · ...      │
-             └─────────────────────────────────────────────────┘
-中间件层      PostgreSQL（告警/案件/情报） · Kafka（事件流） · OpenSearch（检索）
-             · ClickHouse（报表聚合） · Redis · MinIO · Prometheus + Grafana
+**主链路（已接线并验证）**：采集 → Kafka 事件流 → 规则引擎 → 告警落库(PG) + ClickHouse → 报表/前端/Grafana
+
+```mermaid
+flowchart TB
+    subgraph IN["接入层"]
+        V["Vector / Falco / 采集模拟器 / curl"]
+    end
+    subgraph SVC["业务服务层（17 个 Java 21 服务）"]
+        SE["search-config 采集管道<br/>归一化 · 攒批 200 · 三路输出"]
+        DE["detect-web 检测引擎<br/>23 条规则 · 三种类型 · SSE 推送"]
+        AL["alert-web 告警中心<br/>富化 · 落库 · 联动 SOAR"]
+        RP["report-web 报表<br/>日报 · 7 日趋势"]
+        GW["api-gateway 网关<br/>JWT 验签 · RBAC · 多租户"]
+    end
+    subgraph MW["中间件层"]
+        KA["Kafka socp-events<br/>事件流"]
+        OS["OpenSearch<br/>按天索引"]
+        H2["H2 检索库<br/>历史日志"]
+        PG["PostgreSQL t_alarm<br/>告警事实源"]
+        CK["ClickHouse alarm_detail<br/>报表聚合源"]
+        PR["Prometheus + Grafana<br/>17 服务指标"]
+    end
+    subgraph FE["展示层"]
+        UI["前端控制台<br/>实时告警 (SSE)"]
+    end
+
+    IN -->|"POST /search-config/api/v1/ingest<br/>(NDJSON 批量)"| SE
+    SE --> KA
+    SE --> OS
+    SE --> H2
+    KA --> DE
+    DE --> AL
+    AL --> PG
+    AL --> CK
+    CK --> RP
+    DE -->|"SSE 实时推送"| UI
+    GW --> SVC
+    PR -.->|"抓取指标"| SVC
 ```
 
-**主链路（已接线并验证）**：
-`search-config 采集 → Kafka socp-events → detect-web 规则引擎 → alert-web 告警落库(PG) + 写 ClickHouse → report-web 报表聚合 → Grafana 监控`
+**主链路数据流**：`search-config 采集 → Kafka socp-events → detect-web 规则引擎 → alert-web 告警落库(PG) + 写 ClickHouse → report-web 报表聚合 → 前端/Grafana`
 
 ## 中间件接线状态（真实）
 
