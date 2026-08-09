@@ -791,6 +791,10 @@ onMounted(() => {
     currentUser.value = localStorage.getItem('socp_user') || ''
     currentRole.value = localStorage.getItem('socp_role') || ''
   } catch { currentUser.value = ''; currentRole.value = '' }
+  // 无有效登录态 → 自动弹登录框（demo-token 兜底在强制验签下会 401，不能再静默空白）
+  if (!currentUser.value) {
+    showLoginDialog.value = true
+  }
   refreshOverview()
   refreshTimer = window.setInterval(refreshOverview, 10_000)
   window.addEventListener('resize', onWinResize)

@@ -1,7 +1,7 @@
 // SOCP 统一控制台 API 客户端（聚合所有后端）
-// 令牌：登录成功后存 localStorage；未登录回退 demo-token（演示兼容模式，生产关闭 dev-bypass 后强制登录）
+// 令牌：登录成功后存 localStorage；未登录返回空串（强制验签下任何兜底 token 都 401）
 export function getToken(): string {
-  try { return localStorage.getItem('socp_token') || 'demo-token' } catch { return 'demo-token' }
+  try { return localStorage.getItem('socp_token') || '' } catch { return '' }
 }
 export function setToken(t: string): void { try { localStorage.setItem('socp_token', t) } catch { /* ignore */ } }
 export function clearToken(): void { try { localStorage.removeItem('socp_token') } catch { /* ignore */ } }
