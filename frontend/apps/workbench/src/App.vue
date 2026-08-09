@@ -55,6 +55,8 @@ import AnimatedNumber from './AnimatedNumber.vue'
 import TrendChart from './components/TrendChart.vue'
 import SevBadge from './components/SevBadge.vue'
 import PagerBar from './components/PagerBar.vue'
+import OverviewView from './views/OverviewView.vue'
+import AlarmsView from './views/AlarmsView.vue'
 import {
   listAlarms, listAlarmsPaged, getDisposition, setDispositionStatus, assignAlarm, addAlarmNote,
   listSources, createSource, deleteSource, renderConfig,
@@ -1169,97 +1171,8 @@ function relTime(iso?: string): string {
       </header>
       <main class="socp-content">
         <!-- 概览 -->
-        <div v-if="activeMenu === 'overview'" class="page-pad view-enter">
-          <!-- 主数字 Hero：总览焦点 -->
-          <div class="ov-hero">
-            <div class="ov-hero-main">
-              <div class="ov-hero-num"><AnimatedNumber :value="stat.total" /></div>
-              <div class="ov-hero-label">告警总数</div>
-              <div class="ov-hero-sub" v-if="sitStats">较昨日趋势
-                <span>{{ Object.keys(sitStats?.trend7d ?? {}).length }} 天趋势可用</span>
-              </div>
-            </div>
-            <div class="ov-hero-side">
-              <div class="ov-side-item">
-                <div class="ov-side-num" style="color:#f85149"><AnimatedNumber :value="stat.critical + stat.high" /></div>
-                <div class="ov-side-label">高危告警（CRITICAL+HIGH）</div>
-              </div>
-              <div class="ov-side-item">
-                <div class="ov-side-num" style="color:#30d158">{{ stat.online }}/11</div>
-                <div class="ov-side-label">服务在线</div>
-              </div>
-            </div>
-          </div>
-
-          <!-- severity 色带分布 -->
-          <el-card shadow="never" style="margin-top:14px" v-if="sitStats">
-            <template #header>告警级别分布</template>
-            <div class="sev-band">
-              <div v-for="s in ['CRITICAL','HIGH','MEDIUM','LOW']" :key="s"
-                class="sev-seg" :style="{ flex: (sitStats.bySeverity[s] ?? 0) + 0.01, background: sevColor(s) }"
-                :title="`${s}: ${sitStats.bySeverity[s] ?? 0}`" />
-            </div>
-            <div class="sev-legend">
-              <span v-for="s in ['CRITICAL','HIGH','MEDIUM','LOW']" :key="s" class="sev-legend-item">
-                <i class="sev-legend-dot" :style="{ background: sevColor(s) }" />{{ s }}
-                <b class="mono">{{ sitStats.bySeverity[s] ?? 0 }}</b>
-              </span>
-            </div>
-          </el-card>
-
-          <el-row :gutter="14" style="margin-top:14px">
-            <!-- 7 日趋势 -->
-            <el-col :span="16">
-              <el-card shadow="never" style="height:100%">
-                <template #header>近 7 日告警趋势</template>
-                <TrendChart :data="sitStats?.trend7d" style="height:210px" />
-              </el-card>
-            </el-col>
-            <!-- 风险 Top -->
-            <el-col :span="8">
-              <el-card shadow="never" style="height:100%">
-                <template #header>最需处置</template>
-                <div v-if="(sitStats?.topRisk ?? []).length" class="ov-risk">
-                  <div v-for="r in (sitStats?.topRisk ?? []).slice(0, 5)" :key="r.id" class="ov-risk-item">
-                    <span class="feed-dot" :style="{ background: sevColor(r.severity) }" />
-                    <div class="ov-risk-body">
-                      <div class="ov-risk-name">{{ r.ruleName }}</div>
-                      <div class="ov-risk-entity mono">{{ r.entity }}</div>
-                    </div>
-                    <span class="ov-risk-score mono">{{ r.riskScore ?? '—' }}</span>
-                  </div>
-                </div>
-                <div v-else class="feed-empty">暂无风险告警</div>
-              </el-card>
-            </el-col>
-          </el-row>
-
-          <el-row :gutter="14" style="margin-top:14px">
-            <el-col :span="16">
-              <el-card shadow="never">
-                <template #header>最新告警</template>
-                <el-table :data="filteredAlarms.slice(0, 5)" size="small">
-                  <el-table-column label="级别" width="100"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
-                  <el-table-column prop="ruleName" label="规则" min-width="150" />
-                  <el-table-column prop="entity" label="实体" width="120" />
-                  <el-table-column prop="message" label="消息" min-width="200" show-overflow-tooltip />
-                </el-table>
-              </el-card>
-            </el-col>
-            <el-col :span="8">
-              <el-card shadow="never">
-                <template #header>后端服务健康</template>
-                <div class="ov-health">
-                  <div v-for="h in HEALTH_TARGETS" :key="h.name" class="ov-health-item">
-                    <span class="ov-health-dot" :class="healths[h.name] === 'up' ? 'up' : 'down'" />
-                    <span class="ov-health-name">{{ h.name }}</span>
-                    <span class="ov-health-state" :class="healths[h.name] === 'up' ? 'up' : 'down'">{{ healths[h.name] === 'up' ? 'UP' : 'DOWN' }}</span>
-                  </div>
-                </div>
-              </el-card>
-            </el-col>
-          </el-row>
-        </div>
+        <OverviewView v-if="activeMenu === 'overview'"
+          :stat="stat" :sit-stats="sitStats" :filtered-alarms="filteredAlarms" :healths="healths" />
 
         <!-- 实时态势大屏 -->
         <div v-else-if="activeMenu === 'situation'" class="page-pad view-enter sit-wrap">
@@ -1376,107 +1289,12 @@ function relTime(iso?: string): string {
         </div>
 
         <!-- 告警查询 -->
-        <div v-else-if="activeMenu === 'alarms'" class="page-pad view-enter">
-          <div style="display:flex;gap:10px;margin-bottom:12px">
-            <el-input v-model="alarmKeyword" placeholder="搜索规则/实体/消息" clearable style="width:280px" @keyup.enter="onAlarmSearch" @clear="onAlarmSearch" />
-            <el-select v-model="alarmSeverity" placeholder="全部级别" clearable style="width:140px" @change="onAlarmSearch">
-              <el-option v-for="s in SEVERITIES" :key="s" :label="s" :value="s" />
-            </el-select>
-            <el-button size="small" @click="onAlarmSearch">查询</el-button>
-            <span style="color:#909399;line-height:32px">共 {{ alarmPageData.total }} 条</span>
-            <span style="flex:1"></span>
-            <el-button size="small" @click="exportAlarms('csv')">导出 CSV</el-button>
-            <el-button size="small" @click="exportAlarms('json')">导出 JSON</el-button>
-          </div>
-          <!-- 告警微卡片列表（行=卡片：状态点 + 规则 + 实体 + 状态 + 相对时间 + 操作） -->
-          <div class="card-list">
-            <div v-for="a in filteredAlarms" :key="a.id" class="alarm-card" @click="openAlarm(a)">
-              <span class="alarm-sev-dot" :style="{ background: sevColor(a.severity) }" />
-              <div class="alarm-body">
-                <div class="alarm-top">
-                  <span class="alarm-sev-tag" :style="{ background: sevColor(a.severity) }">{{ a.severity }}</span>
-                  <span class="alarm-rule">{{ a.ruleName || a.ruleId }}</span>
-                  <span class="alarm-entity mono">{{ a.entity }}</span>
-                  <span class="alarm-status" :class="(a.status || 'OPEN').toLowerCase()">{{ a.status || 'OPEN' }}</span>
-                  <span class="alarm-time">{{ relTime(a.occurredAt) }}</span>
-                </div>
-                <div class="alarm-msg">{{ a.message }}</div>
-              </div>
-              <el-button link type="primary" size="small" @click.stop="openAlarm(a)">处置</el-button>
-            </div>
-            <div v-if="!filteredAlarms.length" class="feed-empty">暂无告警</div>
-          </div>
-          <div style="display:flex;justify-content:flex-end;margin-top:14px">
-            <el-pagination
-              v-model:current-page="alarmPageNum"
-              v-model:page-size="alarmPageSize"
-              :total="alarmPageData.total"
-              :page-sizes="[10, 20, 50, 100]"
-              layout="total, sizes, prev, pager, next"
-              @current-change="loadAlarmPage"
-              @size-change="() => { alarmPageNum = 1; loadAlarmPage() }" />
-          </div>
-
-          <!-- 告警详情/处置抽屉 -->
-          <el-drawer v-model="drawerVisible" :title="`告警处置 · ${currentAlarm?.ruleName ?? ''}`" size="480px">
-            <template v-if="currentAlarm">
-              <el-descriptions :column="2" size="small" border style="margin-bottom:14px">
-                <el-descriptions-item label="规则 ID">{{ currentAlarm.ruleId }}</el-descriptions-item>
-                <el-descriptions-item label="级别"><SevBadge :value="currentAlarm.severity" /></el-descriptions-item>
-                <el-descriptions-item label="实体">{{ currentAlarm.entity }}</el-descriptions-item>
-                <el-descriptions-item label="发生时间">{{ currentAlarm.occurredAt }}</el-descriptions-item>
-                <el-descriptions-item label="消息" :span="2">{{ currentAlarm.message }}</el-descriptions-item>
-                <el-descriptions-item label="ATT&CK" :span="2">
-                  <a v-if="currentAlarm.mitre" :href="`https://attack.mitre.org/techniques/${String(currentAlarm.mitre).replace('-', '/')}/`" target="_blank" style="color:#409eff;font-weight:600">{{ currentAlarm.mitre }}</a>
-                  <span v-else style="color:#909399">—</span>
-                </el-descriptions-item>
-                <el-descriptions-item label="威胁情报命中" :span="2">
-                  <span v-if="tiHitsList().length">
-                    <el-tag v-for="(h, i) in tiHitsList()" :key="i" size="small" type="danger" style="margin-right:6px;margin-bottom:4px">{{ h.type }} · {{ h.value }}</el-tag>
-                  </span>
-                  <span v-else style="color:#909399">—</span>
-                </el-descriptions-item>
-              </el-descriptions>
-
-              <el-divider content-position="left">状态流转</el-divider>
-              <div style="display:flex;gap:8px;margin-bottom:8px">
-                <el-select v-model="newStatus" style="flex:1">
-                  <el-option v-for="s in DISP_STATUSES" :key="s" :label="s" :value="s" />
-                </el-select>
-                <el-button type="primary" @click="changeStatus">更新</el-button>
-              </div>
-              <div style="display:flex;gap:8px;margin-bottom:14px">
-                <el-input v-model="newAssignee" placeholder="分配人，如 ops-zhang" />
-                <el-button @click="doAssign">分配</el-button>
-              </div>
-
-              <el-divider content-position="left">备注 / 调查记录</el-divider>
-              <div v-if="disposition && disposition.notes.length">
-                <div v-for="(n, i) in disposition.notes" :key="i" style="background:var(--ns-bg-subtle);border-radius:6px;padding:8px 12px;margin-bottom:8px">
-                  <div style="font-size:12px;color:#909399">{{ n.author }} · {{ n.at }}</div>
-                  <div style="margin-top:2px">{{ n.content }}</div>
-                </div>
-              </div>
-              <el-empty v-else description="暂无备注" :image-size="50" />
-              <div style="display:flex;gap:8px;margin-top:8px">
-                <el-input v-model="newNote" placeholder="添加调查备注…" @keyup.enter="doAddNote" />
-                <el-button type="success" @click="doAddNote">添加</el-button>
-              </div>
-
-              <el-divider content-position="left">关联案件</el-divider>
-              <el-card v-if="relatedCase" shadow="never" style="margin-bottom:10px">
-                <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-                  <div>
-                    <div style="font-weight:600">{{ relatedCase.title }}</div>
-                    <div style="font-size:12px;color:#909399;margin-top:2px">{{ relatedCase.id }} · {{ relatedCase.status }} · 实体 {{ relatedCase.entity }} · 告警 {{ relatedCase.alarmIds.length }} 条</div>
-                  </div>
-                  <el-button link type="primary" size="small" @click="drawerVisible = false; onMenuChange('case')">前往案件</el-button>
-                </div>
-              </el-card>
-              <el-empty v-else description="暂无关联案件（告警创建时会自动建案/归并）" :image-size="50" />
-            </template>
-          </el-drawer>
-        </div>
+        <AlarmsView v-else-if="activeMenu === 'alarms'"
+          v-model:keyword="alarmKeyword" v-model:severity="alarmSeverity" v-model:page-num="alarmPageNum"
+          :filtered-alarms="filteredAlarms" :alarm-page-data="alarmPageData" :alarm-page-size="alarmPageSize"
+          :on-search="onAlarmSearch" :load-page="loadAlarmPage"
+          :export-csv="() => exportAlarms('csv')" :export-json="() => exportAlarms('json')"
+          :go-case="() => onMenuChange('case')" />
 
         <!-- 日志检索（SPL） -->
         <div v-else-if="activeMenu === 'search'" class="page-pad view-enter">
