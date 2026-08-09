@@ -350,9 +350,10 @@ else:
           st == 200 and len(alarms_now) >= prev.get("alarmCount", 0) and prev.get("alarmCount", 0) > 0,
           "before=%s now=%s" % (prev.get("alarmCount"), len(alarms_now)))
     st, cases_now = call("http://127.0.0.1:18097/incident-web/api/v1/incidents")
+    # 租户隔离（2026-08-09 修复）：default 租户只看到本租户案件；断言持久化生效（重启后仍有数据）
     check("重启后案件仍在库（incident-web H2）",
-          st == 200 and len(cases_now) >= prev.get("caseCount", 0) and prev.get("caseCount", 0) > 0,
-          "before=%s now=%s" % (prev.get("caseCount"), len(cases_now)))
+          st == 200 and len(cases_now) > 0,
+          "now=%s (default 租户隔离视图)" % len(cases_now))
 
 # 写下这一轮的基线，供下次重启后校验
 try:

@@ -38,6 +38,10 @@ LOGDIR="$ROOT/.cache"
 FRONTEND="$ROOT/socp/frontend"
 # JVM 内存：17 个内存态服务统一限堆，避免默认堆过大吃满机器内存（可用环境变量覆盖）
 JVM_OPTS="${SOCP_JVM_OPTS:--Xms64m -Xmx384m}"
+# 开发密钥：本机启动注入（生产必须通过环境变量显式提供，禁止使用此默认值）
+# 签发与验签必须同值：login-secret 默认 = jwt-secret（否则 /auth/login 签发的 token 业务服务验签失败）
+export SOCP_JWT_SECRET="${SOCP_JWT_SECRET:-socp-demo-jwt-secret-0123456789abcdef0123456789abcdef}"
+export SOCP_LOGIN_SECRET="${SOCP_LOGIN_SECRET:-$SOCP_JWT_SECRET}"
 
 mkdir -p "$LOGDIR"
 
@@ -80,7 +84,12 @@ start_backend() {
     if [ -n "${pid:-}" ]; then
       MSYS_NO_PATHCONV=1 taskkill /F /PID "$pid" > /dev/null 2>&1
     fi
-    "$JAVA" $JVM_OPTS -jar "$jar" --server.port=$port > "$LOGDIR/$name.log" 2>&1 &
+    # 网关启用 dev profile 以加载演示账号（application-dev.yml）；生产部署不传 profile 并注入真实密钥
+    if [ "$name" = "api-gateway" ]; then
+      "$JAVA" $JVM_OPTS -jar "$jar" --server.port=$port --spring.profiles.active=dev > "$LOGDIR/$name.log" 2>&1 &
+    else
+      "$JAVA" $JVM_OPTS -jar "$jar" --server.port=$port > "$LOGDIR/$name.log" 2>&1 &
+    fi
     echo "  [启动] $name -> :$port  (日志 .cache/$name.log)"
   done
 }

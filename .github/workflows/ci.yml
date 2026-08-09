@@ -9,6 +9,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      SOCP_JWT_SECRET: ci-test-jwt-secret-0123456789abcdef0123456789abcdef
     steps:
       - uses: actions/checkout@v4
 
@@ -24,23 +26,23 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: socp/frontend/pnpm-lock.yaml
+          cache-dependency-path: frontend/pnpm-lock.yaml
 
       - name: Build backend (27 Maven modules)
-        run: bash socp/build/mvnw.sh -DskipTests package
-        working-directory: socp
+        run: bash build/mvnw.sh -DskipTests package
 
       - name: Run backend tests
-        run: bash socp/build/mvnw.sh test -Dsurefire.failIfNoSpecifiedTests=false
-        working-directory: socp
+        run: bash build/mvnw.sh test -Dsurefire.failIfNoSpecifiedTests=false
 
       - name: Build frontend (workbench)
         run: node ../../node_modules/vite/bin/vite.js build
-        working-directory: socp/frontend/apps/workbench
+        working-directory: frontend/apps/workbench
 
   e2e:
     runs-on: ubuntu-latest
     needs: build
+    env:
+      SOCP_JWT_SECRET: ci-test-jwt-secret-0123456789abcdef0123456789abcdef
     services:
       postgres:
         image: postgres:18
@@ -61,15 +63,13 @@ jobs:
           java-version: 21
 
       - name: Build backend
-        run: bash socp/build/mvnw.sh -DskipTests package
-        working-directory: socp
+        run: bash build/mvnw.sh -DskipTests package
 
       # 最小切片验证：alert-web + api-gateway（无 Kafka/OpenSearch/CK 依赖）
       - name: Start minimal slice (alert-web + gateway)
         run: |
           mkdir -p .cache
-          bash socp/build/run-slice.sh start || true
-          # 等 60s 直到 2 服务 UP
+          bash build/run-slice.sh start || true
           python3 - <<'EOF'
           import time, urllib.request
           for i in range(60):
@@ -88,5 +88,4 @@ jobs:
           EOF
 
       - name: Run slice E2E (auth/tenant/audit/ratelimit/trace)
-        run: python3 socp/build/verify-slice.py
-        working-directory: socp
+        run: python3 build/verify-slice.py

@@ -4,11 +4,14 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 
 import java.util.List;
+import java.util.Optional;
 
 /** 告警仓储：按租户隔离查询（多租户 SDK 级保证，见 §3.3） */
 public interface AlarmRepository extends JpaRepository<Alarm, String> {
 
     List<Alarm> findByTenantId(String tenantId);
+
+    Optional<Alarm> findByTenantIdAndId(String tenantId, String id);
 
     List<Alarm> findByTenantIdAndSeverity(String tenantId, Severity severity);
 

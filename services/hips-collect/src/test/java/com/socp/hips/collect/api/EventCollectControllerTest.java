@@ -1,12 +1,15 @@
 package com.socp.hips.collect.api;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.socp.hips.collect.collector.EndpointSimulator;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.LinkedHashMap;
@@ -23,9 +26,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @WebMvcTest(EventCollectController.class)
 @AutoConfigureMockMvc(addFilters = false)
+@TestPropertySource(properties = {"socp.security.dev-bypass=true"})
 class EventCollectControllerTest {
 
     private static final String BEARER = "Bearer test-token";
+
+    @MockitoBean
+    private EndpointSimulator simulator;
 
     @Autowired
     private MockMvc mvc;

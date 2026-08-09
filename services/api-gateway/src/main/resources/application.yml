@@ -83,12 +83,17 @@ spring:
           default-filters: []
 
 # 网关鉴权：与业务服务共用 socp-auth 的 JwtValidator（HMAC HS256，与 /auth/login 签发 secret 一致）。
-# 登录签发 secret 走 socp.auth.login-secret（有默认值）；验签走 socp.security.jwt-secret。
+# 登录签发 secret 走 socp.auth.login-secret（无默认值，必须显式提供）；验签走 socp.security.jwt-secret。
 socp:
   security:
     # 生产鉴权（2026-08-09 启用）：HMAC HS256 验签，与网关 /auth/login 签发 secret 一致。
-    jwt-secret: ${SOCP_JWT_SECRET:socp-demo-jwt-secret-0123456789abcdef0123456789abcdef}
+    jwt-secret: ${SOCP_JWT_SECRET}
     dev-bypass: ${SOCP_DEV_BYPASS:false}
+  auth:
+    # 本地账号表由 application-dev.yml 提供（仅 dev profile）；生产请接 Keycloak/OIDC 或外部身份源。
+    login-secret: ${SOCP_LOGIN_SECRET}
+    users: ${SOCP_AUTH_USERS:}
+    roles: ${SOCP_AUTH_ROLES:}
 
 management:
   endpoints:

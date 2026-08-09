@@ -36,8 +36,9 @@ public class CaseStore {
     }
 
     public List<Case> list() {
+        String tenant = tenant();
         List<Case> all = new ArrayList<>();
-        for (CaseEntity e : repo.findAll()) {
+        for (CaseEntity e : repo.findByTenantId(tenant)) {
             all.add(fromEntity(e));
         }
         all.sort((a, b) -> b.updatedAt().compareTo(a.updatedAt()));
@@ -45,14 +46,20 @@ public class CaseStore {
     }
 
     public Case get(String id) {
-        return repo.findById(id).map(CaseStore::fromEntity).orElse(null);
+        return repo.findByTenantIdAndId(tenant(), id).map(CaseStore::fromEntity).orElse(null);
     }
 
-    /** 查找某实体当前进行中的案件，无则 null。 */
+    /** 查找某实体当前进行中的案件，无则 null（限当前租户）。 */
     public String openCaseId(String entity) {
         if (entity == null) return null;
-        List<CaseEntity> open = repo.findByEntityAndStatusIn(entity, OPEN_STATUSES);
+        List<CaseEntity> open = repo.findByTenantIdAndEntityAndStatusIn(tenant(), entity, OPEN_STATUSES);
         return open.isEmpty() ? null : open.get(0).getId();
+    }
+
+    /** 当前租户（无上下文按 default），租户隔离查询统一入口。 */
+    private static String tenant() {
+        String t = com.socp.platform.tenant.TenantContext.get();
+        return t == null ? "default" : t;
     }
 
     // ---- 互转 ----

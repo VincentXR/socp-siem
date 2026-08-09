@@ -31,34 +31,55 @@ import java.util.Map;
 @RequestMapping("/auth")
 public class AuthController {
 
-    private static final Map<String, String> USERS = Map.of(
-            "admin", "admin123",
-            "demo", "demo123",
-            "viewer", "viewer123");
-    private static final Map<String, String> ROLES = Map.of(
-            "admin", "admin",
-            "demo", "analyst",
-            "viewer", "viewer");
+    /** 演示账号仅在 dev 配置提供（application-dev.yml）；生产必须显式配置或接 Keycloak/OIDC。 */
+    @Value("${socp.auth.users:}")
+    private String usersJson;
+
+    @Value("${socp.auth.roles:}")
+    private String rolesJson;
+
+    private Map<String, String> users;
+    private Map<String, String> roles;
+
     private static final long EXPIRES_SECONDS = 1800;
 
-    @Value("${socp.auth.login-secret:socp-demo-jwt-secret-0123456789abcdef0123456789abcdef}")
+    @Value("${socp.auth.login-secret}")
     private String secret;
+
+    @jakarta.annotation.PostConstruct
+    void init() {
+        try {
+            users = usersJson == null || usersJson.isBlank()
+                    ? Map.of() : parseJson(usersJson);
+            roles = rolesJson == null || rolesJson.isBlank()
+                    ? Map.of() : parseJson(rolesJson);
+        } catch (Exception e) {
+            users = Map.of();
+            roles = Map.of();
+        }
+    }
+
+    private static Map<String, String> parseJson(String json) throws Exception {
+        com.fasterxml.jackson.core.type.TypeReference<Map<String, String>> tr =
+                new com.fasterxml.jackson.core.type.TypeReference<>() {};
+        return new com.fasterxml.jackson.databind.ObjectMapper().readValue(json, tr);
+    }
 
     @PostMapping(value = "/login", consumes = MediaType.APPLICATION_JSON_VALUE)
     public Mono<ResponseEntity<?>> login(@RequestBody Map<String, String> body) {
         String username = body == null ? null : body.get("username");
         String password = body == null ? null : body.get("password");
-        if (username == null || password == null || !password.equals(USERS.get(username))) {
+        if (username == null || password == null || !password.equals(users.get(username))) {
             Map<String, Object> err = new LinkedHashMap<>();
             err.put("code", 401);
             err.put("message", "账号或密码错误");
             return Mono.just(ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(err));
         }
-        String token = sign(username, ROLES.getOrDefault(username, "analyst"));
+        String token = sign(username, roles.getOrDefault(username, "analyst"));
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("token", token);
         out.put("username", username);
-        out.put("role", ROLES.getOrDefault(username, "analyst"));
+        out.put("role", roles.getOrDefault(username, "analyst"));
         out.put("tenant", "default");
         out.put("expiresIn", EXPIRES_SECONDS);
         return Mono.just(ResponseEntity.ok(out));

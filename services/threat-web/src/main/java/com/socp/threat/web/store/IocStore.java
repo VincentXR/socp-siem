@@ -44,8 +44,12 @@ public class IocStore {
     }
 
     public List<Ioc> list(String type) {
+        // 租户隔离：只返回当前租户 IOC（无上下文按 default）
+        String tenant = com.socp.platform.tenant.TenantContext.get();
+        if (tenant == null) tenant = "default";
+        final String t = tenant;
         List<Ioc> all = new ArrayList<>();
-        for (IocEntity e : repo.findAll()) all.add(fromEntity(e));
+        for (IocEntity e : repo.findByTenantId(t)) all.add(fromEntity(e));
         if (type == null || type.isBlank()) return all;
         return all.stream().filter(i -> i.type().equalsIgnoreCase(type)).toList();
     }
@@ -80,8 +84,10 @@ public class IocStore {
     }
 
     public List<Ioc> all() {
+        String tenant = com.socp.platform.tenant.TenantContext.get();
+        if (tenant == null) tenant = "default";
         List<Ioc> out = new ArrayList<>();
-        for (IocEntity e : repo.findAll()) out.add(fromEntity(e));
+        for (IocEntity e : repo.findByTenantId(tenant)) out.add(fromEntity(e));
         return out;
     }
 

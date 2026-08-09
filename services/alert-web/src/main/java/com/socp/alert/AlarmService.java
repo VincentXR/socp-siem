@@ -156,20 +156,22 @@ public class AlarmService {
     }
 
     public List<Alarm> query(Severity severity, String rule, String q) {
-        String tenant = TenantContext.get();
-        if (tenant == null) {
-            return repo.findAll();
-        }
+        // 租户隔离：无上下文时按 default（机机约定），绝不 findAll 跨租户
+        String tenant = TenantContext.get() == null ? "default" : TenantContext.get();
         return repo.query(tenant, severity, rule, q);
     }
 
     public Alarm get(String id) {
-        return repo.findById(id).orElseThrow(() -> com.socp.platform.error.ApiException.notFound("告警不存在: " + id));
+        // 租户隔离：只能读自己租户的告警
+        String tenant = TenantContext.get() == null ? "default" : TenantContext.get();
+        return repo.findByTenantIdAndId(tenant, id)
+                .orElseThrow(() -> com.socp.platform.error.ApiException.notFound("告警不存在: " + id));
     }
 
-    /** 聚合统计：级别分布 / 近 7 天趋势 / 规则 Top。 */
+    /** 聚合统计：级别分布 / 近 7 天趋势 / 规则 Top（按当前租户隔离）。 */
     public Map<String, Object> stats() {
-        List<Alarm> all = repo.findAll();
+        String tenant = TenantContext.get() == null ? "default" : TenantContext.get();
+        List<Alarm> all = repo.findByTenantId(tenant);
         Map<String, Long> bySeverity = new LinkedHashMap<>();
         Map<String, Long> byRule = new LinkedHashMap<>();
         Map<String, Long> byDay = new LinkedHashMap<>();
