@@ -126,6 +126,10 @@ async function del<T>(path: string): Promise<T> {
 
 // ---------- ALERT 告警 ----------
 export const listAlarms = (q?: string) => get<Alarm[]>(`/alert-web/api/alarms${q ? `?q=${q}` : ''}`)
+/** 分页查询告警（后端真分页：page 从 1 起，size 默认 20） */
+export interface AlarmPage { items: Alarm[]; total: number; page: number; size: number }
+export const listAlarmsPaged = (page: number, size: number, q?: string, severity?: string) =>
+  get<AlarmPage>(`/alert-web/api/alarms?page=${page}&size=${size}${q ? `&q=${encodeURIComponent(q)}` : ''}${severity ? `&severity=${severity}` : ''}`)
 export const createAlarm = (a: Partial<Alarm>) => post<Alarm>('/alert-web/api/alarms', a)
 export interface Disposition {
   status: string; assignee: string | null

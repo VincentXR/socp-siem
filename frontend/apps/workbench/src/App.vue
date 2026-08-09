@@ -53,7 +53,7 @@ registerChartTheme()
 import LoginView from './LoginView.vue'
 import AnimatedNumber from './AnimatedNumber.vue'
 import {
-  listAlarms, getDisposition, setDispositionStatus, assignAlarm, addAlarmNote,
+  listAlarms, listAlarmsPaged, getDisposition, setDispositionStatus, assignAlarm, addAlarmNote,
   listSources, createSource, deleteSource, renderConfig,
   listParseRules, createParseRule, deleteParseRule, previewParse,
   listOutputs, createOutput, deleteOutput,
@@ -82,7 +82,7 @@ import {
   login as apiLogin, clearToken,
   exportAlarms, exportCases, exportSearch,
   SEVERITIES, SOURCE_TYPES, PARSE_FORMATS,
-  type Alarm, type LogSource, type ParseRule, type SinkTarget,
+  type Alarm, type AlarmPage, type LogSource, type ParseRule, type SinkTarget,
   type DataSourceType, type LogCategory, type FieldDef,
   type Disposition, type SearchEvent, type SearchResult,
   type Playbook, type ReportSummary, type Asset, type Endpoint, type TenantInfo, type AiResult,
@@ -292,16 +292,23 @@ async function refreshOverview() {
   healths.value = map
 }
 
-// ---------- 告警 ----------
+// ---------- 告警（后端分页查询） ----------
 const alarmSeverity = ref('')
 const alarmKeyword = ref('')
-const filteredAlarms = computed(() => {
-  let list = alarms.value
-  if (alarmSeverity.value) list = list.filter(a => a.severity === alarmSeverity.value)
-  const kw = alarmKeyword.value.trim().toLowerCase()
-  if (kw) list = list.filter(a => (a.ruleId + a.ruleName + a.entity + a.message).toLowerCase().includes(kw))
-  return list
-})
+const alarmPageData = ref<AlarmPage>({ items: [], total: 0, page: 1, size: 20 })
+const alarmPageNum = ref(1)
+const alarmPageSize = ref(20)
+/** 当前页告警（分页 API 结果） */
+const filteredAlarms = computed(() => alarmPageData.value.items)
+async function loadAlarmPage() {
+  try {
+    alarmPageData.value = await listAlarmsPaged(
+      alarmPageNum.value, alarmPageSize.value,
+      alarmKeyword.value.trim() || undefined,
+      alarmSeverity.value || undefined)
+  } catch { /* 静默 */ }
+}
+function onAlarmSearch() { alarmPageNum.value = 1; loadAlarmPage() }
 
 // ---------- 告警详情/处置 ----------
 const drawerVisible = ref(false)
@@ -629,6 +636,17 @@ async function loadEndpoints() {
   if (s.status === 'fulfilled') endpointStat.value = s.value
 }
 async function removeEp(id: string) { await deleteEndpoint(id); await loadEndpoints() }
+
+
+// ---------- 列表前端分页（案件/资产/IOC/剧本执行） ----------
+const casePage = ref(1), caseSize = ref(10)
+const assetPage = ref(1), assetSize = ref(10)
+const iocPage = ref(1), iocSize = ref(10)
+const pbExecPage = ref(1), pbExecSize = ref(10)
+const casesPaged = computed(() => cases.value.slice((casePage.value-1)*caseSize.value, casePage.value*caseSize.value))
+const assetsPaged = computed(() => assets.value.slice((assetPage.value-1)*assetSize.value, assetPage.value*assetSize.value))
+const iocsPaged = computed(() => iocs.value.slice((iocPage.value-1)*iocSize.value, iocPage.value*iocSize.value))
+const pbExecsPaged = computed(() => pbExecutions.value.slice((pbExecPage.value-1)*pbExecSize.value, pbExecPage.value*pbExecSize.value))
 
 // ---------- 报表归档（MinIO） ----------
 const archiveInfo = ref<{ count: number; objects: Array<{ key: string; size: number }> } | null>(null)
@@ -990,7 +1008,8 @@ const healthUpCount = computed(() => healthList.value.filter(x => x.status === '
 function onMenuChange(key: string) {
   activeMenu.value = key
   switch (key) {
-    case 'overview': case 'alarms': refreshOverview(); break
+    case 'overview': refreshOverview(); break
+    case 'alarms': loadAlarmPage(); break
     case 'situation': loadSituation(); if (liveOn.value) startLive(); break
     case 'search': doSearch(); break
     case 'ingest': loadSources(); loadOutputs(); loadParseRules(); loadTasks(); break
@@ -1415,11 +1434,12 @@ function relTime(iso?: string): string {
         <!-- 告警查询 -->
         <div v-else-if="activeMenu === 'alarms'" class="page-pad view-enter">
           <div style="display:flex;gap:10px;margin-bottom:12px">
-            <el-input v-model="alarmKeyword" placeholder="搜索规则/实体/消息" clearable style="width:280px" />
-            <el-select v-model="alarmSeverity" placeholder="全部级别" clearable style="width:140px">
+            <el-input v-model="alarmKeyword" placeholder="搜索规则/实体/消息" clearable style="width:280px" @keyup.enter="onAlarmSearch" @clear="onAlarmSearch" />
+            <el-select v-model="alarmSeverity" placeholder="全部级别" clearable style="width:140px" @change="onAlarmSearch">
               <el-option v-for="s in SEVERITIES" :key="s" :label="s" :value="s" />
             </el-select>
-            <span style="color:#909399;line-height:32px">共 {{ filteredAlarms.length }} 条</span>
+            <el-button size="small" @click="onAlarmSearch">查询</el-button>
+            <span style="color:#909399;line-height:32px">共 {{ alarmPageData.total }} 条</span>
             <span style="flex:1"></span>
             <el-button size="small" @click="exportAlarms('csv')">导出 CSV</el-button>
             <el-button size="small" @click="exportAlarms('json')">导出 JSON</el-button>
@@ -1441,6 +1461,16 @@ function relTime(iso?: string): string {
               <el-button link type="primary" size="small" @click.stop="openAlarm(a)">处置</el-button>
             </div>
             <div v-if="!filteredAlarms.length" class="feed-empty">暂无告警</div>
+          </div>
+          <div style="display:flex;justify-content:flex-end;margin-top:14px">
+            <el-pagination
+              v-model:current-page="alarmPageNum"
+              v-model:page-size="alarmPageSize"
+              :total="alarmPageData.total"
+              :page-sizes="[10, 20, 50, 100]"
+              layout="total, sizes, prev, pager, next"
+              @current-change="loadAlarmPage"
+              @size-change="() => { alarmPageNum = 1; loadAlarmPage() }" />
           </div>
 
           <!-- 告警详情/处置抽屉 -->
@@ -2218,7 +2248,7 @@ function relTime(iso?: string): string {
           </el-card>
           <el-card shadow="never" style="margin-top:14px">
             <template #header>执行历史（最近 {{ pbExecutions.length }} 条）</template>
-            <el-table :data="pbExecutions" size="small">
+            <el-table :data="pbExecsPaged" size="small">
               <el-table-column prop="ts" label="时间" width="200" />
               <el-table-column prop="playbook" label="剧本" min-width="140" />
               <el-table-column prop="trigger" label="触发" min-width="160" show-overflow-tooltip />
@@ -2250,7 +2280,13 @@ function relTime(iso?: string): string {
             <span v-if="archiveInfo" style="font-size:12px;color:var(--ns-text-3)">已归档 {{ archiveInfo.count }} 个对象</span>
           </div>
           <el-row :gutter="12" style="margin-bottom:14px" v-if="report">
-            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ report.total }}</div><div class="label">今日告警</div></div></el-card></el-col>
+            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ report.total }}</div><div class="label">今日告警</div></div></el-card>
+          <div style="display:flex;justify-content:flex-end;margin-top:12px">
+            <el-pagination v-model:current-page="pbExecPage" v-model:page-size="pbExecSize" :total="pbExecutions.length"
+              :page-sizes="[10, 20, 50]" layout="total, sizes, prev, pager, next"
+              @size-change="() => { pbExecPage = 1 }" />
+          </div>
+</el-col>
             <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#f56c6c">{{ report.bySeverity.CRITICAL ?? 0 }}</div><div class="label">CRITICAL</div></div></el-card></el-col>
             <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#e63946">{{ report.bySeverity.HIGH ?? 0 }}</div><div class="label">HIGH</div></div></el-card></el-col>
             <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#e6a23c">{{ report.bySeverity.MEDIUM ?? 0 }}</div><div class="label">MEDIUM</div></div></el-card></el-col>
@@ -2282,7 +2318,7 @@ function relTime(iso?: string): string {
             <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ Object.keys(assetStat.byType || {}).length }}</div><div class="label">资产类型</div></div></el-card></el-col>
           </el-row>
           <el-card shadow="never">
-            <el-table :data="assets" size="small">
+            <el-table :data="assetsPaged" size="small">
               <el-table-column prop="name" label="名称" width="140" />
               <el-table-column prop="type" label="类型" width="100" />
               <el-table-column prop="ip" label="IP" width="120" />
@@ -2298,7 +2334,13 @@ function relTime(iso?: string): string {
         <div v-else-if="activeMenu === 'endpoints'" class="page-pad view-enter">
           <div style="margin-bottom:12px"><el-button @click="loadEndpoints">刷新</el-button></div>
           <el-row :gutter="12" style="margin-bottom:14px" v-if="endpointStat">
-            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ endpointStat.total }}</div><div class="label">端点总数</div></div></el-card></el-col>
+            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ endpointStat.total }}</div><div class="label">端点总数</div></div></el-card>
+          <div style="display:flex;justify-content:flex-end;margin-top:12px">
+            <el-pagination v-model:current-page="assetPage" v-model:page-size="assetSize" :total="assets.length"
+              :page-sizes="[10, 20, 50]" layout="total, sizes, prev, pager, next"
+              @size-change="() => { assetPage = 1 }" />
+          </div>
+</el-col>
             <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#30d158">{{ endpointStat.online }}</div><div class="label">在线端点</div></div></el-card></el-col>
             <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#e6a23c">{{ endpointStat.total - endpointStat.online }}</div><div class="label">离线端点</div></div></el-card></el-col>
             <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ Object.keys(endpointStat.byType || {}).length }}</div><div class="label">端点类型</div></div></el-card></el-col>
@@ -2371,7 +2413,7 @@ function relTime(iso?: string): string {
             <template #footer><el-button @click="showIocDialog = false">取消</el-button><el-button type="success" @click="addIoc(); showIocDialog = false">新增情报</el-button></template>
           </el-dialog>
           <el-card shadow="never">
-            <el-table :data="iocs" size="small">
+            <el-table :data="iocsPaged" size="small">
               <el-table-column prop="type" label="类型" width="90" />
               <el-table-column prop="value" label="值" min-width="160" />
               <el-table-column label="严重度" width="90"><template #default="{ row }"><span :style="sevBg(row.severity)">{{ row.severity }}</span></template></el-table-column>
@@ -2404,6 +2446,12 @@ function relTime(iso?: string): string {
               <el-tag v-for="u in attackCov.uncovered.slice(0, 24)" :key="u" size="small" type="info" style="margin:2px">{{ u }}</el-tag>
             </div>
           </el-card>
+          <div style="display:flex;justify-content:flex-end;margin-top:12px">
+            <el-pagination v-model:current-page="iocPage" v-model:page-size="iocSize" :total="iocs.length"
+              :page-sizes="[10, 20, 50]" layout="total, sizes, prev, pager, next"
+              @size-change="() => { iocPage = 1 }" />
+          </div>
+
           <el-card shadow="never" style="margin-bottom:14px">
             <template #header>ATT&CK 战术矩阵（红=有告警命中 · 绿=已覆盖 · 灰=未覆盖）</template>
             <div class="attack-matrix">
@@ -2486,7 +2534,7 @@ function relTime(iso?: string): string {
             <el-button size="small" @click="exportCases()">导出案件 JSON</el-button>
           </div>
           <el-card shadow="never">
-            <el-table :data="cases" size="small">
+            <el-table :data="casesPaged" size="small">
               <el-table-column prop="id" label="案件 ID" width="180" />
               <el-table-column prop="title" label="标题" min-width="180" />
               <el-table-column prop="entity" label="实体" width="130" />
@@ -2554,6 +2602,12 @@ function relTime(iso?: string): string {
               <el-button size="small" @click="doAddRefEntry(rs.id)">追加</el-button>
             </div>
           </el-card>
+          <div style="display:flex;justify-content:flex-end;margin-top:12px">
+            <el-pagination v-model:current-page="casePage" v-model:page-size="caseSize" :total="cases.length"
+              :page-sizes="[10, 20, 50]" layout="total, sizes, prev, pager, next"
+              @size-change="() => { casePage = 1 }" />
+          </div>
+
         </div>
 
         <!-- 合规 (soc-base) -->

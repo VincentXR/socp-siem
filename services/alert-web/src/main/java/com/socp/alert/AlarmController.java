@@ -53,14 +53,35 @@ public class AlarmController {
         return ApiResult.ok(service.create(a));
     }
 
-    /** 查询告警：支持 severity / rule / q 过滤；带限流（每租户 10/s）。 */
+    /** 查询告警：支持 severity / rule / q 过滤 + 分页（page 从 1 起，size 缺省 20）。
+     *  只传 size 返回切片 List（兼容 verify 的 ?size=200 全量拉取）；
+     *  传 page 返回分页结构 {items,total,page,size}。带限流（每租户 10/s）。 */
     @RateLimit(permits = 10, seconds = 1)
     @GetMapping
-    public ApiResult<List<Alarm>> list(
+    public Object list(
             @RequestParam(required = false) Severity severity,
             @RequestParam(required = false) String rule,
-            @RequestParam(required = false) String q) {
-        return ApiResult.ok(service.query(severity, rule, q));
+            @RequestParam(required = false) String q,
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer size) {
+        List<Alarm> all = service.query(severity, rule, q);
+        if (page == null && size == null) {
+            return ApiResult.ok(all);
+        }
+        int sz = size == null || size <= 0 ? 20 : Math.min(size, 500);
+        if (page == null) {
+            // 只传 size：按大小切片返回 List（保持旧契约）
+            int to = Math.min(sz, all.size());
+            return ApiResult.ok(all.subList(0, to));
+        }
+        int pg = page < 1 ? 1 : page;
+        int from = Math.min((pg - 1) * sz, all.size());
+        int to = Math.min(from + sz, all.size());
+        return ApiResult.ok(Map.of(
+                "items", all.subList(from, to),
+                "total", all.size(),
+                "page", pg,
+                "size", sz));
     }
 
     /** 下钻单条告警 */
