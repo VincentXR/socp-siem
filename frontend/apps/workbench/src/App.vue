@@ -95,6 +95,23 @@ const MENU_ICONS: Record<string, string> = {
 }
 
 
+// ---------- 主题（浅色/深色，localStorage 记忆，默认跟随系统） ----------
+const theme = ref<'light' | 'dark'>('light')
+function applyTheme(t: 'light' | 'dark') {
+  theme.value = t
+  document.documentElement.setAttribute('data-theme', t)
+  try { localStorage.setItem('socp_theme', t) } catch { /* ignore */ }
+}
+function toggleTheme() { applyTheme(theme.value === 'light' ? 'dark' : 'light') }
+function initTheme() {
+  let t: 'light' | 'dark' | null = null
+  try { t = localStorage.getItem('socp_theme') as 'light' | 'dark' | null } catch { /* ignore */ }
+  if (!t) {
+    t = window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  }
+  applyTheme(t)
+}
+
 // ---------- 登录态（网关 JWT；未登录回退 demo-token 兼容演示） ----------
 const currentUser = ref<string>('')
 const currentRole = ref<string>('')
@@ -629,8 +646,8 @@ function renderSitCharts() {
           startAngle: 210, endAngle: -30, splitNumber: 5,
           axisLine: { lineStyle: { width: 14, color: [[0.2, '#67c23a'], [0.4, '#95d475'], [0.65, '#e6a23c'], [0.85, '#f89898'], [1, '#f56c6c']] } },
           pointer: { width: 4, length: '62%' },
-          axisTick: { distance: -14, length: 4, lineStyle: { color: '#fff' } },
-          splitLine: { distance: -14, length: 14, lineStyle: { color: '#fff', width: 2 } },
+          axisTick: { distance: -14, length: 4, lineStyle: { color: 'transparent' } },
+          splitLine: { distance: -14, length: 14, lineStyle: { color: 'transparent', width: 2 } },
           axisLabel: { distance: 16, fontSize: 10, color: '#909399' },
           detail: { valueAnimation: true, fontSize: 26, fontWeight: 700, offsetCenter: [0, '38%'], formatter: '{value}', color: '#303133' },
           title: { offsetCenter: [0, '72%'], fontSize: 12, color: '#909399' },
@@ -646,7 +663,7 @@ function renderSitCharts() {
         legend: { bottom: 0, itemWidth: 8, itemHeight: 8, textStyle: { fontSize: 11 } },
         series: [{
           type: 'pie', radius: ['48%', '72%'], center: ['50%', '44%'], avoidLabelOverlap: true,
-          itemStyle: { borderRadius: 4, borderColor: '#fff', borderWidth: 2 },
+          itemStyle: { borderRadius: 4, borderColor: 'transparent', borderWidth: 0 },
           label: { show: false }, labelLine: { show: false },
           data: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'].map(k => ({
             name: k, value: lv[k] ?? 0, itemStyle: { color: sevColor(k) },
@@ -860,6 +877,7 @@ function onMenuChange(key: string) {
 }
 
 onMounted(() => {
+  initTheme()
   try {
     currentUser.value = localStorage.getItem('socp_user') || ''
     currentRole.value = localStorage.getItem('socp_role') || ''
@@ -1023,8 +1041,12 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
         <span class="grad-text">安全运营中心</span>
         <span class="header-sub">Security Operations Center</span>
         <span style="flex:1"></span>
+        <el-button size="small" @click="toggleTheme" title="切换深色/浅色模式">
+          <span class="icon" style="display:inline-flex;vertical-align:-3px" v-html="'<svg viewBox=\'0 0 24 24\' width=\'14\' height=\'14\' fill=\'none\' stroke=\'currentColor\' stroke-width=\'1.7\' stroke-linecap=\'round\' stroke-linejoin=\'round\'>' + (theme === 'light' ? '<path d=\'M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z\'/>' : '<circle cx=\'12\' cy=\'12\' r=\'4\'/><path d=\'M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4\'/>') + '</svg>'" />
+          {{ theme === 'light' ? '深色' : '浅色' }}
+        </el-button>
         <span v-if="currentUser" style="display:flex;align-items:center;gap:10px">
-          <span style="font-size:13px;color:#6e7480">👤 {{ currentUser }} <span class="mono" style="font-size:11px;color:#635bff">{{ currentRole || 'guest' }}</span></span>
+          <span style="font-size:13px;color:var(--ns-text-2)">{{ currentUser }} <span class="mono" style="font-size:11px;color:var(--ns-accent-fg)">{{ currentRole || 'guest' }}</span></span>
           <el-button size="small" @click="doLogout">退出</el-button>
         </span>
         <el-button v-else size="small" type="primary" @click="openLoginDialog">登录</el-button>
@@ -1240,7 +1262,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
 
               <el-divider content-position="left">备注 / 调查记录</el-divider>
               <div v-if="disposition && disposition.notes.length">
-                <div v-for="(n, i) in disposition.notes" :key="i" style="background:#f6f8fa;border-radius:6px;padding:8px 12px;margin-bottom:8px">
+                <div v-for="(n, i) in disposition.notes" :key="i" style="background:var(--ns-bg-subtle);border-radius:6px;padding:8px 12px;margin-bottom:8px">
                   <div style="font-size:12px;color:#909399">{{ n.author }} · {{ n.at }}</div>
                   <div style="margin-top:2px">{{ n.content }}</div>
                 </div>
@@ -1299,7 +1321,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
                   <template #default="{ row }">
                     <div style="display:flex;align-items:center;gap:8px">
                       <span>{{ row.count }}</span>
-                      <div style="flex:1;background:#f0f2f5;border-radius:4px;height:10px;overflow:hidden">
+                      <div style="flex:1;background:var(--ns-bg-inset);border-radius:4px;height:10px;overflow:hidden">
                         <div :style="{ width: `${Math.min(100, (row.count / maxStatCount) * 100)}%`, background: '#409eff', height: '100%' }" />
                       </div>
                     </div>
@@ -1535,7 +1557,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
                   <el-button type="primary" @click="doPreview">预览</el-button>
                 </div>
                 <el-input v-model="previewLine" type="textarea" :rows="2" placeholder="示例日志行" />
-                <div v-if="previewResult" style="margin-top:12px;background:#f6f8fa;border-radius:6px;padding:12px">
+                <div v-if="previewResult" style="margin-top:12px;background:var(--ns-bg-subtle);border-radius:6px;padding:12px">
                   <p style="margin:0 0 6px">
                     结果：<el-tag :type="previewResult.matched ? 'success' : 'danger'" size="small">{{ previewResult.matched ? '命中' : '未命中' }}</el-tag>
                     <span v-if="previewResult.error" style="color:#f56c6c;margin-left:8px">{{ previewResult.error }}</span>
@@ -1547,7 +1569,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
           </el-tabs>
           <el-dialog v-model="showRender" title="vector.toml" width="720px">
             <el-button size="small" type="primary" @click="copyRender">复制</el-button>
-            <pre style="background:#f6f8fa;border:1px solid #e4e7ed;border-radius:6px;padding:12px;font-size:12px;overflow:auto;max-height:440px;margin-top:10px">{{ renderText }}</pre>
+            <pre style="background:var(--ns-bg-subtle);border:1px solid var(--ns-border);border-radius:6px;padding:12px;font-size:12px;overflow:auto;max-height:440px;margin-top:10px">{{ renderText }}</pre>
           </el-dialog>
           <el-dialog v-model="showRuleDialog" title="新增解析规则" width="560px">
             <el-form label-width="90px">
@@ -2084,7 +2106,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
               <el-input v-model="aiQuestion" placeholder="提问：如何检测暴力破解？端口扫描怎么处理？" @keyup.enter="doAsk" style="flex:1" />
               <el-button type="primary" :loading="aiLoading" @click="doAsk">提问</el-button>
             </div>
-            <div v-if="aiResult" style="background:#f6f8fa;border-radius:8px;padding:16px">
+            <div v-if="aiResult" style="background:var(--ns-bg-subtle);border-radius:8px;padding:16px">
               <p style="font-weight:600;margin:0 0 8px">问：{{ aiResult.question }}</p>
               <p style="white-space:pre-wrap;margin:0 0 12px">{{ aiResult.answer }}</p>
               <p v-if="aiResult.suggestion" style="color:#409eff;margin:0">{{ aiResult.suggestion }}</p>
@@ -2350,7 +2372,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
         <div v-else-if="activeMenu === 'health'" class="page-pad">
           <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:14px">
             <el-card shadow="never"><div class="stat-card"><div class="num" :style="{ color: healthUpCount === healthList.length ? '#16a34a' : '#dc2626' }">{{ healthUpCount }}/{{ healthList.length }}</div><div class="label">服务在线</div></div></el-card>
-            <el-card shadow="never"><div class="stat-card"><div class="num" style="color:#635bff">{{ healthEngine?.eventCount ?? 0 }}</div><div class="label">引擎累计事件</div></div></el-card>
+            <el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-accent-fg)">{{ healthEngine?.eventCount ?? 0 }}</div><div class="label">引擎累计事件</div></div></el-card>
             <el-card shadow="never"><div class="stat-card"><div class="num" style="color:#f56c6c">{{ healthEngine?.alertCount ?? 0 }}</div><div class="label">引擎累计告警</div></div></el-card>
             <el-card shadow="never"><div class="stat-card"><div class="num" style="color:#409eff">{{ healthIngest?.eps1m ?? 0 }}</div><div class="label">接入 EPS(1m)</div></div></el-card>
           </div>
@@ -2366,7 +2388,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
               <div v-for="svc in healthList" :key="svc.name"
                    style="border:1px solid #e8eaee;border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:6px">
                 <span style="font-weight:600;font-size:13px">{{ svc.name }}</span>
-                <span class="mono" style="font-size:11px;color:#9aa0aa">{{ svc.path }}</span>
+                <span class="mono" style="font-size:11px;color:var(--ns-text-3)">{{ svc.path }}</span>
                 <span :style="{ display:'inline-flex', alignItems:'center', gap:6, fontSize:12, color: svc.status === 'up' ? '#16a34a' : '#dc2626', fontWeight: 500 }">
                   <span :style="{ width:8, height:8, borderRadius:'50%', background: svc.status === 'up' ? '#16a34a' : '#dc2626' }"></span>
                   {{ svc.status === 'up' ? 'UP' : 'DOWN' }}
@@ -2376,7 +2398,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
           </el-card>
           <el-card shadow="never" style="margin-top:14px">
             <template #header>运维信息</template>
-            <div style="font-size:12px;color:#6e7480;line-height:1.9">
+            <div style="font-size:12px;color:var(--ns-text-2);line-height:1.9">
               引擎队列负载 <b class="mono">{{ healthEngine?.queueLoad ?? 0 }}</b> · 丢弃 <b class="mono">{{ healthEngine?.dropCount ?? 0 }}</b> · 抑制 <b class="mono">{{ healthEngine?.suppressedCount ?? 0 }}</b> ·
               规则 <b class="mono">{{ healthEngine?.rules ?? 0 }}</b> 条<br>
               服务日志位于 <span class="mono">.cache/&lt;服务名&gt;.log</span>（运行目录）；Prometheus 指标：<span class="mono">/{服务名}/actuator/prometheus</span>
