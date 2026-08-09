@@ -55,8 +55,8 @@
 | detect-model | 18090 | DETECT | ✅ 5 分钟滑动窗口聚合（按规则/实体/级别 + 分钟级趋势） |
 | hips-web | 18087 | HIPS | ✅ 端点注册/心跳/事件接收 + 统计 |
 | hips-collect | 18093 | HIPS | ✅ Falco 事件定时模拟器 → 上报 hips-web |
-| soar-web | 18083 | SOAR | ✅ 剧本 CRUD + 触发编排 + 手动执行 + 动作派发（通知/建案/webhook） |
-| report-web | 18084 | REPORT | ✅ 日报 + 7 日趋势（ClickHouse 聚合优先，失败回退） |
+| soar-web | 18083 | SOAR | ✅ 剧本 CRUD + 触发编排 + 手动执行 + 动作重试/补偿 + 定时剧本调度 + 派发（通知/建案/webhook） |
+| report-web | 18084 | REPORT | ✅ 日报 + 7 日趋势（ClickHouse 优先）+ MinIO 报表归档（预签名下载） |
 | ai-assistant | 18088 | AI | ✅ 关键词知识库问答（未接外部 LLM） |
 | api-gateway | 18092 | 网关 | ✅ Spring Cloud Gateway 路由 + JWT 验签 + RBAC(viewer 只读) + traceId |
 | threat-web | 18094 | THREAT | ✅ 威胁情报 IOC 管理 + 命中富化（H2 落库） |
@@ -108,12 +108,11 @@ python socp/build/verify-slice.py
 
 ## 已知边界（诚实声明）
 
-- **RBAC**：已实现角色授权——`@RequireRole` 注解（admin/analyst/viewer）+ 网关全局 viewer 只读兜底；未做角色/权限的运行时管理 UI（角色由 JWT claim 决定）
-- **审计日志**：`@AuditOperation` 注解 + 内存 sink + 查询 API（`GET /soc-base/api/v1/audit/records|stats`）；生产可切 Kafka sink
 - **ai-assistant**：关键词问答库，未接外部 LLM API
-- **SOAR**：剧本执行器为进程内实现，未用 Temporal Saga（无补偿/重试编排）
-- **Temporal / Keycloak realm / MinIO 业务**：编排就绪但未跑业务链路（验签侧已支持 Keycloak 签发 JWT）
-- **测试**：20 个单元/切片测试类，无跨服务集成测试（由 verify-full.py 覆盖）
+- **Temporal**：SOAR 补偿/重试/定时已在进程内实现（语义等价），未用 Temporal 分布式编排
+- **Keycloak realm**：验签侧已支持 Keycloak 签发 JWT（配 `issuer-uri` 即启用），OIDC 登录流程未实跑
+- **测试**：22 个单元/切片测试类（含 SOAR 补偿/审计查询），无跨服务集成测试（由 verify-full.py 覆盖）
+- **CI**：GitHub Actions 已配置（构建 + 测试 + 前端 + 切片 E2E），推送后自动运行
 
 ## 目录结构
 

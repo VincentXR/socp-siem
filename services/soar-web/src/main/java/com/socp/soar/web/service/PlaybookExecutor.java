@@ -70,34 +70,25 @@ public class PlaybookExecutor {
         return out;
     }
 
+    private static final int MAX_ATTEMPTS = 3; // 每个动作最多尝试次数（重试 2 次）
+
     private Map<String, Object> run(Playbook pb, Map<String, Object> alarm) {
         List<Map<String, Object>> results = new ArrayList<>();
+        boolean previousFailed = false;
         for (String action : pb.actions()) {
-            Map<String, Object> r = new LinkedHashMap<>();
-            r.put("action", action);
-            String a = action.toLowerCase();
-            if (a.contains("http://") || a.contains("https://")) {
-                int code = Http.post(action, toJson(alarm), 3000);
-                r.put("status", (code >= 200 && code < 300) ? "sent" : "failed");
-                r.put("httpStatus", code);
-                r.put("target", "webhook");
-            } else if (a.contains("notify") || a.contains("通知")) {
-                int code = Http.post(notifyUrl + "/notify-web/api/v1/notify/alert", toJson(alarm), 3000);
-                r.put("status", (code >= 200 && code < 300) ? "sent" : "failed");
-                r.put("httpStatus", code);
-                r.put("target", "notify-web");
-            } else if (a.contains("case") || a.contains("建案")) {
-                int code = Http.post(caseUrl + "/incident-web/api/v1/incidents/from-alarm", toJson(alarm), 3000);
-                r.put("status", (code >= 200 && code < 300) ? "created" : "failed");
-                r.put("httpStatus", code);
-                r.put("target", "incident-web");
-            } else if (a.contains("tag")) {
-                r.put("status", "executed");
-                r.put("tag", action.contains(" ") ? action.substring(action.indexOf(' ') + 1).trim() : action);
-            } else {
-                r.put("status", "executed");
-            }
+            Map<String, Object> r = executeAction(action, alarm, previousFailed);
             results.add(r);
+            // 补偿动作（前缀"补偿:"）只在主动作失败后执行；主动作失败会阻断后续主动作
+            if (action.startsWith("补偿:") || action.startsWith("compensate:")) {
+                previousFailed = false; // 补偿已执行，视为完成该阶段
+            } else {
+                boolean ok = "success".equals(r.get("status"));
+                if (!ok) {
+                    previousFailed = true; // 失败：后续只执行补偿动作
+                } else {
+                    previousFailed = false;
+                }
+            }
         }
         Map<String, Object> exec = new LinkedHashMap<>();
         exec.put("playbookId", pb.id());
@@ -108,6 +99,65 @@ public class PlaybookExecutor {
         if (executions.size() > 200) executions.remove(0);
         executions.add(exec);
         return exec;
+    }
+
+    /** 执行单个动作（含失败重试）；activeFailed 为 true 时跳过主动作、只允许补偿动作。 */
+    private Map<String, Object> executeAction(String action, Map<String, Object> alarm, boolean activeFailed) {
+        Map<String, Object> r = new LinkedHashMap<>();
+        r.put("action", action);
+        String a = action.toLowerCase();
+        boolean isCompensate = a.startsWith("补偿:") || a.startsWith("compensate:");
+        if (activeFailed && !isCompensate) {
+            r.put("status", "skipped");
+            r.put("reason", "前置动作失败，本动作被跳过（仅执行补偿）");
+            return r;
+        }
+        // 尝试执行（含重试）
+        Map<String, Object> attempt = attempt(action, a, alarm);
+        if (!"success".equals(attempt.get("status"))) {
+            int retries = 0;
+            while (retries < MAX_ATTEMPTS - 1) {
+                retries++;
+                attempt = attempt(action, a, alarm);
+                if ("success".equals(attempt.get("status"))) break;
+            }
+            if (!"success".equals(attempt.get("status"))) {
+                attempt.put("retried", retries);
+            }
+        }
+        r.putAll(attempt);
+        return r;
+    }
+
+    private Map<String, Object> attempt(String action, String a, Map<String, Object> alarm) {
+        Map<String, Object> r = new LinkedHashMap<>();
+        try {
+            if (a.contains("http://") || a.contains("https://")) {
+                int code = Http.post(action, toJson(alarm), 3000);
+                r.put("status", (code >= 200 && code < 300) ? "success" : "failed");
+                r.put("httpStatus", code);
+                r.put("target", "webhook");
+            } else if (a.contains("notify") || a.contains("通知")) {
+                int code = Http.post(notifyUrl + "/notify-web/api/v1/notify/alert", toJson(alarm), 3000);
+                r.put("status", (code >= 200 && code < 300) ? "success" : "failed");
+                r.put("httpStatus", code);
+                r.put("target", "notify-web");
+            } else if (a.contains("case") || a.contains("建案")) {
+                int code = Http.post(caseUrl + "/incident-web/api/v1/incidents/from-alarm", toJson(alarm), 3000);
+                r.put("status", (code >= 200 && code < 300) ? "success" : "failed");
+                r.put("httpStatus", code);
+                r.put("target", "incident-web");
+            } else if (a.contains("tag")) {
+                r.put("status", "success");
+                r.put("tag", action.contains(" ") ? action.substring(action.indexOf(' ') + 1).trim() : action);
+            } else {
+                r.put("status", "success");
+            }
+        } catch (Exception e) {
+            r.put("status", "failed");
+            r.put("error", e.getMessage());
+        }
+        return r;
     }
 
     private boolean matches(String trigger, String ruleId, String severity, int sevLevel) {

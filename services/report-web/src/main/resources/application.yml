@@ -15,6 +15,12 @@ socp:
     dev-bypass: ${SOCP_DEV_BYPASS:false}
   alert:
     url: http://localhost:18080
+  minio:
+    url: ${SOCP_MINIO_URL:http://localhost:9000}
+    access-key: ${SOCP_MINIO_ACCESS:socp}
+    secret-key: ${SOCP_MINIO_SECRET:Socp@2026}
+    bucket: ${SOCP_MINIO_BUCKET:socp-reports}
+    enabled: ${SOCP_MINIO_ENABLED:true}
 
 management:
   endpoints:

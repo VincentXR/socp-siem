@@ -26,6 +26,12 @@
             <groupId>com.socp.platform</groupId>
             <artifactId>socp-audit</artifactId>
         </dependency>
+        <!-- 对象存储（MinIO S3，报表导出/归档） -->
+        <dependency>
+            <groupId>io.minio</groupId>
+            <artifactId>minio</artifactId>
+            <version>8.5.17</version>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
