@@ -62,16 +62,22 @@ public class KafkaEventProducer {
         return p;
     }
 
-    /** 异步发送一批事件（不阻塞采集热路径）；发送失败打 WARN（可观测，不再静默） */
+    /** 异步发送一批事件（不阻塞采集热路径）；发送失败打 WARN（可观测，不再静默）。
+     *  发送时透传 W3C traceparent（trace 上下文跨 Kafka 传播，见 detect-web 消费侧恢复 MDC）。 */
     public void sendEvents(List<SearchEvent> es) {
         if (!enabled || es == null || es.isEmpty()) return;
+        String traceparent = com.socp.platform.obs.TraceIdFilter.buildTraceparent();
         Thread.startVirtualThread(() -> {
             try {
                 KafkaProducer<String, String> p = producer();
                 for (SearchEvent e : es) {
                     String value = MAPPER.writeValueAsString(e);
                     // key=eventId：同一事件进同一分区且顺序保证，配合幂等实现重试安全
-                    p.send(new ProducerRecord<>(topic, e.eventId(), value),
+                    var rec = new ProducerRecord<>(topic, e.eventId(), value);
+                    if (traceparent != null) {
+                        rec.headers().add("traceparent", traceparent.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    }
+                    p.send(rec,
                             (md, ex) -> {
                                 if (ex != null) {
                                     log.warn("Kafka 发送失败 eventId={}（已触发重试）: {}", e.eventId(), ex.getMessage());

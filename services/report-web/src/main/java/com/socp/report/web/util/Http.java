@@ -17,6 +17,8 @@ public final class Http {
             c.setReadTimeout(timeoutMs);
             c.setRequestProperty("Authorization", "Bearer " + token());
             c.setRequestProperty("X-Tenant-Id", "default");
+            String _tp = com.socp.platform.obs.TraceIdFilter.buildTraceparent();
+            if (_tp != null) c.setRequestProperty("traceparent", _tp);
             int code = c.getResponseCode();
             java.io.InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
             ByteArrayOutputStream bos = new ByteArrayOutputStream();

@@ -1,23 +1,23 @@
 package com.socp.detect.web.store;
 
+import com.socp.platform.tenant.TenantContext;
 import com.socp.rule.util.Json;
 import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 规则描述存储——进程内 ConcurrentHashMap（集群无关可单测）。
- * 生产环境替换为 PG（detect 库 t_rule），接口稳定，控制器无需改动。
- * 规则以 RuleSpec 的 JSON Map 形态保存（见 {@link com.socp.rule.config.RuleSpec}）。
+ * 规则描述存储——JPA + H2 文件库（Flyway V1 建表），重启不丢；接口与原内存版一致。
+ * 规则以 RuleSpec 的 JSON Map 形态保存（见 {@link com.socp.rule.config.RuleSpec}），spec 整体序列化为 JSON 列。
  */
 @Component
 public class RuleSpecStore {
 
-    private final ConcurrentHashMap<String, Map<String, Object>> map = new ConcurrentHashMap<>();
+    private final RuleRepository repo;
 
     /** 启动种子规则：与 com.siem Rules.defaultRules 同语义，以 JSON 配置形态表达 */
     private static final List<String> SEED_JSON = List.of(
@@ -166,15 +166,23 @@ public class RuleSpecStore {
             """
     );
 
-    public RuleSpecStore() {
-        for (String json : SEED_JSON) {
-            Map<String, Object> spec = Json.parseObject(json);
-            map.put((String) spec.get("id"), spec);
+    public RuleSpecStore(RuleRepository repo) {
+        this.repo = repo;
+        if (repo.count() == 0) {
+            for (String json : SEED_JSON) {
+                Map<String, Object> spec = Json.parseObject(json);
+                save(spec);
+            }
         }
     }
 
+    private String tenant() {
+        String t = TenantContext.get();
+        return t == null ? "default" : t;
+    }
+
     public boolean isEmpty() {
-        return map.isEmpty();
+        return repo.count() == 0;
     }
 
     public Map<String, Object> save(Map<String, Object> spec) {
@@ -184,19 +192,30 @@ public class RuleSpecStore {
             spec = new LinkedHashMap<>(spec);
             spec.put("id", "RULE-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase());
         }
-        map.put(String.valueOf(spec.get("id")), spec);
+        RuleEntity e = new RuleEntity();
+        e.setId(String.valueOf(spec.get("id")));
+        try {
+            e.setSpec(Json.mapper().writeValueAsString(spec));
+        } catch (Exception ex) {
+            throw new IllegalStateException("规则 JSON 序列化失败: " + ex.getMessage(), ex);
+        }
+        e.setTenantId(tenant());
+        repo.save(e);
         return spec;
     }
 
     public List<Map<String, Object>> list() {
-        return map.values().stream().toList();
+        return repo.findByTenantId(tenant()).stream().map(e -> Json.parseObject(e.getSpec())).toList();
     }
 
     public Map<String, Object> get(String id) {
-        return map.get(id);
+        return repo.findByIdAndTenantId(id, tenant()).map(e -> Json.parseObject(e.getSpec())).orElse(null);
     }
 
     public boolean delete(String id) {
-        return map.remove(id) != null;
+        Optional<RuleEntity> e = repo.findByIdAndTenantId(id, tenant());
+        if (e.isEmpty()) return false;
+        repo.delete(e.get());
+        return true;
     }
 }

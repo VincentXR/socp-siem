@@ -1,23 +1,39 @@
 package com.socp.soar.web.store;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.socp.platform.tenant.TenantContext;
 import com.socp.soar.web.model.Playbook;
 import com.socp.soar.web.model.PlaybookStatus;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.Optional;
 
 /**
- * 剧本存储——进程内 ConcurrentHashMap。生产替换为 PG（soar.t_playbook），接口不变。
- * 种子剧本与前端 DEMO_PLAYBOOKS 同语义。
+ * 剧本存储——JPA + H2 文件库（Flyway V1 建表），重启不丢；接口与原内存版一致。
+ * 种子剧本仅在空库时写入；actions 以 JSON 字符串持久化。
  */
 @Component
 public class PlaybookStore {
 
-    private final ConcurrentHashMap<String, Playbook> map = new ConcurrentHashMap<>();
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final TypeReference<List<String>> STR_LIST = new TypeReference<>() {
+    };
 
-    public PlaybookStore() {
-        seed();
+    private final PlaybookRepository repo;
+
+    public PlaybookStore(PlaybookRepository repo) {
+        this.repo = repo;
+        if (repo.count() == 0) {
+            seed();
+        }
+    }
+
+    private String tenant() {
+        String t = TenantContext.get();
+        return t == null ? "default" : t;
     }
 
     private void seed() {
@@ -34,28 +50,67 @@ public class PlaybookStore {
     }
 
     public List<Playbook> list() {
-        return map.values().stream().toList();
+        return repo.findByTenantId(tenant()).stream().map(PlaybookStore::fromEntity).toList();
     }
 
     public Playbook save(Playbook pb) {
-        map.put(pb.id(), pb);
+        repo.save(toEntity(pb, tenant()));
         return pb;
     }
 
     public boolean delete(String id) {
-        return map.remove(id) != null;
+        Optional<PlaybookEntity> e = repo.findByIdAndTenantId(id, tenant());
+        if (e.isEmpty()) return false;
+        repo.delete(e.get());
+        return true;
     }
 
     public Playbook get(String id) {
-        return map.get(id);
+        return repo.findByIdAndTenantId(id, tenant()).map(PlaybookStore::fromEntity).orElse(null);
     }
 
     public Playbook toggle(String id) {
-        Playbook pb = map.get(id);
-        if (pb == null) return null;
-        Playbook updated = new Playbook(pb.id(), pb.name(), pb.trigger(), pb.actions(),
-                !pb.enabled(), !pb.enabled() ? PlaybookStatus.ACTIVE : PlaybookStatus.DRAFT, pb.createdAt());
-        map.put(id, updated);
-        return updated;
+        Optional<PlaybookEntity> e = repo.findByIdAndTenantId(id, tenant());
+        if (e.isEmpty()) return null;
+        PlaybookEntity ent = e.get();
+        boolean enabled = !ent.isEnabled();
+        ent.setEnabled(enabled);
+        ent.setStatus(enabled ? PlaybookStatus.ACTIVE.name() : PlaybookStatus.DRAFT.name());
+        repo.save(ent);
+        return fromEntity(ent);
+    }
+
+    private static Playbook fromEntity(PlaybookEntity e) {
+        List<String> actions;
+        try {
+            actions = MAPPER.readValue(e.getActions(), STR_LIST);
+        } catch (Exception ex) {
+            actions = List.of();
+        }
+        PlaybookStatus status;
+        try {
+            status = PlaybookStatus.valueOf(e.getStatus());
+        } catch (Exception ex) {
+            status = e.isEnabled() ? PlaybookStatus.ACTIVE : PlaybookStatus.DRAFT;
+        }
+        return new Playbook(e.getId(), e.getName(), e.getTrigger(), actions, e.isEnabled(),
+                status, e.getCreatedAt());
+    }
+
+    private static PlaybookEntity toEntity(Playbook p, String tenant) {
+        PlaybookEntity e = new PlaybookEntity();
+        e.setId(p.id());
+        e.setName(p.name());
+        e.setTrigger(p.trigger());
+        try {
+            e.setActions(MAPPER.writeValueAsString(p.actions()));
+        } catch (Exception ex) {
+            e.setActions("[]");
+        }
+        e.setEnabled(p.enabled());
+        e.setStatus(p.status() == null ? PlaybookStatus.DRAFT.name() : p.status().name());
+        e.setCreatedAt(p.createdAt() == null ? Instant.now() : p.createdAt());
+        e.setTenantId(tenant);
+        return e;
     }
 }

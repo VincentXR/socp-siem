@@ -1,20 +1,37 @@
 package com.socp.asset.web.store;
 
 import com.socp.asset.web.model.Asset;
+import com.socp.platform.tenant.TenantContext;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.Optional;
 
 /**
- * 资产存储——进程内；生产替换为 PG asset.t_asset，接口不变。
+ * 资产存储——JPA + H2 文件库（Flyway V1 建表），重启不丢；接口与原内存版一致。
+ * 种子数据仅在空库时写入（避免重复）。
  */
 @Component
 public class AssetStore {
 
-    private final ConcurrentHashMap<String, Asset> map = new ConcurrentHashMap<>();
+    private final AssetRepository repo;
+    private final boolean seeded;
 
-    public AssetStore() {
+    public AssetStore(AssetRepository repo) {
+        this.repo = repo;
+        this.seeded = repo.count() > 0;
+        if (!seeded) {
+            seed();
+        }
+    }
+
+    private String tenant() {
+        String t = TenantContext.get();
+        return t == null ? "default" : t;
+    }
+
+    private void seed() {
         save(Asset.create("web01", "SERVER", "10.0.0.5", "Ubuntu 22.04", "infra", "HIGH"));
         save(Asset.create("web02", "SERVER", "10.0.0.6", "Ubuntu 22.04", "infra", "HIGH"));
         save(Asset.create("fw-core", "FIREWALL", "10.0.0.1", "pfSense", "sec", "CRITICAL"));
@@ -23,28 +40,60 @@ public class AssetStore {
     }
 
     public List<Asset> list() {
-        return map.values().stream().toList();
+        return repo.findByTenantId(tenant()).stream().map(AssetStore::fromEntity).toList();
     }
 
     public Asset save(Asset a) {
-        map.put(a.id(), a);
+        AssetEntity e = toEntity(a, tenant());
+        repo.save(e);
         return a;
     }
 
     /** 按 IP 去重：已存在同 IP 资产则更新（保留原 id），否则新建。 */
     public Asset upsertByIp(Asset a) {
-        for (Asset existing : map.values()) {
-            if (existing.ip().equals(a.ip()) && !a.ip().isBlank()) {
-                Asset merged = new Asset(existing.id(), a.name(), a.type(), a.ip(), a.os(), a.owner(),
-                        a.criticality(), existing.createdAt());
-                map.put(existing.id(), merged);
-                return merged;
-            }
+        String t = tenant();
+        List<AssetEntity> same = repo.findByIpAndTenantId(a.ip(), t);
+        if (!a.ip().isBlank() && !same.isEmpty()) {
+            AssetEntity existing = same.get(0);
+            existing.setName(a.name());
+            existing.setType(a.type());
+            existing.setOs(a.os());
+            existing.setOwner(a.owner());
+            existing.setCriticality(a.criticality());
+            repo.save(existing);
+            return new Asset(existing.getId(), a.name(), a.type(), a.ip(), a.os(), a.owner(),
+                    a.criticality(), existing.getCreatedAt());
         }
         return save(a);
     }
 
     public boolean delete(String id) {
-        return map.remove(id) != null;
+        Optional<AssetEntity> e = repo.findByIdAndTenantId(id, tenant());
+        if (e.isEmpty()) return false;
+        repo.delete(e.get());
+        return true;
+    }
+
+    public Asset get(String id) {
+        return repo.findByIdAndTenantId(id, tenant()).map(AssetStore::fromEntity).orElse(null);
+    }
+
+    private static Asset fromEntity(AssetEntity e) {
+        return new Asset(e.getId(), e.getName(), e.getType(), e.getIp(), e.getOs(), e.getOwner(),
+                e.getCriticality(), e.getCreatedAt());
+    }
+
+    private static AssetEntity toEntity(Asset a, String tenant) {
+        AssetEntity e = new AssetEntity();
+        e.setId(a.id());
+        e.setName(a.name());
+        e.setType(a.type());
+        e.setIp(a.ip());
+        e.setOs(a.os());
+        e.setOwner(a.owner());
+        e.setCriticality(a.criticality());
+        e.setCreatedAt(a.createdAt() == null ? Instant.now() : a.createdAt());
+        e.setTenantId(tenant);
+        return e;
     }
 }

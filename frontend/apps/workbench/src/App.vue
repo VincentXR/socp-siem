@@ -52,6 +52,9 @@ function registerChartTheme() {
 registerChartTheme()
 import LoginView from './LoginView.vue'
 import AnimatedNumber from './AnimatedNumber.vue'
+import TrendChart from './components/TrendChart.vue'
+import SevBadge from './components/SevBadge.vue'
+import PagerBar from './components/PagerBar.vue'
 import {
   listAlarms, listAlarmsPaged, getDisposition, setDispositionStatus, assignAlarm, addAlarmNote,
   listSources, createSource, deleteSource, renderConfig,
@@ -714,10 +717,9 @@ function openAlertStream() {
   } catch { /* 不支持 SSE 时退化为轮询 */ }
 }
 function closeAlertStream() { if (alertStream) { alertStream.close(); alertStream = null } }
-const gaugeEl = ref<HTMLElement>(); const donutEl = ref<HTMLElement>(); const sitTrendEl = ref<HTMLElement>(); const epsEl = ref<HTMLElement>()
-const ovTrendEl = ref<HTMLElement>()
+const gaugeEl = ref<HTMLElement>(); const donutEl = ref<HTMLElement>(); const epsEl = ref<HTMLElement>()
 const chartGauge = shallowRef<echarts.ECharts>(); const chartDonut = shallowRef<echarts.ECharts>()
-const chartSitTrend = shallowRef<echarts.ECharts>(); const chartEps = shallowRef<echarts.ECharts>(); const chartOvTrend = shallowRef<echarts.ECharts>()
+const chartEps = shallowRef<echarts.ECharts>()
 
 const feedView = computed(() =>
   liveSevFilter.value ? liveFeed.value.filter(a => a.severity === liveSevFilter.value) : liveFeed.value)
@@ -748,49 +750,6 @@ function renderSitCharts() {
   setTimeout(() => {
     const st = sitStats.value
     // 概览页：近 7 日趋势（sparkline 风格，简洁单线）
-    if (ovTrendEl.value && st?.trend7d) {
-      const days = Object.keys(st.trend7d).sort()
-      const vals = days.map(d => st.trend7d[d])
-      if (!chartOvTrend.value || chartOvTrend.value.isDisposed()) chartOvTrend.value = echarts.init(ovTrendEl.value, 'socp')
-      chartOvTrend.value.setOption({
-        grid: { left: 10, right: 10, top: 24, bottom: 6, containLabel: false },
-        xAxis: {
-          type: 'category', data: days,
-          axisLabel: { fontSize: 10.5, color: themeColor('label'), formatter: (v: string) => v.slice(5) },
-          axisLine: { lineStyle: { color: themeColor('axis') } },
-          axisTick: { show: false },
-        },
-        yAxis: { type: 'value', show: false, minInterval: 1 },
-        tooltip: {
-          trigger: 'axis',
-          formatter: (ps: Array<{ axisValue: string; value: number }>) => {
-            const p = ps[0]
-            return `${p.axisValue}<br/><b>${p.value}</b> 条告警`
-          },
-        },
-        series: [{
-          type: 'line', smooth: true, symbol: 'circle', symbolSize: 6,
-          data: vals,
-          lineStyle: { color: themeColor('axis'), width: 0 },
-          itemStyle: { color: themeColor('label') },
-          label: {
-            show: true, position: 'top', fontSize: 10.5, color: themeColor('label'),
-            formatter: (p: { value: number }) => (p.value > 0 ? String(p.value) : ''),
-          },
-          areaStyle: {
-            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-              { offset: 0, color: theme.value === 'dark' ? 'rgba(68,147,248,.4)' : 'rgba(9,105,218,.32)' },
-              { offset: 1, color: 'rgba(0,0,0,0)' },
-            ]),
-          },
-          markPoint: {
-            data: [{ type: 'max', name: '峰值' }],
-            symbolSize: 44, label: { fontSize: 10, color: '#fff', formatter: '{c}' },
-            itemStyle: { color: theme.value === 'dark' ? '#3fb950' : '#1a7f37' },
-          },
-        }],
-      }, true)
-    }
     if (gaugeEl.value) {
       if (!chartGauge.value || chartGauge.value.isDisposed()) chartGauge.value = echarts.init(gaugeEl.value, 'socp')
       chartGauge.value.setOption({
@@ -821,20 +780,6 @@ function renderSitCharts() {
           data: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'].map(k => ({
             name: k, value: lv[k] ?? 0, itemStyle: { color: sevColor(k) },
           })).filter(d => d.value > 0),
-        }],
-      })
-    }
-    if (sitTrendEl.value) {
-      if (!chartSitTrend.value || chartSitTrend.value.isDisposed()) chartSitTrend.value = echarts.init(sitTrendEl.value, 'socp')
-      const t = st?.trend7d ?? {}
-      chartSitTrend.value.setOption({
-        grid: { left: 36, right: 12, top: 22, bottom: 24 }, tooltip: { trigger: 'axis' },
-        xAxis: { type: 'category', data: Object.keys(t).map(d => d.slice(5)), axisLabel: { fontSize: 10 } },
-        yAxis: { type: 'value', axisLabel: { fontSize: 10 } },
-        series: [{
-          type: 'line', smooth: true, showSymbol: false, data: Object.values(t),
-          lineStyle: { color: '#409eff', width: 2 },
-          areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(64,158,255,.35)' }, { offset: 1, color: 'rgba(64,158,255,.02)' }]) },
         }],
       })
     }
@@ -1049,7 +994,7 @@ onUnmounted(() => {
   if (healthTimer) clearInterval(healthTimer)
   stopLive()
   closeAlertStream()
-  for (const c of [chartBar, chartLine, chartGauge, chartDonut, chartSitTrend, chartEps, chartRiskBar, chartOvTrend]) {
+  for (const c of [chartBar, chartLine, chartGauge, chartDonut, chartEps, chartRiskBar]) {
     if (c.value && !c.value.isDisposed()) c.value.dispose()
   }
   window.removeEventListener('resize', onWinResize)
@@ -1171,7 +1116,6 @@ function openUrl(u: string) { if (u) window.open(u, '_blank') }
 
 // 严重级别颜色
 function sevColor(s: string) { return { CRITICAL: '#f56c6c', HIGH: '#e63946', MEDIUM: '#e6a23c', LOW: '#909399', INFO: '#909399' }[s] ?? '#909399' }
-function sevBg(s: string) { const c = sevColor(s); return `background:${c};color:#fff;border-radius:4px;padding:0 8px;font-size:12px;font-weight:600;display:inline-block;line-height:20px` }
 /** 相对时间：xx 分钟前 / x 小时前 / x 天前 */
 function relTime(iso?: string): string {
   if (!iso) return '—'
@@ -1268,7 +1212,7 @@ function relTime(iso?: string): string {
             <el-col :span="16">
               <el-card shadow="never" style="height:100%">
                 <template #header>近 7 日告警趋势</template>
-                <div ref="ovTrendEl" style="height:210px" />
+                <TrendChart :data="sitStats?.trend7d" style="height:210px" />
               </el-card>
             </el-col>
             <!-- 风险 Top -->
@@ -1295,7 +1239,7 @@ function relTime(iso?: string): string {
               <el-card shadow="never">
                 <template #header>最新告警</template>
                 <el-table :data="filteredAlarms.slice(0, 5)" size="small">
-                  <el-table-column label="级别" width="100"><template #default="{ row }"><span :style="sevBg(row.severity)">{{ row.severity }}</span></template></el-table-column>
+                  <el-table-column label="级别" width="100"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
                   <el-table-column prop="ruleName" label="规则" min-width="150" />
                   <el-table-column prop="entity" label="实体" width="120" />
                   <el-table-column prop="message" label="消息" min-width="200" show-overflow-tooltip />
@@ -1365,7 +1309,7 @@ function relTime(iso?: string): string {
             <el-col :span="6">
               <el-card shadow="never" class="sit-card">
                 <template #header>近 7 日告警趋势</template>
-                <div ref="sitTrendEl" style="height:210px"></div>
+                <TrendChart :data="sitStats?.trend7d" variant="situation" style="height:210px" />
               </el-card>
             </el-col>
             <el-col :span="6">
@@ -1397,7 +1341,7 @@ function relTime(iso?: string): string {
                     <span class="feed-dot" :style="{ background: sevColor(a.severity) }" />
                     <div class="feed-body">
                       <div class="feed-top">
-                        <span :style="sevBg(a.severity)">{{ a.severity }}</span>
+                        <SevBadge :value="a.severity" />
                         <span class="feed-rule">{{ a.ruleName }}</span>
                         <span class="feed-entity mono">{{ a.entity }}</span>
                         <span class="feed-time mono">{{ new Date(a.timestamp).toLocaleTimeString('zh-CN', { hour12: false }) }}</span>
@@ -1423,7 +1367,7 @@ function relTime(iso?: string): string {
                     <template #default="{ row }"><span class="mono" style="font-size:12px">{{ row.mitre || '—' }}</span></template>
                   </el-table-column>
                   <el-table-column label="级别" width="94">
-                    <template #default="{ row }"><span :style="sevBg(row.severity)">{{ row.severity }}</span></template>
+                    <template #default="{ row }"><SevBadge :value="row.severity" /></template>
                   </el-table-column>
                 </el-table>
               </el-card>
@@ -1478,7 +1422,7 @@ function relTime(iso?: string): string {
             <template v-if="currentAlarm">
               <el-descriptions :column="2" size="small" border style="margin-bottom:14px">
                 <el-descriptions-item label="规则 ID">{{ currentAlarm.ruleId }}</el-descriptions-item>
-                <el-descriptions-item label="级别"><span :style="sevBg(currentAlarm.severity)">{{ currentAlarm.severity }}</span></el-descriptions-item>
+                <el-descriptions-item label="级别"><SevBadge :value="currentAlarm.severity" /></el-descriptions-item>
                 <el-descriptions-item label="实体">{{ currentAlarm.entity }}</el-descriptions-item>
                 <el-descriptions-item label="发生时间">{{ currentAlarm.occurredAt }}</el-descriptions-item>
                 <el-descriptions-item label="消息" :span="2">{{ currentAlarm.message }}</el-descriptions-item>
@@ -1555,7 +1499,7 @@ function relTime(iso?: string): string {
                 <el-table-column label="时间" width="150"><template #default="{ row }">{{ row.timestamp.slice(0, 19).replace('T', ' ') }}</template></el-table-column>
                 <el-table-column prop="source" label="来源" width="90" />
                 <el-table-column prop="host" label="主机" width="90" />
-                <el-table-column label="级别" width="80"><template #default="{ row }"><span :style="sevBg(row.severity)">{{ row.severity }}</span></template></el-table-column>
+                <el-table-column label="级别" width="80"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
                 <el-table-column prop="msg" label="消息" min-width="240" show-overflow-tooltip />
               </el-table>
             </el-card>
@@ -1891,7 +1835,7 @@ function relTime(iso?: string): string {
                   <el-table-column prop="code" label="编码" width="120" />
                   <el-table-column prop="name" label="名称" width="130" />
                   <el-table-column prop="description" label="说明" min-width="260" show-overflow-tooltip />
-                  <el-table-column label="基线级别" width="100"><template #default="{ row }"><span :style="sevBg(row.defaultSeverity)">{{ row.defaultSeverity }}</span></template></el-table-column>
+                  <el-table-column label="基线级别" width="100"><template #default="{ row }"><SevBadge :value="row.defaultSeverity" /></template></el-table-column>
                   <el-table-column label="启用" width="65"><template #default="{ row }"><el-tag :type="row.enabled?'success':'info'" size="small">{{ row.enabled ? '是' : '否' }}</el-tag></template></el-table-column>
                   <el-table-column label="操作" width="70"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeCategory(row.id)">删除</el-button></template></el-table-column>
                 </el-table>
@@ -1977,7 +1921,7 @@ function relTime(iso?: string): string {
               <el-table-column prop="id" label="ID" width="150" />
               <el-table-column prop="name" label="名称" min-width="150" />
               <el-table-column prop="type" label="类型" width="90" />
-              <el-table-column prop="severity" label="级别" width="85"><template #default="{ row }"><span :style="sevBg(row.severity)">{{ row.severity }}</span></template></el-table-column>
+              <el-table-column prop="severity" label="级别" width="85"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
               <el-table-column label="匹配条件" min-width="220" show-overflow-tooltip>
                 <template #default="{ row }">{{ (row.match || []).map((c: { field: string; op: string; value: string }) => `${c.field} ${c.op} ${c.value}`).join(' AND ') || (row.steps || []).length + ' 步关联' || '-' }}</template>
               </el-table-column>
@@ -2089,7 +2033,7 @@ function relTime(iso?: string): string {
                       </el-table-column>
                       <el-table-column prop="alerts" label="告警数" width="80" />
                       <el-table-column label="最高级别" width="100">
-                        <template #default="{ row }"><span :style="sevBg(row.maxSeverity)">{{ row.maxSeverity }}</span></template>
+                        <template #default="{ row }"><SevBadge :value="row.maxSeverity" /></template>
                       </el-table-column>
                       <el-table-column label="主要战术" min-width="140">
                         <template #default="{ row }">
@@ -2180,7 +2124,7 @@ function relTime(iso?: string): string {
                     <div v-if="scoreResult">
                       <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:16px">
                         <span style="font-size:44px;font-weight:700" :style="{ color: riskColor(scoreResult.level) }">{{ scoreResult.score }}</span>
-                        <span :style="sevBg(scoreResult.level)">{{ scoreResult.level }}</span>
+                        <SevBadge :value="scoreResult.level" />
                         <span style="font-size:12px;color:#909399">总分上限 100</span>
                       </div>
                       <div v-for="(v, k) in scoreResult.breakdown" :key="k" class="bd-row">
@@ -2208,7 +2152,7 @@ function relTime(iso?: string): string {
                 <el-tag v-if="entityDetail.critical" type="danger" effect="dark" style="margin-left:auto">核心资产</el-tag>
               </div>
               <el-descriptions :column="1" border size="small">
-                <el-descriptions-item label="最高级别"><span :style="sevBg(entityDetail.maxSeverity)">{{ entityDetail.maxSeverity }}</span></el-descriptions-item>
+                <el-descriptions-item label="最高级别"><SevBadge :value="entityDetail.maxSeverity" /></el-descriptions-item>
                 <el-descriptions-item label="首次出现">{{ fmtTime(entityDetail.firstSeen) }}</el-descriptions-item>
                 <el-descriptions-item label="最近活动">{{ fmtTime(entityDetail.lastSeen) }}</el-descriptions-item>
               </el-descriptions>
@@ -2281,11 +2225,7 @@ function relTime(iso?: string): string {
           </div>
           <el-row :gutter="12" style="margin-bottom:14px" v-if="report">
             <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ report.total }}</div><div class="label">今日告警</div></div></el-card>
-          <div style="display:flex;justify-content:flex-end;margin-top:12px">
-            <el-pagination v-model:current-page="pbExecPage" v-model:page-size="pbExecSize" :total="pbExecutions.length"
-              :page-sizes="[10, 20, 50]" layout="total, sizes, prev, pager, next"
-              @size-change="() => { pbExecPage = 1 }" />
-          </div>
+          <PagerBar v-model:current-page="pbExecPage" v-model:page-size="pbExecSize" :total="pbExecutions.length" />
 </el-col>
             <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#f56c6c">{{ report.bySeverity.CRITICAL ?? 0 }}</div><div class="label">CRITICAL</div></div></el-card></el-col>
             <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#e63946">{{ report.bySeverity.HIGH ?? 0 }}</div><div class="label">HIGH</div></div></el-card></el-col>
@@ -2335,11 +2275,7 @@ function relTime(iso?: string): string {
           <div style="margin-bottom:12px"><el-button @click="loadEndpoints">刷新</el-button></div>
           <el-row :gutter="12" style="margin-bottom:14px" v-if="endpointStat">
             <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ endpointStat.total }}</div><div class="label">端点总数</div></div></el-card>
-          <div style="display:flex;justify-content:flex-end;margin-top:12px">
-            <el-pagination v-model:current-page="assetPage" v-model:page-size="assetSize" :total="assets.length"
-              :page-sizes="[10, 20, 50]" layout="total, sizes, prev, pager, next"
-              @size-change="() => { assetPage = 1 }" />
-          </div>
+          <PagerBar v-model:current-page="assetPage" v-model:page-size="assetSize" :total="assets.length" />
 </el-col>
             <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#30d158">{{ endpointStat.online }}</div><div class="label">在线端点</div></div></el-card></el-col>
             <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#e6a23c">{{ endpointStat.total - endpointStat.online }}</div><div class="label">离线端点</div></div></el-card></el-col>
@@ -2416,7 +2352,7 @@ function relTime(iso?: string): string {
             <el-table :data="iocsPaged" size="small">
               <el-table-column prop="type" label="类型" width="90" />
               <el-table-column prop="value" label="值" min-width="160" />
-              <el-table-column label="严重度" width="90"><template #default="{ row }"><span :style="sevBg(row.severity)">{{ row.severity }}</span></template></el-table-column>
+              <el-table-column label="严重度" width="90"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
               <el-table-column prop="source" label="来源" width="100" />
               <el-table-column prop="description" label="描述" min-width="160" show-overflow-tooltip />
               <el-table-column label="操作" width="80"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeIoc(row.id)">删除</el-button></template></el-table-column>
@@ -2446,11 +2382,7 @@ function relTime(iso?: string): string {
               <el-tag v-for="u in attackCov.uncovered.slice(0, 24)" :key="u" size="small" type="info" style="margin:2px">{{ u }}</el-tag>
             </div>
           </el-card>
-          <div style="display:flex;justify-content:flex-end;margin-top:12px">
-            <el-pagination v-model:current-page="iocPage" v-model:page-size="iocSize" :total="iocs.length"
-              :page-sizes="[10, 20, 50]" layout="total, sizes, prev, pager, next"
-              @size-change="() => { iocPage = 1 }" />
-          </div>
+          <PagerBar v-model:current-page="iocPage" v-model:page-size="iocSize" :total="iocs.length" />
 
           <el-card shadow="never" style="margin-bottom:14px">
             <template #header>ATT&CK 战术矩阵（红=有告警命中 · 绿=已覆盖 · 灰=未覆盖）</template>
@@ -2538,7 +2470,7 @@ function relTime(iso?: string): string {
               <el-table-column prop="id" label="案件 ID" width="180" />
               <el-table-column prop="title" label="标题" min-width="180" />
               <el-table-column prop="entity" label="实体" width="130" />
-              <el-table-column label="级别" width="90"><template #default="{ row }"><span :style="sevBg(row.severity)">{{ row.severity }}</span></template></el-table-column>
+              <el-table-column label="级别" width="90"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
               <el-table-column label="状态" width="120"><template #default="{ row }"><el-tag :type="row.status === 'OPEN' ? 'danger' : row.status === 'RESOLVED' || row.status === 'CLOSED' ? 'success' : 'warning'" size="small">{{ row.status }}</el-tag></template></el-table-column>
               <el-table-column prop="alarmIds.length" label="关联告警" width="90" />
               <el-table-column label="操作" width="90"><template #default="{ row }"><el-button link type="primary" size="small" @click="openCase(row)">详情/时间线</el-button></template></el-table-column>
@@ -2549,7 +2481,7 @@ function relTime(iso?: string): string {
               <el-descriptions :column="2" size="small" border style="margin-bottom:14px">
                 <el-descriptions-item label="案件 ID">{{ caseDetail.id }}</el-descriptions-item>
                 <el-descriptions-item label="实体">{{ caseDetail.entity }}</el-descriptions-item>
-                <el-descriptions-item label="级别"><span :style="sevBg(caseDetail.severity)">{{ caseDetail.severity }}</span></el-descriptions-item>
+                <el-descriptions-item label="级别"><SevBadge :value="caseDetail.severity" /></el-descriptions-item>
                 <el-descriptions-item label="状态">{{ caseDetail.status }}</el-descriptions-item>
                 <el-descriptions-item label="关联规则" :span="2">{{ caseDetail.ruleIds.join(', ') || '—' }}</el-descriptions-item>
                 <el-descriptions-item label="关联告警" :span="2">{{ caseDetail.alarmIds.join(', ') || '—' }}</el-descriptions-item>
@@ -2602,11 +2534,7 @@ function relTime(iso?: string): string {
               <el-button size="small" @click="doAddRefEntry(rs.id)">追加</el-button>
             </div>
           </el-card>
-          <div style="display:flex;justify-content:flex-end;margin-top:12px">
-            <el-pagination v-model:current-page="casePage" v-model:page-size="caseSize" :total="cases.length"
-              :page-sizes="[10, 20, 50]" layout="total, sizes, prev, pager, next"
-              @size-change="() => { casePage = 1 }" />
-          </div>
+          <PagerBar v-model:current-page="casePage" v-model:page-size="caseSize" :total="cases.length" />
 
         </div>
 

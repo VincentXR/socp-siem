@@ -18,6 +18,8 @@ public final class Http {
             c.setRequestProperty("Content-Type", "application/json");
             c.setRequestProperty("Authorization", "Bearer " + token());
             c.setRequestProperty("X-Tenant-Id", "default");
+            String _tp = com.socp.platform.obs.TraceIdFilter.buildTraceparent();
+            if (_tp != null) c.setRequestProperty("traceparent", _tp);
             try (OutputStream os = c.getOutputStream()) {
                 os.write(json.getBytes(StandardCharsets.UTF_8));
             }
@@ -39,6 +41,8 @@ public final class Http {
             c.setRequestProperty("Content-Type", "application/json");
             c.setRequestProperty("Authorization", "Bearer " + token());
             c.setRequestProperty("X-Tenant-Id", "default");
+            String _tp = com.socp.platform.obs.TraceIdFilter.buildTraceparent();
+            if (_tp != null) c.setRequestProperty("traceparent", _tp);
             try (OutputStream os = c.getOutputStream()) {
                 os.write(json.getBytes(StandardCharsets.UTF_8));
             }

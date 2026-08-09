@@ -117,6 +117,15 @@ public class KafkaEventConsumer {
                 for (var r : recs) {
                     String raw = r.value();
                     String eventId = null;
+                    // trace 上下文透传：从消息 header 恢复 W3C traceparent → MDC（与 HTTP 链路同 traceId）
+                    String tp = null;
+                    try {
+                        var h = r.headers().lastHeader("traceparent");
+                        if (h != null) tp = new String(h.value(), java.nio.charset.StandardCharsets.UTF_8);
+                    } catch (Exception ignored) {
+                    }
+                    String restored = tp == null ? null : com.socp.platform.obs.TraceIdFilter.parseTraceId(tp);
+                    if (restored != null) org.slf4j.MDC.put("traceId", restored);
                     try {
                         @SuppressWarnings("unchecked")
                         Map<String, Object> m = MAPPER.readValue(raw, Map.class);
@@ -130,6 +139,8 @@ public class KafkaEventConsumer {
                     } catch (Exception ex) {
                         log.warn("Kafka 事件解析失败 → DLQ: {}", ex.getMessage());
                         toDlq(eventId, raw);
+                    } finally {
+                        org.slf4j.MDC.remove("traceId");
                     }
                 }
                 if (!recs.isEmpty()) {
@@ -151,6 +162,10 @@ public class KafkaEventConsumer {
         Map<String, String> fields = new LinkedHashMap<>();
         for (var en : rawFields.entrySet()) fields.put(en.getKey(), String.valueOf(en.getValue()));
         String msg = m.get("msg") == null ? String.valueOf(m.getOrDefault("message", "")) : String.valueOf(m.get("msg"));
+        // msg 并入 fields，保证 RuleSpec 的 msg 条件可命中（与 RuleController.toEvent 语义一致）
+        if (m.containsKey("msg") && !fields.containsKey("msg")) {
+            fields.put("msg", msg);
+        }
         Severity severity = Severity.INFO;
         try {
             severity = Severity.valueOf(String.valueOf(m.getOrDefault("severity", "INFO")).toUpperCase());

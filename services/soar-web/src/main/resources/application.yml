@@ -6,6 +6,18 @@ server:
 spring:
   application:
     name: soar-web
+  # 剧本持久化（2026-08-10）：H2 文件库 + Flyway，重启不丢；生产可切 PostgreSQL
+  datasource:
+    url: jdbc:h2:file:${user.home}/.socp/soar;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
 
 socp:
   security:
