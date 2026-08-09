@@ -2,6 +2,54 @@
 import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
+
+/** 主题（在 echarts 主题注册前声明，registerTheme 加载期即读取） */
+const theme = ref<'light' | 'dark'>('light')
+
+// Linear 风全局 echarts 主题（浅色/深色自适应，淡网格 / 细轴 / 圆角 tooltip / 品牌色系）
+function themeColor(k: 'grid' | 'axis' | 'label' | 'tooltipBg' | 'tooltipText' | 'legend'): string {
+  const dark = theme.value === 'dark'
+  return {
+    grid: dark ? 'rgba(255,255,255,.06)' : 'rgba(31,35,40,.06)',
+    axis: dark ? '#3d444d' : '#d1d9e0',
+    label: dark ? '#9198a1' : '#59636e',
+    tooltipBg: dark ? '#21262d' : '#ffffff',
+    tooltipText: dark ? '#e6edf3' : '#1f2328',
+    legend: dark ? '#9198a1' : '#59636e',
+  }[k]
+}
+/** 注册（或覆盖）echarts 'socp' 主题；主题切换时重调以刷新颜色 */
+function registerChartTheme() {
+  echarts.registerTheme('socp', {
+    color: ['#4493f8', '#0969da', '#30d158', '#ff9f0a', '#f85149', '#8250df', '#39c5cf', '#bf8700'],
+    backgroundColor: 'transparent',
+    textStyle: { color: themeColor('label'), fontFamily: '-apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif' },
+    title: { textStyle: { color: themeColor('label'), fontSize: 13, fontWeight: 600 }, subtextStyle: { color: themeColor('legend'), fontSize: 11 } },
+    legend: { textStyle: { color: themeColor('legend'), fontSize: 11 } },
+    tooltip: {
+      backgroundColor: themeColor('tooltipBg'),
+      borderColor: themeColor('grid'),
+      borderWidth: 1,
+      textStyle: { color: themeColor('tooltipText'), fontSize: 12 },
+      extraCssText: 'border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.12);',
+    },
+    categoryAxis: {
+      axisLine: { lineStyle: { color: themeColor('axis') } },
+      axisTick: { show: false },
+      axisLabel: { color: themeColor('label'), fontSize: 11 },
+      splitLine: { show: false },
+    },
+    valueAxis: {
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { color: themeColor('label'), fontSize: 11 },
+      splitLine: { lineStyle: { color: themeColor('grid'), type: 'dashed' } },
+    },
+    line: { smooth: true, symbol: 'circle', symbolSize: 6, lineStyle: { width: 2 } },
+    bar: { itemStyle: { borderRadius: [6, 6, 0, 0] } },
+  })
+}
+registerChartTheme()
 import LoginView from './LoginView.vue'
 import {
   listAlarms, getDisposition, setDispositionStatus, assignAlarm, addAlarmNote,
@@ -131,12 +179,12 @@ const MENU_ICONS: Record<string, string> = {
 }
 
 
-// ---------- 主题（浅色/深色，localStorage 记忆，默认跟随系统） ----------
-const theme = ref<'light' | 'dark'>('light')
+// ---------- 主题（浅色/深色，localStorage 记忆，默认跟随系统；theme 声明见文件顶部，供 echarts 主题注册使用） ----------
 function applyTheme(t: 'light' | 'dark') {
   theme.value = t
   document.documentElement.setAttribute('data-theme', t)
   try { localStorage.setItem('socp_theme', t) } catch { /* ignore */ }
+  registerChartTheme()
 }
 function toggleTheme() {
   applyTheme(theme.value === 'light' ? 'dark' : 'light')
@@ -542,7 +590,7 @@ async function loadReport() {
   report.value = r; trend.value = t
   setTimeout(() => {
     if (barEl.value && r) {
-      chartBar.value?.dispose(); chartBar.value = echarts.init(barEl.value)
+      chartBar.value?.dispose(); chartBar.value = echarts.init(barEl.value, 'socp')
       chartBar.value.setOption({
         title: { text: '告警级别分布', textStyle: { fontSize: 14 } }, tooltip: {},
         xAxis: { type: 'category', data: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'] }, yAxis: { type: 'value' },
@@ -551,7 +599,7 @@ async function loadReport() {
       })
     }
     if (lineEl.value && t) {
-      chartLine.value?.dispose(); chartLine.value = echarts.init(lineEl.value)
+      chartLine.value?.dispose(); chartLine.value = echarts.init(lineEl.value, 'socp')
       chartLine.value.setOption({
         title: { text: '近 7 日趋势', textStyle: { fontSize: 14 } }, tooltip: { trigger: 'axis' },
         xAxis: { type: 'category', data: t.days }, yAxis: { type: 'value' },
@@ -680,7 +728,7 @@ function renderSitCharts() {
   setTimeout(() => {
     const st = sitStats.value
     if (gaugeEl.value) {
-      if (!chartGauge.value || chartGauge.value.isDisposed()) chartGauge.value = echarts.init(gaugeEl.value)
+      if (!chartGauge.value || chartGauge.value.isDisposed()) chartGauge.value = echarts.init(gaugeEl.value, 'socp')
       chartGauge.value.setOption({
         series: [{
           type: 'gauge', min: 0, max: 100, radius: '92%', center: ['50%', '58%'],
@@ -697,7 +745,7 @@ function renderSitCharts() {
       })
     }
     if (donutEl.value) {
-      if (!chartDonut.value || chartDonut.value.isDisposed()) chartDonut.value = echarts.init(donutEl.value)
+      if (!chartDonut.value || chartDonut.value.isDisposed()) chartDonut.value = echarts.init(donutEl.value, 'socp')
       const lv = st?.byRiskLevel ?? {}
       chartDonut.value.setOption({
         tooltip: { trigger: 'item' },
@@ -713,7 +761,7 @@ function renderSitCharts() {
       })
     }
     if (sitTrendEl.value) {
-      if (!chartSitTrend.value || chartSitTrend.value.isDisposed()) chartSitTrend.value = echarts.init(sitTrendEl.value)
+      if (!chartSitTrend.value || chartSitTrend.value.isDisposed()) chartSitTrend.value = echarts.init(sitTrendEl.value, 'socp')
       const t = st?.trend7d ?? {}
       chartSitTrend.value.setOption({
         grid: { left: 36, right: 12, top: 22, bottom: 24 }, tooltip: { trigger: 'axis' },
@@ -727,7 +775,7 @@ function renderSitCharts() {
       })
     }
     if (epsEl.value) {
-      if (!chartEps.value || chartEps.value.isDisposed()) chartEps.value = echarts.init(epsEl.value)
+      if (!chartEps.value || chartEps.value.isDisposed()) chartEps.value = echarts.init(epsEl.value, 'socp')
       chartEps.value.setOption({
         grid: { left: 34, right: 10, top: 18, bottom: 20 }, tooltip: { trigger: 'axis' },
         xAxis: { type: 'category', show: false, data: epsHistory.value.map((_, i) => i) },
@@ -782,7 +830,7 @@ async function loadUeba() {
 function renderRiskBar() {
   setTimeout(() => {
     if (!riskBarEl.value) return
-    if (!chartRiskBar.value || chartRiskBar.value.isDisposed()) chartRiskBar.value = echarts.init(riskBarEl.value)
+    if (!chartRiskBar.value || chartRiskBar.value.isDisposed()) chartRiskBar.value = echarts.init(riskBarEl.value, 'socp')
     const top = riskEntities.value.slice(0, 10).slice().reverse()
     chartRiskBar.value.setOption({
       grid: { left: 4, right: 40, top: 10, bottom: 10, containLabel: true },
@@ -1204,7 +1252,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
                 <div class="feed">
                   <div v-if="!feedView.length" class="feed-empty">暂无实时告警 —— 可在「日志接入 · 接入任务」里点自测灌一条样例日志</div>
                   <div v-for="a in feedView" :key="a.id" class="feed-item" :class="{ fresh: a._new }">
-                    <span class="feed-bar" :style="{ background: sevColor(a.severity) }" />
+                    <span class="feed-dot" :style="{ background: sevColor(a.severity) }" />
                     <div class="feed-body">
                       <div class="feed-top">
                         <span :style="sevBg(a.severity)">{{ a.severity }}</span>
@@ -1221,7 +1269,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
             <el-col :span="11">
               <el-card shadow="never" class="sit-card">
                 <template #header>最该处置的告警（按威胁评分）</template>
-                <el-table :data="sitStats?.topRisk ?? []" size="small" stripe height="368">
+                <el-table :data="sitStats?.topRisk ?? []" size="small" height="368">
                   <el-table-column label="评分" width="86">
                     <template #default="{ row }">
                       <span class="risk-pill" :style="{ background: sevColor(row.riskLevel) }">{{ row.riskScore }}</span>
@@ -1254,7 +1302,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
             <el-button size="small" @click="exportAlarms('json')">导出 JSON</el-button>
           </div>
           <el-card shadow="never">
-            <el-table :data="filteredAlarms" size="small" stripe>
+            <el-table :data="filteredAlarms" size="small">
               <el-table-column label="级别" width="100"><template #default="{ row }"><span :style="sevBg(row.severity)">{{ row.severity }}</span></template></el-table-column>
               <el-table-column prop="ruleId" label="规则 ID" width="160" />
               <el-table-column prop="ruleName" label="规则名称" min-width="150" />
@@ -1349,7 +1397,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
           <template v-if="searchResult">
             <el-card shadow="never" style="margin-bottom:14px">
               <template #header>命中 {{ searchResult.total }} 条事件</template>
-              <el-table :data="searchResult.events" size="small" stripe max-height="420">
+              <el-table :data="searchResult.events" size="small" max-height="420">
                 <el-table-column label="时间" width="150"><template #default="{ row }">{{ row.timestamp.slice(0, 19).replace('T', ' ') }}</template></el-table-column>
                 <el-table-column prop="source" label="来源" width="90" />
                 <el-table-column prop="host" label="主机" width="90" />
@@ -1399,7 +1447,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
                     <el-button size="small" style="margin-left:auto" @click="loadTasks">刷新</el-button>
                   </div>
                 </template>
-                <el-table :data="tasks" size="small" stripe>
+                <el-table :data="tasks" size="small">
                   <el-table-column label="状态" width="92">
                     <template #default="{ row }">
                       <el-tag :type="healthMeta(row.runtime.health).type" size="small" effect="dark">{{ healthMeta(row.runtime.health).text }}</el-tag>
@@ -1531,7 +1579,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
                 </template>
               </el-dialog>
               <el-card shadow="never">
-                <el-table :data="sources" size="small" stripe>
+                <el-table :data="sources" size="small">
                   <el-table-column prop="name" label="名称" width="130" />
                   <el-table-column prop="type" label="类型" width="110" />
                   <el-table-column prop="format" label="格式" width="80" />
@@ -1564,7 +1612,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
                 <template #footer><el-button @click="showOutputDialog = false">取消</el-button><el-button type="success" @click="addOutput(); showOutputDialog = false">新增输出</el-button></template>
               </el-dialog>
               <el-card shadow="never">
-                <el-table :data="outputs" size="small" stripe>
+                <el-table :data="outputs" size="small">
                   <el-table-column prop="name" label="名称" width="180" />
                   <el-table-column prop="type" label="类型" width="130" />
                   <el-table-column prop="uri" label="目标 URL" min-width="280" show-overflow-tooltip />
@@ -1582,7 +1630,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
                 <span style="color:#909399;font-size:12px;margin-left:8px">定义「一行日志 → 字段」的提取方式，可现场用示例行验证</span>
               </div>
               <el-card shadow="never">
-                <el-table :data="parseRules" size="small" stripe>
+                <el-table :data="parseRules" size="small">
                   <el-table-column prop="name" label="规则名" width="180" />
                   <el-table-column prop="format" label="格式" width="90" />
                   <el-table-column prop="pattern" label="正则/描述" min-width="300" show-overflow-tooltip />
@@ -1653,7 +1701,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
               </el-dialog>
               <el-card shadow="never">
                 <template #header>接入方式注册表（9 类内置 + 可扩展）</template>
-                <el-table :data="dataSourceTypes" size="small" stripe>
+                <el-table :data="dataSourceTypes" size="small">
                   <el-table-column prop="code" label="编码" width="130" />
                   <el-table-column prop="name" label="名称" width="150" />
                   <el-table-column prop="description" label="说明" min-width="300" show-overflow-tooltip />
@@ -1685,7 +1733,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
               </el-dialog>
               <el-card shadow="never">
                 <template #header>日志分类体系（对齐 SIEM Taxonomy / MITRE ATT&CK）</template>
-                <el-table :data="logCategories" size="small" stripe>
+                <el-table :data="logCategories" size="small">
                   <el-table-column prop="code" label="编码" width="120" />
                   <el-table-column prop="name" label="名称" width="130" />
                   <el-table-column prop="description" label="说明" min-width="260" show-overflow-tooltip />
@@ -1727,7 +1775,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
               </el-dialog>
               <el-card shadow="never">
                 <template #header>字段字典（统一字段语义，解析/检索/告警共用）</template>
-                <el-table :data="fieldDefs" size="small" stripe>
+                <el-table :data="fieldDefs" size="small">
                   <el-table-column prop="fieldName" label="字段名" width="130" />
                   <el-table-column prop="fieldLabel" label="中文名" width="110" />
                   <el-table-column prop="fieldType" label="类型" width="80" />
@@ -1771,7 +1819,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
                 <el-button type="primary" size="small" @click="openRuleEditor()">新建规则</el-button>
               </div>
             </template>
-            <el-table :data="rules" size="small" stripe>
+            <el-table :data="rules" size="small">
               <el-table-column prop="id" label="ID" width="150" />
               <el-table-column prop="name" label="名称" min-width="150" />
               <el-table-column prop="type" label="类型" width="90" />
@@ -1875,7 +1923,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
                 <el-col :span="14">
                   <el-card shadow="never">
                     <template #header>实体明细（点击行下钻）</template>
-                    <el-table :data="riskEntities" size="small" stripe height="340" @row-click="openEntity">
+                    <el-table :data="riskEntities" size="small" height="340" @row-click="openEntity">
                       <el-table-column label="风险" width="80">
                         <template #default="{ row }"><span class="risk-pill" :style="{ background: riskColor(row.level) }">{{ row.risk }}</span></template>
                       </el-table-column>
@@ -2036,7 +2084,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
         <div v-else-if="activeMenu === 'soar'" class="page-pad">
           <div style="margin-bottom:12px"><el-button type="primary" @click="showPbDialog = true">新建剧本</el-button><el-button @click="loadPlaybooks">刷新</el-button></div>
           <el-card shadow="never">
-            <el-table :data="playbooks" size="small" stripe>
+            <el-table :data="playbooks" size="small">
               <el-table-column prop="name" label="剧本" min-width="140" />
               <el-table-column prop="trigger" label="触发条件" min-width="200" show-overflow-tooltip />
               <el-table-column label="动作链" min-width="260"><template #default="{ row }"><el-tag v-for="a in row.actions" :key="a" size="small" style="margin-right:6px">{{ a }}</el-tag></template></el-table-column>
@@ -2046,7 +2094,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
           </el-card>
           <el-card shadow="never" style="margin-top:14px">
             <template #header>执行历史（最近 {{ pbExecutions.length }} 条）</template>
-            <el-table :data="pbExecutions" size="small" stripe>
+            <el-table :data="pbExecutions" size="small">
               <el-table-column prop="ts" label="时间" width="200" />
               <el-table-column prop="playbook" label="剧本" min-width="140" />
               <el-table-column prop="trigger" label="触发" min-width="160" show-overflow-tooltip />
@@ -2110,7 +2158,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
             <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ Object.keys(assetStat.byType || {}).length }}</div><div class="label">资产类型</div></div></el-card></el-col>
           </el-row>
           <el-card shadow="never">
-            <el-table :data="assets" size="small" stripe>
+            <el-table :data="assets" size="small">
               <el-table-column prop="name" label="名称" width="140" />
               <el-table-column prop="type" label="类型" width="100" />
               <el-table-column prop="ip" label="IP" width="120" />
@@ -2132,7 +2180,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
             <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ Object.keys(endpointStat.byType || {}).length }}</div><div class="label">端点类型</div></div></el-card></el-col>
           </el-row>
           <el-card shadow="never">
-            <el-table :data="endpoints" size="small" stripe>
+            <el-table :data="endpoints" size="small">
               <el-table-column prop="hostname" label="主机名" width="140" />
               <el-table-column prop="ip" label="IP" width="120" />
               <el-table-column prop="os" label="系统" min-width="140" />
@@ -2199,7 +2247,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
             <template #footer><el-button @click="showIocDialog = false">取消</el-button><el-button type="success" @click="addIoc(); showIocDialog = false">新增情报</el-button></template>
           </el-dialog>
           <el-card shadow="never">
-            <el-table :data="iocs" size="small" stripe>
+            <el-table :data="iocs" size="small">
               <el-table-column prop="type" label="类型" width="90" />
               <el-table-column prop="value" label="值" min-width="160" />
               <el-table-column label="严重度" width="90"><template #default="{ row }"><span :style="sevBg(row.severity)">{{ row.severity }}</span></template></el-table-column>
@@ -2244,7 +2292,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
             </div>
           </el-card>
           <el-card shadow="never">
-            <el-table :data="techniques" size="small" stripe>
+            <el-table :data="techniques" size="small">
               <el-table-column prop="id" label="技术 ID" width="110" />
               <el-table-column prop="name" label="名称" min-width="180" />
               <el-table-column prop="tactic" label="战术" width="130" />
@@ -2273,7 +2321,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
           </el-dialog>
           <el-card shadow="never" style="margin-bottom:14px">
             <div class="sec-title" style="margin-bottom:8px">通知渠道</div>
-            <el-table :data="channels" size="small" stripe>
+            <el-table :data="channels" size="small">
               <el-table-column prop="name" label="名称" width="140" />
               <el-table-column prop="type" label="类型" width="100" />
               <el-table-column prop="target" label="目标" min-width="200" show-overflow-tooltip />
@@ -2288,7 +2336,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
           </el-card>
           <el-card shadow="never">
             <div class="sec-title" style="margin-bottom:8px">分发日志（告警触发后实时写入）</div>
-            <el-table :data="dispatchLogList" size="small" stripe>
+            <el-table :data="dispatchLogList" size="small">
               <el-table-column prop="ts" label="时间" width="220" />
               <el-table-column prop="channel" label="渠道" width="120" />
               <el-table-column prop="type" label="类型" width="90" />
@@ -2314,7 +2362,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
             <el-button size="small" @click="exportCases()">导出案件 JSON</el-button>
           </div>
           <el-card shadow="never">
-            <el-table :data="cases" size="small" stripe>
+            <el-table :data="cases" size="small">
               <el-table-column prop="id" label="案件 ID" width="180" />
               <el-table-column prop="title" label="标题" min-width="180" />
               <el-table-column prop="entity" label="实体" width="130" />
@@ -2404,7 +2452,7 @@ function sevBg(s: string) { const c = sevColor(s); return `background:${c};color
               <strong>{{ fw.framework }}</strong>
               <span style="font-weight:700;color:#409eff">{{ fw.coverage }}%</span>
             </div>
-            <el-table :data="fw.controls" size="small" stripe>
+            <el-table :data="fw.controls" size="small">
               <el-table-column prop="id" label="控制项" width="120" />
               <el-table-column prop="name" label="名称" min-width="200" />
               <el-table-column label="覆盖" width="90"><template #default="{ row }"><el-tag :type="row.covered ? 'success' : 'danger'" size="small">{{ row.covered ? '已覆盖' : '缺失' }}</el-tag></template></el-table-column>
