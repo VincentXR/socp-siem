@@ -2,6 +2,8 @@ package com.socp.incident.web.api;
 
 import com.socp.incident.web.domain.Case;
 import com.socp.incident.web.service.CaseService;
+import com.socp.platform.audit.AuditOperation;
+import com.socp.platform.auth.RequireRole;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -31,6 +33,8 @@ public class CaseController {
     }
 
     /** 由告警自动建案/归并（alert-web 创建告警时调用，或 SOAR 触发）。 */
+    @RequireRole({"admin", "analyst"})
+    @AuditOperation(action = "CREATE_INCIDENT", target = "case")
     @PostMapping("/incidents/from-alarm")
     public Map<String, Object> fromAlarm(@RequestBody Map<String, Object> alarm) {
         return service.fromAlarm(alarm);
@@ -63,6 +67,8 @@ public class CaseController {
         return Map.of("caseId", id, "timeline", c == null ? List.of() : c.timeline());
     }
 
+    @RequireRole({"admin", "analyst"})
+    @AuditOperation(action = "UPDATE_INCIDENT_STATUS", target = "case")
     @PostMapping("/incidents/{id}/status")
     public Map<String, Object> status(@PathVariable String id,
                                        @RequestParam String status,
@@ -70,6 +76,7 @@ public class CaseController {
         return service.setStatus(id, status, assignee);
     }
 
+    @RequireRole({"admin", "analyst"})
     @PostMapping("/incidents/{id}/notes")
     public Map<String, Object> note(@PathVariable String id,
                                      @RequestParam String author,

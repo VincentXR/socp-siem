@@ -48,6 +48,7 @@ public class AuthInterceptor implements HandlerInterceptor {
         }
 
         String tenantFromClaim = null;
+        String role = null;
         if (!jwtValidator.isDevBypass()) {
             JWTClaimsSet claims;
             try {
@@ -57,6 +58,37 @@ public class AuthInterceptor implements HandlerInterceptor {
                 throw ApiException.unauthorized(e.getMessage());
             }
             tenantFromClaim = jwtValidator.extractTenant(claims);
+            try {
+                role = claims.getStringClaim("role");
+            } catch (Exception ignored) {
+                // 无 role claim 的旧令牌按无限制处理
+            }
+        } else {
+            // dev-bypass 回退（仅本地切片）：从 X-Role 头取角色，缺省 analyst
+            role = req.getHeader("X-Role");
+        }
+
+        // RBAC：方法级 @RequireRole 检查（在租户解析之前即可执行，不依赖租户）
+        if (handler instanceof org.springframework.web.method.HandlerMethod hm) {
+            RequireRole rr = hm.getMethodAnnotation(RequireRole.class);
+            if (rr == null) {
+                rr = hm.getBeanType().getAnnotation(RequireRole.class);
+            }
+            if (rr != null && rr.value().length > 0) {
+                String userRole = role == null || role.isBlank() ? "anonymous" : role;
+                boolean allowed = false;
+                for (String r : rr.value()) {
+                    if (r.equalsIgnoreCase(userRole)) {
+                        allowed = true;
+                        break;
+                    }
+                }
+                if (!allowed) {
+                    log.warn("RBAC 拒绝 path={} role={} require={}", req.getRequestURI(), userRole,
+                            String.join(",", rr.value()));
+                    throw ApiException.forbidden(rr.message());
+                }
+            }
         }
 
         if (tenantFromClaim != null && !tenantFromClaim.isBlank() && !"default".equals(tenantFromClaim)) {

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.socp.platform.audit.AuditOperation;
+import com.socp.platform.auth.RequireRole;
 import com.socp.platform.error.ApiResult;
 import com.socp.platform.ratelimit.RateLimit;
 import jakarta.validation.Valid;
@@ -37,6 +38,7 @@ public class AlarmController {
     }
 
     /** 写入告警（接入→检测→分析 的产物落 t_alarm）。带审计注解，结果进 Kafka socp-audit（Docker 环境）。 */
+    @RequireRole({"admin", "analyst"})
     @AuditOperation(action = "CREATE_ALARM", target = "t_alarm")
     @PostMapping
     public ApiResult<Alarm> create(@Valid @RequestBody CreateAlarmRequest req) {

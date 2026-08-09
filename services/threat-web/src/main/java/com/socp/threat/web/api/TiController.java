@@ -1,5 +1,7 @@
 package com.socp.threat.web.api;
 
+import com.socp.platform.audit.AuditOperation;
+import com.socp.platform.auth.RequireRole;
 import com.socp.threat.web.domain.Ioc;
 import com.socp.threat.web.store.IocStore;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -34,6 +36,8 @@ public class TiController {
         return store.list(type);
     }
 
+    @RequireRole({"admin", "analyst"})
+    @AuditOperation(action = "CREATE_IOC", target = "threat")
     @PostMapping("/iocs")
     public Ioc create(@RequestBody Map<String, Object> body) {
         @SuppressWarnings("unchecked")
@@ -44,6 +48,8 @@ public class TiController {
         return store.add(ioc);
     }
 
+    @RequireRole({"admin", "analyst"})
+    @AuditOperation(action = "DELETE_IOC", target = "threat")
     @DeleteMapping("/iocs/{id}")
     public Map<String, Object> delete(@PathVariable String id) {
         return Map.of("removed", store.delete(id), "id", id);

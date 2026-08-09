@@ -108,7 +108,8 @@ python socp/build/verify-slice.py
 
 ## 已知边界（诚实声明）
 
-- **RBAC**：仅实现 viewer 只读角色，完整 `@PreAuthorize` 授权未落地
+- **RBAC**：已实现角色授权——`@RequireRole` 注解（admin/analyst/viewer）+ 网关全局 viewer 只读兜底；未做角色/权限的运行时管理 UI（角色由 JWT claim 决定）
+- **审计日志**：`@AuditOperation` 注解 + 内存 sink + 查询 API（`GET /soc-base/api/v1/audit/records|stats`）；生产可切 Kafka sink
 - **ai-assistant**：关键词问答库，未接外部 LLM API
 - **SOAR**：剧本执行器为进程内实现，未用 Temporal Saga（无补偿/重试编排）
 - **Temporal / Keycloak realm / MinIO 业务**：编排就绪但未跑业务链路（验签侧已支持 Keycloak 签发 JWT）
