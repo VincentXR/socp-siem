@@ -80,6 +80,48 @@ $ python build/demos/attack-scenarios.py
 其中场景 2/3 同时演示了 **Detection Engineering 的规则生命周期**：规则通过 API 新增/修正，
 `RuleChangePublisher` 发 Kafka 广播 → 集群内所有引擎实例热更新（`DetectEngineService.reload()` 原子替换），全程无需重启。
 
+## 日志解析 Pipeline（Canonical Event Schema）
+
+归一化不再是"JSON 展平 + 顺序扫规则"。`search-config` 现在有独立的 parser 层（`services/search-config/.../parser/`）：
+
+```
+Raw Event
+   ↓
+Source Router（vendor 提示 / CEF: / LEEF: / <PRI> / {json} / key=value 特征前缀路由，
+            不是每条日志遍历全部规则）
+   ↓
+ParserRegistry
+├─ JsonParser      JSON 行展平 + canonical 别名映射（Falco / Suricata / 采集器包装行）
+├─ SysmonParser    Windows Sysmon JSON（EventID 1/3/11/22 → process/network/file 语义）
+├─ SyslogParser    RFC3164 / RFC5424（PRI → severity，host / app / pid / message）
+├─ CefParser       ArcSight CEF（SignatureID → event.code，Extension → source/destination）
+├─ LeefParser      QRadar LEEF（同 CEF 对齐）
+├─ KvParser        key=value（引号支持）
+└─ RegexRuleParser 用户 parse rules（兜底抽取，命中即停）
+   ↓
+Canonical Event Schema（简化 ECS）
+   ↓
+Enrichment（查找表：核心资产 / 关键人员 / 封禁名单）
+   ↓
+Kafka socp-events → Detection
+```
+
+**Canonical 字段模型**（Detection Rule 用这些键写 match，不关心厂商）：
+
+```
+event.code / event.category / event.type / event.action
+source.ip / source.port / destination.ip / destination.port
+host.name / user.name
+process.name / process.pid / process.command_line
+file.path / file.hash.sha256
+network.protocol
+```
+
+例：Sysmon `EventID 1`（进程创建）、Falco JSON、FortiGate CEF firewall 日志，
+经过各自 parser 后都产出 `event.category=process` / `source.ip` / `user.name` 等同一组字段——
+检测规则只需写一次，厂商差异被 parser 层吸收。兼容层同时把 `src_ip`/`user`/`host` 等
+原有键桥接回 `fields`，存量规则无需改动。
+
 ## Detection Engine 做了什么
 
 - **7 种规则类型**：`pattern`（单事件命中）/ `threshold`（滑动窗口计数）/ `correlation` / `correlation-set`（多步关联）/ `baseline`（UEBA 自身历史基线）/ `rare`（首见值）
@@ -116,7 +158,7 @@ $ python build/demos/attack-scenarios.py
 前置：Docker Desktop（已开启虚拟化）、Node.js 22+（仅前端）。
 
 ```bash
-git clone https://github.com/VincentXR/socp-siem.git && cd socp-siem/socp
+git clone https://github.com/VincentXR/socp-siem.git && cd socp-siem
 
 # 1) 起 8 个中间件（PG / Kafka / OpenSearch / ClickHouse / Redis / MinIO / Prometheus / Grafana）
 docker compose -f infra/docker-compose.yml up -d
@@ -139,7 +181,7 @@ cd frontend/apps/workbench && node ../../node_modules/vite/bin/vite.js --port 51
 ## 目录结构
 
 ```
-socp/
+socp-siem/
 ├── platform/       # 横切模块：auth(JWT) tenant audit ratelimit error obs(OTel) rule(引擎) client(服务间调用) bom test
 ├── services/       # 业务服务（网关 / 采集 / 检测 / 告警 / SOAR / 报表 / 案件 / 资产 / HIPS / 情报 / ATT&CK / 通知）
 ├── frontend/       # workbench 控制台（Vue3 + Element Plus + ECharts）

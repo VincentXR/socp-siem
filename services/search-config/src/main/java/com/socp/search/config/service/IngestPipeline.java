@@ -37,6 +37,23 @@ public class IngestPipeline {
     private final IngestTaskMonitor monitor;
     private final com.socp.search.config.search.KafkaEventProducer kafkaProducer;
     private final DetectClient detectClient;
+    private final com.socp.search.config.parser.ParserRegistry parserRegistry;
+
+    // ---- 可观测指标（2026-08-11，暴露真实 ingest 压力而非固定 queueLoad=0.0） ----
+    private final io.micrometer.core.instrument.MeterRegistry meterRegistry;
+    private final io.micrometer.core.instrument.Counter acceptedCounter;
+    private final io.micrometer.core.instrument.Counter skippedCounter;
+    private final io.micrometer.core.instrument.Counter forwardedCounter;
+    private final java.util.concurrent.atomic.AtomicReference<Double> epsRef = new java.util.concurrent.atomic.AtomicReference<>(0.0);
+
+    /**
+     * HTTP 直连 DETECT 转发开关（2026-08-11 架构收敛）：
+     * 正式模式只有一条 Detection 主链 {@code search-config → Kafka socp-events → detect-web}，
+     * HTTP 直连不再是 ingestion 主路径（避免同一事件双写进 Detection）。
+     * 仅当 {@code SOCP_INGEST_FORWARD_HTTP=true} 时开启——留给本地调试/压测，不用于生产。
+     */
+    @org.springframework.beans.factory.annotation.Value("${socp.ingest.forward-http:false}")
+    private boolean forwardHttp;
 
     private static final Logger log = LoggerFactory.getLogger(IngestPipeline.class);
 
@@ -44,7 +61,9 @@ public class IngestPipeline {
                           ReferenceSetStore refSets, SearchStore searchStore,
                           IngestTaskMonitor monitor,
                           com.socp.search.config.search.KafkaEventProducer kafkaProducer,
-                          DetectClient detectClient) {
+                          DetectClient detectClient,
+                          com.socp.search.config.parser.ParserRegistry parserRegistry,
+                          io.micrometer.core.instrument.MeterRegistry meterRegistry) {
         this.preview = preview;
         this.parseRules = parseRules;
         this.refSets = refSets;
@@ -52,6 +71,16 @@ public class IngestPipeline {
         this.monitor = monitor;
         this.kafkaProducer = kafkaProducer;
         this.detectClient = detectClient;
+        this.parserRegistry = parserRegistry;
+        this.meterRegistry = meterRegistry;
+        this.acceptedCounter = io.micrometer.core.instrument.Counter.builder("socp_ingest_events_total")
+                .tag("outcome", "accepted").register(meterRegistry);
+        this.skippedCounter = io.micrometer.core.instrument.Counter.builder("socp_ingest_events_total")
+                .tag("outcome", "skipped").register(meterRegistry);
+        this.forwardedCounter = io.micrometer.core.instrument.Counter.builder("socp_ingest_events_total")
+                .tag("outcome", "forwarded").register(meterRegistry);
+        io.micrometer.core.instrument.Gauge.builder("socp_ingest_eps", epsRef, java.util.concurrent.atomic.AtomicReference::get)
+                .register(meterRegistry);
     }
 
     /** 处理一批 NDJSON。返回 accepted/skipped/forwarded 统计，并按采集器记录运行指标。 */
@@ -76,7 +105,7 @@ public class IngestPipeline {
             if (t.isEmpty()) continue;
             long bytes = t.length();
             try {
-                Map<String, Object> norm = normalize(t);
+                Map<String, Object> norm = normalize(t, defaultCollector);
                 if (norm == null) {
                     skipped++;
                     bump(perCollector, defaultCollector, 0, 1, 0, bytes);
@@ -97,12 +126,27 @@ public class IngestPipeline {
         forwarded += flush(pending, perCollector, defaultCollector);
         perCollector.forEach((k, v) ->
                 monitor.record(k, (int) v[0], (int) v[1], (int) v[2], v[3]));
+        // 真实指标：累加计数器 + 更新 EPS（parse failure rate 由 skipped/total 得出）
+        acceptedCounter.increment(accepted);
+        skippedCounter.increment(skipped);
+        forwardedCounter.increment(forwarded);
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("accepted", accepted);
         out.put("skipped", skipped);
         out.put("forwarded", forwarded);
+        // search-config 同步解析、无内部队列——queueLoad 不适用（0 表示无排队）。
+        // 真实压力指标：parseFailureRate（解析失败占比）、eps1m（近 1 分钟吞吐，来自 monitor）
         out.put("queueLoad", 0.0);
+        double total = accepted + skipped;
+        out.put("parseFailureRate", total > 0 ? Math.round(skipped * 1000.0 / total) / 10.0 : 0.0);
+        if (defaultCollector != null) {
+            Object eps = monitor.runtime(defaultCollector, true).get("eps1m");
+            if (eps instanceof Number n) {
+                epsRef.set(n.doubleValue());
+                out.put("eps1m", n.doubleValue());
+            }
+        }
         out.put("collectors", perCollector.keySet());
         return out;
     }
@@ -126,48 +170,37 @@ public class IngestPipeline {
     }
 
     /** 解析+归一化+富化单行。返回含 source/host/severity/msg/fields/timestamp 的 Map。 */
-    private Map<String, Object> normalize(String line) {
-        Map<String, Object> raw;
-        String rawLog;
-        try {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> obj = MAPPER.readValue(line, Map.class);
-            raw = obj;
-            rawLog = obj.get("message") != null ? String.valueOf(obj.get("message")) : line;
-        } catch (Exception e) {
-            raw = Map.of();
-            rawLog = line;
-        }
+    private Map<String, Object> normalize(String line, String collectorHint) {
+        // 1) Parser Pipeline：Source Router（vendor/特征）选解析器 → canonical ECS 字段
+        Map<String, String> canonical = parserRegistry.parse(line, collectorHint);
+        Map<String, Object> fields = new LinkedHashMap<>(canonical);
+        String rawLog = canonical.getOrDefault(com.socp.search.config.parser.CanonicalEvent.EVENT_MESSAGE, line);
 
-        Map<String, Object> fields = new LinkedHashMap<>();
-        // 1) JSON 行：展平为字段
-        for (var en : raw.entrySet()) {
-            if ("message".equals(en.getKey())) continue;
-            fields.put(en.getKey(), String.valueOf(en.getValue()));
-        }
-        // 2) 非 JSON 或需结构化的行：尝试启用解析规则抽取（如 sshd 失败登录）
-        if (fields.isEmpty() || rawLog.contains("Failed password") || rawLog.contains("authentication failure")) {
+        // 2) 解析规则兜底抽取：仅当 canonical 未结构化（只有 message）时尝试，
+        //    命中第一条即停——不再每条日志全量扫描全部规则
+        if (fields.size() <= 2) {
             for (var rule : parseRules.list()) {
                 Map<String, Object> pr = preview.preview(rule.id(), null, null, rawLog);
                 if (Boolean.TRUE.equals(pr.get("matched"))) {
                     @SuppressWarnings("unchecked")
                     Map<String, Object> extracted = (Map<String, Object>) pr.get("fields");
                     if (extracted != null) fields.putAll(extracted);
-                    if (fields.get("source") == null && raw.get("source") != null)
-                        fields.put("source", raw.get("source"));
                     break;
                 }
             }
         }
-        // 3) 查找表富化：标注命中核心资产/关键人员/封禁名单
+        // 3) canonical → 兼容键桥接（Detection 规则 keyField 用 src_ip/user 等顶层）
+        bridge(fields, canonical);
+
+        // 4) 查找表富化：标注命中核心资产/关键人员/封禁名单
         enrich(fields);
 
-        String source = pick(fields, "source", raw, "source", "type", "app");
-        String host = pick(fields, "host", raw, "host", "hostname", "device");
-        String severity = pick(fields, "severity", raw, "severity", "level");
+        String source = pick(fields, "source", "type", "app", "vendor");
+        String host = pick(fields, "host", "hostname", "device", com.socp.search.config.parser.CanonicalEvent.HOST_NAME);
+        String severity = pick(fields, "severity", "level", com.socp.search.config.parser.CanonicalEvent.EVENT_SEVERITY);
         if (severity.isBlank()) severity = "INFO";
         String msg = rawLog;
-        String ts = pick(fields, "timestamp", raw, "timestamp", "@timestamp", "time");
+        String ts = pick(fields, "timestamp", "@timestamp", "time");
         Map<String, Object> norm = new LinkedHashMap<>();
         norm.put("source", source.isBlank() ? "unknown" : source);
         norm.put("host", host.isBlank() ? "unknown" : host);
@@ -176,6 +209,26 @@ public class IngestPipeline {
         norm.put("timestamp", parseTs(ts));
         norm.put("fields", fields);
         return norm;
+    }
+
+    /** canonical（ECS 键）→ Detection 规则习惯的兼容键（src_ip/user/host/msg...），缺失才补。 */
+    private static void bridge(Map<String, Object> fields, Map<String, String> c) {
+        putIfAbsent(fields, "src_ip", c.get(com.socp.search.config.parser.CanonicalEvent.SOURCE_IP));
+        putIfAbsent(fields, "dst_ip", c.get(com.socp.search.config.parser.CanonicalEvent.DESTINATION_IP));
+        putIfAbsent(fields, "src_port", c.get(com.socp.search.config.parser.CanonicalEvent.SOURCE_PORT));
+        putIfAbsent(fields, "dst_port", c.get(com.socp.search.config.parser.CanonicalEvent.DESTINATION_PORT));
+        putIfAbsent(fields, "user", c.get(com.socp.search.config.parser.CanonicalEvent.USER_NAME));
+        putIfAbsent(fields, "host", c.get(com.socp.search.config.parser.CanonicalEvent.HOST_NAME));
+        putIfAbsent(fields, "msg", c.get(com.socp.search.config.parser.CanonicalEvent.EVENT_MESSAGE));
+        putIfAbsent(fields, "severity", c.get(com.socp.search.config.parser.CanonicalEvent.EVENT_SEVERITY));
+        putIfAbsent(fields, "process", c.get(com.socp.search.config.parser.CanonicalEvent.PROCESS_NAME));
+        putIfAbsent(fields, "pid", c.get(com.socp.search.config.parser.CanonicalEvent.PROCESS_PID));
+    }
+
+    private static void putIfAbsent(Map<String, Object> m, String key, Object v) {
+        if (v != null && m.get(key) == null) {
+            m.put(key, v);
+        }
     }
 
     private void enrich(Map<String, Object> fields) {
@@ -216,24 +269,26 @@ public class IngestPipeline {
         // 检索库批量落库（一次 saveAll + OpenSearch 异步索引）
         List<SearchEvent> evs = batch.stream().map(this::toEvent).toList();
         searchStore.ingestBatch(evs);
-        // 事件总线：Kafka 异步发 socp-events 主题（DETECT 消费进规则引擎）
+        // 事件总线：Kafka 异步发 socp-events 主题（DETECT 消费进规则引擎）——Detection 唯一主链
         kafkaProducer.sendEvents(evs);
-        // NDJSON 批量转发给 DETECT
-        StringBuilder sb = new StringBuilder();
-        for (Map<String, Object> m : batch) sb.append(toJson(m)).append('\n');
-        ServiceCall call = detectClient.ingestBulk(sb.toString());
+        // HTTP 直连 DETECT 仅调试用（默认关闭）：同一事件不再双写进 Detection
         int fl = 0;
-        if (call.ok() && call.body() != null) {
-            try {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> r = MAPPER.readValue(call.body(), Map.class);
-                Object a = r.get("accepted");
-                fl = a instanceof Number ? ((Number) a).intValue() : 0;
-            } catch (Exception ignored) {
-                fl = 0;
+        if (forwardHttp) {
+            StringBuilder sb = new StringBuilder();
+            for (Map<String, Object> m : batch) sb.append(toJson(m)).append('\n');
+            ServiceCall call = detectClient.ingestBulk(sb.toString());
+            if (call.ok() && call.body() != null) {
+                try {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> r = MAPPER.readValue(call.body(), Map.class);
+                    Object a = r.get("accepted");
+                    fl = a instanceof Number ? ((Number) a).intValue() : 0;
+                } catch (Exception ignored) {
+                    fl = 0;
+                }
+            } else if (!call.ok()) {
+                log.warn("归一化事件转发 DETECT 失败 原因={}", call.failureReason());
             }
-        } else if (!call.ok()) {
-            log.warn("归一化事件转发 DETECT 失败 原因={}", call.failureReason());
         }
         int n = Math.min(fl, batch.size());
         for (int i = 0; i < n; i++) {
@@ -243,10 +298,9 @@ public class IngestPipeline {
         return fl;
     }
 
-    private static String pick(Map<String, Object> fields, String defKey, Map<String, Object> raw, String... keys) {
-        if (fields.get(defKey) != null) return String.valueOf(fields.get(defKey));
+    private static String pick(Map<String, Object> fields, String... keys) {
         for (String k : keys) {
-            if (raw.get(k) != null) return String.valueOf(raw.get(k));
+            if (fields.get(k) != null) return String.valueOf(fields.get(k));
         }
         return "";
     }
