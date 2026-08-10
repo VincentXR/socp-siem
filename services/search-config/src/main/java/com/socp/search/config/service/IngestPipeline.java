@@ -173,12 +173,19 @@ public class IngestPipeline {
     private Map<String, Object> normalize(String line, String collectorHint) {
         // 1) Parser Pipeline：Source Router（vendor/特征）选解析器 → canonical ECS 字段
         Map<String, String> canonical = parserRegistry.parse(line, collectorHint);
-        Map<String, Object> fields = new LinkedHashMap<>(canonical);
+        // canonical（带 . 的 ECS 键）拆到独立 ecs 命名空间，避免与 fields 的 text 键
+        // （source/host/severity...）在 OpenSearch mapping 上冲突
+        Map<String, Object> fields = new LinkedHashMap<>();
+        Map<String, String> ecs = new LinkedHashMap<>();
+        for (var en : canonical.entrySet()) {
+            if (en.getKey().contains(".")) ecs.put(en.getKey(), en.getValue());
+            else fields.put(en.getKey(), en.getValue());
+        }
         String rawLog = canonical.getOrDefault(com.socp.search.config.parser.CanonicalEvent.EVENT_MESSAGE, line);
 
         // 2) 解析规则兜底抽取：仅当 canonical 未结构化（只有 message）时尝试，
         //    命中第一条即停——不再每条日志全量扫描全部规则
-        if (fields.size() <= 2) {
+        if (fields.size() <= 1 && ecs.size() <= 1) {
             for (var rule : parseRules.list()) {
                 Map<String, Object> pr = preview.preview(rule.id(), null, null, rawLog);
                 if (Boolean.TRUE.equals(pr.get("matched"))) {
@@ -208,6 +215,7 @@ public class IngestPipeline {
         norm.put("msg", msg);
         norm.put("timestamp", parseTs(ts));
         norm.put("fields", fields);
+        if (!ecs.isEmpty()) norm.put("ecs", ecs);
         return norm;
     }
 
@@ -251,13 +259,19 @@ public class IngestPipeline {
         @SuppressWarnings("unchecked")
         Map<String, String> fs = new LinkedHashMap<>();
         if (f != null) for (var e : f.entrySet()) fs.put(e.getKey(), String.valueOf(e.getValue()));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> eo = (Map<String, Object>) norm.get("ecs");
+        @SuppressWarnings("unchecked")
+        Map<String, String> ecs = new LinkedHashMap<>();
+        if (eo != null) for (var e : eo.entrySet()) ecs.put(e.getKey(), String.valueOf(e.getValue()));
         return new SearchEvent(
                 Instant.parse(String.valueOf(norm.get("timestamp"))),
                 String.valueOf(norm.get("source")),
                 String.valueOf(norm.get("host")),
                 String.valueOf(norm.get("severity")),
                 String.valueOf(norm.get("msg")),
-                Map.copyOf(fs));
+                Map.copyOf(fs),
+                Map.copyOf(ecs));
     }
 
     /**

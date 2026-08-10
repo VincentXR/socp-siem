@@ -81,13 +81,57 @@ public class OsEventWriter {
             }
             int code = c.getResponseCode();
             if (code >= 200 && code < 300) {
-                log.info("OpenSearch bulk 写入 {} 事件 -> {} (HTTP {})", es.size(), index, code);
+                // 失败可见：bulk HTTP 200 不代表每条成功——逐条检查 items 的 error
+                String resp = new String(c.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+                int failed = countBulkErrors(resp);
+                if (failed > 0) {
+                    log.warn("OpenSearch bulk 写入 {}/{} 条失败（items error，HTTP {}）-> {} : {}",
+                            failed, es.size(), code, index, firstError(resp));
+                } else {
+                    log.info("OpenSearch bulk 写入 {} 事件 -> {} (HTTP {})", es.size(), index, code);
+                }
             } else {
                 log.warn("OpenSearch bulk 失败 HTTP {} (静默降级)", code);
             }
             c.disconnect();
         } catch (Exception e) {
             log.warn("OpenSearch 写入异常（静默降级）: {}", e.toString());
+        }
+    }
+
+    /** 统计 bulk 响应里 items[].index.error 出现的次数。 */
+    private static int countBulkErrors(String resp) {
+        try {
+            var root = MAPPER.readValue(resp, com.fasterxml.jackson.databind.JsonNode.class);
+            var items = root.get("items");
+            if (items == null || !items.isArray()) return 0;
+            int n = 0;
+            for (var it : items) {
+                var idx = it.get("index");
+                if (idx != null && idx.has("error")) n++;
+            }
+            return n;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    /** 提取第一条错误信息（如 mapping 冲突原因），便于直接定位。 */
+    private static String firstError(String resp) {
+        try {
+            var root = MAPPER.readValue(resp, com.fasterxml.jackson.databind.JsonNode.class);
+            var items = root.get("items");
+            if (items == null || !items.isArray()) return "";
+            for (var it : items) {
+                var idx = it.get("index");
+                if (idx != null && idx.has("error")) {
+                    var reason = idx.get("error").get("reason");
+                    return reason == null ? String.valueOf(idx.get("error")) : reason.asText();
+                }
+            }
+            return "";
+        } catch (Exception e) {
+            return "";
         }
     }
 

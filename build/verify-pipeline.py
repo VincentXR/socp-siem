@@ -186,6 +186,21 @@ check("Kafka topic 出现新事件", new_offset is not None, f"offset {base_offs
 print("\n== 4. OpenSearch socp-events-* raw event ==")
 def os_grew():
     try:
+        # OpenSearch 异步 refresh：写入后强制 refresh 保证 _count 可见
+        req = urllib.request.Request(OS_URL + "/socp-events-*/_refresh", method="POST")
+        req.add_header("Authorization", "Basic " + base64.b64encode(OS_AUTH.encode()).decode())
+        if OS_URL.startswith("https"):
+            global _os_ctx
+            if _os_ctx is None:
+                _os_ctx = ssl.create_default_context()
+                _os_ctx.check_hostname = False
+                _os_ctx.verify_mode = ssl.CERT_NONE
+            urllib.request.urlopen(req, timeout=10, context=_os_ctx)
+        else:
+            urllib.request.urlopen(req, timeout=10)
+    except Exception:
+        pass
+    try:
         n = os_get("/socp-events-*/_count").get("count", 0)
         return n if n > os_total else None
     except Exception:
