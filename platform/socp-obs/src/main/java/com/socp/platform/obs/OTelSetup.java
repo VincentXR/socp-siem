@@ -20,13 +20,19 @@ import org.slf4j.LoggerFactory;
  *   <li>W3C trace context propagator（与 TraceIdFilter/Kafka header 的 traceparent 完全兼容）</li>
  *   <li>OTLP gRPC exporter → Jaeger all-in-one（localhost:4317）</li>
  * </ul>
- * 容错：Jaeger 不可达 / SDK 初始化异常时打 WARN 并回退（GlobalOpenTelemetry 保持 noop，
+ * <p><b>默认关闭</b>：{@code socp.obs.tracing.enabled}（环境变量 {@code SOCP_TRACING_ENABLED}）默认
+ * {@code false}。默认不连接 4317——否则 Jaeger 没起来的环境（核心 8 件套不含 Jaeger，它在 extra
+ * profile）会被 BatchSpanProcessor 的导出失败刷满 ERROR 日志。开启后全链路 trace 进 Jaeger 可视化。
+ *
+ * <p>容错：Jaeger 不可达 / SDK 初始化异常时打 WARN 并回退（GlobalOpenTelemetry 保持 noop，
  * TraceIdFilter 走手写 traceparent 逻辑），**绝不阻塞业务启动**。
  */
 public final class OTelSetup {
 
     private static final Logger log = LoggerFactory.getLogger(OTelSetup.class);
     private static volatile boolean initialized = false;
+    /** 只决策一次，避免每个请求重复判断/打日志。 */
+    private static volatile boolean decided = false;
 
     private OTelSetup() {
     }
@@ -36,7 +42,19 @@ public final class OTelSetup {
     }
 
     public static synchronized void initIfNeeded(String serviceName) {
-        if (initialized) return;
+        initIfNeeded(serviceName, isEnabledByEnv());
+    }
+
+    /**
+     * @param enabled 是否启用 OTLP 上报（默认应走 false，见类注释）
+     */
+    public static synchronized void initIfNeeded(String serviceName, boolean enabled) {
+        if (decided) return;
+        decided = true;
+        if (!enabled) {
+            log.info("OpenTelemetry tracing 未启用（socp.obs.tracing.enabled=false），沿用手写 traceparent，不连接 4317");
+            return;
+        }
         try {
             String endpoint = System.getenv().getOrDefault("SOCP_OTLP_ENDPOINT", "http://localhost:4317");
             OtlpGrpcSpanExporter exporter = OtlpGrpcSpanExporter.builder()
@@ -63,6 +81,10 @@ public final class OTelSetup {
         } catch (Throwable t) {
             log.warn("OpenTelemetry SDK 初始化失败（回退手写 traceparent）: {}", t.getMessage());
         }
+    }
+
+    private static boolean isEnabledByEnv() {
+        return Boolean.parseBoolean(System.getenv().getOrDefault("SOCP_TRACING_ENABLED", "false"));
     }
 
     public static boolean isInitialized() {

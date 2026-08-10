@@ -25,6 +25,10 @@ public class CaseEntity {
     @Id
     private String id;
 
+    /** 人读展示编号（INC-<yyyyMMdd>-<随机>），与内部主键 id(UUIDv7) 分离 */
+    @Column(name = "case_no", length = 64)
+    private String caseNo;
+
     /** 多租户隔离列，落库前从 TenantContext 自动注入（等价 BaseEntity 的行为） */
     @Column(name = "tenant_id")
     private String tenantId;
@@ -66,6 +70,14 @@ public class CaseEntity {
 
     public void setId(String id) {
         this.id = id;
+    }
+
+    public String getCaseNo() {
+        return caseNo;
+    }
+
+    public void setCaseNo(String caseNo) {
+        this.caseNo = caseNo;
     }
 
     public String getTitle() {

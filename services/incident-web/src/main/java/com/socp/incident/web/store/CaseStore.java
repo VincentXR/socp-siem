@@ -67,6 +67,7 @@ public class CaseStore {
     static CaseEntity toEntity(Case c) {
         CaseEntity e = new CaseEntity();
         e.setId(c.id());
+        e.setCaseNo(c.caseNo());
         e.setTitle(c.title());
         e.setEntity(c.entity());
         e.setSeverity(c.severity());
@@ -87,7 +88,7 @@ public class CaseStore {
         });
         List<TimelineEvent> timeline = readList(e.getTimelineJson(), new TypeReference<>() {
         });
-        return new Case(e.getId(), e.getTitle(), e.getEntity(), e.getSeverity(), e.getStatus(),
+        return new Case(e.getId(), e.getCaseNo(), e.getTitle(), e.getEntity(), e.getSeverity(), e.getStatus(),
                 ruleIds == null ? List.of() : ruleIds,
                 alarmIds == null ? List.of() : alarmIds,
                 timeline == null ? List.of() : timeline,

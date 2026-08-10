@@ -106,7 +106,11 @@ public class TraceIdFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain)
             throws ServletException, IOException {
-        OTelSetup.initIfNeeded(env == null ? "" : env.getProperty("spring.application.name", ""));
+        String svc = env == null ? "" : env.getProperty("spring.application.name", "");
+        boolean tracingEnabled = env != null && Boolean.parseBoolean(
+                env.getProperty("socp.obs.tracing.enabled",
+                        env.getProperty("SOCP_TRACING_ENABLED", "false")));
+        OTelSetup.initIfNeeded(svc, tracingEnabled);
         if (OTelSetup.isInitialized()) {
             doWithOtel(req, res, chain);
         } else {

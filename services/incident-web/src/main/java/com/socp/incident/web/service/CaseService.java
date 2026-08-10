@@ -58,6 +58,7 @@ public class CaseService {
             if (!alarmId.isBlank() && open.alarmIds().contains(alarmId)) {
                 Map<String, Object> dup = new LinkedHashMap<>();
                 dup.put("caseId", open.id());
+                dup.put("caseNo", open.caseNo());
                 dup.put("title", open.title());
                 dup.put("entity", open.entity());
                 dup.put("status", open.status());
@@ -82,6 +83,7 @@ public class CaseService {
         }
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("caseId", c.id());
+        out.put("caseNo", c.caseNo());
         out.put("title", c.title());
         out.put("entity", c.entity());
         out.put("status", c.status());
@@ -110,7 +112,7 @@ public class CaseService {
         Case c = store.get(id);
         if (c == null) return Map.of("error", "not_found");
         TimelineEvent ev = new TimelineEvent(Instant.now(), "NOTE", author + ": " + content, "analyst", null);
-        Case updated = new Case(c.id(), c.title(), c.entity(), c.severity(), c.status(),
+        Case updated = new Case(c.id(), c.caseNo(), c.title(), c.entity(), c.severity(), c.status(),
                 c.ruleIds(), c.alarmIds(),
                 append(c.timeline(), ev), c.assignee(), c.createdAt(), Instant.now());
         store.save(updated);
