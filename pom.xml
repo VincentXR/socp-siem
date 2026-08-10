@@ -48,8 +48,9 @@
         <module>platform/socp-data</module>
         <module>platform/socp-test</module>
         <module>platform/socp-rule</module>
+        <module>platform/socp-client</module>
 
-        <!-- 13 个业务服务 -->
+        <!-- 17 个业务服务 -->
         <module>services/soc-base</module>
         <module>services/asset-web</module>
         <module>services/asset-collect</module>
@@ -131,6 +132,11 @@
             <dependency>
                 <groupId>com.socp.platform</groupId>
                 <artifactId>socp-rule</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.socp.platform</groupId>
+                <artifactId>socp-client</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

@@ -2,7 +2,10 @@ package com.socp.notify.web.service;
 
 import com.socp.notify.web.domain.Channel;
 import com.socp.notify.web.store.ChannelStore;
-import com.socp.notify.web.util.Http;
+import com.socp.platform.client.ServiceCall;
+import com.socp.platform.client.SocpHttpClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -20,12 +23,16 @@ import java.util.concurrent.CopyOnWriteArrayList;
 @Service
 public class NotificationDispatcher {
 
+    private static final Logger log = LoggerFactory.getLogger(NotificationDispatcher.class);
+
     private final ChannelStore channels;
+    private final SocpHttpClient http;
     private final List<Map<String, Object>> dispatchLog = new CopyOnWriteArrayList<>();
     private static final int TIMEOUT = 3000;
 
-    public NotificationDispatcher(ChannelStore channels) {
+    public NotificationDispatcher(ChannelStore channels, SocpHttpClient http) {
         this.channels = channels;
+        this.http = http;
     }
 
     /** 接收告警（来自 alert-web）并分发。返回本次分发明细。 */
@@ -54,11 +61,17 @@ public class NotificationDispatcher {
             return r;
         }
         String json = buildPayload(ch, alarm);
-        String resp = Http.postWithBody(ch.target(), json, TIMEOUT);
-        int code = parseCode(resp);
-        r.put("status", (code >= 200 && code < 300) ? "sent" : "failed");
-        r.put("httpStatus", code);
-        r.put("detail", truncate(resp, 300));
+        // 渠道地址由用户配置（可能是外网 webhook），统一走 socp-client：超时受控、失败留痕
+        ServiceCall call = http.postExternal(ch.target(), json, SocpHttpClient.JSON, TIMEOUT);
+        r.put("status", call.ok() ? "sent" : "failed");
+        r.put("httpStatus", call.status());
+        r.put("detail", call.ok()
+                ? truncate(call.body(), 300)
+                : truncate(call.failureReason() + " | " + call.body(), 300));
+        if (!call.ok()) {
+            log.warn("通知渠道分发失败 channel={} type={} target={} alarmId={} 原因={}",
+                    ch.name(), ch.type(), ch.target(), alarm.get("id"), call.failureReason());
+        }
         return r;
     }
 
@@ -118,16 +131,6 @@ public class NotificationDispatcher {
 
     public List<Map<String, Object>> log() {
         return List.copyOf(dispatchLog);
-    }
-
-    private static int parseCode(String resp) {
-        if (resp == null || resp.isEmpty()) return -1;
-        int i = resp.indexOf('|');
-        try {
-            return i < 0 ? Integer.parseInt(resp.trim()) : Integer.parseInt(resp.substring(0, i).trim());
-        } catch (NumberFormatException e) {
-            return -1;
-        }
     }
 
     /** 递归 JSON 序列化：正确处理嵌套 Map/List/数值/布尔，避免把 Map 的 Java toString 当成 JSON。 */

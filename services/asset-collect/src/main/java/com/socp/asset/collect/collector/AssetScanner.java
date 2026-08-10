@@ -1,9 +1,9 @@
 package com.socp.asset.collect.collector;
 
-import com.socp.asset.collect.util.Http;
+import com.socp.platform.client.AssetClient;
+import com.socp.platform.client.ServiceCall;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -30,8 +30,11 @@ public class AssetScanner {
     private final List<Map<String, Object>> discovered = new CopyOnWriteArrayList<>();
     private int round = 0;
 
-    @Value("${socp.asset.url:http://localhost:18085}")
-    private String assetUrl;
+    private final AssetClient assetClient;
+
+    public AssetScanner(AssetClient assetClient) {
+        this.assetClient = assetClient;
+    }
 
     /** 每 60 秒模拟一轮扫描：发现 1-2 台新资产并上报。 */
     @Scheduled(fixedDelay = 60_000, initialDelay = 20_000)
@@ -49,14 +52,10 @@ public class AssetScanner {
             asset.put("scannedAt", Instant.now().toString());
             discovered.add(asset);
 
-            // 上报 asset-web 落库（best-effort，失败不阻塞）
-            try {
-                int code = Http.post(assetUrl + "/asset-web/api/v1/assets/collect", toJson(asset), 3000);
-                if (code < 200 || code >= 300) {
-                    log.warn("资产上报失败 http={} name={}", code, name);
-                }
-            } catch (Exception e) {
-                log.debug("资产上报异常（静默降级）: {}", e.getMessage());
+            // 上报 asset-web 落库（best-effort，但失败必须可观测）
+            ServiceCall call = assetClient.collect(toJson(asset));
+            if (!call.ok()) {
+                log.warn("资产上报失败 name={} 原因={}", name, call.failureReason());
             }
         }
         log.info("扫描轮次 #{} 完成，累计发现 {} 台", round, discovered.size());

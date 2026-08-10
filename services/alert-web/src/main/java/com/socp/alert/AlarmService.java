@@ -1,7 +1,13 @@
 package com.socp.alert;
 
+import com.socp.platform.client.IncidentClient;
+import com.socp.platform.client.NotifyClient;
+import com.socp.platform.client.ServiceCall;
+import com.socp.platform.client.SoarClient;
+import com.socp.platform.client.ThreatClient;
 import com.socp.platform.tenant.TenantContext;
-import org.springframework.beans.factory.annotation.Value;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -19,24 +25,28 @@ import java.util.regex.Pattern;
  */
 @Service
 public class AlarmService {
+
+    private static final Logger log = LoggerFactory.getLogger(AlarmService.class);
+
     private final AlarmRepository repo;
     private final CkReporter ckReporter;
-
-    @Value("${socp.threat.url:http://localhost:18094}")
-    private String tiUrl;
-    @Value("${socp.notify.url:http://localhost:18096}")
-    private String notifyUrl;
-    @Value("${socp.incident.url:http://localhost:18097}")
-    private String caseUrl;
-    @Value("${socp.soar.url:http://localhost:18083}")
-    private String soarUrl;
+    private final ThreatClient threatClient;
+    private final NotifyClient notifyClient;
+    private final IncidentClient incidentClient;
+    private final SoarClient soarClient;
 
     private static final Pattern IP = Pattern.compile("\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b");
     private static final Pattern DOMAIN = Pattern.compile("\\b(?:[a-z0-9-]+\\.)+[a-z]{2,}\\b");
 
-    public AlarmService(AlarmRepository repo, CkReporter ckReporter) {
+    public AlarmService(AlarmRepository repo, CkReporter ckReporter,
+                        ThreatClient threatClient, NotifyClient notifyClient,
+                        IncidentClient incidentClient, SoarClient soarClient) {
         this.repo = repo;
         this.ckReporter = ckReporter;
+        this.threatClient = threatClient;
+        this.notifyClient = notifyClient;
+        this.incidentClient = incidentClient;
+        this.soarClient = soarClient;
     }
 
     @Transactional
@@ -58,39 +68,76 @@ public class AlarmService {
         return saved;
     }
 
+    /**
+     * 告警落库后的异步富化与扇出（虚拟线程执行，不阻塞写入路径）。
+     *
+     * <p>这里是 best-effort：任一下游不可用都不影响告警本身。但 <b>不等于可以吞异常</b>——
+     * 每个下游调用的失败都由 {@code socp-client} 统一记 WARN + 指标，
+     * 本方法只兜住「自己代码抛出的意外」，并且同样打日志，绝不 {@code catch (Exception ignored)}。
+     */
     private void enrichAndDispatch(Alarm a) {
         try {
-            // 1) 威胁情报富化
-            List<String> candidates = new ArrayList<>();
-            if (a.getEntity() != null && !a.getEntity().isBlank()) candidates.add(a.getEntity());
-            if (a.getMessage() != null) {
-                Matcher im = IP.matcher(a.getMessage());
-                while (im.find()) candidates.add(im.group());
-                Matcher dm = DOMAIN.matcher(a.getMessage().toLowerCase());
-                while (dm.find()) candidates.add(dm.group());
-            }
-            if (!candidates.isEmpty()) {
-                String resp = com.socp.alert.util.Http.postWithBody(
-                        tiUrl + "/threat-web/api/v1/iocs/match", toJsonArray(candidates), 3000);
-                String hits = parseHits(resp);
-                if (hits != null) {
-                    a.setTiHits(hits);
-                    // 情报命中后二次修正风险分：命中 IOC 是最强的加权信号之一
-                    int hitCount = countHits(hits);
-                    var s = computeRisk(a, hitCount);
-                    a.setRiskScore(s.score());
-                    a.setRiskLevel(s.level());
-                    repo.save(a);
-                }
-            }
-            // 2) 联动通知 / 案件 / SOAR 自动编排
-            String alarmJson = alarmJson(a);
-            com.socp.alert.util.Http.post(notifyUrl + "/notify-web/api/v1/notify/alert", alarmJson, 3000);
-            com.socp.alert.util.Http.post(caseUrl + "/incident-web/api/v1/incidents/from-alarm", alarmJson, 3000);
-            com.socp.alert.util.Http.post(soarUrl + "/soar-web/api/v1/playbooks/evaluate", alarmJson, 3000);
-        } catch (Exception ignored) {
-            // best-effort：任一外部服务不可用不影响告警落库
+            enrichWithThreatIntel(a);
+        } catch (Exception e) {
+            log.warn("告警情报富化异常 alarmId={} entity={} error={}", a.getId(), a.getEntity(), summary(e));
         }
+        String alarmJson;
+        try {
+            alarmJson = alarmJson(a);
+        } catch (Exception e) {
+            log.warn("告警序列化失败，联动扇出取消 alarmId={} error={}", a.getId(), summary(e));
+            return;
+        }
+        // 联动通知 / 案件 / SOAR 自动编排：三条互不阻塞，任一失败不影响其余
+        dispatch("notify-web", a, () -> notifyClient.notifyAlert(alarmJson));
+        dispatch("incident-web", a, () -> incidentClient.createFromAlarm(alarmJson));
+        dispatch("soar-web", a, () -> soarClient.evaluate(alarmJson));
+    }
+
+    /** 威胁情报富化：命中 IOC 后二次修正风险分。 */
+    private void enrichWithThreatIntel(Alarm a) {
+        List<String> candidates = new ArrayList<>();
+        if (a.getEntity() != null && !a.getEntity().isBlank()) candidates.add(a.getEntity());
+        if (a.getMessage() != null) {
+            Matcher im = IP.matcher(a.getMessage());
+            while (im.find()) candidates.add(im.group());
+            Matcher dm = DOMAIN.matcher(a.getMessage().toLowerCase());
+            while (dm.find()) candidates.add(dm.group());
+        }
+        if (candidates.isEmpty()) return;
+
+        ServiceCall call = threatClient.matchIocs(toJsonArray(candidates));
+        if (!call.ok()) {
+            // 客户端已记录 target/url/status，这里补业务上下文：哪条告警没富化成功
+            log.warn("告警情报富化跳过（threat-web 不可用）alarmId={} entity={} 原因={}",
+                    a.getId(), a.getEntity(), call.failureReason());
+            return;
+        }
+        String hits = parseHits(call.body());
+        if (hits == null) return;
+        a.setTiHits(hits);
+        int hitCount = countHits(hits);
+        var s = computeRisk(a, hitCount);
+        a.setRiskScore(s.score());
+        a.setRiskLevel(s.level());
+        repo.save(a);
+    }
+
+    /** 统一扇出：吞掉异常但绝不吞掉日志。 */
+    private void dispatch(String downstream, Alarm a, java.util.function.Supplier<ServiceCall> action) {
+        try {
+            ServiceCall call = action.get();
+            if (!call.ok()) {
+                log.warn("告警联动失败 downstream={} alarmId={} ruleId={} entity={} 原因={}",
+                        downstream, a.getId(), a.getRuleId(), a.getEntity(), call.failureReason());
+            }
+        } catch (Exception e) {
+            log.warn("告警联动异常 downstream={} alarmId={} error={}", downstream, a.getId(), summary(e));
+        }
+    }
+
+    private static String summary(Exception e) {
+        return e.getClass().getSimpleName() + ": " + e.getMessage();
     }
 
     /**
@@ -112,8 +159,10 @@ public class AlarmService {
                 recent = (int) repo.countRecentByEntity(
                         a.getEntity(), java.time.Instant.now().minus(java.time.Duration.ofHours(1)));
             }
-        } catch (Exception ignored) {
-            // 统计失败不影响评分主流程
+        } catch (Exception e) {
+            // 统计失败不影响评分主流程，但要留痕（否则风险分为什么偏低会查不出来）
+            log.debug("近 1 小时同实体告警计数失败，风险分按 recent=0 计算 entity={} error={}",
+                    a.getEntity(), summary(e));
         }
         return com.socp.rule.score.RiskScorer.score(sev, a.getMitre(), tiHits, recent, 0);
     }
@@ -128,10 +177,9 @@ public class AlarmService {
         return n;
     }
 
-    private static String parseHits(String resp) {
-        if (resp == null) return null;
-        int i = resp.indexOf('|');
-        String body = i < 0 ? resp : resp.substring(i + 1);
+    /** 解析 threat-web 的匹配响应体，取出 hits 并转成数组形式供前端展示。 */
+    private static String parseHits(String body) {
+        if (body == null || body.isBlank()) return null;
         try {
             @SuppressWarnings("unchecked")
             Map<String, Object> m = new com.fasterxml.jackson.databind.ObjectMapper()

@@ -4,6 +4,8 @@ import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.rule.rules.Rule;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
 import java.util.List;
@@ -20,6 +22,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * 由 com.siem 迁移（含背压 503 语义：ingest 返回 false 供接入端回 503）。
  */
 public final class RuleEngine implements AutoCloseable {
+
+    private static final Logger log = LoggerFactory.getLogger(RuleEngine.class);
 
     private final AtomicReference<List<Rule>> rulesRef;
     private final List<AlertSink> sinks;
@@ -121,7 +125,12 @@ public final class RuleEngine implements AutoCloseable {
     public void reload(List<Rule> newRules) {
         List<Rule> old = rulesRef.getAndSet(List.copyOf(newRules));
         old.forEach(Rule::close);
-        System.out.println("[DETECT 引擎] 规则已热更新，当前 " + newRules.size() + " 条");
+        log.info("规则已热更新，当前 {} 条", newRules.size());
+    }
+
+    /** 各规则命中统计（2026-08-10）：hits/alerts，用于规则健康度观测。 */
+    public List<Map<String, Object>> ruleStats() {
+        return rulesRef.get().stream().map(Rule::stats).toList();
     }
 
     public long eventCount() {

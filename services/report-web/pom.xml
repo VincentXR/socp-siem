@@ -14,6 +14,12 @@
     <description>REPORT Web（报表/合规/工单，SFMP13）</description>
 
     <dependencies>
+        <!-- 服务间调用统一客户端（超时/状态码检查/失败可见/指标/trace 透传） -->
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-client</artifactId>
+        </dependency>
+
     <dependency>
             <groupId>com.socp.platform</groupId>
             <artifactId>socp-error</artifactId>

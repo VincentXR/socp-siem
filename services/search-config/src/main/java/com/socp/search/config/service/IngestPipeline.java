@@ -6,8 +6,10 @@ import com.socp.search.config.search.SearchEvent;
 import com.socp.search.config.search.SearchStore;
 import com.socp.search.config.store.ParseRuleStore;
 import com.socp.search.config.store.ReferenceSetStore;
-import com.socp.search.config.util.Http;
-import org.springframework.beans.factory.annotation.Value;
+import com.socp.platform.client.DetectClient;
+import com.socp.platform.client.ServiceCall;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -34,20 +36,22 @@ public class IngestPipeline {
     private final SearchStore searchStore;
     private final IngestTaskMonitor monitor;
     private final com.socp.search.config.search.KafkaEventProducer kafkaProducer;
+    private final DetectClient detectClient;
 
-    @Value("${socp.detect.url:http://localhost:18082}")
-    private String gasUrl;
+    private static final Logger log = LoggerFactory.getLogger(IngestPipeline.class);
 
     public IngestPipeline(ParsePreviewService preview, ParseRuleStore parseRules,
                           ReferenceSetStore refSets, SearchStore searchStore,
                           IngestTaskMonitor monitor,
-                          com.socp.search.config.search.KafkaEventProducer kafkaProducer) {
+                          com.socp.search.config.search.KafkaEventProducer kafkaProducer,
+                          DetectClient detectClient) {
         this.preview = preview;
         this.parseRules = parseRules;
         this.refSets = refSets;
         this.searchStore = searchStore;
         this.monitor = monitor;
         this.kafkaProducer = kafkaProducer;
+        this.detectClient = detectClient;
     }
 
     /** 处理一批 NDJSON。返回 accepted/skipped/forwarded 统计，并按采集器记录运行指标。 */
@@ -217,18 +221,19 @@ public class IngestPipeline {
         // NDJSON 批量转发给 DETECT
         StringBuilder sb = new StringBuilder();
         for (Map<String, Object> m : batch) sb.append(toJson(m)).append('\n');
-        String resp = Http.postBody(gasUrl + "/detect-web/api/v1/ingest/bulk", sb.toString(),
-                "application/x-ndjson", 5000);
+        ServiceCall call = detectClient.ingestBulk(sb.toString());
         int fl = 0;
-        if (resp != null) {
+        if (call.ok() && call.body() != null) {
             try {
                 @SuppressWarnings("unchecked")
-                Map<String, Object> r = MAPPER.readValue(resp, Map.class);
+                Map<String, Object> r = MAPPER.readValue(call.body(), Map.class);
                 Object a = r.get("accepted");
                 fl = a instanceof Number ? ((Number) a).intValue() : 0;
             } catch (Exception ignored) {
                 fl = 0;
             }
+        } else if (!call.ok()) {
+            log.warn("归一化事件转发 DETECT 失败 原因={}", call.failureReason());
         }
         int n = Math.min(fl, batch.size());
         for (int i = 0; i < n; i++) {

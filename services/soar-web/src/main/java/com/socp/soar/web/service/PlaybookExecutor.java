@@ -1,9 +1,13 @@
 package com.socp.soar.web.service;
 
+import com.socp.platform.client.IncidentClient;
+import com.socp.platform.client.NotifyClient;
+import com.socp.platform.client.ServiceCall;
+import com.socp.platform.client.SocpHttpClient;
 import com.socp.soar.web.model.Playbook;
 import com.socp.soar.web.store.PlaybookStore;
-import com.socp.soar.web.util.Http;
-import org.springframework.beans.factory.annotation.Value;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -25,17 +29,23 @@ import java.util.concurrent.CopyOnWriteArrayList;
 @Service
 public class PlaybookExecutor {
 
+    private static final Logger log = LoggerFactory.getLogger(PlaybookExecutor.class);
+
+    /** 外部 webhook 超时：用户配置的地址不受控，给足 3s 但绝不无限等。 */
+    private static final int WEBHOOK_TIMEOUT_MS = 3000;
+
     private final PlaybookStore store;
     private final List<Map<String, Object>> executions = new CopyOnWriteArrayList<>();
+    private final NotifyClient notifyClient;
+    private final IncidentClient incidentClient;
+    private final SocpHttpClient http;
 
-    @Value("${socp.notify.url:http://localhost:18096}")
-    private String notifyUrl;
-
-    @Value("${socp.incident.url:http://localhost:18097}")
-    private String caseUrl;
-
-    public PlaybookExecutor(PlaybookStore store) {
+    public PlaybookExecutor(PlaybookStore store, NotifyClient notifyClient,
+                            IncidentClient incidentClient, SocpHttpClient http) {
         this.store = store;
+        this.notifyClient = notifyClient;
+        this.incidentClient = incidentClient;
+        this.http = http;
     }
 
     /** 按 ID 手动触发执行（忽略启用状态与触发条件）。 */
@@ -133,20 +143,11 @@ public class PlaybookExecutor {
         Map<String, Object> r = new LinkedHashMap<>();
         try {
             if (a.contains("http://") || a.contains("https://")) {
-                int code = Http.post(action, toJson(alarm), 3000);
-                r.put("status", (code >= 200 && code < 300) ? "success" : "failed");
-                r.put("httpStatus", code);
-                r.put("target", "webhook");
+                fill(r, "webhook", http.postExternal(action, toJson(alarm), SocpHttpClient.JSON, WEBHOOK_TIMEOUT_MS));
             } else if (a.contains("notify") || a.contains("通知")) {
-                int code = Http.post(notifyUrl + "/notify-web/api/v1/notify/alert", toJson(alarm), 3000);
-                r.put("status", (code >= 200 && code < 300) ? "success" : "failed");
-                r.put("httpStatus", code);
-                r.put("target", "notify-web");
+                fill(r, "notify-web", notifyClient.notifyAlert(toJson(alarm)));
             } else if (a.contains("case") || a.contains("建案")) {
-                int code = Http.post(caseUrl + "/incident-web/api/v1/incidents/from-alarm", toJson(alarm), 3000);
-                r.put("status", (code >= 200 && code < 300) ? "success" : "failed");
-                r.put("httpStatus", code);
-                r.put("target", "incident-web");
+                fill(r, "incident-web", incidentClient.createFromAlarm(toJson(alarm)));
             } else if (a.contains("tag")) {
                 r.put("status", "success");
                 r.put("tag", action.contains(" ") ? action.substring(action.indexOf(' ') + 1).trim() : action);
@@ -154,10 +155,28 @@ public class PlaybookExecutor {
                 r.put("status", "success");
             }
         } catch (Exception e) {
+            log.warn("剧本动作执行异常 action={} alarmId={} error={}: {}",
+                    action, alarm.get("id"), e.getClass().getSimpleName(), e.getMessage());
             r.put("status", "failed");
-            r.put("error", e.getMessage());
+            r.put("error", e.getClass().getSimpleName() + ": " + e.getMessage());
         }
         return r;
+    }
+
+    /**
+     * 把一次服务调用的结果落进剧本执行记录。
+     *
+     * <p>失败原因会同时写进执行记录（前端可见）和日志（{@code socp-client} 已记 WARN），
+     * 不再出现「剧本显示 failed，但没人知道为什么」。
+     */
+    private static void fill(Map<String, Object> r, String target, ServiceCall call) {
+        r.put("status", call.ok() ? "success" : "failed");
+        r.put("httpStatus", call.status());
+        r.put("target", target);
+        r.put("costMs", call.durationMs());
+        if (!call.ok()) {
+            r.put("error", call.failureReason());
+        }
     }
 
     private boolean matches(String trigger, String ruleId, String severity, int sevLevel) {

@@ -120,6 +120,7 @@ public class DetectEngineService {
         m.put("dropCount", e.dropCount());
         m.put("suppressedCount", e.suppressedCount());
         m.put("queueLoad", e.queueLoad());
+        m.put("ruleStats", e.ruleStats());
         return m;
     }
 }

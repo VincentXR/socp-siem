@@ -1,7 +1,11 @@
 package com.socp.report.web.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.socp.platform.client.AlertClient;
+import com.socp.platform.client.ServiceCall;
 import com.socp.report.web.model.ReportSummary;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -25,10 +29,15 @@ import java.util.Map;
 @Service
 public class ReportService {
 
+    private static final Logger log = LoggerFactory.getLogger(ReportService.class);
+
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    @Value("${socp.alert.url:http://localhost:18080}")
-    private String ssaUrl;
+    private final AlertClient alertClient;
+
+    public ReportService(AlertClient alertClient) {
+        this.alertClient = alertClient;
+    }
 
     @Value("${socp.ck.url:http://localhost:8123}")
     private String ckUrl;
@@ -39,10 +48,15 @@ public class ReportService {
     @Value("${socp.ck.password:socp}")
     private String ckPassword;
 
-    /** 拉取 ALERT 统计；解析失败回退到空报表，避免前端报错。 */
+    /** 拉取 ALERT 统计；不可用或解析失败回退到空报表，避免前端报错（但一定留日志）。 */
     @SuppressWarnings("unchecked")
     private Map<String, Object> fetchStats() {
-        String body = com.socp.report.web.util.Http.get(ssaUrl + "/alert-web/api/alarms/stats", 3000);
+        ServiceCall call = alertClient.stats();
+        if (!call.ok()) {
+            log.warn("报表回退数据源不可用：alert-web 统计拉取失败，本次报表将为空 原因={}", call.failureReason());
+            return Map.of();
+        }
+        String body = call.body();
         if (body == null || body.isBlank()) return Map.of();
         try {
             Map<String, Object> m = MAPPER.readValue(body, Map.class);
@@ -52,11 +66,18 @@ public class ReportService {
             }
             return m;
         } catch (Exception e) {
+            log.warn("alert-web 统计响应解析失败，本次报表将为空 error={}: {}",
+                    e.getClass().getSimpleName(), e.getMessage());
             return Map.of();
         }
     }
 
-    /** 执行 CK 查询，成功返回结果行（TSV 每行一个字符串）；失败返回 null（触发回退）。 */
+    /**
+     * 执行 CK 查询，成功返回结果行（TSV 每行一个字符串）；失败返回 null（触发回退到 alert-web）。
+     *
+     * <p>CK 不可用是**预期内**的降级路径（演示环境常不起 ClickHouse），因此记 debug 而非 warn；
+     * 真正的数据缺失会在 {@link #fetchStats()} 那一层以 warn 暴露。
+     */
     private List<String> ckQuery(String sql) {
         try {
             HttpURLConnection c = (HttpURLConnection) new URL(ckUrl).openConnection();
@@ -72,7 +93,10 @@ public class ReportService {
                 os.write(sql.getBytes(StandardCharsets.UTF_8));
             }
             int code = c.getResponseCode();
-            if (code < 200 || code >= 300) return null;
+            if (code < 200 || code >= 300) {
+                log.debug("ClickHouse 查询非 2xx，回退 alert-web 统计 status={} url={}", code, ckUrl);
+                return null;
+            }
             InputStream is = c.getInputStream();
             String body = new String(is.readAllBytes(), StandardCharsets.UTF_8);
             c.disconnect();
@@ -82,6 +106,8 @@ public class ReportService {
             }
             return lines;
         } catch (Exception e) {
+            log.debug("ClickHouse 不可达，回退 alert-web 统计 url={} error={}: {}",
+                    ckUrl, e.getClass().getSimpleName(), e.getMessage());
             return null;
         }
     }

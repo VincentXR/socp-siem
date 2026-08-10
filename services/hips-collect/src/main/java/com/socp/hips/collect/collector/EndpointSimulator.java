@@ -1,9 +1,9 @@
 package com.socp.hips.collect.collector;
 
-import com.socp.hips.collect.util.Http;
+import com.socp.platform.client.HipsClient;
+import com.socp.platform.client.ServiceCall;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -30,8 +30,11 @@ public class EndpointSimulator {
     private final List<Map<String, Object>> events = new CopyOnWriteArrayList<>();
     private int round = 0;
 
-    @Value("${socp.hips.url:http://localhost:18087}")
-    private String hipsUrl;
+    private final HipsClient hipsClient;
+
+    public EndpointSimulator(HipsClient hipsClient) {
+        this.hipsClient = hipsClient;
+    }
 
     /** 每 45 秒模拟一轮端点事件（进程启动/文件写入/网络连接）。 */
     @Scheduled(fixedDelay = 45_000, initialDelay = 25_000)
@@ -50,13 +53,9 @@ public class EndpointSimulator {
         ev.put("ts", Instant.now().toString());
         events.add(ev);
 
-        try {
-            int code = Http.post(hipsUrl + "/hips-web/api/v1/endpoints/events", toJson(ev), 3000);
-            if (code < 200 || code >= 300) {
-                log.warn("端点事件上报失败 http={}", code);
-            }
-        } catch (Exception e) {
-            log.debug("端点事件上报异常（静默降级）: {}", e.getMessage());
+        ServiceCall call = hipsClient.reportEvent(toJson(ev));
+        if (!call.ok()) {
+            log.warn("端点事件上报失败 原因={}", call.failureReason());
         }
         log.info("端点模拟 #{} 完成，累计 {} 条事件", round, events.size());
     }

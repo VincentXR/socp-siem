@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.socp</groupId>
+        <artifactId>socp-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+    <groupId>com.socp.platform</groupId>
+    <artifactId>socp-client</artifactId>
+    <name>SOCP Service Client</name>
+    <description>服务间调用统一客户端：地址解析 / 超时 / 状态码检查 / 失败可见 / 指标 / trace 透传 / 重试</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <!-- traceparent 透传（W3C），与 socp-obs 的 TraceIdFilter 共用一套实现 -->
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-obs</artifactId>
+        </dependency>
+        <!-- 服务间调用带上当前租户上下文，而不是硬编码 default -->
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-tenant</artifactId>
+        </dependency>
+        <!-- 调用指标 socp_client_calls / socp_client_latency；registry 由各服务的 actuator 提供，
+             这里只依赖 micrometer-core 接口，缺失 registry 时客户端自动降级为不打点 -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

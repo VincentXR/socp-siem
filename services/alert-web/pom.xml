@@ -14,6 +14,12 @@
     <description>态势感知告警管理（SSAP5）：告警 CRUD + 查询/下钻，t_alarm 落入 PostgreSQL/H2（见 §8.1 / §8.2）</description>
 
     <dependencies>
+        <!-- 服务间调用统一客户端（超时/状态码检查/失败可见/指标/trace 透传） -->
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-client</artifactId>
+        </dependency>
+
     <dependency>
             <groupId>com.socp.platform</groupId>
             <artifactId>socp-error</artifactId>
