@@ -1,15 +1,23 @@
 # SOCP 基础设施（P0）——docker-compose 一键起全栈中间件
 #
-# ⚠️ 重要前提（务必先读）
-#  1) 本文件声明的中间件**基本尚未在 Java 代码中接线**：
-#       - PostgreSQL / OpenSearch / Redis / ClickHouse / Temporal / MinIO：**零客户端引用**；
-#       - Kafka：仅 socp-audit 的 KafkaAuditSink 用到，且需显式配 `socp.audit.sink=kafka`（默认内存 sink）；
-#       - Keycloak：仅验签侧可用（socp-auth 的 JwtValidator 可拉其 JWKS），无 OIDC 登录流程。
-#     默认配置下起容器不会改变服务行为：17 个后端服务仍以**内存态**运行，其中 4 个
-#     （alert-web / search-config / threat-web / incident-web）用 **H2 文件库**作 PostgreSQL 替身。
+# ⚠️ 接线状态（2026-08-11 校正，与代码一致）：
+#   **已接线（真客户端）**：
+#     - PostgreSQL：alert-web(库 alert) / threat-web(库 threat) / incident-web(库 incident)，
+#       Flyway V1/V2 迁移；另 4 个服务默认 H2 文件库（search/detect/soar/asset，
+#       ~/.socp/*.mv.db），切 PG 只需改 datasource url。
+#     - Kafka：search-config producer → socp-events → detect-web consumer（Detection 主链，
+#       acks=all + 幂等 + 手动 commit + eventId 去重 + DLQ）；socp-rule-changes 规则热更新广播。
+#     - OpenSearch：search-config OsEventWriter（socp-events-yyyy.MM.dd 按天索引，HTTPS + basic）。
+#     - ClickHouse：alert-web CkReporter（alert_agg.alarm_detail，report-web 报表聚合优先查 CK）。
+#   **编排就绪（无客户端）**：Redis（限流为进程内令牌桶）/ MinIO（报表归档预留）/
+#     Temporal（SOAR 为进程内执行器）/ Keycloak（验签侧 JWKS 可用，无 OIDC 流程）。
+#   **模式**：Local Dev 默认即「混合」——3 PG + 4 H2 + 10 内存态服务；
+#   起本 compose 后中间件就绪，核心链路（Kafka/OS/CK）立即生效。
 #  2) 本文件需要本机具备 **Docker 运行时**，并非所有开发环境都具备。
-#     无 Docker 时可直接 `bash socp/build/run-all.sh start` 全栈联调，功能不受影响。
-#  3) 因此本文件当前的定位是「**面向未来接线的编排基线**」，而非运行必需项。
+#     无 Docker 时 4 个 H2 服务与内存态服务仍可 `bash build/run-all.sh start` 全栈联调，
+#     但 Kafka/OpenSearch/ClickHouse 链路不生效（detect-web 收不到事件）。
+#  3) 生产/集成模式：把 4 个 H2 服务切 PostgreSQL（SOCP_PG_* 环境变量 + 建库），
+#     并设置 SOCP_INGEST_FORWARD_HTTP / SOCP_TRACING_ENABLED 等开关，见 README「两种模式」。
 #
 # 其它说明：
 #  - 镜像 tag 钉写稿时已知 GA；正式编码前请联网到官方源核验一次（见架构报告 §1 版本核验清单）。

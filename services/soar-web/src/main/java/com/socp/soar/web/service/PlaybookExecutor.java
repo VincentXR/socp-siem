@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
@@ -85,25 +86,41 @@ public class PlaybookExecutor {
     private Map<String, Object> run(Playbook pb, Map<String, Object> alarm) {
         List<Map<String, Object>> results = new ArrayList<>();
         boolean previousFailed = false;
+        int retryCount = 0;
+        String firstError = null;
+        boolean compensating = false;
         for (String action : pb.actions()) {
             Map<String, Object> r = executeAction(action, alarm, previousFailed);
             results.add(r);
             // 补偿动作（前缀"补偿:"）只在主动作失败后执行；主动作失败会阻断后续主动作
             if (action.startsWith("补偿:") || action.startsWith("compensate:")) {
                 previousFailed = false; // 补偿已执行，视为完成该阶段
+                compensating = true;
             } else {
                 boolean ok = "success".equals(r.get("status"));
                 if (!ok) {
                     previousFailed = true; // 失败：后续只执行补偿动作
+                    Object at = r.get("attempts");
+                    retryCount += at instanceof Number n ? n.intValue() : 1;
+                    if (firstError == null) {
+                        firstError = String.valueOf(r.getOrDefault("error", "action failed"));
+                    }
                 } else {
                     previousFailed = false;
                 }
             }
         }
+        // 执行级状态机：SUCCESS / COMPENSATING（部分失败已补偿）/ FAILED（未补偿或补偿也失败）
+        boolean anyFailed = results.stream().anyMatch(r -> "failed".equals(r.get("status")));
+        String execStatus = !anyFailed ? "SUCCESS" : (compensating ? "COMPENSATING" : "FAILED");
         Map<String, Object> exec = new LinkedHashMap<>();
+        exec.put("executionId", "EXEC-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase());
         exec.put("playbookId", pb.id());
         exec.put("playbook", pb.name());
         exec.put("trigger", pb.trigger());
+        exec.put("status", execStatus);
+        exec.put("retryCount", retryCount);
+        if (firstError != null) exec.put("error", firstError);
         exec.put("results", results);
         exec.put("ts", Instant.now().toString());
         if (executions.size() > 200) executions.remove(0);

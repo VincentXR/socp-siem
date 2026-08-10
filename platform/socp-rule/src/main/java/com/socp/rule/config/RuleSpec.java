@@ -38,7 +38,10 @@ public final class RuleSpec {
     public final String keyField;     // 阈值/关联的分组字段
     public final Integer threshold;   // 阈值规则的触发次数
     public final Duration window;     // 时间窗口
-    public final boolean enabled;     // 是否启用（false 则加载时被跳过）
+    /** 规则生命周期状态（2026-08-11）：DRAFT / TESTING / ACTIVE / DISABLED / ARCHIVED。
+     *  仅 ACTIVE（或兼容旧 enabled=true）进引擎；其余状态保留在库中不执行。 */
+    public final String status;
+    public final boolean enabled;     // 派生：status==ACTIVE 或（status 缺失时）旧 enabled 布尔
     public final List<Map<String, String>> match;             // pattern / threshold 的匹配条件
     public final List<List<Map<String, String>>> steps;       // correlation 的有序步骤
 
@@ -64,7 +67,14 @@ public final class RuleSpec {
         Object w = m.get("window");
         this.window = w == null ? Duration.ofMinutes(1) : parseWindow(String.valueOf(w));
         Object en = m.get("enabled");
-        this.enabled = en == null ? true : Boolean.parseBoolean(String.valueOf(en));
+        boolean enB = en == null || Boolean.parseBoolean(String.valueOf(en));
+        Object st = m.get("status");
+        if (st != null && !String.valueOf(st).isBlank()) {
+            this.status = String.valueOf(st).toUpperCase();
+        } else {
+            this.status = enB ? "ACTIVE" : "DISABLED"; // 旧规则无 status → 按 enabled 派生
+        }
+        this.enabled = "ACTIVE".equals(this.status) || enB; // ACTIVE 或旧 enabled=true 进引擎
         this.match = parseConds((List<Object>) m.getOrDefault("match", List.of()));
         this.steps = parseSteps((List<Object>) m.getOrDefault("steps", List.of()));
 
@@ -138,6 +148,7 @@ public final class RuleSpec {
         if (threshold != null) out.put("threshold", threshold);
         out.put("window", window.toSeconds() + "s");
         out.put("enabled", enabled);
+        if (status != null) out.put("status", status);
         if (valueField != null) out.put("valueField", valueField);
         if (sigma != null) out.put("sigma", sigma);
         if (baselineWindows != null) out.put("baselineWindows", baselineWindows);

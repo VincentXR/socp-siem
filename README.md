@@ -2,6 +2,26 @@
 
 A self-hosted, event-driven SIEM/SOC platform built to explore security telemetry ingestion, detection engineering, alert investigation and automated response.
 
+**核心是 Security Event Pipeline，不是服务数量：**
+
+```
+Telemetry ingestion → Event normalization (Canonical Schema) → Kafka streaming
+→ Detection engineering (7 种规则类型 · 热更新 · 幂等 · 去重) → Alert lifecycle
+→ Incident workflow → Automated response (SOAR 剧本 · 补偿)
+```
+
+能力清单：
+
+1. **Telemetry ingestion** — Vector / NDJSON 接入，攒批 + 背压（503 + Retry-After）
+2. **Event normalization** — Parser Pipeline（JSON / Syslog / CEF / LEEF / KV / Sysmon / auditd / Falco）→ **Canonical Event Schema**（厂商无关字段模型）
+3. **Kafka-based event streaming** — `search-config → Kafka socp-events → detect-web` 唯一主链（acks=all · 幂等 · 手动 commit · DLQ）
+4. **Detection engineering** — threshold / pattern / correlation / UEBA baseline / rare 规则，窗口去重 + 抑制，规则生命周期（DRAFT→TESTING→ACTIVE→DISABLED→ARCHIVED）
+5. **Alert lifecycle** — 告警持久化（PG）+ 富化（IOC / ATT&CK）+ 状态流转（OPEN→INVESTIGATING→RESOLVED→CLOSED）
+6. **Incident workflow** — 告警自动建案/归并（UUIDv7 主键 + INC- 展示编号）
+7. **Automated response** — SOAR 剧本（通知 / 建案 / webhook），失败重试 + 补偿，执行状态机（SUCCESS / COMPENSATING / FAILED）
+
+Implemented with: Spring Boot · Kafka · OpenSearch · PostgreSQL · ClickHouse · Vector · OpenTelemetry · Vue 3
+
 The focus is the **core pipeline**, not the number of services:
 
 ```
@@ -143,6 +163,28 @@ network.protocol
 | 报表 | ClickHouse 聚合 | 明细表 `alarm_detail` 服务日报/趋势，避免 OLTP 库扛分析查询 |
 | 告警事实源 | PostgreSQL `t_alarm` | 告警生命周期（状态/处置/备注）需要强一致事务 |
 | 遥测 | OpenTelemetry SDK + W3C traceparent + Jaeger | 每请求一个 span，Kafka header 透传 trace 上下文；HTTP 与事件流同一 trace 可下钻 |
+
+## 两种运行模式（诚实接线状态）
+
+不是"假装全上中间件"。默认就是**混合模式**，起 compose 后核心链路立即生效：
+
+| 服务 | 默认（Local Dev） | 集成（Integration） |
+|---|---|---|
+| alert-web / threat-web / incident-web | **PostgreSQL**（alert/threat/incident 库，Flyway 迁移） | 同左 |
+| search-config / detect-web / soar-web / asset-web | **H2 文件库**（`~/.socp/*.mv.db`） | 切 PostgreSQL（`SOCP_PG_*` + 建库） |
+| report / soc / hips / ai / attack / notify / gateway / 采集器 | 内存态（进程内 store） | 同左（这些是展示/采集类，不强制 DB） |
+| Kafka `socp-events` | **search-config → detect-web 主链**（compose 起后生效） | 同左 |
+| OpenSearch `socp-events-*` | **search-config 写入**（compose 起后生效） | 同左 |
+| ClickHouse `alarm_detail` | **alert-web 写入**（compose 起后生效） | 同左 |
+
+**Local Dev**（无 Docker）：`bash build/run-all.sh backend` —— 3 PG 服务需要本机 PG 或改 H2 profile；
+Kafka/OS/CK 链路不生效（detect-web 收不到事件），其余功能完整。
+
+**Integration**（`docker compose -f infra/docker-compose.yml up -d` + `run-all.sh backend`）：
+Kafka/OpenSearch/ClickHouse 立即接入，`verify-pipeline.py` 12 项真链路断言可跑。
+
+> 诚实说明：4 个 H2 服务是"默认配置"，不代表"假装接 PG"——切换只需改 datasource；
+> 3 个 PG 服务是**真客户端**（Flyway 迁移真实执行）。compose 顶部注释已与代码对齐。
 
 ## 边界（诚实声明）
 

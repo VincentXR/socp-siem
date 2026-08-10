@@ -28,12 +28,16 @@ public class ParserRegistry {
     public ParserRegistry() {
         parsers = List.of(
                 new SysmonParser(),
+                new FalcoParser(),
+                new AuditdParser(),
                 new JsonParser(),
                 new SyslogParser(),
                 new CefParser(),
                 new LeefParser(),
                 new KvParser());
         byVendor.put("sysmon", new SysmonParser());
+        byVendor.put("falco", new FalcoParser());
+        byVendor.put("auditd", new AuditdParser());
         byVendor.put("json", new JsonParser());
         byVendor.put("syslog", new SyslogParser());
         byVendor.put("cef", new CefParser());
