@@ -24,24 +24,21 @@ export default defineConfig({
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
   server: {
-    port: 5173,
+    port: Number(process.env.SOCP_PORT_FRONTEND_WORKBENCH ?? 5173),
     proxy: {
-      '/alert-web': { target: 'http://localhost:18080', changeOrigin: true },
-      '/search-config': { target: 'http://localhost:18081', changeOrigin: true },
-      '/detect-web': { target: 'http://localhost:18082', changeOrigin: true },
-      '/soar-web': { target: 'http://localhost:18083', changeOrigin: true },
-      '/report-web': { target: 'http://localhost:18084', changeOrigin: true },
-      '/asset-web': { target: 'http://localhost:18085', changeOrigin: true },
-      '/soc-base': { target: 'http://localhost:18086', changeOrigin: true },
-      '/hips-web': { target: 'http://localhost:18087', changeOrigin: true },
-      '/ai-assistant': { target: 'http://localhost:18088', changeOrigin: true },
-      '/detect-model': { target: 'http://localhost:18090', changeOrigin: true },
-      '/threat-web': { target: 'http://localhost:18094', changeOrigin: true },
-      '/attack-web': { target: 'http://localhost:18095', changeOrigin: true },
-      '/notify-web': { target: 'http://localhost:18096', changeOrigin: true },
-      '/incident-web': { target: 'http://localhost:18097', changeOrigin: true },
-      '/auth': { target: 'http://localhost:18092', changeOrigin: true },
-      '/actuator': { target: 'http://localhost:18092', changeOrigin: true },
+      // ---------------------------------------------------------------------
+      // 前端只知道「网关」一个地址，不知道后端有几个服务、各自在哪个端口。
+      //
+      // 以前这里维护 17 条 localhost:180xx 代理，等于把整个服务拓扑泄漏到前端，
+      // 后端换端口/上 Docker/加服务都要回来改这个文件。现在一条正则全代到网关，
+      // 由 api-gateway 按 context-path 路由到下游 —— 拓扑知识只存在于网关一处。
+      //
+      // 生产构建不走 vite proxy：前端与网关同源部署（Nginx / 网关直接托管静态资源）。
+      // ---------------------------------------------------------------------
+      '^/(alert-web|search-config|detect-web|soar-web|report-web|asset-web|soc-base|hips-web|ai-assistant|detect-model|asset-collect|hips-collect|threat-web|attack-web|notify-web|incident-web|auth|actuator)(/|$)': {
+        target: process.env.SOCP_GATEWAY_URL ?? 'http://localhost:18092',
+        changeOrigin: true,
+      },
     },
   },
 })

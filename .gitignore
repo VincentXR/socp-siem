@@ -35,3 +35,5 @@ Thumbs.db
 # ---- 环境变量/密钥（如后续添加 .env 类文件） ----
 .env
 *.local
+# 例外：build/ports.env 是端口表（唯一来源），必须入库，不是本地密钥文件
+!build/ports.env

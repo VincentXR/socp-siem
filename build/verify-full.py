@@ -18,13 +18,13 @@ import urllib.request
 
 PASS, FAIL = [], []
 
-SVC = {
-    "alert-web": 18080, "search-config": 18081, "detect-web": 18082, "soar-web": 18083,
-    "report-web": 18084, "asset-web": 18085, "soc-base": 18086, "hips-web": 18087,
-    "ai-assistant": 18088, "detect-model": 18090, "asset-collect": 18091,
-    "api-gateway": 18092, "hips-collect": 18093, "threat-web": 18094,
-    "attack-web": 18095, "notify-web": 18096, "incident-web": 18097,
-}
+# 端口/地址唯一来源：build/ports.env（经 build/ports.py 读取）。
+# 想换端口跑： SOCP_PORT_ALERT_WEB=28080 python build/verify-full.py
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from ports import SERVICES as SVC, base_url, health_url, GATEWAY_URL  # noqa: E402
+
+#: 服务名 -> 基地址，供下面各用例拼 URL（不再出现任何硬编码端口）
+U = {name: base_url(name) for name in SVC}
 
 
 def call(url, method="GET", body=None, timeout=10):
@@ -60,7 +60,7 @@ def token():
         return _TOKEN["t"]
     try:
         req = urllib.request.Request(
-            "http://127.0.0.1:18092/auth/login",
+            GATEWAY_URL + "/auth/login",
             data=json.dumps({"username": "demo", "password": "demo123"}).encode(),
             method="POST",
         )
@@ -88,35 +88,32 @@ def unwrap(body):
 # ---------------------------------------------------------------- 1. 健康
 print("\n=== 1. 服务健康（17 个后端） ===")
 for name, port in SVC.items():
-    if name == "api-gateway":
-        st, _ = call("http://127.0.0.1:%d/actuator/health" % port)
-    else:
-        st, _ = call("http://127.0.0.1:%d/%s/actuator/health" % (port, name))
+    st, _ = call(health_url(name))
     check("%s:%d 健康" % (name, port), st == 200, st)
 
 # ---------------------------------------------------------------- 2. 情报
 print("\n=== 2. 威胁情报 threat-web ===")
 # 每轮用独立 IP，避免 alert-web 同实体告警去重导致“无新告警”（仍能在重启后校验该 IOC 仍在库）
 IOC_IP = "198.51.100.%d" % random.randint(2, 254)
-st, ioc = call("http://127.0.0.1:18094/threat-web/api/v1/iocs", "POST", {
+st, ioc = call(U["threat-web"] + "/threat-web/api/v1/iocs", "POST", {
     "type": "IP", "value": IOC_IP, "threatType": "C2", "source": "verify-full",
     "confidence": 95, "severity": "CRITICAL", "tags": ["e2e"]})
 check("新增 IOC", st == 200 and ioc.get("value") == IOC_IP, ioc)
-st, m = call("http://127.0.0.1:18094/threat-web/api/v1/iocs/match?value=" + IOC_IP)
+st, m = call(U["threat-web"] + "/threat-web/api/v1/iocs/match?value=" + IOC_IP)
 check("IOC 命中查询", st == 200 and bool(m), m)
-st, s = call("http://127.0.0.1:18094/threat-web/api/v1/stats")
+st, s = call(U["threat-web"] + "/threat-web/api/v1/stats")
 check("IOC 统计非空", st == 200 and s.get("total", 0) > 0, s)
 
 # ---------------------------------------------------------------- 3. ATT&CK
 print("\n=== 3. MITRE ATT&CK attack-web ===")
-st, tactics = call("http://127.0.0.1:18095/attack-web/api/v1/tactics")
+st, tactics = call(U["attack-web"] + "/attack-web/api/v1/tactics")
 check("战术目录 14 项", st == 200 and len(tactics) == 14, len(tactics) if st == 200 else st)
-st, techs = call("http://127.0.0.1:18095/attack-web/api/v1/techniques")
+st, techs = call(U["attack-web"] + "/attack-web/api/v1/techniques")
 check("技术目录非空", st == 200 and len(techs) > 20, len(techs) if st == 200 else st)
-st, rules = call("http://127.0.0.1:18082/detect-web/api/v1/rules")
+st, rules = call(U["detect-web"] + "/detect-web/api/v1/rules")
 rule_techs = sorted({r.get("mitre") for r in rules if r.get("mitre")}) if st == 200 else []
 check("规则已标注 ATT&CK 技术", len(rule_techs) >= 10, rule_techs)
-st, cov = call("http://127.0.0.1:18095/attack-web/api/v1/coverage", "POST",
+st, cov = call(U["attack-web"] + "/attack-web/api/v1/coverage", "POST",
                {"ruleTechniques": rule_techs})
 check("检测覆盖率可计算且 > 0", st == 200 and cov.get("coverage", 0) > 0,
       "coverage=%s%% (%s/%s)" % (cov.get("coverage"), cov.get("coveredTechniques"), cov.get("totalTechniques"))
@@ -124,15 +121,15 @@ check("检测覆盖率可计算且 > 0", st == 200 and cov.get("coverage", 0) > 
 
 # ---------------------------------------------------------------- 4. 通知渠道
 print("\n=== 4. 通知集成 notify-web ===")
-st, chans = call("http://127.0.0.1:18096/notify-web/api/v1/channels")
+st, chans = call(U["notify-web"] + "/notify-web/api/v1/channels")
 check("内置通知渠道存在", st == 200 and len(chans) >= 2, len(chans) if st == 200 else st)
 
 # ---------------------------------------------------------------- 5. 全链路
 print("\n=== 5. 端到端：采集→检测→告警→富化→通知→建案→SOAR ===")
-before_alarms = unwrap(call("http://127.0.0.1:18080/alert-web/api/alarms?size=200")[1]) or []
+before_alarms = unwrap(call(U["alert-web"] + "/alert-web/api/alarms?size=200")[1]) or []
 before_ids = {a["id"] for a in before_alarms}
 
-st, ing = call("http://127.0.0.1:18082/detect-web/api/v1/ingest", "POST", {
+st, ing = call(U["detect-web"] + "/detect-web/api/v1/ingest", "POST", {
     "source": "auth", "host": "verify-host-01", "severity": "HIGH",
     "msg": "sudo: verifier : TTY=pts/9 ; USER=root ; COMMAND=/bin/sh",
     "fields": {"src_ip": IOC_IP, "user": "verifier"}})
@@ -151,7 +148,7 @@ def wait_for(fn, timeout=20.0, interval=0.5):
 
 
 def new_alarm_of(entity):
-    cur = unwrap(call("http://127.0.0.1:18080/alert-web/api/alarms?size=200")[1]) or []
+    cur = unwrap(call(U["alert-web"] + "/alert-web/api/alarms?size=200")[1]) or []
     cand = [a for a in cur if a["id"] not in before_ids and a.get("entity") == entity]
     return cand[0] if cand and cand[0].get("tiHits") else None
 
@@ -174,7 +171,7 @@ if new_alarm:
     aid = new_alarm["id"]
 
     def my_dispatch():
-        st_, dlog_ = call("http://127.0.0.1:18096/notify-web/api/v1/dispatch-log")
+        st_, dlog_ = call(U["notify-web"] + "/notify-web/api/v1/dispatch-log")
         mine_ = [d for d in dlog_ if d.get("alarmId") == aid] if st_ == 200 else []
         return mine_ if len(mine_) >= 2 else None
 
@@ -186,7 +183,7 @@ if new_alarm:
           [d for d in mine if d.get("type") == "WEBHOOK"])
 
     def my_case():
-        st_, cases_ = call("http://127.0.0.1:18097/incident-web/api/v1/incidents")
+        st_, cases_ = call(U["incident-web"] + "/incident-web/api/v1/incidents")
         if st_ != 200:
             return None
         return next((c for c in cases_ if aid in c.get("alarmIds", [])), None)
@@ -203,7 +200,7 @@ if new_alarm:
               alarm_evs[0].get("message", "")[:100] if alarm_evs else "")
 
     def my_execs():
-        st_, ex_ = call("http://127.0.0.1:18083/soar-web/api/v1/playbooks/executions")
+        st_, ex_ = call(U["soar-web"] + "/soar-web/api/v1/playbooks/executions")
         return ex_ if st_ == 200 and len(ex_) > 0 else None
 
     execs = wait_for(my_execs) or []
@@ -211,23 +208,23 @@ if new_alarm:
 
 # ---------------------------------------------------------------- 6. 查找表 / 合规
 print("\n=== 6. 查找表与合规 ===")
-st, sets = call("http://127.0.0.1:18081/search-config/api/v1/reference-sets")
+st, sets = call(U["search-config"] + "/search-config/api/v1/reference-sets")
 check("参考数据集存在", st == 200 and len(sets) > 0, [s.get("name") for s in sets] if st == 200 else st)
-st, fwb = call("http://127.0.0.1:18086/soc-base/api/v1/compliance/frameworks")
+st, fwb = call(U["soc-base"] + "/soc-base/api/v1/compliance/frameworks")
 fw = fwb.get("frameworks", []) if isinstance(fwb, dict) else []
 check("合规框架存在", st == 200 and len(fw) > 0, [f.get("name") for f in fw] if st == 200 else st)
-st, ccov = call("http://127.0.0.1:18086/soc-base/api/v1/compliance/coverage", "POST",
+st, ccov = call(U["soc-base"] + "/soc-base/api/v1/compliance/coverage", "POST",
                 {"ruleIds": [r.get("id") for r in rules]})
 check("合规覆盖率可计算且控制项映射有效（>50%）",
       st == 200 and ccov.get("coverage", 0) > 50,
       {k: v for k, v in ccov.items() if not isinstance(v, list)} if st == 200 else st)
 
-st, rep = call("http://127.0.0.1:18084/report-web/api/v1/reports/daily")
+st, rep = call(U["report-web"] + "/report-web/api/v1/reports/daily")
 check("REPORT 日报可生成", st == 200 and bool(rep), list(rep.keys())[:6] if st == 200 else st)
 
 # ---------------------------------------------------------------- 7. UEBA / 威胁评分 / 观察名单
 print("\n=== 7. UEBA 异常基线 + 威胁评分 + 观察名单 ===")
-st, wls = call("http://127.0.0.1:18082/detect-web/api/v1/watchlists")
+st, wls = call(U["detect-web"] + "/detect-web/api/v1/watchlists")
 wl_names = {w.get("name") for w in wls} if st == 200 else set()
 check("内置观察名单已装载", st == 200 and {"privileged_accounts", "crown_jewels", "blocked_ips"} <= wl_names,
       sorted(wl_names))
@@ -240,8 +237,8 @@ watch_rules = [r for r in rules if str(r.get("id", "")).startswith("WATCH-")] if
 check("观察名单驱动规则已注册", len(watch_rules) >= 3, [r.get("id") for r in watch_rules])
 
 # 评分模型：可解释拆解 + 单调性（条件更恶劣 → 分更高）
-st, sc_low = call("http://127.0.0.1:18082/detect-web/api/v1/ueba/score?severity=LOW")
-st2, sc_hi = call("http://127.0.0.1:18082/detect-web/api/v1/ueba/score"
+st, sc_low = call(U["detect-web"] + "/detect-web/api/v1/ueba/score?severity=LOW")
+st2, sc_hi = call(U["detect-web"] + "/detect-web/api/v1/ueba/score"
                   "?severity=CRITICAL&mitre=T1486&tiHits=3&recentAlerts=10&assetCriticality=3")
 check("威胁评分可解释（含分项拆解）",
       st2 == 200 and isinstance(sc_hi.get("breakdown"), dict) and len(sc_hi["breakdown"]) >= 4,
@@ -251,13 +248,13 @@ check("威胁评分单调且封顶 100",
       "LOW=%s CRITICAL+全加成=%s" % (sc_low.get("score"), sc_hi.get("score")))
 
 # 动态改名单立刻生效：把测试实体加进 crown_jewels，实体画像的 critical 标记应翻转
-st, _ = call("http://127.0.0.1:18082/detect-web/api/v1/watchlists/crown_jewels", "POST", [IOC_IP])
-st2, wl = call("http://127.0.0.1:18082/detect-web/api/v1/watchlists/crown_jewels")
+st, _ = call(U["detect-web"] + "/detect-web/api/v1/watchlists/crown_jewels", "POST", [IOC_IP])
+st2, wl = call(U["detect-web"] + "/detect-web/api/v1/watchlists/crown_jewels")
 check("观察名单可运行时追加（无需重载规则）",
       st == 200 and st2 == 200 and IOC_IP in [str(v).lower() for v in wl.get("values", [])],
       wl.get("size"))
 
-st, ents = call("http://127.0.0.1:18082/detect-web/api/v1/ueba/entities?limit=20")
+st, ents = call(U["detect-web"] + "/detect-web/api/v1/ueba/entities?limit=20")
 check("实体风险画像已产出", st == 200 and len(ents) > 0,
       [(e.get("entity"), e.get("risk"), e.get("level")) for e in ents[:3]] if st == 200 else st)
 if st == 200 and ents:
@@ -266,12 +263,12 @@ if st == 200 and ents:
     check("风险画像含 ATT&CK / 规则下钻",
           all(("mitre" in e and "topRules" in e) for e in ents),
           {"mitre": ents[0].get("mitre"), "topRules": ents[0].get("topRules")})
-st, usum = call("http://127.0.0.1:18082/detect-web/api/v1/ueba/summary")
+st, usum = call(U["detect-web"] + "/detect-web/api/v1/ueba/summary")
 check("风险摘要含档位分布与半衰期",
       st == 200 and isinstance(usum.get("byLevel"), dict) and usum.get("halfLifeHours", 0) > 0, usum)
 
 # 告警落库应带威胁评分（检测侧与分析侧同一口径）
-st, astats = call("http://127.0.0.1:18080/alert-web/api/alarms/stats")
+st, astats = call(U["alert-web"] + "/alert-web/api/alarms/stats")
 astats = unwrap(astats)
 check("告警统计含风险分布 / 均分 / Top 风险",
       st == 200 and "byRiskLevel" in astats and "avgRisk" in astats and "topRisk" in astats,
@@ -284,7 +281,7 @@ if st == 200 and astats.get("topRisk"):
 
 # ---------------------------------------------------------------- 8. 接入任务
 print("\n=== 8. 接入任务配置与运行监控 ===")
-st, tasks = call("http://127.0.0.1:18081/search-config/api/v1/ingest/tasks")
+st, tasks = call(U["search-config"] + "/search-config/api/v1/ingest/tasks")
 check("接入任务列表可用", st == 200 and len(tasks) > 0, len(tasks) if st == 200 else st)
 if st == 200 and tasks:
     t0 = tasks[0]
@@ -295,27 +292,27 @@ if st == 200 and tasks:
 
     tid = t0["id"]
     # 自测：灌一条样例日志走完整管线
-    st_t, tres = call("http://127.0.0.1:18081/search-config/api/v1/ingest/tasks/%s/test" % tid, "POST", {})
+    st_t, tres = call(U["search-config"] + "/search-config/api/v1/ingest/tasks/%s/test" % tid, "POST", {})
     check("接入连通性自测贯通管线", st_t == 200 and tres.get("ok") is True,
           {"collector": tres.get("collector"), "pipeline": tres.get("pipeline")} if st_t == 200 else st_t)
 
     # 自测后运行指标应累加
-    st_a, after = call("http://127.0.0.1:18081/search-config/api/v1/ingest/tasks/%s" % tid)
+    st_a, after = call(U["search-config"] + "/search-config/api/v1/ingest/tasks/%s" % tid)
     check("自测后运行指标累加",
           st_a == 200 and after["runtime"].get("accepted", 0) > 0 and after["runtime"].get("lastAt"),
           {k: after["runtime"].get(k) for k in ("accepted", "forwarded", "eps1m", "health")} if st_a == 200 else st_a)
 
     # 启停
-    st_s, _ = call("http://127.0.0.1:18081/search-config/api/v1/ingest/tasks/%s/stop" % tid, "POST")
-    st_g, stopped = call("http://127.0.0.1:18081/search-config/api/v1/ingest/tasks/%s" % tid)
+    st_s, _ = call(U["search-config"] + "/search-config/api/v1/ingest/tasks/%s/stop" % tid, "POST")
+    st_g, stopped = call(U["search-config"] + "/search-config/api/v1/ingest/tasks/%s" % tid)
     check("任务可停止", st_s == 200 and st_g == 200 and stopped.get("enabled") is False,
           stopped.get("enabled") if st_g == 200 else st_g)
-    st_r, _ = call("http://127.0.0.1:18081/search-config/api/v1/ingest/tasks/%s/start" % tid, "POST")
-    st_g2, started = call("http://127.0.0.1:18081/search-config/api/v1/ingest/tasks/%s" % tid)
+    st_r, _ = call(U["search-config"] + "/search-config/api/v1/ingest/tasks/%s/start" % tid, "POST")
+    st_g2, started = call(U["search-config"] + "/search-config/api/v1/ingest/tasks/%s" % tid)
     check("任务可重新启动", st_r == 200 and st_g2 == 200 and started.get("enabled") is True,
           started.get("enabled") if st_g2 == 200 else st_g2)
 
-st, isum = call("http://127.0.0.1:18081/search-config/api/v1/ingest/tasks/summary")
+st, isum = call(U["search-config"] + "/search-config/api/v1/ingest/tasks/summary")
 check("接入摘要含 EPS / 健康分布",
       st == 200 and "eps1m" in isum and isinstance(isum.get("byHealth"), dict), isum)
 
@@ -338,18 +335,18 @@ if prev is None:
     check("持久化基线已写入（首轮：重启后再跑一次本脚本即校验存活）", True, MARKER)
 else:
     # 上一轮写的 IOC / 案件 / 接入源在服务重启后应仍然存在
-    st, m = call("http://127.0.0.1:18094/threat-web/api/v1/iocs/match?value=" + prev["ioc"])
+    st, m = call(U["threat-web"] + "/threat-web/api/v1/iocs/match?value=" + prev["ioc"])
     check("重启后 IOC 仍在库（threat-web H2）", st == 200 and bool(m) and m.get("matched", True) is not False,
           prev["ioc"])
-    st, srcs = call("http://127.0.0.1:18081/search-config/api/v1/sources")
+    st, srcs = call(U["search-config"] + "/search-config/api/v1/sources")
     check("重启后接入源仍在库（search-config H2）",
           st == 200 and any(s.get("id") == prev["source"] for s in srcs), prev["source"])
-    st, alarms_now = call("http://127.0.0.1:18080/alert-web/api/alarms?size=500")
+    st, alarms_now = call(U["alert-web"] + "/alert-web/api/alarms?size=500")
     alarms_now = unwrap(alarms_now) or []
     check("重启后历史告警仍在库（alert-web H2）",
           st == 200 and len(alarms_now) >= prev.get("alarmCount", 0) and prev.get("alarmCount", 0) > 0,
           "before=%s now=%s" % (prev.get("alarmCount"), len(alarms_now)))
-    st, cases_now = call("http://127.0.0.1:18097/incident-web/api/v1/incidents")
+    st, cases_now = call(U["incident-web"] + "/incident-web/api/v1/incidents")
     # 租户隔离（2026-08-09 修复）：default 租户只看到本租户案件；断言持久化生效（重启后仍有数据）
     check("重启后案件仍在库（incident-web H2）",
           st == 200 and len(cases_now) > 0,
@@ -358,13 +355,13 @@ else:
 # 写下这一轮的基线，供下次重启后校验
 try:
     src_id = "persist-probe-" + str(int(time.time()))
-    st_src, created = call("http://127.0.0.1:18081/search-config/api/v1/sources", "POST",
+    st_src, created = call(U["search-config"] + "/search-config/api/v1/sources", "POST",
          {"id": src_id, "name": src_id, "type": "FILE", "format": "AUTO",
           "path": "/var/log/persist-probe.log", "env": "verify", "enabled": False})
     # createFull 忽略请求里的 id、生成 UUID 主键；以响应返回的真实 id 作为基线才查得到
     real_src_id = created.get("id") if (st_src == 200 and isinstance(created, dict) and created.get("id")) else src_id
-    cur_alarms = unwrap(call("http://127.0.0.1:18080/alert-web/api/alarms?size=500")[1]) or []
-    cur_cases = call("http://127.0.0.1:18097/incident-web/api/v1/incidents")[1] or []
+    cur_alarms = unwrap(call(U["alert-web"] + "/alert-web/api/alarms?size=500")[1]) or []
+    cur_cases = call(U["incident-web"] + "/incident-web/api/v1/incidents")[1] or []
     os.makedirs(os.path.dirname(MARKER), exist_ok=True)
     with open(MARKER, "w", encoding="utf-8") as fh:
         json.dump({"ioc": IOC_IP, "source": real_src_id,

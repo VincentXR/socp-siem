@@ -1,17 +1,21 @@
 # -*- coding: utf-8 -*-
 """SOCP 纵切端到端验证：鉴权 / 多租户 / 审计 / 存储 / 限流 / 链路追踪。
 
-用法： python socp/build/verify-slice.py [网关地址]
-默认网关 http://localhost:18092，所有请求均经网关转发到 alert-web。
+用法： python build/verify-slice.py [网关地址]
+网关地址默认取 build/ports.env（唯一来源），所有请求均经网关转发到 alert-web。
 """
 import json
+import os
 import sys
 import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-GW = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:18092"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from ports import GATEWAY_URL  # noqa: E402
+
+GW = sys.argv[1] if len(sys.argv) > 1 else GATEWAY_URL
 BASE = GW + "/alert-web/api/alarms"
 PASS, FAIL = [], []
 
@@ -25,7 +29,7 @@ def real_token():
         return _TOKEN["t"]
     try:
         req = urllib.request.Request(
-            "http://127.0.0.1:18092/auth/login",
+            GW + "/auth/login",
             data=json.dumps({"username": "demo", "password": "demo123"}).encode(),
             method="POST",
         )
