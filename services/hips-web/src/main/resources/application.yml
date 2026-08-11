@@ -6,6 +6,20 @@ server:
 spring:
   application:
     name: hips-web
+  datasource:
+    # 本地持久化（H2 文件库，替代内存态；重启不丢）。生产可换 PG（同 schema）。
+    url: jdbc:h2:file:${user.home}/.socp/hips-web;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: socp
+    password: socp
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+
 
 socp:
   security:
