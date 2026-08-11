@@ -36,13 +36,16 @@ public class AlertForwarder {
     private final EntityRiskStore riskStore;
     private final AlertClient alertClient;
     private final SoarClient soarClient;
+    private final AlarmKafkaProducer alarmProducer;
 
     public AlertForwarder(RuleSpecStore ruleStore, EntityRiskStore riskStore,
-                          AlertClient alertClient, SoarClient soarClient) {
+                          AlertClient alertClient, SoarClient soarClient,
+                          AlarmKafkaProducer alarmProducer) {
         this.ruleStore = ruleStore;
         this.riskStore = riskStore;
         this.alertClient = alertClient;
         this.soarClient = soarClient;
+        this.alarmProducer = alarmProducer;
     }
 
     /** 异步无关地转发（调用方在引擎虚拟线程里，避免在热路径阻塞）。 */
@@ -78,6 +81,10 @@ public class AlertForwarder {
             log.warn("告警转发失败，该告警未进入 alert-web：alertId={} ruleId={} ruleName={} entity={} severity={} 原因={}",
                     a.id(), a.ruleId(), a.ruleName(), a.entity(), a.severity(), forwarded.failureReason());
         }
+
+        // DETECT MODEL 二次分析：告警落库成功后发原始告警到 socp-alarm-original（Kafka），
+        // detect-model 消费做窗口聚合/二次关联。best-effort：失败只 WARN，不影响告警本身。
+        alarmProducer.send(payload, a.id());
 
         // SOAR 联动：best-effort 评估启用的剧本（命中则执行 NOTIFY/CASE/webhook 等动作）。
         // 失败只影响自动化响应，不影响告警本身，交给客户端统一记 WARN 即可。

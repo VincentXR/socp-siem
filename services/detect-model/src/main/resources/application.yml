@@ -12,6 +12,12 @@ socp:
     # 生产鉴权（2026-08-09 启用）：HMAC HS256 验签，与网关 /auth/login 签发 secret 一致。
     jwt-secret: ${SOCP_JWT_SECRET}
     dev-bypass: ${SOCP_DEV_BYPASS:false}
+  kafka:
+    # 告警二次分析链路：消费 detect-web 转发的 socp-alarm-original 主题。
+    # 生产环境可用 SOCP_KAFKA_BOOTSTRAP 覆盖（如 CI 的 broker 地址）。
+    bootstrap: ${SOCP_KAFKA_BOOTSTRAP:localhost:9092}
+    alarm-topic: ${SOCP_KAFKA_ALARM_TOPIC:socp-alarm-original}
+    enabled: ${SOCP_KAFKA_ENABLED:true}
 
 management:
   endpoints:

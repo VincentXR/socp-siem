@@ -65,6 +65,12 @@
             <artifactId>micrometer-registry-prometheus</artifactId>
             <scope>runtime</scope>
         </dependency>
+        <!-- 告警 Kafka 二次分析链路（消费 socp-alarm-original，与 detect-web 同款原生 client） -->
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>kafka-clients</artifactId>
+            <version>3.9.0</version>
+        </dependency>
     </dependencies>
 
     <build>

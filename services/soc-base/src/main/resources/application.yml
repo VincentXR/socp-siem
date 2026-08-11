@@ -6,12 +6,33 @@ server:
 spring:
   application:
     name: soc-base
+  datasource:
+    # 审计落库：默认 PostgreSQL（Docker compose 的 socp-postgres，库 audit）。
+    # 需要回退 H2 时用 --spring.profiles.active=h2（见 application-h2.yml）。
+    url: jdbc:postgresql://${SOCP_PG_HOST:localhost}:${SOCP_PG_PORT:5432}/audit
+    driver-class-name: org.postgresql.Driver
+    username: ${SOCP_PG_USER:socp}
+    password: ${SOCP_PG_PASSWORD:socp}
+  jpa:
+    hibernate:
+      # Flyway 接管 schema，Hibernate 不再自动改表
+      ddl-auto: none
+    open-in-view: false
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
 
 socp:
   security:
     # 生产鉴权（2026-08-09 启用）：HMAC HS256 验签，与网关 /auth/login 签发 secret 一致。
     jwt-secret: ${SOCP_JWT_SECRET}
     dev-bypass: ${SOCP_DEV_BYPASS:false}
+  kafka:
+    # 审计消费链路：订阅各服务 @AuditOperation → socp-audit 主题，落 t_audit 表。
+    # 生产环境可用 SOCP_KAFKA_BOOTSTRAP 覆盖。
+    bootstrap: ${SOCP_KAFKA_BOOTSTRAP:localhost:9092}
+    audit-topic: ${SOCP_KAFKA_AUDIT_TOPIC:socp-audit}
+    audit-enabled: ${SOCP_KAFKA_AUDIT_ENABLED:true}
 
 management:
   endpoints:

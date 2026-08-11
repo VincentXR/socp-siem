@@ -18,15 +18,24 @@ public class SearchController {
 
     private final SplEngine engine;
     private final SearchStore store;
+    private final OsEventReader osReader;
 
-    public SearchController(SplEngine engine, SearchStore store) {
+    public SearchController(SplEngine engine, SearchStore store, OsEventReader osReader) {
         this.engine = engine;
         this.store = store;
+        this.osReader = osReader;
     }
 
     @GetMapping
     public SplEngine.QueryResult search(@RequestParam(value = "q", defaultValue = "") String q) {
-        return engine.execute(q, store.all());
+        // OpenSearch 优先（真实检索库）：可用返回 OS 结果；不可达/失败回退本地 H2 + SplEngine。
+        // OS 里只有 ingest 之后的实时数据，历史语料（进程启动前的）由本地 SearchStore 兜底，
+        // 因此查询两侧并取 total 大者更符合"全量检索"语义。
+        SplEngine.QueryResult os = osReader.search(q, 200);
+        SplEngine.QueryResult local = engine.execute(q, store.all());
+        if (os == null) return local;
+        if (os.total() >= local.total()) return os;
+        return local;
     }
 
     /** 归档导出：检索结果下载为 JSON 或 CSV。 */

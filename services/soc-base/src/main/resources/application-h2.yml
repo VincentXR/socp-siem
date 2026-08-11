@@ -1,0 +1,8 @@
+# soc-base H2 回退配置：--spring.profiles.active=h2 时使用（本地无 Docker 切片）。
+# 与 application.yml 的 PostgreSQL 默认配置共存，仅覆盖 datasource 与 Flyway 目标。
+spring:
+  datasource:
+    url: jdbc:h2:file:${user.home}/.socp/soc-base;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: socp
+    password: socp
