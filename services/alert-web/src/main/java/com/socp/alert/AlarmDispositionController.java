@@ -5,6 +5,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.Map;
+import com.socp.platform.auth.RequireRole;
 
 /**
  * 告警处置 API（工单化）：状态流转 / 分配 / 备注。
@@ -28,12 +29,14 @@ public class AlarmDispositionController {
         return disp.get(id);
     }
 
+    @RequireRole({"admin", "analyst"})
     @PutMapping("/status")
     public AlarmDispositionService.Disposition setStatus(@PathVariable String id, @RequestBody Map<String, String> body) {
         alarmService.get(id);
         return disp.setStatus(id, body.getOrDefault("status", ""));
     }
 
+    @RequireRole({"admin", "analyst"})
     @PostMapping("/assign")
     public AlarmDispositionService.Disposition assign(@PathVariable String id, @RequestBody Map<String, String> body) {
         alarmService.get(id);
@@ -42,6 +45,7 @@ public class AlarmDispositionController {
         return disp.assign(id, assignee);
     }
 
+    @RequireRole({"admin", "analyst"})
     @PostMapping("/notes")
     public AlarmDispositionService.Disposition addNote(@PathVariable String id, @RequestBody Map<String, String> body) {
         alarmService.get(id);

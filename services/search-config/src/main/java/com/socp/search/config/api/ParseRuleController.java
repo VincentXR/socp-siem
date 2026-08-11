@@ -7,6 +7,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.Map;
+import com.socp.platform.auth.RequireRole;
 
 /**
  * 解析规则 API：CRUD + 实时预览。
@@ -28,17 +29,20 @@ public class ParseRuleController {
         return store.list();
     }
 
+    @RequireRole({"admin", "analyst"})
     @PostMapping
     public ParseRule create(@RequestBody ParseRule rule) {
         return store.save(rule);
     }
 
+    @RequireRole({"admin", "analyst"})
     @DeleteMapping("/{id}")
     public Map<String, Object> delete(@PathVariable String id) {
         return Map.of("removed", store.delete(id));
     }
 
     /** 预览：用规则 + 示例行验证字段抽取 */
+    @RequireRole({"admin", "analyst"})
     @PostMapping("/preview")
     public Map<String, Object> preview(@RequestBody PreviewRequest req) {
         return preview.preview(req.ruleId(), req.format(), req.pattern(), req.line());

@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 import java.util.Map;
+import com.socp.platform.auth.RequireRole;
 
 /**
  * 查找表 / 参考数据集 REST API（context-path /search-config）。
@@ -32,6 +33,7 @@ public class ReferenceSetController {
         return store.list();
     }
 
+    @RequireRole({"admin", "analyst"})
     @PostMapping
     public ReferenceSet create(@RequestBody Map<String, Object> body) {
         @SuppressWarnings("unchecked")
@@ -39,6 +41,7 @@ public class ReferenceSetController {
         return store.add(ReferenceSet.of(str(body, "name"), str(body, "description"), entries));
     }
 
+    @RequireRole({"admin", "analyst"})
     @PostMapping("/{id}/entries")
     public Map<String, Object> addEntry(@PathVariable String id, @RequestBody Map<String, Object> body) {
         ReferenceSet rs = store.get(id);
@@ -50,6 +53,7 @@ public class ReferenceSetController {
         return Map.of("ok", true, "size", entries.size());
     }
 
+    @RequireRole({"admin", "analyst"})
     @DeleteMapping("/{id}")
     public Map<String, Object> delete(@PathVariable String id) {
         return Map.of("removed", store.delete(id), "id", id);

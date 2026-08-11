@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
+import com.socp.platform.auth.RequireRole;
 
 /**
  * HIPS 端点管理 API：注册 / 列表 / 心跳 / 事件接收 / 统计。
@@ -31,6 +32,7 @@ public class EndpointController {
         return store.list();
     }
 
+    @RequireRole({"admin", "analyst"})
     @PostMapping
     public Endpoint register(@RequestBody RegisterRequest req) {
         return store.save(Endpoint.register(req.hostname(), req.ip(), req.os(), req.agentVersion()));
@@ -79,6 +81,7 @@ public class EndpointController {
         return out;
     }
 
+    @RequireRole({"admin", "analyst"})
     @DeleteMapping("/{id}")
     public Map<String, Object> delete(@PathVariable String id) {
         return Map.of("removed", store.delete(id));

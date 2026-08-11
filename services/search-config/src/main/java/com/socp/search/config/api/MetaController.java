@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.Map;
+import com.socp.platform.auth.RequireRole;
 
 /**
  * 元数据管理 API：数据源分类 / 日志类别 / 字段字典。
@@ -36,11 +37,13 @@ public class MetaController {
         return dsStore.list();
     }
 
+    @RequireRole({"admin", "analyst"})
     @PostMapping("/data-source-types")
     public DataSourceType createDataSourceType(@RequestBody DataSourceType t) {
         return dsStore.save(t);
     }
 
+    @RequireRole({"admin", "analyst"})
     @DeleteMapping("/data-source-types/{id}")
     public Map<String, Object> deleteDataSourceType(@PathVariable String id) {
         return Map.of("removed", dsStore.delete(id));
@@ -53,11 +56,13 @@ public class MetaController {
         return catStore.list();
     }
 
+    @RequireRole({"admin", "analyst"})
     @PostMapping("/categories")
     public LogCategory createCategory(@RequestBody LogCategory c) {
         return catStore.save(c);
     }
 
+    @RequireRole({"admin", "analyst"})
     @DeleteMapping("/categories/{id}")
     public Map<String, Object> deleteCategory(@PathVariable String id) {
         return Map.of("removed", catStore.delete(id));
@@ -70,11 +75,13 @@ public class MetaController {
         return fieldStore.list();
     }
 
+    @RequireRole({"admin", "analyst"})
     @PostMapping("/fields")
     public FieldDef createField(@RequestBody FieldDef f) {
         return fieldStore.save(f);
     }
 
+    @RequireRole({"admin", "analyst"})
     @DeleteMapping("/fields/{id}")
     public Map<String, Object> deleteField(@PathVariable String id) {
         return Map.of("removed", fieldStore.delete(id));

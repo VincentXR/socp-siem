@@ -8,6 +8,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import com.socp.platform.auth.RequireRole;
 
 /**
  * ASSET 资产管理 API：CRUD + 采集上报 + 统计。
@@ -27,6 +28,7 @@ public class AssetController {
         return store.list();
     }
 
+    @RequireRole({"admin", "analyst"})
     @PostMapping
     public Asset create(@RequestBody CreateAssetRequest req) {
         return store.save(Asset.create(req.name(), req.type(), req.ip(), req.os(), req.owner(), req.criticality()));
@@ -57,6 +59,7 @@ public class AssetController {
         return out;
     }
 
+    @RequireRole({"admin", "analyst"})
     @DeleteMapping("/{id}")
     public Map<String, Object> delete(@PathVariable String id) {
         return Map.of("removed", store.delete(id));

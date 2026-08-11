@@ -6,6 +6,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.Map;
+import com.socp.platform.auth.RequireRole;
 
 /**
  * 输出目标 API：CRUD。
@@ -25,11 +26,13 @@ public class SinkTargetController {
         return store.list();
     }
 
+    @RequireRole({"admin", "analyst"})
     @PostMapping
     public SinkTarget create(@RequestBody SinkTarget target) {
         return store.save(target);
     }
 
+    @RequireRole({"admin", "analyst"})
     @DeleteMapping("/{id}")
     public Map<String, Object> delete(@PathVariable String id) {
         return Map.of("removed", store.delete(id));

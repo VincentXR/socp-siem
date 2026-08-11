@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import com.socp.platform.auth.RequireRole;
 
 /**
  * SEARCH 日志源 REST API——采集链路第一环的配置面 + 接收面。
@@ -58,6 +59,7 @@ public class LogSourceController {
         return store.list();
     }
 
+    @RequireRole({"admin", "analyst"})
     @PostMapping("/sources")
     public LogSource create(@RequestBody LogSource req) {
         LogSource src = LogSource.createFull(
@@ -77,6 +79,7 @@ public class LogSourceController {
         return Map.of("source", s.get());
     }
 
+    @RequireRole({"admin", "analyst"})
     @PutMapping("/sources/{id}")
     public Map<String, Object> update(@PathVariable String id, @RequestBody LogSource req) {
         Optional<LogSource> exist = store.get(id);
@@ -92,6 +95,7 @@ public class LogSourceController {
         return Map.of("source", updated);
     }
 
+    @RequireRole({"admin", "analyst"})
     @DeleteMapping("/sources/{id}")
     public Map<String, Object> delete(@PathVariable String id) {
         boolean ok = store.delete(id);
@@ -105,6 +109,7 @@ public class LogSourceController {
         return renderer.render(List.of(s.get()), sinkStore.list());
     }
 
+    @RequireRole({"admin", "analyst"})
     @PostMapping(value = "/render", produces = "text/plain")
     public String renderAll() {
         return renderer.render(store.enabled(), sinkStore.list());

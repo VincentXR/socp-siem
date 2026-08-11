@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import com.socp.platform.auth.RequireRole;
 
 /**
  * DETECT 检测 API：规则 CRUD + 热更新 + 事件摄取（背压 503）+ 告警/统计查询。
@@ -45,17 +46,20 @@ public class RuleController {
         return engine.listRules();
     }
 
+    @RequireRole({"admin", "analyst"})
     @PostMapping("/rules")
     public Map<String, Object> addRule(@RequestBody Map<String, Object> spec) {
         return engine.addRule(spec);
     }
 
+    @RequireRole({"admin", "analyst"})
     @PutMapping("/rules/{id}")
     public Map<String, Object> updateRule(@PathVariable String id, @RequestBody Map<String, Object> spec) {
         spec.put("id", id);
         return engine.updateRule(spec);
     }
 
+    @RequireRole({"admin", "analyst"})
     @DeleteMapping("/rules/{id}")
     public Map<String, Object> deleteRule(@PathVariable String id) {
         Map<String, Object> body = new LinkedHashMap<>();
@@ -63,6 +67,7 @@ public class RuleController {
         return body;
     }
 
+    @RequireRole({"admin", "analyst"})
     @PostMapping("/rules/reload")
     public Map<String, Object> reload() {
         engine.reload();

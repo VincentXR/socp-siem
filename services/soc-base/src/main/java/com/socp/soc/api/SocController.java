@@ -6,6 +6,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.Map;
+import com.socp.platform.auth.RequireRole;
 
 /**
  * SOC 基础 API：租户管理 + 平台概览。
@@ -25,6 +26,7 @@ public class SocController {
         return store.list();
     }
 
+    @RequireRole({"admin", "analyst"})
     @PostMapping("/tenants")
     public TenantInfo createTenant(@RequestBody Map<String, String> body) {
         return store.save(TenantInfo.create(body.get("name"), body.get("code")));

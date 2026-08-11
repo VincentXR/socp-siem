@@ -170,21 +170,21 @@ network.protocol
 
 | 服务 | 默认（Local Dev） | 集成（Integration） |
 |---|---|---|
-| alert-web / threat-web / incident-web | **PostgreSQL**（alert/threat/incident 库，Flyway 迁移） | 同左 |
-| search-config / detect-web / soar-web / asset-web | **H2 文件库**（`~/.socp/*.mv.db`） | 切 PostgreSQL（`SOCP_PG_*` + 建库） |
-| report / soc / hips / ai / attack / notify / gateway / 采集器 | 内存态（进程内 store） | 同左（这些是展示/采集类，不强制 DB） |
-| Kafka `socp-events` | **search-config → detect-web 主链**（compose 起后生效） | 同左 |
-| OpenSearch `socp-events-*` | **search-config 写入**（compose 起后生效） | 同左 |
+| alert-web / threat-web / incident-web / soc-base | **PostgreSQL**（alert/threat/incident/audit 库，Flyway 迁移） | 同左 |
+| search / detect / soar / asset / hips / notify / attack / ai / detect-model | **H2 文件库**（`~/.socp/*.mv.db`，内存+库双写，重启不丢） | 同左（H2 即持久化） |
+| gateway / report / 采集器（asset-collect / hips-collect） | 无状态（网关路由 / 查 CK+PG / 上报） | 同左（无状态不需要 DB） |
+| Kafka `socp-events` / `socp-audit` / `socp-alarm-original` | **search-config → detect-web 主链** + 审计 + 二次分析（compose 起后生效） | 同左 |
+| OpenSearch `socp-events-*` | **search-config 写 + 读**（检索优先 OS，回退 H2） | 同左 |
 | ClickHouse `alarm_detail` | **alert-web 写入**（compose 起后生效） | 同左 |
 
-**Local Dev**（无 Docker）：`bash build/run-all.sh backend` —— 3 PG 服务需要本机 PG 或改 H2 profile；
+**Local Dev**（无 Docker）：`bash build/run-all.sh backend` —— 4 个 PG 服务需要本机 PG 或改 H2 profile；
 Kafka/OS/CK 链路不生效（detect-web 收不到事件），其余功能完整。
 
 **Integration**（`docker compose -f infra/docker-compose.yml up -d` + `run-all.sh backend`）：
 Kafka/OpenSearch/ClickHouse 立即接入，`verify-pipeline.py` 12 项真链路断言可跑。
 
-> 诚实说明：4 个 H2 服务是"默认配置"，不代表"假装接 PG"——切换只需改 datasource；
-> 3 个 PG 服务是**真客户端**（Flyway 迁移真实执行）。compose 顶部注释已与代码对齐。
+> 诚实说明：**13 个有状态服务全部持久化**（PG 4 + H2 9，H2 为内存+库双写、重启自动恢复）；
+> 4 个无状态服务（网关/报表/采集器）正确无库。PG 与 H2 均为真客户端（Flyway 迁移真实执行）。
 
 ## 边界（诚实声明）
 

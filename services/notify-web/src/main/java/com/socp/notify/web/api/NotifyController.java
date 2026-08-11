@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import com.socp.platform.auth.RequireRole;
 
 /**
  * 通知与集成 REST API（context-path /notify-web）。
@@ -36,6 +37,7 @@ public class NotifyController {
         return channels.list();
     }
 
+    @RequireRole({"admin", "analyst"})
     @PostMapping("/channels")
     public Channel create(@RequestBody Map<String, Object> body) {
         @SuppressWarnings("unchecked")
@@ -46,6 +48,7 @@ public class NotifyController {
         return channels.add(ch);
     }
 
+    @RequireRole({"admin", "analyst"})
     @PostMapping("/channels/{id}/toggle")
     public Map<String, Object> toggle(@PathVariable String id) {
         Channel ch = channels.get(id);
@@ -55,6 +58,7 @@ public class NotifyController {
         return Map.of("channel", updated);
     }
 
+    @RequireRole({"admin", "analyst"})
     @DeleteMapping("/channels/{id}")
     public Map<String, Object> delete(@PathVariable String id) {
         return Map.of("removed", channels.delete(id), "id", id);

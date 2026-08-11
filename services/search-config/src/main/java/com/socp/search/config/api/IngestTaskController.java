@@ -16,6 +16,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import com.socp.platform.auth.RequireRole;
 
 /**
  * 接入任务管理 API：把"接入配置"和"运行指标"合成一个任务视图。
@@ -62,18 +63,21 @@ public class IngestTaskController {
                 .orElseGet(() -> ResponseEntity.status(404).body(Map.of("error", "source_not_found", "id", id)));
     }
 
-    @PostMapping("/ingest/tasks/{id}/start")
+        @RequireRole({"admin", "analyst"})
+@PostMapping("/ingest/tasks/{id}/start")
     public ResponseEntity<?> start(@PathVariable String id) {
         return toggle(id, true);
     }
 
-    @PostMapping("/ingest/tasks/{id}/stop")
+        @RequireRole({"admin", "analyst"})
+@PostMapping("/ingest/tasks/{id}/stop")
     public ResponseEntity<?> stop(@PathVariable String id) {
         return toggle(id, false);
     }
 
     /** 接入连通性自测：灌一条样例日志走完整解析/富化/转发链路，回显管线结果 */
-    @PostMapping("/ingest/tasks/{id}/test")
+        @RequireRole({"admin", "analyst"})
+@PostMapping("/ingest/tasks/{id}/test")
     public ResponseEntity<?> test(@PathVariable String id, @RequestBody(required = false) Map<String, Object> body) {
         Optional<LogSource> s = store.get(id);
         if (s.isEmpty()) {

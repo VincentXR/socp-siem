@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 import java.util.Map;
+import com.socp.platform.auth.RequireRole;
 
 /**
  * SOAR 剧本 API：CRUD + 启停。
@@ -34,6 +35,7 @@ public class PlaybookController {
         return store.list();
     }
 
+    @RequireRole({"admin", "analyst"})
     @PostMapping
     public Playbook create(@RequestBody CreatePlaybookRequest req) {
         Playbook pb = Playbook.create(req.name(), req.trigger(), req.actions(), req.enabled());
@@ -45,11 +47,13 @@ public class PlaybookController {
         return store.get(id);
     }
 
+    @RequireRole({"admin", "analyst"})
     @DeleteMapping("/{id}")
     public Map<String, Object> delete(@PathVariable String id) {
         return Map.of("removed", store.delete(id));
     }
 
+    @RequireRole({"admin", "analyst"})
     @PostMapping("/{id}/toggle")
     public Playbook toggle(@PathVariable String id) {
         return store.toggle(id);
@@ -62,6 +66,7 @@ public class PlaybookController {
     }
 
     /** 手动触发指定剧本执行（忽略触发条件，直接跑 actions）。 */
+    @RequireRole({"admin", "analyst"})
     @PostMapping("/{id}/execute")
     public Map<String, Object> execute(@PathVariable String id, @RequestBody(required = false) Map<String, Object> context) {
         return executor.runById(id, context == null ? Map.of() : context);
