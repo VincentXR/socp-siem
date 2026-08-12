@@ -75,7 +75,7 @@ public class AuthController {
             err.put("message", "账号或密码错误");
             return Mono.just(ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(err));
         }
-        String token = sign(username, roles.getOrDefault(username, "analyst"));
+        String token = sign(username, roles.getOrDefault(username, "analyst"), "default");
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("token", token);
         out.put("username", username);
@@ -85,14 +85,15 @@ public class AuthController {
         return Mono.just(ResponseEntity.ok(out));
     }
 
-    private String sign(String username, String role) {
+    /** 签发统一 session token（HS256）。public 供 OIDC 回调复用（Keycloak 身份源 → 统一 token）。 */
+    public String sign(String username, String role, String tenant) {
         try {
             Instant now = Instant.now();
             JWTClaimsSet claims = new JWTClaimsSet.Builder()
                     .subject(username)
                     .issuer("socp-gateway")
-                    .claim("tenant", "default")
-                    .claim("role", role)
+                    .claim("tenant", tenant == null || tenant.isBlank() ? "default" : tenant)
+                    .claim("role", role == null || role.isBlank() ? "analyst" : role)
                     .issueTime(Date.from(now))
                     .expirationTime(Date.from(now.plusSeconds(EXPIRES_SECONDS)))
                     .build();

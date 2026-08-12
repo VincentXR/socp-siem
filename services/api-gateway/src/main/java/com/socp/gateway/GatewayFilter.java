@@ -58,8 +58,8 @@ public class GatewayFilter implements GlobalFilter, Ordered {
 
         String auth = exchange.getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
         String path = exchange.getRequest().getPath().value();
-        // 登录端点放行（签发令牌的入口本身不能要求令牌）；其余请求必须带 Bearer。
-        if (path.startsWith("/auth/login")) {
+        // 登录端点放行（签发令牌的入口本身不能要求令牌；OIDC 跳转/回调同此）
+        if (path.startsWith("/auth/login") || path.startsWith("/auth/oidc/")) {
             ServerWebExchange mutated = exchange.mutate()
                     .request(r -> r.headers(headers -> headers.set("X-Trace-Id", traceId)))
                     .build();

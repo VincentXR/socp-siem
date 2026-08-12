@@ -95,6 +95,14 @@ socp:
     users: ${SOCP_AUTH_USERS:}
     roles: ${SOCP_AUTH_ROLES:}
 
+  # Keycloak OIDC 登录（PKCE 授权码，2026-08-12）：Keycloak 只作身份源，
+  # 网关回调后统一签发 HS256 session token，业务服务保持 HMAC 验签零改动。
+  oidc:
+    issuer-uri: ${SOCP_OIDC_ISSUER_URI:http://localhost:8083/realms/socp}
+    client-id: ${SOCP_OIDC_CLIENT_ID:socp-spa}
+    redirect-uri: ${SOCP_OIDC_REDIRECT_URI:http://localhost:18092/auth/oidc/callback}
+    frontend-url: ${SOCP_OIDC_FRONTEND_URL:http://localhost:5173}
+
 management:
   endpoints:
     web:
