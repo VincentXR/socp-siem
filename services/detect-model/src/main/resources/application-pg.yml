@@ -1,0 +1,19 @@
+# 生产持久化（2026-08-12）：H2 文件库 → PostgreSQL 切换 profile。
+# 默认仍走主 application.yml 的 H2（本地便利）；生产启动时加 --spring.profiles.active=pg。
+# 库 detect_model 由 infra/init-sql/pg/01_databases.sql 预建（独立库，避免与 detect-web 同库 Flyway 冲突）。
+spring:
+  datasource:
+    url: jdbc:postgresql://${SOCP_PG_HOST:localhost}:${SOCP_PG_PORT:5432}/detect_model
+    driver-class-name: org.postgresql.Driver
+    username: ${SOCP_PG_USER:socp}
+    password: ${SOCP_PG_PASSWORD:socp}
+  jpa:
+    hibernate:
+      # Flyway 接管 schema，Hibernate 不再自动改表
+      ddl-auto: none
+    open-in-view: false
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    baseline-version: 0
+    locations: classpath:db/migration

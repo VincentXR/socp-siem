@@ -43,3 +43,7 @@ CODEBUDDY.md
 
 # ---- 工具链 junction（指向本机 D 盘 tooling，仓库内不跟踪） ----
 tooling/
+
+# ---- Python 缓存 ----
+__pycache__/
+*.pyc

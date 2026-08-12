@@ -171,7 +171,7 @@ network.protocol
 | 服务 | 默认（Local Dev） | 集成（Integration） |
 |---|---|---|
 | alert-web / threat-web / incident-web / soc-base | **PostgreSQL**（alert/threat/incident/audit 库，Flyway 迁移） | 同左 |
-| search / detect / soar / asset / hips / notify / attack / ai / detect-model | **H2 文件库**（`~/.socp/*.mv.db`，内存+库双写，重启不丢） | 同左（H2 即持久化） |
+| search / detect / soar / asset / hips / notify / attack / ai / detect-model | **H2 文件库**（`~/.socp/*.mv.db`，内存+库双写，重启不丢） | 同左（H2 即持久化）；**生产可切 PostgreSQL**：启动加 `--spring.profiles.active=pg`（2026-08-12，9 服务均带 `application-pg.yml`，各配独立 PG 库 search/detect/soar/asset/hips/ai/attack/notify/detect_model，Flyway V1 同源迁移，已验证核心四服务落库） |
 | gateway / report / 采集器（asset-collect / hips-collect） | 无状态（网关路由 / 查 CK+PG / 上报） | 同左（无状态不需要 DB） |
 | Kafka `socp-events` / `socp-audit` / `socp-alarm-original` | **search-config → detect-web 主链** + 审计 + 二次分析（compose 起后生效） | 同左 |
 | OpenSearch `socp-events-*` | **search-config 写 + 读**（检索优先 OS，回退 H2） | 同左 |
