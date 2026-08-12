@@ -18,9 +18,11 @@
 # ---------- 数据源 1：文件尾部监听 ----------
 [sources.siem_files]
 type = "file"
-include = ["demo/sample.log"]
-read_from = "beginning"
-data_dir = ".cache/vector"
+# Docker 运行：仓库根挂载到 /demo（见 run-vector.sh），容器内路径 /demo/sample.log
+include = ["/demo/sample.log"]
+# 每次启动从文件末尾开始，不重放历史行
+read_from = "end"
+data_dir = "/var/lib/vector"
 
 # ---------- 数据源 2：syslog（TCP，避免 514 特权端口） ----------
 [sources.siem_syslog]
@@ -45,6 +47,15 @@ if !exists(.collector_host) {
   .collector_host = "vector-local"
 }
 .ingested_at = format_timestamp!(now(), format: "%+")
+
+# 行内 JSON 解包：file/syslog 采集的 JSON 行（Falco/采集器包装行）展开到顶层，
+# 让 SEARCH 的 JsonParser 吃完整事件（与 verify 脚本直接 POST 的格式一致），
+# 否则 host/src_ip/user 全在嵌套 message 字符串里，canonical 解析不出实体。
+if is_json(.message) {
+  parsed = parse_json(.message) ?? {}
+  . = merge!(., parsed)
+}
+
 .parse_format = "auto"
 if exists(.port) { del(.port) }
 '''
@@ -53,7 +64,9 @@ if exists(.port) { del(.port) }
 [sinks.gls_ingest]
 type = "http"
 inputs = ["gls_normalize"]
-uri = "http://localhost:18081/search-config/api/v1/ingest"
+# Docker Desktop (Windows/WSL2) 下容器内 localhost 不等于宿主，必须走 host.docker.internal；
+# 原生运行（宿主机装 vector.exe）时改回 localhost。
+uri = "http://host.docker.internal:18081/search-config/api/v1/ingest"
 method = "post"
 encoding.codec = "json"
 framing.method = "newline_delimited"
@@ -63,6 +76,9 @@ batch.timeout_secs = 2
 request.retry_attempts = 5
 request.retry_backoff_secs = 2
 request.timeout_secs = 30
+# 机机采集凭据：与 search-config socp.security.ingest-token 一致（dev-bypass=false 时必须）。
+# 运行期由 run-vector.sh 用 sed 替换 __VECTOR_TOKEN__ 为实际值（Vector 配置模板的 ${VAR} 展开不可靠）。
+request.headers.Authorization = "Bearer __VECTOR_TOKEN__"
 buffer.type = "disk"
 buffer.max_size = 268435488
 buffer.when_full = "block"

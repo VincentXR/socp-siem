@@ -2,11 +2,13 @@ package com.socp.search.config.api;
 
 import com.socp.search.config.domain.LogSource;
 import com.socp.search.config.domain.ParseFormat;
+import com.socp.search.config.domain.SinkTarget;
 import com.socp.search.config.domain.SourceType;
 import com.socp.search.config.render.VectorConfigRenderer;
 import com.socp.search.config.store.LogSourceStore;
 import com.socp.search.config.store.SinkTargetStore;
 import jakarta.annotation.PostConstruct;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 
@@ -36,13 +38,16 @@ public class LogSourceController {
     private final SinkTargetStore sinkStore;
     private final VectorConfigRenderer renderer;
     private final com.socp.search.config.service.IngestPipeline pipeline;
+    private final String vectorToken;
 
     public LogSourceController(LogSourceStore store, SinkTargetStore sinkStore,
-                               com.socp.search.config.service.IngestPipeline pipeline) {
+                               com.socp.search.config.service.IngestPipeline pipeline,
+                               @Value("${socp.vector.token:dev-vector-token}") String vectorToken) {
         this.store = store;
         this.sinkStore = sinkStore;
         this.renderer = new VectorConfigRenderer(null);
         this.pipeline = pipeline;
+        this.vectorToken = vectorToken;
     }
 
     @PostConstruct
@@ -51,6 +56,22 @@ public class LogSourceController {
         if (store.list().isEmpty()) {
             store.save(LogSource.create("demo-auth-log", SourceType.FILE, ParseFormat.AUTO,
                     "demo/sample.log", null, null, "local", true));
+        }
+        // 2026-08-12：真实采集链路种子——Vector 监听文件尾部 + syslog TCP 5514，
+        // 解析权归 SEARCH（parse_format=AUTO），与 agents/vector-pipeline/vector.toml 对齐
+        if (store.list().stream().noneMatch(s -> "real-file".equals(s.id()))) {
+            store.save(LogSource.create("real-file", SourceType.FILE, ParseFormat.AUTO,
+                    "demo/sample.log", null, null, "local", true));
+        }
+        if (store.list().stream().noneMatch(s -> "real-syslog".equals(s.id()))) {
+            store.save(LogSource.create("real-syslog", SourceType.SYSLOG, ParseFormat.AUTO,
+                    null, "0.0.0.0:5514", null, "local", true));
+        }
+        // 输出目标：SEARCH ingest + 机机 token（渲染 Vector 配置时注入 Authorization 头）
+        if (sinkStore.list().isEmpty()) {
+            sinkStore.save(SinkTarget.create("search-ingest", "SEARCH",
+                    "http://localhost:18081/search-config/api/v1/ingest",
+                    "Bearer " + vectorToken, true));
         }
     }
 
