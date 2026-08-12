@@ -84,7 +84,7 @@ import {
   listWatchlists, putWatchlist, appendWatchlist, deleteWatchlist,
   listIngestTasks, ingestSummary, startIngestTask, stopIngestTask, testIngestTask,
   alarmStats, gasRecentAlerts, gasEngineStats,
-  login as apiLogin, setToken, clearToken,
+  login as apiLogin, setToken, clearToken, setUnauthorizedHandler,
   exportAlarms, exportCases, exportSearch,
   SEVERITIES, SOURCE_TYPES, PARSE_FORMATS,
   type Alarm, type AlarmPage, type LogSource, type ParseRule, type SinkTarget,
@@ -979,6 +979,11 @@ function onMenuChange(key: string) {
 
 onMounted(() => {
   initTheme()
+  // token 过期/失效（任意 API 401）→ 清 token 回登录页，不再卡在已登录态（2026-08-13）
+  setUnauthorizedHandler(() => {
+    ElMessage.warning('登录已过期，请重新登录')
+    setTimeout(doLogout, 600)
+  })
   // OIDC 回调（2026-08-12）：网关 /auth/oidc/callback 302 回 ?socp_oidc_token=，写 token 并清 URL。
   // token 为网关统一签发的 HS256 session token，payload 里 sub=Keycloak 用户、role/tenant 来自 realm claim mapper。
   const oidcToken = new URLSearchParams(window.location.search).get('socp_oidc_token')

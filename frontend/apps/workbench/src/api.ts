@@ -80,11 +80,26 @@ export const PARSE_FORMATS = ['AUTO', 'SYSLOG', 'JSON', 'KV', 'CEF', 'LEEF'] as 
 // ---------- 通用请求 ----------
 const authHeader = (): string => `Bearer ${getToken()}`
 
+/** 401 处理（2026-08-13）：token 过期/失效时统一清 token 并通知 App 登出，
+ *  否则页面停留在"已登录"态但所有请求 401，用户无法触发重新登录。 */
+let unauthorizedHandler: (() => void) | null = null
+export function setUnauthorizedHandler(fn: (() => void) | null): void { unauthorizedHandler = fn }
+
+function assertOk(res: Response): void {
+  if (res.status === 401) {
+    clearToken()
+    const h = unauthorizedHandler
+    if (h) h()
+    throw new Error('登录已过期，请重新登录')
+  }
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+}
+
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(path, {
     headers: { Accept: 'application/json', Authorization: authHeader() },
   })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  assertOk(res)
   const body = await res.json()
   // alert-web 返回 ApiResult{code,message,data}，其余直接返回
   if (body && typeof body === 'object' && 'code' in body && 'data' in body) {
@@ -100,7 +115,7 @@ async function post<T>(path: string, data?: unknown): Promise<T> {
     headers: { 'Content-Type': 'application/json', Authorization: authHeader() },
     body: data ? JSON.stringify(data) : undefined,
   })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  assertOk(res)
   const body = await res.json()
   if (body && typeof body === 'object' && 'code' in body && 'data' in body) return body.data as T
   return body as T
@@ -112,7 +127,7 @@ async function put<T>(path: string, data?: unknown): Promise<T> {
     headers: { 'Content-Type': 'application/json', Authorization: authHeader() },
     body: data ? JSON.stringify(data) : undefined,
   })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  assertOk(res)
   const body = await res.json()
   if (body && typeof body === 'object' && 'code' in body && 'data' in body) return body.data as T
   return body as T
@@ -120,7 +135,7 @@ async function put<T>(path: string, data?: unknown): Promise<T> {
 
 async function del<T>(path: string): Promise<T> {
   const res = await fetch(path, { method: 'DELETE', headers: { Authorization: authHeader() } })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  assertOk(res)
   return (await res.json()) as T
 }
 
