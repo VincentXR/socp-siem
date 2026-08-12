@@ -1,6 +1,10 @@
 package com.socp.alert;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.error.ApiException;
+import com.socp.platform.tenant.TenantContext;
+import jakarta.annotation.PostConstruct;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -11,7 +15,9 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 告警处置（工单化）：状态流转 + 备注 + 分配人 + 操作历史。
- * 集群无关实现（内存）；生产替换为 PG t_alarm_hist（审计留存），接口不变。
+ *
+ * <p>2026-08-12（P3）：从纯内存 {@code ConcurrentHashMap} 升级为「内存 + t_alarm_disposition 双写」——
+ * 启动从库恢复、写操作同步落库，重启不丢（此前重启即清空处置/备注）。接口不变。
  *
  * <p>状态机：OPEN → INVESTIGATING → RESOLVED / CLOSED（可回退）。
  */
@@ -27,7 +33,23 @@ public class AlarmDispositionService {
         }
     }
 
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final TypeReference<List<Disposition.Note>> NOTES_TYPE = new TypeReference<>() {
+    };
+
+    private final DispositionRepository repo;
     private final Map<String, Disposition> map = new ConcurrentHashMap<>();
+
+    public AlarmDispositionService(DispositionRepository repo) {
+        this.repo = repo;
+    }
+
+    @PostConstruct
+    void init() {
+        for (DispositionEntity e : repo.findAll()) {
+            map.put(e.getAlarmId(), toDisposition(e));
+        }
+    }
 
     public Disposition get(String alarmId) {
         return map.getOrDefault(alarmId, new Disposition("OPEN", null, List.of()));
@@ -40,15 +62,13 @@ public class AlarmDispositionService {
         }
         Disposition cur = get(alarmId);
         Disposition next = new Disposition(s, cur.assignee(), cur.notes());
-        map.put(alarmId, next);
-        return next;
+        return persist(alarmId, next);
     }
 
     public Disposition assign(String alarmId, String assignee) {
         Disposition cur = get(alarmId);
         Disposition next = new Disposition(cur.status(), assignee, cur.notes());
-        map.put(alarmId, next);
-        return next;
+        return persist(alarmId, next);
     }
 
     public Disposition addNote(String alarmId, String author, String content) {
@@ -59,7 +79,47 @@ public class AlarmDispositionService {
         List<Disposition.Note> notes = new ArrayList<>(cur.notes());
         notes.add(new Disposition.Note(author == null ? "operator" : author, content.trim(), Instant.now()));
         Disposition next = new Disposition(cur.status(), cur.assignee(), List.copyOf(notes));
-        map.put(alarmId, next);
-        return next;
+        return persist(alarmId, next);
+    }
+
+    /** 内存 + 库双写：写操作同步落 t_alarm_disposition，重启恢复。 */
+    private Disposition persist(String alarmId, Disposition d) {
+        map.put(alarmId, d);
+        DispositionEntity e = repo.findByAlarmId(alarmId).orElseGet(() -> {
+            DispositionEntity n = new DispositionEntity();
+            n.setAlarmId(alarmId);
+            n.setTenantId(TenantContext.get() == null ? "default" : TenantContext.get());
+            return n;
+        });
+        e.setStatus(d.status());
+        e.setAssignee(d.assignee());
+        e.setNotes(writeNotes(d.notes()));
+        repo.save(e);
+        return d;
+    }
+
+    private static Disposition toDisposition(DispositionEntity e) {
+        return new Disposition(
+                e.getStatus() == null ? "OPEN" : e.getStatus(),
+                e.getAssignee(),
+                readNotes(e.getNotes()));
+    }
+
+    private static String writeNotes(List<Disposition.Note> notes) {
+        try {
+            return MAPPER.writeValueAsString(notes);
+        } catch (Exception ex) {
+            return "[]";
+        }
+    }
+
+    private static List<Disposition.Note> readNotes(String json) {
+        if (json == null || json.isBlank()) return List.of();
+        try {
+            List<Disposition.Note> n = MAPPER.readValue(json, NOTES_TYPE);
+            return n == null ? List.of() : n;
+        } catch (Exception ex) {
+            return List.of();
+        }
     }
 }

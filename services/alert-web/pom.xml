@@ -105,6 +105,12 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- P3 Outbox：告警事件发 Kafka（socp-alarm-events）+ 下游消费者（原生客户端，同 detect-web） -->
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>kafka-clients</artifactId>
+            <version>3.9.0</version>
+        </dependency>
     </dependencies>
 
     <build>

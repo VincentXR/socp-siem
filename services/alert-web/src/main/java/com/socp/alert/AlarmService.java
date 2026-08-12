@@ -34,19 +34,22 @@ public class AlarmService {
     private final NotifyClient notifyClient;
     private final IncidentClient incidentClient;
     private final SoarClient soarClient;
+    private final OutboxRepository outboxRepo;
 
     private static final Pattern IP = Pattern.compile("\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b");
     private static final Pattern DOMAIN = Pattern.compile("\\b(?:[a-z0-9-]+\\.)+[a-z]{2,}\\b");
 
     public AlarmService(AlarmRepository repo, CkReporter ckReporter,
                         ThreatClient threatClient, NotifyClient notifyClient,
-                        IncidentClient incidentClient, SoarClient soarClient) {
+                        IncidentClient incidentClient, SoarClient soarClient,
+                        OutboxRepository outboxRepo) {
         this.repo = repo;
         this.ckReporter = ckReporter;
         this.threatClient = threatClient;
         this.notifyClient = notifyClient;
         this.incidentClient = incidentClient;
         this.soarClient = soarClient;
+        this.outboxRepo = outboxRepo;
     }
 
     @Transactional
@@ -60,38 +63,31 @@ public class AlarmService {
         }
         alarm.setRiskLevel(com.socp.rule.score.RiskScorer.level(alarm.getRiskScore()));
         Alarm saved = repo.save(alarm);
-        // 报表层：ClickHouse 异步写明细（best-effort，失败静默）
-        ckReporter.reportAlarm(saved);
-        // 异步富化 + 联动（best-effort，不阻塞写入路径）
+        // P3 Outbox：同事务写告警事件（ALARM_CREATED），OutboxPublisher 发 Kafka socp-alarm-events，
+        // 下游（CK/Incident/SOAR/Notify）由 AlarmEventConsumer 消费——失败可重放，不再跨系统双写。
+        OutboxEvent oe = new OutboxEvent();
+        oe.setAggregateId(saved.getId());
+        oe.setEventType("ALARM_CREATED");
+        oe.setPayload(alarmJson(saved));
+        oe.setStatus("PENDING");
+        oe.setCreatedAt(java.time.Instant.now());
+        outboxRepo.save(oe);
+        // 异步富化（threat-web IOC 命中 → 二次修正风险分，落 t_alarm）；扇出由 Kafka 消费者负责
         Alarm finalSaved = saved;
-        Thread.startVirtualThread(() -> enrichAndDispatch(finalSaved));
+        Thread.startVirtualThread(() -> enrichOnly(finalSaved));
         return saved;
     }
 
     /**
-     * 告警落库后的异步富化与扇出（虚拟线程执行，不阻塞写入路径）。
-     *
-     * <p>这里是 best-effort：任一下游不可用都不影响告警本身。但 <b>不等于可以吞异常</b>——
-     * 每个下游调用的失败都由 {@code socp-client} 统一记 WARN + 指标，
-     * 本方法只兜住「自己代码抛出的意外」，并且同样打日志，绝不 {@code catch (Exception ignored)}。
+     * 告警落库后的异步威胁情报富化（虚拟线程）：命中 IOC 修正风险分并落库。
+     * 下游扇出（CK/Notify/Incident/SOAR）已在 P3 改为 Kafka 消费者（AlarmEventConsumer）驱动。
      */
-    private void enrichAndDispatch(Alarm a) {
+    private void enrichOnly(Alarm a) {
         try {
             enrichWithThreatIntel(a);
         } catch (Exception e) {
             log.warn("告警情报富化异常 alarmId={} entity={} error={}", a.getId(), a.getEntity(), summary(e));
         }
-        String alarmJson;
-        try {
-            alarmJson = alarmJson(a);
-        } catch (Exception e) {
-            log.warn("告警序列化失败，联动扇出取消 alarmId={} error={}", a.getId(), summary(e));
-            return;
-        }
-        // 联动通知 / 案件 / SOAR 自动编排：三条互不阻塞，任一失败不影响其余
-        dispatch("notify-web", a, () -> notifyClient.notifyAlert(alarmJson));
-        dispatch("incident-web", a, () -> incidentClient.createFromAlarm(alarmJson));
-        dispatch("soar-web", a, () -> soarClient.evaluate(alarmJson));
     }
 
     /** 威胁情报富化：命中 IOC 后二次修正风险分。 */
@@ -121,19 +117,6 @@ public class AlarmService {
         a.setRiskScore(s.score());
         a.setRiskLevel(s.level());
         repo.save(a);
-    }
-
-    /** 统一扇出：吞掉异常但绝不吞掉日志。 */
-    private void dispatch(String downstream, Alarm a, java.util.function.Supplier<ServiceCall> action) {
-        try {
-            ServiceCall call = action.get();
-            if (!call.ok()) {
-                log.warn("告警联动失败 downstream={} alarmId={} ruleId={} entity={} 原因={}",
-                        downstream, a.getId(), a.getRuleId(), a.getEntity(), call.failureReason());
-            }
-        } catch (Exception e) {
-            log.warn("告警联动异常 downstream={} alarmId={} error={}", downstream, a.getId(), summary(e));
-        }
     }
 
     private static String summary(Exception e) {

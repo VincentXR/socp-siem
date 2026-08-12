@@ -12,6 +12,7 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 @SpringBootApplication(scanBasePackages = {"com.socp.alert", "com.socp.platform"})
 @EntityScan(basePackages = {"com.socp.alert", "com.socp.platform"})
 @EnableJpaRepositories(basePackages = "com.socp.alert")
+@org.springframework.scheduling.annotation.EnableScheduling
 public class AlertWebApplication {
     public static void main(String[] args) {
         SpringApplication.run(AlertWebApplication.class, args);
