@@ -95,16 +95,23 @@ public class KafkaEventProducer {
     private volatile Boolean availableCache;
     private volatile long availableAt;
 
-    /** Kafka broker 可达性（partitionsFor 探测，30s 缓存）。不可达时采集管线降级直写 OpenSearch。 */
+    /** Kafka broker 可达性（TCP 连接 bootstrap，5s 缓存）。不可达时采集管线降级直写 OpenSearch。
+     *  不用 partitionsFor：metadata 有 5 分钟缓存，broker 断开后仍可能命中缓存误判为可达。 */
     public boolean isAvailable() {
         if (!enabled) return false;
-        if (availableCache != null && System.currentTimeMillis() - availableAt < 30_000L) {
+        if (availableCache != null && System.currentTimeMillis() - availableAt < 5_000L) {
             return availableCache;
         }
         boolean ok = false;
         try {
-            var p = producer();
-            ok = p.partitionsFor(topic) != null;
+            String hp = bootstrap.trim();
+            int idx = hp.indexOf(':');
+            String host = idx > 0 ? hp.substring(0, idx) : hp;
+            int port = idx > 0 ? Integer.parseInt(hp.substring(idx + 1)) : 9092;
+            try (java.net.Socket s = new java.net.Socket()) {
+                s.connect(new java.net.InetSocketAddress(host, port), 2000);
+                ok = true;
+            }
         } catch (Exception ex) {
             log.warn("Kafka 探测不可达（降级直写 OpenSearch）: {}", ex.getMessage());
             ok = false;

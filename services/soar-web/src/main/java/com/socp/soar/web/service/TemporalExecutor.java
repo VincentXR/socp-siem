@@ -26,14 +26,17 @@ public class TemporalExecutor {
 
     private final WorkflowClient workflowClient;
     private final boolean enabled;
-    /** 可用性缓存：连接探测有 3s 网络等待，30s 内复用上次结果，避免每次编排都阻塞。 */
+    private final String target;
+    /** 可用性缓存：连接探测有 2s 网络等待，5s 内复用上次结果，避免每次编排都阻塞。 */
     private volatile Boolean cachedAvailable;
     private volatile long cachedAt;
 
     public TemporalExecutor(WorkflowClient workflowClient,
-                            @org.springframework.beans.factory.annotation.Value("${socp.temporal.enabled:true}") boolean enabled) {
+                            @org.springframework.beans.factory.annotation.Value("${socp.temporal.enabled:true}") boolean enabled,
+                            @org.springframework.beans.factory.annotation.Value("${socp.temporal.target:localhost:7233}") String target) {
         this.workflowClient = workflowClient;
         this.enabled = enabled;
+        this.target = target;
     }
 
     /** Temporal 可用性探测：开关关闭或连不上（blockUntilConnected）都视为不可用。 */
@@ -41,15 +44,20 @@ public class TemporalExecutor {
         if (!enabled) {
             return false;
         }
-        if (cachedAvailable != null && System.currentTimeMillis() - cachedAt < 30_000L) {
+        if (cachedAvailable != null && System.currentTimeMillis() - cachedAt < 5_000L) {
             return cachedAvailable;
         }
         boolean ok;
         try {
-            // 真实 RPC 探测：GetSystemInfo 成功即服务端可达（失败抛 grpc 异常）
-            workflowClient.getWorkflowServiceStubs().blockingStub()
-                    .getSystemInfo(io.temporal.api.workflowservice.v1.GetSystemInfoRequest.newBuilder().build());
-            ok = true;
+            // 真实连接探测：TCP 连 Temporal 服务端（grpc 调用可能内部等待，TCP 探测 2s 内出结果）
+            String hp = target.trim();
+            int idx = hp.indexOf(':');
+            String host = idx > 0 ? hp.substring(0, idx) : hp;
+            int port = idx > 0 ? Integer.parseInt(hp.substring(idx + 1)) : 7233;
+            try (java.net.Socket s = new java.net.Socket()) {
+                s.connect(new java.net.InetSocketAddress(host, port), 2000);
+                ok = true;
+            }
         } catch (Exception e) {
             log.debug("Temporal 不可达，回退进程内执行器: {}", e.getMessage());
             ok = false;

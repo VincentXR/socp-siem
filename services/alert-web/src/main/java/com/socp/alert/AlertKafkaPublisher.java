@@ -69,15 +69,23 @@ public class AlertKafkaPublisher {
     private volatile Boolean availableCache;
     private volatile long availableAt;
 
-    /** Kafka broker 可达性（30s 缓存）：不可达时 OutboxPublisher 暂缓发布（保留 PENDING）。 */
+    /** Kafka broker 可达性（TCP 连接 bootstrap，5s 缓存）：不可达时 OutboxPublisher 暂缓发布（保留 PENDING）。
+     *  不用 partitionsFor：metadata 缓存会误判 broker 断开后仍可达。 */
     public boolean isAvailable() {
         if (!enabled) return false;
-        if (availableCache != null && System.currentTimeMillis() - availableAt < 30_000L) {
+        if (availableCache != null && System.currentTimeMillis() - availableAt < 5_000L) {
             return availableCache;
         }
         boolean ok = false;
         try {
-            ok = producer().partitionsFor(topic) != null;
+            String hp = bootstrap.trim();
+            int idx = hp.indexOf(':');
+            String host = idx > 0 ? hp.substring(0, idx) : hp;
+            int port = idx > 0 ? Integer.parseInt(hp.substring(idx + 1)) : 9092;
+            try (java.net.Socket s = new java.net.Socket()) {
+                s.connect(new java.net.InetSocketAddress(host, port), 2000);
+                ok = true;
+            }
         } catch (Exception ex) {
             log.warn("Kafka 探测不可达（outbox 暂缓发布）: {}", ex.getMessage());
             ok = false;
