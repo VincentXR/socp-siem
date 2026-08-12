@@ -24,6 +24,11 @@ socp:
     # 生产鉴权（2026-08-09 启用）：HMAC HS256 验签，与网关 /auth/login 签发 secret 一致。
     jwt-secret: ${SOCP_JWT_SECRET}
     dev-bypass: ${SOCP_DEV_BYPASS:false}
+  temporal:
+    # 双模式（2026-08-12）：Temporal 可达走 Workflow，不可达回退进程内执行器。
+    enabled: ${SOCP_TEMPORAL_ENABLED:true}
+    target: ${SOCP_TEMPORAL_TARGET:localhost:7233}
+    namespace: default
 
 management:
   endpoints:

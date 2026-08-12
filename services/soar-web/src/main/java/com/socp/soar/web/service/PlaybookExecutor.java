@@ -40,13 +40,16 @@ public class PlaybookExecutor {
     private final NotifyClient notifyClient;
     private final IncidentClient incidentClient;
     private final SocpHttpClient http;
+    private final TemporalExecutor temporalExecutor;
 
     public PlaybookExecutor(PlaybookStore store, NotifyClient notifyClient,
-                            IncidentClient incidentClient, SocpHttpClient http) {
+                            IncidentClient incidentClient, SocpHttpClient http,
+                            TemporalExecutor temporalExecutor) {
         this.store = store;
         this.notifyClient = notifyClient;
         this.incidentClient = incidentClient;
         this.http = http;
+        this.temporalExecutor = temporalExecutor;
     }
 
     /** 按 ID 手动触发执行（忽略启用状态与触发条件）。 */
@@ -84,6 +87,12 @@ public class PlaybookExecutor {
     private static final int MAX_ATTEMPTS = 3; // 每个动作最多尝试次数（重试 2 次）
 
     private Map<String, Object> run(Playbook pb, Map<String, Object> alarm) {
+        // 双模式（2026-08-12）：Temporal 可用走分布式编排，不可用回退进程内
+        if (temporalExecutor.isAvailable()) {
+            Map<String, Object> exec = temporalExecutor.run(pb, alarm);
+            recordExecution(exec);
+            return exec;
+        }
         List<Map<String, Object>> results = new ArrayList<>();
         boolean previousFailed = false;
         int retryCount = 0;
@@ -123,13 +132,19 @@ public class PlaybookExecutor {
         if (firstError != null) exec.put("error", firstError);
         exec.put("results", results);
         exec.put("ts", Instant.now().toString());
-        if (executions.size() > 200) executions.remove(0);
-        executions.add(exec);
+        recordExecution(exec);
         return exec;
     }
 
-    /** 执行单个动作（含失败重试）；activeFailed 为 true 时跳过主动作、只允许补偿动作。 */
-    private Map<String, Object> executeAction(String action, Map<String, Object> alarm, boolean activeFailed) {
+    /** 记录一次执行结果（进程内与 Temporal 模式共用，前端 /executions 可见）。 */
+    private void recordExecution(Map<String, Object> exec) {
+        if (executions.size() > 200) executions.remove(0);
+        executions.add(exec);
+    }
+
+    /** 执行单个动作（含失败重试）；activeFailed 为 true 时跳过主动作、只允许补偿动作。
+     *  public 供 Temporal Activity 复用，保证两种执行模式动作语义一致。 */
+    public Map<String, Object> executeAction(String action, Map<String, Object> alarm, boolean activeFailed) {
         Map<String, Object> r = new LinkedHashMap<>();
         r.put("action", action);
         String a = action.toLowerCase();
