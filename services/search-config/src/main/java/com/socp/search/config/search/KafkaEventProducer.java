@@ -54,6 +54,8 @@ public class KafkaEventProducer {
                     props.put(ProducerConfig.RETRIES_CONFIG, Integer.MAX_VALUE);
                     props.put(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, 5);
                     props.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 30_000);
+                    // 探测（partitionsFor）与发送的阻塞上限：broker 不可达时快速失败而非卡 60s
+                    props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 3_000);
                     producer = new KafkaProducer<>(props);
                 }
                 p = producer;
@@ -64,8 +66,7 @@ public class KafkaEventProducer {
 
     /** 异步发送一批事件（不阻塞采集热路径）；发送失败打 WARN（可观测，不再静默）。
      *  发送时透传 W3C traceparent（trace 上下文跨 Kafka 传播，见 detect-web 消费侧恢复 MDC）。 */
-    public void sendEvents(List<SearchEvent> es) {
-        if (!enabled || es == null || es.isEmpty()) return;
+    public void sendEvents(List<SearchEvent> es) {        if (!enabled || es == null || es.isEmpty()) return;
         String traceparent = com.socp.platform.obs.TraceIdFilter.buildTraceparent();
         Thread.startVirtualThread(() -> {
             try {
@@ -88,5 +89,28 @@ public class KafkaEventProducer {
                 log.warn("Kafka 发送异常（降级为 HTTP 直连兜底）: {}", ex.getMessage());
             }
         });
+    }
+
+    // ---- P2（2026-08-12）：Kafka 可用性探测 ----
+    private volatile Boolean availableCache;
+    private volatile long availableAt;
+
+    /** Kafka broker 可达性（partitionsFor 探测，30s 缓存）。不可达时采集管线降级直写 OpenSearch。 */
+    public boolean isAvailable() {
+        if (!enabled) return false;
+        if (availableCache != null && System.currentTimeMillis() - availableAt < 30_000L) {
+            return availableCache;
+        }
+        boolean ok = false;
+        try {
+            var p = producer();
+            ok = p.partitionsFor(topic) != null;
+        } catch (Exception ex) {
+            log.warn("Kafka 探测不可达（降级直写 OpenSearch）: {}", ex.getMessage());
+            ok = false;
+        }
+        availableCache = ok;
+        availableAt = System.currentTimeMillis();
+        return ok;
     }
 }

@@ -54,6 +54,14 @@ public class SearchStore {
 
     /** 批量写入（攒批场景）：一次 saveAll 落库，避免逐条 H2 insert 拖慢采集吞吐。 */
     public synchronized void ingestBatch(List<SearchEvent> es) {
+        saveBatch(es);
+        // 生产检索库：OpenSearch 异步落索引（best-effort，失败静默；null=单测跳过）。
+        // 2026-08-12 P2：Kafka 可用时 OS 由 OsIndexerConsumer 消费写入（可重放），此直写仅作无 Kafka 回退。
+        if (osWriter != null) osWriter.writeEvents(es);
+    }
+
+    /** 只落 H2（内存 List + repository），不写 OpenSearch——P2 后 OS 走 Kafka 消费侧写入。 */
+    public synchronized void saveBatch(List<SearchEvent> es) {
         if (es == null || es.isEmpty()) return;
         events.addAll(es);
         int over = events.size() - CAP;
@@ -61,8 +69,6 @@ public class SearchStore {
             events.remove(0);
         }
         repo.saveAll(es.stream().map(SearchStore::toEntity).toList());
-        // 生产检索库：OpenSearch 异步落索引（best-effort，失败静默；null=单测跳过）
-        if (osWriter != null) osWriter.writeEvents(es);
     }
 
     public int size() {
