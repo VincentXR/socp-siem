@@ -38,7 +38,7 @@ defineProps<{
           <div class="ov-side-label">高危告警（CRITICAL+HIGH）</div>
         </div>
         <div class="ov-side-item">
-          <div class="ov-side-num" style="color:#30d158">{{ stat.online }}/11</div>
+          <div class="ov-side-num" style="color:#30d158">{{ stat.online }}/{{ HEALTH_TARGETS.length }}</div>
           <div class="ov-side-label">服务在线</div>
         </div>
       </div>
