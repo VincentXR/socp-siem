@@ -1,5 +1,16 @@
 # 模块地图与落地度
 
+> ## ⚠️ 本文档已过期（最后同步 2026-08-09）
+>
+> 下表反映 2026-08-08/09 状态，**与当前代码不符**。变化要点（详见 README.md 与代码）：
+> - **持久化**：文末"13 服务纯内存"已过时 → 13/13 有状态服务全持久化（PG 4 + H2 9 双写）；2026-08-12 起 9 个 H2 服务可切 PG（`application-pg.yml`）
+> - **鉴权**："无 RBAC"已过时 → 15 控制器 43 写端点 `@RequireRole(admin/analyst)`；dev-bypass 默认 false（JWT HMAC 全链验签）
+> - **中间件接线**：文末表"Java 代码接线 ⛔ 无"已过时 → Kafka/OpenSearch/ClickHouse 全接线（见 README「两种运行模式」）
+> - **CI**："无 CI、非 git 仓库"已过时 → `.github/workflows/ci.yml` 三 job 存在
+> - **2026-08-12 新增**：真实采集链路（Vector/collect 转发）、SOAR Temporal 双模式、Keycloak OIDC PKCE 登录
+>
+> **当前真相源：`README.md` 与仓库代码**；本文件保留历史逐模块记录供追溯。
+
 > 状态图例：✅ 真实实现 · 🟡 部分/占位/骨架 · ⛔ 未实现或未接线 · ❌ 缺失
 >
 > **重要口径**：本文中的 ✅ 一律表示「**进程内逻辑已实现、服务可运行**」，

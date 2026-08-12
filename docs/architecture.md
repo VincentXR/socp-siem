@@ -1,5 +1,16 @@
 # SOCP 企业级 SIEM 平台 —— 架构
 
+> ## ⚠️ 本文档已过期（最后同步 2026-08-09）
+>
+> 下方内容反映 2026-08-08/09 的目标架构与当时落地状态，**与当前代码有大量出入**：
+> - "RBAC 未实现" → **已实现**：15 控制器 43 个管理写端点统一 `@RequireRole(admin/analyst)`
+> - "中间件零接线" → **已接线**：Kafka（socp-events/socp-audit/socp-alarm-original 三 topic）、OpenSearch（socp-events-* 检索）、ClickHouse（alarm_detail 报表）、PG（4 库告警/案件/情报/审计）
+> - "无 CI" → **已有**：`.github/workflows/ci.yml`（build/e2e/e2e-pipeline）
+> - "13 服务纯内存" → **13/13 有状态服务全持久化**（PG 4 + H2 9 双写）；2026-08-12 起 H2 服务可切 PG（`--spring.profiles.active=pg`）
+> - 2026-08-12 新增：真实采集链路（Vector file/syslog → ingest）、SOAR Temporal 双模式、Keycloak OIDC PKCE 登录
+>
+> **当前真相源：`README.md` 与仓库代码**。本文件仅保留历史设计脉络，供追溯"为什么这么设计"。
+
 > 本文档描述目标架构与当前落地状态。状态会随开发推进更新（见 module-map.md）。
 
 ## 0. 一句话
