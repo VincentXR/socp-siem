@@ -193,6 +193,7 @@ Kafka/OpenSearch/ClickHouse 立即接入，`verify-pipeline.py` 12 项真链路�
 - **Kafka**：演示环境单 broker（副本因子 1）；生产按集群调整分区/副本
 - **SOAR**：剧本执行/重试/补偿在进程内实现（语义等价），未用 Temporal 分布式编排
 - **Keycloak**：验签侧可切换 `issuer-uri`（JWKS），OIDC 登录流程未实跑
+- **RBAC**：管理写端点统一 `@RequireRole(admin/analyst)`（规则/接入配置/剧本/渠道/处置/租户/端点等 15 个控制器），viewer 只读；采集/机机端点（ingest/collect/evaluate/notify）与登录端点豁免
 - 所有服务默认走 `dev` profile（本地账号表）；生产请用环境变量覆盖 `SOCP_JWT_SECRET` / `SOCP_PG_*` 等
 
 ## 快速开始（约 15 分钟）
@@ -211,11 +212,12 @@ bash build/mvnw.sh -DskipTests package
 # 3) 起后端服务（端口 18080~18097，日志 .cache/*.log）
 bash build/run-all.sh backend
 
-# 4) 前端控制台
-cd frontend/apps/workbench && node ../../node_modules/vite/bin/vite.js --port 5188
+# 4) 前端控制台（start-frontend.sh 用 cd -P 解析物理路径启动，
+#    规避 vite 6.4.3 在 junction 路径下依赖改写失效导致白屏的问题）
+bash build/start-frontend.sh            # 默认 5173，可传端口参数
 ```
 
-访问：**控制台** http://localhost:5188（demo / demo123）· **Grafana** http://localhost:3000（admin / Socp@2026）
+访问：**控制台** http://localhost:5173（demo / demo123）· **Grafana** http://localhost:3000（admin / Socp@2026）
 中间件：PG `socp/socp` · OpenSearch `admin/Socp!Sec2026xK` · ClickHouse `default/socp`
 
 > ⚠️ 凭据为演示用途，生产请用环境变量覆盖。
