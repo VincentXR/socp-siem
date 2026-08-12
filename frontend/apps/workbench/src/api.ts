@@ -418,7 +418,8 @@ export const aiAsk = (question: string) => post<AiResult>('/ai-assistant/api/v1/
 // ---------- 健康检查 ----------
 export async function checkHealth(path: string): Promise<'up' | 'down'> {
   try {
-    const res = await fetch(path, { signal: AbortSignal.timeout(3000) })
+    // 必须带 token：网关对路由到业务服务的 /actuator/health 也要求 Bearer（网关自身 /actuator 例外）
+    const res = await fetch(path, { headers: { Authorization: authHeader() }, signal: AbortSignal.timeout(3000) })
     if (!res.ok) return 'down'
     const body = await res.json()
     return String(body?.status ?? '').toUpperCase() === 'UP' ? 'up' : 'down'
