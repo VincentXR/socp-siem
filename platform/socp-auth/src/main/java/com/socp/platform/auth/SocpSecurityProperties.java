@@ -31,6 +31,10 @@ public class SocpSecurityProperties {
     /** 租户 claim 名，校验通过后写入 TenantContext */
     private String tenantClaim = "tenant";
 
+    /** 机机采集凭据（Vector/Agent 静态 token）：Authorization 与之匹配时跳过 JWT 验签直接放行。
+     *  仅用于采集端点（ingest/collect），比正式 JWT 简单且不依赖网关签发。默认关闭。 */
+    private String ingestToken;
+
     /** 允许的时钟偏移（秒），用于 exp/nbf 校验 */
     private int clockSkewSeconds = 60;
 
@@ -110,6 +114,14 @@ public class SocpSecurityProperties {
 
     public void setTenantClaim(String tenantClaim) {
         this.tenantClaim = tenantClaim;
+    }
+
+    public String getIngestToken() {
+        return ingestToken;
+    }
+
+    public void setIngestToken(String ingestToken) {
+        this.ingestToken = ingestToken;
     }
 
     public int getClockSkewSeconds() {

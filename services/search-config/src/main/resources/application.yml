@@ -30,6 +30,13 @@ socp:
     # 生产鉴权（2026-08-09 启用）：HMAC HS256 验签，与网关 /auth/login 签发 secret 一致。
     jwt-secret: ${SOCP_JWT_SECRET}
     dev-bypass: ${SOCP_DEV_BYPASS:false}
+    # 机机采集凭据：Vector 渲染配置里 Authorization 头的值（socp.vector.token）匹配即放行，
+    # 否则采集器在 dev-bypass=false 下会被 401 挡在链路外。
+    ingest-token: ${SOCP_INGEST_TOKEN:dev-vector-token}
+  vector:
+    # 渲染 Vector 配置时注入的采集 token（Authorization: Bearer），与 Vector sink 约定一致；
+    # dev-bypass=false 时 ingest 校验此 token，缺失/不匹配返回 401。
+    token: ${SOCP_VECTOR_TOKEN:dev-vector-token}
   detect:
     url: http://localhost:18082
 

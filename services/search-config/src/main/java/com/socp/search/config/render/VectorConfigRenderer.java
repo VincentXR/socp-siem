@@ -42,12 +42,13 @@ public class VectorConfigRenderer {
             return sb.toString();
         }
 
-        String sinkUri = outputs.stream()
+        SinkTarget selected = outputs.stream()
                 .filter(SinkTarget::enabled)
-                .map(SinkTarget::uri)
-                .filter(u -> u != null && !u.isBlank())
+                .filter(t -> t.uri() != null && !t.uri().isBlank())
                 .findFirst()
-                .orElse(defaultUri);
+                .orElse(null);
+        String sinkUri = selected == null ? defaultUri : selected.uri();
+        String authToken = selected == null ? null : selected.authToken();
 
         List<String> transformNames = new java.util.ArrayList<>();
         for (LogSource src : active) {
@@ -57,7 +58,7 @@ public class VectorConfigRenderer {
             sb.append(emitTransform(src, id, tName));
             transformNames.add(tName);
         }
-        sb.append(sinkBlock(sinkUri, transformNames));
+        sb.append(sinkBlock(sinkUri, authToken, transformNames));
         sb.append(footer());
         return sb.toString();
     }
@@ -159,9 +160,16 @@ public class VectorConfigRenderer {
                 """.formatted(tName, srcId, tag, fmt, rules);
     }
 
-    private String sinkBlock(String uri, List<String> transformInputs) {
+    private String sinkBlock(String uri, String authToken, List<String> transformInputs) {
         String inputs = transformInputs.stream().map(t -> "\"" + t + "\"")
                 .collect(Collectors.joining(", ", "[", "]"));
+        // 输出目标可选带机机 token（Authorization 头）；dev-bypass=false 时缺失会导致 ingest 401。
+        // authToken 语义允许已含 "Bearer " 前缀（SinkTarget 注释），此时不再重复加。
+        String auth = (authToken == null || authToken.isBlank())
+                ? ""
+                : "\nrequest.headers.Authorization = \""
+                    + (authToken.startsWith("Bearer ") ? authToken : "Bearer " + authToken)
+                    + "\"";
         return """
                 \n# ---------- 转发：NDJSON 批量 POST 给 SEARCH 输出目标 ----------
                 [sinks.gls_ingest]
@@ -184,11 +192,12 @@ public class VectorConfigRenderer {
                 request.retry_attempts = 5
                 request.retry_backoff_secs = 2
                 request.timeout_secs = 30
+                %s
 
                 buffer.type = "disk"
                 buffer.max_size = 268435488
                 buffer.when_full = "block"
-                """.formatted(inputs, uri);
+                """.formatted(inputs, uri, auth);
     }
 
     private String header() {

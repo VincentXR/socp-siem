@@ -30,9 +30,11 @@ public class AuthInterceptor implements HandlerInterceptor {
     private static final String BEARER = "Bearer ";
 
     private final JwtValidator jwtValidator;
+    private final SocpSecurityProperties props;
 
-    public AuthInterceptor(JwtValidator jwtValidator) {
+    public AuthInterceptor(JwtValidator jwtValidator, SocpSecurityProperties props) {
         this.jwtValidator = jwtValidator;
+        this.props = props;
     }
 
     @Override
@@ -49,7 +51,12 @@ public class AuthInterceptor implements HandlerInterceptor {
 
         String tenantFromClaim = null;
         String role = null;
-        if (!jwtValidator.isDevBypass()) {
+        // 机机采集凭据（Vector/Agent 静态 token）：与 Authorization 精确匹配时跳过 JWT 验签，
+        // 按 analyst 角色放行（ingest/collect 为写端点且无 @RequireRole）。用于采集器连不上网关签发的场景。
+        String ingestToken = props.getIngestToken();
+        if (ingestToken != null && !ingestToken.isBlank() && ingestToken.equals(token)) {
+            role = "analyst";
+        } else if (!jwtValidator.isDevBypass()) {
             JWTClaimsSet claims;
             try {
                 claims = jwtValidator.validate(token);
