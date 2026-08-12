@@ -19,6 +19,12 @@ PORT="${1:-5173}"
 
 # 仓库根（-P 解析 junction -> 物理路径；本文件在 <repo>/build/ 下）
 ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Windows：node.exe 不认 /c/ 风格 POSIX 路径，转成盘符路径 C:/...（同 run-all.sh 的坑）
+if command -v cygpath >/dev/null 2>&1; then
+  ROOT="$(cygpath -m "$ROOT")"
+else
+  ROOT="$(printf '%s:%s' "${ROOT:1:1}" "${ROOT:2}")"
+fi
 WORKBENCH="$ROOT/frontend/apps/workbench"
 VITE_BIN="$ROOT/frontend/node_modules/vite/bin/vite.js"
 

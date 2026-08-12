@@ -84,7 +84,7 @@ import {
   listWatchlists, putWatchlist, appendWatchlist, deleteWatchlist,
   listIngestTasks, ingestSummary, startIngestTask, stopIngestTask, testIngestTask,
   alarmStats, gasRecentAlerts, gasEngineStats,
-  login as apiLogin, clearToken,
+  login as apiLogin, setToken, clearToken,
   exportAlarms, exportCases, exportSearch,
   SEVERITIES, SOURCE_TYPES, PARSE_FORMATS,
   type Alarm, type AlarmPage, type LogSource, type ParseRule, type SinkTarget,
@@ -979,6 +979,20 @@ function onMenuChange(key: string) {
 
 onMounted(() => {
   initTheme()
+  // OIDC 回调（2026-08-12）：网关 /auth/oidc/callback 302 回 ?socp_oidc_token=，写 token 并清 URL。
+  // token 为网关统一签发的 HS256 session token，payload 里 sub=Keycloak 用户、role/tenant 来自 realm claim mapper。
+  const oidcToken = new URLSearchParams(window.location.search).get('socp_oidc_token')
+  if (oidcToken) {
+    setToken(oidcToken)
+    const claims = decodeJwtPayload(oidcToken)
+    if (claims) {
+      try {
+        localStorage.setItem('socp_user', claims.sub || 'socp-user')
+        localStorage.setItem('socp_role', claims.role || 'analyst')
+      } catch { /* ignore */ }
+    }
+    window.history.replaceState({}, '', window.location.pathname)
+  }
   try {
     currentUser.value = localStorage.getItem('socp_user') || ''
     currentRole.value = localStorage.getItem('socp_role') || ''
@@ -1001,6 +1015,14 @@ onUnmounted(() => {
   }
   window.removeEventListener('resize', onWinResize)
 })
+
+/** 解码 JWT payload（不验签，仅取展示用 sub/role；验签在网关/服务侧完成） */
+function decodeJwtPayload(t: string): Record<string, any> | null {
+  try {
+    const p = t.split('.')[1]
+    return JSON.parse(atob(p.replace(/-/g, '+').replace(/_/g, '/')))
+  } catch { return null }
+}
 
 /** 图表随窗口自适应：切页时实例可能未挂载，逐个判活再 resize */
 function onWinResize() {

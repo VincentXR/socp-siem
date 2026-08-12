@@ -191,10 +191,11 @@ Kafka/OpenSearch/ClickHouse 立即接入，`verify-pipeline.py` 12 项真链路�
 - **多租户**：当前为 `tenant_id` 列的**逻辑隔离**（SDK 强制写入 + 查询过滤），不是物理隔离（同库同表）
 - **ai-assistant**：关键词知识库问答，**未接外部 LLM**——本项目暂不做"为 AI 而 AI"
 - **Kafka**：演示环境单 broker（副本因子 1）；生产按集群调整分区/副本
-- **SOAR**：剧本执行/重试/补偿在进程内实现（语义等价），未用 Temporal 分布式编排
-- **Keycloak**：验签侧可切换 `issuer-uri`（JWKS），OIDC 登录流程未实跑
+- **SOAR（2026-08-12 双模式）**：Temporal 可达（`docker compose --profile extra up -d temporal`）走 Workflow/Activity 分布式编排；不可达自动回退进程内执行器（双模式，绝不因编排中间件故障拖垮告警响应）
+- **Keycloak（2026-08-12 OIDC 已实跑）**：PKCE 授权码登录（`socp-spa` 客户端，`docker compose --profile extra up -d keycloak`），Keycloak 只作身份源，网关回调统一签发 HS256 session token，业务服务保持 HMAC 验签；`/auth/login` demo 账号保留。验签侧亦可切 `issuer-uri`（JWKS）
+- **采集（2026-08-12 真实链路）**：`build/run-vector.sh` 起 Docker Vector 采集真实文件（`demo/sample.log`）+ syslog TCP 5514 → search-config ingest（机机 token 鉴权）→ canonical 解析 → OpenSearch/Kafka → 检测；asset-collect/hips-collect 把上报事件真转发进同一主链。Falco 规则（`agents/falco-rules`）配置就绪，Windows 下未真跑（仅 Linux）
 - **RBAC**：管理写端点统一 `@RequireRole(admin/analyst)`（规则/接入配置/剧本/渠道/处置/租户/端点等 15 个控制器），viewer 只读；采集/机机端点（ingest/collect/evaluate/notify）与登录端点豁免
-- 所有服务默认走 `dev` profile（本地账号表）；生产请用环境变量覆盖 `SOCP_JWT_SECRET` / `SOCP_PG_*` 等
+- 所有服务默认走 `dev` profile（本地账号表）；生产请用环境变量覆盖 `SOCP_JWT_SECRET` / `SOCP_PG_*` / `SOCP_OIDC_*` 等
 
 ## 快速开始（约 15 分钟）
 

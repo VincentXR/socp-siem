@@ -31,6 +31,11 @@ function quickFill(u: string, p: string) {
   username.value = u
   password.value = p
 }
+
+/** Keycloak OIDC 登录：跳网关 /auth/oidc/login（302 到 Keycloak），回调后带 ?socp_oidc_token= 回来 */
+function oidcLogin() {
+  window.location.href = '/auth/oidc/login'
+}
 </script>
 
 <template>
@@ -70,6 +75,16 @@ function quickFill(u: string, p: string) {
         <span class="quick-label">演示账号</span>
         <button type="button" class="chip" @click="quickFill('demo', 'demo123')">分析师 demo</button>
         <button type="button" class="chip" @click="quickFill('admin', 'admin123')">管理员 admin</button>
+      </div>
+
+      <div class="oidc-row">
+        <button type="button" class="oidc-btn" @click="oidcLogin">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="11" width="18" height="11" rx="2" />
+            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+          </svg>
+          <span>Keycloak 统一登录</span>
+        </button>
       </div>
     </div>
 
@@ -159,6 +174,20 @@ function quickFill(u: string, p: string) {
   transition: background .12s ease, border-color .12s ease, color .12s ease;
 }
 .chip:hover { background: var(--ns-accent-subtle); border-color: var(--ns-accent); color: var(--ns-accent-fg); }
+
+.oidc-row { margin-top: 14px; }
+.oidc-btn {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; height: 42px;
+  border: 1px solid var(--ns-border-strong);
+  border-radius: 999px;
+  background: var(--ns-bg-subtle);
+  color: var(--ns-text-2);
+  font-size: 13px; font-weight: 500;
+  cursor: pointer;
+  transition: background .12s ease, border-color .12s ease, color .12s ease;
+}
+.oidc-btn:hover { background: var(--ns-accent-subtle); border-color: var(--ns-accent); color: var(--ns-accent-fg); }
 
 .login-foot { font-size: 12px; color: var(--ns-text-3); }
 </style>
