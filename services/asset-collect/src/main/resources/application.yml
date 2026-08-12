@@ -12,6 +12,8 @@ socp:
     # 生产鉴权（2026-08-09 启用）：HMAC HS256 验签，与网关 /auth/login 签发 secret 一致。
     jwt-secret: ${SOCP_JWT_SECRET}
     dev-bypass: ${SOCP_DEV_BYPASS:false}
+    # 机机采集凭据：Agent/采集器用静态 token 访问 /collect（与 search-config ingest-token 同值）
+    ingest-token: ${SOCP_INGEST_TOKEN:dev-vector-token}
   asset:
     url: ${SOCP_ASSET_URL:http://localhost:18085}
 
