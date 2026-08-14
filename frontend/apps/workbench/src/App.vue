@@ -50,12 +50,15 @@ function registerChartTheme() {
   })
 }
 registerChartTheme()
+
+/** 主题感知取色：实时态势图表仍由主壳层维护 */
+function tc(light: string, dark: string): string { return theme.value === 'dark' ? dark : light }
+
 import LoginView from './LoginView.vue'
 import AnimatedNumber from './AnimatedNumber.vue'
 import AppShell from './components/AppShell.vue'
 import TrendChart from './components/TrendChart.vue'
 import SevBadge from './components/SevBadge.vue'
-import PagerBar from './components/PagerBar.vue'
 import OverviewView from './views/OverviewView.vue'
 import AlarmsView from './views/AlarmsView.vue'
 import { getVisibleMenuGroups } from './app/navigation'
@@ -68,12 +71,8 @@ import {
   listCategories, createCategory, deleteCategory,
   listFields, createField, deleteField,
   listRules, createGasRule, updateGasRule, deleteGasRule, gasStats, gasIngest,
-  dailyReport, trend7d,
   listTenants, socOverview,
-  archiveReport, listArchive,
   checkHealth, HEALTH_TARGETS,
-  listIocs, createIoc, deleteIoc, tiMatch, tiStats,
-  listTactics, listTechniques, attackCoverage,
   listCases,
   uebaEntities, uebaEntity, uebaSummary, uebaScore,
   listWatchlists, putWatchlist, appendWatchlist, deleteWatchlist,
@@ -85,8 +84,8 @@ import {
   type Alarm, type AlarmPage, type LogSource, type ParseRule, type SinkTarget,
   type DataSourceType, type LogCategory, type FieldDef,
   type Disposition,
-  type ReportSummary, type TenantInfo,
-  type Ioc, type Technique, type CaseInfo,
+  type TenantInfo,
+  type CaseInfo,
   type RiskEntity, type RiskSummary, type ScoreBreakdown, type Watchlist,
   type IngestTask, type IngestSummary, type AlarmStats, type GasAlert, type GasStats,
 } from './api'
@@ -101,6 +100,9 @@ const NotifyView = defineAsyncComponent(() => import('./views/NotifyView.vue'))
 const CasesView = defineAsyncComponent(() => import('./views/CasesView.vue'))
 const RefsetView = defineAsyncComponent(() => import('./views/RefsetView.vue'))
 const ComplianceView = defineAsyncComponent(() => import('./views/ComplianceView.vue'))
+const ReportView = defineAsyncComponent(() => import('./views/ReportView.vue'))
+const ThreatIntelView = defineAsyncComponent(() => import('./views/ThreatIntelView.vue'))
+const AttackView = defineAsyncComponent(() => import('./views/AttackView.vue'))
 
 // ---------- 导航 ----------
 const activeMenu = ref('overview')
@@ -152,7 +154,6 @@ function toggleTheme() {
   applyTheme(theme.value === 'light' ? 'dark' : 'light')
   // 主题切换后重绘图表（echarts canvas 不跟随 CSS 变量）
   loadSituation()
-  loadReport()
 }
 function initTheme() {
   let t: 'light' | 'dark' | null = null
@@ -220,14 +221,12 @@ const showWlDialog = ref(false)
 const showDsDialog = ref(false)
 const showCatDialog = ref(false)
 const showFieldDialog = ref(false)
-const showIocDialog = ref(false)
 const showSourceDialog = ref(false)
 const showOutputDialog = ref(false)
 function openWlDialog() { newWl.value = { name: '', values: '' }; showWlDialog.value = true }
 function openDsDialog() { newDsType.value = { code: '', name: '', description: '', enabled: true }; showDsDialog.value = true }
 function openCatDialog() { newCategory.value = { code: '', name: '', description: '', defaultSeverity: 'MEDIUM', enabled: true }; showCatDialog.value = true }
 function openFieldDialog() { newField.value = { fieldName: '', fieldLabel: '', fieldType: 'string', source: 'custom', searchable: true, aggregatable: true, stored: true, description: '' }; showFieldDialog.value = true }
-function openIocDialog() { newIoc.value = { type: 'ip', value: '', severity: 'HIGH', source: 'manual', description: '', tags: '' }; showIocDialog.value = true }
 function openSourceDialog() { newSource.value = { name: '', type: 'FILE' as string, format: 'AUTO' as string, path: '', address: '', topic: '', env: 'local', readFrom: 'beginning', multiline: '', protocol: 'tcp', charset: 'utf-8', timezone: 'Asia/Shanghai', tags: '', frequency: 1, categoryId: '', groupId: '', enabled: true }; showSourceDialog.value = true }
 function openOutputDialog() { newOutput.value = { name: '', type: 'GLS_INGEST', uri: '', authToken: '', enabled: true }; showOutputDialog.value = true }
 
@@ -508,65 +507,6 @@ function onTopSearch() {
   if (!topSearch.value.trim()) return
   onMenuChange('search')
 }
-// ---------- 报表 ----------
-const report = ref<ReportSummary | null>(null)
-const trend = ref<{ days: string[]; counts: number[] } | null>(null)
-const chartBar = shallowRef<echarts.ECharts>(); const chartLine = shallowRef<echarts.ECharts>()
-const barEl = ref<HTMLElement>(); const lineEl = ref<HTMLElement>()
-/** 主题感知取色：图表文字/轴线在深色下用浅灰、浅色下用深灰，避免白底黑字看不见 */
-function tc(light: string, dark: string): string { return theme.value === 'dark' ? dark : light }
-async function loadReport() {
-  const [r, t] = await Promise.all([dailyReport(), trend7d()])
-  report.value = r; trend.value = t
-  setTimeout(() => {
-    if (barEl.value && r) {
-      chartBar.value?.dispose(); chartBar.value = echarts.init(barEl.value, 'socp')
-      chartBar.value.setOption({
-        title: { text: '告警级别分布', textStyle: { fontSize: 14 } }, tooltip: {},
-        xAxis: { type: 'category', data: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'] }, yAxis: { type: 'value' },
-        series: [{ type: 'bar', data: ['CRITICAL','HIGH','MEDIUM','LOW'].map(k => r.bySeverity[k] ?? 0),
-          itemStyle: { color: (p: { dataIndex: number }) => ['#f56c6c','#e63946','#e6a23c','#909399'][p.dataIndex] } }],
-      })
-    }
-    if (lineEl.value && t) {
-      chartLine.value?.dispose(); chartLine.value = echarts.init(lineEl.value, 'socp')
-      chartLine.value.setOption({
-        title: { text: '近 7 日趋势', textStyle: { fontSize: 14 } }, tooltip: { trigger: 'axis' },
-        xAxis: { type: 'category', data: t.days }, yAxis: { type: 'value' },
-        series: [{ type: 'line', smooth: true, data: t.counts, areaStyle: {} }],
-      })
-    }
-  }, 100)
-}
-
-// ---------- 列表前端分页（案件/资产/IOC/剧本执行） ----------
-const iocPage = ref(1), iocSize = ref(10)
-const iocsPaged = computed(() => iocs.value.slice((iocPage.value-1)*iocSize.value, iocPage.value*iocSize.value))
-
-// ---------- 报表归档（MinIO） ----------
-const archiveInfo = ref<{ count: number; objects: Array<{ key: string; size: number }> } | null>(null)
-const archiveBusy = ref(false)
-async function doArchive() {
-  if (archiveBusy.value) return
-  archiveBusy.value = true
-  try {
-    const r = await archiveReport()
-    if (r.archived) {
-      ElMessage.success(`报表已归档至 MinIO（${r.day}/${r.dailyKey}）`)
-    } else {
-      ElMessage.error(r.error || '归档失败')
-    }
-    await loadArchive()
-  } catch (e) {
-    ElMessage.error((e as Error).message || '归档失败')
-  } finally {
-    archiveBusy.value = false
-  }
-}
-async function loadArchive() {
-  try { archiveInfo.value = await listArchive() } catch { /* MinIO 未启用时静默 */ }
-}
-
 // ---------- SOC ----------
 const tenants = ref<TenantInfo[]>([]); const socInfo = ref<Record<string, unknown>>({})
 async function loadSoc() { tenants.value = await listTenants(); socInfo.value = await socOverview() }
@@ -842,9 +782,6 @@ function onMenuChange(key: string) {
     case 'meta': loadMeta(); break
     case 'detect': loadRules(); break
     case 'ueba': loadUeba(); break
-    case 'report': loadReport(); loadArchive(); break
-    case 'threat-intel': loadTi(); break
-    case 'attack': loadAttack(); break
   }
 }
 
@@ -885,7 +822,7 @@ onUnmounted(() => {
   if (refreshTimer) clearInterval(refreshTimer)
   stopLive()
   closeAlertStream()
-  for (const c of [chartBar, chartLine, chartGauge, chartDonut, chartEps, chartRiskBar]) {
+  for (const c of [chartGauge, chartDonut, chartEps, chartRiskBar]) {
     if (c.value && !c.value.isDisposed()) c.value.dispose()
   }
   window.removeEventListener('resize', onWinResize)
@@ -901,77 +838,14 @@ function decodeJwtPayload(t: string): Record<string, any> | null {
 
 /** 图表随窗口自适应：切页时实例可能未挂载，逐个判活再 resize */
 function onWinResize() {
-  for (const c of [chartBar, chartLine, chartGauge, chartDonut, chartEps, chartRiskBar]) {
+  for (const c of [chartGauge, chartDonut, chartEps, chartRiskBar]) {
     if (c.value && !c.value.isDisposed()) c.value.resize()
   }
-}
-
-// ---------- 威胁情报 (threat-web) ----------
-const iocs = ref<Ioc[]>([])
-const tiStat = ref<{ total?: number; byType?: Record<string, number> }>({})
-const iocType = ref('')
-const newIoc = ref({ type: 'ip', value: '', severity: 'HIGH', source: 'manual', description: '', tags: '' })
-const tiMatchValue = ref(''); const tiMatchResult = ref<{ value: string; matched: boolean; ioc?: Ioc } | null>(null)
-async function loadTi() { iocs.value = await listIocs(iocType.value || undefined); try { tiStat.value = await tiStats() } catch { tiStat.value = {} } }
-async function addIoc() {
-  if (!newIoc.value.value.trim()) return
-  await createIoc({ type: newIoc.value.type, value: newIoc.value.value.trim(), severity: newIoc.value.severity, source: newIoc.value.source, description: newIoc.value.description || undefined, tags: newIoc.value.tags ? newIoc.value.tags.split(/[,，\s]+/).filter(Boolean) : [] })
-  newIoc.value = { type: 'ip', value: '', severity: 'HIGH', source: 'manual', description: '', tags: '' }; await loadTi()
-}
-async function removeIoc(id: string) { await deleteIoc(id); await loadTi() }
-async function doTiMatch() { if (!tiMatchValue.value.trim()) return; try { tiMatchResult.value = await tiMatch(tiMatchValue.value.trim()) } catch { tiMatchResult.value = { value: tiMatchValue.value, matched: false } } }
-
-// ---------- MITRE ATT&CK (attack-web) ----------
-type AttackCov = Awaited<ReturnType<typeof attackCoverage>>
-const tactics = ref<Array<{ id: string; name: string }>>([])
-const techniques = ref<Technique[]>([])
-const attackTech = ref('')
-const attackCov = ref<AttackCov | null>(null)
-const attackLoading = ref(false)
-async function loadAttack() {
-  tactics.value = await listTactics() as Array<{ id: string; name: string }>
-  techniques.value = await listTechniques(attackTech.value || undefined)
-  await computeAttackCov()
-}
-async function computeAttackCov() {
-  attackLoading.value = true
-  try {
-    const rules = await listRules() as Array<Record<string, unknown>>
-    const techs = rules.map(r => String(r.mitre ?? '')).filter(x => x.length > 0)
-    attackCov.value = await attackCoverage(techs)
-  } catch { attackCov.value = null } finally { attackLoading.value = false }
-}
-
-// ATT&CK 矩阵热力图：按战术分列，单元按技术；红=有告警命中 / 绿=已覆盖 / 灰=未覆盖
-const mitreCounts = computed<Record<string, number>>(() => {
-  const m: Record<string, number> = {}
-  for (const a of alarms.value) if (a.mitre) m[a.mitre] = (m[a.mitre] || 0) + 1
-  return m
-})
-const uncoveredSet = computed(() => new Set((attackCov.value?.uncovered) ?? []))
-const attackMatrix = computed(() => {
-  const byTac: Record<string, Array<Technique & { covered: boolean; count: number }>> = {}
-  for (const t of techniques.value) {
-    const key = (t.tactic || '').toString()
-    ;(byTac[key] ||= []).push({ ...t, covered: !uncoveredSet.value.has(t.id), count: mitreCounts.value[t.id] || 0 })
-  }
-  return tactics.value.map(tac => {
-    const techs = byTac[tac.id] || byTac[tac.name] || []
-    const cov = attackCov.value?.byTactic?.find(b => b.tactic === tac.id || b.tactic === tac.name)
-    return { tac, techs, total: techs.length, covered: techs.filter(t => t.covered).length, covPct: cov ? cov.coverage : 0 }
-  })
-})
-function techStyle(t: { covered: boolean; count: number }) {
-  if (t.count > 0) return 'background:#f56c6c;color:#fff;border-color:#f56c6c'
-  if (t.covered) return 'background:var(--ns-success);color:#fff;border-color:transparent'
-  return 'background:var(--ns-bg-inset);color:var(--ns-text-3);border-color:var(--ns-border)'
 }
 
 // ---------- 告警详情联动（THREAT / ATT&CK / 案件） ----------
 const relatedCase = ref<CaseInfo | null>(null)
 async function findRelatedCase(alarmId: string) { relatedCase.value = null; try { const all = await listCases(); relatedCase.value = all.find(c => c.alarmIds.includes(alarmId)) ?? null } catch { relatedCase.value = null } }
-function tiHitsList(): Ioc[] { try { return currentAlarm.value?.tiHits ? (JSON.parse(currentAlarm.value.tiHits) as Ioc[]) : [] } catch { return [] } }
-function openUrl(u: string) { if (u) window.open(u, '_blank') }
 
 // 严重级别颜色
 function sevColor(s: string) { return { CRITICAL: '#f56c6c', HIGH: '#e63946', MEDIUM: '#e6a23c', LOW: '#909399', INFO: '#909399' }[s] ?? '#909399' }
@@ -1798,35 +1672,7 @@ function relTime(iso?: string): string {
 
         <SoarView v-else-if="activeMenu === 'soar'" />
 
-        <!-- 报表统计 -->
-        <div v-else-if="activeMenu === 'report'" class="page-pad view-enter">
-          <div style="margin-bottom:12px;display:flex;gap:10px;align-items:center">
-            <el-button @click="loadReport">刷新</el-button>
-            <el-button type="primary" :loading="archiveBusy" @click="doArchive">归档至 MinIO</el-button>
-            <span v-if="archiveInfo" style="font-size:12px;color:var(--ns-text-3)">已归档 {{ archiveInfo.count }} 个对象</span>
-          </div>
-          <el-row :gutter="12" style="margin-bottom:14px" v-if="report">
-            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ report.total }}</div><div class="label">今日告警</div></div></el-card></el-col>
-            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#f56c6c">{{ report.bySeverity.CRITICAL ?? 0 }}</div><div class="label">CRITICAL</div></div></el-card></el-col>
-            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#e63946">{{ report.bySeverity.HIGH ?? 0 }}</div><div class="label">HIGH</div></div></el-card></el-col>
-            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#e6a23c">{{ report.bySeverity.MEDIUM ?? 0 }}</div><div class="label">MEDIUM</div></div></el-card></el-col>
-          </el-row>
-          <el-row :gutter="12">
-            <el-col :span="12"><el-card shadow="never"><div ref="barEl" style="height:300px" /></el-card></el-col>
-            <el-col :span="12"><el-card shadow="never"><div ref="lineEl" style="height:300px" /></el-card></el-col>
-          </el-row>
-          <el-card shadow="never" style="margin-top:14px" v-if="report">
-            <template #header>TOP 规则</template>
-            <el-table :data="report.byRule" size="small"><el-table-column prop="rule" label="规则" /><el-table-column prop="count" label="告警数" width="120" /></el-table>
-          </el-card>
-          <el-card shadow="never" style="margin-top:14px" v-if="archiveInfo?.objects.length">
-            <template #header>MinIO 归档对象</template>
-            <el-table :data="archiveInfo.objects" size="small">
-              <el-table-column prop="key" label="对象 Key" min-width="240" />
-              <el-table-column prop="size" label="大小" width="120"><template #default="{ row }">{{ (row.size / 1024).toFixed(1) }} KB</template></el-table-column>
-            </el-table>
-          </el-card>
-        </div>
+        <ReportView v-else-if="activeMenu === 'report'" :theme="theme" />
 
         <AssetsView v-else-if="activeMenu === 'assets'" />
         <EndpointsView v-else-if="activeMenu === 'endpoints'" />
@@ -1834,101 +1680,9 @@ function relTime(iso?: string): string {
         <!-- AI 助手 -->
         <AiAssistantView v-else-if="activeMenu === 'ai'" />
 
-        <!-- 威胁情报 (threat-web) -->
-        <div v-else-if="activeMenu === 'threat-intel'" class="page-pad view-enter">
-          <div style="display:flex;gap:16px;margin-bottom:14px;flex-wrap:wrap">
-            <el-card shadow="never" :body-style="{ padding: '12px 18px' }">
-              <div style="font-size:12px;color:#909399">情报总量</div>
-              <div style="font-size:22px;font-weight:700">{{ tiStat.total ?? 0 }}</div>
-            </el-card>
-            <el-card v-for="(c, k) in (tiStat.byType || {})" :key="k" shadow="never" :body-style="{ padding: '12px 18px' }">
-              <div style="font-size:12px;color:#909399">{{ k }}</div>
-              <div style="font-size:22px;font-weight:700">{{ c }}</div>
-            </el-card>
-          </div>
-          <el-card shadow="never" style="margin-bottom:14px">
-            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-              <el-input v-model="tiMatchValue" placeholder="匹配情报，如 185.220.101.45 或 evil-c2.com" style="width:320px" @keyup.enter="doTiMatch" />
-              <el-button type="primary" @click="doTiMatch">查询命中</el-button>
-              <el-select v-model="iocType" placeholder="全部类型" clearable style="width:140px" @change="loadTi">
-                <el-option v-for="t in ['ip','domain','url','sha256','email']" :key="t" :label="t" :value="t" />
-              </el-select>
-            </div>
-            <el-alert v-if="tiMatchResult" :title="tiMatchResult.matched ? `命中情报库：${tiMatchResult.ioc?.value}（${tiMatchResult.ioc?.severity}）` : '未命中情报库'" :type="tiMatchResult.matched ? 'error' : 'info'" :closable="false" style="margin-top:10px" />
-          </el-card>
-          <div class="add-bar">
-            <el-button type="primary" @click="openIocDialog">+ 新增情报</el-button>
-            <span class="hint">IP / 域名 / URL / 文件哈希 / 邮箱，命中后被规则与富化引用</span>
-          </div>
-          <el-dialog v-model="showIocDialog" title="新增威胁情报" width="560px">
-            <el-form label-width="80px">
-              <el-form-item label="情报值"><el-input v-model="newIoc.value" placeholder="如 1.2.3.4" /></el-form-item>
-              <el-form-item label="类型">
-                <el-select v-model="newIoc.type" style="width:160px"><el-option v-for="t in ['ip','domain','url','sha256','email']" :key="t" :label="t" :value="t" /></el-select>
-              </el-form-item>
-              <el-form-item label="严重度">
-                <el-select v-model="newIoc.severity" style="width:160px"><el-option v-for="s in SEVERITIES" :key="s" :label="s" :value="s" /></el-select>
-              </el-form-item>
-              <el-form-item label="描述"><el-input v-model="newIoc.description" placeholder="描述" /></el-form-item>
-            </el-form>
-            <template #footer><el-button @click="showIocDialog = false">取消</el-button><el-button type="success" @click="addIoc(); showIocDialog = false">新增情报</el-button></template>
-          </el-dialog>
-          <el-card shadow="never">
-            <el-table :data="iocsPaged" size="small">
-              <el-table-column prop="type" label="类型" width="90" />
-              <el-table-column prop="value" label="值" min-width="160" />
-              <el-table-column label="严重度" width="90"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
-              <el-table-column prop="source" label="来源" width="100" />
-              <el-table-column prop="description" label="描述" min-width="160" show-overflow-tooltip />
-              <el-table-column label="操作" width="80"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeIoc(row.id)">删除</el-button></template></el-table-column>
-            </el-table>
-          </el-card>
-        </div>
+        <ThreatIntelView v-else-if="activeMenu === 'threat-intel'" />
 
-        <!-- MITRE ATT&CK (attack-web) -->
-        <div v-else-if="activeMenu === 'attack'" class="page-pad view-enter">
-          <el-card shadow="never" style="margin-bottom:14px">
-            <div style="display:flex;gap:20px;align-items:center;flex-wrap:wrap">
-              <div>
-                <div style="font-size:12px;color:#909399">检测覆盖率</div>
-                <div style="font-size:30px;font-weight:700;color:#409eff">{{ attackCov ? attackCov.coverage : '—' }}%</div>
-              </div>
-              <div>
-                <div style="font-size:12px;color:#909399">已覆盖 / 总技术</div>
-                <div style="font-size:18px;font-weight:600">{{ attackCov ? attackCov.coveredTechniques : '—' }} / {{ attackCov ? attackCov.totalTechniques : '—' }}</div>
-              </div>
-              <el-select v-model="attackTech" placeholder="全部战术" clearable style="width:170px" @change="loadAttack">
-                <el-option v-for="t in tactics" :key="t.id" :label="t.name" :value="t.id" />
-              </el-select>
-              <el-button :loading="attackLoading" @click="computeAttackCov">重新计算</el-button>
-            </div>
-            <div v-if="attackCov && attackCov.uncovered.length" style="margin-top:10px">
-              <span style="color:#909399;font-size:12px">未覆盖技术：</span>
-              <el-tag v-for="u in attackCov.uncovered.slice(0, 24)" :key="u" size="small" type="info" style="margin:2px">{{ u }}</el-tag>
-            </div>
-          </el-card>
-          <PagerBar v-model:current-page="iocPage" v-model:page-size="iocSize" :total="iocs.length" />
-
-          <el-card shadow="never" style="margin-bottom:14px">
-            <template #header>ATT&CK 战术矩阵（红=有告警命中 · 绿=已覆盖 · 灰=未覆盖）</template>
-            <div class="attack-matrix">
-              <div v-for="col in attackMatrix" :key="col.tac.id" class="am-col">
-                <div class="am-head">{{ col.tac.name }}<span class="am-cov">{{ col.covered }}/{{ col.total }}</span></div>
-                <div v-for="t in col.techs" :key="t.id" class="am-cell" :style="techStyle(t)" @click="openUrl(t.url)" :title="t.id + ' ' + t.name">
-                  <span class="am-id">{{ t.id }}</span><span v-if="t.count" class="am-badge">{{ t.count }}</span>
-                </div>
-              </div>
-            </div>
-          </el-card>
-          <el-card shadow="never">
-            <el-table :data="techniques" size="small">
-              <el-table-column prop="id" label="技术 ID" width="110" />
-              <el-table-column prop="name" label="名称" min-width="180" />
-              <el-table-column prop="tactic" label="战术" width="130" />
-              <el-table-column label="操作" width="80"><template #default="{ row }"><el-button link type="primary" size="small" @click="openUrl(row.url)">详情</el-button></template></el-table-column>
-            </el-table>
-          </el-card>
-        </div>
+        <AttackView v-else-if="activeMenu === 'attack'" :alarms="alarms" />
 
         <NotifyView v-else-if="activeMenu === 'notify'" />
 
