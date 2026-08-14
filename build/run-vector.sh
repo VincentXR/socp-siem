@@ -39,6 +39,10 @@ case "${1:-start}" in
       -v "$GEN":/etc/vector/vector.toml:ro \
       -v "$ROOT/demo":/demo \
       -p 5514:5514/tcp \
+      --memory 256m \
+      --log-driver json-file \
+      --log-opt max-size=10m \
+      --log-opt max-file=3 \
       "$IMAGE" --config /etc/vector/vector.toml
     echo "日志: docker logs -f $NAME"
     ;;
