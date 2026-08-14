@@ -57,6 +57,16 @@ public class GatewayFilter implements GlobalFilter, Ordered {
         });
 
         String auth = exchange.getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
+        // SSE（EventSource）无法设置自定义请求头，令牌只能经查询参数 ?token= 传递。
+        // 此处作为 Authorization 头的兜底：仍需走下方同一套 JwtValidator 验签，鉴权口径不变。
+        boolean tokenFromQuery = false;
+        if (auth == null || !auth.startsWith(BEARER) || auth.substring(BEARER.length()).isBlank()) {
+            String q = exchange.getRequest().getQueryParams().getFirst("token");
+            if (q != null && !q.isBlank()) {
+                auth = BEARER + q;
+                tokenFromQuery = true;
+            }
+        }
         String path = exchange.getRequest().getPath().value();
         // 登录端点放行（签发令牌的入口本身不能要求令牌；OIDC 跳转/回调同此）
         if (path.startsWith("/auth/login") || path.startsWith("/auth/oidc/")) {
@@ -103,9 +113,16 @@ public class GatewayFilter implements GlobalFilter, Ordered {
         }
 
         final String resolvedTenant = tenant;
+        final String resolvedAuth = auth;
+        final boolean queryToken = tokenFromQuery;
         ServerWebExchange mutated = exchange.mutate()
                 .request(r -> r.headers(headers -> {
                     headers.set("X-Trace-Id", traceId);
+                    // 令牌来自查询参数（SSE）时，网关验签后需回灌成 Authorization 头，
+                    // 否则下游业务服务（各自也有 AuthInterceptor 验签）收不到令牌而 401。
+                    if (queryToken) {
+                        headers.set(HttpHeaders.AUTHORIZATION, resolvedAuth);
+                    }
                     if (resolvedTenant != null && !resolvedTenant.isBlank()) {
                         headers.set("X-Tenant-Id", resolvedTenant);
                     }

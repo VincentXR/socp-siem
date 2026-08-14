@@ -84,7 +84,7 @@ import {
   listWatchlists, putWatchlist, appendWatchlist, deleteWatchlist,
   listIngestTasks, ingestSummary, startIngestTask, stopIngestTask, testIngestTask,
   alarmStats, gasRecentAlerts, gasEngineStats,
-  login as apiLogin, setToken, clearToken, setUnauthorizedHandler,
+  login as apiLogin, setToken, clearToken, getToken, setUnauthorizedHandler,
   exportAlarms, exportCases, exportSearch,
   SEVERITIES, SOURCE_TYPES, PARSE_FORMATS,
   type Alarm, type AlarmPage, type LogSource, type ParseRule, type SinkTarget,
@@ -715,7 +715,8 @@ let liveTimer: number | undefined
 let alertStream: EventSource | null = null
 function openAlertStream() {
   try {
-    alertStream = new EventSource('/detect-web/api/v1/stream')
+    // EventSource 无法设置 Authorization 头，令牌只能走 ?token= 查询参数（网关 GatewayFilter 兜底读取）。
+    alertStream = new EventSource('/detect-web/api/v1/stream?token=' + encodeURIComponent(getToken()))
     alertStream.addEventListener('alert', (e: MessageEvent) => {
       try {
         const a = JSON.parse(e.data)
@@ -732,7 +733,15 @@ function openAlertStream() {
         }
       } catch { /* 忽略异常帧 */ }
     })
-    alertStream.onerror = () => { /* EventSource 内建自动重连 */ }
+    // onerror 拿不到 HTTP 状态码。无 token 时 SSE 永远无法鉴权（网关恒定 401），
+    // 此时复用统一登出流程，避免"401 → 静默重连 → 再 401"的死循环；
+    // 有 token 时多为瞬时网络抖动，交给 EventSource 内建重连。
+    alertStream.onerror = () => {
+      if (!getToken()) {
+        ElMessage.warning('登录已过期，请重新登录')
+        setTimeout(doLogout, 600)
+      }
+    }
   } catch { /* 不支持 SSE 时退化为轮询 */ }
 }
 function closeAlertStream() { if (alertStream) { alertStream.close(); alertStream = null } }
