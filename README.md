@@ -74,6 +74,7 @@ CI 不止构建与单测。`.github/workflows/ci.yml` 的 `e2e-pipeline` job 会
 # 前置：docker compose -f infra/docker-compose.yml up -d + 起核心服务
 python build/verify-pipeline.py      # 真链路 E2E（12 项断言）
 python build/verify-full.py          # 62 项全栈 E2E（健康/全链路/持久化/鉴权/多租户/限流/追踪）
+python build/failure-tests.py        # 故障注入（2026-08-14 P4）：断 Kafka/OS/Temporal/PG，断言降级与自愈
 ```
 
 ## 3 个攻击场景 Demo
@@ -173,9 +174,9 @@ network.protocol
 | alert-web / threat-web / incident-web / soc-base | **PostgreSQL**（alert/threat/incident/audit 库，Flyway 迁移） | 同左 |
 | search / detect / soar / asset / hips / notify / attack / ai / detect-model | **H2 文件库**（`~/.socp/*.mv.db`，内存+库双写，重启不丢） | 同左（H2 即持久化）；**生产可切 PostgreSQL**：启动加 `--spring.profiles.active=pg`（2026-08-12，9 服务均带 `application-pg.yml`，各配独立 PG 库 search/detect/soar/asset/hips/ai/attack/notify/detect_model，Flyway V1 同源迁移，已验证核心四服务落库） |
 | gateway / report / 采集器（asset-collect / hips-collect） | 无状态（网关路由 / 查 CK+PG / 上报） | 同左（无状态不需要 DB） |
-| Kafka `socp-events` / `socp-audit` / `socp-alarm-original` | **search-config → detect-web 主链** + 审计 + 二次分析（compose 起后生效） | 同左 |
-| OpenSearch `socp-events-*` | **search-config 写 + 读**（检索优先 OS，回退 H2） | 同左 |
-| ClickHouse `alarm_detail` | **alert-web 写入**（compose 起后生效） | 同左 |
+| Kafka `socp-events` / `socp-audit` / `socp-alarm-original` / `socp-alarm-events` | **Kafka 为 canonical 事件主链（2026-08-14 P2）**：ingest 只写 `socp-events`（不再跨系统双写），detect 消费检测、OsIndexerConsumer 写 OS——OS 挂了可重放重建 | 同左 |
+| OpenSearch `socp-events-*` | **OsIndexerConsumer 消费写入**（P2，手动 commit + 幂等 + DLQ）；检索优先 OS，回退 H2 | 同左 |
+| ClickHouse `alarm_detail` | **AlarmEventConsumer（outbox 消费者）写入**（P3，失败可重放） | 同左 |
 
 **Local Dev**（无 Docker）：`bash build/run-all.sh backend` —— 4 个 PG 服务需要本机 PG 或改 H2 profile；
 Kafka/OS/CK 链路不生效（detect-web 收不到事件），其余功能完整。
@@ -195,6 +196,9 @@ Kafka/OpenSearch/ClickHouse 立即接入，`verify-pipeline.py` 12 项真链路�
 - **Keycloak（2026-08-12 OIDC 已实跑）**：PKCE 授权码登录（`socp-spa` 客户端，`docker compose --profile extra up -d keycloak`），Keycloak 只作身份源，网关回调统一签发 HS256 session token，业务服务保持 HMAC 验签；`/auth/login` demo 账号保留。验签侧亦可切 `issuer-uri`（JWKS）
 - **采集（2026-08-12 真实链路）**：`build/run-vector.sh` 起 Docker Vector 采集真实文件（`demo/sample.log`）+ syslog TCP 5514 → search-config ingest（机机 token 鉴权）→ canonical 解析 → OpenSearch/Kafka → 检测；asset-collect/hips-collect 把上报事件真转发进同一主链。Falco 规则（`agents/falco-rules`）配置就绪，Windows 下未真跑（仅 Linux）
 - **RBAC**：管理写端点统一 `@RequireRole(admin/analyst)`（规则/接入配置/剧本/渠道/处置/租户/端点等 15 个控制器），viewer 只读；采集/机机端点（ingest/collect/evaluate/notify）与登录端点豁免
+- **prod profile（2026-08-14，P1）**：三档 profile —— `local`（默认：H2 / 内存回退 / 默认凭据全允许）、`integration`（compose 全中间件）、`prod`（启动 `--spring.profiles.active=prod` 时 **ProdGuard fail-fast**：禁止 H2、默认 JWT secret、`dev-bypass=true`、默认 ingest-token，强制 Temporal 开启）
+- **Outbox（2026-08-14，P3）**：告警创建与 `t_alarm` 同事务写 `outbox_event`，`OutboxPublisher` 发 Kafka `socp-alarm-events`，`AlarmEventConsumer` 扇出 CK / Notify / Incident / SOAR（失败可重放，不再跨系统双写）；告警处置（assignee/status/notes）从纯内存改为 `t_alarm_disposition` 持久化，重启不丢
+- **故障注入（2026-08-14，P4）**：`build/failure-tests.py` 覆盖 Kafka 断开（ingest 降级直写 OS）/ OpenSearch 停止 / Temporal 停止（SOAR 回退进程内）/ PostgreSQL 停止（进程存活、恢复自愈）；可用性探测改为 TCP 连接 + 5s 缓存（`partitionsFor` 的 metadata 缓存会误判死 broker 可达）
 - 所有服务默认走 `dev` profile（本地账号表）；生产请用环境变量覆盖 `SOCP_JWT_SECRET` / `SOCP_PG_*` / `SOCP_OIDC_*` 等
 
 ## 快速开始（约 15 分钟）
