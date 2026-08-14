@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue'
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, shallowRef } from 'vue'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
 
@@ -71,11 +71,9 @@ import {
   splSearch,
   listPlaybooks, createPlaybook, deletePlaybook, togglePlaybook, listPlaybookExecutions,
   dailyReport, trend7d,
-  listAssets, deleteAsset, assetStats,
   listTenants, socOverview,
-  listEndpoints, deleteEndpoint, endpointStats,
   archiveReport, listArchive,
-  aiAsk, checkHealth, HEALTH_TARGETS,
+  checkHealth, HEALTH_TARGETS,
   listIocs, createIoc, deleteIoc, tiMatch, tiStats,
   listTactics, listTechniques, attackCoverage,
   listChannels, createChannel, deleteChannel, toggleChannel, dispatchLog,
@@ -92,11 +90,16 @@ import {
   type Alarm, type AlarmPage, type LogSource, type ParseRule, type SinkTarget,
   type DataSourceType, type LogCategory, type FieldDef,
   type Disposition, type SearchEvent, type SearchResult,
-  type Playbook, type ReportSummary, type Asset, type Endpoint, type TenantInfo, type AiResult,
+  type Playbook, type ReportSummary, type TenantInfo,
   type Ioc, type Technique, type Channel, type CaseInfo, type TimelineEvent, type ReferenceSet,
   type RiskEntity, type RiskSummary, type ScoreBreakdown, type Watchlist,
   type IngestTask, type IngestSummary, type AlarmStats, type GasAlert, type GasStats,
 } from './api'
+
+const AiAssistantView = defineAsyncComponent(() => import('./views/AiAssistantView.vue'))
+const AssetsView = defineAsyncComponent(() => import('./views/AssetsView.vue'))
+const EndpointsView = defineAsyncComponent(() => import('./views/EndpointsView.vue'))
+const HealthView = defineAsyncComponent(() => import('./views/HealthView.vue'))
 
 // ---------- 导航 ----------
 const activeMenu = ref('overview')
@@ -583,34 +586,11 @@ async function loadReport() {
   }, 100)
 }
 
-// ---------- 资产 ----------
-const assets = ref<Asset[]>([])
-const assetStat = ref<{ total: number; byType: Record<string, number>; byCriticality: Record<string, number> } | null>(null)
-async function loadAssets() {
-  const [a, s] = await Promise.allSettled([listAssets(), assetStats()])
-  if (a.status === 'fulfilled') assets.value = a.value
-  if (s.status === 'fulfilled') assetStat.value = s.value
-}
-async function removeAsset(id: string) { await deleteAsset(id); await loadAssets() }
-
-// ---------- 端点 ----------
-const endpoints = ref<Endpoint[]>([])
-const endpointStat = ref<{ total: number; online: number; byType: Record<string, number> } | null>(null)
-async function loadEndpoints() {
-  const [e, s] = await Promise.allSettled([listEndpoints(), endpointStats()])
-  if (e.status === 'fulfilled') endpoints.value = e.value
-  if (s.status === 'fulfilled') endpointStat.value = s.value
-}
-async function removeEp(id: string) { await deleteEndpoint(id); await loadEndpoints() }
-
-
 // ---------- 列表前端分页（案件/资产/IOC/剧本执行） ----------
 const casePage = ref(1), caseSize = ref(10)
-const assetPage = ref(1), assetSize = ref(10)
 const iocPage = ref(1), iocSize = ref(10)
 const pbExecPage = ref(1), pbExecSize = ref(10)
 const casesPaged = computed(() => cases.value.slice((casePage.value-1)*caseSize.value, casePage.value*caseSize.value))
-const assetsPaged = computed(() => assets.value.slice((assetPage.value-1)*assetSize.value, assetPage.value*assetSize.value))
 const iocsPaged = computed(() => iocs.value.slice((iocPage.value-1)*iocSize.value, iocPage.value*iocSize.value))
 const pbExecsPaged = computed(() => pbExecutions.value.slice((pbExecPage.value-1)*pbExecSize.value, pbExecPage.value*pbExecSize.value))
 
@@ -643,9 +623,6 @@ const tenants = ref<TenantInfo[]>([]); const socInfo = ref<Record<string, unknow
 async function loadSoc() { tenants.value = await listTenants(); socInfo.value = await socOverview() }
 
 // ---------- AI ----------
-const aiQuestion = ref(''); const aiResult = ref<AiResult | null>(null); const aiLoading = ref(false)
-async function doAsk() { if (!aiQuestion.value.trim()) return; aiLoading.value = true; try { aiResult.value = await aiAsk(aiQuestion.value) } finally { aiLoading.value = false } }
-
 // ---------- 实时态势大屏 ----------
 const sitStats = ref<AlarmStats | null>(null)
 const sitEngine = ref<GasStats | null>(null)
@@ -905,22 +882,6 @@ async function runTest() {
 }
 
 // ---------- 系统健康看板 ----------
-const healthList = ref<Array<{ name: string; path: string; status: string }>>([])
-const healthEngine = ref<GasStats | null>(null)
-const healthIngest = ref<IngestSummary | null>(null)
-let healthTimer: number | undefined
-async function loadHealth() {
-  const [h, e, i] = await Promise.allSettled([
-    Promise.all(HEALTH_TARGETS.map(async t => ({ ...t, status: await checkHealth(t.path) }))),
-    gasEngineStats(), ingestSummary(),
-  ])
-  if (h.status === 'fulfilled') healthList.value = h.value
-  else healthList.value = HEALTH_TARGETS.map(t => ({ ...t, status: 'down' }))
-  if (e.status === 'fulfilled') healthEngine.value = e.value
-  if (i.status === 'fulfilled') healthIngest.value = i.value
-}
-const healthUpCount = computed(() => healthList.value.filter(x => x.status === 'up').length)
-
 // ---------- 生命周期 ----------
 function onMenuChange(key: string) {
   activeMenu.value = key
@@ -935,15 +896,12 @@ function onMenuChange(key: string) {
     case 'ueba': loadUeba(); break
     case 'soar': loadPlaybooks(); break
     case 'report': loadReport(); loadArchive(); break
-    case 'assets': loadAssets(); break
-    case 'endpoints': loadEndpoints(); break
     case 'threat-intel': loadTi(); break
     case 'attack': loadAttack(); break
     case 'notify': loadNotify(); break
     case 'case': loadCases(); break
     case 'refset': loadRefSets(); break
     case 'compliance': loadCompliance(); break
-    case 'health': loadHealth(); break
   }
 }
 
@@ -982,7 +940,6 @@ onMounted(() => {
 })
 onUnmounted(() => {
   if (refreshTimer) clearInterval(refreshTimer)
-  if (healthTimer) clearInterval(healthTimer)
   stopLive()
   closeAlertStream()
   for (const c of [chartBar, chartLine, chartGauge, chartDonut, chartEps, chartRiskBar]) {
@@ -2048,66 +2005,11 @@ function relTime(iso?: string): string {
           </el-card>
         </div>
 
-        <!-- 资产管理 -->
-        <div v-else-if="activeMenu === 'assets'" class="page-pad view-enter">
-          <div style="margin-bottom:12px"><el-button @click="loadAssets">刷新</el-button></div>
-          <el-row :gutter="12" style="margin-bottom:14px" v-if="assetStat">
-            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ assetStat.total }}</div><div class="label">资产总数</div></div></el-card></el-col>
-            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#f56c6c">{{ assetStat.byCriticality?.CRITICAL ?? 0 }}</div><div class="label">关键资产</div></div></el-card></el-col>
-            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#e6a23c">{{ assetStat.byCriticality?.HIGH ?? 0 }}</div><div class="label">高价值资产</div></div></el-card></el-col>
-            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ Object.keys(assetStat.byType || {}).length }}</div><div class="label">资产类型</div></div></el-card></el-col>
-          </el-row>
-          <el-card shadow="never">
-            <el-table :data="assetsPaged" size="small">
-              <el-table-column prop="name" label="名称" width="140" />
-              <el-table-column prop="type" label="类型" width="100" />
-              <el-table-column prop="ip" label="IP" width="120" />
-              <el-table-column prop="os" label="系统" min-width="140" />
-              <el-table-column prop="owner" label="负责人" width="100" />
-              <el-table-column prop="criticality" label="关键度" width="90"><template #default="{ row }"><el-tag :type="row.criticality==='CRITICAL'?'danger':row.criticality==='HIGH'?'warning':'info'" size="small">{{ row.criticality }}</el-tag></template></el-table-column>
-              <el-table-column label="操作" width="70"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeAsset(row.id)">删除</el-button></template></el-table-column>
-            </el-table>
-          </el-card>
-        </div>
-
-        <!-- 端点防护 -->
-        <div v-else-if="activeMenu === 'endpoints'" class="page-pad view-enter">
-          <div style="margin-bottom:12px"><el-button @click="loadEndpoints">刷新</el-button></div>
-          <el-row :gutter="12" style="margin-bottom:14px" v-if="endpointStat">
-            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ endpointStat.total }}</div><div class="label">端点总数</div></div></el-card>
-          <PagerBar v-model:current-page="assetPage" v-model:page-size="assetSize" :total="assets.length" />
-</el-col>
-            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#30d158">{{ endpointStat.online }}</div><div class="label">在线端点</div></div></el-card></el-col>
-            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#e6a23c">{{ endpointStat.total - endpointStat.online }}</div><div class="label">离线端点</div></div></el-card></el-col>
-            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ Object.keys(endpointStat.byType || {}).length }}</div><div class="label">端点类型</div></div></el-card></el-col>
-          </el-row>
-          <el-card shadow="never">
-            <el-table :data="endpoints" size="small">
-              <el-table-column prop="hostname" label="主机名" width="140" />
-              <el-table-column prop="ip" label="IP" width="120" />
-              <el-table-column prop="os" label="系统" min-width="140" />
-              <el-table-column prop="agentVersion" label="Agent 版本" width="120" />
-              <el-table-column prop="status" label="状态" width="80"><template #default="{ row }"><el-tag :type="row.status==='ONLINE'?'success':'info'" size="small">{{ row.status }}</el-tag></template></el-table-column>
-              <el-table-column label="操作" width="70"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeEp(row.id)">注销</el-button></template></el-table-column>
-            </el-table>
-          </el-card>
-        </div>
+        <AssetsView v-else-if="activeMenu === 'assets'" />
+        <EndpointsView v-else-if="activeMenu === 'endpoints'" />
 
         <!-- AI 助手 -->
-        <div v-else-if="activeMenu === 'ai'" class="page-pad view-enter">
-          <el-card shadow="never">
-            <div style="display:flex;gap:10px;margin-bottom:16px">
-              <el-input v-model="aiQuestion" placeholder="提问：如何检测暴力破解？端口扫描怎么处理？" @keyup.enter="doAsk" style="flex:1" />
-              <el-button type="primary" :loading="aiLoading" @click="doAsk">提问</el-button>
-            </div>
-            <div v-if="aiResult" style="background:var(--ns-bg-subtle);border-radius:8px;padding:16px">
-              <p style="font-weight:600;margin:0 0 8px">问：{{ aiResult.question }}</p>
-              <p style="white-space:pre-wrap;margin:0 0 12px">{{ aiResult.answer }}</p>
-              <p v-if="aiResult.suggestion" style="color:#409eff;margin:0">{{ aiResult.suggestion }}</p>
-              <p style="color:#909399;font-size:12px;margin:8px 0 0">耗时 {{ aiResult.elapsedMs }}ms</p>
-            </div>
-          </el-card>
-        </div>
+        <AiAssistantView v-else-if="activeMenu === 'ai'" />
 
         <!-- 威胁情报 (threat-web) -->
         <div v-else-if="activeMenu === 'threat-intel'" class="page-pad view-enter">
@@ -2366,43 +2268,7 @@ function relTime(iso?: string): string {
             </el-table>
           </el-card>
         </div>
-        <!-- 系统健康看板 -->
-        <div v-else-if="activeMenu === 'health'" class="page-pad view-enter">
-          <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:14px">
-            <el-card shadow="never"><div class="stat-card"><div class="num" :style="{ color: healthUpCount === healthList.length ? '#16a34a' : '#dc2626' }">{{ healthUpCount }}/{{ healthList.length }}</div><div class="label">服务在线</div></div></el-card>
-            <el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-accent-fg)">{{ healthEngine?.eventCount ?? 0 }}</div><div class="label">引擎累计事件</div></div></el-card>
-            <el-card shadow="never"><div class="stat-card"><div class="num" style="color:#f56c6c">{{ healthEngine?.alertCount ?? 0 }}</div><div class="label">引擎累计告警</div></div></el-card>
-            <el-card shadow="never"><div class="stat-card"><div class="num" style="color:#409eff">{{ healthIngest?.eps1m ?? 0 }}</div><div class="label">接入 EPS(1m)</div></div></el-card>
-          </div>
-          <el-card shadow="never">
-            <template #header>
-              <div style="display:flex;align-items:center;gap:10px">
-                <span>服务健康（30s 自动刷新）</span>
-                <span style="flex:1"></span>
-                <el-button size="small" type="primary" @click="loadHealth">刷新</el-button>
-              </div>
-            </template>
-            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px">
-              <div v-for="svc in healthList" :key="svc.name"
-                   style="border:1px solid #e8eaee;border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:6px">
-                <span style="font-weight:600;font-size:13px">{{ svc.name }}</span>
-                <span class="mono" style="font-size:11px;color:var(--ns-text-3)">{{ svc.path }}</span>
-                <span :style="{ display:'inline-flex', alignItems:'center', gap:6, fontSize:12, color: svc.status === 'up' ? '#16a34a' : '#dc2626', fontWeight: 500 }">
-                  <span :style="{ width:8, height:8, borderRadius:'50%', background: svc.status === 'up' ? '#16a34a' : '#dc2626' }"></span>
-                  {{ svc.status === 'up' ? 'UP' : 'DOWN' }}
-                </span>
-              </div>
-            </div>
-          </el-card>
-          <el-card shadow="never" style="margin-top:14px">
-            <template #header>运维信息</template>
-            <div style="font-size:12px;color:var(--ns-text-2);line-height:1.9">
-              引擎队列负载 <b class="mono">{{ healthEngine?.queueLoad ?? 0 }}</b> · 丢弃 <b class="mono">{{ healthEngine?.dropCount ?? 0 }}</b> · 抑制 <b class="mono">{{ healthEngine?.suppressedCount ?? 0 }}</b> ·
-              规则 <b class="mono">{{ healthEngine?.rules ?? 0 }}</b> 条<br>
-              服务日志位于 <span class="mono">.cache/&lt;服务名&gt;.log</span>（运行目录）；Prometheus 指标：<span class="mono">/{服务名}/actuator/prometheus</span>
-            </div>
-          </el-card>
-        </div>
+        <HealthView v-else-if="activeMenu === 'health'" />
       </main>
   </AppShell>
 </template>
