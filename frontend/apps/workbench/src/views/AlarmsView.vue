@@ -4,6 +4,8 @@
  * 数据与加载回调由 App.vue 传入；抽屉/处置逻辑自包含（直接调 api.ts）。
  */
 import { ref, computed } from 'vue'
+import EmptyState from '../components/EmptyState.vue'
+import PageHeader from '../components/PageHeader.vue'
 import SevBadge from '../components/SevBadge.vue'
 import { sevColor, relTime } from '../lib/ui'
 import {
@@ -98,14 +100,15 @@ const sevTagStyle = (s: string) => ({ background: sevColor(s) })
 
 <template>
   <div class="page-pad view-enter">
-    <div style="display:flex;gap:10px;margin-bottom:12px">
+    <PageHeader title="告警查询" description="按规则、实体和严重级别筛选告警，并从右侧抽屉完成处置。" />
+    <div class="alarm-toolbar">
       <el-input v-model="keyword" placeholder="搜索规则/实体/消息" clearable style="width:280px" @keyup.enter="props.onSearch" @clear="props.onSearch" />
       <el-select v-model="severity" placeholder="全部级别" clearable style="width:140px" @change="props.onSearch">
         <el-option v-for="s in SEVERITIES" :key="s" :label="s" :value="s" />
       </el-select>
       <el-button size="small" @click="props.onSearch">查询</el-button>
-      <span style="color:#909399;line-height:32px">共 {{ props.alarmPageData.total }} 条</span>
-      <span style="flex:1"></span>
+      <span class="toolbar-count">共 {{ props.alarmPageData.total }} 条</span>
+      <span class="toolbar-spacer" />
       <el-button size="small" @click="props.exportCsv">导出 CSV</el-button>
       <el-button size="small" @click="props.exportJson">导出 JSON</el-button>
     </div>
@@ -126,10 +129,10 @@ const sevTagStyle = (s: string) => ({ background: sevColor(s) })
         </div>
         <el-button link type="primary" size="small" @click.stop="openAlarm(a)">处置</el-button>
       </div>
-      <div v-if="!props.filteredAlarms.length" class="feed-empty">暂无告警</div>
+      <EmptyState v-if="!props.filteredAlarms.length" title="暂无告警" description="调整筛选条件后重试，或等待新的告警进入系统。" />
     </div>
 
-    <div style="display:flex;justify-content:flex-end;margin-top:14px">
+    <div class="alarm-pagination">
       <el-pagination
         v-model:current-page="pageNum"
         :page-size="props.alarmPageSize"

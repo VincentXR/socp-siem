@@ -1,0 +1,20 @@
+:root {
+  --ns-space-1: 4px;
+  --ns-space-2: 8px;
+  --ns-space-3: 12px;
+  --ns-space-4: 16px;
+  --ns-space-5: 20px;
+  --ns-space-6: 24px;
+  --ns-space-8: 32px;
+  --ns-radius-sm: 8px;
+  --ns-radius-md: 12px;
+  --ns-radius-lg: 16px;
+  --ns-radius-pill: 999px;
+  --ns-content-max: 1500px;
+  --ns-sidebar-width: 240px;
+  --ns-header-height: 56px;
+  --ns-motion-fast: 120ms;
+  --ns-motion-base: 180ms;
+  --ns-motion-slow: 280ms;
+  --ns-font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+}

@@ -52,11 +52,13 @@ function registerChartTheme() {
 registerChartTheme()
 import LoginView from './LoginView.vue'
 import AnimatedNumber from './AnimatedNumber.vue'
+import AppShell from './components/AppShell.vue'
 import TrendChart from './components/TrendChart.vue'
 import SevBadge from './components/SevBadge.vue'
 import PagerBar from './components/PagerBar.vue'
 import OverviewView from './views/OverviewView.vue'
 import AlarmsView from './views/AlarmsView.vue'
+import { getVisibleMenuGroups } from './app/navigation'
 import {
   listAlarms, listAlarmsPaged, getDisposition, setDispositionStatus, assignAlarm, addAlarmNote,
   listSources, createSource, deleteSource, renderConfig,
@@ -100,65 +102,7 @@ import {
 const activeMenu = ref('overview')
 
 /** 菜单分组（按安全域归类，减少导航噪音） */
-const MENU_GROUPS = [
-  {
-    group: '总览',
-    items: [
-      { key: 'overview', label: '概览', icon: 'dashboard' },
-      { key: 'situation', label: '实时态势', icon: 'radar' },
-    ],
-  },
-  {
-    group: '告警与事件',
-    items: [
-      { key: 'alarms', label: '告警查询', icon: 'alarm' },
-      { key: 'case', label: '案件管理', icon: 'case' },
-      { key: 'search', label: '日志检索', icon: 'search' },
-      { key: 'notify', label: '通知集成', icon: 'notify' },
-    ],
-  },
-  {
-    group: '检测与响应',
-    items: [
-      { key: 'detect', label: '检测规则', icon: 'detect' },
-      { key: 'ueba', label: 'UEBA 风险', icon: 'ueba' },
-      { key: 'soar', label: '编排响应', icon: 'soar' },
-      { key: 'attack', label: 'ATT&CK', icon: 'attack' },
-    ],
-  },
-  {
-    group: '资产与情报',
-    items: [
-      { key: 'assets', label: '资产管理', icon: 'assets' },
-      { key: 'endpoints', label: '端点防护', icon: 'endpoints' },
-      { key: 'threat-intel', label: '威胁情报', icon: 'threat' },
-      { key: 'refset', label: '参考数据集', icon: 'refset' },
-    ],
-  },
-  {
-    group: '接入与配置',
-    items: [
-      { key: 'ingest', label: '日志接入', icon: 'ingest' },
-      { key: 'meta', label: '元数据', icon: 'meta' },
-      { key: 'compliance', label: '合规', icon: 'compliance' },
-    ],
-  },
-  {
-    group: '系统',
-    items: [
-      { key: 'report', label: '报表统计', icon: 'report' },
-      { key: 'ai', label: 'AI 助手', icon: 'ai' },
-      { key: 'health', label: '系统健康', icon: 'health' },
-    ],
-  },
-]
-// viewer（只读）角色隐藏配置/管理类菜单
-const MENU_VIEWER_HIDDEN = ['ingest', 'meta', 'detect', 'soar', 'notify', 'refset']
-/** 按角色过滤后的分组（隐藏整组若组内无可见项） */
-const MENU_VIEW = computed(() =>
-  MENU_GROUPS
-    .map(g => ({ ...g, items: g.items.filter(m => !MENU_VIEWER_HIDDEN.includes(m.key)) }))
-    .filter(g => g.items.length > 0))
+const MENU_VIEW = computed(() => getVisibleMenuGroups())
 /** 当前菜单的中文名（顶栏面包屑用） */
 const activeLabel = computed(() => {
   for (const g of MENU_VIEW.value) {
@@ -1057,7 +1001,7 @@ function decodeJwtPayload(t: string): Record<string, any> | null {
 
 /** 图表随窗口自适应：切页时实例可能未挂载，逐个判活再 resize */
 function onWinResize() {
-  for (const c of [chartBar, chartLine, chartGauge, chartDonut, chartSitTrend, chartEps, chartRiskBar, chartOvTrend]) {
+  for (const c of [chartBar, chartLine, chartGauge, chartDonut, chartEps, chartRiskBar]) {
     if (c.value && !c.value.isDisposed()) c.value.resize()
   }
 }
@@ -1190,42 +1134,23 @@ function relTime(iso?: string): string {
 
 <template>
   <LoginView v-if="!isAuthed" @done="onLoginDone" />
-  <div v-else class="socp-shell">
-    <!-- 侧边栏 -->
-    <aside class="socp-sider">
-      <div class="socp-logo"><span class="dot" />SOCP 控制台</div>
-      <nav class="socp-menu">
-        <template v-for="g in MENU_VIEW" :key="g.group">
-          <div class="socp-menu-group">{{ g.group }}</div>
-          <div v-for="m in g.items" :key="m.key"
-            :class="['socp-menu-item', { active: activeMenu === m.key }]"
-            @click="onMenuChange(m.key)">
-            <span class="icon" v-html="'<svg viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'currentColor\' stroke-width=\'1.6\' stroke-linecap=\'round\' stroke-linejoin=\'round\'>' + (MENU_ICONS[m.icon] || '') + '</svg>'"></span><span>{{ m.label }}</span>
-          </div>
-        </template>
-      </nav>
-    </aside>
-
-    <!-- 主区 -->
-    <div class="socp-main">
-      <header class="socp-header">
-        <span class="header-crumb"><span>控制台</span><span style="color:var(--ns-border-strong)">/</span><span class="header-crumb-cur">{{ activeLabel }}</span></span>
-        <span style="flex:1"></span>
-        <el-input v-model="topSearch" placeholder="搜索告警、资产、规则…" size="small" clearable style="width:220px" @keyup.enter="onTopSearch" />
-        <el-button size="small" title="查看告警中心" @click="onMenuChange('alarms')">
-          <span style="display:inline-flex;vertical-align:-2px" v-html="'<svg viewBox=\'0 0 24 24\' width=\'15\' height=\'15\' fill=\'none\' stroke=\'currentColor\' stroke-width=\'1.7\' stroke-linecap=\'round\' stroke-linejoin=\'round\'><path d=\'M12 3a7 7 0 0 0-7 7c0 3-1 5-2.5 6.5h19C20 15 19 13 19 10a7 7 0 0 0-7-7Z\'/><path d=\'M10 20h4\'/></svg>'" />
-        </el-button>
-        <el-button size="small" @click="toggleTheme" title="切换深色/浅色模式">
-          <span class="icon" style="display:inline-flex;vertical-align:-3px" v-html="'<svg viewBox=\'0 0 24 24\' width=\'14\' height=\'14\' fill=\'none\' stroke=\'currentColor\' stroke-width=\'1.7\' stroke-linecap=\'round\' stroke-linejoin=\'round\'>' + (theme === 'light' ? '<path d=\'M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z\'/>' : '<circle cx=\'12\' cy=\'12\' r=\'4\'/><path d=\'M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4\'/>') + '</svg>'" />
-          {{ theme === 'light' ? '深色' : '浅色' }}
-        </el-button>
-        <span v-if="currentUser" style="display:flex;align-items:center;gap:10px">
-          <span class="header-avatar">{{ userInitials }}</span>
-          <span style="font-size:13px;color:var(--ns-text-2)">{{ currentUser }} <span class="mono" style="font-size:11px;color:var(--ns-accent-fg)">{{ currentRole || 'guest' }}</span></span>
-          <el-button size="small" @click="doLogout">退出</el-button>
-        </span>
-        <el-button v-else size="small" type="primary" @click="openLoginDialog">登录</el-button>
-      </header>
+  <AppShell
+    v-else
+    :menu-groups="MENU_VIEW"
+    :active-menu="activeMenu"
+    :active-label="activeLabel"
+    :theme="theme"
+    :current-user="currentUser"
+    :current-role="currentRole"
+    :user-initials="userInitials"
+    :top-search="topSearch"
+    @menu-change="onMenuChange"
+    @toggle-theme="toggleTheme"
+    @update:top-search="topSearch = $event"
+    @top-search="onTopSearch"
+    @logout="doLogout"
+    @login="openLoginDialog"
+  >
       <main class="socp-content">
         <!-- 概览 -->
         <OverviewView v-if="activeMenu === 'overview'"
@@ -2479,6 +2404,5 @@ function relTime(iso?: string): string {
           </el-card>
         </div>
       </main>
-    </div>
-  </div>
+  </AppShell>
 </template>
