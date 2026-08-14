@@ -159,6 +159,14 @@ const MENU_VIEW = computed(() =>
   MENU_GROUPS
     .map(g => ({ ...g, items: g.items.filter(m => !MENU_VIEWER_HIDDEN.includes(m.key)) }))
     .filter(g => g.items.length > 0))
+/** 当前菜单的中文名（顶栏面包屑用） */
+const activeLabel = computed(() => {
+  for (const g of MENU_VIEW.value) {
+    const m = g.items.find(x => x.key === activeMenu.value)
+    if (m) return m.label
+  }
+  return '安全概览'
+})
 
 /** Apple 线条风格 SVG 图标（24×24 viewBox，stroke 1.6） */
 const MENU_ICONS: Record<string, string> = {
@@ -210,6 +218,8 @@ function initTheme() {
 // ---------- 登录态（网关 JWT；未登录回退 demo-token 兼容演示） ----------
 const currentUser = ref<string>('')
 const currentRole = ref<string>('')
+/** 头像缩写（顶栏） */
+const userInitials = computed(() => (currentUser.value || 'SY').slice(0, 2).toUpperCase())
 const isAuthed = ref(false)
 const showLoginDialog = ref(false)
 const loginForm = ref({ username: 'demo', password: 'demo123' })
@@ -550,6 +560,13 @@ async function toggleRule(rule: Record<string, unknown>) {
 
 // ---------- SPL 检索 ----------
 const searchQuery = ref('source=auth severity=HIGH')
+/** 顶栏全局搜索：回车后跳到日志检索页并执行 */
+const topSearch = ref('')
+function onTopSearch() {
+  if (!topSearch.value.trim()) return
+  searchQuery.value = topSearch.value
+  onMenuChange('search')
+}
 const searchResult = ref<SearchResult | null>(null)
 const searchLoading = ref(false)
 const maxStatCount = computed(() =>
@@ -1183,14 +1200,18 @@ function relTime(iso?: string): string {
     <!-- 主区 -->
     <div class="socp-main">
       <header class="socp-header">
-        <span class="grad-text">安全运营中心</span>
-        <span class="header-sub">Security Operations Center</span>
+        <span class="header-crumb"><span>控制台</span><span style="color:var(--ns-border-strong)">/</span><span class="header-crumb-cur">{{ activeLabel }}</span></span>
         <span style="flex:1"></span>
+        <el-input v-model="topSearch" placeholder="搜索告警、资产、规则…" size="small" clearable style="width:220px" @keyup.enter="onTopSearch" />
+        <el-button size="small" title="查看告警中心" @click="onMenuChange('alarms')">
+          <span style="display:inline-flex;vertical-align:-2px" v-html="'<svg viewBox=\'0 0 24 24\' width=\'15\' height=\'15\' fill=\'none\' stroke=\'currentColor\' stroke-width=\'1.7\' stroke-linecap=\'round\' stroke-linejoin=\'round\'><path d=\'M12 3a7 7 0 0 0-7 7c0 3-1 5-2.5 6.5h19C20 15 19 13 19 10a7 7 0 0 0-7-7Z\'/><path d=\'M10 20h4\'/></svg>'" />
+        </el-button>
         <el-button size="small" @click="toggleTheme" title="切换深色/浅色模式">
           <span class="icon" style="display:inline-flex;vertical-align:-3px" v-html="'<svg viewBox=\'0 0 24 24\' width=\'14\' height=\'14\' fill=\'none\' stroke=\'currentColor\' stroke-width=\'1.7\' stroke-linecap=\'round\' stroke-linejoin=\'round\'>' + (theme === 'light' ? '<path d=\'M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z\'/>' : '<circle cx=\'12\' cy=\'12\' r=\'4\'/><path d=\'M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4\'/>') + '</svg>'" />
           {{ theme === 'light' ? '深色' : '浅色' }}
         </el-button>
         <span v-if="currentUser" style="display:flex;align-items:center;gap:10px">
+          <span class="header-avatar">{{ userInitials }}</span>
           <span style="font-size:13px;color:var(--ns-text-2)">{{ currentUser }} <span class="mono" style="font-size:11px;color:var(--ns-accent-fg)">{{ currentRole || 'guest' }}</span></span>
           <el-button size="small" @click="doLogout">退出</el-button>
         </span>
@@ -1199,7 +1220,7 @@ function relTime(iso?: string): string {
       <main class="socp-content">
         <!-- 概览 -->
         <OverviewView v-if="activeMenu === 'overview'"
-          :stat="stat" :sit-stats="sitStats" :filtered-alarms="filteredAlarms" :healths="healths" />
+          :stat="stat" :sit-stats="sitStats" :filtered-alarms="alarms" :healths="healths" @refresh="refreshOverview" />
 
         <!-- 实时态势大屏 -->
         <div v-else-if="activeMenu === 'situation'" class="page-pad view-enter sit-wrap">
