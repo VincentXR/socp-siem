@@ -68,30 +68,25 @@ import {
   listCategories, createCategory, deleteCategory,
   listFields, createField, deleteField,
   listRules, createGasRule, updateGasRule, deleteGasRule, gasStats, gasIngest,
-  splSearch,
-  listPlaybooks, createPlaybook, deletePlaybook, togglePlaybook, listPlaybookExecutions,
   dailyReport, trend7d,
   listTenants, socOverview,
   archiveReport, listArchive,
   checkHealth, HEALTH_TARGETS,
   listIocs, createIoc, deleteIoc, tiMatch, tiStats,
   listTactics, listTechniques, attackCoverage,
-  listChannels, createChannel, deleteChannel, toggleChannel, dispatchLog,
-  listCases, caseTimeline, setCaseStatus, caseStats,
-  listRefSets, createRefSet, deleteRefSet, addRefEntry,
-  complianceFrameworks, complianceCoverage,
+  listCases,
   uebaEntities, uebaEntity, uebaSummary, uebaScore,
   listWatchlists, putWatchlist, appendWatchlist, deleteWatchlist,
   listIngestTasks, ingestSummary, startIngestTask, stopIngestTask, testIngestTask,
   alarmStats, gasRecentAlerts, gasEngineStats,
   login as apiLogin, setToken, clearToken, getToken, setUnauthorizedHandler,
-  exportAlarms, exportCases, exportSearch,
+  exportAlarms,
   SEVERITIES, SOURCE_TYPES, PARSE_FORMATS,
   type Alarm, type AlarmPage, type LogSource, type ParseRule, type SinkTarget,
   type DataSourceType, type LogCategory, type FieldDef,
-  type Disposition, type SearchEvent, type SearchResult,
-  type Playbook, type ReportSummary, type TenantInfo,
-  type Ioc, type Technique, type Channel, type CaseInfo, type TimelineEvent, type ReferenceSet,
+  type Disposition,
+  type ReportSummary, type TenantInfo,
+  type Ioc, type Technique, type CaseInfo,
   type RiskEntity, type RiskSummary, type ScoreBreakdown, type Watchlist,
   type IngestTask, type IngestSummary, type AlarmStats, type GasAlert, type GasStats,
 } from './api'
@@ -100,6 +95,12 @@ const AiAssistantView = defineAsyncComponent(() => import('./views/AiAssistantVi
 const AssetsView = defineAsyncComponent(() => import('./views/AssetsView.vue'))
 const EndpointsView = defineAsyncComponent(() => import('./views/EndpointsView.vue'))
 const HealthView = defineAsyncComponent(() => import('./views/HealthView.vue'))
+const SearchView = defineAsyncComponent(() => import('./views/SearchView.vue'))
+const SoarView = defineAsyncComponent(() => import('./views/SoarView.vue'))
+const NotifyView = defineAsyncComponent(() => import('./views/NotifyView.vue'))
+const CasesView = defineAsyncComponent(() => import('./views/CasesView.vue'))
+const RefsetView = defineAsyncComponent(() => import('./views/RefsetView.vue'))
+const ComplianceView = defineAsyncComponent(() => import('./views/ComplianceView.vue'))
 
 // ---------- 导航 ----------
 const activeMenu = ref('overview')
@@ -220,8 +221,6 @@ const showDsDialog = ref(false)
 const showCatDialog = ref(false)
 const showFieldDialog = ref(false)
 const showIocDialog = ref(false)
-const showChannelDialog = ref(false)
-const showRefSetDialog = ref(false)
 const showSourceDialog = ref(false)
 const showOutputDialog = ref(false)
 function openWlDialog() { newWl.value = { name: '', values: '' }; showWlDialog.value = true }
@@ -229,8 +228,6 @@ function openDsDialog() { newDsType.value = { code: '', name: '', description: '
 function openCatDialog() { newCategory.value = { code: '', name: '', description: '', defaultSeverity: 'MEDIUM', enabled: true }; showCatDialog.value = true }
 function openFieldDialog() { newField.value = { fieldName: '', fieldLabel: '', fieldType: 'string', source: 'custom', searchable: true, aggregatable: true, stored: true, description: '' }; showFieldDialog.value = true }
 function openIocDialog() { newIoc.value = { type: 'ip', value: '', severity: 'HIGH', source: 'manual', description: '', tags: '' }; showIocDialog.value = true }
-function openChannelDialog() { newChannel.value = { name: '', type: 'SLACK', target: '', enabled: true, description: '' }; showChannelDialog.value = true }
-function openRefSetDialog() { newRefSet.value = { name: '', description: '', entries: '' }; showRefSetDialog.value = true }
 function openSourceDialog() { newSource.value = { name: '', type: 'FILE' as string, format: 'AUTO' as string, path: '', address: '', topic: '', env: 'local', readFrom: 'beginning', multiline: '', protocol: 'tcp', charset: 'utf-8', timezone: 'Asia/Shanghai', tags: '', frequency: 1, categoryId: '', groupId: '', enabled: true }; showSourceDialog.value = true }
 function openOutputDialog() { newOutput.value = { name: '', type: 'GLS_INGEST', uri: '', authToken: '', enabled: true }; showOutputDialog.value = true }
 
@@ -505,56 +502,12 @@ async function toggleRule(rule: Record<string, unknown>) {
   await loadRules()
 }
 
-// ---------- SPL 检索 ----------
-const searchQuery = ref('source=auth severity=HIGH')
 /** 顶栏全局搜索：回车后跳到日志检索页并执行 */
 const topSearch = ref('')
 function onTopSearch() {
   if (!topSearch.value.trim()) return
-  searchQuery.value = topSearch.value
   onMenuChange('search')
 }
-const searchResult = ref<SearchResult | null>(null)
-const searchLoading = ref(false)
-const maxStatCount = computed(() =>
-  Math.max(1, ...(searchResult.value?.stat?.rows.map(r => Number(r.count)) ?? [1])),
-)
-const SEARCH_EXAMPLES = [
-  'source=auth severity=HIGH',
-  'msg contains "blocked" | top src_ip 5',
-  'severity>=HIGH | timechart',
-  'src_ip=10.0.0.9 OR user=admin',
-  'source=web | count by http_method',
-  'bytes>=1000 | head 10',
-]
-async function doSearch() {
-  searchLoading.value = true
-  try {
-    searchResult.value = await splSearch(searchQuery.value)
-  } catch (e) {
-    searchResult.value = null
-    ingestResult.value = `检索失败: ${e instanceof Error ? e.message : e}`
-  } finally {
-    searchLoading.value = false
-  }
-}
-
-// ---------- 编排 ----------
-const playbooks = ref<Playbook[]>([])
-const pbExecutions = ref<Array<Record<string, unknown>>>([])
-const showPbDialog = ref(false)
-const newPb = ref({ name: '', trigger: '', actions: '', enabled: true })
-async function loadPlaybooks() {
-  playbooks.value = await listPlaybooks()
-  try { pbExecutions.value = await listPlaybookExecutions() } catch { pbExecutions.value = [] }
-}
-async function addPb() {
-  await createPlaybook({ name: newPb.value.name, trigger: newPb.value.trigger, actions: newPb.value.actions.split(/[,，\n]/).map(s => s.trim()).filter(Boolean), enabled: newPb.value.enabled })
-  showPbDialog.value = false; newPb.value = { name: '', trigger: '', actions: '', enabled: true }; await loadPlaybooks()
-}
-async function removePb(id: string) { await deletePlaybook(id); await loadPlaybooks() }
-async function togglePb(id: string) { await togglePlaybook(id); await loadPlaybooks() }
-
 // ---------- 报表 ----------
 const report = ref<ReportSummary | null>(null)
 const trend = ref<{ days: string[]; counts: number[] } | null>(null)
@@ -587,12 +540,8 @@ async function loadReport() {
 }
 
 // ---------- 列表前端分页（案件/资产/IOC/剧本执行） ----------
-const casePage = ref(1), caseSize = ref(10)
 const iocPage = ref(1), iocSize = ref(10)
-const pbExecPage = ref(1), pbExecSize = ref(10)
-const casesPaged = computed(() => cases.value.slice((casePage.value-1)*caseSize.value, casePage.value*caseSize.value))
 const iocsPaged = computed(() => iocs.value.slice((iocPage.value-1)*iocSize.value, iocPage.value*iocSize.value))
-const pbExecsPaged = computed(() => pbExecutions.value.slice((pbExecPage.value-1)*pbExecSize.value, pbExecPage.value*pbExecSize.value))
 
 // ---------- 报表归档（MinIO） ----------
 const archiveInfo = ref<{ count: number; objects: Array<{ key: string; size: number }> } | null>(null)
@@ -889,19 +838,13 @@ function onMenuChange(key: string) {
     case 'overview': refreshOverview(); break
     case 'alarms': loadAlarmPage(); break
     case 'situation': loadSituation(); if (liveOn.value) startLive(); break
-    case 'search': doSearch(); break
     case 'ingest': loadSources(); loadOutputs(); loadParseRules(); loadTasks(); break
     case 'meta': loadMeta(); break
     case 'detect': loadRules(); break
     case 'ueba': loadUeba(); break
-    case 'soar': loadPlaybooks(); break
     case 'report': loadReport(); loadArchive(); break
     case 'threat-intel': loadTi(); break
     case 'attack': loadAttack(); break
-    case 'notify': loadNotify(); break
-    case 'case': loadCases(); break
-    case 'refset': loadRefSets(); break
-    case 'compliance': loadCompliance(); break
   }
 }
 
@@ -1022,46 +965,6 @@ function techStyle(t: { covered: boolean; count: number }) {
   if (t.count > 0) return 'background:#f56c6c;color:#fff;border-color:#f56c6c'
   if (t.covered) return 'background:var(--ns-success);color:#fff;border-color:transparent'
   return 'background:var(--ns-bg-inset);color:var(--ns-text-3);border-color:var(--ns-border)'
-}
-
-// ---------- 通知集成 (notify-web) ----------
-const channels = ref<Channel[]>([])
-const dispatchLogList = ref<Array<Record<string, unknown>>>([])
-const newChannel = ref({ name: '', type: 'SLACK', target: '', enabled: true, description: '' })
-async function loadNotify() { channels.value = await listChannels(); try { dispatchLogList.value = await dispatchLog() as Array<Record<string, unknown>> } catch { dispatchLogList.value = [] } }
-async function addChannel() { if (!newChannel.value.name.trim() || !newChannel.value.target.trim()) return; await createChannel({ name: newChannel.value.name.trim(), type: newChannel.value.type, target: newChannel.value.target.trim(), enabled: newChannel.value.enabled, description: newChannel.value.description || undefined }); newChannel.value = { name: '', type: 'SLACK', target: '', enabled: true, description: '' }; await loadNotify() }
-async function removeChannel(id: string) { await deleteChannel(id); await loadNotify() }
-async function doToggleChannel(id: string) { await toggleChannel(id); await loadNotify() }
-
-// ---------- 案件管理 (incident-web) ----------
-const cases = ref<CaseInfo[]>([])
-const caseStat = ref<{ total?: number; open?: number; resolved?: number }>({})
-const caseDetail = ref<CaseInfo | null>(null)
-const caseTimelineData = ref<TimelineEvent[]>([])
-const caseDrawer = ref(false)
-const newCaseStatus = ref('')
-async function loadCases() { cases.value = await listCases(); try { caseStat.value = await caseStats() } catch { caseStat.value = {} } }
-async function openCase(c: CaseInfo) { caseDetail.value = c; caseDrawer.value = true; newCaseStatus.value = c.status; try { caseTimelineData.value = (await caseTimeline(c.id)).timeline } catch { caseTimelineData.value = [] } }
-async function doSetCaseStatus() { if (!caseDetail.value || !newCaseStatus.value) return; const r = await setCaseStatus(caseDetail.value.id, newCaseStatus.value); caseDetail.value = (r as { case: CaseInfo }).case; await loadCases() }
-
-// ---------- 参考数据集 (search-config) ----------
-const refSets = ref<ReferenceSet[]>([])
-const newRefSet = ref({ name: '', description: '', entries: '' })
-const refEntryText = ref<Record<string, string>>({})
-async function loadRefSets() { refSets.value = await listRefSets() }
-async function addRefSet() { if (!newRefSet.value.name.trim()) return; const entries = newRefSet.value.entries.split(/[\n,，\s]+/).filter(Boolean); await createRefSet({ name: newRefSet.value.name.trim(), description: newRefSet.value.description || undefined, entries }); newRefSet.value = { name: '', description: '', entries: '' }; await loadRefSets() }
-async function removeRefSet(id: string) { await deleteRefSet(id); await loadRefSets() }
-async function doAddRefEntry(id: string) { const v = (refEntryText.value[id] || '').trim(); if (!v) return; await addRefEntry(id, v); refEntryText.value[id] = ''; await loadRefSets() }
-
-// ---------- 合规 (soc-base) ----------
-type ComplianceCov = Awaited<ReturnType<typeof complianceCoverage>>
-const frameworks = ref<Array<{ name: string; controls: Array<{ id: string; name: string; ruleIds: string[] }> }>>([])
-const complianceCov = ref<ComplianceCov | null>(null)
-const complianceLoading = ref(false)
-async function loadCompliance() { const r = await complianceFrameworks(); frameworks.value = r.frameworks; await computeCompliance() }
-async function computeCompliance() {
-  complianceLoading.value = true
-  try { const rules = await listRules() as Array<Record<string, unknown>>; const ids = rules.map(r => String(r.id ?? '')).filter(Boolean); complianceCov.value = await complianceCoverage(ids) } catch { complianceCov.value = null } finally { complianceLoading.value = false }
 }
 
 // ---------- 告警详情联动（THREAT / ATT&CK / 案件） ----------
@@ -1235,49 +1138,7 @@ function relTime(iso?: string): string {
           :export-csv="() => exportAlarms('csv')" :export-json="() => exportAlarms('json')"
           :go-case="() => onMenuChange('case')" />
 
-        <!-- 日志检索（SPL） -->
-        <div v-else-if="activeMenu === 'search'" class="page-pad view-enter">
-          <el-card shadow="never" style="margin-bottom:14px">
-            <div style="display:flex;gap:10px;align-items:center">
-              <el-input v-model="searchQuery" placeholder='SPL 查询，如 source=auth severity=HIGH | top src_ip 5' clearable @keyup.enter="doSearch" style="flex:1" />
-              <el-button type="primary" :loading="searchLoading" @click="doSearch">执行检索</el-button>
-              <el-button size="small" @click="exportSearch(searchQuery, 'json')">导出 JSON</el-button>
-              <el-button size="small" @click="exportSearch(searchQuery, 'csv')">导出 CSV</el-button>
-            </div>
-            <div style="margin-top:10px">
-              <el-tag v-for="ex in SEARCH_EXAMPLES" :key="ex" size="small" style="margin-right:8px;cursor:pointer" @click="searchQuery = ex; doSearch()">{{ ex }}</el-tag>
-            </div>
-          </el-card>
-
-          <template v-if="searchResult">
-            <el-card shadow="never" style="margin-bottom:14px">
-              <template #header>命中 {{ searchResult.total }} 条事件</template>
-              <el-table :data="searchResult.events" size="small" max-height="420">
-                <el-table-column label="时间" width="150"><template #default="{ row }">{{ row.timestamp.slice(0, 19).replace('T', ' ') }}</template></el-table-column>
-                <el-table-column prop="source" label="来源" width="90" />
-                <el-table-column prop="host" label="主机" width="90" />
-                <el-table-column label="级别" width="80"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
-                <el-table-column prop="msg" label="消息" min-width="240" show-overflow-tooltip />
-              </el-table>
-            </el-card>
-            <el-card shadow="never" v-if="searchResult.stat">
-              <template #header>{{ searchResult.stat.type === 'timechart' ? '时间分布（按天）' : `统计（${searchResult.stat.type === 'top' ? 'Top' : '分组计数'}）` }}</template>
-              <el-table :data="searchResult.stat.rows" size="small">
-                <el-table-column prop="key" label="Key" />
-                <el-table-column label="条数" width="140">
-                  <template #default="{ row }">
-                    <div style="display:flex;align-items:center;gap:8px">
-                      <span>{{ row.count }}</span>
-                      <div style="flex:1;background:var(--ns-bg-inset);border-radius:4px;height:10px;overflow:hidden">
-                        <div :style="{ width: `${Math.min(100, (row.count / maxStatCount) * 100)}%`, background: '#409eff', height: '100%' }" />
-                      </div>
-                    </div>
-                  </template>
-                </el-table-column>
-              </el-table>
-            </el-card>
-          </template>
-        </div>
+        <SearchView v-else-if="activeMenu === 'search'" :initial-query="topSearch" />
 
         <!-- 日志接入（接入任务 / 输入源 / 输出配置 / 解析规则） -->
         <div v-else-if="activeMenu === 'ingest'" class="page-pad view-enter">
@@ -1935,43 +1796,7 @@ function relTime(iso?: string): string {
           </el-drawer>
         </div>
 
-        <!-- 编排响应 -->
-        <div v-else-if="activeMenu === 'soar'" class="page-pad view-enter">
-          <div style="margin-bottom:12px"><el-button type="primary" @click="showPbDialog = true">新建剧本</el-button><el-button @click="loadPlaybooks">刷新</el-button></div>
-          <el-card shadow="never">
-            <el-table :data="playbooks" size="small">
-              <el-table-column prop="name" label="剧本" min-width="140" />
-              <el-table-column prop="trigger" label="触发条件" min-width="200" show-overflow-tooltip />
-              <el-table-column label="动作链" min-width="260"><template #default="{ row }"><el-tag v-for="a in row.actions" :key="a" size="small" style="margin-right:6px">{{ a }}</el-tag></template></el-table-column>
-              <el-table-column label="状态" width="80"><template #default="{ row }"><el-tag :type="row.enabled?'success':'info'" size="small">{{ row.status }}</el-tag></template></el-table-column>
-              <el-table-column label="操作" width="130"><template #default="{ row }"><el-button link size="small" @click="togglePb(row.id)">{{ row.enabled ? '停用' : '启用' }}</el-button><el-button link type="danger" size="small" @click="removePb(row.id)">删除</el-button></template></el-table-column>
-            </el-table>
-          </el-card>
-          <el-card shadow="never" style="margin-top:14px">
-            <template #header>执行历史（最近 {{ pbExecutions.length }} 条）</template>
-            <el-table :data="pbExecsPaged" size="small">
-              <el-table-column prop="ts" label="时间" width="200" />
-              <el-table-column prop="playbook" label="剧本" min-width="140" />
-              <el-table-column prop="trigger" label="触发" min-width="160" show-overflow-tooltip />
-              <el-table-column label="动作结果" min-width="320">
-                <template #default="{ row }">
-                  <span v-for="(r, i) in (row.results as any[] || [])" :key="i" style="margin-right:8px">
-                    <el-tag size="small" :type="String(r.status).startsWith('fail') ? 'danger' : (String(r.status).startsWith('sent') || String(r.status).startsWith('created') ? 'success' : 'info')">{{ r.action }} → {{ r.status }}</el-tag>
-                  </span>
-                </template>
-              </el-table-column>
-            </el-table>
-          </el-card>
-          <el-dialog v-model="showPbDialog" title="新建剧本" width="500px">
-            <el-form label-width="80px">
-              <el-form-item label="名称"><el-input v-model="newPb.name" /></el-form-item>
-              <el-form-item label="触发"><el-input v-model="newPb.trigger" /></el-form-item>
-              <el-form-item label="动作"><el-input v-model="newPb.actions" type="textarea" :rows="3" placeholder="每行一个动作" /></el-form-item>
-              <el-form-item label="启用"><el-switch v-model="newPb.enabled" /></el-form-item>
-            </el-form>
-            <template #footer><el-button @click="showPbDialog = false">取消</el-button><el-button type="primary" @click="addPb">创建</el-button></template>
-          </el-dialog>
-        </div>
+        <SoarView v-else-if="activeMenu === 'soar'" />
 
         <!-- 报表统计 -->
         <div v-else-if="activeMenu === 'report'" class="page-pad view-enter">
@@ -1981,9 +1806,7 @@ function relTime(iso?: string): string {
             <span v-if="archiveInfo" style="font-size:12px;color:var(--ns-text-3)">已归档 {{ archiveInfo.count }} 个对象</span>
           </div>
           <el-row :gutter="12" style="margin-bottom:14px" v-if="report">
-            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ report.total }}</div><div class="label">今日告警</div></div></el-card>
-          <PagerBar v-model:current-page="pbExecPage" v-model:page-size="pbExecSize" :total="pbExecutions.length" />
-</el-col>
+            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ report.total }}</div><div class="label">今日告警</div></div></el-card></el-col>
             <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#f56c6c">{{ report.bySeverity.CRITICAL ?? 0 }}</div><div class="label">CRITICAL</div></div></el-card></el-col>
             <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#e63946">{{ report.bySeverity.HIGH ?? 0 }}</div><div class="label">HIGH</div></div></el-card></el-col>
             <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#e6a23c">{{ report.bySeverity.MEDIUM ?? 0 }}</div><div class="label">MEDIUM</div></div></el-card></el-col>
@@ -2107,167 +1930,13 @@ function relTime(iso?: string): string {
           </el-card>
         </div>
 
-        <!-- 通知集成 (notify-web) -->
-        <div v-else-if="activeMenu === 'notify'" class="page-pad view-enter">
-          <div class="add-bar">
-            <el-button type="primary" @click="openChannelDialog">+ 新增通知渠道</el-button>
-            <span class="hint">SLACK / WEBHOOK / EMAIL，告警触发后实时分发</span>
-          </div>
-          <el-dialog v-model="showChannelDialog" title="新增通知渠道" width="560px">
-            <el-form label-width="80px">
-              <el-form-item label="渠道名"><el-input v-model="newChannel.name" placeholder="如 安全群" /></el-form-item>
-              <el-form-item label="类型">
-                <el-select v-model="newChannel.type" style="width:160px"><el-option v-for="t in ['SLACK','WEBHOOK','EMAIL']" :key="t" :label="t" :value="t" /></el-select>
-              </el-form-item>
-              <el-form-item label="目标"><el-input v-model="newChannel.target" placeholder="Webhook URL / 邮箱" /></el-form-item>
-              <el-form-item label="描述"><el-input v-model="newChannel.description" placeholder="描述（可选）" /></el-form-item>
-              <el-form-item label="启用"><el-switch v-model="newChannel.enabled" /></el-form-item>
-            </el-form>
-            <template #footer><el-button @click="showChannelDialog = false">取消</el-button><el-button type="success" @click="addChannel(); showChannelDialog = false">新增渠道</el-button></template>
-          </el-dialog>
-          <el-card shadow="never" style="margin-bottom:14px">
-            <div class="sec-title" style="margin-bottom:8px">通知渠道</div>
-            <el-table :data="channels" size="small">
-              <el-table-column prop="name" label="名称" width="140" />
-              <el-table-column prop="type" label="类型" width="100" />
-              <el-table-column prop="target" label="目标" min-width="200" show-overflow-tooltip />
-              <el-table-column label="启用" width="90"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? '启用' : '停用' }}</el-tag></template></el-table-column>
-              <el-table-column label="操作" width="150">
-                <template #default="{ row }">
-                  <el-button link type="primary" size="small" @click="doToggleChannel(row.id)">{{ row.enabled ? '停用' : '启用' }}</el-button>
-                  <el-button link type="danger" size="small" @click="removeChannel(row.id)">删除</el-button>
-                </template>
-              </el-table-column>
-            </el-table>
-          </el-card>
-          <el-card shadow="never">
-            <div class="sec-title" style="margin-bottom:8px">分发日志（告警触发后实时写入）</div>
-            <el-table :data="dispatchLogList" size="small">
-              <el-table-column prop="ts" label="时间" width="220" />
-              <el-table-column prop="channel" label="渠道" width="120" />
-              <el-table-column prop="type" label="类型" width="90" />
-              <el-table-column prop="ruleId" label="规则" width="140" />
-              <el-table-column label="状态" width="100"><template #default="{ row }"><el-tag :type="row.status === 'sent' ? 'success' : row.status === 'failed' ? 'danger' : 'info'" size="small">{{ row.status }}</el-tag></template></el-table-column>
-            </el-table>
-          </el-card>
-        </div>
+        <NotifyView v-else-if="activeMenu === 'notify'" />
 
-        <!-- 案件管理 (incident-web) -->
-        <div v-else-if="activeMenu === 'case'" class="page-pad view-enter">
-          <div style="display:flex;gap:16px;margin-bottom:14px;flex-wrap:wrap">
-            <el-card shadow="never" :body-style="{ padding: '12px 18px' }">
-              <div style="font-size:12px;color:#909399">案件总数</div><div style="font-size:22px;font-weight:700">{{ caseStat.total ?? 0 }}</div>
-            </el-card>
-            <el-card shadow="never" :body-style="{ padding: '12px 18px' }">
-              <div style="font-size:12px;color:#909399">进行中</div><div style="font-size:22px;font-weight:700;color:#e6a23c">{{ caseStat.open ?? 0 }}</div>
-            </el-card>
-            <el-card shadow="never" :body-style="{ padding: '12px 18px' }">
-              <div style="font-size:12px;color:#909399">已解决</div><div style="font-size:22px;font-weight:700;color:#67c23a">{{ caseStat.resolved ?? 0 }}</div>
-            </el-card>
-            <span style="flex:1"></span>
-            <el-button size="small" @click="exportCases()">导出案件 JSON</el-button>
-          </div>
-          <el-card shadow="never">
-            <el-table :data="casesPaged" size="small">
-              <el-table-column prop="id" label="案件 ID" width="180" />
-              <el-table-column prop="title" label="标题" min-width="180" />
-              <el-table-column prop="entity" label="实体" width="130" />
-              <el-table-column label="级别" width="90"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
-              <el-table-column label="状态" width="120"><template #default="{ row }"><el-tag :type="row.status === 'OPEN' ? 'danger' : row.status === 'RESOLVED' || row.status === 'CLOSED' ? 'success' : 'warning'" size="small">{{ row.status }}</el-tag></template></el-table-column>
-              <el-table-column prop="alarmIds.length" label="关联告警" width="90" />
-              <el-table-column label="操作" width="90"><template #default="{ row }"><el-button link type="primary" size="small" @click="openCase(row)">详情/时间线</el-button></template></el-table-column>
-            </el-table>
-          </el-card>
-          <el-drawer v-model="caseDrawer" :title="`案件 · ${caseDetail?.title ?? ''}`" size="520px">
-            <template v-if="caseDetail">
-              <el-descriptions :column="2" size="small" border style="margin-bottom:14px">
-                <el-descriptions-item label="案件 ID">{{ caseDetail.id }}</el-descriptions-item>
-                <el-descriptions-item label="实体">{{ caseDetail.entity }}</el-descriptions-item>
-                <el-descriptions-item label="级别"><SevBadge :value="caseDetail.severity" /></el-descriptions-item>
-                <el-descriptions-item label="状态">{{ caseDetail.status }}</el-descriptions-item>
-                <el-descriptions-item label="关联规则" :span="2">{{ caseDetail.ruleIds.join(', ') || '—' }}</el-descriptions-item>
-                <el-descriptions-item label="关联告警" :span="2">{{ caseDetail.alarmIds.join(', ') || '—' }}</el-descriptions-item>
-              </el-descriptions>
-              <div style="display:flex;gap:8px;margin-bottom:14px">
-                <el-select v-model="newCaseStatus" style="flex:1"><el-option v-for="s in ['OPEN','INVESTIGATING','CONTAINED','RESOLVED','CLOSED']" :key="s" :label="s" :value="s" /></el-select>
-                <el-button type="primary" @click="doSetCaseStatus">更新状态</el-button>
-              </div>
-              <el-divider content-position="left">事件时间线</el-divider>
-              <el-timeline>
-                <el-timeline-item v-for="(e, i) in caseTimelineData" :key="i" :timestamp="e.ts" placement="top">
-                  <div style="font-size:13px">{{ e.message }}</div>
-                  <div style="font-size:12px;color:#909399">{{ e.type }} · {{ e.source }}</div>
-                </el-timeline-item>
-              </el-timeline>
-            </template>
-          </el-drawer>
-        </div>
+        <CasesView v-else-if="activeMenu === 'case'" />
 
-        <!-- 参考数据集 (search-config) -->
-        <div v-else-if="activeMenu === 'refset'" class="page-pad view-enter">
-          <div class="add-bar">
-            <el-button type="primary" @click="openRefSetDialog">+ 新建参考数据集</el-button>
-            <span class="hint">可被规则 op=inlist / notinlist 引用的白名单 / 黑名单集合</span>
-          </div>
-          <el-dialog v-model="showRefSetDialog" title="新建参考数据集" width="560px">
-            <el-form label-width="80px">
-              <el-form-item label="数据集名"><el-input v-model="newRefSet.name" placeholder="如 vip_users" /></el-form-item>
-              <el-form-item label="描述"><el-input v-model="newRefSet.description" placeholder="描述" /></el-form-item>
-              <el-form-item label="初始条目">
-                <el-input v-model="newRefSet.entries" type="textarea" :rows="4" placeholder="初始条目，逗号 / 换行分隔" />
-              </el-form-item>
-            </el-form>
-            <template #footer><el-button @click="showRefSetDialog = false">取消</el-button><el-button type="success" @click="addRefSet(); showRefSetDialog = false">新建数据集</el-button></template>
-          </el-dialog>
-          <el-card shadow="never" v-for="rs in refSets" :key="rs.id" style="margin-bottom:12px">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-              <div>
-                <span style="font-weight:600">{{ rs.name }}</span>
-                <span style="color:#909399;font-size:12px;margin-left:8px">{{ rs.description || '—' }} · {{ rs.entries.length }} 条</span>
-              </div>
-              <el-button link type="danger" size="small" @click="removeRefSet(rs.id)">删除</el-button>
-            </div>
-            <div style="margin-bottom:8px">
-              <el-tag v-for="(e, i) in rs.entries.slice(0, 40)" :key="i" size="small" style="margin:2px">{{ e }}</el-tag>
-              <span v-if="rs.entries.length > 40" style="color:#909399;font-size:12px">… 等 {{ rs.entries.length }} 条</span>
-            </div>
-            <div style="display:flex;gap:8px">
-              <el-input v-model="refEntryText[rs.id]" placeholder="追加条目" style="flex:1" @keyup.enter="doAddRefEntry(rs.id)" />
-              <el-button size="small" @click="doAddRefEntry(rs.id)">追加</el-button>
-            </div>
-          </el-card>
-          <PagerBar v-model:current-page="casePage" v-model:page-size="caseSize" :total="cases.length" />
+        <RefsetView v-else-if="activeMenu === 'refset'" />
 
-        </div>
-
-        <!-- 合规 (soc-base) -->
-        <div v-else-if="activeMenu === 'compliance'" class="page-pad view-enter">
-          <el-card shadow="never" style="margin-bottom:14px">
-            <div style="display:flex;gap:20px;align-items:center;flex-wrap:wrap">
-              <div>
-                <div style="font-size:12px;color:#909399">整体控制项覆盖率</div>
-                <div style="font-size:30px;font-weight:700;color:#409eff">{{ complianceCov ? complianceCov.coverage : '—' }}%</div>
-              </div>
-              <div>
-                <div style="font-size:12px;color:#909399">已覆盖 / 总控制项</div>
-                <div style="font-size:18px;font-weight:600">{{ complianceCov ? complianceCov.coveredControls : '—' }} / {{ complianceCov ? complianceCov.totalControls : '—' }}</div>
-              </div>
-              <el-button :loading="complianceLoading" @click="computeCompliance">重新计算</el-button>
-            </div>
-          </el-card>
-          <el-card shadow="never" v-for="fw in (complianceCov ? complianceCov.byFramework : [])" :key="fw.framework" style="margin-bottom:12px">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-              <strong>{{ fw.framework }}</strong>
-              <span style="font-weight:700;color:#409eff">{{ fw.coverage }}%</span>
-            </div>
-            <el-table :data="fw.controls" size="small">
-              <el-table-column prop="id" label="控制项" width="120" />
-              <el-table-column prop="name" label="名称" min-width="200" />
-              <el-table-column label="覆盖" width="90"><template #default="{ row }"><el-tag :type="row.covered ? 'success' : 'danger'" size="small">{{ row.covered ? '已覆盖' : '缺失' }}</el-tag></template></el-table-column>
-              <el-table-column prop="mappedRules" label="映射规则" min-width="160"><template #default="{ row }"><span style="font-size:12px;color:#909399">{{ (row.mappedRules || []).join(', ') || '—' }}</span></template></el-table-column>
-            </el-table>
-          </el-card>
-        </div>
+        <ComplianceView v-else-if="activeMenu === 'compliance'" />
         <HealthView v-else-if="activeMenu === 'health'" />
       </main>
   </AppShell>

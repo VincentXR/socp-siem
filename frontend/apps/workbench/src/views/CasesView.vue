@@ -1,0 +1,87 @@
+<script setup lang="ts">
+import { computed, onMounted, ref } from 'vue'
+import PageHeader from '../components/PageHeader.vue'
+import PagerBar from '../components/PagerBar.vue'
+import SevBadge from '../components/SevBadge.vue'
+import { caseStats, caseTimeline, exportCases, listCases, setCaseStatus, type CaseInfo, type TimelineEvent } from '../api'
+
+const cases = ref<CaseInfo[]>([])
+const stats = ref<{ total?: number; open?: number; resolved?: number }>({})
+const detail = ref<CaseInfo | null>(null)
+const timeline = ref<TimelineEvent[]>([])
+const drawerVisible = ref(false)
+const newStatus = ref('')
+const page = ref(1)
+const size = ref(10)
+const loading = ref(false)
+const casesPaged = computed(() => cases.value.slice((page.value - 1) * size.value, page.value * size.value))
+
+async function loadCases() {
+  if (loading.value) return
+  loading.value = true
+  try {
+    const [caseResult, statResult] = await Promise.allSettled([listCases(), caseStats()])
+    if (caseResult.status === 'fulfilled') cases.value = caseResult.value
+    if (statResult.status === 'fulfilled') stats.value = statResult.value
+  } finally { loading.value = false }
+}
+
+async function openCase(item: CaseInfo) {
+  detail.value = item
+  newStatus.value = item.status
+  drawerVisible.value = true
+  try { timeline.value = (await caseTimeline(item.id)).timeline } catch { timeline.value = [] }
+}
+
+async function updateStatus() {
+  if (!detail.value || !newStatus.value) return
+  const result = await setCaseStatus(detail.value.id, newStatus.value)
+  detail.value = result.case
+  await loadCases()
+}
+
+onMounted(loadCases)
+</script>
+
+<template>
+  <div class="page-pad view-enter">
+    <PageHeader title="案件管理" description="将告警聚合为可跟踪案件，维护处置状态和事件时间线。">
+      <template #actions><el-button size="small" @click="exportCases()">导出案件 JSON</el-button></template>
+    </PageHeader>
+
+    <div class="page-metrics">
+      <MetricCard label="案件总数" tone="info">{{ stats.total ?? 0 }}</MetricCard>
+      <MetricCard label="进行中" tone="warning">{{ stats.open ?? 0 }}</MetricCard>
+      <MetricCard label="已解决" tone="success">{{ stats.resolved ?? 0 }}</MetricCard>
+    </div>
+
+    <el-card shadow="never">
+      <el-table :data="casesPaged" size="small">
+        <el-table-column prop="id" label="案件 ID" width="180" />
+        <el-table-column prop="title" label="标题" min-width="180" />
+        <el-table-column prop="entity" label="实体" width="130" />
+        <el-table-column label="级别" width="90"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
+        <el-table-column label="状态" width="120"><template #default="{ row }"><el-tag :type="row.status === 'OPEN' ? 'danger' : row.status === 'RESOLVED' || row.status === 'CLOSED' ? 'success' : 'warning'" size="small">{{ row.status }}</el-tag></template></el-table-column>
+        <el-table-column prop="alarmIds.length" label="关联告警" width="90" />
+        <el-table-column label="操作" width="90"><template #default="{ row }"><el-button link type="primary" size="small" @click="openCase(row)">详情/时间线</el-button></template></el-table-column>
+      </el-table>
+      <PagerBar v-model:current-page="page" v-model:page-size="size" :total="cases.length" />
+    </el-card>
+
+    <el-drawer v-model="drawerVisible" :title="`案件 · ${detail?.title ?? ''}`" size="520px">
+      <template v-if="detail">
+        <el-descriptions :column="2" size="small" border>
+          <el-descriptions-item label="案件 ID">{{ detail.id }}</el-descriptions-item>
+          <el-descriptions-item label="实体">{{ detail.entity }}</el-descriptions-item>
+          <el-descriptions-item label="级别"><SevBadge :value="detail.severity" /></el-descriptions-item>
+          <el-descriptions-item label="状态">{{ detail.status }}</el-descriptions-item>
+          <el-descriptions-item label="关联规则" :span="2">{{ detail.ruleIds.join(', ') || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="关联告警" :span="2">{{ detail.alarmIds.join(', ') || '—' }}</el-descriptions-item>
+        </el-descriptions>
+        <div class="case-status-row"><el-select v-model="newStatus"><el-option v-for="status in ['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']" :key="status" :label="status" :value="status" /></el-select><el-button type="primary" @click="updateStatus">更新状态</el-button></div>
+        <el-divider content-position="left">事件时间线</el-divider>
+        <el-timeline><el-timeline-item v-for="(event, index) in timeline" :key="index" :timestamp="event.ts" placement="top"><div>{{ event.message }}</div><div class="case-event-meta">{{ event.type }} · {{ event.source }}</div></el-timeline-item></el-timeline>
+      </template>
+    </el-drawer>
+  </div>
+</template>

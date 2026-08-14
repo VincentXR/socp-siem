@@ -304,6 +304,31 @@ body {
 .health-service-status.is-down { color: var(--ns-danger); }
 .health-service-status.is-down i { background: var(--ns-danger); }
 .health-ops-copy { color: var(--ns-text-2); font-size: 12px; line-height: 1.9; }
+.search-toolbar { margin-bottom: var(--ns-space-4); }
+.search-query-row { display: flex; align-items: center; gap: var(--ns-space-2); }
+.search-query-row .el-input { flex: 1; min-width: 0; }
+.search-examples { display: flex; flex-wrap: wrap; gap: var(--ns-space-2); margin-top: var(--ns-space-3); }
+.search-examples .el-tag { cursor: pointer; }
+.search-error { margin-bottom: var(--ns-space-4); }
+.search-result-card { margin-bottom: var(--ns-space-4); }
+.search-stat-row { display: flex; align-items: center; gap: var(--ns-space-2); }
+.search-stat-track { flex: 1; height: 10px; overflow: hidden; border-radius: var(--ns-radius-sm); background: var(--ns-bg-inset); }
+.search-stat-track i { display: block; height: 100%; border-radius: inherit; background: var(--ns-accent); }
+.soar-action-tag, .soar-result-tag { margin-right: 6px; }
+.soar-history-card, .notify-card, .compliance-card { margin-top: var(--ns-space-4); }
+.case-status-row { display: flex; gap: var(--ns-space-2); margin-top: var(--ns-space-4); }
+.case-status-row .el-select { flex: 1; }
+.case-event-meta { color: var(--ns-text-3); font-size: 12px; margin-top: 3px; }
+.refset-card { margin-bottom: var(--ns-space-3); }
+.refset-head { display: flex; align-items: center; justify-content: space-between; gap: var(--ns-space-3); margin-bottom: var(--ns-space-3); }
+.refset-meta { color: var(--ns-text-3); font-size: 12px; margin-left: var(--ns-space-2); }
+.refset-entries { display: flex; flex-wrap: wrap; gap: var(--ns-space-2); margin-bottom: var(--ns-space-3); }
+.refset-add-row { display: flex; gap: var(--ns-space-2); }
+.refset-add-row .el-input { flex: 1; }
+.compliance-metrics { grid-template-columns: repeat(3, 1fr); }
+.compliance-card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--ns-space-2); }
+.compliance-card-head span { color: var(--ns-accent-fg); font-weight: 700; }
+.compliance-rules { color: var(--ns-text-3); font-size: 12px; }
 
 .el-card {
   border: 1px solid var(--ns-border) !important;
@@ -657,4 +682,8 @@ body {
   .ai-ask-row { flex-direction: column; }
   .health-kpis { grid-template-columns: repeat(2, 1fr); gap: var(--ns-space-3); }
   .page-metrics { grid-template-columns: repeat(2, 1fr); gap: var(--ns-space-3); }
+  .search-query-row { flex-direction: column; align-items: stretch; }
+  .search-query-row .el-button { width: 100%; }
+  .compliance-metrics { grid-template-columns: 1fr; }
+  .refset-add-row { flex-direction: column; }
 }
