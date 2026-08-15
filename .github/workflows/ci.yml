@@ -136,11 +136,11 @@ jobs:
       SOCP_LOGIN_SECRET: ci-test-jwt-secret-0123456789abcdef0123456789abcdef
       SOCP_AUTH_USERS: '{"admin":"admin123","demo":"demo123","viewer":"viewer123"}'
       SOCP_AUTH_ROLES: '{"admin":"admin","demo":"analyst","viewer":"viewer"}'
-      # CI middleware uses local HTTP OpenSearch and unauthenticated ClickHouse.
+      # CI middleware uses local HTTP OpenSearch and the configured ClickHouse credentials.
       PIPELINE_OS: http://localhost:9200
       PIPELINE_OS_AUTH: "admin:"
       PIPELINE_CK: http://localhost:8123
-      PIPELINE_CK_AUTH: "default:"
+      PIPELINE_CK_AUTH: "default:socp"
       PIPELINE_KAFKA: localhost:9092
     services:
       postgres:
@@ -183,9 +183,12 @@ jobs:
           --health-interval 10s --health-timeout 10s --health-retries 20
       clickhouse:
         image: clickhouse/clickhouse-server:24.3
+        env:
+          CLICKHOUSE_USER: default
+          CLICKHOUSE_PASSWORD: socp
         ports: ["8123:8123"]
         options: >-
-          --health-cmd "clickhouse-client -q 'SELECT 1'"
+          --health-cmd "clickhouse-client --user default --password socp -q 'SELECT 1'"
           --health-interval 5s --health-timeout 5s --health-retries 15
     steps:
       - uses: actions/checkout@v4
@@ -200,6 +203,12 @@ jobs:
               docker exec "$pg_container" createdb -U socp "$database"
             fi
           done
+
+      - name: Prepare ClickHouse schema
+        run: |
+          curl --fail --user default:socp \
+            --data-binary @infra/init-sql/clickhouse/init.sql \
+            'http://localhost:8123/?multiquery=1'
 
       - name: Set up JDK 21
         uses: actions/setup-java@v5
