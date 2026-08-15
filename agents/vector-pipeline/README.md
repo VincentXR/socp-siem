@@ -3,8 +3,8 @@
 Vector 日志转发配置（端点 Agent 侧），对接 SOCP 的 SEARCH（采集/检索）服务。
 
 ## 定位
-- Vector 只负责**采集 + 传输**，不做语义解析。
-- 解析、规则、告警、存储、UI 全部在 SOCP（SEARCH/OpenSearch/DETECT/SOAR/REPORT）内完成，保证单一可信解析路径。
+- Vector 负责**采集 + 传输 + 轻量 envelope 元数据**，不做业务语义解析。
+- 解析、规则、告警、存储、UI 全部在 SOCP（SEARCH/OpenSearch/DETECT/SOAR/REPORT）内完成，保证单一可信解析路径；例如 raw sshd 行由 `search-config` 的 `SshdParser` 归一化为 authentication/login_failed 或 login_success。
 - 与 `com.siem` 时期的旁路契约完全一致（json codec + newline_delimited + healthcheck 关闭 + disk buffer + retry 5）。
 
 ## 数据流

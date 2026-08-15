@@ -206,6 +206,11 @@ public class IngestPipeline {
         enrich(fields);
 
         String source = pick(fields, "source", "type", "app", "vendor");
+        String category = canonical.get(com.socp.search.config.parser.CanonicalEvent.EVENT_CATEGORY);
+        if ((source.isBlank() || "sshd".equalsIgnoreCase(source))
+                && "authentication".equalsIgnoreCase(category)) {
+            source = "auth";
+        }
         String host = pick(fields, "host", "hostname", "device", com.socp.search.config.parser.CanonicalEvent.HOST_NAME);
         String severity = pick(fields, "severity", "level", com.socp.search.config.parser.CanonicalEvent.EVENT_SEVERITY);
         if (severity.isBlank()) severity = "INFO";
@@ -232,6 +237,8 @@ public class IngestPipeline {
         putIfAbsent(fields, "host", c.get(com.socp.search.config.parser.CanonicalEvent.HOST_NAME));
         putIfAbsent(fields, "msg", c.get(com.socp.search.config.parser.CanonicalEvent.EVENT_MESSAGE));
         putIfAbsent(fields, "severity", c.get(com.socp.search.config.parser.CanonicalEvent.EVENT_SEVERITY));
+        putIfAbsent(fields, "action", c.get(com.socp.search.config.parser.CanonicalEvent.EVENT_ACTION));
+        putIfAbsent(fields, "category", c.get(com.socp.search.config.parser.CanonicalEvent.EVENT_CATEGORY));
         putIfAbsent(fields, "process", c.get(com.socp.search.config.parser.CanonicalEvent.PROCESS_NAME));
         putIfAbsent(fields, "pid", c.get(com.socp.search.config.parser.CanonicalEvent.PROCESS_PID));
     }

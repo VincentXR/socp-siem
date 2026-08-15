@@ -31,6 +31,7 @@ public class ParserRegistry {
                 new FalcoParser(),
                 new AuditdParser(),
                 new JsonParser(),
+                new SshdParser(),
                 new SyslogParser(),
                 new CefParser(),
                 new LeefParser(),
@@ -39,6 +40,7 @@ public class ParserRegistry {
         byVendor.put("falco", new FalcoParser());
         byVendor.put("auditd", new AuditdParser());
         byVendor.put("json", new JsonParser());
+        byVendor.put("sshd", new SshdParser());
         byVendor.put("syslog", new SyslogParser());
         byVendor.put("cef", new CefParser());
         byVendor.put("leef", new LeefParser());
@@ -67,11 +69,28 @@ public class ParserRegistry {
         for (EventParser p : parsers) {
             Map<String, String> out = safeParse(p, raw);
             if (out != null) {
+                // Vector sends a JSON envelope whose message field still contains
+                // the raw sshd line. Keep collector metadata, then enrich the
+                // envelope with the parser-specific authentication semantics.
+                if ("json".equals(p.name())) {
+                    Map<String, String> nested = parseEmbeddedSshd(out);
+                    if (nested != null) {
+                        Map<String, String> merged = new LinkedHashMap<>(out);
+                        merged.putAll(nested);
+                        return merged;
+                    }
+                }
                 return out;
             }
         }
         // 兜底：原文进 event.message
         return Map.of(CanonicalEvent.EVENT_MESSAGE, raw.trim());
+    }
+
+    private Map<String, String> parseEmbeddedSshd(Map<String, String> envelope) {
+        String message = envelope.get(CanonicalEvent.EVENT_MESSAGE);
+        if (message == null || message.isBlank()) return null;
+        return safeParse(new SshdParser(), message);
     }
 
     private Map<String, String> safeParse(EventParser p, String raw) {

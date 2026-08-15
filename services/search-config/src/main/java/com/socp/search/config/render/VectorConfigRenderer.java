@@ -15,7 +15,7 @@ import java.util.stream.Collectors;
  *
  * <p>每个日志源生成独立的 transform（inputs=[sources.src_X]），在 VRL 里按源标注
  * parse_format（解析格式）与 parse_rule_ids（自定义解析规则），SEARCH ingest 侧据此选择解析方式；
- * Vector 本身仍只做采集+传输，保持单一可信解析路径。
+ * Vector 本身做采集、轻量 envelope 元数据和传输，保持单一可信解析路径。
  */
 public class VectorConfigRenderer {
 
@@ -204,7 +204,7 @@ public class VectorConfigRenderer {
         return """
                 # ============================================================================
                 # SOCP / SEARCH 采集流水线 —— 由 search-config 渲染生成（勿手改，改配置后重新渲染）
-                # 角色：Vector 只采集 + 传输，解析/检索/告警归 SEARCH/OpenSearch。
+                # 角色：Vector 采集 + 轻量 envelope 元数据 + 传输，解析/检索/告警归 SEARCH/OpenSearch。
                 # 每个 LogSource 一个 transform（标注 parse_format/parse_rule_ids），
                 # 输出目标可选（默认 SEARCH ingest；可换 OpenSearch 等）。
                 # 校验：vector validate --no-environment vector.generated.toml

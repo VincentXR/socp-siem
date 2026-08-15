@@ -1,7 +1,7 @@
 # ============================================================================
 # SOCP / SEARCH 采集流水线 —— Vector 配置（端点 Agent 侧）
 #
-# 角色：Vector 只做「采集 + 传输」，解析/检索/告警归 SEARCH 与 OpenSearch。
+# 角色：Vector 做「采集 + 轻量 envelope 元数据 + 传输」，业务解析/检索/告警归 SEARCH 与 OpenSearch。
 # 本文件可由 search-config 服务动态渲染（POST /search-config/api/v1/render），
 # 这里保留的是「参考模板」，与渲染产物一致。
 #
