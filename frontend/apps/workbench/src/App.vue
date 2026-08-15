@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, shallowRef } from 'vue'
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
 
@@ -51,35 +51,20 @@ function registerChartTheme() {
 }
 registerChartTheme()
 
-/** 主题感知取色：实时态势图表仍由主壳层维护 */
-function tc(light: string, dark: string): string { return theme.value === 'dark' ? dark : light }
-
 import LoginView from './LoginView.vue'
 import AnimatedNumber from './AnimatedNumber.vue'
 import AppShell from './components/AppShell.vue'
-import TrendChart from './components/TrendChart.vue'
-import SevBadge from './components/SevBadge.vue'
 import OverviewView from './views/OverviewView.vue'
 import AlarmsView from './views/AlarmsView.vue'
 import { getVisibleMenuGroups } from './app/navigation'
 import {
-  listAlarms, listAlarmsPaged, getDisposition, setDispositionStatus, assignAlarm, addAlarmNote,
-  listTenants, socOverview,
+  listAlarms, listAlarmsPaged,
   checkHealth, HEALTH_TARGETS,
-  listCases,
-  uebaEntities, uebaEntity, uebaSummary, uebaScore,
-  listWatchlists, putWatchlist, appendWatchlist, deleteWatchlist,
-  ingestSummary,
-  alarmStats, gasRecentAlerts, gasEngineStats,
-  login as apiLogin, setToken, clearToken, getToken, setUnauthorizedHandler,
+  alarmStats,
+  login as apiLogin, setToken, clearToken, setUnauthorizedHandler,
   exportAlarms,
-  SEVERITIES,
   type Alarm, type AlarmPage,
-  type Disposition,
-  type TenantInfo,
-  type CaseInfo,
-  type RiskEntity, type RiskSummary, type ScoreBreakdown, type Watchlist,
-  type IngestSummary, type AlarmStats, type GasAlert, type GasStats,
+  type AlarmStats,
 } from './api'
 
 const AiAssistantView = defineAsyncComponent(() => import('./views/AiAssistantView.vue'))
@@ -98,6 +83,8 @@ const AttackView = defineAsyncComponent(() => import('./views/AttackView.vue'))
 const IngestView = defineAsyncComponent(() => import('./views/IngestView.vue'))
 const MetaView = defineAsyncComponent(() => import('./views/MetaView.vue'))
 const DetectView = defineAsyncComponent(() => import('./views/DetectView.vue'))
+const UebaView = defineAsyncComponent(() => import('./views/UebaView.vue'))
+const SituationView = defineAsyncComponent(() => import('./views/SituationView.vue'))
 
 // ---------- 导航 ----------
 const activeMenu = ref('overview')
@@ -147,8 +134,6 @@ function applyTheme(t: 'light' | 'dark') {
 }
 function toggleTheme() {
   applyTheme(theme.value === 'light' ? 'dark' : 'light')
-  // 主题切换后重绘图表（echarts canvas 不跟随 CSS 变量）
-  loadSituation()
 }
 function initTheme() {
   let t: 'light' | 'dark' | null = null
@@ -176,8 +161,7 @@ function onLoginDone(user: string, role: string) {
   isAuthed.value = true
   showLoginDialog.value = false
   refreshOverview()
-  loadSituation()
-  openAlertStream()
+  loadOverviewStats()
 }
 async function doLogin() {
   if (loginBusy.value) return
@@ -192,7 +176,7 @@ async function doLogin() {
     } catch { /* ignore */ }
     showLoginDialog.value = false
     refreshOverview()
-    loadSituation()
+    loadOverviewStats()
   } catch (e) {
     ElMessage.error((e as Error).message || '登录失败')
   } finally {
@@ -211,13 +195,10 @@ function doLogout() {
   location.reload()
 }
 
-// ---------- 弹窗状态（所有「新增」类操作统一走对话框） ----------
-const showWlDialog = ref(false)
-function openWlDialog() { newWl.value = { name: '', values: '' }; showWlDialog.value = true }
-
 // ---------- 概览 ----------
 const alarms = ref<Alarm[]>([])
 const healths = ref<Record<string, 'up' | 'down'>>({})
+const sitStats = ref<AlarmStats | null>(null)
 let refreshTimer: number | undefined
 
 const stat = computed(() => ({
@@ -233,6 +214,9 @@ async function refreshOverview() {
   const map: Record<string, 'up' | 'down'> = {}
   HEALTH_TARGETS.forEach((h, i) => { map[h.name] = results[i] })
   healths.value = map
+}
+async function loadOverviewStats() {
+  try { sitStats.value = await alarmStats() } catch { /* 静默 */ }
 }
 
 // ---------- 告警（后端分页查询） ----------
@@ -253,261 +237,12 @@ async function loadAlarmPage() {
 }
 function onAlarmSearch() { alarmPageNum.value = 1; loadAlarmPage() }
 
-// ---------- 告警详情/处置 ----------
-const drawerVisible = ref(false)
-const currentAlarm = ref<Alarm | null>(null)
-const disposition = ref<Disposition | null>(null)
-const newStatus = ref('')
-const newAssignee = ref('')
-const newNote = ref('')
-const DISP_STATUSES = ['OPEN', 'INVESTIGATING', 'RESOLVED', 'CLOSED']
-
-async function openAlarm(a: Alarm) {
-  currentAlarm.value = a
-  drawerVisible.value = true
-  findRelatedCase(a.id)
-  try {
-    disposition.value = await getDisposition(a.id)
-    newStatus.value = disposition.value.status
-  } catch {
-    disposition.value = { status: 'OPEN', assignee: null, notes: [] }
-    newStatus.value = 'OPEN'
-  }
-}
-async function changeStatus() {
-  if (!currentAlarm.value || !newStatus.value) return
-  disposition.value = await setDispositionStatus(currentAlarm.value.id, newStatus.value)
-}
-async function doAssign() {
-  if (!currentAlarm.value || !newAssignee.value.trim()) return
-  disposition.value = await assignAlarm(currentAlarm.value.id, newAssignee.value.trim())
-  newAssignee.value = ''
-}
-async function doAddNote() {
-  if (!currentAlarm.value || !newNote.value.trim()) return
-  disposition.value = await addAlarmNote(currentAlarm.value.id, newNote.value.trim(), 'operator')
-  newNote.value = ''
-}
-
 /** 顶栏全局搜索：回车后跳到日志检索页并执行 */
 const topSearch = ref('')
 function onTopSearch() {
   if (!topSearch.value.trim()) return
   onMenuChange('search')
 }
-
-// ---------- SOC ----------
-const tenants = ref<TenantInfo[]>([]); const socInfo = ref<Record<string, unknown>>({})
-async function loadSoc() { tenants.value = await listTenants(); socInfo.value = await socOverview() }
-
-// ---------- AI ----------
-// ---------- 实时态势大屏 ----------
-const sitStats = ref<AlarmStats | null>(null)
-const sitEngine = ref<GasStats | null>(null)
-const sitIngest = ref<IngestSummary | null>(null)
-const liveFeed = ref<Array<GasAlert & { _new?: boolean }>>([])
-const liveOn = ref(true)
-const liveSevFilter = ref('')
-const epsHistory = ref<number[]>([])
-let liveTimer: number | undefined
-// SSE 实时告警流：替代轮询等待，新告警即时插入 feed 并刷新 KPI
-let alertStream: EventSource | null = null
-function openAlertStream() {
-  try {
-    // EventSource 无法设置 Authorization 头，令牌只能走 ?token= 查询参数（网关 GatewayFilter 兜底读取）。
-    alertStream = new EventSource('/detect-web/api/v1/stream?token=' + encodeURIComponent(getToken()))
-    alertStream.addEventListener('alert', (e: MessageEvent) => {
-      try {
-        const a = JSON.parse(e.data)
-        if (a && a.ruleId) {
-          const item: GasAlert = {
-            id: a.id ?? `sse-${a.ruleId}-${a.timestamp}`,
-            timestamp: a.timestamp ?? new Date().toISOString(),
-            ruleId: a.ruleId, ruleName: a.ruleName ?? '',
-            severity: a.severity ?? 'INFO', message: a.message ?? '',
-            entity: a.entity ?? '',
-          }
-          mergeFeed([item])
-          loadSituation() // 同步刷新 KPI/图表，不必等下一个 4s 周期
-        }
-      } catch { /* 忽略异常帧 */ }
-    })
-    // onerror 拿不到 HTTP 状态码。无 token 时 SSE 永远无法鉴权（网关恒定 401），
-    // 此时复用统一登出流程，避免"401 → 静默重连 → 再 401"的死循环；
-    // 有 token 时多为瞬时网络抖动，交给 EventSource 内建重连。
-    alertStream.onerror = () => {
-      if (!getToken()) {
-        ElMessage.warning('登录已过期，请重新登录')
-        setTimeout(doLogout, 600)
-      }
-    }
-  } catch { /* 不支持 SSE 时退化为轮询 */ }
-}
-function closeAlertStream() { if (alertStream) { alertStream.close(); alertStream = null } }
-const gaugeEl = ref<HTMLElement>(); const donutEl = ref<HTMLElement>(); const epsEl = ref<HTMLElement>()
-const chartGauge = shallowRef<echarts.ECharts>(); const chartDonut = shallowRef<echarts.ECharts>()
-const chartEps = shallowRef<echarts.ECharts>()
-
-const feedView = computed(() =>
-  liveSevFilter.value ? liveFeed.value.filter(a => a.severity === liveSevFilter.value) : liveFeed.value)
-const queuePct = computed(() => Math.round(((sitEngine.value?.queueLoad ?? 0)) * 1000) / 10)
-
-async function loadSituation() {
-  const [s, e, g, i] = await Promise.allSettled([alarmStats(), gasEngineStats(), gasRecentAlerts(), ingestSummary()])
-  if (s.status === 'fulfilled') sitStats.value = s.value
-  if (e.status === 'fulfilled') sitEngine.value = e.value
-  if (i.status === 'fulfilled') {
-    sitIngest.value = i.value
-    epsHistory.value = [...epsHistory.value, i.value.eps1m ?? 0].slice(-40)
-  }
-  if (g.status === 'fulfilled') mergeFeed(g.value)
-  renderSitCharts()
-}
-
-/** 增量并入实时流：只把新 id 打上高亮标记，避免整表重绘导致的闪烁 */
-function mergeFeed(incoming: GasAlert[]) {
-  const known = new Set(liveFeed.value.map(a => a.id))
-  const fresh = incoming.filter(a => !known.has(a.id)).map(a => ({ ...a, _new: true }))
-  if (fresh.length === 0) return
-  liveFeed.value = [...fresh, ...liveFeed.value.map(a => ({ ...a, _new: false }))].slice(0, 200)
-  window.setTimeout(() => { liveFeed.value = liveFeed.value.map(a => ({ ...a, _new: false })) }, 1600)
-}
-
-function renderSitCharts() {
-  setTimeout(() => {
-    const st = sitStats.value
-    // 概览页：近 7 日趋势（sparkline 风格，简洁单线）
-    if (gaugeEl.value) {
-      if (!chartGauge.value || chartGauge.value.isDisposed()) chartGauge.value = echarts.init(gaugeEl.value, 'socp')
-      chartGauge.value.setOption({
-        series: [{
-          type: 'gauge', min: 0, max: 100, radius: '92%', center: ['50%', '58%'],
-          startAngle: 210, endAngle: -30, splitNumber: 5,
-          axisLine: { lineStyle: { width: 14, color: [[0.2, '#67c23a'], [0.4, '#95d475'], [0.65, '#e6a23c'], [0.85, '#f89898'], [1, '#f56c6c']] } },
-          pointer: { width: 4, length: '62%' },
-          axisTick: { distance: -14, length: 4, lineStyle: { color: 'transparent' } },
-          splitLine: { distance: -14, length: 14, lineStyle: { color: 'transparent', width: 2 } },
-          axisLabel: { distance: 16, fontSize: 10, color: tc('#818b98', '#9198a1') },
-          detail: { valueAnimation: true, fontSize: 26, fontWeight: 700, offsetCenter: [0, '38%'], formatter: '{value}', color: tc('#1f2328', '#e6edf3') },
-          title: { offsetCenter: [0, '72%'], fontSize: 12, color: tc('#59636e', '#9198a1') },
-          data: [{ value: st?.avgRisk ?? 0, name: '平均威胁分' }],
-        }],
-      })
-    }
-    if (donutEl.value) {
-      if (!chartDonut.value || chartDonut.value.isDisposed()) chartDonut.value = echarts.init(donutEl.value, 'socp')
-      const lv = st?.byRiskLevel ?? {}
-      chartDonut.value.setOption({
-        tooltip: { trigger: 'item' },
-        legend: { bottom: 0, itemWidth: 8, itemHeight: 8, textStyle: { fontSize: 11 } },
-        series: [{
-          type: 'pie', radius: ['48%', '72%'], center: ['50%', '44%'], avoidLabelOverlap: true,
-          itemStyle: { borderRadius: 4, borderColor: 'transparent', borderWidth: 0 },
-          label: { show: false }, labelLine: { show: false },
-          data: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'].map(k => ({
-            name: k, value: lv[k] ?? 0, itemStyle: { color: sevColor(k) },
-          })).filter(d => d.value > 0),
-        }],
-      })
-    }
-    if (epsEl.value) {
-      if (!chartEps.value || chartEps.value.isDisposed()) chartEps.value = echarts.init(epsEl.value, 'socp')
-      chartEps.value.setOption({
-        grid: { left: 34, right: 10, top: 18, bottom: 20 }, tooltip: { trigger: 'axis' },
-        xAxis: { type: 'category', show: false, data: epsHistory.value.map((_, i) => i) },
-        yAxis: { type: 'value', axisLabel: { fontSize: 10 }, splitLine: { lineStyle: { type: 'dashed' } } },
-        series: [{
-          type: 'line', smooth: true, showSymbol: false, data: epsHistory.value,
-          lineStyle: { color: '#67c23a', width: 2 },
-          areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(103,194,58,.35)' }, { offset: 1, color: 'rgba(103,194,58,.02)' }]) },
-        }],
-      })
-    }
-  }, 80)
-}
-
-function toggleLive() {
-  liveOn.value = !liveOn.value
-  if (liveOn.value) startLive(); else stopLive()
-}
-function startLive() {
-  stopLive()
-  liveTimer = window.setInterval(() => { if (activeMenu.value === 'situation') loadSituation() }, 4000)
-}
-function stopLive() { if (liveTimer) { clearInterval(liveTimer); liveTimer = undefined } }
-
-// ---------- UEBA 风险看板 ----------
-const riskEntities = ref<RiskEntity[]>([])
-const riskSummary = ref<RiskSummary | null>(null)
-const riskLimit = ref(20)
-const entityDrawer = ref(false)
-const entityDetail = ref<RiskEntity | null>(null)
-const watchlists = ref<Watchlist[]>([])
-const wlAppend = ref<Record<string, string>>({})
-const newWl = ref({ name: '', values: '' })
-const uebaTab = ref('entities')
-const scoreForm = ref({ severity: 'HIGH', mitre: 'T1110', tiHits: 1, recentAlerts: 3, assetCriticality: 2 })
-const scoreResult = ref<ScoreBreakdown | null>(null)
-const riskBarEl = ref<HTMLElement>(); const chartRiskBar = shallowRef<echarts.ECharts>()
-
-const BREAKDOWN_LABEL: Record<string, string> = {
-  base: '严重级别基线', tactic: 'ATT&CK 战术权重', intel: '情报命中加成',
-  frequency: '实体频次加成', asset: '资产重要性加成',
-}
-
-async function loadUeba() {
-  const [e, s, w] = await Promise.allSettled([uebaEntities(riskLimit.value), uebaSummary(), listWatchlists()])
-  riskEntities.value = e.status === 'fulfilled' ? e.value : []
-  riskSummary.value = s.status === 'fulfilled' ? s.value : null
-  watchlists.value = w.status === 'fulfilled' ? w.value : []
-  renderRiskBar()
-  if (!scoreResult.value) await calcScore()
-}
-function renderRiskBar() {
-  setTimeout(() => {
-    if (!riskBarEl.value) return
-    if (!chartRiskBar.value || chartRiskBar.value.isDisposed()) chartRiskBar.value = echarts.init(riskBarEl.value, 'socp')
-    const top = riskEntities.value.slice(0, 10).slice().reverse()
-    chartRiskBar.value.setOption({
-      grid: { left: 4, right: 40, top: 10, bottom: 10, containLabel: true },
-      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-      xAxis: { type: 'value', max: 100, axisLabel: { fontSize: 10 }, splitLine: { lineStyle: { type: 'dashed' } } },
-      yAxis: { type: 'category', data: top.map(t => t.entity), axisLabel: { fontSize: 11 } },
-      series: [{
-        type: 'bar', barWidth: 14, data: top.map(t => ({ value: t.risk, itemStyle: { color: sevColor(t.level), borderRadius: [0, 7, 7, 0] } })),
-        label: { show: true, position: 'right', fontSize: 11, formatter: '{c}' },
-      }],
-    })
-  }, 80)
-}
-async function openEntity(e: RiskEntity) {
-  entityDetail.value = e; entityDrawer.value = true
-  try { entityDetail.value = await uebaEntity(e.entity) } catch { /* 用列表里的快照兜底 */ }
-}
-async function calcScore() {
-  try { scoreResult.value = await uebaScore(scoreForm.value) } catch { scoreResult.value = null }
-}
-async function doAppendWl(name: string) {
-  const raw = (wlAppend.value[name] || '').trim()
-  if (!raw) return
-  await appendWatchlist(name, raw.split(/[\n,，\s]+/).filter(Boolean))
-  wlAppend.value[name] = ''
-  watchlists.value = await listWatchlists()
-}
-async function doCreateWl() {
-  const n = newWl.value.name.trim()
-  if (!n) return
-  await putWatchlist(n, newWl.value.values.split(/[\n,，\s]+/).filter(Boolean))
-  newWl.value = { name: '', values: '' }
-  watchlists.value = await listWatchlists()
-}
-async function doDeleteWl(name: string) {
-  await deleteWatchlist(name)
-  watchlists.value = await listWatchlists()
-}
-function riskColor(level: string) { return sevColor(level) }
-function fmtTime(value: string | null) { return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—' }
-
 
 // ---------- 系统健康看板 ----------
 // ---------- 生命周期 ----------
@@ -516,8 +251,6 @@ function onMenuChange(key: string) {
   switch (key) {
     case 'overview': refreshOverview(); break
     case 'alarms': loadAlarmPage(); break
-    case 'situation': loadSituation(); if (liveOn.value) startLive(); break
-    case 'ueba': loadUeba(); break
   }
 }
 
@@ -550,18 +283,11 @@ onMounted(() => {
   // 有登录态才拉数据；无登录态由 LoginView 接管（登录成功后回调再拉）
   if (!isAuthed.value) return
   refreshOverview()
+  loadOverviewStats()
   refreshTimer = window.setInterval(refreshOverview, 10_000)
-  window.addEventListener('resize', onWinResize)
-  openAlertStream()
 })
 onUnmounted(() => {
   if (refreshTimer) clearInterval(refreshTimer)
-  stopLive()
-  closeAlertStream()
-  for (const c of [chartGauge, chartDonut, chartEps, chartRiskBar]) {
-    if (c.value && !c.value.isDisposed()) c.value.dispose()
-  }
-  window.removeEventListener('resize', onWinResize)
 })
 
 /** 解码 JWT payload（不验签，仅取展示用 sub/role；验签在网关/服务侧完成） */
@@ -572,34 +298,6 @@ function decodeJwtPayload(t: string): Record<string, any> | null {
   } catch { return null }
 }
 
-/** 图表随窗口自适应：切页时实例可能未挂载，逐个判活再 resize */
-function onWinResize() {
-  for (const c of [chartGauge, chartDonut, chartEps, chartRiskBar]) {
-    if (c.value && !c.value.isDisposed()) c.value.resize()
-  }
-}
-
-// ---------- 告警详情联动（THREAT / ATT&CK / 案件） ----------
-const relatedCase = ref<CaseInfo | null>(null)
-async function findRelatedCase(alarmId: string) { relatedCase.value = null; try { const all = await listCases(); relatedCase.value = all.find(c => c.alarmIds.includes(alarmId)) ?? null } catch { relatedCase.value = null } }
-
-// 严重级别颜色
-function sevColor(s: string) { return { CRITICAL: '#f56c6c', HIGH: '#e63946', MEDIUM: '#e6a23c', LOW: '#909399', INFO: '#909399' }[s] ?? '#909399' }
-/** 相对时间：xx 分钟前 / x 小时前 / x 天前 */
-function relTime(iso?: string): string {
-  if (!iso) return '—'
-  const t = Date.parse(iso)
-  if (isNaN(t)) return iso
-  const diff = Math.max(0, Date.now() - t)
-  const min = Math.floor(diff / 60000)
-  if (min < 1) return '刚刚'
-  if (min < 60) return `${min} 分钟前`
-  const h = Math.floor(min / 60)
-  if (h < 24) return `${h} 小时前`
-  const d = Math.floor(h / 24)
-  if (d < 30) return `${d} 天前`
-  return iso.slice(0, 10)
-}
 </script>
 
 <template>
@@ -626,119 +324,7 @@ function relTime(iso?: string): string {
         <OverviewView v-if="activeMenu === 'overview'"
           :stat="stat" :sit-stats="sitStats" :filtered-alarms="alarms" :healths="healths" @refresh="refreshOverview" />
 
-        <!-- 实时态势大屏 -->
-        <div v-else-if="activeMenu === 'situation'" class="page-pad view-enter sit-wrap">
-          <!-- KPI 条 -->
-          <div class="sit-kpis">
-            <div class="sit-kpi">
-              <div class="k-num">{{ sitEngine?.eventCount ?? 0 }}</div><div class="k-label">引擎处理事件</div>
-            </div>
-            <div class="sit-kpi">
-              <div class="k-num" style="color:#f56c6c">{{ sitEngine?.alertCount ?? 0 }}</div><div class="k-label">规则命中告警</div>
-            </div>
-            <div class="sit-kpi">
-              <div class="k-num" style="color:#e6a23c">{{ sitEngine?.suppressedCount ?? 0 }}</div><div class="k-label">抑制去重</div>
-            </div>
-            <div class="sit-kpi">
-              <div class="k-num" :style="{ color: (sitEngine?.dropCount ?? 0) > 0 ? '#f56c6c' : '#67c23a' }">{{ sitEngine?.dropCount ?? 0 }}</div>
-              <div class="k-label">背压丢弃</div>
-            </div>
-            <div class="sit-kpi">
-              <div class="k-num" style="color:#409eff">{{ sitIngest?.eps1m ?? 0 }}</div><div class="k-label">接入 EPS(1m)</div>
-            </div>
-            <div class="sit-kpi">
-              <div class="k-num">{{ queuePct }}%</div>
-              <div class="k-label">队列水位</div>
-              <el-progress :percentage="Math.min(100, queuePct)" :show-text="false" :stroke-width="4"
-                :color="queuePct > 70 ? '#f56c6c' : queuePct > 30 ? '#e6a23c' : '#67c23a'" style="margin-top:4px" />
-            </div>
-          </div>
-
-          <el-row :gutter="12" style="margin-bottom:12px">
-            <el-col :span="6">
-              <el-card shadow="never" class="sit-card">
-                <template #header>威胁评分（0–100）</template>
-                <div ref="gaugeEl" style="height:180px"></div>
-                <div style="text-align:center;font-size:12px;color:#909399">
-                  告警总量 <b style="color:#303133">{{ sitStats?.total ?? 0 }}</b>
-                  · 高危 <b style="color:#f56c6c">{{ (sitStats?.byRiskLevel?.CRITICAL ?? 0) + (sitStats?.byRiskLevel?.HIGH ?? 0) }}</b>
-                </div>
-              </el-card>
-            </el-col>
-            <el-col :span="6">
-              <el-card shadow="never" class="sit-card">
-                <template #header>风险档位分布</template>
-                <div ref="donutEl" style="height:210px"></div>
-              </el-card>
-            </el-col>
-            <el-col :span="6">
-              <el-card shadow="never" class="sit-card">
-                <template #header>近 7 日告警趋势</template>
-                <TrendChart :data="sitStats?.trend7d" variant="situation" style="height:210px" />
-              </el-card>
-            </el-col>
-            <el-col :span="6">
-              <el-card shadow="never" class="sit-card">
-                <template #header>接入吞吐（EPS 采样）</template>
-                <div ref="epsEl" style="height:210px"></div>
-              </el-card>
-            </el-col>
-          </el-row>
-
-          <el-row :gutter="12">
-            <el-col :span="13">
-              <el-card shadow="never" class="sit-card">
-                <template #header>
-                  <div style="display:flex;align-items:center;gap:10px">
-                    <span class="live-dot" :class="{ off: !liveOn }" />
-                    <span>实时事件流</span>
-                    <el-select v-model="liveSevFilter" placeholder="全部级别" clearable size="small" style="width:120px">
-                      <el-option v-for="s in SEVERITIES" :key="s" :label="s" :value="s" />
-                    </el-select>
-                    <el-button size="small" @click="toggleLive">{{ liveOn ? '暂停' : '继续' }}</el-button>
-                    <el-button size="small" @click="loadSituation">刷新</el-button>
-                    <span style="margin-left:auto;font-size:12px;color:#909399">{{ feedView.length }} 条</span>
-                  </div>
-                </template>
-                <div class="feed">
-                  <div v-if="!feedView.length" class="feed-empty">暂无实时告警 —— 可在「日志接入 · 接入任务」里点自测灌一条样例日志</div>
-                  <div v-for="a in feedView" :key="a.id" class="feed-item" :class="{ fresh: a._new }">
-                    <span class="feed-dot" :style="{ background: sevColor(a.severity) }" />
-                    <div class="feed-body">
-                      <div class="feed-top">
-                        <SevBadge :value="a.severity" />
-                        <span class="feed-rule">{{ a.ruleName }}</span>
-                        <span class="feed-entity mono">{{ a.entity }}</span>
-                        <span class="feed-time mono">{{ new Date(a.timestamp).toLocaleTimeString('zh-CN', { hour12: false }) }}</span>
-                      </div>
-                      <div class="feed-msg">{{ a.message }}</div>
-                    </div>
-                  </div>
-                </div>
-              </el-card>
-            </el-col>
-            <el-col :span="11">
-              <el-card shadow="never" class="sit-card">
-                <template #header>最该处置的告警（按威胁评分）</template>
-                <el-table :data="sitStats?.topRisk ?? []" size="small" height="368">
-                  <el-table-column label="评分" width="86">
-                    <template #default="{ row }">
-                      <span class="risk-pill" :style="{ background: sevColor(row.riskLevel) }">{{ row.riskScore }}</span>
-                    </template>
-                  </el-table-column>
-                  <el-table-column prop="ruleName" label="规则" min-width="150" show-overflow-tooltip />
-                  <el-table-column prop="entity" label="实体" width="130" show-overflow-tooltip />
-                  <el-table-column label="ATT&CK" width="92">
-                    <template #default="{ row }"><span class="mono" style="font-size:12px">{{ row.mitre || '—' }}</span></template>
-                  </el-table-column>
-                  <el-table-column label="级别" width="94">
-                    <template #default="{ row }"><SevBadge :value="row.severity" /></template>
-                  </el-table-column>
-                </el-table>
-              </el-card>
-            </el-col>
-          </el-row>
-        </div>
+        <SituationView v-else-if="activeMenu === 'situation'" :theme="theme" @session-expired="doLogout" />
 
         <!-- 告警查询 -->
         <AlarmsView v-else-if="activeMenu === 'alarms'"
@@ -757,193 +343,7 @@ function relTime(iso?: string): string {
 
         <DetectView v-else-if="activeMenu === 'detect'" />
 
-        <!-- UEBA 风险看板 -->
-        <div v-else-if="activeMenu === 'ueba'" class="page-pad view-enter">
-          <el-row :gutter="12" style="margin-bottom:14px">
-            <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num">{{ riskSummary?.entities ?? 0 }}</div><div class="label">画像实体数</div></div></el-card></el-col>
-            <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#f56c6c">{{ riskSummary?.maxRisk ?? 0 }}</div><div class="label">最高风险分</div></div></el-card></el-col>
-            <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#e6a23c">{{ (riskSummary?.byLevel?.CRITICAL ?? 0) + (riskSummary?.byLevel?.HIGH ?? 0) }}</div><div class="label">高危实体</div></div></el-card></el-col>
-            <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num">{{ riskSummary?.halfLifeHours ?? 0 }}h</div><div class="label">风险半衰期</div></div></el-card></el-col>
-            <el-col :span="4"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#409eff">{{ watchlists.length }}</div><div class="label">观察名单</div></div></el-card></el-col>
-          </el-row>
-
-          <el-tabs v-model="uebaTab">
-            <!-- 实体风险 -->
-            <el-tab-pane label="实体风险排行" name="entities">
-              <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
-                <span style="font-size:13px;color:#909399">Top N</span>
-                <el-input-number v-model="riskLimit" :min="5" :max="100" :step="5" size="small" @change="loadUeba" />
-                <el-button size="small" @click="loadUeba">刷新</el-button>
-                <span style="font-size:12px;color:#909399">
-                  风险分 = 严重级别 + ATT&CK 战术权重 + 情报命中 + 频次 + 资产重要性，按 {{ riskSummary?.halfLifeHours ?? 6 }} 小时半衰期指数衰减
-                </span>
-              </div>
-              <el-row :gutter="12">
-                <el-col :span="10">
-                  <el-card shadow="never">
-                    <template #header>风险 Top 10</template>
-                    <div ref="riskBarEl" style="height:340px"></div>
-                  </el-card>
-                </el-col>
-                <el-col :span="14">
-                  <el-card shadow="never">
-                    <template #header>实体明细（点击行下钻）</template>
-                    <el-table :data="riskEntities" size="small" height="340" @row-click="openEntity">
-                      <el-table-column label="风险" width="80">
-                        <template #default="{ row }"><span class="risk-pill" :style="{ background: riskColor(row.level) }">{{ row.risk }}</span></template>
-                      </el-table-column>
-                      <el-table-column label="实体" min-width="150">
-                        <template #default="{ row }">
-                          <span class="mono">{{ row.entity }}</span>
-                          <el-tag v-if="row.critical" size="small" type="danger" effect="dark" style="margin-left:6px">核心资产</el-tag>
-                        </template>
-                      </el-table-column>
-                      <el-table-column prop="alerts" label="告警数" width="80" />
-                      <el-table-column label="最高级别" width="100">
-                        <template #default="{ row }"><SevBadge :value="row.maxSeverity" /></template>
-                      </el-table-column>
-                      <el-table-column label="主要战术" min-width="140">
-                        <template #default="{ row }">
-                          <el-tag v-for="m in row.mitre.slice(0, 3)" :key="m.technique" size="small" style="margin-right:4px">{{ m.technique }}×{{ m.count }}</el-tag>
-                          <span v-if="!row.mitre.length" style="color:#c0c4cc">—</span>
-                        </template>
-                      </el-table-column>
-                      <el-table-column label="最近活动" width="150">
-                        <template #default="{ row }"><span class="mono" style="font-size:12px">{{ fmtTime(row.lastSeen) }}</span></template>
-                      </el-table-column>
-                    </el-table>
-                  </el-card>
-                </el-col>
-              </el-row>
-            </el-tab-pane>
-
-            <!-- 观察名单 -->
-            <el-tab-pane label="观察名单" name="watchlists">
-              <div class="add-bar">
-                <el-button type="primary" @click="openWlDialog">+ 新增观察名单</el-button>
-                <span class="hint">名单可被规则条件 <code class="mono">op=inlist / notinlist</code> 引用，改完立即生效，无需重载规则</span>
-              </div>
-              <el-dialog v-model="showWlDialog" title="新增观察名单" width="560px">
-                <el-form label-width="92px">
-                  <el-form-item label="名单标识"><el-input v-model="newWl.name" placeholder="如 vip_accounts" /></el-form-item>
-                  <el-form-item label="成员值">
-                    <el-input v-model="newWl.values" type="textarea" :rows="4" placeholder="值，逗号/空格/换行分隔" />
-                  </el-form-item>
-                </el-form>
-                <template #footer>
-                  <el-button @click="showWlDialog = false">取消</el-button>
-                  <el-button type="primary" @click="doCreateWl(); showWlDialog = false">创建/覆盖</el-button>
-                </template>
-              </el-dialog>
-              <el-row :gutter="12">
-                <el-col v-for="w in watchlists" :key="w.name" :span="8" style="margin-bottom:12px">
-                  <el-card shadow="never" class="wl-card">
-                    <template #header>
-                      <div style="display:flex;align-items:center;gap:8px">
-                        <span class="mono" style="font-weight:600">{{ w.name }}</span>
-                        <el-tag size="small" type="info">{{ w.size }} 项</el-tag>
-                        <el-button link type="danger" size="small" style="margin-left:auto" @click="doDeleteWl(w.name)">删除</el-button>
-                      </div>
-                    </template>
-                    <div class="wl-values">
-                      <el-tag v-for="v in w.values" :key="v" size="small" style="margin:2px" class="mono">{{ v }}</el-tag>
-                      <span v-if="!w.values.length" style="color:#c0c4cc;font-size:12px">空名单</span>
-                    </div>
-                    <div style="display:flex;gap:6px;margin-top:10px">
-                      <el-input v-model="wlAppend[w.name]" size="small" placeholder="追加值" @keyup.enter="doAppendWl(w.name)" />
-                      <el-button size="small" @click="doAppendWl(w.name)">追加</el-button>
-                    </div>
-                  </el-card>
-                </el-col>
-              </el-row>
-            </el-tab-pane>
-
-            <!-- 评分模型 -->
-            <el-tab-pane label="评分模型试算" name="score">
-              <el-row :gutter="12">
-                <el-col :span="10">
-                  <el-card shadow="never">
-                    <template #header>输入条件</template>
-                    <el-form label-width="120px" size="small">
-                      <el-form-item label="严重级别">
-                        <el-select v-model="scoreForm.severity" @change="calcScore" style="width:160px">
-                          <el-option v-for="s in SEVERITIES" :key="s" :label="s" :value="s" />
-                        </el-select>
-                      </el-form-item>
-                      <el-form-item label="ATT&CK 技术">
-                        <el-input v-model="scoreForm.mitre" placeholder="如 T1486" style="width:160px" @change="calcScore" />
-                      </el-form-item>
-                      <el-form-item label="情报命中数">
-                        <el-slider v-model="scoreForm.tiHits" :min="0" :max="5" show-stops @change="calcScore" />
-                      </el-form-item>
-                      <el-form-item label="近 1h 同实体告警">
-                        <el-slider v-model="scoreForm.recentAlerts" :min="0" :max="20" @change="calcScore" />
-                      </el-form-item>
-                      <el-form-item label="资产重要性">
-                        <el-slider v-model="scoreForm.assetCriticality" :min="0" :max="3" show-stops @change="calcScore" />
-                      </el-form-item>
-                    </el-form>
-                  </el-card>
-                </el-col>
-                <el-col :span="14">
-                  <el-card shadow="never">
-                    <template #header>评分拆解（与检测/分析侧同一口径）</template>
-                    <div v-if="scoreResult">
-                      <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:16px">
-                        <span style="font-size:44px;font-weight:700" :style="{ color: riskColor(scoreResult.level) }">{{ scoreResult.score }}</span>
-                        <SevBadge :value="scoreResult.level" />
-                        <span style="font-size:12px;color:#909399">总分上限 100</span>
-                      </div>
-                      <div v-for="(v, k) in scoreResult.breakdown" :key="k" class="bd-row">
-                        <span class="bd-label">{{ BREAKDOWN_LABEL[k] ?? k }}</span>
-                        <div class="bd-bar"><div class="bd-fill" :style="{ width: Math.min(100, v) + '%', background: riskColor(scoreResult.level) }" /></div>
-                        <span class="bd-val">+{{ v }}</span>
-                      </div>
-                    </div>
-                    <el-empty v-else description="评分服务不可用" />
-                  </el-card>
-                </el-col>
-              </el-row>
-            </el-tab-pane>
-          </el-tabs>
-
-          <!-- 实体下钻抽屉 -->
-          <el-drawer v-model="entityDrawer" size="480px" :title="entityDetail?.entity ?? '实体画像'">
-            <div v-if="entityDetail">
-              <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
-                <span class="risk-pill lg" :style="{ background: riskColor(entityDetail.level) }">{{ entityDetail.risk }}</span>
-                <div>
-                  <div style="font-weight:600" class="mono">{{ entityDetail.entity }}</div>
-                  <div style="font-size:12px;color:#909399">{{ entityDetail.level }} · {{ entityDetail.alerts }} 条告警</div>
-                </div>
-                <el-tag v-if="entityDetail.critical" type="danger" effect="dark" style="margin-left:auto">核心资产</el-tag>
-              </div>
-              <el-descriptions :column="1" border size="small">
-                <el-descriptions-item label="最高级别"><SevBadge :value="entityDetail.maxSeverity" /></el-descriptions-item>
-                <el-descriptions-item label="首次出现">{{ fmtTime(entityDetail.firstSeen) }}</el-descriptions-item>
-                <el-descriptions-item label="最近活动">{{ fmtTime(entityDetail.lastSeen) }}</el-descriptions-item>
-              </el-descriptions>
-              <h4 style="margin:16px 0 8px">ATT&CK 技术分布</h4>
-              <el-table :data="entityDetail.mitre" size="small" border>
-                <el-table-column prop="technique" label="技术" width="120" />
-                <el-table-column prop="count" label="次数" width="80" />
-                <el-table-column label="占比">
-                  <template #default="{ row }">
-                    <el-progress :percentage="Math.round(row.count / entityDetail!.alerts * 100)" :stroke-width="10" />
-                  </template>
-                </el-table-column>
-              </el-table>
-              <h4 style="margin:16px 0 8px">触发最多的规则</h4>
-              <el-table :data="entityDetail.topRules" size="small" border>
-                <el-table-column prop="rule" label="规则" min-width="180" show-overflow-tooltip />
-                <el-table-column prop="count" label="次数" width="80" />
-              </el-table>
-              <div style="margin-top:16px">
-                <el-button type="primary" plain @click="entityDrawer = false; alarmKeyword = entityDetail!.entity; onMenuChange('alarms')">查看该实体全部告警</el-button>
-              </div>
-            </div>
-          </el-drawer>
-        </div>
+        <UebaView v-else-if="activeMenu === 'ueba'" :theme="theme" @go-alarms="keyword => { alarmKeyword = keyword; onMenuChange('alarms') }" />
 
         <SoarView v-else-if="activeMenu === 'soar'" />
 

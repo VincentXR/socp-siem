@@ -1,0 +1,234 @@
+<script setup lang="ts">
+import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
+import * as echarts from 'echarts'
+import TrendChart from '../components/TrendChart.vue'
+import SevBadge from '../components/SevBadge.vue'
+import {
+  alarmStats, gasEngineStats, gasRecentAlerts, getToken, ingestSummary, SEVERITIES,
+  type AlarmStats, type GasAlert, type GasStats, type IngestSummary,
+} from '../api'
+
+const props = defineProps<{ theme: 'light' | 'dark' }>()
+const emit = defineEmits<{ 'session-expired': [] }>()
+
+const sitStats = ref<AlarmStats | null>(null)
+const sitEngine = ref<GasStats | null>(null)
+const sitIngest = ref<IngestSummary | null>(null)
+const liveFeed = ref<Array<GasAlert & { _new?: boolean }>>([])
+const liveOn = ref(true)
+const liveSevFilter = ref('')
+const epsHistory = ref<number[]>([])
+let liveTimer: number | undefined
+let alertStream: EventSource | null = null
+const gaugeEl = ref<HTMLElement>()
+const donutEl = ref<HTMLElement>()
+const epsEl = ref<HTMLElement>()
+const chartGauge = shallowRef<echarts.ECharts>()
+const chartDonut = shallowRef<echarts.ECharts>()
+const chartEps = shallowRef<echarts.ECharts>()
+
+function sevColor(severity: string) {
+  return { CRITICAL: '#f56c6c', HIGH: '#e63946', MEDIUM: '#e6a23c', LOW: '#909399', INFO: '#909399' }[severity] ?? '#909399'
+}
+function tc(light: string, dark: string) { return props.theme === 'dark' ? dark : light }
+const feedView = computed(() => liveSevFilter.value ? liveFeed.value.filter(alert => alert.severity === liveSevFilter.value) : liveFeed.value)
+const queuePct = computed(() => Math.round((sitEngine.value?.queueLoad ?? 0) * 1000) / 10)
+
+function openAlertStream() {
+  try {
+    alertStream = new EventSource('/detect-web/api/v1/stream?token=' + encodeURIComponent(getToken()))
+    alertStream.addEventListener('alert', (event: MessageEvent) => {
+      try {
+        const value = JSON.parse(event.data)
+        if (value && value.ruleId) {
+          mergeFeed([{
+            id: value.id ?? `sse-${value.ruleId}-${value.timestamp}`,
+            timestamp: value.timestamp ?? new Date().toISOString(),
+            ruleId: value.ruleId, ruleName: value.ruleName ?? '', severity: value.severity ?? 'INFO',
+            message: value.message ?? '', entity: value.entity ?? '',
+          }])
+          loadSituation()
+        }
+      } catch { /* 忽略异常帧 */ }
+    })
+    alertStream.onerror = () => {
+      if (!getToken()) setTimeout(() => emit('session-expired'), 600)
+    }
+  } catch { /* 不支持 SSE 时退化为轮询 */ }
+}
+function closeAlertStream() {
+  if (alertStream) { alertStream.close(); alertStream = null }
+}
+async function loadSituation() {
+  const [stats, engine, recent, ingest] = await Promise.allSettled([alarmStats(), gasEngineStats(), gasRecentAlerts(), ingestSummary()])
+  if (stats.status === 'fulfilled') sitStats.value = stats.value
+  if (engine.status === 'fulfilled') sitEngine.value = engine.value
+  if (ingest.status === 'fulfilled') {
+    sitIngest.value = ingest.value
+    epsHistory.value = [...epsHistory.value, ingest.value.eps1m ?? 0].slice(-40)
+  }
+  if (recent.status === 'fulfilled') mergeFeed(recent.value)
+  renderSitCharts()
+}
+function mergeFeed(incoming: GasAlert[]) {
+  const known = new Set(liveFeed.value.map(alert => alert.id))
+  const fresh = incoming.filter(alert => !known.has(alert.id)).map(alert => ({ ...alert, _new: true }))
+  if (!fresh.length) return
+  liveFeed.value = [...fresh, ...liveFeed.value.map(alert => ({ ...alert, _new: false }))].slice(0, 200)
+  window.setTimeout(() => { liveFeed.value = liveFeed.value.map(alert => ({ ...alert, _new: false })) }, 1600)
+}
+function renderSitCharts() {
+  setTimeout(() => {
+    const stats = sitStats.value
+    if (gaugeEl.value) {
+      if (!chartGauge.value || chartGauge.value.isDisposed()) chartGauge.value = echarts.init(gaugeEl.value, 'socp')
+      chartGauge.value.setOption({
+        series: [{ type: 'gauge', min: 0, max: 100, radius: '92%', center: ['50%', '58%'], startAngle: 210, endAngle: -30, splitNumber: 5,
+          axisLine: { lineStyle: { width: 14, color: [[0.2, '#67c23a'], [0.4, '#95d475'], [0.65, '#e6a23c'], [0.85, '#f89898'], [1, '#f56c6c']] } },
+          pointer: { width: 4, length: '62%' }, axisTick: { distance: -14, length: 4, lineStyle: { color: 'transparent' } },
+          splitLine: { distance: -14, length: 14, lineStyle: { color: 'transparent', width: 2 } },
+          axisLabel: { distance: 16, fontSize: 10, color: tc('#818b98', '#9198a1') },
+          detail: { valueAnimation: true, fontSize: 26, fontWeight: 700, offsetCenter: [0, '38%'], formatter: '{value}', color: tc('#1f2328', '#e6edf3') },
+          title: { offsetCenter: [0, '72%'], fontSize: 12, color: tc('#59636e', '#9198a1') }, data: [{ value: stats?.avgRisk ?? 0, name: '平均威胁分' }] }],
+      })
+    }
+    if (donutEl.value) {
+      if (!chartDonut.value || chartDonut.value.isDisposed()) chartDonut.value = echarts.init(donutEl.value, 'socp')
+      const levels = stats?.byRiskLevel ?? {}
+      chartDonut.value.setOption({ tooltip: { trigger: 'item' }, legend: { bottom: 0, itemWidth: 8, itemHeight: 8, textStyle: { fontSize: 11 } }, series: [{ type: 'pie', radius: ['48%', '72%'], center: ['50%', '44%'], avoidLabelOverlap: true, itemStyle: { borderRadius: 4, borderColor: 'transparent', borderWidth: 0 }, label: { show: false }, labelLine: { show: false }, data: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'].map(level => ({ name: level, value: levels[level] ?? 0, itemStyle: { color: sevColor(level) } })).filter(item => item.value > 0) }] })
+    }
+    if (epsEl.value) {
+      if (!chartEps.value || chartEps.value.isDisposed()) chartEps.value = echarts.init(epsEl.value, 'socp')
+      chartEps.value.setOption({ grid: { left: 34, right: 10, top: 18, bottom: 20 }, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', show: false, data: epsHistory.value.map((_, index) => index) }, yAxis: { type: 'value', axisLabel: { fontSize: 10 }, splitLine: { lineStyle: { type: 'dashed' } } }, series: [{ type: 'line', smooth: true, showSymbol: false, data: epsHistory.value, lineStyle: { color: '#67c23a', width: 2 }, areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(103,194,58,.35)' }, { offset: 1, color: 'rgba(103,194,58,.02)' }]) } }] })
+    }
+  }, 80)
+}
+function toggleLive() { liveOn.value = !liveOn.value; if (liveOn.value) startLive(); else stopLive() }
+function startLive() { stopLive(); liveTimer = window.setInterval(loadSituation, 4000) }
+function stopLive() { if (liveTimer) { clearInterval(liveTimer); liveTimer = undefined } }
+function onResize() { chartGauge.value?.resize(); chartDonut.value?.resize(); chartEps.value?.resize() }
+
+watch(() => props.theme, renderSitCharts)
+onMounted(() => { loadSituation(); openAlertStream(); if (liveOn.value) startLive(); window.addEventListener('resize', onResize) })
+onUnmounted(() => {
+  stopLive(); closeAlertStream(); window.removeEventListener('resize', onResize)
+  chartGauge.value?.dispose(); chartDonut.value?.dispose(); chartEps.value?.dispose()
+})
+</script>
+
+<template>
+        <!-- 实时态势大屏 -->
+  <div class="page-pad view-enter sit-wrap">
+          <!-- KPI 条 -->
+          <div class="sit-kpis">
+            <div class="sit-kpi">
+              <div class="k-num">{{ sitEngine?.eventCount ?? 0 }}</div><div class="k-label">引擎处理事件</div>
+            </div>
+            <div class="sit-kpi">
+              <div class="k-num" style="color:#f56c6c">{{ sitEngine?.alertCount ?? 0 }}</div><div class="k-label">规则命中告警</div>
+            </div>
+            <div class="sit-kpi">
+              <div class="k-num" style="color:#e6a23c">{{ sitEngine?.suppressedCount ?? 0 }}</div><div class="k-label">抑制去重</div>
+            </div>
+            <div class="sit-kpi">
+              <div class="k-num" :style="{ color: (sitEngine?.dropCount ?? 0) > 0 ? '#f56c6c' : '#67c23a' }">{{ sitEngine?.dropCount ?? 0 }}</div>
+              <div class="k-label">背压丢弃</div>
+            </div>
+            <div class="sit-kpi">
+              <div class="k-num" style="color:#409eff">{{ sitIngest?.eps1m ?? 0 }}</div><div class="k-label">接入 EPS(1m)</div>
+            </div>
+            <div class="sit-kpi">
+              <div class="k-num">{{ queuePct }}%</div>
+              <div class="k-label">队列水位</div>
+              <el-progress :percentage="Math.min(100, queuePct)" :show-text="false" :stroke-width="4"
+                :color="queuePct > 70 ? '#f56c6c' : queuePct > 30 ? '#e6a23c' : '#67c23a'" style="margin-top:4px" />
+            </div>
+          </div>
+
+          <el-row :gutter="12" style="margin-bottom:12px">
+            <el-col :span="6">
+              <el-card shadow="never" class="sit-card">
+                <template #header>威胁评分（0–100）</template>
+                <div ref="gaugeEl" style="height:180px"></div>
+                <div style="text-align:center;font-size:12px;color:#909399">
+                  告警总量 <b style="color:#303133">{{ sitStats?.total ?? 0 }}</b>
+                  · 高危 <b style="color:#f56c6c">{{ (sitStats?.byRiskLevel?.CRITICAL ?? 0) + (sitStats?.byRiskLevel?.HIGH ?? 0) }}</b>
+                </div>
+              </el-card>
+            </el-col>
+            <el-col :span="6">
+              <el-card shadow="never" class="sit-card">
+                <template #header>风险档位分布</template>
+                <div ref="donutEl" style="height:210px"></div>
+              </el-card>
+            </el-col>
+            <el-col :span="6">
+              <el-card shadow="never" class="sit-card">
+                <template #header>近 7 日告警趋势</template>
+                <TrendChart :data="sitStats?.trend7d" variant="situation" style="height:210px" />
+              </el-card>
+            </el-col>
+            <el-col :span="6">
+              <el-card shadow="never" class="sit-card">
+                <template #header>接入吞吐（EPS 采样）</template>
+                <div ref="epsEl" style="height:210px"></div>
+              </el-card>
+            </el-col>
+          </el-row>
+
+          <el-row :gutter="12">
+            <el-col :span="13">
+              <el-card shadow="never" class="sit-card">
+                <template #header>
+                  <div style="display:flex;align-items:center;gap:10px">
+                    <span class="live-dot" :class="{ off: !liveOn }" />
+                    <span>实时事件流</span>
+                    <el-select v-model="liveSevFilter" placeholder="全部级别" clearable size="small" style="width:120px">
+                      <el-option v-for="s in SEVERITIES" :key="s" :label="s" :value="s" />
+                    </el-select>
+                    <el-button size="small" @click="toggleLive">{{ liveOn ? '暂停' : '继续' }}</el-button>
+                    <el-button size="small" @click="loadSituation">刷新</el-button>
+                    <span style="margin-left:auto;font-size:12px;color:#909399">{{ feedView.length }} 条</span>
+                  </div>
+                </template>
+                <div class="feed">
+                  <div v-if="!feedView.length" class="feed-empty">暂无实时告警 —— 可在「日志接入 · 接入任务」里点自测灌一条样例日志</div>
+                  <div v-for="a in feedView" :key="a.id" class="feed-item" :class="{ fresh: a._new }">
+                    <span class="feed-dot" :style="{ background: sevColor(a.severity) }" />
+                    <div class="feed-body">
+                      <div class="feed-top">
+                        <SevBadge :value="a.severity" />
+                        <span class="feed-rule">{{ a.ruleName }}</span>
+                        <span class="feed-entity mono">{{ a.entity }}</span>
+                        <span class="feed-time mono">{{ new Date(a.timestamp).toLocaleTimeString('zh-CN', { hour12: false }) }}</span>
+                      </div>
+                      <div class="feed-msg">{{ a.message }}</div>
+                    </div>
+                  </div>
+                </div>
+              </el-card>
+            </el-col>
+            <el-col :span="11">
+              <el-card shadow="never" class="sit-card">
+                <template #header>最该处置的告警（按威胁评分）</template>
+                <el-table :data="sitStats?.topRisk ?? []" size="small" height="368">
+                  <el-table-column label="评分" width="86">
+                    <template #default="{ row }">
+                      <span class="risk-pill" :style="{ background: sevColor(row.riskLevel) }">{{ row.riskScore }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="ruleName" label="规则" min-width="150" show-overflow-tooltip />
+                  <el-table-column prop="entity" label="实体" width="130" show-overflow-tooltip />
+                  <el-table-column label="ATT&CK" width="92">
+                    <template #default="{ row }"><span class="mono" style="font-size:12px">{{ row.mitre || '—' }}</span></template>
+                  </el-table-column>
+                  <el-table-column label="级别" width="94">
+                    <template #default="{ row }"><SevBadge :value="row.severity" /></template>
+                  </el-table-column>
+                </el-table>
+              </el-card>
+            </el-col>
+          </el-row>
+        </div>
+
+</template>
