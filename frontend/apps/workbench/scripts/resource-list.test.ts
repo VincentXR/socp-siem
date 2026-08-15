@@ -38,3 +38,14 @@ test('resource list paginates and resets an empty page after replacement', () =>
   assert.equal(list.page.value, 1)
   assert.deepEqual(list.paged.value.map(item => item.id), ['1'])
 })
+
+test('resource list sorts the complete filtered set before pagination', () => {
+  const list = useResourceList<Resource>({ searchFields: item => [item.name], pageSize: 2 })
+  list.setItems(resources)
+  list.onSortChange({ prop: 'name', order: 'descending' })
+
+  assert.deepEqual(list.sorted.value.map(item => item.name), ['web-02', 'web-01', 'db-01'])
+  assert.deepEqual(list.paged.value.map(item => item.name), ['web-02', 'web-01'])
+  list.page.value = 2
+  assert.deepEqual(list.paged.value.map(item => item.name), ['db-01'])
+})

@@ -65,12 +65,12 @@ onMounted(loadEndpoints)
         <el-input v-model="keyword" placeholder="搜索主机名 / IP / 系统" clearable @input="page = 1" />
         </FilterToolbar>
       </template>
-      <el-table :data="endpointsPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd">
-        <el-table-column prop="hostname" column-key="hostname" label="主机名" :width="columnWidth('hostname', 140)" sortable show-overflow-tooltip />
-        <el-table-column prop="ip" column-key="ip" label="IP" :width="columnWidth('ip', 120)" sortable />
-        <el-table-column prop="os" column-key="os" label="系统" :width="columnWidth('os')" min-width="140" sortable show-overflow-tooltip />
-        <el-table-column prop="agentVersion" column-key="agentVersion" label="Agent 版本" :width="columnWidth('agentVersion', 120)" sortable show-overflow-tooltip />
-        <el-table-column prop="status" column-key="status" label="状态" :width="columnWidth('status', 80)" sortable>
+      <el-table :data="endpointsPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @sort-change="endpointsList.onSortChange">
+        <el-table-column prop="hostname" column-key="hostname" label="主机名" :width="columnWidth('hostname', 140)" sortable="custom" show-overflow-tooltip />
+        <el-table-column prop="ip" column-key="ip" label="IP" :width="columnWidth('ip', 120)" sortable="custom" />
+        <el-table-column prop="os" column-key="os" label="系统" :width="columnWidth('os')" min-width="140" sortable="custom" show-overflow-tooltip />
+        <el-table-column prop="agentVersion" column-key="agentVersion" label="Agent 版本" :width="columnWidth('agentVersion', 120)" sortable="custom" show-overflow-tooltip />
+        <el-table-column prop="status" column-key="status" label="状态" :width="columnWidth('status', 80)" sortable="custom">
           <template #default="{ row }"><el-tag :type="row.status === 'ONLINE' ? 'success' : 'info'" size="small">{{ row.status }}</el-tag></template>
         </el-table-column>
         <el-table-column label="操作" width="70" :resizable="false">

@@ -131,12 +131,12 @@ onMounted(loadTi)
       <template #footer><el-button @click="showIocDialog = false">取消</el-button><el-button type="success" @click="addIoc">新增情报</el-button></template>
     </el-dialog>
     <DataTableCard v-model:current-page="iocPage" v-model:page-size="iocSize" :total="iocsFiltered.length">
-      <el-table :data="iocsPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd">
-        <el-table-column prop="type" column-key="type" label="类型" :width="columnWidth('type', 90)" sortable />
-        <el-table-column prop="value" column-key="value" label="值" :width="columnWidth('value')" min-width="160" sortable show-overflow-tooltip />
-        <el-table-column prop="severity" column-key="severity" label="严重度" :width="columnWidth('severity', 90)" sortable><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
-        <el-table-column prop="source" column-key="source" label="来源" :width="columnWidth('source', 100)" sortable show-overflow-tooltip />
-        <el-table-column prop="description" column-key="description" label="描述" :width="columnWidth('description')" min-width="160" sortable show-overflow-tooltip />
+      <el-table :data="iocsPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @sort-change="iocList.onSortChange">
+        <el-table-column prop="type" column-key="type" label="类型" :width="columnWidth('type', 90)" sortable="custom" />
+        <el-table-column prop="value" column-key="value" label="值" :width="columnWidth('value')" min-width="160" sortable="custom" show-overflow-tooltip />
+        <el-table-column prop="severity" column-key="severity" label="严重度" :width="columnWidth('severity', 90)" sortable="custom"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
+        <el-table-column prop="source" column-key="source" label="来源" :width="columnWidth('source', 100)" sortable="custom" show-overflow-tooltip />
+        <el-table-column prop="description" column-key="description" label="描述" :width="columnWidth('description')" min-width="160" sortable="custom" show-overflow-tooltip />
         <el-table-column label="操作" width="80" :resizable="false"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeIoc(row.id)">删除</el-button></template></el-table-column>
       </el-table>
     </DataTableCard>

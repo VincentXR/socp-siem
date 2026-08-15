@@ -36,6 +36,7 @@ const statusFilter = ref('')
 const casesList = useResourceList<CaseInfo>({
   searchFields: item => [item.id, item.title, item.entity, item.severity, item.status],
   filter: item => !statusFilter.value || item.status === statusFilter.value,
+  sortValue: (item, prop) => prop === 'alarmCount' ? item.alarmIds.length : (item as unknown as Record<string, unknown>)[prop],
 })
 const { items: cases, page, size, keyword, loading, filtered: casesFiltered, paged: casesPaged, setItems } = casesList
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('cases')
@@ -89,13 +90,13 @@ onMounted(loadCases)
         </el-select>
         </FilterToolbar>
       </template>
-      <el-table :data="casesPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd">
-        <el-table-column prop="id" column-key="id" label="案件 ID" :width="columnWidth('id', 180)" sortable show-overflow-tooltip />
-        <el-table-column prop="title" column-key="title" label="标题" :width="columnWidth('title')" min-width="180" sortable show-overflow-tooltip />
-        <el-table-column prop="entity" column-key="entity" label="实体" :width="columnWidth('entity', 130)" sortable show-overflow-tooltip />
-        <el-table-column prop="severity" column-key="severity" label="级别" :width="columnWidth('severity', 90)" sortable><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
-        <el-table-column prop="status" column-key="status" label="状态" :width="columnWidth('status', 120)" sortable><template #default="{ row }"><el-tag :type="row.status === 'OPEN' ? 'danger' : row.status === 'RESOLVED' || row.status === 'CLOSED' ? 'success' : 'warning'" size="small">{{ row.status }}</el-tag></template></el-table-column>
-        <el-table-column prop="alarmCount" column-key="alarmCount" label="关联告警" :width="columnWidth('alarmCount', 90)" sortable><template #default="{ row }">{{ row.alarmIds.length }}</template></el-table-column>
+      <el-table :data="casesPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @sort-change="casesList.onSortChange">
+        <el-table-column prop="id" column-key="id" label="案件 ID" :width="columnWidth('id', 180)" sortable="custom" show-overflow-tooltip />
+        <el-table-column prop="title" column-key="title" label="标题" :width="columnWidth('title')" min-width="180" sortable="custom" show-overflow-tooltip />
+        <el-table-column prop="entity" column-key="entity" label="实体" :width="columnWidth('entity', 130)" sortable="custom" show-overflow-tooltip />
+        <el-table-column prop="severity" column-key="severity" label="级别" :width="columnWidth('severity', 90)" sortable="custom"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
+        <el-table-column prop="status" column-key="status" label="状态" :width="columnWidth('status', 120)" sortable="custom"><template #default="{ row }"><el-tag :type="row.status === 'OPEN' ? 'danger' : row.status === 'RESOLVED' || row.status === 'CLOSED' ? 'success' : 'warning'" size="small">{{ row.status }}</el-tag></template></el-table-column>
+        <el-table-column prop="alarmCount" column-key="alarmCount" label="关联告警" :width="columnWidth('alarmCount', 90)" sortable="custom"><template #default="{ row }">{{ row.alarmIds.length }}</template></el-table-column>
         <el-table-column label="操作" width="90" :resizable="false"><template #default="{ row }"><el-button link type="primary" size="small" @click="openCaseRow(row)">详情/时间线</el-button></template></el-table-column>
       </el-table>
     </DataTableCard>
