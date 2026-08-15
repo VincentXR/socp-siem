@@ -1,81 +1,100 @@
 # SOCP SIEM Architecture
 
-This document describes the current implementation as of 2026-08-15. The
-repository README and executable code are the source of truth; this page is a
-short architecture reference, not a historical design proposal.
+This document describes the implemented event pipeline, storage boundaries,
+runtime configuration, and reliability semantics. Source code, migrations, and
+executable verification scripts are the final source of truth.
 
-## System shape
-
-SOCP is a Java 21/Spring Boot monorepo with 28 Maven modules, 17 backend
-services, one Vue workbench, and optional Docker middleware. The important
-boundary is the event pipeline, not the service count:
+## Event pipeline
 
 ```mermaid
 flowchart LR
-  A[Vector / NDJSON / collectors] --> P[search-config\nparser + canonical schema]
-  P --> K[(Kafka\nsocp-events)]
-  K --> D[detect-web\nRuleEngine + UEBA]
-  K --> O[OsIndexerConsumer]
-  O --> OS[(OpenSearch\nraw event search)]
-  D --> AL[alert-web\nalert lifecycle]
-  AL --> PG[(PostgreSQL\nt_alarm + outbox)]
-  PG --> OB[OutboxPublisher]
-  OB --> AE[(Kafka\nsocp-alarm-events)]
-  AE --> FAN[AlarmEventConsumer]
-  FAN --> CK[(ClickHouse\nalarm_detail)]
-  FAN --> I[Incident / Notify / SOAR]
+  S[Vector / NDJSON / collectors] --> P[search-config<br/>parse · normalize · enrich]
+  P --> K[(Kafka<br/>socp-events)]
+  K --> D[detect-web<br/>rule engine · UEBA]
+  K --> IX[OpenSearch index consumer]
+  IX --> OS[(OpenSearch<br/>raw event search)]
+  D --> A[alert-web<br/>alert lifecycle]
+  A --> PG[(PostgreSQL<br/>alert facts + outbox)]
+  PG --> OP[Outbox publisher]
+  OP --> AK[(Kafka<br/>socp-alarm-events)]
+  AK --> FAN[Alarm event consumer]
+  FAN --> CK[(ClickHouse<br/>alarm analytics)]
+  FAN --> I[incident-web]
+  FAN --> R[soar-web / notify-web]
   UI[Vue workbench] --> GW[api-gateway]
-  GW --> AL
+  GW --> A
   GW --> D
   GW --> OS
   GW --> I
+  GW --> R
 ```
+
+`search-config` is the normalization boundary. It converts vendor-specific
+input into a canonical security event before publishing to `socp-events`.
+Detection and indexing consume the same event stream independently, so a
+search outage does not block detection and a detection restart can process
+Kafka backlog after recovery.
 
 ## Responsibilities and storage
 
-| Concern | Current implementation | Reason for the boundary |
+| Concern | Implementation | Boundary |
 |---|---|---|
-| Ingestion and parsing | `search-config`, Vector, collector endpoints | Isolate vendor-specific formats from detection rules |
-| Event transport | Kafka topics `socp-events`, `socp-rule-changes`, `socp-alarm-events` | Decouple producers and consumers; support replay and fan-out |
-| Detection | `socp-rule` embedded in `detect-web` | JSON-configured rules, hot reload, window state and backpressure |
-| Alert facts | `alert-web` + PostgreSQL `t_alarm` | Transactional lifecycle and tenant-filtered queries |
-| Raw event search | OpenSearch, written by the Kafka consumer | Search and investigation workloads stay separate from OLTP |
-| Analytical reporting | ClickHouse `alert_agg.alarm_detail` | Keep trend and aggregation queries off PostgreSQL |
-| Response | `incident-web`, `notify-web`, `soar-web`, optional Temporal | Explicit workflow state, retries and compensation |
+| Ingestion and parsing | Vector, collectors, and `search-config` | Vendor-specific formats stay outside detection rules |
+| Event transport | Kafka `socp-events`, rule-change events, and alarm events | Decouples producers, detection, indexing, and fan-out |
+| Detection | `socp-rule` embedded in `detect-web` | JSON rules, hot reload, suppression, windows, and backpressure |
+| Alert facts | `alert-web` and PostgreSQL | Transactional lifecycle and tenant-scoped queries |
+| Event investigation | OpenSearch index consumer and search API | Full-text and field search stay separate from OLTP |
+| Reporting | ClickHouse alarm detail consumer and `report-web` | Aggregations do not compete with alert writes |
+| Response | `incident-web`, `notify-web`, `soar-web`, optional Temporal | Explicit workflow state, retry, and compensation |
 
-The default local profile uses PostgreSQL for `alert-web`, `incident-web`,
-`soc-base`, and `threat-web`; nine stateful services use file-backed H2 with
-Flyway migrations. The `pg` profile is available for those nine services.
-Gateway, collectors, and reporting are stateless or read from other stores.
+The default development setup uses PostgreSQL for alert, incident, SOC base,
+and threat-intelligence data. Nine lower-resource stateful services use
+file-backed H2 by default and provide an `application-pg.yml` configuration.
+Gateway, collectors, and reporting have no primary transactional database.
 
 ## Reliability semantics
 
 - Kafka producers use `acks=all` and idempotence where configured.
-- Consumers use manual commit, event-id deduplication, and DLQ/error paths.
-- Detection applies bounded queue backpressure; ingest returns `503` with
-  `Retry-After` when the queue cannot accept more events.
-- Alert creation and its outbox row are written in one database transaction.
-  The outbox publisher gives at-least-once delivery; consumers must remain
-  idempotent. This is not an exactly-once claim.
-- Temporal is optional in local development. SOAR falls back to the in-process
-  executor when Temporal is unavailable; `prod` rejects that fallback.
+- Consumers use manual offset commits, stable event IDs, deduplication, and
+  error/DLQ paths.
+- Detection has a bounded queue. When it cannot accept more events, ingest
+  returns `503` with `Retry-After` so the collector can retry instead of
+  silently dropping data.
+- `alert-web` writes the alert and its Outbox row in one database transaction.
+  The publisher provides at-least-once delivery; downstream consumers must be
+  idempotent. The system does not claim distributed exactly-once processing.
+- Temporal is optional for development. SOAR can use the in-process executor
+  when Temporal is unavailable; the `prod` guard rejects that fallback.
 
-## Security and tenancy
+## Security and observability
 
 `socp-auth` validates HMAC or JWKS JWTs, extracts the tenant claim, and applies
-method-level `@RequireRole` checks. Development may use the explicit
-dev-bypass fallback; production must provide a real secret or issuer and uses
-`ProdGuard` to reject demo credentials, H2, bypass authentication, and disabled
-Temporal. Tenant isolation is logical (`tenant_id` plus SDK filters), not
-physical database isolation.
+method-level `@RequireRole` checks. Tenant isolation is logical: services use
+`tenant_id` and shared context/query filters rather than separate databases.
 
-## Operating modes
+OpenTelemetry propagates trace context across HTTP requests and Kafka headers.
+Audit records, trace IDs, health endpoints, and metrics provide operational
+evidence for an event as it moves through the pipeline.
 
-- `local`: fastest development, H2/file-backed services and optional middleware.
-- `integration`: Docker middleware plus the real Kafka/OpenSearch/ClickHouse
-  path; use `verify-pipeline.py` or `verify-full.py`.
-- `prod`: environment-provided credentials and PostgreSQL, with fail-fast
-  safety checks.
+## Runtime configuration
+
+- The startup scripts use the `dev` profile for local credentials and demo
+  defaults. The normal integration setup adds Docker middleware.
+- Services with an `application-pg.yml` file can use the `pg` profile to switch
+  from file-backed H2 to PostgreSQL.
+- The `prod` profile enables `ProdGuard`, which rejects H2, demo credentials,
+  authentication bypass, the default ingest token, and disabled Temporal.
+- Docker Compose is a single-node development and verification environment;
+  it is not a production HA deployment.
+
+## Known scaling boundaries
+
+Detection window state is held in the engine process. A horizontally scaled
+deployment must keep the same detection key on one partition or introduce a
+shared state strategy. Logical tenancy is implemented, while physical tenant
+database isolation is outside the current scope. Kafka, OpenSearch,
+PostgreSQL, and ClickHouse are configured as single-node dependencies for
+local verification.
 
 See [module-map.md](module-map.md), [getting-started.md](getting-started.md),
-and the [architecture decision records](adr/) for implementation details.
+[testing.md](testing.md), and the [architecture decision records](adr/).

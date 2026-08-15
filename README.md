@@ -118,6 +118,7 @@ bash build/mvnw.sh test -Dsurefire.failIfNoSpecifiedTests=false
 cd frontend/apps/workbench
 pnpm test
 pnpm verify
+cd ../../..
 
 # 集成环境验证
 python build/verify-slice.py

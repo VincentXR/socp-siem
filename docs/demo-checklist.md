@@ -1,62 +1,90 @@
-# Demo Checklist
+# Operational Demo Checklist
 
-这份清单用于简历链接和面试演示。重点是证明一条真实的安全事件闭环，
-而不是逐个展示服务数量。
+This guide provides a repeatable demonstration of the implemented security
+event pipeline and its recovery behavior.
 
-## Golden Demo：3～5 分钟
+## Golden Demo: SSH brute force to account compromise
 
-故事固定为：SSH 暴力破解，随后同一来源成功登录。
+The scenario sends five failed SSH logins from one source, followed by a
+successful login from the same source:
 
 ```text
 sshd raw log
   -> Vector
-  -> search-config: parse + canonical normalize
-  -> Kafka socp-events
-  -> detect-web: threshold / correlation
+  -> search-config: parse + canonical normalization
+  -> Kafka: socp-events
+  -> detect-web: threshold + correlation
   -> alert-web: PostgreSQL + Outbox
        -> incident-web / soar-web / notify-web
 event -> OpenSearch investigation
 alert -> ClickHouse analytics
 ```
 
-准备并启动完整本地链路：
+### Preparation
 
 ```bash
 docker compose -f infra/docker-compose.yml up -d
 bash build/run-all.sh backend
 bash build/run-vector.sh start
+```
+
+Confirm the workbench is available at `http://localhost:5173`, then run:
+
+```bash
 python build/demos/golden-demo.py
 ```
 
-脚本会向 `demo/sample.log` 追加 5 条唯一的 `Failed password`，等待
-`AUTH-BRUTE`，再追加一条 `Accepted password`，等待
-`AUTH-BRUTE-SUCCESS`，并验证事件、告警、Incident、SOAR、Notify 和报表。
-其中通知使用本地 EMAIL 记录渠道，不会发出外部邮件。
+The script creates or reuses a local SOAR playbook and notification channel,
+appends five `Failed password` records and one `Accepted password` record to
+`demo/sample.log`, and verifies:
 
-若 Vector 未启动，或只需排查 search-config 之后的链路，可运行：
+1. The raw records become canonical events with `event.action`, `source.ip`,
+   and `user.name` fields.
+2. Rule `AUTH-BRUTE` produces an alert.
+3. Rule `AUTH-BRUTE-SUCCESS` correlates the failed and successful logins.
+4. The Outbox creates an Incident, records a notification, and starts SOAR.
+5. The reporting endpoint exposes downstream analytics and trace IDs.
+
+If Vector is not the focus of the check, inject directly after the collector
+boundary:
 
 ```bash
 python build/demos/golden-demo.py --transport ingest
 ```
 
-现场页面只展示五件事：canonical 字段、告警 ATT&CK（T1110/T1078）、
-Incident 时间线、SOAR 执行结果、Audit/Trace。Kafka、PG、OpenSearch、
-ClickHouse 的职责在面试追问时展开，不需要逐个打开管理页面。
+The local EMAIL channel records dispatches and does not send external mail.
 
-## Failure Demo：Kafka 保证积压和恢复
+## Failure Demo: detection recovery
 
-1. 启动 Golden Demo 所需服务。
-2. 停止 `detect-web`，继续注入事件，观察 `socp-events` consumer lag 上升。
-3. 重启 `detect-web`，观察 lag 下降并继续产生告警。
-4. 解释：采集与检测解耦，语义是 at-least-once；消费者使用手动提交、
-   event-id 去重和 DLQ，不宣称跨系统 exactly-once。
+1. Start the Golden Demo prerequisites.
+2. Stop `detect-web` while the ingestion path remains available.
+3. Inject additional events and observe the `socp-events` consumer lag grow.
+4. Restart `detect-web` and confirm the lag decreases and alerts resume.
+5. Explain the behavior as at-least-once delivery with manual commits,
+   event-ID deduplication, and DLQ/error handling.
 
-脚本化依赖故障可使用 `python build/failure-tests.py`；它覆盖 Kafka、
-OpenSearch、Temporal 和 PostgreSQL 的停止/恢复场景。
+The scripted dependency checks cover the same recovery family:
 
-## 展示边界
+```bash
+python build/failure-tests.py
+```
 
-- `build/demos/attack-scenarios.py` 是多规则 playground，不是主链路 Demo。
-- 不展示真实凭据、客户数据、私有主机名或本地数据库文件。
-- Jaeger 只有在启用 tracing/Jaeger 时展示；没有追踪后端时以响应中的 trace ID
-  和日志关联作为替代证据。
+They exercise Kafka, OpenSearch, Temporal, and PostgreSQL stop/restart paths.
+
+## Evidence to collect
+
+Use the workbench to inspect the canonical event, the two alerts and their
+ATT&CK mappings, the Incident timeline, the SOAR execution, and audit/trace
+information. The infrastructure components are explained through their
+responsibilities in [architecture.md](architecture.md); they do not need to be
+opened individually during the walkthrough.
+
+When tracing is enabled, use Jaeger for the distributed trace. Otherwise,
+retain the response `X-Trace-Id` and service logs as the correlation evidence.
+
+## Cleanup
+
+```bash
+bash build/run-all.sh stop
+docker compose -f infra/docker-compose.yml down
+```
