@@ -9,34 +9,26 @@ import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
-import { computed, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import MetricCard from '../components/MetricCard.vue'
 import PageHeader from '../components/PageHeader.vue'
 import PagerBar from '../components/PagerBar.vue'
-import { assetStats, deleteAsset, listAssets, type Asset } from '../api'
+import { useResourceList } from '../composables/useResourceList'
+import { assetApi, type Asset } from '../api/domains'
 
-const assets = ref<Asset[]>([])
 const assetStat = ref<{ total: number; byType: Record<string, number>; byCriticality: Record<string, number> } | null>(null)
-const page = ref(1)
-const size = ref(10)
-const loading = ref(false)
-const keyword = ref('')
-const assetsFiltered = computed(() => {
-  const q = keyword.value.trim().toLowerCase()
-  if (!q) return assets.value
-  return assets.value.filter(asset => [asset.name, asset.type, asset.ip, asset.os, asset.owner, asset.criticality]
-    .some(value => String(value ?? '').toLowerCase().includes(q)))
+const assetsList = useResourceList<Asset>({
+  searchFields: asset => [asset.name, asset.type, asset.ip, asset.os, asset.owner, asset.criticality],
 })
-const assetsPaged = computed(() => assetsFiltered.value.slice((page.value - 1) * size.value, page.value * size.value))
+const { items: assets, page, size, keyword, loading, filtered: assetsFiltered, paged: assetsPaged, setItems } = assetsList
 
 async function loadAssets() {
   if (loading.value) return
   loading.value = true
   try {
-    const [assetResult, statResult] = await Promise.allSettled([listAssets(), assetStats()])
+    const [assetResult, statResult] = await Promise.allSettled([assetApi.list(), assetApi.stats()])
     if (assetResult.status === 'fulfilled') {
-      assets.value = assetResult.value
-      if (page.value > 1 && assetsPaged.value.length === 0) page.value = 1
+      setItems(assetResult.value)
     }
     if (statResult.status === 'fulfilled') assetStat.value = statResult.value
   } finally {
@@ -45,7 +37,7 @@ async function loadAssets() {
 }
 
 async function removeAsset(id: string) {
-  await deleteAsset(id)
+  await assetApi.remove(id)
   await loadAssets()
 }
 

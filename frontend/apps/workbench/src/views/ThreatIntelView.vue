@@ -15,30 +15,35 @@ import { ElForm, ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
-import { computed, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import PagerBar from '../components/PagerBar.vue'
 import SevBadge from '../components/SevBadge.vue'
-import { createIoc, deleteIoc, listIocs, tiMatch, tiStats, SEVERITIES, type Ioc } from '../api'
+import { useResourceList } from '../composables/useResourceList'
+import { threatIntelApi, type Ioc } from '../api/domains'
+import { SEVERITIES } from '../api'
 
-const iocs = ref<Ioc[]>([])
 const tiStat = ref<{ total?: number; byType?: Record<string, number> }>({})
 const iocType = ref('')
-const iocPage = ref(1)
-const iocSize = ref(10)
 const showIocDialog = ref(false)
 const newIoc = ref({ type: 'ip', value: '', severity: 'HIGH', source: 'manual', description: '', tags: '' })
 const tiMatchValue = ref('')
 const tiMatchResult = ref<{ value: string; matched: boolean; ioc?: Ioc } | null>(null)
-const iocKeyword = ref('')
-
-const iocsFiltered = computed(() => {
-  const q = iocKeyword.value.trim().toLowerCase()
-  if (!q) return iocs.value
-  return iocs.value.filter(ioc => [ioc.type, ioc.value, ioc.severity, ioc.source, ioc.description]
-    .some(value => String(value ?? '').toLowerCase().includes(q)))
+const iocList = useResourceList<Ioc>({
+  searchFields: ioc => [ioc.type, ioc.value, ioc.severity, ioc.source, ioc.description],
+  filter: ioc => !iocType.value || ioc.type === iocType.value,
 })
-const iocsPaged = computed(() => iocsFiltered.value.slice((iocPage.value - 1) * iocSize.value, iocPage.value * iocSize.value))
+const {
+  items: iocs,
+  page: iocPage,
+  size: iocSize,
+  keyword: iocKeyword,
+  loading,
+  filtered: iocsFiltered,
+  paged: iocsPaged,
+  setItems,
+  resetPage,
+} = iocList
 
 function openIocDialog() {
   newIoc.value = { type: 'ip', value: '', severity: 'HIGH', source: 'manual', description: '', tags: '' }
@@ -46,14 +51,23 @@ function openIocDialog() {
 }
 
 async function loadTi() {
-  iocPage.value = 1
-  iocs.value = await listIocs(iocType.value || undefined)
-  try { tiStat.value = await tiStats() } catch { tiStat.value = {} }
+  resetPage()
+  loading.value = true
+  try {
+    const [iocResult, statResult] = await Promise.allSettled([
+      threatIntelApi.list(iocType.value || undefined),
+      threatIntelApi.stats(),
+    ])
+    if (iocResult.status === 'fulfilled') setItems(iocResult.value)
+    if (statResult.status === 'fulfilled') tiStat.value = statResult.value
+  } finally {
+    loading.value = false
+  }
 }
 
 async function addIoc() {
   if (!newIoc.value.value.trim()) return
-  await createIoc({
+  await threatIntelApi.create({
     type: newIoc.value.type, value: newIoc.value.value.trim(), severity: newIoc.value.severity,
     source: newIoc.value.source, description: newIoc.value.description || undefined,
     tags: newIoc.value.tags ? newIoc.value.tags.split(/[,，\s]+/).filter(Boolean) : [],
@@ -63,13 +77,13 @@ async function addIoc() {
 }
 
 async function removeIoc(id: string) {
-  await deleteIoc(id)
+  await threatIntelApi.remove(id)
   await loadTi()
 }
 
 async function doTiMatch() {
   if (!tiMatchValue.value.trim()) return
-  try { tiMatchResult.value = await tiMatch(tiMatchValue.value.trim()) }
+  try { tiMatchResult.value = await threatIntelApi.match(tiMatchValue.value.trim()) }
   catch { tiMatchResult.value = { value: tiMatchValue.value, matched: false } }
 }
 
@@ -79,7 +93,7 @@ onMounted(loadTi)
 <template>
   <div class="page-pad view-enter">
     <PageHeader title="威胁情报" description="维护 IP、域名、URL、哈希和邮箱情报，并检查事件是否命中情报库。">
-      <template #actions><el-button size="small" @click="loadTi">刷新</el-button></template>
+      <template #actions><el-button size="small" :loading="loading" @click="loadTi">刷新</el-button></template>
     </PageHeader>
     <div class="page-metrics ti-metrics">
       <el-card shadow="never" :body-style="{ padding: '12px 18px' }">

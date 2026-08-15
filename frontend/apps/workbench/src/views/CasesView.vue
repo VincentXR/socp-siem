@@ -19,40 +19,32 @@ import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { ElTimeline, ElTimelineItem } from 'element-plus/es/components/timeline/index.mjs'
-import { computed, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import MetricCard from '../components/MetricCard.vue'
 import PageHeader from '../components/PageHeader.vue'
 import PagerBar from '../components/PagerBar.vue'
 import SevBadge from '../components/SevBadge.vue'
-import { caseStats, caseTimeline, exportCases, listCases, setCaseStatus, type CaseInfo, type TimelineEvent } from '../api'
+import { useResourceList } from '../composables/useResourceList'
+import { caseApi, type CaseInfo, type TimelineEvent } from '../api/domains'
 
-const cases = ref<CaseInfo[]>([])
 const stats = ref<{ total?: number; open?: number; resolved?: number }>({})
 const detail = ref<CaseInfo | null>(null)
 const timeline = ref<TimelineEvent[]>([])
 const drawerVisible = ref(false)
 const newStatus = ref('')
-const page = ref(1)
-const size = ref(10)
-const loading = ref(false)
-const keyword = ref('')
 const statusFilter = ref('')
-const casesFiltered = computed(() => {
-  const q = keyword.value.trim().toLowerCase()
-  return cases.value.filter(item => {
-    const matchesText = !q || [item.id, item.title, item.entity, item.severity, item.status]
-      .some(value => String(value ?? '').toLowerCase().includes(q))
-    return matchesText && (!statusFilter.value || item.status === statusFilter.value)
-  })
+const casesList = useResourceList<CaseInfo>({
+  searchFields: item => [item.id, item.title, item.entity, item.severity, item.status],
+  filter: item => !statusFilter.value || item.status === statusFilter.value,
 })
-const casesPaged = computed(() => casesFiltered.value.slice((page.value - 1) * size.value, page.value * size.value))
+const { items: cases, page, size, keyword, loading, filtered: casesFiltered, paged: casesPaged, setItems } = casesList
 
 async function loadCases() {
   if (loading.value) return
   loading.value = true
   try {
-    const [caseResult, statResult] = await Promise.allSettled([listCases(), caseStats()])
-    if (caseResult.status === 'fulfilled') cases.value = caseResult.value
+    const [caseResult, statResult] = await Promise.allSettled([caseApi.list(), caseApi.stats()])
+    if (caseResult.status === 'fulfilled') setItems(caseResult.value)
     if (statResult.status === 'fulfilled') stats.value = statResult.value
   } finally { loading.value = false }
 }
@@ -61,13 +53,13 @@ async function openCase(item: CaseInfo) {
   detail.value = item
   newStatus.value = item.status
   drawerVisible.value = true
-  try { timeline.value = (await caseTimeline(item.id)).timeline } catch { timeline.value = [] }
+  try { timeline.value = (await caseApi.timeline(item.id)).timeline } catch { timeline.value = [] }
 }
 function openCaseRow(row: unknown) { openCase(row as CaseInfo) }
 
 async function updateStatus() {
   if (!detail.value || !newStatus.value) return
-  const result = await setCaseStatus(detail.value.id, newStatus.value)
+  const result = await caseApi.updateStatus(detail.value.id, newStatus.value)
   detail.value = result.case
   await loadCases()
 }
@@ -78,7 +70,7 @@ onMounted(loadCases)
 <template>
   <div class="page-pad view-enter">
     <PageHeader title="案件管理" description="将告警聚合为可跟踪案件，维护处置状态和事件时间线。">
-      <template #actions><el-button size="small" @click="exportCases()">导出案件 JSON</el-button></template>
+      <template #actions><el-button size="small" @click="caseApi.export()">导出案件 JSON</el-button></template>
     </PageHeader>
 
     <div class="page-metrics">

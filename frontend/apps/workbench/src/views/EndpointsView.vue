@@ -9,34 +9,26 @@ import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
-import { computed, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import MetricCard from '../components/MetricCard.vue'
 import PageHeader from '../components/PageHeader.vue'
 import PagerBar from '../components/PagerBar.vue'
-import { deleteEndpoint, endpointStats, listEndpoints, type Endpoint } from '../api'
+import { useResourceList } from '../composables/useResourceList'
+import { endpointApi, type Endpoint } from '../api/domains'
 
-const endpoints = ref<Endpoint[]>([])
 const endpointStat = ref<{ total: number; online: number; byType: Record<string, number> } | null>(null)
-const page = ref(1)
-const size = ref(10)
-const loading = ref(false)
-const keyword = ref('')
-const endpointsFiltered = computed(() => {
-  const q = keyword.value.trim().toLowerCase()
-  if (!q) return endpoints.value
-  return endpoints.value.filter(endpoint => [endpoint.hostname, endpoint.ip, endpoint.os, endpoint.agentVersion, endpoint.status]
-    .some(value => String(value ?? '').toLowerCase().includes(q)))
+const endpointsList = useResourceList<Endpoint>({
+  searchFields: endpoint => [endpoint.hostname, endpoint.ip, endpoint.os, endpoint.agentVersion, endpoint.status],
 })
-const endpointsPaged = computed(() => endpointsFiltered.value.slice((page.value - 1) * size.value, page.value * size.value))
+const { items: endpoints, page, size, keyword, loading, filtered: endpointsFiltered, paged: endpointsPaged, setItems } = endpointsList
 
 async function loadEndpoints() {
   if (loading.value) return
   loading.value = true
   try {
-    const [endpointResult, statResult] = await Promise.allSettled([listEndpoints(), endpointStats()])
+    const [endpointResult, statResult] = await Promise.allSettled([endpointApi.list(), endpointApi.stats()])
     if (endpointResult.status === 'fulfilled') {
-      endpoints.value = endpointResult.value
-      if (page.value > 1 && endpointsPaged.value.length === 0) page.value = 1
+      setItems(endpointResult.value)
     }
     if (statResult.status === 'fulfilled') endpointStat.value = statResult.value
   } finally {
@@ -45,7 +37,7 @@ async function loadEndpoints() {
 }
 
 async function removeEndpoint(id: string) {
-  await deleteEndpoint(id)
+  await endpointApi.remove(id)
   await loadEndpoints()
 }
 
