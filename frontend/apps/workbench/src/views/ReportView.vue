@@ -36,8 +36,9 @@ let renderToken = 0
 function tc(light: string, dark: string): string { return props.theme === 'dark' ? dark : light }
 
 async function loadReport() {
-  const result = await reportRequest.execute(async () => {
-    const [summary, dailyTrend] = await Promise.all([dailyReport(), trend7d()])
+  const result = await reportRequest.execute(async signal => {
+    const requestOptions = { signal }
+    const [summary, dailyTrend] = await Promise.all([dailyReport(requestOptions), trend7d(requestOptions)])
     return { summary, dailyTrend }
   })
   if (!result) return

@@ -9,15 +9,19 @@ export function useRequest<T>(initial: T | null = null) {
   const loading = ref(false)
   let requestId = 0
   let activeRequest = 0
+  let activeController: AbortController | null = null
 
-  async function execute(request: () => Promise<T>): Promise<T | undefined> {
+  async function execute(request: (signal: AbortSignal) => Promise<T>): Promise<T | undefined> {
     const id = ++requestId
     activeRequest = id
+    activeController?.abort()
+    const controller = new AbortController()
+    activeController = controller
     loading.value = true
     error.value = null
 
     try {
-      const result = await request()
+      const result = await request(controller.signal)
       if (id !== activeRequest) return undefined
       data.value = result
       return result
@@ -27,12 +31,17 @@ export function useRequest<T>(initial: T | null = null) {
       }
       return undefined
     } finally {
-      if (id === activeRequest) loading.value = false
+      if (id === activeRequest) {
+        loading.value = false
+        activeController = null
+      }
     }
   }
 
   function cancel(): void {
     activeRequest = ++requestId
+    activeController?.abort()
+    activeController = null
     loading.value = false
   }
 

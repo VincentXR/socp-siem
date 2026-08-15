@@ -3,47 +3,49 @@ import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/card/style/css.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElCard from 'element-plus/es/components/card/index.mjs'
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useQuery } from '@tanstack/vue-query'
+import { computed } from 'vue'
 import MetricCard from '../components/MetricCard.vue'
 import PageHeader from '../components/PageHeader.vue'
 import { HEALTH_TARGETS, checkHealth, gasEngineStats, ingestSummary, type GasStats, type IngestSummary } from '../api'
 
 type HealthItem = (typeof HEALTH_TARGETS)[number] & { status: string }
 
-const healthList = ref<HealthItem[]>([])
-const healthEngine = ref<GasStats | null>(null)
-const healthIngest = ref<IngestSummary | null>(null)
-const loading = ref(false)
-let refreshTimer: number | undefined
+const healthServicesQuery = useQuery({
+  queryKey: ['health', 'services'],
+  queryFn: ({ signal }) => Promise.all(HEALTH_TARGETS.map(async target => ({
+    ...target,
+    status: await checkHealth(target.path, { signal, timeoutMs: 3_000 }),
+  }))),
+  refetchInterval: 30_000,
+  refetchIntervalInBackground: false,
+})
+const healthEngineQuery = useQuery({
+  queryKey: ['health', 'engine'],
+  queryFn: ({ signal }) => gasEngineStats({ signal }),
+  refetchInterval: 30_000,
+  refetchIntervalInBackground: false,
+})
+const healthIngestQuery = useQuery({
+  queryKey: ['health', 'ingest'],
+  queryFn: ({ signal }) => ingestSummary({ signal }),
+  refetchInterval: 30_000,
+  refetchIntervalInBackground: false,
+})
+const healthList = computed<HealthItem[]>(() => healthServicesQuery.data.value ?? [])
+const healthEngine = computed<GasStats | null>(() => healthEngineQuery.data.value ?? null)
+const healthIngest = computed<IngestSummary | null>(() => healthIngestQuery.data.value ?? null)
+const loading = computed(() => healthServicesQuery.isFetching.value || healthEngineQuery.isFetching.value || healthIngestQuery.isFetching.value)
 
 const healthUpCount = computed(() => healthList.value.filter(service => service.status === 'up').length)
 
 async function loadHealth() {
-  if (loading.value) return
-  loading.value = true
-  try {
-    const [health, engine, ingest] = await Promise.allSettled([
-      Promise.all(HEALTH_TARGETS.map(async target => ({ ...target, status: await checkHealth(target.path) }))),
-      gasEngineStats(),
-      ingestSummary(),
-    ])
-    healthList.value = health.status === 'fulfilled'
-      ? health.value
-      : HEALTH_TARGETS.map(target => ({ ...target, status: 'down' }))
-    if (engine.status === 'fulfilled') healthEngine.value = engine.value
-    if (ingest.status === 'fulfilled') healthIngest.value = ingest.value
-  } finally {
-    loading.value = false
-  }
+  await Promise.allSettled([
+    healthServicesQuery.refetch(),
+    healthEngineQuery.refetch(),
+    healthIngestQuery.refetch(),
+  ])
 }
-
-onMounted(() => {
-  loadHealth()
-  refreshTimer = window.setInterval(loadHealth, 30_000)
-})
-onUnmounted(() => {
-  if (refreshTimer) window.clearInterval(refreshTimer)
-})
 </script>
 
 <template>

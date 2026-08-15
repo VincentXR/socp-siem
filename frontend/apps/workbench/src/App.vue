@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, onUnmounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onMounted, ref } from 'vue'
+import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import ElMessage from 'element-plus/es/components/message/index.mjs'
 import { setChartTheme } from './lib/echarts'
+import { useRequest } from './composables/useRequest'
 
 /** 主题（在 echarts 主题注册前声明，registerTheme 加载期即读取） */
 const theme = ref<'light' | 'dark'>('light')
@@ -20,8 +22,7 @@ import {
   alarmStats,
   login as apiLogin, setToken, clearToken, setUnauthorizedHandler,
   exportAlarms,
-  type Alarm, type AlarmPage,
-  type AlarmStats,
+  type AlarmPage,
 } from './api'
 
 const AiAssistantView = defineAsyncComponent(() => import('./views/AiAssistantView.vue'))
@@ -107,6 +108,7 @@ const currentRole = ref<string>('')
 /** 头像缩写（顶栏） */
 const userInitials = computed(() => (currentUser.value || 'SY').slice(0, 2).toUpperCase())
 const isAuthed = ref(false)
+const queryClient = useQueryClient()
 const showLoginDialog = ref(false)
 const loginForm = ref({ username: 'demo', password: 'demo123' })
 const loginBusy = ref(false)
@@ -141,6 +143,7 @@ async function doLogin() {
   }
 }
 function doLogout() {
+  void queryClient.cancelQueries()
   clearToken()
   currentUser.value = ''
   currentRole.value = ''
@@ -153,10 +156,35 @@ function doLogout() {
 }
 
 // ---------- 概览 ----------
-const alarms = ref<Alarm[]>([])
-const healths = ref<Record<string, 'up' | 'down'>>({})
-const sitStats = ref<AlarmStats | null>(null)
-let refreshTimer: number | undefined
+const overviewAlarmsQuery = useQuery({
+  queryKey: ['overview', 'alarms'],
+  queryFn: ({ signal }) => listAlarms(undefined, { signal }),
+  enabled: isAuthed,
+  refetchInterval: 10_000,
+  refetchIntervalInBackground: false,
+})
+const overviewHealthQuery = useQuery({
+  queryKey: ['overview', 'health'],
+  queryFn: async ({ signal }) => {
+    const results = await Promise.all(HEALTH_TARGETS.map(target => checkHealth(target.path, { signal, timeoutMs: 3_000 })))
+    const map: Record<string, 'up' | 'down'> = {}
+    HEALTH_TARGETS.forEach((target, index) => { map[target.name] = results[index] })
+    return map
+  },
+  enabled: isAuthed,
+  refetchInterval: 10_000,
+  refetchIntervalInBackground: false,
+})
+const overviewStatsQuery = useQuery({
+  queryKey: ['overview', 'stats'],
+  queryFn: ({ signal }) => alarmStats({ signal }),
+  enabled: isAuthed,
+  refetchInterval: 10_000,
+  refetchIntervalInBackground: false,
+})
+const alarms = computed(() => overviewAlarmsQuery.data.value ?? [])
+const healths = computed(() => overviewHealthQuery.data.value ?? {})
+const sitStats = computed(() => overviewStatsQuery.data.value ?? null)
 
 const stat = computed(() => ({
   total: alarms.value.length,
@@ -166,33 +194,30 @@ const stat = computed(() => ({
 }))
 
 async function refreshOverview() {
-  try { alarms.value = await listAlarms() } catch { /* 静默 */ }
-  const results = await Promise.all(HEALTH_TARGETS.map(h => checkHealth(h.path)))
-  const map: Record<string, 'up' | 'down'> = {}
-  HEALTH_TARGETS.forEach((h, i) => { map[h.name] = results[i] })
-  healths.value = map
+  await Promise.allSettled([overviewAlarmsQuery.refetch(), overviewHealthQuery.refetch()])
 }
 async function loadOverviewStats() {
-  try { sitStats.value = await alarmStats() } catch { /* 静默 */ }
+  await overviewStatsQuery.refetch().catch(() => undefined)
 }
 
 // ---------- 告警（后端分页查询） ----------
 const alarmSeverity = ref('')
 const alarmKeyword = ref('')
-const alarmPageData = ref<AlarmPage>({ items: [], total: 0, page: 1, size: 20 })
+const emptyAlarmPage: AlarmPage = { items: [], total: 0, page: 1, size: 20 }
+const alarmPageRequest = useRequest<AlarmPage>(emptyAlarmPage)
+const alarmPageData = computed(() => alarmPageRequest.data.value ?? emptyAlarmPage)
 const alarmPageNum = ref(1)
 const alarmPageSize = ref(20)
 /** 当前页告警（分页 API 结果） */
 const filteredAlarms = computed(() => alarmPageData.value.items)
 async function loadAlarmPage() {
-  try {
-    alarmPageData.value = await listAlarmsPaged(
-      alarmPageNum.value, alarmPageSize.value,
-      alarmKeyword.value.trim() || undefined,
-      alarmSeverity.value || undefined)
-  } catch { /* 静默 */ }
+  await alarmPageRequest.execute(signal => listAlarmsPaged(
+    alarmPageNum.value, alarmPageSize.value,
+    alarmKeyword.value.trim() || undefined,
+    alarmSeverity.value || undefined,
+    { signal }))
 }
-function onAlarmSearch() { alarmPageNum.value = 1; loadAlarmPage() }
+function onAlarmSearch() { alarmPageNum.value = 1; void loadAlarmPage() }
 
 /** 顶栏全局搜索：回车后跳到日志检索页并执行 */
 const topSearch = ref('')
@@ -206,8 +231,8 @@ function onTopSearch() {
 function onMenuChange(key: string) {
   activeMenu.value = key
   switch (key) {
-    case 'overview': refreshOverview(); break
-    case 'alarms': loadAlarmPage(); break
+    case 'overview': void refreshOverview(); break
+    case 'alarms': void loadAlarmPage(); break
   }
 }
 
@@ -239,12 +264,8 @@ onMounted(() => {
   } catch { currentUser.value = ''; currentRole.value = ''; isAuthed.value = false }
   // 有登录态才拉数据；无登录态由 LoginView 接管（登录成功后回调再拉）
   if (!isAuthed.value) return
-  refreshOverview()
-  loadOverviewStats()
-  refreshTimer = window.setInterval(refreshOverview, 10_000)
-})
-onUnmounted(() => {
-  if (refreshTimer) clearInterval(refreshTimer)
+  void refreshOverview()
+  void loadOverviewStats()
 })
 
 /** 解码 JWT payload（不验签，仅取展示用 sub/role；验签在网关/服务侧完成） */

@@ -13,27 +13,25 @@ import ElProgress from 'element-plus/es/components/progress/index.mjs'
 import ElRow from 'element-plus/es/components/row/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
+import { useQuery } from '@tanstack/vue-query'
 import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import type { ECharts } from 'echarts/core'
 import { loadEcharts } from '../lib/echarts'
 import TrendChart from '../components/TrendChart.vue'
 import SevBadge from '../components/SevBadge.vue'
 import {
-  alarmStats, gasEngineStats, gasRecentAlerts, getToken, ingestSummary, SEVERITIES,
+  alarmStats, gasEngineStats, gasRecentAlerts, getToken, ingestSummary, isAbortError, SEVERITIES,
+  type ApiRequestOptions,
   type AlarmStats, type GasAlert, type GasStats, type IngestSummary,
 } from '../api'
 
 const props = defineProps<{ theme: 'light' | 'dark' }>()
 const emit = defineEmits<{ 'session-expired': [] }>()
 
-const sitStats = ref<AlarmStats | null>(null)
-const sitEngine = ref<GasStats | null>(null)
-const sitIngest = ref<IngestSummary | null>(null)
 const liveFeed = ref<Array<GasAlert & { _new?: boolean }>>([])
 const liveOn = ref(true)
 const liveSevFilter = ref('')
 const epsHistory = ref<number[]>([])
-let liveTimer: number | undefined
 let alertStream: EventSource | null = null
 const gaugeEl = ref<HTMLElement>()
 const donutEl = ref<HTMLElement>()
@@ -42,6 +40,30 @@ const chartGauge = shallowRef<ECharts>()
 const chartDonut = shallowRef<ECharts>()
 const chartEps = shallowRef<ECharts>()
 let renderToken = 0
+
+const situationQuery = useQuery({
+  queryKey: ['situation', 'snapshot'],
+  queryFn: async ({ signal }) => {
+    const options: ApiRequestOptions = { signal }
+    const [stats, engine, recent, ingest] = await Promise.allSettled([
+      alarmStats(options), gasEngineStats(options), gasRecentAlerts(options), ingestSummary(options),
+    ])
+    for (const result of [stats, engine, recent, ingest]) {
+      if (result.status === 'rejected' && isAbortError(result.reason)) throw result.reason
+    }
+    return {
+      stats: stats.status === 'fulfilled' ? stats.value : null,
+      engine: engine.status === 'fulfilled' ? engine.value : null,
+      recent: recent.status === 'fulfilled' ? recent.value : [],
+      ingest: ingest.status === 'fulfilled' ? ingest.value : null,
+    }
+  },
+  refetchInterval: () => liveOn.value ? 4_000 : false,
+  refetchIntervalInBackground: false,
+})
+const sitStats = computed<AlarmStats | null>(() => situationQuery.data.value?.stats ?? null)
+const sitEngine = computed<GasStats | null>(() => situationQuery.data.value?.engine ?? null)
+const sitIngest = computed<IngestSummary | null>(() => situationQuery.data.value?.ingest ?? null)
 
 function sevColor(severity: string) {
   return { CRITICAL: '#f56c6c', HIGH: '#e63946', MEDIUM: '#e6a23c', LOW: '#909399', INFO: '#909399' }[severity] ?? '#909399'
@@ -63,7 +85,7 @@ function openAlertStream() {
             ruleId: value.ruleId, ruleName: value.ruleName ?? '', severity: value.severity ?? 'INFO',
             message: value.message ?? '', entity: value.entity ?? '',
           }])
-          loadSituation()
+          void loadSituation()
         }
       } catch { /* 忽略异常帧 */ }
     })
@@ -75,17 +97,7 @@ function openAlertStream() {
 function closeAlertStream() {
   if (alertStream) { alertStream.close(); alertStream = null }
 }
-async function loadSituation() {
-  const [stats, engine, recent, ingest] = await Promise.allSettled([alarmStats(), gasEngineStats(), gasRecentAlerts(), ingestSummary()])
-  if (stats.status === 'fulfilled') sitStats.value = stats.value
-  if (engine.status === 'fulfilled') sitEngine.value = engine.value
-  if (ingest.status === 'fulfilled') {
-    sitIngest.value = ingest.value
-    epsHistory.value = [...epsHistory.value, ingest.value.eps1m ?? 0].slice(-40)
-  }
-  if (recent.status === 'fulfilled') mergeFeed(recent.value)
-  renderSitCharts()
-}
+async function loadSituation() { await situationQuery.refetch() }
 function mergeFeed(incoming: GasAlert[]) {
   const known = new Set(liveFeed.value.map(alert => alert.id))
   const fresh = incoming.filter(alert => !known.has(alert.id)).map(alert => ({ ...alert, _new: true }))
@@ -122,16 +134,37 @@ function renderSitCharts() {
     }
   }, 80)
 }
-function toggleLive() { liveOn.value = !liveOn.value; if (liveOn.value) startLive(); else stopLive() }
-function startLive() { stopLive(); liveTimer = window.setInterval(loadSituation, 4000) }
-function stopLive() { if (liveTimer) { clearInterval(liveTimer); liveTimer = undefined } }
+function toggleLive() {
+  liveOn.value = !liveOn.value
+  if (liveOn.value) {
+    if (document.visibilityState === 'visible') openAlertStream()
+    void loadSituation()
+  } else {
+    closeAlertStream()
+  }
+}
 function onResize() { chartGauge.value?.resize(); chartDonut.value?.resize(); chartEps.value?.resize() }
+function onVisibilityChange() {
+  if (document.visibilityState === 'hidden') closeAlertStream()
+  else if (liveOn.value) { openAlertStream(); void loadSituation() }
+}
 
 watch(() => props.theme, renderSitCharts)
-onMounted(() => { loadSituation(); openAlertStream(); if (liveOn.value) startLive(); window.addEventListener('resize', onResize) })
+watch(() => situationQuery.data.value, snapshot => {
+  if (!snapshot) return
+  mergeFeed(snapshot.recent)
+  if (snapshot.ingest) epsHistory.value = [...epsHistory.value, snapshot.ingest.eps1m ?? 0].slice(-40)
+  renderSitCharts()
+})
+onMounted(() => {
+  if (liveOn.value) openAlertStream()
+  window.addEventListener('resize', onResize)
+  document.addEventListener('visibilitychange', onVisibilityChange)
+})
 onUnmounted(() => {
   renderToken++
-  stopLive(); closeAlertStream(); window.removeEventListener('resize', onResize)
+  closeAlertStream(); window.removeEventListener('resize', onResize)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
   chartGauge.value?.dispose(); chartDonut.value?.dispose(); chartEps.value?.dispose()
 })
 </script>
