@@ -50,9 +50,9 @@ const timeOnly = (iso: string) => (iso?.length >= 19 ? iso.slice(11, 19) : '—'
 <template>
   <div class="page-pad view-enter">
     <PageHeader title="安全概览">
-      <template #description>实时态势 · 最近更新 {{ updatedAt }} · 全量快照 / 趋势近 7 日</template>
+      <template #description>实时态势 · 最近更新 {{ updatedAt }} · 数据窗口近 7 日</template>
       <template #actions>
-        <span class="ov-date-pill">趋势近 7 日</span>
+        <span class="ov-date-pill">近 7 日</span>
         <el-button type="primary" size="small" round @click="onRefresh">刷新</el-button>
       </template>
     </PageHeader>
@@ -60,7 +60,7 @@ const timeOnly = (iso: string) => (iso?.length >= 19 ? iso.slice(11, 19) : '—'
     <div class="ov-kpis">
       <MetricCard label="告警总数" tone="info">
         <AnimatedNumber :value="stat.total" />
-        <template #hint>当前全量 · 近 7 日累计 <b class="mono">{{ trendSum }}</b> 条</template>
+        <template #hint>近 7 日累计 <b class="mono">{{ trendSum }}</b> 条</template>
       </MetricCard>
       <MetricCard label="高危待处置" tone="danger">
         <AnimatedNumber :value="highPending" />

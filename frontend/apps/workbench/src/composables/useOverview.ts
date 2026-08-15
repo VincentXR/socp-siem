@@ -35,10 +35,17 @@ export function useOverview(enabled: Ref<boolean>) {
   const alarms = computed(() => alarmsQuery.data.value ?? [])
   const healths = computed(() => healthQuery.data.value ?? {})
   const sitStats = computed(() => statsQuery.data.value ?? null)
+  const recentAlarms = computed(() => {
+    const since = Date.now() - 7 * 24 * 60 * 60 * 1000
+    return alarms.value.filter(alarm => {
+      const occurredAt = Date.parse(alarm.occurredAt)
+      return Number.isFinite(occurredAt) && occurredAt >= since
+    })
+  })
   const stat = computed(() => ({
-    total: alarms.value.length,
-    critical: alarms.value.filter(alarm => alarm.severity === 'CRITICAL').length,
-    high: alarms.value.filter(alarm => alarm.severity === 'HIGH').length,
+    total: sitStats.value?.total ?? recentAlarms.value.length,
+    critical: sitStats.value?.bySeverity?.CRITICAL ?? recentAlarms.value.filter(alarm => alarm.severity === 'CRITICAL').length,
+    high: sitStats.value?.bySeverity?.HIGH ?? recentAlarms.value.filter(alarm => alarm.severity === 'HIGH').length,
     online: Object.values(healths.value).filter(status => status === 'up').length,
   }))
 

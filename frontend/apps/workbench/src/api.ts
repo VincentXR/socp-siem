@@ -434,7 +434,7 @@ export interface AlarmStats {
   avgRisk: number
   topRisk: Array<{ id: string; ruleName: string; entity: string; severity: string; mitre: string | null; riskScore: number; riskLevel: string }>
 }
-export const alarmStats = (options?: ApiRequestOptions) => get<AlarmStats>('/alert-web/api/alarms/stats', options)
+export const alarmStats = (options?: ApiRequestOptions, window = '7d') => get<AlarmStats>(withQuery('/alert-web/api/alarms/stats', { window }), options)
 
 // ---------- 归档导出 ----------
 function downloadBlob(blob: Blob, filename: string) {

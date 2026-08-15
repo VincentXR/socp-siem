@@ -233,10 +233,21 @@ public class AlarmService {
                 .orElseThrow(() -> com.socp.platform.error.ApiException.notFound("告警不存在: " + id));
     }
 
-    /** 聚合统计：级别分布 / 近 7 天趋势 / 规则 Top（按当前租户隔离）。 */
+    /** 聚合统计：默认返回当前租户全量；window=7d 时限定为近 7 个 UTC 自然日。 */
     public Map<String, Object> stats() {
+        return stats(null);
+    }
+
+    public Map<String, Object> stats(String window) {
         String tenant = TenantContext.get() == null ? "default" : TenantContext.get();
         List<Alarm> all = repo.findByTenantId(tenant);
+        if ("7d".equalsIgnoreCase(window)) {
+            java.time.Instant windowStart = java.time.LocalDate.now(java.time.ZoneOffset.UTC)
+                    .minusDays(6).atStartOfDay(java.time.ZoneOffset.UTC).toInstant();
+            all = all.stream()
+                    .filter(a -> a.getOccurredAt() != null && !a.getOccurredAt().isBefore(windowStart))
+                    .toList();
+        }
         Map<String, Long> bySeverity = new LinkedHashMap<>();
         Map<String, Long> byRule = new LinkedHashMap<>();
         Map<String, Long> byDay = new LinkedHashMap<>();

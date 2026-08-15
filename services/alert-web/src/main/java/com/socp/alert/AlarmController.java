@@ -93,10 +93,10 @@ public class AlarmController {
         return ApiResult.ok(service.get(id));
     }
 
-    /** 告警聚合统计：总览 / 按级别 / 近 7 天趋势 / 按规则 Top（供 REPORT 报表）。 */
+    /** 告警聚合统计：默认全量；window=7d 时返回近 7 个自然日数据。 */
     @GetMapping("/stats")
-    public ApiResult<Map<String, Object>> stats() {
-        return ApiResult.ok(service.stats());
+    public ApiResult<Map<String, Object>> stats(@RequestParam(defaultValue = "all") String window) {
+        return ApiResult.ok(service.stats(window));
     }
 
     /** 归档导出：告警全量按 CSV 或 JSON 下载（数据带不走问题的解法）。 */

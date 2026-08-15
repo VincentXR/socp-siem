@@ -205,14 +205,14 @@ onUnmounted(() => {
                 <template #header>威胁评分（0–100）</template>
                 <div ref="gaugeEl" style="height:180px"></div>
                 <div style="text-align:center;font-size:12px;color:#909399">
-                  告警总量 <b style="color:#303133">{{ sitStats?.total ?? 0 }}</b>
+                  近 7 日告警总量 <b style="color:#303133">{{ sitStats?.total ?? 0 }}</b>
                   · 高危 <b style="color:#f56c6c">{{ (sitStats?.byRiskLevel?.CRITICAL ?? 0) + (sitStats?.byRiskLevel?.HIGH ?? 0) }}</b>
                 </div>
               </el-card>
             </el-col>
             <el-col :span="6">
               <el-card shadow="never" class="sit-card">
-                <template #header>风险档位分布</template>
+                <template #header>近 7 日风险档位分布</template>
                 <div ref="donutEl" style="height:210px"></div>
               </el-card>
             </el-col>
@@ -264,7 +264,7 @@ onUnmounted(() => {
             </el-col>
             <el-col :span="11">
               <el-card shadow="never" class="sit-card">
-                <template #header>最该处置的告警（按威胁评分）</template>
+                <template #header>近 7 日最该处置的告警（按威胁评分）</template>
                 <el-table :data="sitStats?.topRisk ?? []" size="small" height="368">
                   <el-table-column label="评分" width="86">
                     <template #default="{ row }">
