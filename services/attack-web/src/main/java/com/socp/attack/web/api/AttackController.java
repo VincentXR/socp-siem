@@ -2,13 +2,18 @@ package com.socp.attack.web.api;
 
 import com.socp.attack.web.domain.Technique;
 import com.socp.attack.web.store.AttackStore;
+import com.socp.platform.audit.AuditOperation;
+import com.socp.platform.auth.RequireRole;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -49,6 +54,16 @@ public class AttackController {
         return out;
     }
 
+    @RequireRole({"admin", "analyst"})
+    @AuditOperation(action = "UPDATE_ATTACK_TECHNIQUE", target = "attack")
+    @PutMapping("/techniques/{id}")
+    public Technique update(@PathVariable String id, @RequestBody Map<String, Object> body) {
+        Technique updated = store.update(id, value(body, "name"), value(body, "tactic"),
+                value(body, "url"), value(body, "description"));
+        if (updated == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "ATT&CK 技术不存在");
+        return updated;
+    }
+
     /**
      * 检测覆盖率：请求体 {"ruleTechniques": ["T1110","T1190"]}，
      * 返回每个战术的覆盖数/覆盖率、总体覆盖率、未覆盖技术列表。
@@ -67,5 +82,10 @@ public class AttackController {
         out.put("tactics", store.tactics().size());
         out.put("techniques", store.techniques().size());
         return out;
+    }
+
+    private static String value(Map<String, Object> body, String key) {
+        Object value = body == null ? null : body.get(key);
+        return value == null ? null : String.valueOf(value);
     }
 }

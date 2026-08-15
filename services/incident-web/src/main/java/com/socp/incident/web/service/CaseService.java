@@ -96,6 +96,14 @@ public class CaseService {
         return store.list();
     }
 
+    /** 手动创建案件：不关联告警，后续可在调查过程中补充时间线和关联信息。 */
+    public Case create(String title, String entity, String severity, String assignee) {
+        Case created = Case.create(title.trim(), entity == null ? "" : entity.trim(),
+                severity == null || severity.isBlank() ? "HIGH" : severity.trim().toUpperCase(),
+                assignee == null || assignee.isBlank() ? null : assignee.trim());
+        return store.save(created);
+    }
+
     public Case get(String id) {
         return store.get(id);
     }

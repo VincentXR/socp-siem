@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview",
-    "test": "node --experimental-strip-types --test scripts/api-response.test.ts scripts/navigation.test.ts scripts/resource-list.test.ts",
+    "test": "node --experimental-strip-types --test scripts/api-response.test.ts scripts/navigation.test.ts scripts/resource-list.test.ts scripts/resource-import.test.ts",
     "verify": "pnpm build && node scripts/verify-build.mjs"
   },
   "dependencies": {

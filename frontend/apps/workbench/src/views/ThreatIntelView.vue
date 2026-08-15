@@ -5,6 +5,7 @@ import 'element-plus/es/components/card/style/css.mjs'
 import 'element-plus/es/components/dialog/style/css.mjs'
 import 'element-plus/es/components/form/style/css.mjs'
 import 'element-plus/es/components/input/style/css.mjs'
+import 'element-plus/es/components/message/style/css.mjs'
 import 'element-plus/es/components/select/style/css.mjs'
 import 'element-plus/es/components/table/style/css.mjs'
 import ElAlert from 'element-plus/es/components/alert/index.mjs'
@@ -13,6 +14,7 @@ import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElDialog from 'element-plus/es/components/dialog/index.mjs'
 import { ElForm, ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
+import ElMessage from 'element-plus/es/components/message/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import { onMounted, ref } from 'vue'
@@ -24,10 +26,12 @@ import { useResourceList } from '../composables/useResourceList'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { threatIntelApi, type Ioc } from '../api/domains'
 import { SEVERITIES } from '../api'
+import { readImportRows, type ImportRow } from '../lib/resource-import'
 
 const tiStat = ref<{ total?: number; byType?: Record<string, number> }>({})
 const iocType = ref('')
 const showIocDialog = ref(false)
+const iocImportInput = ref<HTMLInputElement | null>(null)
 const newIoc = ref({ type: 'ip', value: '', severity: 'HIGH', source: 'manual', description: '', tags: '' })
 const tiMatchResult = ref<{ value: string; matched: boolean; ioc?: Ioc } | null>(null)
 const iocList = useResourceList<Ioc>({
@@ -46,6 +50,10 @@ const {
   resetPage,
 } = iocList
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('threat-intel')
+const rowValue = (row: ImportRow, ...keys: string[]) => {
+  const key = keys.find(candidate => row[candidate] !== undefined)
+  return key ? String(row[key] ?? '').trim() : ''
+}
 
 function openIocDialog() {
   newIoc.value = { type: 'ip', value: '', severity: 'HIGH', source: 'manual', description: '', tags: '' }
@@ -91,6 +99,35 @@ async function doTiMatch() {
   catch { tiMatchResult.value = { value, matched: false } }
 }
 
+function selectIocImport() {
+  iocImportInput.value?.click()
+}
+
+async function importIocFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  try {
+    const rows = await readImportRows(file)
+    const payload = rows.map(row => ({
+      type: rowValue(row, 'type', '类型').toUpperCase() || 'IP',
+      value: rowValue(row, 'value', '值', '情报值'),
+      severity: rowValue(row, 'severity', '严重度', '级别').toUpperCase() || 'MEDIUM',
+      source: rowValue(row, 'source', '来源') || 'import',
+      description: rowValue(row, 'description', '描述'),
+      tags: rowValue(row, 'tags', '标签').split(/[,，\s]+/).filter(Boolean),
+    }))
+    const result = await threatIntelApi.bulkImport(payload)
+    if (result.skipped) ElMessage.warning(`已导入 ${result.imported} 条，跳过 ${result.skipped} 条`)
+    else ElMessage.success(`成功导入 ${result.imported} 条威胁情报`)
+    await loadTi()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '威胁情报导入失败')
+  } finally {
+    input.value = ''
+  }
+}
+
 onMounted(loadTi)
 </script>
 
@@ -119,6 +156,8 @@ onMounted(loadTi)
     <el-alert v-if="tiMatchResult" :title="tiMatchResult.matched ? `命中情报库：${tiMatchResult.ioc?.value}（${tiMatchResult.ioc?.severity}）` : '未命中情报库'" :type="tiMatchResult.matched ? 'error' : 'info'" :closable="false" style="margin-bottom:14px" />
     <div class="add-bar">
       <el-button type="primary" @click="openIocDialog">+ 新增情报</el-button>
+      <el-button @click="selectIocImport">批量导入</el-button>
+      <input ref="iocImportInput" type="file" accept=".csv,.json,application/json,text/csv" hidden @change="importIocFile" />
       <span class="hint">IP / 域名 / URL / 文件哈希 / 邮箱，命中后被规则与富化引用</span>
     </div>
     <el-dialog v-model="showIocDialog" title="新增威胁情报" width="560px">

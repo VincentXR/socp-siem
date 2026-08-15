@@ -24,4 +24,8 @@ public class TechniqueEntity {
     public String getTactic() { return tactic; }
     public String getUrl() { return url; }
     public String getDescription() { return description; }
+    public void setName(String name) { this.name = name; }
+    public void setTactic(String tactic) { this.tactic = tactic; }
+    public void setUrl(String url) { this.url = url; }
+    public void setDescription(String description) { this.description = description; }
 }

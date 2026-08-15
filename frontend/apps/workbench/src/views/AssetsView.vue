@@ -25,10 +25,12 @@ import PageHeader from '../components/PageHeader.vue'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { useResourceList } from '../composables/useResourceList'
 import { assetApi, type Asset } from '../api/domains'
+import { readImportRows, type ImportRow } from '../lib/resource-import'
 
 const assetStat = ref<{ total: number; byType: Record<string, number>; byCriticality: Record<string, number> } | null>(null)
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('assets')
 const showAssetDialog = ref(false)
+const assetImportInput = ref<HTMLInputElement | null>(null)
 const editingAssetId = ref<string | null>(null)
 const assetForm = ref({ name: '', type: 'SERVER', ip: '', os: '', owner: '', criticality: 'HIGH' })
 const assetTypes = [
@@ -46,6 +48,10 @@ const criticalityOptions = [
   { value: 'MEDIUM', label: '中' },
   { value: 'LOW', label: '低' },
 ]
+const rowValue = (row: ImportRow, ...keys: string[]) => {
+  const key = keys.find(candidate => row[candidate] !== undefined)
+  return key ? String(row[key] ?? '').trim() : ''
+}
 const assetsList = useResourceList<Asset>({
   searchFields: asset => [
     asset.name, asset.type, assetTypes.find(item => item.value === asset.type)?.label,
@@ -123,6 +129,37 @@ async function saveAsset() {
   }
 }
 
+function selectAssetImport() {
+  assetImportInput.value?.click()
+}
+
+async function importAssetFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  try {
+    const rows = await readImportRows(file)
+    const payload = rows.map(row => {
+      const rawType = rowValue(row, 'type', '类型').toUpperCase()
+      const type = assetTypes.find(item => item.value === rawType || item.label === rowValue(row, 'type', '类型'))?.value ?? 'SERVER'
+      const rawCriticality = rowValue(row, 'criticality', '关键度', '关键性').toUpperCase()
+      const criticality = criticalityOptions.find(item => item.value === rawCriticality || item.label === rowValue(row, 'criticality', '关键度', '关键性'))?.value ?? 'HIGH'
+      return {
+        name: rowValue(row, 'name', '名称'), type, ip: rowValue(row, 'ip', 'IP', '地址'),
+        os: rowValue(row, 'os', '系统'), owner: rowValue(row, 'owner', '负责人'), criticality,
+      }
+    })
+    const result = await assetApi.bulkImport(payload)
+    if (result.skipped) ElMessage.warning(`已导入 ${result.imported} 条，跳过 ${result.skipped} 条`)
+    else ElMessage.success(`成功导入 ${result.imported} 条资产`)
+    await loadAssets()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '资产导入失败')
+  } finally {
+    input.value = ''
+  }
+}
+
 onMounted(loadAssets)
 </script>
 
@@ -131,7 +168,9 @@ onMounted(loadAssets)
     <PageHeader title="资产管理" description="盘点关键资产、负责人和业务属性，为风险研判提供上下文。">
       <template #actions>
         <el-button type="primary" size="small" @click="openCreateAsset">新增资产</el-button>
+        <el-button size="small" @click="selectAssetImport">批量导入</el-button>
         <el-button size="small" :loading="loading" @click="loadAssets">刷新</el-button>
+        <input ref="assetImportInput" type="file" accept=".csv,.json,application/json,text/csv" hidden @change="importAssetFile" />
       </template>
     </PageHeader>
 

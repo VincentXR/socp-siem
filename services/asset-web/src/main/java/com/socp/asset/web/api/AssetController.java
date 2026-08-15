@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 import com.socp.platform.auth.RequireRole;
+import com.socp.platform.audit.AuditOperation;
 
 /**
  * ASSET 资产管理 API：CRUD + 采集上报 + 统计。
@@ -34,6 +35,26 @@ public class AssetController {
     @PostMapping
     public Asset create(@RequestBody CreateAssetRequest req) {
         return store.save(Asset.create(req.name(), req.type(), req.ip(), req.os(), req.owner(), req.criticality()));
+    }
+
+    /** 批量导入资产：单条校验失败不会阻断同一批次的其他记录。 */
+    @RequireRole({"admin", "analyst"})
+    @AuditOperation(action = "IMPORT_ASSET", target = "asset")
+    @PostMapping("/import")
+    public Map<String, Object> importAssets(@RequestBody List<CreateAssetRequest> requests) {
+        List<String> errors = new java.util.ArrayList<>();
+        int imported = 0;
+        for (int index = 0; index < (requests == null ? 0 : requests.size()); index++) {
+            CreateAssetRequest req = requests.get(index);
+            if (req == null || blank(req.name()) || blank(req.ip())) {
+                errors.add("第 " + (index + 1) + " 行缺少名称或 IP");
+                continue;
+            }
+            store.save(Asset.create(req.name().trim(), valueOr(req.type(), "SERVER"), req.ip().trim(),
+                    valueOr(req.os(), ""), valueOr(req.owner(), "import"), valueOr(req.criticality(), "HIGH")));
+            imported++;
+        }
+        return Map.of("imported", imported, "skipped", errors.size(), "errors", errors);
     }
 
     @RequireRole({"admin", "analyst"})
@@ -78,6 +99,14 @@ public class AssetController {
     private static Map<String, Object> countBy(List<Asset> all, java.util.function.Function<Asset, String> f) {
         return all.stream().collect(Collectors.groupingBy(f, Collectors.counting()))
                 .entrySet().stream().collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (a, b) -> a, LinkedHashMap::new));
+    }
+
+    private static boolean blank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    private static String valueOr(String value, String fallback) {
+        return blank(value) ? fallback : value.trim();
     }
 
     public record CreateAssetRequest(

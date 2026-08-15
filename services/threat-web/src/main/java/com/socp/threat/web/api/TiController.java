@@ -40,12 +40,32 @@ public class TiController {
     @AuditOperation(action = "CREATE_IOC", target = "threat")
     @PostMapping("/iocs")
     public Ioc create(@RequestBody Map<String, Object> body) {
-        @SuppressWarnings("unchecked")
-        List<String> tags = (List<String>) body.getOrDefault("tags", List.of());
         Ioc ioc = Ioc.of(
                 str(body, "type"), str(body, "value"), str(body, "severity"),
-                str(body, "source"), str(body, "description"), tags);
+                str(body, "source"), str(body, "description"), tags(body));
         return store.add(ioc);
+    }
+
+    /** 批量导入 IOC：单条格式错误不会阻断同一批次的其他指标。 */
+    @RequireRole({"admin", "analyst"})
+    @AuditOperation(action = "IMPORT_IOC", target = "threat")
+    @PostMapping("/iocs/import")
+    public Map<String, Object> importIocs(@RequestBody List<Map<String, Object>> rows) {
+        List<String> errors = new java.util.ArrayList<>();
+        int imported = 0;
+        for (int index = 0; index < (rows == null ? 0 : rows.size()); index++) {
+            Map<String, Object> row = rows.get(index);
+            if (row == null || str(row, "value").isBlank()) {
+                errors.add("第 " + (index + 1) + " 行缺少情报值");
+                continue;
+            }
+            Ioc ioc = Ioc.of(
+                    valueOr(row, "type", "IP"), str(row, "value"), valueOr(row, "severity", "MEDIUM"),
+                    valueOr(row, "source", "import"), str(row, "description"), tags(row));
+            store.add(ioc);
+            imported++;
+        }
+        return Map.of("imported", imported, "skipped", errors.size(), "errors", errors);
     }
 
     @RequireRole({"admin", "analyst"})
@@ -97,5 +117,22 @@ public class TiController {
     private static String str(Map<String, Object> m, String k) {
         Object v = m.get(k);
         return v == null ? "" : String.valueOf(v);
+    }
+
+    private static String valueOr(Map<String, Object> body, String key, String fallback) {
+        String value = str(body, key);
+        return value.isBlank() ? fallback : value;
+    }
+
+    private static List<String> tags(Map<String, Object> body) {
+        Object raw = body.get("tags");
+        if (raw instanceof List<?> values) {
+            return values.stream().map(String::valueOf).map(String::trim).filter(value -> !value.isBlank()).toList();
+        }
+        if (raw instanceof String value && !value.isBlank()) {
+            return java.util.Arrays.stream(value.split("[,，\\s]+"))
+                    .map(String::trim).filter(tag -> !tag.isBlank()).toList();
+        }
+        return List.of();
     }
 }

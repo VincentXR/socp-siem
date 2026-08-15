@@ -3,7 +3,10 @@ import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/descriptions/style/css.mjs'
 import 'element-plus/es/components/divider/style/css.mjs'
 import 'element-plus/es/components/drawer/style/css.mjs'
+import 'element-plus/es/components/dialog/style/css.mjs'
+import 'element-plus/es/components/form/style/css.mjs'
 import 'element-plus/es/components/input/style/css.mjs'
+import 'element-plus/es/components/message/style/css.mjs'
 import 'element-plus/es/components/select/style/css.mjs'
 import 'element-plus/es/components/table/style/css.mjs'
 import 'element-plus/es/components/tag/style/css.mjs'
@@ -11,8 +14,11 @@ import 'element-plus/es/components/timeline/style/css.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import { ElDescriptions, ElDescriptionsItem } from 'element-plus/es/components/descriptions/index.mjs'
 import ElDivider from 'element-plus/es/components/divider/index.mjs'
+import ElDialog from 'element-plus/es/components/dialog/index.mjs'
 import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
+import { ElForm, ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
+import ElMessage from 'element-plus/es/components/message/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
@@ -31,6 +37,8 @@ const stats = ref<{ total?: number; open?: number; resolved?: number }>({})
 const detail = ref<CaseInfo | null>(null)
 const timeline = ref<TimelineEvent[]>([])
 const drawerVisible = ref(false)
+const createDialogVisible = ref(false)
+const caseForm = ref({ title: '', entity: '', severity: 'HIGH', assignee: '' })
 const newStatus = ref('')
 const statusFilter = ref('')
 const casesList = useResourceList<CaseInfo>({
@@ -66,13 +74,39 @@ async function updateStatus() {
   await loadCases()
 }
 
+function openCreateCase() {
+  caseForm.value = { title: '', entity: '', severity: 'HIGH', assignee: '' }
+  createDialogVisible.value = true
+}
+
+async function saveCase() {
+  if (!caseForm.value.title.trim()) {
+    ElMessage.warning('请输入案件标题')
+    return
+  }
+  try {
+    await caseApi.create({
+      title: caseForm.value.title.trim(), entity: caseForm.value.entity.trim(),
+      severity: caseForm.value.severity, assignee: caseForm.value.assignee.trim() || undefined,
+    })
+    createDialogVisible.value = false
+    ElMessage.success('案件已创建')
+    await loadCases()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '创建案件失败')
+  }
+}
+
 onMounted(loadCases)
 </script>
 
 <template>
   <div class="page-pad view-enter">
     <PageHeader title="案件管理" description="将告警聚合为可跟踪案件，维护处置状态和事件时间线。">
-      <template #actions><el-button size="small" @click="caseApi.export()">导出案件 JSON</el-button></template>
+      <template #actions>
+        <el-button type="primary" size="small" @click="openCreateCase">新增案件</el-button>
+        <el-button size="small" @click="caseApi.export()">导出案件 JSON</el-button>
+      </template>
     </PageHeader>
 
     <div class="page-metrics">
@@ -100,6 +134,19 @@ onMounted(loadCases)
         <el-table-column label="操作" width="90" :resizable="false"><template #default="{ row }"><el-button link type="primary" size="small" @click="openCaseRow(row)">详情/时间线</el-button></template></el-table-column>
       </el-table>
     </DataTableCard>
+
+    <el-dialog v-model="createDialogVisible" title="新增案件" width="560px">
+      <el-form label-width="80px">
+        <el-form-item label="标题" required><el-input v-model="caseForm.title" placeholder="如：SSH 暴力破解调查" /></el-form-item>
+        <el-form-item label="关联实体"><el-input v-model="caseForm.entity" placeholder="如：203.0.113.10 或 root" /></el-form-item>
+        <el-form-item label="级别"><el-select v-model="caseForm.severity" style="width: 180px"><el-option v-for="level in ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']" :key="level" :label="level" :value="level" /></el-select></el-form-item>
+        <el-form-item label="负责人"><el-input v-model="caseForm.assignee" placeholder="可选，如 analyst" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="createDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveCase">创建案件</el-button>
+      </template>
+    </el-dialog>
 
     <el-drawer v-model="drawerVisible" :title="`案件 · ${detail?.title ?? ''}`" size="520px">
       <template v-if="detail">

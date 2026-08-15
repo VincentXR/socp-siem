@@ -123,6 +123,30 @@ public class AttackStore {
         return techniques.get(id);
     }
 
+    /** 更新本地 ATT&CK 技术目录中的可编辑字段，并同步 H2。 */
+    public synchronized Technique update(String id, String name, String tactic, String url, String description) {
+        Technique existing = techniques.get(id);
+        if (existing == null) return null;
+        Technique updated = new Technique(id,
+                valueOr(name, existing.name()), valueOr(tactic, existing.tactic()),
+                valueOr(url, existing.url()), valueOr(description, existing.description()));
+        techniques.put(id, updated);
+        for (int index = 0; index < order.size(); index++) {
+            if (order.get(index).id().equals(id)) {
+                order.set(index, updated);
+                break;
+            }
+        }
+        techniqueRepository.findById(id).ifPresent(entity -> {
+            entity.setName(updated.name());
+            entity.setTactic(updated.tactic());
+            entity.setUrl(updated.url());
+            entity.setDescription(updated.description());
+            techniqueRepository.save(entity);
+        });
+        return updated;
+    }
+
     /** 给定当前已启用规则覆盖的技术 ID 集合，计算各战术覆盖率与未覆盖技术。 */
     public Map<String, Object> coverage(java.util.Set<String> covered) {
         Map<String, Object> out = new LinkedHashMap<>();
@@ -151,5 +175,9 @@ public class AttackStore {
         out.put("coverage", totalTech == 0 ? 0 : (int) Math.round(100.0 * coveredTech / totalTech));
         out.put("uncovered", uncovered);
         return out;
+    }
+
+    private static String valueOr(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value.trim();
     }
 }

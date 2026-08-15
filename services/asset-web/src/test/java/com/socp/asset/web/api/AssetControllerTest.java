@@ -82,6 +82,26 @@ class AssetControllerTest {
     }
 
     @Test
+    void importReportsImportedAndSkippedRows() throws Exception {
+        given(store.save(any(Asset.class))).willAnswer(inv -> inv.getArgument(0));
+        List<Map<String, String>> rows = List.of(
+                Map.of("name", "web-imported", "type", "SERVER", "ip", "10.0.0.40"),
+                Map.of("name", "missing-ip"));
+
+        mvc.perform(post("/api/v1/assets/import")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(rows)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.imported").value(1))
+                .andExpect(jsonPath("$.skipped").value(1))
+                .andExpect(jsonPath("$.errors[0]").value(org.hamcrest.Matchers.containsString("缺少名称或 IP")));
+
+        verify(store).save(any(Asset.class));
+    }
+
+    @Test
     void deleteReportsWhetherAssetExisted() throws Exception {
         given(store.delete("known")).willReturn(true);
         given(store.delete("ghost")).willReturn(false);

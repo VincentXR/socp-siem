@@ -5,6 +5,7 @@ import com.socp.incident.web.service.CaseService;
 import com.socp.platform.audit.AuditOperation;
 import com.socp.platform.auth.RequireRole;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -14,6 +15,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 import java.util.Map;
@@ -38,6 +40,16 @@ public class CaseController {
     @PostMapping("/incidents/from-alarm")
     public Map<String, Object> fromAlarm(@RequestBody Map<String, Object> alarm) {
         return service.fromAlarm(alarm);
+    }
+
+    @RequireRole({"admin", "analyst"})
+    @AuditOperation(action = "CREATE_INCIDENT", target = "case")
+    @PostMapping("/incidents")
+    public Map<String, Object> create(@RequestBody CreateCaseRequest request) {
+        if (request == null || request.title() == null || request.title().isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "案件标题不能为空");
+        }
+        return Map.of("case", service.create(request.title(), request.entity(), request.severity(), request.assignee()));
     }
 
     @GetMapping("/incidents")
@@ -87,5 +99,8 @@ public class CaseController {
     @GetMapping("/stats")
     public Map<String, Object> stats() {
         return service.stats();
+    }
+
+    public record CreateCaseRequest(String title, String entity, String severity, String assignee) {
     }
 }

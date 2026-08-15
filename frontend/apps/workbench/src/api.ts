@@ -283,6 +283,7 @@ export const listAssets = () => get<Asset[]>('/asset-web/api/v1/assets')
 export const createAsset = (a: Partial<Asset>) => post<Asset>('/asset-web/api/v1/assets', a)
 export const updateAsset = (id: string, a: Partial<Asset>) => put<Asset>(`/asset-web/api/v1/assets/${encodeURIComponent(id)}`, a)
 export const deleteAsset = (id: string) => del(`/asset-web/api/v1/assets/${encodeURIComponent(id)}`)
+export const importAssets = (items: Array<Partial<Asset>>) => post<{ imported: number; skipped: number; errors: string[] }>('/asset-web/api/v1/assets/import', items)
 export const assetStats = () => get<{ total: number; byType: Record<string, number>; byCriticality: Record<string, number> }>('/asset-web/api/v1/assets/stats')
 
 // ---------- SOC 底座 ----------
@@ -303,6 +304,8 @@ export interface Ioc { id: string; type: string; value: string; severity: string
 export const listIocs = (type?: string, options?: ApiRequestOptions) => get<Ioc[]>(withQuery('/threat-web/api/v1/iocs', { type }), options)
 export const createIoc = (i: { type: string; value: string; severity?: string; source?: string; description?: string; tags?: string[] }) =>
   post<Ioc>('/threat-web/api/v1/iocs', i)
+export const importIocs = (items: Array<{ type: string; value: string; severity?: string; source?: string; description?: string; tags?: string[] }>) =>
+  post<{ imported: number; skipped: number; errors: string[] }>('/threat-web/api/v1/iocs/import', items)
 export const deleteIoc = (id: string) => del(`/threat-web/api/v1/iocs/${encodeURIComponent(id)}`)
 export const tiMatch = (value: string, options?: ApiRequestOptions) => get<{ value: string; matched: boolean; ioc?: Ioc }>(withQuery('/threat-web/api/v1/iocs/match', { value }), options)
 export const tiStats = () => get<{ total: number; byType: Record<string, number> }>('/threat-web/api/v1/stats')
@@ -311,6 +314,8 @@ export const tiStats = () => get<{ total: number; byType: Record<string, number>
 export interface Technique { id: string; name: string; tactic: string; url: string; description: string }
 export const listTactics = () => get<unknown[]>('/attack-web/api/v1/tactics')
 export const listTechniques = (tactic?: string, options?: ApiRequestOptions) => get<Technique[]>(withQuery('/attack-web/api/v1/techniques', { tactic }), options)
+export const updateTechnique = (id: string, technique: Partial<Omit<Technique, 'id'>>) =>
+  put<Technique>(`/attack-web/api/v1/techniques/${encodeURIComponent(id)}`, technique)
 export const attackCoverage = (ruleTechs: string[]) => post<{
   byTactic: Array<{ tactic: string; name: string; total: number; covered: number; coverage: number }>
   totalTechniques: number; coveredTechniques: number; coverage: number; uncovered: string[]
@@ -328,10 +333,13 @@ export const dispatchLog = () => get<unknown[]>('/notify-web/api/v1/dispatch-log
 // ---------- 案件/时间线 (incident-web) ----------
 export interface TimelineEvent { ts: string; type: string; message: string; source: string }
 export interface CaseInfo {
-  id: string; title: string; entity: string; severity: string; status: string
+  id: string; caseNo?: string; title: string; entity: string; severity: string; status: string
   ruleIds: string[]; alarmIds: string[]; timeline: TimelineEvent[]; assignee: string
+  createdAt?: string; updatedAt?: string
 }
 export const listCases = () => get<CaseInfo[]>('/incident-web/api/v1/incidents')
+export const createCase = (item: { title: string; entity?: string; severity: string; assignee?: string }) =>
+  post<{ case: CaseInfo }>('/incident-web/api/v1/incidents', item)
 export const caseTimeline = (id: string) => get<{ caseId: string; timeline: TimelineEvent[] }>(`/incident-web/api/v1/incidents/${encodeURIComponent(id)}/timeline`)
 export const setCaseStatus = (id: string, status: string, assignee?: string, options?: ApiRequestOptions) =>
   post<{ case: CaseInfo }>(withQuery(`/incident-web/api/v1/incidents/${encodeURIComponent(id)}/status`, { status, assignee }), undefined, options)

@@ -69,6 +69,21 @@ class CaseServiceTest {
         verify(store, never()).save(any(Case.class));
     }
 
+    @Test
+    void createsManualCaseWithOpenStatusAndAssignee() {
+        given(store.save(any(Case.class))).willAnswer(inv -> inv.getArgument(0));
+        CaseService service = new CaseService(store);
+
+        Case created = service.create("Manual investigation", "10.0.0.8", "critical", "analyst");
+
+        assertEquals("Manual investigation", created.title());
+        assertEquals("10.0.0.8", created.entity());
+        assertEquals("CRITICAL", created.severity());
+        assertEquals("OPEN", created.status());
+        assertEquals("analyst", created.assignee());
+        verify(store).save(any(Case.class));
+    }
+
     private static Map<String, Object> alarm(String id) {
         return Map.of(
                 "id", id,

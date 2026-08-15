@@ -32,13 +32,17 @@ public record Case(
     private static final DateTimeFormatter CASE_NO_DATE = DateTimeFormatter.ofPattern("yyyyMMdd");
 
     public static Case create(String title, String entity, String severity) {
+        return create(title, entity, severity, null);
+    }
+
+    public static Case create(String title, String entity, String severity, String assignee) {
         String uuid = com.socp.incident.web.util.Uuid7.next();
         // 展示编号的随机段取自 UUIDv7 的随机尾段，保证同一毫秒内也不重复
         String suffix = uuid.replace("-", "").substring(20, 26).toUpperCase();
         String caseNo = "INC-" + LocalDate.now().format(CASE_NO_DATE) + "-" + suffix;
         Instant now = Instant.now();
         return new Case(uuid, caseNo, title, entity, severity, "OPEN",
-                List.of(), List.of(), List.of(), null, now, now);
+                List.of(), List.of(), List.of(), assignee, now, now);
     }
 
     public Case withAdded(String ruleId, String alarmId, TimelineEvent ev) {
