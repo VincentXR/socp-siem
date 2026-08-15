@@ -101,7 +101,7 @@ function oidcLogin() {
   justify-content: center;
   gap: 20px;
   background: var(--ns-bg-subtle);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-family: var(--ns-font-ui);
   position: relative;
 }
 .login-brand {
@@ -109,7 +109,7 @@ function oidcLogin() {
   position: absolute; top: 26px; left: 28px;
 }
 .brand-mark {
-  width: 34px; height: 34px; border-radius: 12px;
+  width: 34px; height: 34px; border-radius: 8px;
   display: flex; align-items: center; justify-content: center;
   background: var(--ns-accent); color: #fff;
 }
@@ -118,7 +118,7 @@ function oidcLogin() {
 .login-card {
   width: 380px;
   padding: 36px 34px 28px;
-  border-radius: 24px;
+  border-radius: 12px;
   background: var(--ns-surface);
   border: 1px solid var(--ns-border);
   box-shadow: var(--ns-shadow-lg);
@@ -131,7 +131,7 @@ function oidcLogin() {
 .input {
   width: 100%; height: 44px;
   padding: 0 14px;
-  border-radius: 12px;
+  border-radius: 7px;
   background: var(--ns-input-bg);
   border: 1px solid var(--ns-border-strong);
   color: var(--ns-text); font-size: 14px;
@@ -146,7 +146,7 @@ function oidcLogin() {
 
 .submit {
   width: 100%; height: 44px; margin-top: 6px;
-  border: none; border-radius: 999px;
+  border: none; border-radius: 7px;
   font-size: 14px; font-weight: 600;
   color: #fff;
   background: var(--ns-accent);
@@ -169,7 +169,7 @@ function oidcLogin() {
   border: 1px solid var(--ns-border-strong);
   background: var(--ns-bg-subtle);
   color: var(--ns-text-2);
-  font-size: 12px; padding: 5px 13px; border-radius: 999px;
+  font-size: 12px; padding: 5px 11px; border-radius: 6px;
   margin-right: 6px; cursor: pointer;
   transition: background .12s ease, border-color .12s ease, color .12s ease;
 }
@@ -180,7 +180,7 @@ function oidcLogin() {
   display: flex; align-items: center; justify-content: center; gap: 8px;
   width: 100%; height: 42px;
   border: 1px solid var(--ns-border-strong);
-  border-radius: 999px;
+  border-radius: 7px;
   background: var(--ns-bg-subtle);
   color: var(--ns-text-2);
   font-size: 13px; font-weight: 500;

@@ -6,17 +6,17 @@
   --ns-space-5: 20px;
   --ns-space-6: 24px;
   --ns-space-8: 32px;
-  --ns-radius-sm: 6px;
-  --ns-radius-md: 10px;
-  --ns-radius-lg: 14px;
+  --ns-radius-sm: 5px;
+  --ns-radius-md: 8px;
+  --ns-radius-lg: 12px;
   --ns-radius-pill: 999px;
   --ns-content-max: 1440px;
-  --ns-sidebar-width: 224px;
-  --ns-header-height: 60px;
+  --ns-sidebar-width: 216px;
+  --ns-header-height: 56px;
   --ns-motion-fast: 120ms;
   --ns-motion-base: 180ms;
   --ns-motion-slow: 280ms;
   --ns-font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
-  --ns-font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --ns-font-ui: Inter, -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
   --ns-focus: 0 0 0 3px rgba(37, 99, 235, .16);
 }
