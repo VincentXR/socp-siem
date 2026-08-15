@@ -19,7 +19,6 @@ const emit = defineEmits<{
   (event: 'menu-change', key: string): void
   (event: 'toggle-theme'): void
   (event: 'logout'): void
-  (event: 'login'): void
 }>()
 
 </script>
@@ -73,7 +72,6 @@ const emit = defineEmits<{
           <span class="header-user-name">{{ currentUser }} <span class="mono header-role">{{ currentRole || 'guest' }}</span></span>
           <el-button size="small" @click="emit('logout')">退出</el-button>
         </span>
-        <el-button v-else size="small" type="primary" @click="emit('login')">登录</el-button>
       </header>
       <slot />
     </div>
