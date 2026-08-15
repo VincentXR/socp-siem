@@ -72,6 +72,7 @@ class PlaybookControllerTest {
 
         mvc.perform(post("/api/v1/playbooks")
                         .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(body)))
                 .andExpect(status().isOk())
@@ -102,7 +103,8 @@ class PlaybookControllerTest {
         given(store.toggle("ghost")).willReturn(null);
 
         mvc.perform(post("/api/v1/playbooks/{id}/toggle", "ghost")
-                        .header(HttpHeaders.AUTHORIZATION, BEARER))
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$").doesNotExist());
     }

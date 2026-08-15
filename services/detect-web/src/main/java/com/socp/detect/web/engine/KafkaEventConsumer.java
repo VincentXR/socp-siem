@@ -17,14 +17,19 @@ import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
+import java.util.function.BiConsumer;
 
 /**
- * Kafka 事件消费者（事件总线接线）：订阅 SEARCH 采集管线的 `socp-events` 主题，
- * 消费归一化事件喂入规则引擎。与 HTTP ingest 端点并存（两条入口最终都进引擎队列）。
+ * Consumes canonical events from Kafka and submits them to the detection engine.
+ * The consumer uses manual commits, bounded in-process deduplication and a DLQ
+ * path for malformed or failed records.
  */
 @Component
 public class KafkaEventConsumer {
@@ -33,6 +38,16 @@ public class KafkaEventConsumer {
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .registerModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+    private static final int DEDUP_MAX = 100_000;
+    private static final Set<String> DEDUP = Collections.synchronizedSet(new LinkedHashSet<>() {
+        @Override
+        public boolean add(String eventId) {
+            if (size() >= DEDUP_MAX) {
+                clear();
+            }
+            return super.add(eventId);
+        }
+    });
 
     @Value("${socp.kafka.bootstrap:localhost:9092}")
     private String bootstrap;
@@ -44,6 +59,8 @@ public class KafkaEventConsumer {
     private boolean enabled;
 
     private final DetectEngineService engine;
+    private volatile org.apache.kafka.clients.producer.KafkaProducer<String, String> dlqProducer;
+    private BiConsumer<String, String> dlqSink = this::publishDlq;
 
     public KafkaEventConsumer(DetectEngineService engine) {
         this.engine = engine;
@@ -51,28 +68,16 @@ public class KafkaEventConsumer {
 
     @PostConstruct
     public void start() {
-        if (!enabled) return;
-        Thread.ofPlatform().name("kafka-consumer").daemon(true).start(() -> run());
-        log.info("Kafka 事件消费者已启动 bootstrap={} topic={}", bootstrap, topic);
+        if (!enabled) {
+            return;
+        }
+        Thread.ofPlatform().name("kafka-consumer").daemon(true).start(this::run);
+        log.info("Kafka event consumer started bootstrap={} topic={}", bootstrap, topic);
     }
 
-    // ---- 可靠性（2026-08-10）----
-    /** 已处理 eventId 去重缓存（LRU，最多 10 万条；配合"至少一次"语义实现幂等） */
-    private static final java.util.Set<String> DEDUP = java.util.Collections.synchronizedSet(
-            new java.util.LinkedHashSet<>() {
-                @Override
-                public boolean add(String e) {
-                    if (size() >= 100_000) clear();
-                    return super.add(e);
-                }
-            });
-    private static final int DEDUP_MAX = 100_000;
-
-    private volatile org.apache.kafka.clients.producer.KafkaProducer<String, String> dlqProducer;
-
     private org.apache.kafka.clients.producer.KafkaProducer<String, String> dlq() {
-        org.apache.kafka.clients.producer.KafkaProducer<String, String> p = dlqProducer;
-        if (p == null) {
+        var producer = dlqProducer;
+        if (producer == null) {
             synchronized (this) {
                 if (dlqProducer == null) {
                     Properties props = new Properties();
@@ -84,20 +89,44 @@ public class KafkaEventConsumer {
                     props.put(org.apache.kafka.clients.producer.ProducerConfig.ACKS_CONFIG, "all");
                     dlqProducer = new org.apache.kafka.clients.producer.KafkaProducer<>(props);
                 }
-                p = dlqProducer;
+                producer = dlqProducer;
             }
         }
-        return p;
+        return producer;
     }
 
-    /** 解析/处理失败 → 写入 DLQ 主题（socp-events-dlq），不静默丢弃 */
     private void toDlq(String eventId, String raw) {
         try {
-            dlq().send(new org.apache.kafka.clients.producer.ProducerRecord<>(topic + "-dlq",
-                    eventId == null ? "unknown" : eventId, raw));
+            dlqSink.accept(eventId, raw);
         } catch (Exception ex) {
-            log.warn("DLQ 写入失败 eventId={}: {}", eventId, ex.getMessage());
+            log.warn("Failed to write event to DLQ eventId={}: {}", eventId, ex.getMessage());
         }
+    }
+
+    private void publishDlq(String eventId, String raw) {
+        dlq().send(new org.apache.kafka.clients.producer.ProducerRecord<>(topic + "-dlq",
+                eventId == null ? "unknown" : eventId, raw));
+    }
+
+    /** Package-private hook used by focused tests and the polling loop. */
+    void processRecord(String key, String raw) {
+        String eventId = null;
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> event = MAPPER.readValue(raw, Map.class);
+            eventId = String.valueOf(event.getOrDefault("eventId", key));
+            if (eventId != null && !"null".equals(eventId) && !DEDUP.add(eventId)) {
+                return;
+            }
+            engine.ingest(toEvent(event));
+        } catch (Exception ex) {
+            log.warn("Failed to process Kafka event; sending to DLQ: {}", ex.getMessage());
+            toDlq(eventId, raw);
+        }
+    }
+
+    void setDlqSink(BiConsumer<String, String> sink) {
+        this.dlqSink = sink == null ? this::publishDlq : sink;
     }
 
     private void run() {
@@ -107,78 +136,72 @@ public class KafkaEventConsumer {
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
-        // 手动提交 offset（至少一次语义）：处理完一批再 commit，重启后最多重放一批（配合幂等去重）
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
         props.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, 200);
-        try (KafkaConsumer<String, String> c = new KafkaConsumer<>(props)) {
-            c.subscribe(List.of(topic));
+        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props)) {
+            consumer.subscribe(List.of(topic));
             while (true) {
-                var recs = c.poll(Duration.ofMillis(500));
-                for (var r : recs) {
-                    String raw = r.value();
-                    String eventId = null;
-                    // trace 上下文透传：从消息 header 恢复 W3C traceparent → MDC（与 HTTP 链路同 traceId）
-                    String tp = null;
+                var records = consumer.poll(Duration.ofMillis(500));
+                for (var record : records) {
+                    String traceparent = null;
                     try {
-                        var h = r.headers().lastHeader("traceparent");
-                        if (h != null) tp = new String(h.value(), java.nio.charset.StandardCharsets.UTF_8);
+                        var header = record.headers().lastHeader("traceparent");
+                        if (header != null) {
+                            traceparent = new String(header.value(), java.nio.charset.StandardCharsets.UTF_8);
+                        }
                     } catch (Exception ignored) {
                     }
-                    String restored = tp == null ? null : com.socp.platform.obs.TraceIdFilter.parseTraceId(tp);
-                    if (restored != null) org.slf4j.MDC.put("traceId", restored);
+                    String traceId = traceparent == null
+                            ? null
+                            : com.socp.platform.obs.TraceIdFilter.parseTraceId(traceparent);
+                    if (traceId != null) {
+                        org.slf4j.MDC.put("traceId", traceId);
+                    }
                     try {
-                        @SuppressWarnings("unchecked")
-                        Map<String, Object> m = MAPPER.readValue(raw, Map.class);
-                        eventId = String.valueOf(m.getOrDefault("eventId", r.key()));
-                        // 幂等：已处理的 eventId 跳过（消费重放/重复投递不重复触发规则）
-                        if (eventId != null && !"null".equals(eventId) && !DEDUP.add(eventId)) {
-                            continue;
-                        }
-                        SecurityEvent ev = toEvent(m);
-                        engine.ingest(ev);
-                    } catch (Exception ex) {
-                        log.warn("Kafka 事件解析失败 → DLQ: {}", ex.getMessage());
-                        toDlq(eventId, raw);
+                        processRecord(record.key(), record.value());
                     } finally {
                         org.slf4j.MDC.remove("traceId");
                     }
                 }
-                if (!recs.isEmpty()) {
+                if (!records.isEmpty()) {
                     try {
-                        c.commitSync();
+                        consumer.commitSync();
                     } catch (Exception ex) {
-                        log.warn("Kafka commit 失败（下轮重试）: {}", ex.getMessage());
+                        log.warn("Kafka commit failed; records will be retried: {}", ex.getMessage());
                     }
                 }
             }
-        } catch (Exception e) {
-            log.warn("Kafka consumer 退出: {}", e.getMessage());
+        } catch (Exception ex) {
+            log.warn("Kafka consumer stopped: {}", ex.getMessage());
         }
     }
 
     @SuppressWarnings("unchecked")
-    private static SecurityEvent toEvent(Map<String, Object> m) {
-        Map<String, Object> rawFields = (Map<String, Object>) m.getOrDefault("fields", Map.of());
+    private static SecurityEvent toEvent(Map<String, Object> event) {
+        Map<String, Object> rawFields = (Map<String, Object>) event.getOrDefault("fields", Map.of());
         Map<String, String> fields = new LinkedHashMap<>();
-        for (var en : rawFields.entrySet()) fields.put(en.getKey(), String.valueOf(en.getValue()));
-        String msg = m.get("msg") == null ? String.valueOf(m.getOrDefault("message", "")) : String.valueOf(m.get("msg"));
-        // msg 并入 fields，保证 RuleSpec 的 msg 条件可命中（与 RuleController.toEvent 语义一致）
-        if (m.containsKey("msg") && !fields.containsKey("msg")) {
-            fields.put("msg", msg);
+        for (var entry : rawFields.entrySet()) {
+            fields.put(entry.getKey(), String.valueOf(entry.getValue()));
+        }
+        String message = event.get("msg") == null
+                ? String.valueOf(event.getOrDefault("message", ""))
+                : String.valueOf(event.get("msg"));
+        if (event.containsKey("msg") && !fields.containsKey("msg")) {
+            fields.put("msg", message);
         }
         Severity severity = Severity.INFO;
         try {
-            severity = Severity.valueOf(String.valueOf(m.getOrDefault("severity", "INFO")).toUpperCase());
+            severity = Severity.valueOf(String.valueOf(event.getOrDefault("severity", "INFO")).toUpperCase());
         } catch (IllegalArgumentException ignored) {
         }
-        Instant ts = Instant.now();
+        Instant timestamp = Instant.now();
         try {
-            ts = Instant.parse(String.valueOf(m.getOrDefault("timestamp", ts)));
+            timestamp = Instant.parse(String.valueOf(event.getOrDefault("timestamp", timestamp)));
         } catch (Exception ignored) {
         }
-        return new SecurityEvent(ts,
-                String.valueOf(m.getOrDefault("source", "unknown")),
-                String.valueOf(m.getOrDefault("host", "unknown")),
-                msg, fields, severity);
+        return new SecurityEvent(timestamp,
+                String.valueOf(event.getOrDefault("source", "unknown")),
+                String.valueOf(event.getOrDefault("host", "unknown")),
+                message, fields, severity);
     }
 }

@@ -2,6 +2,9 @@ package com.socp.hips.collect.api;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.hips.collect.collector.EndpointSimulator;
+import com.socp.platform.client.ServiceCall;
+import com.socp.platform.client.SocpHttpClient;
+import com.socp.platform.client.SocpService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -19,6 +22,10 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.when;
 
 /**
  * HIPS 运行时事件采集切片测试：Falco 风格事件上报 → 富化（id / receivedAt）→ 回读。
@@ -34,6 +41,9 @@ class EventCollectControllerTest {
     @MockitoBean
     private EndpointSimulator simulator;
 
+    @MockitoBean
+    private SocpHttpClient http;
+
     @Autowired
     private MockMvc mvc;
 
@@ -42,6 +52,10 @@ class EventCollectControllerTest {
 
     @Test
     void reportEnrichesEventAndKeepsOriginalFields() throws Exception {
+        when(http.post(any(), anyString(), anyString(), anyString(), anyInt()))
+                .thenReturn(new ServiceCall(SocpService.SEARCH, "/api/v1/ingest", true,
+                        200, "", null, 1, false, 1));
+
         Map<String, Object> falcoEvent = new LinkedHashMap<>();
         falcoEvent.put("rule", "Terminal shell in container");
         falcoEvent.put("priority", "Warning");

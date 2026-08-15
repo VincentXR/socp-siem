@@ -3,6 +3,7 @@ package com.socp.soc.api;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.audit.AuditRecord;
 import com.socp.platform.audit.AuditSink;
+import com.socp.soc.audit.AuditRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -32,6 +33,9 @@ class AuditControllerTest {
 
     @MockitoBean
     private AuditSink sink;
+
+    @MockitoBean
+    private AuditRepository repository;
 
     @Test
     void recordsReturnedWithFilter() throws Exception {

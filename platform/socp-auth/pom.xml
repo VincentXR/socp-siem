@@ -12,7 +12,7 @@
     <groupId>com.socp.platform</groupId>
     <artifactId>socp-auth</artifactId>
     <name>SOCP Auth</name>
-    <description>鉴权横切：机机 OAuth2 client-credentials + 人机 Keycloak OIDC（stub，见 §0.3）</description>
+    <description>鉴权横切：JWT/JWKS 验签、租户提取、RBAC 和生产启动守卫</description>
 
     <dependencies>
         <dependency>
@@ -42,6 +42,12 @@
             <groupId>org.springframework.security</groupId>
             <artifactId>spring-security-oauth2-resource-server</artifactId>
             <optional>true</optional>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 </project>

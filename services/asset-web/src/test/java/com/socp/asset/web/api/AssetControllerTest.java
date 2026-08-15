@@ -68,6 +68,7 @@ class AssetControllerTest {
 
         mvc.perform(post("/api/v1/assets")
                         .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(body)))
                 .andExpect(status().isOk())
@@ -85,12 +86,14 @@ class AssetControllerTest {
         given(store.delete("ghost")).willReturn(false);
 
         mvc.perform(delete("/api/v1/assets/{id}", "known")
-                        .header(HttpHeaders.AUTHORIZATION, BEARER))
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.removed").value(true));
 
         mvc.perform(delete("/api/v1/assets/{id}", "ghost")
-                        .header(HttpHeaders.AUTHORIZATION, BEARER))
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.removed").value(false));
     }

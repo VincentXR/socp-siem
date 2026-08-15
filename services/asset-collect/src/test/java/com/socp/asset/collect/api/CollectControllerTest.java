@@ -2,6 +2,9 @@ package com.socp.asset.collect.api;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.asset.collect.collector.AssetScanner;
+import com.socp.platform.client.ServiceCall;
+import com.socp.platform.client.SocpHttpClient;
+import com.socp.platform.client.SocpService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -18,6 +21,10 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.when;
 
 /**
  * ASSET 采集入口切片测试：上报 → 富化（id / collectedAt）→ 回读。
@@ -34,6 +41,9 @@ class CollectControllerTest {
     @MockitoBean
     private AssetScanner scanner;
 
+    @MockitoBean
+    private SocpHttpClient http;
+
     @Autowired
     private MockMvc mvc;
 
@@ -42,6 +52,10 @@ class CollectControllerTest {
 
     @Test
     void collectEnrichesRecordAndIsReadableBack() throws Exception {
+        when(http.post(any(), anyString(), anyString(), anyString(), anyInt()))
+                .thenReturn(new ServiceCall(SocpService.SEARCH, "/api/v1/ingest", true,
+                        200, "", null, 1, false, 1));
+
         String body = json.writeValueAsString(Map.of(
                 "name", "cmdb-host-1", "type", "SERVER", "ip", "10.0.0.77"));
 

@@ -70,8 +70,9 @@ class SocControllerTest {
     void createTenantPersistsAndEchoesBody() throws Exception {
         given(store.save(any(TenantInfo.class))).willAnswer(inv -> inv.getArgument(0));
 
-        mvc.perform(post("/api/v1/tenants")
+                mvc.perform(post("/api/v1/tenants")
                         .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(Map.of("name", "红队", "code", "red-team"))))
                 .andExpect(status().isOk())

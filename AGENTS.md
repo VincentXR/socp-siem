@@ -7,10 +7,12 @@ SOCP is a multi-module Java 21/Spring Boot SIEM with a Vue workbench. Shared pla
 ## Build, Test, and Development Commands
 
 ```bash
-bash build/mvnw.sh -DskipTests package              # Build all 27 Maven modules
+bash build/mvnw.sh -DskipTests package              # Build all 28 Maven modules
 bash build/mvnw.sh test -Dsurefire.failIfNoSpecifiedTests=false
 cd frontend && corepack pnpm install --frozen-lockfile
 cd frontend && corepack pnpm build                  # Build workbench
+cd frontend/apps/workbench && pnpm test             # Run frontend API contract tests
+cd frontend/apps/workbench && pnpm verify           # Build and verify production artifacts
 docker compose -f infra/docker-compose.yml up -d    # Start middleware
 bash build/run-all.sh start                         # Start backend and frontend
 python build/verify-slice.py                        # Run minimal integration checks

@@ -1,0 +1,91 @@
+name: Full Stack E2E
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 2 * * 1"
+
+jobs:
+  full-stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SOCP_JWT_SECRET: ci-full-stack-jwt-secret-0123456789abcdef0123456789abcdef
+      SOCP_LOGIN_SECRET: ci-full-stack-jwt-secret-0123456789abcdef0123456789abcdef
+      PIPELINE_OS: https://localhost:9200
+      PIPELINE_OS_AUTH: "admin:Socp!Sec2026xK"
+      PIPELINE_CK: http://localhost:8123
+      PIPELINE_CK_AUTH: "default:socp"
+      PIPELINE_KAFKA: localhost:9092
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      - name: Set up pnpm and Node 22
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Start integration middleware
+        run: docker compose -f infra/docker-compose.yml --profile extra up -d
+
+      - name: Build backend
+        run: bash build/mvnw.sh -DskipTests package
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: frontend
+
+      - name: Build and verify frontend
+        run: pnpm verify
+        working-directory: frontend/apps/workbench
+
+      - name: Install pipeline probe dependency
+        run: python3 -m pip install kafka-python
+
+      - name: Start all backend services
+        run: bash build/run-all.sh backend
+
+      - name: Run full API verification
+        run: python3 build/verify-full.py
+
+      - name: Run true event-pipeline verification
+        run: python3 build/verify-pipeline.py
+
+      - name: Run attack scenario demo
+        run: python3 build/demos/attack-scenarios.py
+
+      - name: Run dependency failure injection
+        run: python3 build/failure-tests.py
+
+      - name: Collect logs
+        if: always()
+        run: |
+          mkdir -p .cache
+          docker compose -f infra/docker-compose.yml --profile extra logs --no-color > .cache/compose.log 2>&1 || true
+
+      - name: Upload verification logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-stack-e2e-logs
+          path: .cache/
+          if-no-files-found: ignore
+
+      - name: Stop services
+        if: always()
+        run: |
+          bash build/run-all.sh stop || true
+          docker compose -f infra/docker-compose.yml --profile extra down || true

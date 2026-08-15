@@ -1,5 +1,8 @@
 package com.socp.soar.web.service;
 
+import com.socp.platform.client.IncidentClient;
+import com.socp.platform.client.NotifyClient;
+import com.socp.platform.client.SocpHttpClient;
 import com.socp.soar.web.model.Playbook;
 import com.socp.soar.web.store.PlaybookStore;
 import org.junit.jupiter.api.Test;
@@ -26,6 +29,18 @@ class PlaybookExecutorTest {
 
     @Mock
     private PlaybookStore store;
+
+    @Mock
+    private NotifyClient notifyClient;
+
+    @Mock
+    private IncidentClient incidentClient;
+
+    @Mock
+    private SocpHttpClient http;
+
+    @Mock
+    private TemporalExecutor temporalExecutor;
 
     @InjectMocks
     private PlaybookExecutor executor;

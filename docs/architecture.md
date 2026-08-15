@@ -1,108 +1,81 @@
-# SOCP 企业级 SIEM 平台 —— 架构
+# SOCP SIEM Architecture
 
-> ## ⚠️ 本文档已过期（最后同步 2026-08-09）
->
-> 下方内容反映 2026-08-08/09 的目标架构与当时落地状态，**与当前代码有大量出入**：
-> - "RBAC 未实现" → **已实现**：15 控制器 43 个管理写端点统一 `@RequireRole(admin/analyst)`
-> - "中间件零接线" → **已接线**：Kafka（socp-events/socp-audit/socp-alarm-original 三 topic）、OpenSearch（socp-events-* 检索）、ClickHouse（alarm_detail 报表）、PG（4 库告警/案件/情报/审计）
-> - "无 CI" → **已有**：`.github/workflows/ci.yml`（build/e2e/e2e-pipeline）
-> - "13 服务纯内存" → **13/13 有状态服务全持久化**（PG 4 + H2 9 双写）；2026-08-12 起 H2 服务可切 PG（`--spring.profiles.active=pg`）
-> - 2026-08-12 新增：真实采集链路（Vector file/syslog → ingest）、SOAR Temporal 双模式、Keycloak OIDC PKCE 登录
->
-> **当前真相源：`README.md` 与仓库代码**。本文件仅保留历史设计脉络，供追溯"为什么这么设计"。
+This document describes the current implementation as of 2026-08-15. The
+repository README and executable code are the source of truth; this page is a
+short architecture reference, not a historical design proposal.
 
-> 本文档描述目标架构与当前落地状态。状态会随开发推进更新（见 module-map.md）。
+## System shape
 
-## 0. 一句话
-链路不变（采集→检测→分析→响应→报表），存储/引擎/多租户/可靠性四方向重构为统一平台。
-单仓 `socp/`，中间件全 docker-compose，端点采集交 Vector/Falco/OTel。
+SOCP is a Java 21/Spring Boot monorepo with 28 Maven modules, 17 backend
+services, one Vue workbench, and optional Docker middleware. The important
+boundary is the event pipeline, not the service count:
 
-## 0.1 三横层
-```
-┌ 接入/端点层
-│  ├─ Keycloak 26（人机 OIDC PKCE）· Spring Authorization Server（机机 client-credentials）
-│  │     [🟡 验签侧已就绪：JwtValidator 支持 JWKS 拉公钥 + exp/nbf + issuer 校验；
-│  │      但无 OIDC 登录/授权码流程，Keycloak 容器未实跑，默认走 dev-bypass]
-│  ├─ api-gateway（Spring Cloud Gateway）── 统一北向入口 :18092  [✅ 已实现，18/18 验证]
-│  ├─ 前端 1 app：apps/workbench（:5173）· 3 packages           [✅ 真实实现]
-│  │     └─ 统一控制台 Shell（App.vue 2121 行 + api.ts 375 行），真实对接后端 API
-│  │     └─ 历史文档中的 alert/search/soar/report 四个独立 app 已于 2026-08-08 清理，已折叠进 workbench
-│  └─ 端点 Agent（非 Java）：Falco（运行时）· Vector（日志）
-│        └─ agents/ 目录 [🟡 配置文件已就位（vector-pipeline + falco-rules），未与后端联调]
-│        └─ OTel Collector [⛔ 规划：既不在 docker-compose 中，代码也无 OTel 依赖]
-│
-┌ 业务服务层 ── 17 个 Java 21 服务（容器内 8080 / 宿主 18080~18097，context-path /{服务名}）
-│   SOC:soc-base ✅ │ ASSET:asset-web ✅·asset-collect ✅ │ ALERT:alert-web ✅ │ SEARCH:search-config ✅
-│   DETECT:detect-web ✅·detect-model 🟡(内存态二次关联，未接 Kafka) │ HIPS:hips-web ✅·hips-collect ✅ │ SOAR:soar-web ✅
-│   REPORT:report-web ✅ │ AI:ai-assistant ✅ │ SPI:api-gateway ✅
-│   THREAT:threat-web ✅ │ ATT&CK:attack-web ✅ │ 通知:notify-web ✅ │ 案件:incident-web ✅
-│   ※ ✅ = 进程内逻辑已实现（内存态 / H2），不代表已接入中间件
-│   └─ 横切 platform/ 10 模块：socp-{auth,tenant,audit,ratelimit,obs,error,data,test,bom,rule}
-│         [auth/tenant/audit/ratelimit/error/rule/data/obs ✅ · bom/test 无 java]
-│         [auth：JWT 验签已实现，但默认 dev-bypass 且无 RBAC；audit：内存 sink 默认 / Kafka sink 可选]
-│
-└ 中间件层 ── docker-compose 官方镜像一键起 [🟡 编排齐全，Java 侧基本零接线、未实跑]
-    PostgreSQL 18(+AGE) · Kafka 4.0 · OpenSearch 2.19 · Redis 8 · ClickHouse 25
-    · Keycloak 26 · MinIO · Temporal · Prometheus/Grafana/Loki/Jaeger
-    ※ 除 Kafka（仅审计出口 opt-in）与 Keycloak（仅验签侧就绪）外，其余中间件在 Java 代码中
-      **无任何客户端引用**，服务默认内存态 / H2 运行
+```mermaid
+flowchart LR
+  A[Vector / NDJSON / collectors] --> P[search-config\nparser + canonical schema]
+  P --> K[(Kafka\nsocp-events)]
+  K --> D[detect-web\nRuleEngine + UEBA]
+  K --> O[OsIndexerConsumer]
+  O --> OS[(OpenSearch\nraw event search)]
+  D --> AL[alert-web\nalert lifecycle]
+  AL --> PG[(PostgreSQL\nt_alarm + outbox)]
+  PG --> OB[OutboxPublisher]
+  OB --> AE[(Kafka\nsocp-alarm-events)]
+  AE --> FAN[AlarmEventConsumer]
+  FAN --> CK[(ClickHouse\nalarm_detail)]
+  FAN --> I[Incident / Notify / SOAR]
+  UI[Vue workbench] --> GW[api-gateway]
+  GW --> AL
+  GW --> D
+  GW --> OS
+  GW --> I
 ```
 
-## 0.2 主链路（**目标架构 —— 中间件尚未在代码中接线**）
+## Responsibilities and storage
 
-> ⚠️ 下图描述的是**设计目标**，不是当前实现。图中所有中间件（OpenSearch / Kafka / PostgreSQL+AGE /
-> Temporal / ClickHouse）**均未在 Java 代码中接线**，仅存在于 docker-compose 编排里。
-
-```
-Vector/Falco Agent ─▶ SEARCH 管道 ─▶ OpenSearch（检索/下钻）              ← 采集/检索 [⛔ 未接线]
-GASWeb 规则匹配引擎 ─▶ Kafka socp-detect-* ─▶ GASModel 窗口聚合
-               ─▶ PostgreSQL t_alarm + AGE 关联图                      ← 检测/分析 [⛔ 未接线]
-socp-detect-analyzed-alarm ─▶ SOAR（Temporal Saga + 补偿）               ← 响应 [⛔ 未接线]
-                        └▶ REPORT（ClickHouse 报表聚合）                  ← 报表 [⛔ 未接线]
-ALERT 看板 ─▶ PG 告警 + ClickHouse 预聚合；下钻 ─▶ SEARCH(OpenSearch)/DETECT(AGE)  [⛔ 未接线]
-```
-
-**当前实际链路（内存态纵切）**：
-
-```
-HTTP ingest ─▶ search-config（进程内解析/渲染，H2 落配置）
-detect-web（进程内规则引擎，内存态告警）─▶ detect-model（🟡 HTTP 收告警 → socp-rule 引擎二次关联，非 Kafka 消费）
-alert-web（H2 t_alarm，告警 CRUD/查询/下钻）◀─ workbench 前端
-soar-web / report-web / ai-assistant（均为进程内内存态实现）
-                 ↑ 全链路无消息队列、无检索引擎、无工作流引擎
-```
-
-## 0.3 与原系统硬替换
-
-> 「定稿方案」列是**决策结论**，不等于已完成。第三列标注当前落地度。
-
-| 原自研/旧实现 | 定稿方案 | 当前落地度 |
+| Concern | Current implementation | Reason for the boundary |
 |---|---|---|
-| PQL 检索引擎 | OpenSearch 原生 DSL | ⛔ 未接线（SEARCH 检索为进程内实现） |
-| Flink 流式检测 | Kafka 窗口聚合 + GASWeb 规则引擎 | 🟡 规则引擎 ✅；Kafka 窗口聚合 ⛔ |
-| NebulaGraph 图 | Apache AGE（PG 扩展） | ⛔ 未接线 |
-| Java HipsAgent | Falco + Vector | 🟡 配置就位，未联调 |
-| ES 7.10.2 服务端 | OpenSearch 2.19 统一 | ⛔ 未接线 |
-| 自研 SOAR 执行 | Temporal Saga | ⛔ 未接线（soar-web 为内存态 CRUD） |
-| 告警存 GaussDB 手写 SQL | PostgreSQL alert.t_alarm | 🟡 已用 JPA，但库是 H2 替身；无迁移脚本 |
-| 自研 APIGateway MVC | Spring Cloud Gateway | ✅ 已实现 |
-| Kafka acks=1/不重试 | acks=all + 幂等 + RetryTopic + DLT | 🟡 仅审计出口有 `KafkaAuditSink`（opt-in）；acks/幂等/RetryTopic/DLT 均未配置 |
-| 多租户靠业务约束 | SDK 强制（拦截器 + 各级前缀） | ✅ TenantFilter + BaseEntity 已实现 |
-| 自研鉴权 | Keycloak OIDC + RBAC | 🟡 认证：JWT 验签已实现（JWKS/HMAC + exp/nbf + issuer），17 服务全接入，但默认 dev-bypass；授权：**RBAC 未实现** |
+| Ingestion and parsing | `search-config`, Vector, collector endpoints | Isolate vendor-specific formats from detection rules |
+| Event transport | Kafka topics `socp-events`, `socp-rule-changes`, `socp-alarm-events` | Decouple producers and consumers; support replay and fan-out |
+| Detection | `socp-rule` embedded in `detect-web` | JSON-configured rules, hot reload, window state and backpressure |
+| Alert facts | `alert-web` + PostgreSQL `t_alarm` | Transactional lifecycle and tenant-filtered queries |
+| Raw event search | OpenSearch, written by the Kafka consumer | Search and investigation workloads stay separate from OLTP |
+| Analytical reporting | ClickHouse `alert_agg.alarm_detail` | Keep trend and aggregation queries off PostgreSQL |
+| Response | `incident-web`, `notify-web`, `soar-web`, optional Temporal | Explicit workflow state, retries and compensation |
 
-## 0.4 已知缺口（简表）
+The default local profile uses PostgreSQL for `alert-web`, `incident-web`,
+`soc-base`, and `threat-web`; nine stateful services use file-backed H2 with
+Flyway migrations. The `pg` profile is available for those nine services.
+Gateway, collectors, and reporting are stateless or read from other stores.
 
-| 维度 | 现状 |
-|---|---|
-| 鉴权 | 认证已实现（JWT 验签 + exp/nbf + issuer + 租户 claim），17 服务全接入；但仓库内无服务配置密钥源 → **开箱即 dev-bypass**（任意非空 Bearer 放行）。**授权 RBAC 完全未实现** |
-| 持久化 | 4 服务用 H2 文件库（alert-web/search-config/threat-web/incident-web），13 服务纯内存；无 Flyway/Liquibase，`ddl-auto: update` |
-| 可观测 | `micrometer-registry-prometheus` 已进 17 服务依赖，但**仅 api-gateway 暴露 `/actuator/prometheus`**，其余 16 个只开 `health,info`（3 个另开 `metrics`）→ 抓取 404；无 OTel；traceId 已在 socp-obs 全局 logback pattern 中打印 |
-| 测试 | 20 个测试类 / 8 个模块（socp-rule 3、search-config 3、asset-web 3、soc-base 3、hips-web 2、hips-collect 2、asset-collect 2、soar-web 2），零跨服务集成测试，构建默认 `-DskipTests` |
-| CI/CD | 不存在；本目录也不是 git 仓库 |
+## Reliability semantics
 
-详细逐模块状态见 `module-map.md`。
+- Kafka producers use `acks=all` and idempotence where configured.
+- Consumers use manual commit, event-id deduplication, and DLQ/error paths.
+- Detection applies bounded queue backpressure; ingest returns `503` with
+  `Retry-After` when the queue cannot accept more events.
+- Alert creation and its outbox row are written in one database transaction.
+  The outbox publisher gives at-least-once delivery; consumers must remain
+  idempotent. This is not an exactly-once claim.
+- Temporal is optional in local development. SOAR falls back to the in-process
+  executor when Temporal is unavailable; `prod` rejects that fallback.
 
-## 战略边界（com.siem vs SOCP）
-`com.siem` 是自研单进程引擎，已端到端验证（含 Vector 旁路）。本轮决定：**将其已验证能力迁进 socp**
-（解析链、规则引擎、事件模型作为 SEARCH/DETECT 底座），com.siem 保留为参考实现直至 socp 链路完整。
-详见 migration-comsiem-to-socp.md。
+## Security and tenancy
+
+`socp-auth` validates HMAC or JWKS JWTs, extracts the tenant claim, and applies
+method-level `@RequireRole` checks. Development may use the explicit
+dev-bypass fallback; production must provide a real secret or issuer and uses
+`ProdGuard` to reject demo credentials, H2, bypass authentication, and disabled
+Temporal. Tenant isolation is logical (`tenant_id` plus SDK filters), not
+physical database isolation.
+
+## Operating modes
+
+- `local`: fastest development, H2/file-backed services and optional middleware.
+- `integration`: Docker middleware plus the real Kafka/OpenSearch/ClickHouse
+  path; use `verify-pipeline.py` or `verify-full.py`.
+- `prod`: environment-provided credentials and PostgreSQL, with fail-fast
+  safety checks.
+
+See [module-map.md](module-map.md), [getting-started.md](getting-started.md),
+and the [architecture decision records](adr/) for implementation details.

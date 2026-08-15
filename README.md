@@ -6,7 +6,7 @@ A self-hosted, event-driven SIEM/SOC platform built to explore security telemetr
 
 ```
 Telemetry ingestion → Event normalization (Canonical Schema) → Kafka streaming
-→ Detection engineering (7 种规则类型 · 热更新 · 幂等 · 去重) → Alert lifecycle
+→ Detection engineering (6 种规则类型 · 热更新 · 幂等 · 去重) → Alert lifecycle
 → Incident workflow → Automated response (SOAR 剧本 · 补偿)
 ```
 
@@ -145,7 +145,7 @@ network.protocol
 
 ## Detection Engine 做了什么
 
-- **7 种规则类型**：`pattern`（单事件命中）/ `threshold`（滑动窗口计数）/ `correlation` / `correlation-set`（多步关联）/ `baseline`（UEBA 自身历史基线）/ `rare`（首见值）
+- **6 种规则类型**：`pattern`（单事件命中）/ `threshold`（滑动窗口计数）/ `correlation` / `correlation-set`（多步关联）/ `baseline`（UEBA 自身历史基线）/ `rare`（首见值）
 - **规则生命周期**：CRUD + 热更新（原子替换旧引擎，毒丸退出） + Kafka 广播到多实例
 - **背压**：10 万事件队列 + 50ms 缓冲 + 满则丢弃计数，HTTP 接入端据此回 `503 + Retry-After`，Vector 自动重试而不是静默丢数据
 - **幂等**：Kafka 消费手动 commit（至少一次）+ `eventId` LRU 去重，重复投递不重复告警
@@ -211,7 +211,7 @@ git clone https://github.com/VincentXR/socp-siem.git && cd socp-siem
 # 1) 起 8 个中间件（PG / Kafka / OpenSearch / ClickHouse / Redis / MinIO / Prometheus / Grafana）
 docker compose -f infra/docker-compose.yml up -d
 
-# 2) 构建 27 模块（内置阿里云镜像 + JDK21，产出可执行 fat-jar）
+# 2) 构建 28 模块（内置阿里云镜像 + JDK21，产出可执行 fat-jar）
 bash build/mvnw.sh -DskipTests package
 
 # 3) 起后端服务（端口 18080~18097，日志 .cache/*.log）
@@ -244,3 +244,16 @@ socp-siem/
 
 Java 21 · Spring Boot 3.5 · Spring Cloud Gateway 2025.0 · Kafka · OpenSearch · ClickHouse · PostgreSQL · Redis ·
 OpenTelemetry + Jaeger · Prometheus + Grafana · Vue 3 + Vite + Element Plus + ECharts · GitHub Actions
+
+## License
+
+This repository is released under the [MIT License](LICENSE).
+
+## Documentation
+
+- [Testing guide](docs/testing.md) - module tests, integration checks and CI ownership
+- [Architecture](docs/architecture.md) — current event flow, storage boundaries and runtime modes
+- [Module map](docs/module-map.md) — services, platform modules and verification ownership
+- [Getting started](docs/getting-started.md) — local/integration setup and validation commands
+- [Architecture decisions](docs/adr/) — canonical pipeline, storage, Outbox and profile trade-offs
+- [Demo checklist](docs/demo-checklist.md) — a focused walkthrough and portfolio evidence plan

@@ -11,6 +11,14 @@
     <name>SOCP Parent</name>
     <description>SOCP 安全运营平台 - 单仓多模块父工程（P0）</description>
 
+    <licenses>
+        <license>
+            <name>MIT License</name>
+            <url>https://opensource.org/license/mit</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
     <properties>
         <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

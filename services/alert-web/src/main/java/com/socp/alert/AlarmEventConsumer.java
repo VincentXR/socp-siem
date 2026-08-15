@@ -156,7 +156,7 @@ public class AlarmEventConsumer {
     }
 
     /** 下游扇出：CK 报表 + Notify / Incident / SOAR。任一下游失败不影响其余（best-effort 但有 WARN）。 */
-    private void fanOut(Map<String, Object> m) {
+    void fanOut(Map<String, Object> m) {
         String alarmId = String.valueOf(m.getOrDefault("id", "?"));
         Alarm a = toAlarm(m);
         try {

@@ -67,6 +67,7 @@ class EndpointControllerTest {
 
         mvc.perform(post("/api/v1/endpoints")
                         .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(body)))
                 .andExpect(status().isOk())
@@ -81,7 +82,8 @@ class EndpointControllerTest {
         given(store.heartbeat("ghost")).willReturn(null);
 
         mvc.perform(post("/api/v1/endpoints/{id}/heartbeat", "ghost")
-                        .header(HttpHeaders.AUTHORIZATION, BEARER))
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$").doesNotExist());
     }
@@ -91,7 +93,8 @@ class EndpointControllerTest {
         given(store.delete("e-1")).willReturn(true);
 
         mvc.perform(delete("/api/v1/endpoints/{id}", "e-1")
-                        .header(HttpHeaders.AUTHORIZATION, BEARER))
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.removed").value(true));
     }

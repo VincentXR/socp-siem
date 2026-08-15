@@ -15,8 +15,8 @@ import java.util.Map;
 import com.socp.platform.auth.RequireRole;
 
 /**
- * SOAR 剧本 API：CRUD + 启停。
- * 当前为内存态执行（actions 以日志输出），Temporal Saga 接线后转为 Workflow 执行。
+ * SOAR 剧本 API：CRUD + 启停。剧本元数据持久化；执行由
+ * {@code PlaybookExecutor} 在 Temporal 与本地补偿模式之间分发。
  */
 @RestController
 @RequestMapping("/api/v1/playbooks")

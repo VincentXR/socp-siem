@@ -5,8 +5,9 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * SOAR 剧本——当告警匹配触发条件时按 actions 依次执行（Temporal Saga 编排+补偿）。
- * 当前为内存态；Temporal 接线后 actions → Saga workflow steps（含补偿逻辑）。
+ * SOAR 剧本——当告警匹配触发条件时按 actions 依次执行。
+ * 元数据由 JPA + Flyway 持久化；执行时根据 Temporal 可用性选择
+ * Workflow/Activity 或本地补偿执行器。
  */
 public record Playbook(
         String id,

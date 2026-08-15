@@ -33,7 +33,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
 
-      - name: Build backend (27 Maven modules)
+      - name: Build backend (28 Maven modules)
         run: bash build/mvnw.sh -DskipTests package
 
       - name: Run backend tests
@@ -43,8 +43,16 @@ jobs:
         run: pnpm install --frozen-lockfile
         working-directory: frontend
 
+      - name: Test frontend API contracts
+        run: pnpm test
+        working-directory: frontend/apps/workbench
+
       - name: Build frontend (workbench)
-        run: node ../../node_modules/vite/bin/vite.js build
+        run: pnpm build
+        working-directory: frontend/apps/workbench
+
+      - name: Verify frontend artifact
+        run: node scripts/verify-build.mjs
         working-directory: frontend/apps/workbench
 
   e2e:
@@ -74,43 +82,39 @@ jobs:
       - name: Build backend
         run: bash build/mvnw.sh -DskipTests package
 
-      # 最小切片验证：alert-web + api-gateway（无 Kafka/OpenSearch/CK 依赖）
       - name: Start minimal slice (alert-web + gateway)
         run: |
           mkdir -p .cache
           bash build/run-slice.sh start || true
           python3 - <<'EOF'
-          import time, urllib.request
-          for i in range(60):
+          import time
+          import urllib.request
+
+          for _ in range(60):
               ok = 0
-              for port, path in [(18092, '/actuator/health'), (18080, '/alert-web/actuator/health')]:
+              for port, path in [(18092, "/actuator/health"), (18080, "/alert-web/actuator/health")]:
                   try:
-                      if urllib.request.urlopen(f'http://127.0.0.1:{port}{path}', timeout=2).status == 200:
+                      if urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=2).status == 200:
                           ok += 1
                   except Exception:
                       pass
               if ok == 2:
-                  print('slice UP'); break
+                  print("slice UP")
+                  break
               time.sleep(3)
           else:
-              raise SystemExit('slice not up')
+              raise SystemExit("slice not up")
           EOF
 
       - name: Run slice E2E (auth/tenant/audit/ratelimit/trace)
         run: python3 build/verify-slice.py
 
-  # ─────────────────────────────────────────────────────────────
-  # 真链路 E2E：Kafka → Detect → PostgreSQL + OpenSearch + ClickHouse
-  # 注入 1 条攻击事件，验证完整 event-driven 链路（见 README「真链路验证」）：
-  #   push 事件 → Kafka topic 出现 → Detection 命中 → PG alert →
-  #   OpenSearch raw event → ClickHouse alarm_detail → API 查询
-  # ─────────────────────────────────────────────────────────────
   e2e-pipeline:
     runs-on: ubuntu-latest
     needs: build
     env:
       SOCP_JWT_SECRET: ci-test-jwt-secret-0123456789abcdef0123456789abcdef
-      # CI 中间件均为本机服务地址（OpenSearch 关安全 → HTTP，ClickHouse 默认用户无密码）
+      # CI middleware uses local HTTP OpenSearch and unauthenticated ClickHouse.
       PIPELINE_OS: http://localhost:9200
       PIPELINE_OS_AUTH: "admin:"
       PIPELINE_CK: http://localhost:8123
@@ -178,8 +182,6 @@ jobs:
       - name: Install kafka-python (pipeline probe)
         run: pip install kafka-python
 
-      # 启动真链路 5 服务：search-config(归一化→Kafka/OS) + detect-web(规则引擎) +
-      # alert-web(PG/CK) + report-web(报表) + api-gateway(鉴权/路由)
       - name: Start pipeline services
         run: |
           mkdir -p .cache
@@ -192,24 +194,31 @@ jobs:
           java -jar services/report-web/target/report-web-1.0.0-SNAPSHOT.jar --server.port=18084 > .cache/report-web.log 2>&1 &
           java -jar services/api-gateway/target/api-gateway-1.0.0-SNAPSHOT.jar --server.port=18092 > .cache/api-gateway.log 2>&1 &
           python3 - <<'EOF'
-          import time, urllib.request
-          targets = [(18081, '/search-config/actuator/health'), (18082, '/detect-web/actuator/health'),
-                     (18080, '/alert-web/actuator/health'), (18084, '/report-web/actuator/health'),
-                     (18092, '/actuator/health')]
-          for i in range(90):
+          import time
+          import urllib.request
+
+          targets = [
+              (18081, "/search-config/actuator/health"),
+              (18082, "/detect-web/actuator/health"),
+              (18080, "/alert-web/actuator/health"),
+              (18084, "/report-web/actuator/health"),
+              (18092, "/actuator/health"),
+          ]
+          for _ in range(90):
               ok = 0
               for port, path in targets:
                   try:
-                      if urllib.request.urlopen(f'http://127.0.0.1:{port}{path}', timeout=2).status == 200:
+                      if urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=2).status == 200:
                           ok += 1
                   except Exception:
                       pass
-              if ok == 5:
-                  print('pipeline services UP'); break
+              if ok == len(targets):
+                  print("pipeline services UP")
+                  break
               time.sleep(3)
           else:
-              raise SystemExit('pipeline services not up')
+              raise SystemExit("pipeline services not up")
           EOF
 
-      - name: Run true-pipeline E2E (Kafka→Detect→PG/OpenSearch/ClickHouse)
+      - name: Run true-pipeline E2E (Kafka -> Detect -> stores)
         run: python3 build/verify-pipeline.py
