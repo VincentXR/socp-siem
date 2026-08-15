@@ -83,7 +83,11 @@ rejects H2.
 - `build/verify-full.py`: full backend API, auth, tenancy, persistence,
   rate-limit and tracing checks.
 - `build/failure-tests.py`: dependency stop/restart and fallback behavior.
-- `build/demos/attack-scenarios.py`: three human-readable attack scenarios.
+- `build/demos/golden-demo.py`: recommended Vector → Kafka → detection →
+  Outbox → Incident/SOAR/Notify walkthrough; `--transport ingest` is a
+  troubleshooting shortcut.
+- `build/demos/attack-scenarios.py`: three human-readable rule-engine
+  playground scenarios; it is not the canonical Vector end-to-end proof.
 - `frontend/apps/workbench/scripts/api-response.test.ts`: frontend API
   contract checks; `verify-build.mjs` checks the production artifact.
 - `docs/testing.md`: test scope, focused commands and CI ownership.

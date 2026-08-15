@@ -25,28 +25,28 @@ Implemented with: Spring Boot · Kafka · OpenSearch · PostgreSQL · ClickHouse
 The focus is the **core pipeline**, not the number of services:
 
 ```
-Vector / 模拟日志
+sshd / syslog raw log
         │
         ▼
-   Ingestion (归一化 · 攒批 · 背压)
-   ├──────────────┬──────────────┐
-   ▼              ▼              ▼
-  Kafka        OpenSearch      PG/H2
- (事件流)      (原始事件检索)   (告警事实源)
-   │
-   ▼
- Detection Engine (规则引擎 · 热更新 · 幂等 · 抑制)
-   │
-   ▼
-  Alert (富化 · ATT&CK · IOC 命中)
-   ├──────────────┬──────────────┐
-   ▼              ▼              ▼
- PostgreSQL     ClickHouse     SOAR / Incident
- (t_alarm)     (alarm_detail   (剧本编排 · 自动建案)
-                报表聚合)
-   │
-   ▼
- report-web 日报 / Grafana / 前端控制台 (SSE 实时)
+Vector (采集 + 轻量 envelope 元数据)
+        │
+        ▼
+search-config (解析 + canonical normalize + enrichment)
+        │
+        ▼
+Kafka socp-events (canonical event bus)
+        │
+        ▼
+detect-web (threshold / pattern / correlation / UEBA)
+        │
+        ▼
+alert-web (PostgreSQL t_alarm + transactional Outbox)
+        │
+        ├──► Kafka socp-alarm-events ──► Incident / SOAR / Notify
+        ├──► ClickHouse alarm_detail ──► report-web / dashboards
+
+Kafka event consumer ──► OpenSearch socp-events-* ──► investigation
+All service requests and Kafka hops ──► audit / metrics / trace context
 ```
 
 外围还有资产、HIPS、ATT&CK 覆盖、通知渠道等模块，但核心是上面这条 **event-driven detection pipeline**——这也是本仓库最值得研究的部分。
@@ -77,9 +77,25 @@ python build/verify-full.py          # 62 项全栈 E2E（健康/全链路/持�
 python build/failure-tests.py        # 故障注入（2026-08-14 P4）：断 Kafka/OS/Temporal/PG，断言降级与自愈
 ```
 
-## 3 个攻击场景 Demo
+## Golden Demo（推荐面试主线）
 
-`build/demos/attack-scenarios.py` 从「攻击日志」一直演示到「告警 → ATT&CK → 事件建案」：
+用一条 SSH 故事展示完整闭环：5 次失败登录触发 `AUTH-BRUTE`，同一 IP
+随后成功登录触发 `AUTH-BRUTE-SUCCESS`，再观察 PG Outbox 驱动的 Incident、
+SOAR、Notify 和报表。
+
+```bash
+python build/demos/golden-demo.py
+```
+
+完整准备步骤、展示顺序和 Kafka 故障演示见
+[`docs/demo-checklist.md`](docs/demo-checklist.md)。默认脚本走真实 Vector
+文件采集；`--transport ingest` 仅用于快速定位 search-config 之后的问题。
+
+## 多规则 Playground
+
+`build/demos/attack-scenarios.py` 保留为规则工程 playground：它覆盖 SSH、
+PowerShell 和 Web Shell 三个场景，适合展示规则热更新与多类型命中，
+但不作为 Vector → Kafka 的黄金端到端证明：
 
 | 场景 | 攻击日志 | 规则（类型） | ATT&CK | 告警 |
 |---|---|---|---|---|
@@ -194,7 +210,7 @@ Kafka/OpenSearch/ClickHouse 立即接入，`verify-pipeline.py` 12 项真链路�
 - **Kafka**：演示环境单 broker（副本因子 1）；生产按集群调整分区/副本
 - **SOAR（2026-08-12 双模式）**：Temporal 可达（`docker compose --profile extra up -d temporal`）走 Workflow/Activity 分布式编排；不可达自动回退进程内执行器（双模式，绝不因编排中间件故障拖垮告警响应）
 - **Keycloak（2026-08-12 OIDC 已实跑）**：PKCE 授权码登录（`socp-spa` 客户端，`docker compose --profile extra up -d keycloak`），Keycloak 只作身份源，网关回调统一签发 HS256 session token，业务服务保持 HMAC 验签；`/auth/login` demo 账号保留。验签侧亦可切 `issuer-uri`（JWKS）
-- **采集（2026-08-12 真实链路）**：`build/run-vector.sh` 起 Docker Vector 采集真实文件（`demo/sample.log`）+ syslog TCP 5514 → search-config ingest（机机 token 鉴权）→ canonical 解析 → OpenSearch/Kafka → 检测；asset-collect/hips-collect 把上报事件真转发进同一主链。Falco 规则（`agents/falco-rules`）配置就绪，Windows 下未真跑（仅 Linux）
+- **采集（2026-08-12 真实链路）**：`build/run-vector.sh` 起 Docker Vector 采集真实文件（`demo/sample.log`）+ syslog TCP 5514 → search-config ingest（机机 token 鉴权）→ canonical 解析 → Kafka `socp-events` → 检测；Kafka consumer 再写 OpenSearch，告警 Outbox consumer 写 ClickHouse。asset-collect/hips-collect 把上报事件真转发进同一主链。Falco 规则（`agents/falco-rules`）配置就绪，Windows 下未真跑（仅 Linux）
 - **RBAC**：管理写端点统一 `@RequireRole(admin/analyst)`（规则/接入配置/剧本/渠道/处置/租户/端点等 15 个控制器），viewer 只读；采集/机机端点（ingest/collect/evaluate/notify）与登录端点豁免
 - **prod profile（2026-08-14，P1）**：三档 profile —— `local`（默认：H2 / 内存回退 / 默认凭据全允许）、`integration`（compose 全中间件）、`prod`（启动 `--spring.profiles.active=prod` 时 **ProdGuard fail-fast**：禁止 H2、默认 JWT secret、`dev-bypass=true`、默认 ingest-token，强制 Temporal 开启）
 - **Outbox（2026-08-14，P3）**：告警创建与 `t_alarm` 同事务写 `outbox_event`，`OutboxPublisher` 发 Kafka `socp-alarm-events`，`AlarmEventConsumer` 扇出 CK / Notify / Incident / SOAR（失败可重放，不再跨系统双写）；告警处置（assignee/status/notes）从纯内存改为 `t_alarm_disposition` 持久化，重启不丢
@@ -217,7 +233,10 @@ bash build/mvnw.sh -DskipTests package
 # 3) 起后端服务（端口 18080~18097，日志 .cache/*.log）
 bash build/run-all.sh backend
 
-# 4) 前端控制台（start-frontend.sh 用 cd -P 解析物理路径启动，
+# 4) 启动真实日志采集 Agent（Golden Demo 需要）
+bash build/run-vector.sh start
+
+# 5) 前端控制台（start-frontend.sh 用 cd -P 解析物理路径启动，
 #    规避 vite 6.4.3 在 junction 路径下依赖改写失效导致白屏的问题）
 bash build/start-frontend.sh            # 默认 5173，可传端口参数
 ```
@@ -235,7 +254,7 @@ socp-siem/
 ├── services/       # 业务服务（网关 / 采集 / 检测 / 告警 / SOAR / 报表 / 案件 / 资产 / HIPS / 情报 / ATT&CK / 通知）
 ├── frontend/       # workbench 控制台（Vue3 + Element Plus + ECharts）
 ├── infra/          # docker-compose + init-sql（8 中间件 + jaeger/keycloak/temporal 可选）
-├── build/          # 构建脚本 + verify-full / verify-pipeline / demos/attack-scenarios
+├── build/          # 构建脚本 + verify-full / verify-pipeline / Golden Demo / rule playground
 ├── .github/        # CI：build + test + e2e（切片）+ e2e-pipeline（真链路）
 └── docs/
 ```
