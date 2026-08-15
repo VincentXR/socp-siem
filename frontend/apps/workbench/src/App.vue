@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref } from 'vue'
 import ElMessage from 'element-plus/es/components/message/index.mjs'
-import { registerChartTheme } from './lib/echarts'
+import { setChartTheme } from './lib/echarts'
 
 /** 主题（在 echarts 主题注册前声明，registerTheme 加载期即读取） */
 const theme = ref<'light' | 'dark'>('light')
 
-registerChartTheme(theme.value)
+setChartTheme(theme.value)
 
 import LoginView from './LoginView.vue'
 import AnimatedNumber from './AnimatedNumber.vue'
@@ -87,7 +87,7 @@ function applyTheme(t: 'light' | 'dark') {
   theme.value = t
   document.documentElement.setAttribute('data-theme', t)
   try { localStorage.setItem('socp_theme', t) } catch { /* ignore */ }
-  registerChartTheme(t)
+  setChartTheme(t)
 }
 function toggleTheme() {
   applyTheme(theme.value === 'light' ? 'dark' : 'light')

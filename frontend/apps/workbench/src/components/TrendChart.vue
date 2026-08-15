@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { echarts } from '../lib/echarts'
+import type { ECharts } from 'echarts/core'
+import { loadEcharts } from '../lib/echarts'
 
 /**
  * 近 7 日告警趋势折线图（概览页/态势页共用）。
@@ -12,7 +13,8 @@ const props = withDefaults(defineProps<{ data?: Record<string, number>; variant?
 })
 
 const el = ref<HTMLElement>()
-let chart: echarts.ECharts | null = null
+let chart: ECharts | null = null
+let renderToken = 0
 
 function themeColor(key: string): string {
   const dark = document.documentElement.classList.contains('dark')
@@ -23,9 +25,12 @@ function themeColor(key: string): string {
   return map[key] ?? '#57606a'
 }
 
-function render() {
+async function render() {
   const d = props.data
   if (!el.value || !d) return
+  const token = ++renderToken
+  const echarts = await loadEcharts()
+  if (token !== renderToken || !el.value) return
   if (!chart || chart.isDisposed()) chart = echarts.init(el.value, 'socp')
   const dark = document.documentElement.classList.contains('dark')
   const days = Object.keys(d).sort()
@@ -85,16 +90,17 @@ function render() {
 }
 
 onMounted(() => {
-  render()
+  void render()
   // 主题切换时重绘（监听 html.dark class）
-  const mo = new MutationObserver(() => render())
+  const mo = new MutationObserver(() => { void render() })
   mo.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
   ;(el.value as any)._mo = mo
 })
 
-watch(() => props.data, () => render(), { deep: true })
+watch(() => props.data, () => { void render() }, { deep: true })
 
 onBeforeUnmount(() => {
+  renderToken++
   ;(el.value as any)?._mo?.disconnect?.()
   chart?.dispose()
   chart = null

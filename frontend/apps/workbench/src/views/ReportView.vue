@@ -1,41 +1,56 @@
 <script setup lang="ts">
 import 'element-plus/es/components/button/style/css.mjs'
+import 'element-plus/es/components/alert/style/css.mjs'
 import 'element-plus/es/components/card/style/css.mjs'
 import 'element-plus/es/components/col/style/css.mjs'
 import 'element-plus/es/components/row/style/css.mjs'
 import 'element-plus/es/components/table/style/css.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
+import ElAlert from 'element-plus/es/components/alert/index.mjs'
 import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElCol from 'element-plus/es/components/col/index.mjs'
 import ElRow from 'element-plus/es/components/row/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import { nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
+import type { ECharts } from 'echarts/core'
 import ElMessage from 'element-plus/es/components/message/index.mjs'
-import { echarts } from '../lib/echarts'
+import { loadEcharts } from '../lib/echarts'
+import { useRequest } from '../composables/useRequest'
 import { archiveReport, dailyReport, listArchive, trend7d, type ReportSummary } from '../api'
 
 const props = defineProps<{ theme: 'light' | 'dark' }>()
 
 const report = ref<ReportSummary | null>(null)
 const trend = ref<{ days: string[]; counts: number[] } | null>(null)
+const reportRequest = useRequest<{ summary: ReportSummary; dailyTrend: { days: string[]; counts: number[] } }>()
+const reportLoading = reportRequest.loading
+const reportError = reportRequest.error
 const archiveInfo = ref<Awaited<ReturnType<typeof listArchive>> | null>(null)
 const archiveBusy = ref(false)
-const chartBar = shallowRef<echarts.ECharts>()
-const chartLine = shallowRef<echarts.ECharts>()
+const chartBar = shallowRef<ECharts>()
+const chartLine = shallowRef<ECharts>()
 const barEl = ref<HTMLElement>()
 const lineEl = ref<HTMLElement>()
+let renderToken = 0
 
 function tc(light: string, dark: string): string { return props.theme === 'dark' ? dark : light }
 
 async function loadReport() {
-  const [summary, dailyTrend] = await Promise.all([dailyReport(), trend7d()])
-  report.value = summary
-  trend.value = dailyTrend
+  const result = await reportRequest.execute(async () => {
+    const [summary, dailyTrend] = await Promise.all([dailyReport(), trend7d()])
+    return { summary, dailyTrend }
+  })
+  if (!result) return
+  report.value = result.summary
+  trend.value = result.dailyTrend
   await nextTick()
-  renderCharts()
+  await renderCharts()
 }
 
-function renderCharts() {
+async function renderCharts() {
+  const token = ++renderToken
+  const echarts = await loadEcharts()
+  if (token !== renderToken) return
   if (barEl.value && report.value) {
     chartBar.value?.dispose()
     chartBar.value = echarts.init(barEl.value, 'socp')
@@ -84,13 +99,14 @@ function onResize() {
   chartLine.value?.resize()
 }
 
-watch(() => props.theme, () => nextTick(renderCharts))
+watch(() => props.theme, () => { void nextTick(renderCharts) })
 onMounted(() => {
   loadReport()
   loadArchive()
   window.addEventListener('resize', onResize)
 })
 onUnmounted(() => {
+  renderToken++
   window.removeEventListener('resize', onResize)
   chartBar.value?.dispose()
   chartLine.value?.dispose()
@@ -100,10 +116,11 @@ onUnmounted(() => {
 <template>
   <div class="page-pad view-enter">
     <div style="margin-bottom:12px;display:flex;gap:10px;align-items:center">
-      <el-button @click="loadReport">刷新</el-button>
+      <el-button :loading="reportLoading" @click="loadReport">刷新</el-button>
       <el-button type="primary" :loading="archiveBusy" @click="doArchive">归档至 MinIO</el-button>
       <span v-if="archiveInfo" style="font-size:12px;color:var(--ns-text-3)">已归档 {{ archiveInfo.count }} 个对象</span>
     </div>
+    <el-alert v-if="reportError" type="error" title="报告加载失败，请重试" show-icon closable @close="reportRequest.reset" />
     <el-row :gutter="12" style="margin-bottom:14px" v-if="report">
       <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ report.total }}</div><div class="label">今日告警</div></div></el-card></el-col>
       <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#f56c6c">{{ report.bySeverity.CRITICAL ?? 0 }}</div><div class="label">CRITICAL</div></div></el-card></el-col>

@@ -1,30 +1,10 @@
-import * as echarts from 'echarts/core'
-import { BarChart, GaugeChart, LineChart, PieChart } from 'echarts/charts'
-import {
-  GridComponent,
-  LegendComponent,
-  MarkPointComponent,
-  TitleComponent,
-  TooltipComponent,
-} from 'echarts/components'
-import { CanvasRenderer } from 'echarts/renderers'
+type Theme = 'light' | 'dark'
+type EChartsRuntime = typeof import('echarts/core')
 
-echarts.use([
-  BarChart,
-  GaugeChart,
-  LineChart,
-  PieChart,
-  GridComponent,
-  LegendComponent,
-  MarkPointComponent,
-  TitleComponent,
-  TooltipComponent,
-  CanvasRenderer,
-])
+let activeTheme: Theme = 'light'
+let runtimePromise: Promise<EChartsRuntime> | null = null
 
-export { echarts }
-
-export function registerChartTheme(theme: 'light' | 'dark'): void {
+function registerChartTheme(echarts: EChartsRuntime, theme: Theme): void {
   const dark = theme === 'dark'
   const colors = {
     grid: dark ? 'rgba(255,255,255,.06)' : 'rgba(31,35,40,.06)',
@@ -62,4 +42,39 @@ export function registerChartTheme(theme: 'light' | 'dark'): void {
     line: { smooth: true, symbol: 'circle', symbolSize: 6, lineStyle: { width: 2 } },
     bar: { itemStyle: { borderRadius: [6, 6, 0, 0] } },
   })
+}
+
+export function setChartTheme(theme: Theme): void {
+  activeTheme = theme
+  if (runtimePromise) void runtimePromise.then(runtime => registerChartTheme(runtime, theme)).catch(() => undefined)
+}
+
+export function loadEcharts(): Promise<EChartsRuntime> {
+  if (!runtimePromise) {
+    runtimePromise = Promise.all([
+      import('echarts/core'),
+      import('echarts/charts'),
+      import('echarts/components'),
+      import('echarts/renderers'),
+    ]).then(([echarts, charts, components, renderers]) => {
+      echarts.use([
+        charts.BarChart,
+        charts.GaugeChart,
+        charts.LineChart,
+        charts.PieChart,
+        components.GridComponent,
+        components.LegendComponent,
+        components.MarkPointComponent,
+        components.TitleComponent,
+        components.TooltipComponent,
+        renderers.CanvasRenderer,
+      ])
+      registerChartTheme(echarts, activeTheme)
+      return echarts
+    }).catch(error => {
+      runtimePromise = null
+      throw error
+    })
+  }
+  return runtimePromise
 }

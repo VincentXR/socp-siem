@@ -1,4 +1,5 @@
 // SOCP 统一控制台 API 客户端（聚合所有后端）
+import { unwrapApiBody } from './lib/api-response'
 // 令牌：登录成功后存 localStorage；未登录返回空串（强制验签下任何兜底 token 都 401）
 export function getToken(): string {
   try { return localStorage.getItem('socp_token') || '' } catch { return '' }
@@ -95,22 +96,13 @@ function assertOk(res: Response): void {
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
 }
 
-function unwrap<T>(body: unknown): T {
-  if (body && typeof body === 'object' && 'code' in body && 'data' in body) {
-    const envelope = body as { code: number; message?: string; data: T }
-    if (envelope.code !== 0) throw new Error(envelope.message || `code=${envelope.code}`)
-    return envelope.data
-  }
-  return body as T
-}
-
 async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   if (!headers.has('Accept')) headers.set('Accept', 'application/json')
   if (!headers.has('Authorization')) headers.set('Authorization', authHeader())
   const res = await fetch(path, { ...init, headers })
   assertOk(res)
-  return unwrap<T>(await res.json())
+  return unwrapApiBody<T>(await res.json())
 }
 
 async function get<T>(path: string): Promise<T> {

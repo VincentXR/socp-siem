@@ -14,7 +14,8 @@ import ElRow from 'element-plus/es/components/row/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
-import { echarts } from '../lib/echarts'
+import type { ECharts } from 'echarts/core'
+import { loadEcharts } from '../lib/echarts'
 import TrendChart from '../components/TrendChart.vue'
 import SevBadge from '../components/SevBadge.vue'
 import {
@@ -37,9 +38,10 @@ let alertStream: EventSource | null = null
 const gaugeEl = ref<HTMLElement>()
 const donutEl = ref<HTMLElement>()
 const epsEl = ref<HTMLElement>()
-const chartGauge = shallowRef<echarts.ECharts>()
-const chartDonut = shallowRef<echarts.ECharts>()
-const chartEps = shallowRef<echarts.ECharts>()
+const chartGauge = shallowRef<ECharts>()
+const chartDonut = shallowRef<ECharts>()
+const chartEps = shallowRef<ECharts>()
+let renderToken = 0
 
 function sevColor(severity: string) {
   return { CRITICAL: '#f56c6c', HIGH: '#e63946', MEDIUM: '#e6a23c', LOW: '#909399', INFO: '#909399' }[severity] ?? '#909399'
@@ -92,7 +94,10 @@ function mergeFeed(incoming: GasAlert[]) {
   window.setTimeout(() => { liveFeed.value = liveFeed.value.map(alert => ({ ...alert, _new: false })) }, 1600)
 }
 function renderSitCharts() {
-  setTimeout(() => {
+  const token = ++renderToken
+  setTimeout(async () => {
+    const echarts = await loadEcharts()
+    if (token !== renderToken) return
     const stats = sitStats.value
     if (gaugeEl.value) {
       if (!chartGauge.value || chartGauge.value.isDisposed()) chartGauge.value = echarts.init(gaugeEl.value, 'socp')
@@ -125,6 +130,7 @@ function onResize() { chartGauge.value?.resize(); chartDonut.value?.resize(); ch
 watch(() => props.theme, renderSitCharts)
 onMounted(() => { loadSituation(); openAlertStream(); if (liveOn.value) startLive(); window.addEventListener('resize', onResize) })
 onUnmounted(() => {
+  renderToken++
   stopLive(); closeAlertStream(); window.removeEventListener('resize', onResize)
   chartGauge.value?.dispose(); chartDonut.value?.dispose(); chartEps.value?.dispose()
 })

@@ -1,11 +1,14 @@
 {
   "name": "@socp/app-workbench",
   "private": true,
+  "type": "module",
   "version": "1.0.0",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --experimental-strip-types --test scripts/api-response.test.ts",
+    "verify": "pnpm build && node scripts/verify-build.mjs"
   },
   "dependencies": {
     "vue": "3.5.41",

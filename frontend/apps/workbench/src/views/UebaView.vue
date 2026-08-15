@@ -34,7 +34,8 @@ import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.m
 import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
-import { echarts } from '../lib/echarts'
+import type { ECharts } from 'echarts/core'
+import { loadEcharts } from '../lib/echarts'
 import SevBadge from '../components/SevBadge.vue'
 import {
   appendWatchlist, deleteWatchlist, listWatchlists, putWatchlist,
@@ -59,7 +60,8 @@ const uebaTab = ref('entities')
 const scoreForm = ref({ severity: 'HIGH', mitre: 'T1110', tiHits: 1, recentAlerts: 3, assetCriticality: 2 })
 const scoreResult = ref<ScoreBreakdown | null>(null)
 const riskBarEl = ref<HTMLElement>()
-const chartRiskBar = shallowRef<echarts.ECharts>()
+const chartRiskBar = shallowRef<ECharts>()
+let renderToken = 0
 const BREAKDOWN_LABEL: Record<string, string> = {
   base: '严重级别基线', tactic: 'ATT&CK 战术权重', intel: '情报命中加成',
   frequency: '实体频次加成', asset: '资产重要性加成',
@@ -85,7 +87,10 @@ async function loadUeba() {
   if (!scoreResult.value) await calcScore()
 }
 function renderRiskBar() {
-  setTimeout(() => {
+  const token = ++renderToken
+  setTimeout(async () => {
+    const echarts = await loadEcharts()
+    if (token !== renderToken) return
     if (!riskBarEl.value) return
     if (!chartRiskBar.value || chartRiskBar.value.isDisposed()) chartRiskBar.value = echarts.init(riskBarEl.value, 'socp')
     const top = riskEntities.value.slice(0, 10).slice().reverse()
@@ -137,6 +142,7 @@ watch(() => props.theme, renderRiskBar)
 onMounted(loadUeba)
 onMounted(() => window.addEventListener('resize', onResize))
 onUnmounted(() => {
+  renderToken++
   window.removeEventListener('resize', onResize)
   chartRiskBar.value?.dispose()
 })
