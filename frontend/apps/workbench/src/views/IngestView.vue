@@ -27,7 +27,7 @@ import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { onMounted, ref } from 'vue'
 import {
-  createOutput, createParseRule, createSource, deleteOutput, deleteParseRule, deleteSource,
+  createOutput, createParseRule, createSource, deleteOutput, deleteParseRule, deleteSource, updateSource,
   ingestSummary, listCategories, listIngestTasks, listOutputs, listParseRules, listSources,
   renderConfig, startIngestTask, stopIngestTask, testIngestTask, previewParse,
   SOURCE_TYPES, PARSE_FORMATS,
@@ -50,6 +50,7 @@ const showRender = ref(false)
 const showSourceDialog = ref(false)
 const showOutputDialog = ref(false)
 const showRuleDialog = ref(false)
+const editingSourceId = ref<string | null>(null)
 
 const tasks = ref<IngestTask[]>([])
 const taskSummary = ref<IngestSummary | null>(null)
@@ -92,7 +93,23 @@ function onIngestTab(key: string | number) {
   if (tab === 'tasks') loadTasks()
 }
 
-async function addSource() {
+function openCreateSource() {
+  editingSourceId.value = null
+  newSource.value = { name: '', type: 'FILE', format: 'AUTO', path: '', address: '', topic: '', env: 'local', readFrom: 'beginning', multiline: '', protocol: 'tcp', charset: 'utf-8', timezone: 'Asia/Shanghai', tags: '', frequency: 1, categoryId: '', groupId: '', enabled: true }
+  showSourceDialog.value = true
+}
+function openEditSource(source: LogSource) {
+  editingSourceId.value = source.id
+  newSource.value = {
+    name: source.name, type: source.type || 'FILE', format: source.format || 'AUTO',
+    path: source.path || '', address: source.address || '', topic: source.topic || '', env: source.env || 'local',
+    readFrom: source.readFrom || 'beginning', multiline: source.multiline || '', protocol: source.protocol || 'tcp',
+    charset: source.charset || 'utf-8', timezone: source.timezone || 'Asia/Shanghai', tags: (source.tags || []).join(','),
+    frequency: source.frequency || 1, categoryId: source.categoryId || '', groupId: source.groupId || '', enabled: source.enabled,
+  }
+  showSourceDialog.value = true
+}
+async function saveSource() {
   const source: Record<string, unknown> = {
     name: newSource.value.name, type: newSource.value.type, format: newSource.value.format,
     env: newSource.value.env, enabled: newSource.value.enabled, readFrom: newSource.value.readFrom,
@@ -105,12 +122,17 @@ async function addSource() {
   if (newSource.value.type === 'FILE') source.path = newSource.value.path || 'demo/sample.log'
   if (newSource.value.type === 'SOCKET' || newSource.value.type === 'SYSLOG') source.address = newSource.value.address || '0.0.0.0:5514'
   if (newSource.value.type === 'KAFKA') source.topic = newSource.value.topic || 'socp-raw'
-  await createSource(source)
-  newSource.value.name = ''
+  if (editingSourceId.value) await updateSource(editingSourceId.value, source)
+  else await createSource(source)
+  editingSourceId.value = null
   showSourceDialog.value = false
   await loadSources()
 }
-async function removeSource(id: string) { await deleteSource(id); await loadSources() }
+async function removeSource(id: string) {
+  if (!confirm('确认删除这个日志源？删除后需要重新配置才能恢复。')) return
+  await deleteSource(id)
+  await loadSources()
+}
 async function doRender() { renderText.value = await renderConfig(); showRender.value = true }
 function copyRender() { navigator.clipboard.writeText(renderText.value) }
 async function addOutput() {
@@ -119,7 +141,11 @@ async function addOutput() {
   showOutputDialog.value = false
   await loadOutputs()
 }
-async function removeOutput(id: string) { await deleteOutput(id); await loadOutputs() }
+async function removeOutput(id: string) {
+  if (!confirm('确认删除这个输出目标？')) return
+  await deleteOutput(id)
+  await loadOutputs()
+}
 async function addParseRule() {
   await createParseRule({
     name: newRule.value.name, format: newRule.value.format,
@@ -131,7 +157,11 @@ async function addParseRule() {
   newRule.value = { name: '', format: 'REGEX', pattern: '', sourceId: '', enabled: true, order: 10 }
   await loadParseRules()
 }
-async function removeParseRule(id: string) { await deleteParseRule(id); await loadParseRules() }
+async function removeParseRule(id: string) {
+  if (!confirm('确认删除这条解析规则？删除后新日志将不再使用它。')) return
+  await deleteParseRule(id)
+  await loadParseRules()
+}
 async function doPreview() {
   try { previewResult.value = await previewParse({ ruleId: previewRuleId.value || undefined, line: previewLine.value }) }
   catch (error) { previewResult.value = { matched: false, fields: {}, error: error instanceof Error ? error.message : String(error) } }
@@ -194,17 +224,17 @@ onMounted(async () => {
       </el-tab-pane>
 
       <el-tab-pane label="输入源" name="sources">
-        <div class="add-bar"><el-button type="primary" @click="showSourceDialog = true">+ 新增日志源</el-button><el-button @click="loadSources">刷新</el-button><el-button type="primary" plain @click="doRender">渲染 vector.toml</el-button><span class="hint">接入方式 + 完整参数；保存后渲染 vector.toml</span></div>
-        <el-dialog v-model="showSourceDialog" title="新增日志源" width="640px">
+        <div class="add-bar"><el-button type="primary" @click="openCreateSource">+ 新增日志源</el-button><el-button @click="loadSources">刷新</el-button><el-button type="primary" plain @click="doRender">渲染 vector.toml</el-button><span class="hint">接入方式 + 完整参数；保存后渲染 vector.toml</span></div>
+        <el-dialog v-model="showSourceDialog" :title="editingSourceId ? '编辑日志源' : '新增日志源'" width="640px">
           <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px"><el-input v-model="newSource.name" placeholder="名称，如 fw-syslog" /><el-select v-model="newSource.type" placeholder="接入方式"><el-option v-for="type in SOURCE_TYPES" :key="type" :label="type" :value="type" /></el-select><el-select v-model="newSource.format" placeholder="解析格式"><el-option v-for="format in PARSE_FORMATS" :key="format" :label="format" :value="format" /></el-select><el-select v-model="newSource.categoryId" placeholder="日志类别" clearable><el-option v-for="category in logCategories" :key="category.id" :label="`${category.code} ${category.name}`" :value="category.id" /></el-select><el-input v-model="newSource.env" placeholder="环境标签" /></div>
           <div v-if="newSource.type === 'FILE'" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:10px"><el-input v-model="newSource.path" placeholder="文件路径/glob，如 /var/log/auth.log" /><el-select v-model="newSource.readFrom"><el-option label="beginning 全量回放" value="beginning" /><el-option label="end 只收新增" value="end" /></el-select><el-input v-model.number="newSource.frequency" placeholder="轮询间隔(秒)" /></div>
           <div v-else-if="newSource.type === 'SOCKET' || newSource.type === 'SYSLOG'" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:10px"><el-input v-model="newSource.address" placeholder="监听 host:port，如 0.0.0.0:514" /><el-select v-model="newSource.protocol"><el-option label="UDP" value="udp" /><el-option label="TCP" value="tcp" /><el-option label="TLS" value="tls" /></el-select></div>
           <div v-else-if="newSource.type === 'KAFKA'" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:10px"><el-input v-model="newSource.topic" placeholder="主题，如 socp-raw" /><el-input v-model="newSource.groupId" placeholder="消费组，如 search-group" /></div>
           <div v-else-if="['WINDOWS_EVENT', 'AGENT', 'HTTP_API', 'DATABASE', 'CLOUD'].includes(newSource.type)" style="margin-top:10px"><el-alert type="info" :closable="false" :title="`${newSource.type} 由对应采集器负责（Winlogbeat/Agent/Webhook/DB CDC/云 SDK），采集器输出统一走 NDJSON → SEARCH ingest`" /></div>
           <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:10px"><el-select v-model="newSource.charset" placeholder="字符集"><el-option label="UTF-8" value="utf-8" /><el-option label="GBK" value="gbk" /><el-option label="ISO-8859-1" value="iso-8859-1" /></el-select><el-select v-model="newSource.timezone" placeholder="时区"><el-option label="Asia/Shanghai" value="Asia/Shanghai" /><el-option label="UTC" value="UTC" /><el-option label="Asia/Tokyo" value="Asia/Tokyo" /></el-select><el-input v-model="newSource.tags" placeholder="标签（逗号分隔），如 app=nginx,team=infra" /></div>
-          <template #footer><el-switch v-model="newSource.enabled" active-text="启用" style="margin-right:12px" /><el-button @click="showSourceDialog = false">取消</el-button><el-button type="success" @click="addSource">新增日志源</el-button></template>
+          <template #footer><el-switch v-model="newSource.enabled" active-text="启用" style="margin-right:12px" /><el-button @click="showSourceDialog = false">取消</el-button><el-button type="success" @click="saveSource">{{ editingSourceId ? '保存修改' : '新增日志源' }}</el-button></template>
         </el-dialog>
-        <el-card shadow="never"><el-table :data="sources" size="small" border><el-table-column prop="name" label="名称" width="130" show-overflow-tooltip /><el-table-column prop="type" label="类型" width="110" /><el-table-column prop="format" label="格式" width="80" /><el-table-column label="目标" min-width="160" show-overflow-tooltip><template #default="{ row }">{{ row.path || row.address || row.topic || '-' }}</template></el-table-column><el-table-column label="协议" width="70"><template #default="{ row }">{{ row.protocol || '-' }}</template></el-table-column><el-table-column prop="env" label="环境" width="65" /><el-table-column label="启用" width="65"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? '是' : '否' }}</el-tag></template></el-table-column><el-table-column label="操作" width="70"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeSource(row.id)">删除</el-button></template></el-table-column></el-table></el-card>
+        <el-card shadow="never"><el-table :data="sources" size="small" border><el-table-column prop="name" label="名称" width="130" show-overflow-tooltip /><el-table-column prop="type" label="类型" width="110" /><el-table-column prop="format" label="格式" width="80" /><el-table-column label="目标" min-width="160" show-overflow-tooltip><template #default="{ row }">{{ row.path || row.address || row.topic || '-' }}</template></el-table-column><el-table-column label="协议" width="70"><template #default="{ row }">{{ row.protocol || '-' }}</template></el-table-column><el-table-column prop="env" label="环境" width="65" /><el-table-column label="启用" width="65"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? '是' : '否' }}</el-tag></template></el-table-column><el-table-column label="操作" width="120"><template #default="{ row }"><el-button link type="primary" size="small" @click="openEditSource(row as LogSource)">编辑</el-button><el-button link type="danger" size="small" @click="removeSource(row.id)">删除</el-button></template></el-table-column></el-table></el-card>
       </el-tab-pane>
 
       <el-tab-pane label="输出配置" name="outputs">

@@ -80,6 +80,7 @@ async function addIoc() {
 }
 
 async function removeIoc(id: string) {
+  if (!confirm('确认删除这条威胁情报？')) return
   await threatIntelApi.remove(id)
   await loadTi()
 }

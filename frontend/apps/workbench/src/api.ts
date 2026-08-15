@@ -222,6 +222,7 @@ export interface ParseRule {
 export interface SinkTarget { id: string; name: string; type: string; uri: string; authToken: string | null; enabled: boolean }
 export const listSources = () => get<LogSource[]>('/search-config/api/v1/sources')
 export const createSource = (s: Record<string, unknown>) => post<LogSource>('/search-config/api/v1/sources', s)
+export const updateSource = (id: string, s: Record<string, unknown>) => put<{ source: LogSource }>(`/search-config/api/v1/sources/${encodeURIComponent(id)}`, s)
 export const deleteSource = (id: string) => del(`/search-config/api/v1/sources/${encodeURIComponent(id)}`)
 export const renderConfig = () => post<string>('/search-config/api/v1/render')
 export const listParseRules = () => get<ParseRule[]>('/search-config/api/v1/parse-rules')
@@ -461,6 +462,8 @@ export const exportCases = () =>
   downloadFile('/incident-web/api/v1/incidents/export', 'cases.json')
 export const exportSearch = (q: string, format = 'json') =>
   downloadFile(withQuery('/search-config/api/v1/search/export', { q, format }), `search.${format}`)
+export const downloadArchivedReport = (key: string) =>
+  get<{ key: string; url: string }>(withQuery('/report-web/api/v1/reports/archive/download', { key }))
 
 export interface GasAlert {
   id: string; timestamp: string; ruleId: string; ruleName: string

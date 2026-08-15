@@ -48,7 +48,11 @@ async function addPlaybook() {
   await loadPlaybooks()
 }
 
-async function removePlaybook(id: string) { await deletePlaybook(id); await loadPlaybooks() }
+async function removePlaybook(id: string) {
+  if (!confirm('确认删除这个响应剧本？历史执行记录不会恢复。')) return
+  await deletePlaybook(id)
+  await loadPlaybooks()
+}
 async function toggle(id: string) { await togglePlaybook(id); await loadPlaybooks() }
 
 onMounted(loadPlaybooks)

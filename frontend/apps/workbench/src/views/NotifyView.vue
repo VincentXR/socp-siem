@@ -47,7 +47,11 @@ async function addChannel() {
   await loadNotify()
 }
 
-async function removeChannel(id: string) { await deleteChannel(id); await loadNotify() }
+async function removeChannel(id: string) {
+  if (!confirm('确认删除这个通知渠道？')) return
+  await deleteChannel(id)
+  await loadNotify()
+}
 async function toggle(id: string) { await toggleChannel(id); await loadNotify() }
 
 onMounted(loadNotify)

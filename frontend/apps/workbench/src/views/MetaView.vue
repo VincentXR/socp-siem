@@ -53,21 +53,33 @@ async function addDsType() {
   showDsDialog.value = false
   await loadMeta()
 }
-async function removeDsType(id: string) { await deleteDataSourceType(id); await loadMeta() }
+async function removeDsType(id: string) {
+  if (!confirm('确认删除这个数据源分类？')) return
+  await deleteDataSourceType(id)
+  await loadMeta()
+}
 async function addCategory() {
   await createCategory(newCategory.value)
   newCategory.value = { code: '', name: '', description: '', defaultSeverity: 'MEDIUM', enabled: true }
   showCatDialog.value = false
   await loadMeta()
 }
-async function removeCategory(id: string) { await deleteCategory(id); await loadMeta() }
+async function removeCategory(id: string) {
+  if (!confirm('确认删除这个日志类别？')) return
+  await deleteCategory(id)
+  await loadMeta()
+}
 async function addField() {
   await createField(newField.value)
   newField.value = { fieldName: '', fieldLabel: '', fieldType: 'string', source: 'custom', searchable: true, aggregatable: true, stored: true, description: '' }
   showFieldDialog.value = false
   await loadMeta()
 }
-async function removeField(id: string) { await deleteField(id); await loadMeta() }
+async function removeField(id: string) {
+  if (!confirm('确认删除这个字段定义？')) return
+  await deleteField(id)
+  await loadMeta()
+}
 
 onMounted(loadMeta)
 </script>

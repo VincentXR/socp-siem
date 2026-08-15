@@ -32,7 +32,11 @@ async function addRefSet() {
   dialogVisible.value = false
   await loadRefSets()
 }
-async function removeRefSet(id: string) { await deleteRefSet(id); await loadRefSets() }
+async function removeRefSet(id: string) {
+  if (!confirm('确认删除这个参考数据集？其中的条目也会一并删除。')) return
+  await deleteRefSet(id)
+  await loadRefSets()
+}
 async function addEntry(id: string) {
   const value = (entryText.value[id] || '').trim()
   if (!value) return

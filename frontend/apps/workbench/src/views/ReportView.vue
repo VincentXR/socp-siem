@@ -16,7 +16,7 @@ import type { ECharts } from 'echarts/core'
 import ElMessage from 'element-plus/es/components/message/index.mjs'
 import { loadEcharts } from '../lib/echarts'
 import { useRequest } from '../composables/useRequest'
-import { archiveReport, dailyReport, listArchive, trend7d, type ReportSummary } from '../api'
+import { archiveReport, dailyReport, downloadArchivedReport, listArchive, trend7d, type ReportSummary } from '../api'
 
 const props = defineProps<{ theme: 'light' | 'dark' }>()
 
@@ -95,6 +95,16 @@ async function doArchive() {
   }
 }
 
+async function downloadArchive(key: string) {
+  try {
+    const result = await downloadArchivedReport(key)
+    if (!result.url) throw new Error('归档下载地址为空')
+    window.open(result.url, '_blank', 'noopener,noreferrer')
+  } catch (error) {
+    ElMessage.error((error as Error).message || '归档下载失败')
+  }
+}
+
 function onResize() {
   chartBar.value?.resize()
   chartLine.value?.resize()
@@ -141,6 +151,7 @@ onUnmounted(() => {
       <el-table :data="archiveInfo.objects" size="small" border>
         <el-table-column prop="key" label="对象 Key" min-width="240" show-overflow-tooltip />
         <el-table-column prop="size" label="大小" width="120"><template #default="{ row }">{{ (row.size / 1024).toFixed(1) }} KB</template></el-table-column>
+        <el-table-column label="操作" width="80"><template #default="{ row }"><el-button link type="primary" size="small" @click="downloadArchive(row.key)">下载</el-button></template></el-table-column>
       </el-table>
     </el-card>
   </div>

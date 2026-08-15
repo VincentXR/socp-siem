@@ -127,6 +127,7 @@ async function doCreateWl() {
   watchlists.value = await listWatchlists()
 }
 async function doDeleteWl(name: string) {
+  if (!confirm(`确认删除观察名单“${name}”？其中的值也会一并删除。`)) return
   await deleteWatchlist(name)
   watchlists.value = await listWatchlists()
 }

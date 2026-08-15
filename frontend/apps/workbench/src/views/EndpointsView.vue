@@ -38,6 +38,7 @@ async function loadEndpoints() {
 }
 
 async function removeEndpoint(id: string) {
+  if (!confirm('确认注销这个端点？注销后需要 Agent 重新注册。')) return
   await endpointApi.remove(id)
   await loadEndpoints()
 }

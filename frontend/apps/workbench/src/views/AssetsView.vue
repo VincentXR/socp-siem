@@ -48,6 +48,7 @@ async function loadAssets() {
 }
 
 async function removeAsset(id: string) {
+  if (!confirm('确认删除这个资产？删除后将无法恢复。')) return
   await assetApi.remove(id)
   await loadAssets()
 }
