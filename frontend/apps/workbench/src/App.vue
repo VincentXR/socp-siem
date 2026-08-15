@@ -11,7 +11,6 @@ const theme = ref<'light' | 'dark'>('light')
 setChartTheme(theme.value)
 
 import LoginView from './LoginView.vue'
-import AnimatedNumber from './AnimatedNumber.vue'
 import AppShell from './components/AppShell.vue'
 import OverviewView from './views/OverviewView.vue'
 import AlarmsView from './views/AlarmsView.vue'
@@ -28,7 +27,6 @@ import {
 const AiAssistantView = defineAsyncComponent(() => import('./views/AiAssistantView.vue'))
 const AssetsView = defineAsyncComponent(() => import('./views/AssetsView.vue'))
 const EndpointsView = defineAsyncComponent(() => import('./views/EndpointsView.vue'))
-const HealthView = defineAsyncComponent(() => import('./views/HealthView.vue'))
 const SearchView = defineAsyncComponent(() => import('./views/SearchView.vue'))
 const SoarView = defineAsyncComponent(() => import('./views/SoarView.vue'))
 const NotifyView = defineAsyncComponent(() => import('./views/NotifyView.vue'))
@@ -240,7 +238,6 @@ function onTopSearch() {
   onMenuChange('search')
 }
 
-// ---------- 系统健康看板 ----------
 // ---------- 生命周期 ----------
 function onMenuChange(key: string) {
   activeMenu.value = key
@@ -358,7 +355,6 @@ function decodeJwtPayload(t: string): Record<string, any> | null {
         <RefsetView v-else-if="activeMenu === 'refset'" />
 
         <ComplianceView v-else-if="activeMenu === 'compliance'" />
-        <HealthView v-else-if="activeMenu === 'health'" />
       </main>
   </AppShell>
 </template>

@@ -54,11 +54,10 @@ export const MENU_GROUPS: MenuGroup[] = [
     ],
   },
   {
-    group: '系统',
+    group: '分析与助手',
     items: [
       { key: 'report', label: '报表统计', icon: 'report' },
       { key: 'ai', label: 'AI 助手', icon: 'ai' },
-      { key: 'health', label: '系统健康', icon: 'health' },
     ],
   },
 ]
@@ -97,5 +96,4 @@ export const MENU_ICONS: Record<string, string> = {
   case: '<path d="M4 8h16v12H4z"/><path d="M8 8V5h8v3M4 12h16M10 15h4"/>',
   refset: '<path d="M5 3h14a1 1 0 0 1 1 1v15l-3-2-3 2-3-2-3 2-3-2V4a1 1 0 0 1 1-1Z"/>',
   compliance: '<path d="M6 4h12v16l-6-3-6 3V4Z"/><path d="m9 11 2 2 4-4"/>',
-  health: '<path d="M12 21C7 16.5 3 13 3 9a5 5 0 0 1 9-3 5 5 0 0 1 9 3c0 4-4 7.5-9 12Z"/><path d="M8.5 10h2l1.5-3 2 5 1.5-2h2"/>',
 }

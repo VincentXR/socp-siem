@@ -303,20 +303,7 @@ body {
 .ai-result-meta { color: var(--ns-text-3); font-size: 12px; margin-top: var(--ns-space-2) !important; }
 .ai-hint { color: var(--ns-text-3); font-size: 12px; padding: var(--ns-space-4) 0; text-align: center; }
 
-.health-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--ns-space-4); margin-bottom: var(--ns-space-4); }
 .page-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--ns-space-4); margin-bottom: var(--ns-space-4); }
-.health-card { margin-bottom: var(--ns-space-4); }
-.health-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: var(--ns-space-3); }
-.health-service { display: flex; flex-direction: column; gap: 6px; padding: var(--ns-space-3); border: 1px solid var(--ns-border); border-radius: var(--ns-radius-md); background: var(--ns-surface); }
-.health-service-name { color: var(--ns-text); font-size: 13px; font-weight: 600; }
-.health-service-path { color: var(--ns-text-3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.health-service-status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; }
-.health-service-status i { width: 8px; height: 8px; border-radius: 50%; }
-.health-service-status.is-up { color: var(--ns-success); }
-.health-service-status.is-up i { background: var(--ns-success); }
-.health-service-status.is-down { color: var(--ns-danger); }
-.health-service-status.is-down i { background: var(--ns-danger); }
-.health-ops-copy { color: var(--ns-text-2); font-size: 12px; line-height: 1.9; }
 .search-toolbar { margin-bottom: var(--ns-space-4); }
 .search-query-row { display: flex; align-items: center; gap: var(--ns-space-2); }
 .search-query-row .el-input { flex: 1; min-width: 0; }
@@ -695,7 +682,6 @@ body {
   .alarm-card > .el-button { margin-left: auto; }
   .alarm-table { height: calc(100vh - 390px) !important; }
   .ai-ask-row { flex-direction: column; }
-  .health-kpis { grid-template-columns: repeat(2, 1fr); gap: var(--ns-space-3); }
   .page-metrics { grid-template-columns: repeat(2, 1fr); gap: var(--ns-space-3); }
   .search-query-row { flex-direction: column; align-items: stretch; }
   .search-query-row .el-button { width: 100%; }
