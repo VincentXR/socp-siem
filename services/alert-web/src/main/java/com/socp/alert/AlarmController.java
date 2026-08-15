@@ -61,10 +61,13 @@ public class AlarmController {
     public Object list(
             @RequestParam(required = false) Severity severity,
             @RequestParam(required = false) String rule,
+            @RequestParam(required = false) String status,
             @RequestParam(required = false) String q,
+            @RequestParam(defaultValue = "occurredAt") String sort,
+            @RequestParam(defaultValue = "descending") String order,
             @RequestParam(required = false) Integer page,
             @RequestParam(required = false) Integer size) {
-        List<Alarm> all = service.query(severity, rule, q);
+        List<Alarm> all = service.query(severity, rule, status, q, sort, order);
         if (page == null && size == null) {
             return ApiResult.ok(all);
         }

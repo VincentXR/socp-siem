@@ -27,10 +27,11 @@ public interface AlarmRepository extends JpaRepository<Alarm, String> {
            where a.tenantId = :tenant
              and (:severity is null or a.severity = :severity)
              and (:rule is null or a.ruleId = :rule)
+             and (:status is null or a.status = :status)
              and (:q is null or (a.entity like %:q% or a.ruleName like %:q% or a.message like %:q%))
            order by a.occurredAt desc
            """)
-    List<Alarm> query(String tenant, Severity severity, String rule, String q);
+    List<Alarm> query(String tenant, Severity severity, String rule, String status, String q);
 
     /** 同实体近期告警数，供威胁评分的"行为频次"分项使用 */
     @Query("select count(a) from Alarm a where a.entity = :entity and a.occurredAt >= :since")

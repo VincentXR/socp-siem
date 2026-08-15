@@ -73,18 +73,18 @@ onMounted(search)
       <el-card shadow="never" class="search-result-card">
         <template #header>命中 {{ result.total }} 条事件</template>
         <el-table :data="result.events" size="small" max-height="420">
-          <el-table-column label="时间" width="150"><template #default="{ row }">{{ row.timestamp.slice(0, 19).replace('T', ' ') }}</template></el-table-column>
-          <el-table-column prop="source" label="来源" width="90" />
-          <el-table-column prop="host" label="主机" width="90" />
-          <el-table-column label="级别" width="80"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
-          <el-table-column prop="msg" label="消息" min-width="240" show-overflow-tooltip />
+          <el-table-column prop="timestamp" label="时间" width="150" sortable><template #default="{ row }">{{ row.timestamp.slice(0, 19).replace('T', ' ') }}</template></el-table-column>
+          <el-table-column prop="source" label="来源" width="90" sortable />
+          <el-table-column prop="host" label="主机" width="90" sortable />
+          <el-table-column prop="severity" label="级别" width="80" sortable><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
+          <el-table-column prop="msg" label="消息" min-width="240" sortable show-overflow-tooltip />
         </el-table>
       </el-card>
       <el-card v-if="result.stat" shadow="never">
         <template #header>{{ result.stat.type === 'timechart' ? '时间分布（按天）' : `统计（${result.stat.type === 'top' ? 'Top' : '分组计数'}）` }}</template>
         <el-table :data="result.stat.rows" size="small">
-          <el-table-column prop="key" label="Key" />
-          <el-table-column label="条数" width="220">
+          <el-table-column prop="key" label="Key" sortable />
+          <el-table-column prop="count" label="条数" width="220" sortable>
             <template #default="{ row }">
               <div class="search-stat-row"><span>{{ row.count }}</span><span class="search-stat-track"><i :style="{ width: `${Math.min(100, (row.count / maxStatCount) * 100)}%` }" /></span></div>
             </template>

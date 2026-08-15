@@ -13,6 +13,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -187,9 +188,42 @@ public class AlarmService {
     }
 
     public List<Alarm> query(Severity severity, String rule, String q) {
+        return query(severity, rule, null, q, "occurredAt", "descending");
+    }
+
+    public List<Alarm> query(Severity severity, String rule, String status, String q,
+                             String sort, String order) {
         // 租户隔离：无上下文时按 default（机机约定），绝不 findAll 跨租户
         String tenant = TenantContext.get() == null ? "default" : TenantContext.get();
-        return repo.query(tenant, severity, rule, q);
+        List<Alarm> alarms = new ArrayList<>(repo.query(tenant, severity, rule, status, q));
+        Comparator<Alarm> comparator = comparatorFor(sort);
+        if ("descending".equalsIgnoreCase(order) || "desc".equalsIgnoreCase(order)) {
+            comparator = comparator.reversed();
+        }
+        alarms.sort(comparator.thenComparing(Alarm::getId, Comparator.nullsLast(String::compareTo)));
+        return alarms;
+    }
+
+    private static Comparator<Alarm> comparatorFor(String sort) {
+        return switch (sort == null ? "occurredAt" : sort) {
+            case "severity" -> Comparator.comparingInt(a -> severityRank(a.getSeverity()));
+            case "ruleName" -> Comparator.comparing(Alarm::getRuleName, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER));
+            case "entity" -> Comparator.comparing(Alarm::getEntity, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER));
+            case "status" -> Comparator.comparing(Alarm::getStatus, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER));
+            case "riskScore" -> Comparator.comparing(Alarm::getRiskScore, Comparator.nullsLast(Integer::compareTo));
+            default -> Comparator.comparing(Alarm::getOccurredAt, Comparator.nullsLast(java.time.Instant::compareTo));
+        };
+    }
+
+    private static int severityRank(Severity severity) {
+        return switch (severity) {
+            case CRITICAL -> 5;
+            case HIGH -> 4;
+            case MEDIUM -> 3;
+            case LOW -> 2;
+            case INFO -> 1;
+            case null -> 0;
+        };
     }
 
     public Alarm get(String id) {

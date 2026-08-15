@@ -192,8 +192,12 @@ async function del<T>(path: string, options?: ApiRequestOptions): Promise<T> {
 export const listAlarms = (q?: string, options?: ApiRequestOptions) => get<Alarm[]>(withQuery('/alert-web/api/alarms', { q }), options)
 /** 分页查询告警（后端真分页：page 从 1 起，size 默认 20） */
 export interface AlarmPage { items: Alarm[]; total: number; page: number; size: number }
-export const listAlarmsPaged = (page: number, size: number, q?: string, severity?: string, options?: ApiRequestOptions) =>
-  get<AlarmPage>(withQuery('/alert-web/api/alarms', { page, size, q, severity }), options)
+export type AlarmSortField = 'occurredAt' | 'severity' | 'ruleName' | 'entity' | 'status' | 'riskScore'
+export type AlarmSortOrder = 'ascending' | 'descending'
+export const listAlarmsPaged = (
+  page: number, size: number, q?: string, severity?: string, status?: string, rule?: string,
+  sort: AlarmSortField = 'occurredAt', order: AlarmSortOrder = 'descending', options?: ApiRequestOptions,
+) => get<AlarmPage>(withQuery('/alert-web/api/alarms', { page, size, q, severity, status, rule, sort, order }), options)
 export const createAlarm = (a: Partial<Alarm>) => post<Alarm>('/alert-web/api/alarms', a)
 export interface Disposition {
   status: string; assignee: string | null

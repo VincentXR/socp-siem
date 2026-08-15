@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/card/style/css.mjs'
+import 'element-plus/es/components/input/style/css.mjs'
 import 'element-plus/es/components/table/style/css.mjs'
 import 'element-plus/es/components/tag/style/css.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElCard from 'element-plus/es/components/card/index.mjs'
+import ElInput from 'element-plus/es/components/input/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { computed, onMounted, ref } from 'vue'
@@ -18,7 +20,14 @@ const endpointStat = ref<{ total: number; online: number; byType: Record<string,
 const page = ref(1)
 const size = ref(10)
 const loading = ref(false)
-const endpointsPaged = computed(() => endpoints.value.slice((page.value - 1) * size.value, page.value * size.value))
+const keyword = ref('')
+const endpointsFiltered = computed(() => {
+  const q = keyword.value.trim().toLowerCase()
+  if (!q) return endpoints.value
+  return endpoints.value.filter(endpoint => [endpoint.hostname, endpoint.ip, endpoint.os, endpoint.agentVersion, endpoint.status]
+    .some(value => String(value ?? '').toLowerCase().includes(q)))
+})
+const endpointsPaged = computed(() => endpointsFiltered.value.slice((page.value - 1) * size.value, page.value * size.value))
 
 async function loadEndpoints() {
   if (loading.value) return
@@ -57,19 +66,23 @@ onMounted(loadEndpoints)
     </div>
 
     <el-card shadow="never">
+      <div class="list-toolbar">
+        <el-input v-model="keyword" placeholder="搜索主机名 / IP / 系统" clearable @input="page = 1" />
+        <span class="toolbar-count">共 {{ endpointsFiltered.length }} 条</span>
+      </div>
       <el-table :data="endpointsPaged" size="small">
-        <el-table-column prop="hostname" label="主机名" width="140" />
-        <el-table-column prop="ip" label="IP" width="120" />
-        <el-table-column prop="os" label="系统" min-width="140" />
-        <el-table-column prop="agentVersion" label="Agent 版本" width="120" />
-        <el-table-column prop="status" label="状态" width="80">
+        <el-table-column prop="hostname" label="主机名" width="140" sortable />
+        <el-table-column prop="ip" label="IP" width="120" sortable />
+        <el-table-column prop="os" label="系统" min-width="140" sortable />
+        <el-table-column prop="agentVersion" label="Agent 版本" width="120" sortable />
+        <el-table-column prop="status" label="状态" width="80" sortable>
           <template #default="{ row }"><el-tag :type="row.status === 'ONLINE' ? 'success' : 'info'" size="small">{{ row.status }}</el-tag></template>
         </el-table-column>
         <el-table-column label="操作" width="70">
           <template #default="{ row }"><el-button link type="danger" size="small" @click="removeEndpoint(row.id)">注销</el-button></template>
         </el-table-column>
       </el-table>
-      <PagerBar v-model:current-page="page" v-model:page-size="size" :total="endpoints.length" />
+      <PagerBar v-model:current-page="page" v-model:page-size="size" :total="endpointsFiltered.length" />
     </el-card>
   </div>
 </template>

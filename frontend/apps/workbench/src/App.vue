@@ -22,7 +22,7 @@ import {
   alarmStats,
   login as apiLogin, setToken, clearToken, setUnauthorizedHandler,
   exportAlarms,
-  type AlarmPage,
+  type AlarmPage, type AlarmSortField, type AlarmSortOrder,
 } from './api'
 
 const AiAssistantView = defineAsyncComponent(() => import('./views/AiAssistantView.vue'))
@@ -203,11 +203,15 @@ async function loadOverviewStats() {
 // ---------- 告警（后端分页查询） ----------
 const alarmSeverity = ref('')
 const alarmKeyword = ref('')
-const emptyAlarmPage: AlarmPage = { items: [], total: 0, page: 1, size: 20 }
+const alarmStatus = ref('')
+const alarmRule = ref('')
+const alarmSort = ref<AlarmSortField>('occurredAt')
+const alarmOrder = ref<AlarmSortOrder>('descending')
+const emptyAlarmPage: AlarmPage = { items: [], total: 0, page: 1, size: 10 }
 const alarmPageRequest = useRequest<AlarmPage>(emptyAlarmPage)
 const alarmPageData = computed(() => alarmPageRequest.data.value ?? emptyAlarmPage)
 const alarmPageNum = ref(1)
-const alarmPageSize = ref(20)
+const alarmPageSize = ref(10)
 /** 当前页告警（分页 API 结果） */
 const filteredAlarms = computed(() => alarmPageData.value.items)
 async function loadAlarmPage() {
@@ -215,9 +219,19 @@ async function loadAlarmPage() {
     alarmPageNum.value, alarmPageSize.value,
     alarmKeyword.value.trim() || undefined,
     alarmSeverity.value || undefined,
+    alarmStatus.value || undefined,
+    alarmRule.value.trim() || undefined,
+    alarmSort.value,
+    alarmOrder.value,
     { signal }))
 }
 function onAlarmSearch() { alarmPageNum.value = 1; void loadAlarmPage() }
+function onAlarmSortChange(field: AlarmSortField, order: AlarmSortOrder) {
+  alarmSort.value = field
+  alarmOrder.value = order
+  alarmPageNum.value = 1
+  void loadAlarmPage()
+}
 
 /** 顶栏全局搜索：回车后跳到日志检索页并执行 */
 const topSearch = ref('')
@@ -306,9 +320,9 @@ function decodeJwtPayload(t: string): Record<string, any> | null {
 
         <!-- 告警查询 -->
         <AlarmsView v-else-if="activeMenu === 'alarms'"
-          v-model:keyword="alarmKeyword" v-model:severity="alarmSeverity" v-model:page-num="alarmPageNum"
+          v-model:keyword="alarmKeyword" v-model:severity="alarmSeverity" v-model:status="alarmStatus" v-model:rule="alarmRule" v-model:page-num="alarmPageNum"
           :filtered-alarms="filteredAlarms" :alarm-page-data="alarmPageData" :alarm-page-size="alarmPageSize"
-          :on-search="onAlarmSearch" :load-page="loadAlarmPage"
+          :on-search="onAlarmSearch" :load-page="loadAlarmPage" :on-sort-change="onAlarmSortChange"
           :export-csv="() => exportAlarms('csv')" :export-json="() => exportAlarms('json')"
           :go-case="() => onMenuChange('case')" />
 

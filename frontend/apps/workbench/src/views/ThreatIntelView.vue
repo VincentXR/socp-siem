@@ -30,8 +30,15 @@ const showIocDialog = ref(false)
 const newIoc = ref({ type: 'ip', value: '', severity: 'HIGH', source: 'manual', description: '', tags: '' })
 const tiMatchValue = ref('')
 const tiMatchResult = ref<{ value: string; matched: boolean; ioc?: Ioc } | null>(null)
+const iocKeyword = ref('')
 
-const iocsPaged = computed(() => iocs.value.slice((iocPage.value - 1) * iocSize.value, iocPage.value * iocSize.value))
+const iocsFiltered = computed(() => {
+  const q = iocKeyword.value.trim().toLowerCase()
+  if (!q) return iocs.value
+  return iocs.value.filter(ioc => [ioc.type, ioc.value, ioc.severity, ioc.source, ioc.description]
+    .some(value => String(value ?? '').toLowerCase().includes(q)))
+})
+const iocsPaged = computed(() => iocsFiltered.value.slice((iocPage.value - 1) * iocSize.value, iocPage.value * iocSize.value))
 
 function openIocDialog() {
   newIoc.value = { type: 'ip', value: '', severity: 'HIGH', source: 'manual', description: '', tags: '' }
@@ -108,15 +115,19 @@ onMounted(loadTi)
       <template #footer><el-button @click="showIocDialog = false">取消</el-button><el-button type="success" @click="addIoc">新增情报</el-button></template>
     </el-dialog>
     <el-card shadow="never">
+      <div class="list-toolbar">
+        <el-input v-model="iocKeyword" placeholder="搜索情报值 / 来源 / 描述" clearable @input="iocPage = 1" />
+        <span class="toolbar-count">共 {{ iocsFiltered.length }} 条</span>
+      </div>
       <el-table :data="iocsPaged" size="small">
-        <el-table-column prop="type" label="类型" width="90" />
-        <el-table-column prop="value" label="值" min-width="160" />
-        <el-table-column label="严重度" width="90"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
-        <el-table-column prop="source" label="来源" width="100" />
-        <el-table-column prop="description" label="描述" min-width="160" show-overflow-tooltip />
+        <el-table-column prop="type" label="类型" width="90" sortable />
+        <el-table-column prop="value" label="值" min-width="160" sortable />
+        <el-table-column prop="severity" label="严重度" width="90" sortable><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
+        <el-table-column prop="source" label="来源" width="100" sortable />
+        <el-table-column prop="description" label="描述" min-width="160" sortable show-overflow-tooltip />
         <el-table-column label="操作" width="80"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeIoc(row.id)">删除</el-button></template></el-table-column>
       </el-table>
-      <PagerBar v-model:current-page="iocPage" v-model:page-size="iocSize" :total="iocs.length" />
+      <PagerBar v-model:current-page="iocPage" v-model:page-size="iocSize" :total="iocsFiltered.length" />
     </el-card>
   </div>
 </template>

@@ -4,6 +4,7 @@ import 'element-plus/es/components/card/style/css.mjs'
 import 'element-plus/es/components/descriptions/style/css.mjs'
 import 'element-plus/es/components/divider/style/css.mjs'
 import 'element-plus/es/components/drawer/style/css.mjs'
+import 'element-plus/es/components/input/style/css.mjs'
 import 'element-plus/es/components/select/style/css.mjs'
 import 'element-plus/es/components/table/style/css.mjs'
 import 'element-plus/es/components/tag/style/css.mjs'
@@ -13,6 +14,7 @@ import ElCard from 'element-plus/es/components/card/index.mjs'
 import { ElDescriptions, ElDescriptionsItem } from 'element-plus/es/components/descriptions/index.mjs'
 import ElDivider from 'element-plus/es/components/divider/index.mjs'
 import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
+import ElInput from 'element-plus/es/components/input/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
@@ -32,7 +34,17 @@ const newStatus = ref('')
 const page = ref(1)
 const size = ref(10)
 const loading = ref(false)
-const casesPaged = computed(() => cases.value.slice((page.value - 1) * size.value, page.value * size.value))
+const keyword = ref('')
+const statusFilter = ref('')
+const casesFiltered = computed(() => {
+  const q = keyword.value.trim().toLowerCase()
+  return cases.value.filter(item => {
+    const matchesText = !q || [item.id, item.title, item.entity, item.severity, item.status]
+      .some(value => String(value ?? '').toLowerCase().includes(q))
+    return matchesText && (!statusFilter.value || item.status === statusFilter.value)
+  })
+})
+const casesPaged = computed(() => casesFiltered.value.slice((page.value - 1) * size.value, page.value * size.value))
 
 async function loadCases() {
   if (loading.value) return
@@ -75,16 +87,23 @@ onMounted(loadCases)
     </div>
 
     <el-card shadow="never">
+      <div class="list-toolbar">
+        <el-input v-model="keyword" placeholder="搜索案件 ID / 标题 / 实体" clearable @input="page = 1" />
+        <el-select v-model="statusFilter" placeholder="全部状态" clearable @change="page = 1">
+          <el-option v-for="status in ['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']" :key="status" :label="status" :value="status" />
+        </el-select>
+        <span class="toolbar-count">共 {{ casesFiltered.length }} 条</span>
+      </div>
       <el-table :data="casesPaged" size="small">
-        <el-table-column prop="id" label="案件 ID" width="180" />
-        <el-table-column prop="title" label="标题" min-width="180" />
-        <el-table-column prop="entity" label="实体" width="130" />
-        <el-table-column label="级别" width="90"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
-        <el-table-column label="状态" width="120"><template #default="{ row }"><el-tag :type="row.status === 'OPEN' ? 'danger' : row.status === 'RESOLVED' || row.status === 'CLOSED' ? 'success' : 'warning'" size="small">{{ row.status }}</el-tag></template></el-table-column>
-        <el-table-column prop="alarmIds.length" label="关联告警" width="90" />
+        <el-table-column prop="id" label="案件 ID" width="180" sortable />
+        <el-table-column prop="title" label="标题" min-width="180" sortable />
+        <el-table-column prop="entity" label="实体" width="130" sortable />
+        <el-table-column prop="severity" label="级别" width="90" sortable><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
+        <el-table-column prop="status" label="状态" width="120" sortable><template #default="{ row }"><el-tag :type="row.status === 'OPEN' ? 'danger' : row.status === 'RESOLVED' || row.status === 'CLOSED' ? 'success' : 'warning'" size="small">{{ row.status }}</el-tag></template></el-table-column>
+        <el-table-column prop="alarmCount" label="关联告警" width="90" sortable><template #default="{ row }">{{ row.alarmIds.length }}</template></el-table-column>
         <el-table-column label="操作" width="90"><template #default="{ row }"><el-button link type="primary" size="small" @click="openCaseRow(row)">详情/时间线</el-button></template></el-table-column>
       </el-table>
-      <PagerBar v-model:current-page="page" v-model:page-size="size" :total="cases.length" />
+      <PagerBar v-model:current-page="page" v-model:page-size="size" :total="casesFiltered.length" />
     </el-card>
 
     <el-drawer v-model="drawerVisible" :title="`案件 · ${detail?.title ?? ''}`" size="520px">
