@@ -29,7 +29,6 @@ const tiStat = ref<{ total?: number; byType?: Record<string, number> }>({})
 const iocType = ref('')
 const showIocDialog = ref(false)
 const newIoc = ref({ type: 'ip', value: '', severity: 'HIGH', source: 'manual', description: '', tags: '' })
-const tiMatchValue = ref('')
 const tiMatchResult = ref<{ value: string; matched: boolean; ioc?: Ioc } | null>(null)
 const iocList = useResourceList<Ioc>({
   searchFields: ioc => [ioc.type, ioc.value, ioc.severity, ioc.source, ioc.description],
@@ -86,9 +85,10 @@ async function removeIoc(id: string) {
 }
 
 async function doTiMatch() {
-  if (!tiMatchValue.value.trim()) return
-  try { tiMatchResult.value = await threatIntelApi.match(tiMatchValue.value.trim()) }
-  catch { tiMatchResult.value = { value: tiMatchValue.value, matched: false } }
+  const value = iocKeyword.value.trim()
+  if (!value) return
+  try { tiMatchResult.value = await threatIntelApi.match(value) }
+  catch { tiMatchResult.value = { value, matched: false } }
 }
 
 onMounted(loadTi)
@@ -109,16 +109,14 @@ onMounted(loadTi)
         <div style="font-size:22px;font-weight:700">{{ count }}</div>
       </el-card>
     </div>
-    <el-card shadow="never" style="margin-bottom:14px">
-      <div class="ti-match-toolbar">
-        <el-input v-model="tiMatchValue" placeholder="匹配情报，如 185.220.101.45 或 evil-c2.com" style="width:320px" @keyup.enter="doTiMatch" />
-        <el-button type="primary" @click="doTiMatch">查询命中</el-button>
-        <el-select v-model="iocType" placeholder="全部类型" clearable style="width:140px" @change="loadTi">
-          <el-option v-for="t in ['ip', 'domain', 'url', 'sha256', 'email']" :key="t" :label="t" :value="t" />
-        </el-select>
-      </div>
-      <el-alert v-if="tiMatchResult" :title="tiMatchResult.matched ? `命中情报库：${tiMatchResult.ioc?.value}（${tiMatchResult.ioc?.severity}）` : '未命中情报库'" :type="tiMatchResult.matched ? 'error' : 'info'" :closable="false" style="margin-top:10px" />
-    </el-card>
+    <FilterToolbar class="ti-query-toolbar" :count="iocsFiltered.length">
+      <el-input v-model="iocKeyword" placeholder="搜索情报值 / 来源 / 描述；输入 IP 或域名可查询命中" clearable @input="iocPage = 1" @keyup.enter="doTiMatch" />
+      <el-button type="primary" @click="doTiMatch">查询命中</el-button>
+      <el-select v-model="iocType" placeholder="全部类型" clearable @change="loadTi">
+        <el-option v-for="t in ['ip', 'domain', 'url', 'sha256', 'email']" :key="t" :label="t" :value="t" />
+      </el-select>
+    </FilterToolbar>
+    <el-alert v-if="tiMatchResult" :title="tiMatchResult.matched ? `命中情报库：${tiMatchResult.ioc?.value}（${tiMatchResult.ioc?.severity}）` : '未命中情报库'" :type="tiMatchResult.matched ? 'error' : 'info'" :closable="false" style="margin-bottom:14px" />
     <div class="add-bar">
       <el-button type="primary" @click="openIocDialog">+ 新增情报</el-button>
       <span class="hint">IP / 域名 / URL / 文件哈希 / 邮箱，命中后被规则与富化引用</span>
@@ -133,11 +131,6 @@ onMounted(loadTi)
       <template #footer><el-button @click="showIocDialog = false">取消</el-button><el-button type="success" @click="addIoc">新增情报</el-button></template>
     </el-dialog>
     <DataTableCard v-model:current-page="iocPage" v-model:page-size="iocSize" :total="iocsFiltered.length">
-      <template #toolbar>
-        <FilterToolbar :count="iocsFiltered.length">
-        <el-input v-model="iocKeyword" placeholder="搜索情报值 / 来源 / 描述" clearable @input="iocPage = 1" />
-        </FilterToolbar>
-      </template>
       <el-table :data="iocsPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd">
         <el-table-column prop="type" column-key="type" label="类型" :width="columnWidth('type', 90)" sortable />
         <el-table-column prop="value" column-key="value" label="值" :width="columnWidth('value')" min-width="160" sortable show-overflow-tooltip />

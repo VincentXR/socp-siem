@@ -319,9 +319,6 @@ body {
 .search-toolbar { margin-bottom: var(--ns-space-4); }
 .search-query-row { display: flex; align-items: center; gap: var(--ns-space-2); }
 .search-query-row .el-input { flex: 1; min-width: 0; }
-.ti-match-toolbar { display: flex; align-items: center; gap: var(--ns-space-2); flex-wrap: nowrap; }
-.ti-match-toolbar .el-input { flex: 1 1 320px; min-width: 280px; }
-.ti-match-toolbar .el-select { flex: 0 0 140px; }
 .search-examples { display: flex; flex-wrap: wrap; gap: var(--ns-space-2); margin-top: var(--ns-space-3); }
 .search-examples .el-tag { cursor: pointer; }
 .search-error { margin-bottom: var(--ns-space-4); }
@@ -1044,8 +1041,6 @@ body {
   .alarm-toolbar-actions { width: 100%; flex-wrap: wrap; margin-left: 0; }
   .alarm-toolbar-actions .toolbar-count { order: 5; width: 100%; }
   .alarm-toolbar-actions .el-button { flex: 1; }
-  .ti-match-toolbar { flex-wrap: wrap; }
-  .ti-match-toolbar .el-input, .ti-match-toolbar .el-select, .ti-match-toolbar .el-button { flex: 1 1 100%; width: 100%; min-width: 0; }
   .filter-toolbar { padding: 10px; }
   .filter-toolbar-controls { width: 100%; }
   .filter-toolbar-controls > .el-input,
