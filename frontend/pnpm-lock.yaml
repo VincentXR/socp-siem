@@ -20,12 +20,6 @@ importers:
 
   apps/workbench:
     dependencies:
-      '@socp/library':
-        specifier: workspace:*
-        version: link:../../packages/library
-      '@socp/soc-ui':
-        specifier: workspace:*
-        version: link:../../packages/soc-ui
       '@tanstack/vue-query':
         specifier: 5.59.0
         version: 5.59.0(vue@3.5.41(typescript@5.9.3))
@@ -35,15 +29,9 @@ importers:
       element-plus:
         specifier: 2.14.3
         version: 2.14.3(vue@3.5.41(typescript@5.9.3))
-      pinia:
-        specifier: 2.2.0
-        version: 2.2.0(typescript@5.9.3)(vue@3.5.41(typescript@5.9.3))
       vue:
         specifier: 3.5.41
         version: 3.5.41(typescript@5.9.3)
-      vue-router:
-        specifier: 4.4.0
-        version: 4.4.0(vue@3.5.41(typescript@5.9.3))
     devDependencies:
       '@vitejs/plugin-vue':
         specifier: 6.0.8
@@ -608,18 +596,6 @@ packages:
     resolution: {integrity: sha512-RvwwcruNjI1ncT5xRakeyS9Lf8lcItv34KD+aif+VH9kduAyfYBipGh12274xtenIPZ119/R9BdTBa8gAwSh0A==}
     engines: {node: '>=12'}
 
-  pinia@2.2.0:
-    resolution: {integrity: sha512-iPrIh26GMqfpUlMOGyxuDowGmYousTecbTHFwT0xZ1zJvh23oQ+Cj99ZoPQA1TnUPhU6AuRPv6/drkTCJ0VHQA==}
-    peerDependencies:
-      '@vue/composition-api': ^1.4.0
-      typescript: '>=4.4.4'
-      vue: ^2.6.14 || ^3.3.0
-    peerDependenciesMeta:
-      '@vue/composition-api':
-        optional: true
-      typescript:
-        optional: true
-
   postcss@8.5.26:
     resolution: {integrity: sha512-u82N74LFzG8ca+dD8puPnplTXoGH4fTPpVGuIbt36G3qvNlkvfD0lEAZSxaly3KX8TS/L1A1gsCEmvKmBcVbkQ==}
     engines: {node: ^10 || ^12 || >=14}
@@ -704,11 +680,6 @@ packages:
     peerDependenciesMeta:
       '@vue/composition-api':
         optional: true
-
-  vue-router@4.4.0:
-    resolution: {integrity: sha512-HB+t2p611aIZraV2aPSRNXf0Z/oLZFrlygJm+sZbdJaW6lcFqEDQwnzUBXn+DApw+/QzDU/I9TeWx9izEjTmsA==}
-    peerDependencies:
-      vue: ^3.2.0
 
   vue-tsc@3.3.9:
     resolution: {integrity: sha512-TS3Y1ux/IRoE8OCP2PpACAeOseuIs0UvWrcr7u+w3PmfY+SlCfEf8zjrBgnQksHUgLpthi5vHlffcQTQTdPBZA==}
@@ -1142,14 +1113,6 @@ snapshots:
 
   picomatch@4.0.5: {}
 
-  pinia@2.2.0(typescript@5.9.3)(vue@3.5.41(typescript@5.9.3)):
-    dependencies:
-      '@vue/devtools-api': 6.6.4
-      vue: 3.5.41(typescript@5.9.3)
-      vue-demi: 0.14.10(vue@3.5.41(typescript@5.9.3))
-    optionalDependencies:
-      typescript: 5.9.3
-
   postcss@8.5.26:
     dependencies:
       nanoid: 3.3.17
@@ -1218,11 +1181,6 @@ snapshots:
 
   vue-demi@0.14.10(vue@3.5.41(typescript@5.9.3)):
     dependencies:
-      vue: 3.5.41(typescript@5.9.3)
-
-  vue-router@4.4.0(vue@3.5.41(typescript@5.9.3)):
-    dependencies:
-      '@vue/devtools-api': 6.6.4
       vue: 3.5.41(typescript@5.9.3)
 
   vue-tsc@3.3.9(typescript@5.9.3):
