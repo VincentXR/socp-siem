@@ -98,8 +98,8 @@ onMounted(loadAttack)
     <el-card shadow="never">
       <el-table :data="techniques" size="small">
         <el-table-column prop="id" label="技术 ID" width="110" />
-        <el-table-column prop="name" label="名称" min-width="180" />
-        <el-table-column prop="tactic" label="战术" width="130" />
+        <el-table-column prop="name" label="名称" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="tactic" label="战术" width="130" show-overflow-tooltip />
         <el-table-column label="操作" width="80"><template #default="{ row }"><el-button link type="primary" size="small" @click="openUrl(row.url)">详情</el-button></template></el-table-column>
       </el-table>
     </el-card>

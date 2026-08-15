@@ -64,10 +64,10 @@ onMounted(loadEndpoints)
         </FilterToolbar>
       </template>
       <el-table :data="endpointsPaged" size="small">
-        <el-table-column prop="hostname" label="主机名" width="140" sortable />
+        <el-table-column prop="hostname" label="主机名" width="140" sortable show-overflow-tooltip />
         <el-table-column prop="ip" label="IP" width="120" sortable />
-        <el-table-column prop="os" label="系统" min-width="140" sortable />
-        <el-table-column prop="agentVersion" label="Agent 版本" width="120" sortable />
+        <el-table-column prop="os" label="系统" min-width="140" sortable show-overflow-tooltip />
+        <el-table-column prop="agentVersion" label="Agent 版本" width="120" sortable show-overflow-tooltip />
         <el-table-column prop="status" label="状态" width="80" sortable>
           <template #default="{ row }"><el-tag :type="row.status === 'ONLINE' ? 'success' : 'info'" size="small">{{ row.status }}</el-tag></template>
         </el-table-column>

@@ -138,9 +138,9 @@ onMounted(loadTi)
       </template>
       <el-table :data="iocsPaged" size="small">
         <el-table-column prop="type" label="类型" width="90" sortable />
-        <el-table-column prop="value" label="值" min-width="160" sortable />
+        <el-table-column prop="value" label="值" min-width="160" sortable show-overflow-tooltip />
         <el-table-column prop="severity" label="严重度" width="90" sortable><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
-        <el-table-column prop="source" label="来源" width="100" sortable />
+        <el-table-column prop="source" label="来源" width="100" sortable show-overflow-tooltip />
         <el-table-column prop="description" label="描述" min-width="160" sortable show-overflow-tooltip />
         <el-table-column label="操作" width="80"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeIoc(row.id)">删除</el-button></template></el-table-column>
       </el-table>

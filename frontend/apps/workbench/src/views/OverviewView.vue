@@ -126,9 +126,9 @@ const timeOnly = (iso: string) => (iso?.length >= 19 ? iso.slice(11, 19) : '—'
             <el-table-column label="级别" width="116">
               <template #default="{ row }"><SevBadge :value="row.severity" /></template>
             </el-table-column>
-            <el-table-column label="规则 · 来源" min-width="180">
+            <el-table-column label="规则 · 来源" min-width="180" show-overflow-tooltip>
               <template #default="{ row }">
-                <span class="ov-alert-rule">{{ row.ruleName }}</span><span class="ov-alert-entity mono"> · {{ row.entity }}</span>
+                <span class="table-text"><span class="ov-alert-rule">{{ row.ruleName }}</span><span class="ov-alert-entity mono"> · {{ row.entity }}</span></span>
               </template>
             </el-table-column>
             <el-table-column label="状态" width="92">

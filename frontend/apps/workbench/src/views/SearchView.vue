@@ -82,7 +82,7 @@ onMounted(search)
       <el-card v-if="result.stat" shadow="never">
         <template #header>{{ result.stat.type === 'timechart' ? '时间分布（按天）' : `统计（${result.stat.type === 'top' ? 'Top' : '分组计数'}）` }}</template>
         <el-table :data="result.stat.rows" size="small">
-          <el-table-column prop="key" label="Key" sortable />
+          <el-table-column prop="key" label="Key" sortable show-overflow-tooltip />
           <el-table-column prop="count" label="条数" width="220" sortable>
             <template #default="{ row }">
               <div class="search-stat-row"><span>{{ row.count }}</span><span class="search-stat-track"><i :style="{ width: `${Math.min(100, (row.count / maxStatCount) * 100)}%` }" /></span></div>

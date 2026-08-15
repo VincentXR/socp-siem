@@ -65,7 +65,7 @@ onMounted(loadPlaybooks)
 
     <el-card shadow="never">
       <el-table :data="playbooks" size="small">
-        <el-table-column prop="name" label="剧本" min-width="140" />
+        <el-table-column prop="name" label="剧本" min-width="140" show-overflow-tooltip />
         <el-table-column prop="trigger" label="触发条件" min-width="200" show-overflow-tooltip />
         <el-table-column label="动作链" min-width="260"><template #default="{ row }"><el-tag v-for="action in row.actions" :key="action" size="small" class="soar-action-tag">{{ action }}</el-tag></template></el-table-column>
         <el-table-column label="状态" width="80"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.status }}</el-tag></template></el-table-column>
@@ -77,7 +77,7 @@ onMounted(loadPlaybooks)
       <template #header>执行历史（最近 {{ executions.length }} 条）</template>
       <el-table :data="executionsPaged" size="small">
         <el-table-column prop="ts" label="时间" width="200" />
-        <el-table-column prop="playbook" label="剧本" min-width="140" />
+        <el-table-column prop="playbook" label="剧本" min-width="140" show-overflow-tooltip />
         <el-table-column prop="trigger" label="触发" min-width="160" show-overflow-tooltip />
         <el-table-column label="动作结果" min-width="320">
           <template #default="{ row }"><span v-for="(result, index) in (row.results as any[] || [])" :key="index" class="soar-result-tag"><el-tag size="small" :type="String(result.status).startsWith('fail') ? 'danger' : (String(result.status).startsWith('sent') || String(result.status).startsWith('created') ? 'success' : 'info')">{{ result.action }} → {{ result.status }}</el-tag></span></template>

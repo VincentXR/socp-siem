@@ -184,7 +184,7 @@ onUnmounted(() => {
                       <el-table-column label="风险" width="80">
                         <template #default="{ row }"><span class="risk-pill" :style="{ background: riskColor(row.level) }">{{ row.risk }}</span></template>
                       </el-table-column>
-                      <el-table-column label="实体" min-width="150">
+                      <el-table-column label="实体" min-width="150" show-overflow-tooltip>
                         <template #default="{ row }">
                           <span class="mono">{{ row.entity }}</span>
                           <el-tag v-if="row.critical" size="small" type="danger" effect="dark" style="margin-left:6px">核心资产</el-tag>
@@ -194,13 +194,13 @@ onUnmounted(() => {
                       <el-table-column label="最高级别" width="100">
                         <template #default="{ row }"><SevBadge :value="row.maxSeverity" /></template>
                       </el-table-column>
-                      <el-table-column label="主要战术" min-width="140">
+                      <el-table-column label="主要战术" min-width="140" show-overflow-tooltip>
                         <template #default="{ row }">
                           <el-tag v-for="m in row.mitre.slice(0, 3)" :key="m.technique" size="small" style="margin-right:4px">{{ m.technique }}×{{ m.count }}</el-tag>
                           <span v-if="!row.mitre.length" style="color:#c0c4cc">—</span>
                         </template>
                       </el-table-column>
-                      <el-table-column label="最近活动" width="150">
+                      <el-table-column label="最近活动" width="150" show-overflow-tooltip>
                         <template #default="{ row }"><span class="mono" style="font-size:12px">{{ fmtTime(row.lastSeen) }}</span></template>
                       </el-table-column>
                     </el-table>

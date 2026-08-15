@@ -64,11 +64,11 @@ onMounted(loadAssets)
         </FilterToolbar>
       </template>
       <el-table :data="assetsPaged" size="small">
-        <el-table-column prop="name" label="名称" width="140" sortable />
+        <el-table-column prop="name" label="名称" width="140" sortable show-overflow-tooltip />
         <el-table-column prop="type" label="类型" width="100" sortable />
         <el-table-column prop="ip" label="IP" width="120" sortable />
-        <el-table-column prop="os" label="系统" min-width="140" sortable />
-        <el-table-column prop="owner" label="负责人" width="100" sortable />
+        <el-table-column prop="os" label="系统" min-width="140" sortable show-overflow-tooltip />
+        <el-table-column prop="owner" label="负责人" width="100" sortable show-overflow-tooltip />
         <el-table-column prop="criticality" label="关键度" width="90" sortable>
           <template #default="{ row }"><el-tag :type="row.criticality === 'CRITICAL' ? 'danger' : row.criticality === 'HIGH' ? 'warning' : 'info'" size="small">{{ row.criticality }}</el-tag></template>
         </el-table-column>

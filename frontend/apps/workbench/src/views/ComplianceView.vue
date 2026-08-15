@@ -60,9 +60,9 @@ onMounted(loadCompliance)
       <div class="compliance-card-head"><strong>{{ framework.framework }}</strong><span>{{ framework.coverage }}%</span></div>
       <el-table :data="framework.controls" size="small">
         <el-table-column prop="id" label="控制项" width="120" />
-        <el-table-column prop="name" label="名称" min-width="200" />
+        <el-table-column prop="name" label="名称" min-width="200" show-overflow-tooltip />
         <el-table-column label="覆盖" width="90"><template #default="{ row }"><el-tag :type="row.covered ? 'success' : 'danger'" size="small">{{ row.covered ? '已覆盖' : '缺失' }}</el-tag></template></el-table-column>
-        <el-table-column prop="mappedRules" label="映射规则" min-width="160"><template #default="{ row }"><span class="compliance-rules">{{ (row.mappedRules || []).join(', ') || '—' }}</span></template></el-table-column>
+        <el-table-column prop="mappedRules" label="映射规则" min-width="160" show-overflow-tooltip><template #default="{ row }"><span class="table-text compliance-rules">{{ (row.mappedRules || []).join(', ') || '—' }}</span></template></el-table-column>
       </el-table>
     </el-card>
     <el-empty v-if="!coverage?.byFramework?.length" description="暂无合规覆盖数据" />

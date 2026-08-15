@@ -89,9 +89,9 @@ onMounted(loadCases)
         </FilterToolbar>
       </template>
       <el-table :data="casesPaged" size="small">
-        <el-table-column prop="id" label="案件 ID" width="180" sortable />
-        <el-table-column prop="title" label="标题" min-width="180" sortable />
-        <el-table-column prop="entity" label="实体" width="130" sortable />
+        <el-table-column prop="id" label="案件 ID" width="180" sortable show-overflow-tooltip />
+        <el-table-column prop="title" label="标题" min-width="180" sortable show-overflow-tooltip />
+        <el-table-column prop="entity" label="实体" width="130" sortable show-overflow-tooltip />
         <el-table-column prop="severity" label="级别" width="90" sortable><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
         <el-table-column prop="status" label="状态" width="120" sortable><template #default="{ row }"><el-tag :type="row.status === 'OPEN' ? 'danger' : row.status === 'RESOLVED' || row.status === 'CLOSED' ? 'success' : 'warning'" size="small">{{ row.status }}</el-tag></template></el-table-column>
         <el-table-column prop="alarmCount" label="关联告警" width="90" sortable><template #default="{ row }">{{ row.alarmIds.length }}</template></el-table-column>
