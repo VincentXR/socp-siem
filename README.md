@@ -1,278 +1,169 @@
 # SOCP SIEM
 
-A self-hosted, event-driven SIEM/SOC platform built to explore security telemetry ingestion, detection engineering, alert investigation and automated response.
+SOCP 是一个自托管、事件驱动的 SIEM/SOC 安全运营平台，用于接入异构安全日志，将原始遥测归一化为统一事件模型，并完成检测、告警、调查、案件流转与自动化响应。
 
-**核心是 Security Event Pipeline，不是服务数量：**
+项目采用 Java 21、Spring Boot 与 Vue 3 构建，提供可在单机环境运行和验证的完整安全事件处理链路。Kafka 负责事件解耦与积压恢复，PostgreSQL 保存告警和案件事实，OpenSearch 支撑原始事件检索，ClickHouse 承担分析聚合，Temporal 可用于 SOAR 工作流编排。
 
-```
-Telemetry ingestion → Event normalization (Canonical Schema) → Kafka streaming
-→ Detection engineering (6 种规则类型 · 热更新 · 幂等 · 去重) → Alert lifecycle
-→ Incident workflow → Automated response (SOAR 剧本 · 补偿)
-```
+## 功能概览
 
-能力清单：
+- **日志接入与归一化**：支持 Vector、NDJSON 和采集端上报；解析 JSON、Syslog、CEF、LEEF、KV、Sysmon、auditd 与 Falco 等格式，并映射到 Canonical Event Schema。
+- **检测工程**：支持 pattern、threshold、correlation、correlation-set、baseline 和 rare 规则，包含规则生命周期、热更新、抑制、事件去重与背压控制。
+- **告警与调查**：提供告警生命周期管理、实时推送、原始事件检索、IOC 与 MITRE ATT&CK 上下文关联。
+- **案件与响应**：支持告警自动建案和归并、人工建案、通知渠道、SOAR 剧本、失败重试与补偿。
+- **资产与情报**：提供资产管理、批量导入、端点防护、威胁情报导入和 ATT&CK 技术管理。
+- **平台治理**：包含 JWT/OIDC、RBAC、逻辑租户隔离、审计、限流、指标和跨 HTTP/Kafka 的 Trace Context 传播。
 
-1. **Telemetry ingestion** — Vector / NDJSON 接入，攒批 + 背压（503 + Retry-After）
-2. **Event normalization** — Parser Pipeline（JSON / Syslog / CEF / LEEF / KV / Sysmon / auditd / Falco）→ **Canonical Event Schema**（厂商无关字段模型）
-3. **Kafka-based event streaming** — `search-config → Kafka socp-events → detect-web` 唯一主链（acks=all · 幂等 · 手动 commit · DLQ）
-4. **Detection engineering** — threshold / pattern / correlation / UEBA baseline / rare 规则，窗口去重 + 抑制，规则生命周期（DRAFT→TESTING→ACTIVE→DISABLED→ARCHIVED）
-5. **Alert lifecycle** — 告警持久化（PG）+ 富化（IOC / ATT&CK）+ 状态流转（OPEN→INVESTIGATING→RESOLVED→CLOSED）
-6. **Incident workflow** — 告警自动建案/归并（UUIDv7 主键 + INC- 展示编号）
-7. **Automated response** — SOAR 剧本（通知 / 建案 / webhook），失败重试 + 补偿，执行状态机（SUCCESS / COMPENSATING / FAILED）
+## 系统架构
 
-Implemented with: Spring Boot · Kafka · OpenSearch · PostgreSQL · ClickHouse · Vector · OpenTelemetry · Vue 3
+```mermaid
+flowchart LR
+    S[sshd / Syslog / EDR / Falco] --> V[Vector / Collectors]
+    V --> N[search-config<br/>Parse · Normalize · Enrich]
+    N --> K[(Kafka<br/>socp-events)]
 
-The focus is the **core pipeline**, not the number of services:
+    K --> D[detect-web<br/>Rule Engine · UEBA]
+    K --> X[Event Indexer]
+    X --> OS[(OpenSearch<br/>Event Search)]
 
-```
-sshd / syslog raw log
-        │
-        ▼
-Vector (采集 + 轻量 envelope 元数据)
-        │
-        ▼
-search-config (解析 + canonical normalize + enrichment)
-        │
-        ▼
-Kafka socp-events (canonical event bus)
-        │
-        ▼
-detect-web (threshold / pattern / correlation / UEBA)
-        │
-        ▼
-alert-web (PostgreSQL t_alarm + transactional Outbox)
-        │
-        ├──► Kafka socp-alarm-events ──► Incident / SOAR / Notify
-        ├──► ClickHouse alarm_detail ──► report-web / dashboards
+    D --> A[alert-web<br/>Alert Lifecycle]
+    A --> PG[(PostgreSQL<br/>Alerts · Outbox)]
+    PG --> OP[Outbox Publisher]
+    OP --> AK[(Kafka<br/>socp-alarm-events)]
+    AK --> F[Alarm Consumer]
+    F --> I[Incident]
+    F --> R[SOAR / Notify]
+    F --> CK[(ClickHouse<br/>Analytics)]
 
-Kafka event consumer ──► OpenSearch socp-events-* ──► investigation
-All service requests and Kafka hops ──► audit / metrics / trace context
+    UI[Vue Workbench] --> GW[API Gateway]
+    GW --> N
+    GW --> D
+    GW --> A
+    GW --> I
 ```
 
-外围还有资产、HIPS、ATT&CK 覆盖、通知渠道等模块，但核心是上面这条 **event-driven detection pipeline**——这也是本仓库最值得研究的部分。
+### 关键设计
 
----
-
-## 真链路验证（GitHub Actions 可独立复现）
-
-CI 不止构建与单测。`.github/workflows/ci.yml` 的 `e2e-pipeline` job 会真实拉起 4 个中间件
-（Kafka / OpenSearch / PostgreSQL / ClickHouse）+ 4 个核心服务，注入 1 条攻击事件并断言整条链路：
-
-| 步骤 | 断言 |
-|---|---|
-| push 模拟攻击事件（`search-config` 归一化管线） | `accepted=1` |
-| Kafka `socp-events` topic | offset 增长 |
-| OpenSearch `socp-events-*` | 出现 raw event |
-| Detection 命中（sudo 权限提升） | `alert-web` 出现 CRITICAL 告警 |
-| PostgreSQL `t_alarm` | 告警已落库（经 API 查询验证） |
-| ClickHouse `alert_agg.alarm_detail` | 出现明细记录 |
-| `report-web` 日报 API | 200 |
-
-本地等价验证：
-
-```bash
-# 前置：docker compose -f infra/docker-compose.yml up -d + 起核心服务
-python build/verify-pipeline.py      # 真链路 E2E（12 项断言）
-python build/verify-full.py          # 62 项全栈 E2E（健康/全链路/持久化/鉴权/多租户/限流/追踪）
-python build/failure-tests.py        # 故障注入（2026-08-14 P4）：断 Kafka/OS/Temporal/PG，断言降级与自愈
-```
-
-## Golden Demo（推荐面试主线）
-
-用一条 SSH 故事展示完整闭环：5 次失败登录触发 `AUTH-BRUTE`，同一 IP
-随后成功登录触发 `AUTH-BRUTE-SUCCESS`，再观察 PG Outbox 驱动的 Incident、
-SOAR、Notify 和报表。
-
-```bash
-python build/demos/golden-demo.py
-```
-
-完整准备步骤、展示顺序和 Kafka 故障演示见
-[`docs/demo-checklist.md`](docs/demo-checklist.md)。默认脚本走真实 Vector
-文件采集；`--transport ingest` 仅用于快速定位 search-config 之后的问题。
-
-## 多规则 Playground
-
-`build/demos/attack-scenarios.py` 保留为规则工程 playground：它覆盖 SSH、
-PowerShell 和 Web Shell 三个场景，适合展示规则热更新与多类型命中，
-但不作为 Vector → Kafka 的黄金端到端证明：
-
-| 场景 | 攻击日志 | 规则（类型） | ATT&CK | 告警 |
-|---|---|---|---|---|
-| SSH 暴力破解 | 60s 内同 IP 5 次登录失败 | `AUTH-BRUTE`（threshold） | T1110 Brute Force | HIGH |
-| Windows PowerShell 编码命令 | `powershell -enc ...` 内联下载执行 | `EXEC-SUSPICIOUS-SHELL`（pattern，**热更新修正**） | T1059.001 PowerShell | HIGH |
-| Linux nginx Web Shell | `/bin/sh` 由 nginx 拉起 / `cmd=whoami` | `WEB-SHELL`（pattern，**API 新建 + 热更新广播**） | T1505.003 Web Shell | CRITICAL |
-
-```
-$ python build/demos/attack-scenarios.py
-场景 1: SSH 暴力破解（Brute Force）  |  ATT&CK: T1110
-  已注入 5 条攻击日志
-  [PASS] 检测命中并产生告警（AUTH-BRUTE）  -> HIGH
-  告警: [HIGH] 源 203.0.113.77 在 60s 内失败登录 5 次，疑似暴力破解
-  [PASS] 告警关联事件（自动建案/归并）
-...
-攻击场景 Demo 通过 8 / 失败 0
-```
-
-其中场景 2/3 同时演示了 **Detection Engineering 的规则生命周期**：规则通过 API 新增/修正，
-`RuleChangePublisher` 发 Kafka 广播 → 集群内所有引擎实例热更新（`DetectEngineService.reload()` 原子替换），全程无需重启。
-
-## 日志解析 Pipeline（Canonical Event Schema）
-
-归一化不再是"JSON 展平 + 顺序扫规则"。`search-config` 现在有独立的 parser 层（`services/search-config/.../parser/`）：
-
-```
-Raw Event
-   ↓
-Source Router（vendor 提示 / CEF: / LEEF: / <PRI> / {json} / key=value 特征前缀路由，
-            不是每条日志遍历全部规则）
-   ↓
-ParserRegistry
-├─ JsonParser      JSON 行展平 + canonical 别名映射（Falco / Suricata / 采集器包装行）
-├─ SysmonParser    Windows Sysmon JSON（EventID 1/3/11/22 → process/network/file 语义）
-├─ SyslogParser    RFC3164 / RFC5424（PRI → severity，host / app / pid / message）
-├─ CefParser       ArcSight CEF（SignatureID → event.code，Extension → source/destination）
-├─ LeefParser      QRadar LEEF（同 CEF 对齐）
-├─ KvParser        key=value（引号支持）
-└─ RegexRuleParser 用户 parse rules（兜底抽取，命中即停）
-   ↓
-Canonical Event Schema（简化 ECS）
-   ↓
-Enrichment（查找表：核心资产 / 关键人员 / 封禁名单）
-   ↓
-Kafka socp-events → Detection
-```
-
-**Canonical 字段模型**（Detection Rule 用这些键写 match，不关心厂商）：
-
-```
-event.code / event.category / event.type / event.action
-source.ip / source.port / destination.ip / destination.port
-host.name / user.name
-process.name / process.pid / process.command_line
-file.path / file.hash.sha256
-network.protocol
-```
-
-例：Sysmon `EventID 1`（进程创建）、Falco JSON、FortiGate CEF firewall 日志，
-经过各自 parser 后都产出 `event.category=process` / `source.ip` / `user.name` 等同一组字段——
-检测规则只需写一次，厂商差异被 parser 层吸收。兼容层同时把 `src_ip`/`user`/`host` 等
-原有键桥接回 `fields`，存量规则无需改动。
-
-## Detection Engine 做了什么
-
-- **6 种规则类型**：`pattern`（单事件命中）/ `threshold`（滑动窗口计数）/ `correlation` / `correlation-set`（多步关联）/ `baseline`（UEBA 自身历史基线）/ `rare`（首见值）
-- **规则生命周期**：CRUD + 热更新（原子替换旧引擎，毒丸退出） + Kafka 广播到多实例
-- **背压**：10 万事件队列 + 50ms 缓冲 + 满则丢弃计数，HTTP 接入端据此回 `503 + Retry-After`，Vector 自动重试而不是静默丢数据
-- **幂等**：Kafka 消费手动 commit（至少一次）+ `eventId` LRU 去重，重复投递不重复告警
-- **抑制去重**：同规则 + 同实体 5 分钟抑制（`Suppressor`），防告警风暴
-- **规则健康度**：per-rule 命中/告警统计（`GET /detect-web/api/v1/stats` 的 `ruleStats`），可识别从不命中的死规则
-- **MITRE ATT&CK 映射**：每条规则带 `mitre` 字段，`attack-web` 聚合检测覆盖率
-
-## 架构决策（为什么这么做）
-
-| 决策 | 选择 | 理由 / trade-off |
+| 关注点 | 实现 | 设计目的 |
 |---|---|---|
-| 规则引擎 | 自研进程内（`socp-rule`） | 避免引入 Logstash/Flink 的重依赖；单消费者虚拟线程模型，规则以 JSON 配置表达，热更新友好。窗口状态在内存（单实例语义），多实例需按 key 分区 |
-| 采集链路 | Vector + 自研归一化（`search-config`） | 保留对日志格式的完全控制；Vector 只做采集与轻量转发 |
-| 事件总线 | Kafka `socp-events`（3 分区） | 解耦采集与检测；consumer 手动 commit + 幂等，可靠性已覆盖（acks=all + DLQ） |
-| 检索 | OpenSearch 按天索引 | 原始事件检索/取证；与 PG（告警事实源）职责分离 |
-| 报表 | ClickHouse 聚合 | 明细表 `alarm_detail` 服务日报/趋势，避免 OLTP 库扛分析查询 |
-| 告警事实源 | PostgreSQL `t_alarm` | 告警生命周期（状态/处置/备注）需要强一致事务 |
-| 遥测 | OpenTelemetry SDK + W3C traceparent + Jaeger | 每请求一个 span，Kafka header 透传 trace 上下文；HTTP 与事件流同一 trace 可下钻 |
+| 统一事件模型 | Canonical Event Schema + Parser Registry | 隔离不同厂商日志格式，检测规则只依赖稳定字段 |
+| 事件传输 | Kafka、手动提交、幂等消费、DLQ | 解耦采集与检测，支持服务恢复后的积压处理 |
+| 告警一致性 | PostgreSQL Transactional Outbox | 在同一事务内保存告警与待发布事件，避免跨系统双写 |
+| 数据分工 | PostgreSQL + OpenSearch + ClickHouse | 分离事务状态、全文检索和分析聚合负载 |
+| 自动化响应 | Temporal Workflow / 本地执行器 | 提供持久化编排、重试和补偿，并支持本地开发降级 |
+| 安全治理 | JWT/OIDC、RBAC、Tenant Context、Audit | 统一身份、权限、租户上下文和操作留痕 |
 
-## 两种运行模式（诚实接线状态）
-
-不是"假装全上中间件"。默认就是**混合模式**，起 compose 后核心链路立即生效：
-
-| 服务 | 默认（Local Dev） | 集成（Integration） |
-|---|---|---|
-| alert-web / threat-web / incident-web / soc-base | **PostgreSQL**（alert/threat/incident/audit 库，Flyway 迁移） | 同左 |
-| search / detect / soar / asset / hips / notify / attack / ai / detect-model | **H2 文件库**（`~/.socp/*.mv.db`，内存+库双写，重启不丢） | 同左（H2 即持久化）；**生产可切 PostgreSQL**：启动加 `--spring.profiles.active=pg`（2026-08-12，9 服务均带 `application-pg.yml`，各配独立 PG 库 search/detect/soar/asset/hips/ai/attack/notify/detect_model，Flyway V1 同源迁移，已验证核心四服务落库） |
-| gateway / report / 采集器（asset-collect / hips-collect） | 无状态（网关路由 / 查 CK+PG / 上报） | 同左（无状态不需要 DB） |
-| Kafka `socp-events` / `socp-audit` / `socp-alarm-original` / `socp-alarm-events` | **Kafka 为 canonical 事件主链（2026-08-14 P2）**：ingest 只写 `socp-events`（不再跨系统双写），detect 消费检测、OsIndexerConsumer 写 OS——OS 挂了可重放重建 | 同左 |
-| OpenSearch `socp-events-*` | **OsIndexerConsumer 消费写入**（P2，手动 commit + 幂等 + DLQ）；检索优先 OS，回退 H2 | 同左 |
-| ClickHouse `alarm_detail` | **AlarmEventConsumer（outbox 消费者）写入**（P3，失败可重放） | 同左 |
-
-**Local Dev**（无 Docker）：`bash build/run-all.sh backend` —— 4 个 PG 服务需要本机 PG 或改 H2 profile；
-Kafka/OS/CK 链路不生效（detect-web 收不到事件），其余功能完整。
-
-**Integration**（`docker compose -f infra/docker-compose.yml up -d` + `run-all.sh backend`）：
-Kafka/OpenSearch/ClickHouse 立即接入，`verify-pipeline.py` 12 项真链路断言可跑。
-
-> 诚实说明：**13 个有状态服务全部持久化**（PG 4 + H2 9，H2 为内存+库双写、重启自动恢复）；
-> 4 个无状态服务（网关/报表/采集器）正确无库。PG 与 H2 均为真客户端（Flyway 迁移真实执行）。
-
-## 边界（诚实声明）
-
-- **多租户**：当前为 `tenant_id` 列的**逻辑隔离**（SDK 强制写入 + 查询过滤），不是物理隔离（同库同表）
-- **ai-assistant**：关键词知识库问答，**未接外部 LLM**——本项目暂不做"为 AI 而 AI"
-- **Kafka**：演示环境单 broker（副本因子 1）；生产按集群调整分区/副本
-- **SOAR（2026-08-12 双模式）**：Temporal 可达（`docker compose --profile extra up -d temporal`）走 Workflow/Activity 分布式编排；不可达自动回退进程内执行器（双模式，绝不因编排中间件故障拖垮告警响应）
-- **Keycloak（2026-08-12 OIDC 已实跑）**：PKCE 授权码登录（`socp-spa` 客户端，`docker compose --profile extra up -d keycloak`），Keycloak 只作身份源，网关回调统一签发 HS256 session token，业务服务保持 HMAC 验签；`/auth/login` demo 账号保留。验签侧亦可切 `issuer-uri`（JWKS）
-- **采集（2026-08-12 真实链路）**：`build/run-vector.sh` 起 Docker Vector 采集真实文件（`demo/sample.log`）+ syslog TCP 5514 → search-config ingest（机机 token 鉴权）→ canonical 解析 → Kafka `socp-events` → 检测；Kafka consumer 再写 OpenSearch，告警 Outbox consumer 写 ClickHouse。asset-collect/hips-collect 把上报事件真转发进同一主链。Falco 规则（`agents/falco-rules`）配置就绪，Windows 下未真跑（仅 Linux）
-- **RBAC**：管理写端点统一 `@RequireRole(admin/analyst)`（规则/接入配置/剧本/渠道/处置/租户/端点等 15 个控制器），viewer 只读；采集/机机端点（ingest/collect/evaluate/notify）与登录端点豁免
-- **prod profile（2026-08-14，P1）**：三档 profile —— `local`（默认：H2 / 内存回退 / 默认凭据全允许）、`integration`（compose 全中间件）、`prod`（启动 `--spring.profiles.active=prod` 时 **ProdGuard fail-fast**：禁止 H2、默认 JWT secret、`dev-bypass=true`、默认 ingest-token，强制 Temporal 开启）
-- **Outbox（2026-08-14，P3）**：告警创建与 `t_alarm` 同事务写 `outbox_event`，`OutboxPublisher` 发 Kafka `socp-alarm-events`，`AlarmEventConsumer` 扇出 CK / Notify / Incident / SOAR（失败可重放，不再跨系统双写）；告警处置（assignee/status/notes）从纯内存改为 `t_alarm_disposition` 持久化，重启不丢
-- **故障注入（2026-08-14，P4）**：`build/failure-tests.py` 覆盖 Kafka 断开（ingest 降级直写 OS）/ OpenSearch 停止 / Temporal 停止（SOAR 回退进程内）/ PostgreSQL 停止（进程存活、恢复自愈）；可用性探测改为 TCP 连接 + 5s 缓存（`partitionsFor` 的 metadata 缓存会误判死 broker 可达）
-- 所有服务默认走 `dev` profile（本地账号表）；生产请用环境变量覆盖 `SOCP_JWT_SECRET` / `SOCP_PG_*` / `SOCP_OIDC_*` 等
-
-## 快速开始（约 15 分钟）
-
-前置：Docker Desktop（已开启虚拟化）、Node.js 22+（仅前端）。
-
-```bash
-git clone https://github.com/VincentXR/socp-siem.git && cd socp-siem
-
-# 1) 起 8 个中间件（PG / Kafka / OpenSearch / ClickHouse / Redis / MinIO / Prometheus / Grafana）
-docker compose -f infra/docker-compose.yml up -d
-
-# 2) 构建 28 模块（内置阿里云镜像 + JDK21，产出可执行 fat-jar）
-bash build/mvnw.sh -DskipTests package
-
-# 3) 起后端服务（端口 18080~18097，日志 .cache/*.log）
-bash build/run-all.sh backend
-
-# 4) 启动真实日志采集 Agent（Golden Demo 需要）
-bash build/run-vector.sh start
-
-# 5) 前端控制台（start-frontend.sh 用 cd -P 解析物理路径启动，
-#    规避 vite 6.4.3 在 junction 路径下依赖改写失效导致白屏的问题）
-bash build/start-frontend.sh            # 默认 5173，可传端口参数
-```
-
-访问：**控制台** http://localhost:5173（demo / demo123）· **Grafana** http://localhost:3000（admin / Socp@2026）
-中间件：PG `socp/socp` · OpenSearch `admin/Socp!Sec2026xK` · ClickHouse `default/socp`
-
-> ⚠️ 凭据为演示用途，生产请用环境变量覆盖。
-
-## 目录结构
-
-```
-socp-siem/
-├── platform/       # 横切模块：auth(JWT) tenant audit ratelimit error obs(OTel) rule(引擎) client(服务间调用) bom test
-├── services/       # 业务服务（网关 / 采集 / 检测 / 告警 / SOAR / 报表 / 案件 / 资产 / HIPS / 情报 / ATT&CK / 通知）
-├── frontend/       # workbench 控制台（Vue3 + Element Plus + ECharts）
-├── infra/          # docker-compose + init-sql（8 中间件 + jaeger/keycloak/temporal 可选）
-├── build/          # 构建脚本 + verify-full / verify-pipeline / Golden Demo / rule playground
-├── .github/        # CI：build + test + e2e（切片）+ e2e-pipeline（真链路）
-└── docs/
-```
+系统采用 at-least-once 交付语义。Kafka 消费者通过事件 ID 去重和幂等写入处理重复投递；告警 Outbox 可重试发布，不声明跨 Kafka 与数据库的 exactly-once。
 
 ## 技术栈
 
-Java 21 · Spring Boot 3.5 · Spring Cloud Gateway 2025.0 · Kafka · OpenSearch · ClickHouse · PostgreSQL · Redis ·
-OpenTelemetry + Jaeger · Prometheus + Grafana · Vue 3 + Vite + Element Plus + ECharts · GitHub Actions
+- **后端**：Java 21、Spring Boot 3.5、Spring Cloud Gateway、MyBatis、Flyway
+- **消息与存储**：Kafka、PostgreSQL、OpenSearch、ClickHouse、MinIO
+- **工作流与可观测性**：Temporal、OpenTelemetry、Jaeger、Prometheus、Grafana
+- **前端**：Vue 3、TypeScript、Vite、Element Plus、ECharts、TanStack Query
+- **工程化**：Maven 多模块、pnpm workspace、Docker Compose、GitHub Actions
+
+## 快速开始
+
+### 环境要求
+
+- JDK 21 与 Git Bash/WSL
+- Node.js 22、Corepack 和 pnpm 10
+- Docker Desktop
+- 完整集成环境建议至少 24 GB 内存；日常开发可只启动相关服务切片
+
+### 启动完整开发环境
+
+```bash
+git clone https://github.com/VincentXR/socp-siem.git
+cd socp-siem
+
+# 启动 PostgreSQL、Kafka、OpenSearch、ClickHouse 等中间件
+docker compose -f infra/docker-compose.yml up -d
+
+# 构建并启动后端
+bash build/mvnw.sh -DskipTests package
+bash build/run-all.sh backend
+
+# 安装依赖并启动前端
+cd frontend
+corepack pnpm install --frozen-lockfile
+cd ..
+bash build/start-frontend.sh
+```
+
+访问 `http://localhost:5173`，本地演示账号为 `demo / demo123`。该凭据仅用于开发环境。
+
+如需运行真实文件采集演示，可额外启动 Vector：
+
+```bash
+bash build/run-vector.sh start
+python build/demos/golden-demo.py
+```
+
+使用以下命令查看或停止本地服务：
+
+```bash
+bash build/run-all.sh status
+bash build/run-all.sh stop
+docker compose -f infra/docker-compose.yml down
+```
+
+## 测试与验证
+
+```bash
+# Java 单元与模块测试
+bash build/mvnw.sh test -Dsurefire.failIfNoSpecifiedTests=false
+
+# 前端类型检查、测试和产物验证
+cd frontend/apps/workbench
+pnpm test
+pnpm verify
+
+# 集成环境验证
+python build/verify-slice.py
+python build/verify-pipeline.py
+python build/verify-full.py
+python build/failure-tests.py
+```
+
+`verify-pipeline.py` 验证事件进入 Kafka、检测命中、告警落库、OpenSearch 索引和 ClickHouse 明细写入。`failure-tests.py` 覆盖 Kafka、OpenSearch、Temporal 和 PostgreSQL 的停止与恢复场景。GitHub Actions 在推送和 Pull Request 时执行后端测试、前端验证、最小服务切片及真实事件管线 E2E。
+
+## 运行配置与边界
+
+- 启动脚本使用 `dev` profile 提供本地演示账号，并采用 PostgreSQL 与文件型 H2 混合持久化。
+- 默认使用 H2 的有状态服务可启用 `pg` profile 切换到 PostgreSQL；完整集成验证同时接入 Kafka、OpenSearch 和 ClickHouse。
+- `prod` profile 启用启动守卫，拒绝 H2、默认密钥、认证绕过、默认采集令牌和禁用 Temporal。生产配置可组合启用 `pg,prod`。
+
+当前实现面向单机开发、演示和故障验证，不包含生产级高可用部署：
+
+- 租户隔离基于 `tenant_id` 与统一查询过滤，不是独立数据库或物理隔离。
+- Docker 环境使用单节点 Kafka、OpenSearch、PostgreSQL 和 ClickHouse。
+- 检测窗口状态保存在进程内；水平扩展时需要按检测键稳定分区。
+- AI 助手使用内置安全知识库，默认不调用外部大模型服务。
+
+## 项目结构
+
+```text
+socp-siem/
+├── platform/                  # 鉴权、租户、审计、可观测性、规则引擎等共享模块
+├── services/                  # 接入、检测、告警、案件、SOAR、资产、情报等业务服务
+├── frontend/apps/workbench/   # Vue 3 安全运营工作台
+├── frontend/packages/         # 前端共享包
+├── agents/                    # Vector、Falco 与采集配置
+├── infra/                     # Docker Compose、中间件配置和初始化脚本
+├── build/                     # 启停、验证、故障注入与演示脚本
+└── docs/                      # 架构、测试、运行指南和 ADR
+```
+
+## 文档
+
+- [架构说明](docs/architecture.md)
+- [模块地图](docs/module-map.md)
+- [启动指南](docs/getting-started.md)
+- [测试指南](docs/testing.md)
+- [Golden Demo 清单](docs/demo-checklist.md)
+- [架构决策记录](docs/adr/)
 
 ## License
 
-This repository is released under the [MIT License](LICENSE).
-
-## Documentation
-
-- [Testing guide](docs/testing.md) - module tests, integration checks and CI ownership
-- [Architecture](docs/architecture.md) — current event flow, storage boundaries and runtime modes
-- [Module map](docs/module-map.md) — services, platform modules and verification ownership
-- [Getting started](docs/getting-started.md) — local/integration setup and validation commands
-- [Architecture decisions](docs/adr/) — canonical pipeline, storage, Outbox and profile trade-offs
-- [Demo checklist](docs/demo-checklist.md) — a focused walkthrough and portfolio evidence plan
+本项目采用 [MIT License](LICENSE)。
