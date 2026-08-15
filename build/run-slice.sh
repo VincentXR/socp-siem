@@ -62,7 +62,11 @@ case "${1:-start}" in
       # 网关的下游地址走 SOCP_*_URI 环境变量（ports.env 已 export），不要用命令行覆盖 routes[0].uri：
       # Spring Boot 绑定 List 时只取优先级最高的那个属性源，命令行里只写 uri 会导致
       # predicates 整个丢失，启动直接报 "Property: routes[0].predicates Value: []"。
-      "$JAVA" -jar "$jar" --server.port="$port" > "$LOGDIR/$name.log" 2>&1 &
+      if [ "$name" = "api-gateway" ]; then
+        "$JAVA" -jar "$jar" --server.port="$port" --spring.profiles.active=dev > "$LOGDIR/$name.log" 2>&1 &
+      else
+        "$JAVA" -jar "$jar" --server.port="$port" > "$LOGDIR/$name.log" 2>&1 &
+      fi
     done
     echo "日志目录：$LOGDIR"
     ;;

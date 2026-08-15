@@ -133,6 +133,9 @@ jobs:
     needs: build
     env:
       SOCP_JWT_SECRET: ci-test-jwt-secret-0123456789abcdef0123456789abcdef
+      SOCP_LOGIN_SECRET: ci-test-jwt-secret-0123456789abcdef0123456789abcdef
+      SOCP_AUTH_USERS: '{"admin":"admin123","demo":"demo123","viewer":"viewer123"}'
+      SOCP_AUTH_ROLES: '{"admin":"admin","demo":"analyst","viewer":"viewer"}'
       # CI middleware uses local HTTP OpenSearch and unauthenticated ClickHouse.
       PIPELINE_OS: http://localhost:9200
       PIPELINE_OS_AUTH: "admin:"
