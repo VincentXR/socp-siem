@@ -280,6 +280,7 @@ export const trend7d = (options?: ApiRequestOptions) => get<{ days: string[]; co
 // ---------- ASSET 资产 ----------
 export const listAssets = () => get<Asset[]>('/asset-web/api/v1/assets')
 export const createAsset = (a: Partial<Asset>) => post<Asset>('/asset-web/api/v1/assets', a)
+export const updateAsset = (id: string, a: Partial<Asset>) => put<Asset>(`/asset-web/api/v1/assets/${encodeURIComponent(id)}`, a)
 export const deleteAsset = (id: string) => del(`/asset-web/api/v1/assets/${encodeURIComponent(id)}`)
 export const assetStats = () => get<{ total: number; byType: Record<string, number>; byCriticality: Record<string, number> }>('/asset-web/api/v1/assets/stats')
 

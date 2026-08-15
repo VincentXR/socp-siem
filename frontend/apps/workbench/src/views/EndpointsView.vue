@@ -60,9 +60,8 @@ onMounted(loadEndpoints)
 
     <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="endpointsFiltered.length">
       <template #toolbar>
-        <FilterToolbar>
+        <FilterToolbar :count="endpointsFiltered.length">
         <el-input v-model="keyword" placeholder="搜索主机名 / IP / 系统" clearable @input="page = 1" />
-        <span class="toolbar-count">共 {{ endpointsFiltered.length }} 条</span>
         </FilterToolbar>
       </template>
       <el-table :data="endpointsPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd">

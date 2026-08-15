@@ -3,6 +3,8 @@ package com.socp.asset.web.api;
 import com.socp.asset.web.model.Asset;
 import com.socp.asset.web.store.AssetStore;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -32,6 +34,14 @@ public class AssetController {
     @PostMapping
     public Asset create(@RequestBody CreateAssetRequest req) {
         return store.save(Asset.create(req.name(), req.type(), req.ip(), req.os(), req.owner(), req.criticality()));
+    }
+
+    @RequireRole({"admin", "analyst"})
+    @PutMapping("/{id}")
+    public Asset update(@PathVariable String id, @RequestBody CreateAssetRequest req) {
+        Asset existing = store.get(id);
+        if (existing == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "资产不存在");
+        return store.save(new Asset(id, req.name(), req.type(), req.ip(), req.os(), req.owner(), req.criticality(), existing.createdAt()));
     }
 
     /** 采集服务（asset-collect）上报新资产——按 name 去重，已存在则更新。 */

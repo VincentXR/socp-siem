@@ -133,9 +133,8 @@ onMounted(loadTi)
     </el-dialog>
     <DataTableCard v-model:current-page="iocPage" v-model:page-size="iocSize" :total="iocsFiltered.length">
       <template #toolbar>
-        <FilterToolbar>
+        <FilterToolbar :count="iocsFiltered.length">
         <el-input v-model="iocKeyword" placeholder="搜索情报值 / 来源 / 描述" clearable @input="iocPage = 1" />
-        <span class="toolbar-count">共 {{ iocsFiltered.length }} 条</span>
         </FilterToolbar>
       </template>
       <el-table :data="iocsPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd">

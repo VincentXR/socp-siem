@@ -82,12 +82,11 @@ onMounted(loadCases)
 
     <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="casesFiltered.length">
       <template #toolbar>
-        <FilterToolbar>
+        <FilterToolbar :count="casesFiltered.length">
         <el-input v-model="keyword" placeholder="搜索案件 ID / 标题 / 实体" clearable @input="page = 1" />
         <el-select v-model="statusFilter" placeholder="全部状态" clearable @change="page = 1">
           <el-option v-for="status in ['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']" :key="status" :label="status" :value="status" />
         </el-select>
-        <span class="toolbar-count">共 {{ casesFiltered.length }} 条</span>
         </FilterToolbar>
       </template>
       <el-table :data="casesPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd">

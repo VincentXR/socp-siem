@@ -22,6 +22,7 @@ import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -96,5 +97,28 @@ class AssetControllerTest {
                         .header("X-Role", "analyst"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.removed").value(false));
+    }
+
+    @Test
+    void updateKeepsAssetIdAndCreatedAt() throws Exception {
+        Asset existing = Asset.create("old-name", "SERVER", "10.0.0.30", "Ubuntu 22.04", "infra", "HIGH");
+        given(store.get("asset-1")).willReturn(new Asset("asset-1", existing.name(), existing.type(), existing.ip(), existing.os(), existing.owner(), existing.criticality(), existing.createdAt()));
+        given(store.save(any(Asset.class))).willAnswer(inv -> inv.getArgument(0));
+
+        Map<String, String> body = Map.of(
+                "name", "web-prod-01", "type", "SERVER", "ip", "10.0.0.31",
+                "os", "Ubuntu 24.04", "owner", "sec", "criticality", "CRITICAL");
+
+        mvc.perform(put("/api/v1/assets/{id}", "asset-1")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(body)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value("asset-1"))
+                .andExpect(jsonPath("$.name").value("web-prod-01"))
+                .andExpect(jsonPath("$.criticality").value("CRITICAL"));
+
+        verify(store).save(any(Asset.class));
     }
 }
