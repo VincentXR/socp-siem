@@ -206,9 +206,11 @@ jobs:
 
       - name: Prepare ClickHouse schema
         run: |
-          curl --fail --user default:socp \
-            --data-binary @infra/init-sql/clickhouse/init.sql \
-            'http://localhost:8123/?multiquery=1'
+          ck_container="$(docker ps --filter 'ancestor=clickhouse/clickhouse-server:24.3' --format '{{.ID}}' | head -n 1)"
+          test -n "$ck_container"
+          docker exec -i "$ck_container" clickhouse-client \
+            --user default --password socp --multiquery \
+            < infra/init-sql/clickhouse/init.sql
 
       - name: Set up JDK 21
         uses: actions/setup-java@v5
