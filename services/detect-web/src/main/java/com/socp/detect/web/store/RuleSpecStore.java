@@ -104,7 +104,7 @@ public class RuleSpecStore {
             """
             {"id":"EXEC-SUSPICIOUS-SHELL","name":"可疑命令执行","type":"pattern","severity":"HIGH",
              "message":"检测到可疑命令执行：{msg} @ {host}","mitre":"T1059",
-             "match":[{"field":"msg","op":"regex","value":"(?i)powershell.*(-enc|encodedcommand)|certutil -urlcache|invoke-expression|iex\\s*\\("}]}
+             "match":[{"field":"msg","op":"regex","value":"(?i)powershell.*(-enc|encodedcommand)|certutil -urlcache|invoke-expression|iex\\\\s*\\\\("}]}
             """,
             """
             {"id":"DOS-FLOOD","name":"拒绝服务洪泛","type":"threshold","severity":"HIGH",
