@@ -1,4 +1,24 @@
 <script setup lang="ts">
+import 'element-plus/es/components/button/style/css.mjs'
+import 'element-plus/es/components/card/style/css.mjs'
+import 'element-plus/es/components/descriptions/style/css.mjs'
+import 'element-plus/es/components/divider/style/css.mjs'
+import 'element-plus/es/components/drawer/style/css.mjs'
+import 'element-plus/es/components/empty/style/css.mjs'
+import 'element-plus/es/components/input/style/css.mjs'
+import 'element-plus/es/components/pagination/style/css.mjs'
+import 'element-plus/es/components/select/style/css.mjs'
+import 'element-plus/es/components/tag/style/css.mjs'
+import ElButton from 'element-plus/es/components/button/index.mjs'
+import ElCard from 'element-plus/es/components/card/index.mjs'
+import { ElDescriptions, ElDescriptionsItem } from 'element-plus/es/components/descriptions/index.mjs'
+import ElDivider from 'element-plus/es/components/divider/index.mjs'
+import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
+import ElEmpty from 'element-plus/es/components/empty/index.mjs'
+import ElInput from 'element-plus/es/components/input/index.mjs'
+import ElPagination from 'element-plus/es/components/pagination/index.mjs'
+import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
+import ElTag from 'element-plus/es/components/tag/index.mjs'
 /**
  * 告警页（2026-08-10 从 App.vue 拆分）：搜索/筛选 + 微卡片列表 + 分页 + 处置抽屉。
  * 数据与加载回调由 App.vue 传入；抽屉/处置逻辑自包含（直接调 api.ts）。

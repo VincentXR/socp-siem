@@ -1,4 +1,22 @@
 <script setup lang="ts">
+import 'element-plus/es/components/button/style/css.mjs'
+import 'element-plus/es/components/card/style/css.mjs'
+import 'element-plus/es/components/descriptions/style/css.mjs'
+import 'element-plus/es/components/divider/style/css.mjs'
+import 'element-plus/es/components/drawer/style/css.mjs'
+import 'element-plus/es/components/select/style/css.mjs'
+import 'element-plus/es/components/table/style/css.mjs'
+import 'element-plus/es/components/tag/style/css.mjs'
+import 'element-plus/es/components/timeline/style/css.mjs'
+import ElButton from 'element-plus/es/components/button/index.mjs'
+import ElCard from 'element-plus/es/components/card/index.mjs'
+import { ElDescriptions, ElDescriptionsItem } from 'element-plus/es/components/descriptions/index.mjs'
+import ElDivider from 'element-plus/es/components/divider/index.mjs'
+import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
+import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
+import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
+import ElTag from 'element-plus/es/components/tag/index.mjs'
+import { ElTimeline, ElTimelineItem } from 'element-plus/es/components/timeline/index.mjs'
 import { computed, onMounted, ref } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import PagerBar from '../components/PagerBar.vue'
@@ -32,6 +50,7 @@ async function openCase(item: CaseInfo) {
   drawerVisible.value = true
   try { timeline.value = (await caseTimeline(item.id)).timeline } catch { timeline.value = [] }
 }
+function openCaseRow(row: unknown) { openCase(row as CaseInfo) }
 
 async function updateStatus() {
   if (!detail.value || !newStatus.value) return
@@ -63,7 +82,7 @@ onMounted(loadCases)
         <el-table-column label="级别" width="90"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
         <el-table-column label="状态" width="120"><template #default="{ row }"><el-tag :type="row.status === 'OPEN' ? 'danger' : row.status === 'RESOLVED' || row.status === 'CLOSED' ? 'success' : 'warning'" size="small">{{ row.status }}</el-tag></template></el-table-column>
         <el-table-column prop="alarmIds.length" label="关联告警" width="90" />
-        <el-table-column label="操作" width="90"><template #default="{ row }"><el-button link type="primary" size="small" @click="openCase(row)">详情/时间线</el-button></template></el-table-column>
+        <el-table-column label="操作" width="90"><template #default="{ row }"><el-button link type="primary" size="small" @click="openCaseRow(row)">详情/时间线</el-button></template></el-table-column>
       </el-table>
       <PagerBar v-model:current-page="page" v-model:page-size="size" :total="cases.length" />
     </el-card>

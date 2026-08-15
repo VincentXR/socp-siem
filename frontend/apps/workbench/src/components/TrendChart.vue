@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import * as echarts from 'echarts'
+import { echarts } from '../lib/echarts'
 
 /**
  * 近 7 日告警趋势折线图（概览页/态势页共用）。

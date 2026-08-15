@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import 'element-plus/es/components/button/style/css.mjs'
+import 'element-plus/es/components/card/style/css.mjs'
+import ElButton from 'element-plus/es/components/button/index.mjs'
+import ElCard from 'element-plus/es/components/card/index.mjs'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import MetricCard from '../components/MetricCard.vue'
 import PageHeader from '../components/PageHeader.vue'

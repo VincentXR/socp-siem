@@ -95,48 +95,46 @@ function assertOk(res: Response): void {
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
 }
 
-async function get<T>(path: string): Promise<T> {
-  const res = await fetch(path, {
-    headers: { Accept: 'application/json', Authorization: authHeader() },
-  })
-  assertOk(res)
-  const body = await res.json()
-  // alert-web 返回 ApiResult{code,message,data}，其余直接返回
+function unwrap<T>(body: unknown): T {
   if (body && typeof body === 'object' && 'code' in body && 'data' in body) {
-    if (body.code !== 0) throw new Error(body.message || `code=${body.code}`)
-    return body.data as T
+    const envelope = body as { code: number; message?: string; data: T }
+    if (envelope.code !== 0) throw new Error(envelope.message || `code=${envelope.code}`)
+    return envelope.data
   }
   return body as T
 }
 
-async function post<T>(path: string, data?: unknown): Promise<T> {
-  const res = await fetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: authHeader() },
-    body: data ? JSON.stringify(data) : undefined,
-  })
+async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers)
+  if (!headers.has('Accept')) headers.set('Accept', 'application/json')
+  if (!headers.has('Authorization')) headers.set('Authorization', authHeader())
+  const res = await fetch(path, { ...init, headers })
   assertOk(res)
-  const body = await res.json()
-  if (body && typeof body === 'object' && 'code' in body && 'data' in body) return body.data as T
-  return body as T
+  return unwrap<T>(await res.json())
+}
+
+async function get<T>(path: string): Promise<T> {
+  return requestJson<T>(path)
+}
+
+async function post<T>(path: string, data?: unknown): Promise<T> {
+  return requestJson<T>(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: data === undefined ? undefined : JSON.stringify(data),
+  })
 }
 
 async function put<T>(path: string, data?: unknown): Promise<T> {
-  const res = await fetch(path, {
+  return requestJson<T>(path, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json', Authorization: authHeader() },
-    body: data ? JSON.stringify(data) : undefined,
+    headers: { 'Content-Type': 'application/json' },
+    body: data === undefined ? undefined : JSON.stringify(data),
   })
-  assertOk(res)
-  const body = await res.json()
-  if (body && typeof body === 'object' && 'code' in body && 'data' in body) return body.data as T
-  return body as T
 }
 
 async function del<T>(path: string): Promise<T> {
-  const res = await fetch(path, { method: 'DELETE', headers: { Authorization: authHeader() } })
-  assertOk(res)
-  return (await res.json()) as T
+  return requestJson<T>(path, { method: 'DELETE' })
 }
 
 // ---------- ALERT 告警 ----------
@@ -393,15 +391,17 @@ function downloadBlob(blob: Blob, filename: string) {
   a.remove()
   URL.revokeObjectURL(url)
 }
+async function downloadFile(path: string, filename: string): Promise<void> {
+  const res = await fetch(path, { headers: { Authorization: authHeader() } })
+  assertOk(res)
+  downloadBlob(await res.blob(), filename)
+}
 export const exportAlarms = (format = 'csv') =>
-  fetch(`/alert-web/api/alarms/export?format=${format}`, { headers: { Authorization: authHeader() } })
-    .then(r => r.blob()).then(b => downloadBlob(b, `alarms.${format}`))
+  downloadFile(`/alert-web/api/alarms/export?format=${format}`, `alarms.${format}`)
 export const exportCases = () =>
-  fetch('/incident-web/api/v1/incidents/export', { headers: { Authorization: authHeader() } })
-    .then(r => r.blob()).then(b => downloadBlob(b, 'cases.json'))
+  downloadFile('/incident-web/api/v1/incidents/export', 'cases.json')
 export const exportSearch = (q: string, format = 'json') =>
-  fetch(`/search-config/api/v1/search/export?q=${encodeURIComponent(q)}&format=${format}`, { headers: { Authorization: authHeader() } })
-    .then(r => r.blob()).then(b => downloadBlob(b, `search.${format}`))
+  downloadFile(`/search-config/api/v1/search/export?q=${encodeURIComponent(q)}&format=${format}`, `search.${format}`)
 
 export interface GasAlert {
   id: string; timestamp: string; ruleId: string; ruleName: string

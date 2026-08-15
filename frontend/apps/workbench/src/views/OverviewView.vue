@@ -1,4 +1,10 @@
 <script setup lang="ts">
+import 'element-plus/es/components/button/style/css.mjs'
+import 'element-plus/es/components/card/style/css.mjs'
+import 'element-plus/es/components/table/style/css.mjs'
+import ElButton from 'element-plus/es/components/button/index.mjs'
+import ElCard from 'element-plus/es/components/card/index.mjs'
+import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import { computed, ref } from 'vue'
 import AnimatedNumber from '../AnimatedNumber.vue'
 import EmptyState from '../components/EmptyState.vue'

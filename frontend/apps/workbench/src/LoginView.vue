@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { login as apiLogin, setToken } from './api'
-import { ElMessage } from 'element-plus'
+import ElMessage from 'element-plus/es/components/message/index.mjs'
 
 const emit = defineEmits<{ (e: 'done', user: string, role: string): void }>()
 

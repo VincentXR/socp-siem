@@ -1,55 +1,12 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
-import * as echarts from 'echarts'
+import ElMessage from 'element-plus/es/components/message/index.mjs'
+import { registerChartTheme } from './lib/echarts'
 
 /** 主题（在 echarts 主题注册前声明，registerTheme 加载期即读取） */
 const theme = ref<'light' | 'dark'>('light')
 
-// Linear 风全局 echarts 主题（浅色/深色自适应，淡网格 / 细轴 / 圆角 tooltip / 品牌色系）
-function themeColor(k: 'grid' | 'axis' | 'label' | 'tooltipBg' | 'tooltipText' | 'legend'): string {
-  const dark = theme.value === 'dark'
-  return {
-    grid: dark ? 'rgba(255,255,255,.06)' : 'rgba(31,35,40,.06)',
-    axis: dark ? '#3d444d' : '#d1d9e0',
-    label: dark ? '#9198a1' : '#59636e',
-    tooltipBg: dark ? '#21262d' : '#ffffff',
-    tooltipText: dark ? '#e6edf3' : '#1f2328',
-    legend: dark ? '#9198a1' : '#59636e',
-  }[k]
-}
-/** 注册（或覆盖）echarts 'socp' 主题；主题切换时重调以刷新颜色 */
-function registerChartTheme() {
-  echarts.registerTheme('socp', {
-    color: ['#4493f8', '#0969da', '#30d158', '#ff9f0a', '#f85149', '#8250df', '#39c5cf', '#bf8700'],
-    backgroundColor: 'transparent',
-    textStyle: { color: themeColor('label'), fontFamily: '-apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif' },
-    title: { textStyle: { color: themeColor('label'), fontSize: 13, fontWeight: 600 }, subtextStyle: { color: themeColor('legend'), fontSize: 11 } },
-    legend: { textStyle: { color: themeColor('legend'), fontSize: 11 } },
-    tooltip: {
-      backgroundColor: themeColor('tooltipBg'),
-      borderColor: themeColor('grid'),
-      borderWidth: 1,
-      textStyle: { color: themeColor('tooltipText'), fontSize: 12 },
-      extraCssText: 'border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.12);',
-    },
-    categoryAxis: {
-      axisLine: { lineStyle: { color: themeColor('axis') } },
-      axisTick: { show: false },
-      axisLabel: { color: themeColor('label'), fontSize: 11 },
-      splitLine: { show: false },
-    },
-    valueAxis: {
-      axisLine: { show: false },
-      axisTick: { show: false },
-      axisLabel: { color: themeColor('label'), fontSize: 11 },
-      splitLine: { lineStyle: { color: themeColor('grid'), type: 'dashed' } },
-    },
-    line: { smooth: true, symbol: 'circle', symbolSize: 6, lineStyle: { width: 2 } },
-    bar: { itemStyle: { borderRadius: [6, 6, 0, 0] } },
-  })
-}
-registerChartTheme()
+registerChartTheme(theme.value)
 
 import LoginView from './LoginView.vue'
 import AnimatedNumber from './AnimatedNumber.vue'
@@ -130,7 +87,7 @@ function applyTheme(t: 'light' | 'dark') {
   theme.value = t
   document.documentElement.setAttribute('data-theme', t)
   try { localStorage.setItem('socp_theme', t) } catch { /* ignore */ }
-  registerChartTheme()
+  registerChartTheme(t)
 }
 function toggleTheme() {
   applyTheme(theme.value === 'light' ? 'dark' : 'light')

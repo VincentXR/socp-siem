@@ -1,7 +1,17 @@
 <script setup lang="ts">
+import 'element-plus/es/components/button/style/css.mjs'
+import 'element-plus/es/components/card/style/css.mjs'
+import 'element-plus/es/components/col/style/css.mjs'
+import 'element-plus/es/components/row/style/css.mjs'
+import 'element-plus/es/components/table/style/css.mjs'
+import ElButton from 'element-plus/es/components/button/index.mjs'
+import ElCard from 'element-plus/es/components/card/index.mjs'
+import ElCol from 'element-plus/es/components/col/index.mjs'
+import ElRow from 'element-plus/es/components/row/index.mjs'
+import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import { nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
-import { ElMessage } from 'element-plus'
-import * as echarts from 'echarts'
+import ElMessage from 'element-plus/es/components/message/index.mjs'
+import { echarts } from '../lib/echarts'
 import { archiveReport, dailyReport, listArchive, trend7d, type ReportSummary } from '../api'
 
 const props = defineProps<{ theme: 'light' | 'dark' }>()

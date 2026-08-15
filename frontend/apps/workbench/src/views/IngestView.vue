@@ -1,4 +1,30 @@
 <script setup lang="ts">
+import 'element-plus/es/components/alert/style/css.mjs'
+import 'element-plus/es/components/button/style/css.mjs'
+import 'element-plus/es/components/card/style/css.mjs'
+import 'element-plus/es/components/col/style/css.mjs'
+import 'element-plus/es/components/dialog/style/css.mjs'
+import 'element-plus/es/components/form/style/css.mjs'
+import 'element-plus/es/components/input/style/css.mjs'
+import 'element-plus/es/components/row/style/css.mjs'
+import 'element-plus/es/components/select/style/css.mjs'
+import 'element-plus/es/components/switch/style/css.mjs'
+import 'element-plus/es/components/table/style/css.mjs'
+import 'element-plus/es/components/tabs/style/css.mjs'
+import 'element-plus/es/components/tag/style/css.mjs'
+import ElAlert from 'element-plus/es/components/alert/index.mjs'
+import ElButton from 'element-plus/es/components/button/index.mjs'
+import ElCard from 'element-plus/es/components/card/index.mjs'
+import ElCol from 'element-plus/es/components/col/index.mjs'
+import ElDialog from 'element-plus/es/components/dialog/index.mjs'
+import { ElForm, ElFormItem } from 'element-plus/es/components/form/index.mjs'
+import ElInput from 'element-plus/es/components/input/index.mjs'
+import ElRow from 'element-plus/es/components/row/index.mjs'
+import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
+import ElSwitch from 'element-plus/es/components/switch/index.mjs'
+import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
+import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs'
+import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { onMounted, ref } from 'vue'
 import {
   createOutput, createParseRule, createSource, deleteOutput, deleteParseRule, deleteSource,
@@ -34,7 +60,8 @@ const testSample = ref('')
 const testResult = ref<Record<string, unknown> | null>(null)
 const testLoading = ref(false)
 
-const HEALTH_META: Record<string, { text: string; type: string }> = {
+type TagType = 'primary' | 'success' | 'warning' | 'info' | 'danger'
+const HEALTH_META: Record<string, { text: string; type: TagType }> = {
   HEALTHY: { text: '正常', type: 'success' }, DEGRADED: { text: '降级', type: 'warning' },
   STALE: { text: '静默', type: 'warning' }, IDLE: { text: '待接入', type: 'info' },
   ERROR: { text: '异常', type: 'danger' }, DISABLED: { text: '已停用', type: 'info' },
@@ -56,12 +83,13 @@ async function loadTasks() {
   tasks.value = taskResult.status === 'fulfilled' ? taskResult.value : []
   taskSummary.value = summaryResult.status === 'fulfilled' ? summaryResult.value : null
 }
-function onIngestTab(key: string) {
-  ingestTab.value = key
-  if (key === 'sources') loadSources()
-  if (key === 'outputs') loadOutputs()
-  if (key === 'rules') loadParseRules()
-  if (key === 'tasks') loadTasks()
+function onIngestTab(key: string | number) {
+  const tab = String(key)
+  ingestTab.value = tab
+  if (tab === 'sources') loadSources()
+  if (tab === 'outputs') loadOutputs()
+  if (tab === 'rules') loadParseRules()
+  if (tab === 'tasks') loadTasks()
 }
 
 async function addSource() {
@@ -115,6 +143,8 @@ async function toggleTask(task: IngestTask) {
   finally { taskBusy.value = { ...taskBusy.value, [task.id]: false } }
 }
 function openTest(task: IngestTask) { testTarget.value = task; testSample.value = ''; testResult.value = null; testDialog.value = true }
+function toggleTaskRow(row: unknown) { toggleTask(row as IngestTask) }
+function openTestRow(row: unknown) { openTest(row as IngestTask) }
 async function runTest() {
   if (!testTarget.value) return
   testLoading.value = true
@@ -151,7 +181,7 @@ onMounted(async () => {
             <el-table-column label="EPS(1m/5m)" width="110"><template #default="{ row }"><span :style="{ color: row.runtime.eps1m > 0 ? '#67c23a' : '#c0c4cc', fontWeight: 600 }">{{ row.runtime.eps1m }}</span><span style="color:#c0c4cc"> / {{ row.runtime.eps5m }}</span></template></el-table-column>
             <el-table-column label="接收 / 转发 / 跳过" width="150"><template #default="{ row }"><span class="mono" style="font-size:12px">{{ row.runtime.accepted }} / {{ row.runtime.forwarded }} / <span :style="{ color: row.runtime.skipped > 0 ? '#e6a23c' : 'inherit' }">{{ row.runtime.skipped }}</span></span></template></el-table-column>
             <el-table-column label="最近数据" width="150"><template #default="{ row }"><span class="mono" style="font-size:12px">{{ fmtTime(row.runtime.lastAt) }}</span></template></el-table-column>
-            <el-table-column label="操作" width="170"><template #default="{ row }"><el-button link :type="row.enabled ? 'warning' : 'success'" size="small" :loading="taskBusy[row.id]" @click="toggleTask(row)">{{ row.enabled ? '停止' : '启动' }}</el-button><el-button link type="primary" size="small" @click="openTest(row)">连通性自测</el-button></template></el-table-column>
+            <el-table-column label="操作" width="170"><template #default="{ row }"><el-button link :type="row.enabled ? 'warning' : 'success'" size="small" :loading="taskBusy[row.id]" @click="toggleTaskRow(row)">{{ row.enabled ? '停止' : '启动' }}</el-button><el-button link type="primary" size="small" @click="openTestRow(row)">连通性自测</el-button></template></el-table-column>
             <el-table-column type="expand"><template #default="{ row }"><div style="padding:8px 20px;font-size:12px;color:#606266"><div>环境：{{ row.env || '—' }} · 类别：{{ row.categoryId || '—' }} · 输出：{{ row.sinkTargetId || '默认' }} · 创建：{{ fmtTime(row.createdAt) }}</div><div style="margin-top:4px">绑定解析规则：<el-tag v-for="p in row.parseRuleIds" :key="p" size="small" style="margin-right:4px">{{ p }}</el-tag><span v-if="!row.parseRuleIds?.length" style="color:#c0c4cc">自动识别</span></div><div v-if="row.runtime.lastError" style="margin-top:4px;color:#f56c6c">最近错误（{{ fmtTime(row.runtime.lastErrorAt ?? null) }}）：{{ row.runtime.lastError }}</div></div></template></el-table-column>
           </el-table>
         </el-card>

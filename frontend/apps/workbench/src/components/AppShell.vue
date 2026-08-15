@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import 'element-plus/es/components/button/style/css.mjs'
+import 'element-plus/es/components/input/style/css.mjs'
+import ElButton from 'element-plus/es/components/button/index.mjs'
+import ElInput from 'element-plus/es/components/input/index.mjs'
 import { MENU_ICONS, type MenuGroup } from '../app/navigation'
 
 type Theme = 'light' | 'dark'

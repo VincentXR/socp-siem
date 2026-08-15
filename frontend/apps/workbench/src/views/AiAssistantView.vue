@@ -1,4 +1,10 @@
 <script setup lang="ts">
+import 'element-plus/es/components/button/style/css.mjs'
+import 'element-plus/es/components/card/style/css.mjs'
+import 'element-plus/es/components/input/style/css.mjs'
+import ElButton from 'element-plus/es/components/button/index.mjs'
+import ElCard from 'element-plus/es/components/card/index.mjs'
+import ElInput from 'element-plus/es/components/input/index.mjs'
 import { ref } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import { aiAsk, type AiResult } from '../api'

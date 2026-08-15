@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import 'element-plus/es/components/pagination/style/css.mjs'
+import ElPagination from 'element-plus/es/components/pagination/index.mjs'
 /**
  * 统一分页器（案件/资产/IOC/剧本执行等列表页共用）。
  * 透传 el-pagination 的 current-page / page-size / total。
