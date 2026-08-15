@@ -4,7 +4,6 @@ import 'element-plus/es/components/dialog/style/css.mjs'
 import 'element-plus/es/components/form/style/css.mjs'
 import 'element-plus/es/components/input/style/css.mjs'
 import 'element-plus/es/components/message/style/css.mjs'
-import 'element-plus/es/components/message-box/style/css.mjs'
 import 'element-plus/es/components/select/style/css.mjs'
 import 'element-plus/es/components/table/style/css.mjs'
 import 'element-plus/es/components/tag/style/css.mjs'
@@ -13,7 +12,6 @@ import ElDialog from 'element-plus/es/components/dialog/index.mjs'
 import { ElForm, ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import ElMessage from 'element-plus/es/components/message/index.mjs'
-import ElMessageBox from 'element-plus/es/components/message-box/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
@@ -79,13 +77,12 @@ async function loadAssets() {
 }
 
 async function removeAsset(id: string) {
+  if (!window.confirm('删除后将无法恢复，是否继续？')) return
   try {
-    await ElMessageBox.confirm('删除后将无法恢复，是否继续？', '删除资产', { type: 'warning' })
     await assetApi.remove(id)
     ElMessage.success('资产已删除')
     await loadAssets()
   } catch (error) {
-    if (error === 'cancel' || error === 'close') return
     ElMessage.error(error instanceof Error ? error.message : '删除资产失败')
   }
 }
