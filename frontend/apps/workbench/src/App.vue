@@ -232,11 +232,6 @@ function onAlarmSortChange(field: AlarmSortField, order: AlarmSortOrder) {
 }
 
 /** 顶栏全局搜索：回车后跳到日志检索页并执行 */
-const topSearch = ref('')
-function onTopSearch() {
-  if (!topSearch.value.trim()) return
-  onMenuChange('search')
-}
 
 // ---------- 生命周期 ----------
 function onMenuChange(key: string) {
@@ -300,11 +295,8 @@ function decodeJwtPayload(t: string): Record<string, any> | null {
     :current-user="currentUser"
     :current-role="currentRole"
     :user-initials="userInitials"
-    :top-search="topSearch"
     @menu-change="onMenuChange"
     @toggle-theme="toggleTheme"
-    @update:top-search="topSearch = $event"
-    @top-search="onTopSearch"
     @logout="doLogout"
     @login="openLoginDialog"
   >
@@ -323,7 +315,7 @@ function decodeJwtPayload(t: string): Record<string, any> | null {
           :export-csv="() => exportAlarms('csv')" :export-json="() => exportAlarms('json')"
           :go-case="() => onMenuChange('case')" />
 
-        <SearchView v-else-if="activeMenu === 'search'" :initial-query="topSearch" />
+        <SearchView v-else-if="activeMenu === 'search'" />
 
         <IngestView v-else-if="activeMenu === 'ingest'" />
 

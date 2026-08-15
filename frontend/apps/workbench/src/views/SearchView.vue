@@ -16,8 +16,7 @@ import PageHeader from '../components/PageHeader.vue'
 import SevBadge from '../components/SevBadge.vue'
 import { exportSearch, splSearch, type SearchResult } from '../api'
 
-const props = defineProps<{ initialQuery?: string }>()
-const query = ref(props.initialQuery || 'source=auth severity=HIGH')
+const query = ref('source=auth severity=HIGH')
 const result = ref<SearchResult | null>(null)
 const loading = ref(false)
 const error = ref('')
