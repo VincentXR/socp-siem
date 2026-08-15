@@ -38,7 +38,7 @@ export function useAuth() {
 
   function initAuth() {
     setUnauthorizedHandler(() => {
-      ElMessage.warning('鐧诲綍宸茶繃鏈燂紝璇烽噸鏂扮櫥褰?')
+      ElMessage.warning('登录已过期，请重新登录')
       setTimeout(doLogout, 600)
     })
 
