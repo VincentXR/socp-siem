@@ -16,6 +16,7 @@ import ElInput from 'element-plus/es/components/input/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import { computed, onMounted, ref } from 'vue'
+import MetricCard from '../components/MetricCard.vue'
 import PageHeader from '../components/PageHeader.vue'
 import PagerBar from '../components/PagerBar.vue'
 import SevBadge from '../components/SevBadge.vue'
@@ -81,7 +82,7 @@ onMounted(loadTi)
     <PageHeader title="威胁情报" description="维护 IP、域名、URL、哈希和邮箱情报，并检查事件是否命中情报库。">
       <template #actions><el-button size="small" @click="loadTi">刷新</el-button></template>
     </PageHeader>
-    <div style="display:flex;gap:16px;margin-bottom:14px;flex-wrap:wrap">
+    <div class="page-metrics ti-metrics">
       <el-card shadow="never" :body-style="{ padding: '12px 18px' }">
         <div style="font-size:12px;color:#909399">情报总量</div>
         <div style="font-size:22px;font-weight:700">{{ tiStat.total ?? 0 }}</div>

@@ -20,6 +20,7 @@ import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.m
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { ElTimeline, ElTimelineItem } from 'element-plus/es/components/timeline/index.mjs'
 import { computed, onMounted, ref } from 'vue'
+import MetricCard from '../components/MetricCard.vue'
 import PageHeader from '../components/PageHeader.vue'
 import PagerBar from '../components/PagerBar.vue'
 import SevBadge from '../components/SevBadge.vue'
