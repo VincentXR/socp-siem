@@ -64,7 +64,7 @@ onMounted(loadPlaybooks)
     </PageHeader>
 
     <el-card shadow="never">
-      <el-table :data="playbooks" size="small">
+      <el-table :data="playbooks" size="small" border>
         <el-table-column prop="name" label="剧本" min-width="140" show-overflow-tooltip />
         <el-table-column prop="trigger" label="触发条件" min-width="200" show-overflow-tooltip />
         <el-table-column label="动作链" min-width="260"><template #default="{ row }"><el-tag v-for="action in row.actions" :key="action" size="small" class="soar-action-tag">{{ action }}</el-tag></template></el-table-column>
@@ -75,7 +75,7 @@ onMounted(loadPlaybooks)
 
     <el-card shadow="never" class="soar-history-card">
       <template #header>执行历史（最近 {{ executions.length }} 条）</template>
-      <el-table :data="executionsPaged" size="small">
+      <el-table :data="executionsPaged" size="small" border>
         <el-table-column prop="ts" label="时间" width="200" />
         <el-table-column prop="playbook" label="剧本" min-width="140" show-overflow-tooltip />
         <el-table-column prop="trigger" label="触发" min-width="160" show-overflow-tooltip />

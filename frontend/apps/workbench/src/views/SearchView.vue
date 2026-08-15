@@ -14,6 +14,7 @@ import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { computed, onMounted, ref } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import SevBadge from '../components/SevBadge.vue'
+import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { exportSearch, splSearch, type SearchResult } from '../api'
 
 const query = ref('source=auth severity=HIGH')
@@ -29,6 +30,7 @@ const examples = [
   'bytes>=1000 | head 10',
 ]
 const maxStatCount = computed(() => Math.max(1, ...(result.value?.stat?.rows.map(row => Number(row.count)) ?? [1])))
+const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('search-events')
 
 async function search() {
   loading.value = true
@@ -71,17 +73,17 @@ onMounted(search)
     <template v-if="result">
       <el-card shadow="never" class="search-result-card">
         <template #header>命中 {{ result.total }} 条事件</template>
-        <el-table :data="result.events" size="small" max-height="420">
-          <el-table-column prop="timestamp" label="时间" width="150" sortable><template #default="{ row }">{{ row.timestamp.slice(0, 19).replace('T', ' ') }}</template></el-table-column>
-          <el-table-column prop="source" label="来源" width="90" sortable />
-          <el-table-column prop="host" label="主机" width="90" sortable />
-          <el-table-column prop="severity" label="级别" width="80" sortable><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
-          <el-table-column prop="msg" label="消息" min-width="240" sortable show-overflow-tooltip />
+        <el-table :data="result.events" size="small" border allow-drag-last-column max-height="420" @header-dragend="onHeaderDragEnd">
+          <el-table-column prop="timestamp" column-key="timestamp" label="时间" :width="columnWidth('timestamp', 150)" sortable><template #default="{ row }">{{ row.timestamp.slice(0, 19).replace('T', ' ') }}</template></el-table-column>
+          <el-table-column prop="source" column-key="source" label="来源" :width="columnWidth('source', 90)" sortable />
+          <el-table-column prop="host" column-key="host" label="主机" :width="columnWidth('host', 90)" sortable />
+          <el-table-column prop="severity" column-key="severity" label="级别" :width="columnWidth('severity', 80)" sortable><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
+          <el-table-column prop="msg" column-key="msg" label="消息" :width="columnWidth('msg')" min-width="240" sortable show-overflow-tooltip />
         </el-table>
       </el-card>
       <el-card v-if="result.stat" shadow="never">
         <template #header>{{ result.stat.type === 'timechart' ? '时间分布（按天）' : `统计（${result.stat.type === 'top' ? 'Top' : '分组计数'}）` }}</template>
-        <el-table :data="result.stat.rows" size="small">
+        <el-table :data="result.stat.rows" size="small" border>
           <el-table-column prop="key" label="Key" sortable show-overflow-tooltip />
           <el-table-column prop="count" label="条数" width="220" sortable>
             <template #default="{ row }">

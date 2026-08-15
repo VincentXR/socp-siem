@@ -30,6 +30,7 @@ import EmptyState from '../components/EmptyState.vue'
 import PageHeader from '../components/PageHeader.vue'
 import SevBadge from '../components/SevBadge.vue'
 import { relTime } from '../lib/ui'
+import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import {
   SEVERITIES, type Alarm, type Ioc,
   getDisposition, setDispositionStatus, assignAlarm, addAlarmNote, listCases,
@@ -52,6 +53,7 @@ const severity = defineModel<string>('severity', { default: '' })
 const status = defineModel<string>('status', { default: '' })
 const rule = defineModel<string>('rule', { default: '' })
 const pageNum = defineModel<number>('pageNum', { default: 1 })
+const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('alarms')
 
 const DISP_STATUSES = ['OPEN', 'INVESTIGATING', 'RESOLVED', 'CLOSED']
 
@@ -157,27 +159,30 @@ function openAlarmRow(row: unknown) {
         height="calc(100vh - 318px)"
         size="small"
         row-key="id"
+        border
+        allow-drag-last-column
+        @header-dragend="onHeaderDragEnd"
         @sort-change="handleSortChange"
         @row-click="openAlarmRow"
       >
-        <el-table-column prop="occurredAt" label="发生时间" width="172" sortable="custom">
+        <el-table-column prop="occurredAt" column-key="occurredAt" label="发生时间" :width="columnWidth('occurredAt', 172)" sortable="custom">
           <template #default="{ row }"><span class="mono">{{ relTime(row.occurredAt) }}</span></template>
         </el-table-column>
-        <el-table-column prop="severity" label="级别" width="100" sortable="custom">
+        <el-table-column prop="severity" column-key="severity" label="级别" :width="columnWidth('severity', 100)" sortable="custom">
           <template #default="{ row }"><SevBadge :value="row.severity" /></template>
         </el-table-column>
-        <el-table-column prop="ruleName" label="规则" min-width="180" sortable="custom" show-overflow-tooltip>
+        <el-table-column prop="ruleName" column-key="ruleName" label="规则" :width="columnWidth('ruleName')" min-width="180" sortable="custom" show-overflow-tooltip>
           <template #default="{ row }">{{ row.ruleName || row.ruleId }}</template>
         </el-table-column>
-        <el-table-column prop="entity" label="实体" min-width="150" sortable="custom" show-overflow-tooltip />
-        <el-table-column prop="status" label="状态" width="125" sortable="custom">
+        <el-table-column prop="entity" column-key="entity" label="实体" :width="columnWidth('entity')" min-width="150" sortable="custom" show-overflow-tooltip />
+        <el-table-column prop="status" column-key="status" label="状态" :width="columnWidth('status', 125)" sortable="custom">
           <template #default="{ row }"><span class="alarm-status" :class="(row.status || 'OPEN').toLowerCase()">{{ row.status || 'OPEN' }}</span></template>
         </el-table-column>
-        <el-table-column prop="riskScore" label="风险分" width="90" sortable="custom">
+        <el-table-column prop="riskScore" column-key="riskScore" label="风险分" :width="columnWidth('riskScore', 90)" sortable="custom">
           <template #default="{ row }">{{ row.riskScore ?? '—' }}</template>
         </el-table-column>
-        <el-table-column prop="message" label="消息" min-width="260" show-overflow-tooltip />
-        <el-table-column label="操作" width="78" fixed="right">
+        <el-table-column prop="message" column-key="message" label="消息" :width="columnWidth('message')" min-width="260" show-overflow-tooltip />
+        <el-table-column label="操作" width="78" fixed="right" :resizable="false">
           <template #default="{ row }"><el-button link type="primary" size="small" @click.stop="openAlarmRow(row)">处置</el-button></template>
         </el-table-column>
       </el-table>

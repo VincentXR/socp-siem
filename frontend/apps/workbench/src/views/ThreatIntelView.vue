@@ -21,6 +21,7 @@ import FilterToolbar from '../components/FilterToolbar.vue'
 import PageHeader from '../components/PageHeader.vue'
 import SevBadge from '../components/SevBadge.vue'
 import { useResourceList } from '../composables/useResourceList'
+import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { threatIntelApi, type Ioc } from '../api/domains'
 import { SEVERITIES } from '../api'
 
@@ -45,6 +46,7 @@ const {
   setItems,
   resetPage,
 } = iocList
+const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('threat-intel')
 
 function openIocDialog() {
   newIoc.value = { type: 'ip', value: '', severity: 'HIGH', source: 'manual', description: '', tags: '' }
@@ -136,13 +138,13 @@ onMounted(loadTi)
         <span class="toolbar-count">共 {{ iocsFiltered.length }} 条</span>
         </FilterToolbar>
       </template>
-      <el-table :data="iocsPaged" size="small">
-        <el-table-column prop="type" label="类型" width="90" sortable />
-        <el-table-column prop="value" label="值" min-width="160" sortable show-overflow-tooltip />
-        <el-table-column prop="severity" label="严重度" width="90" sortable><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
-        <el-table-column prop="source" label="来源" width="100" sortable show-overflow-tooltip />
-        <el-table-column prop="description" label="描述" min-width="160" sortable show-overflow-tooltip />
-        <el-table-column label="操作" width="80"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeIoc(row.id)">删除</el-button></template></el-table-column>
+      <el-table :data="iocsPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd">
+        <el-table-column prop="type" column-key="type" label="类型" :width="columnWidth('type', 90)" sortable />
+        <el-table-column prop="value" column-key="value" label="值" :width="columnWidth('value')" min-width="160" sortable show-overflow-tooltip />
+        <el-table-column prop="severity" column-key="severity" label="严重度" :width="columnWidth('severity', 90)" sortable><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
+        <el-table-column prop="source" column-key="source" label="来源" :width="columnWidth('source', 100)" sortable show-overflow-tooltip />
+        <el-table-column prop="description" column-key="description" label="描述" :width="columnWidth('description')" min-width="160" sortable show-overflow-tooltip />
+        <el-table-column label="操作" width="80" :resizable="false"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeIoc(row.id)">删除</el-button></template></el-table-column>
       </el-table>
     </DataTableCard>
   </div>

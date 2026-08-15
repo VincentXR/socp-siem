@@ -129,7 +129,7 @@
   --ns-shadow-lg: 0 16px 48px rgba(0, 0, 0, .5), 0 2px 8px rgba(0, 0, 0, .35);
   --ns-input-bg: #010409;
   --ns-hover: #21262d;
-  --ns-table-header: #161b22;
+  --ns-table-header: #1c222b;
   --ns-overlay: rgba(1, 4, 9, .6);
   --ns-sidebar-bg: #111820;
 }
@@ -347,6 +347,7 @@ body {
 }
 .el-card__header {
   border-bottom: 1px solid var(--ns-border);
+  background: var(--ns-table-header);
   color: var(--ns-text); font-weight: 600; letter-spacing: .1px;
   padding: 13px 18px; font-size: 13.5px;
 }
@@ -376,10 +377,10 @@ body {
 .el-button--danger { background: var(--ns-danger); border-color: var(--ns-danger); color: #fff; font-weight: 600; }
 .el-button.is-link { color: var(--ns-accent-fg); }
 
-/* ============ 表格（Linear 风：无表头灰底 / 疏朗行高 / 细分隔 / 精致 hover） ============ */
+/* ============ 表格（统一层次 / 纵向分隔 / 疏朗行高 / 精致 hover） ============ */
 .el-table {
   --el-table-border-color: var(--ns-border);
-  --el-table-header-bg-color: transparent;
+  --el-table-header-bg-color: var(--ns-table-header);
   --el-table-row-hover-bg-color: transparent;
   --el-table-tr-bg-color: transparent;
   --el-table-bg-color: transparent;
@@ -392,7 +393,7 @@ body {
 }
 .el-table th.el-table__cell {
   height: 38px;
-  background: transparent !important;
+  background: var(--ns-table-header) !important;
   color: var(--ns-text-3);
   font-weight: 600;
   font-size: 11px;
@@ -400,6 +401,9 @@ body {
   text-transform: uppercase;
   border-bottom: 1px solid var(--ns-border) !important;
 }
+.el-table--border .el-table__cell { border-right-color: var(--ns-border) !important; }
+.el-table--border th.el-table__cell.is-leaf { cursor: col-resize; }
+.el-table th.el-table__cell:hover { color: var(--ns-text); }
 .el-table td.el-table__cell {
   border-bottom: 1px solid var(--ns-border);
   background: transparent;
@@ -904,7 +908,7 @@ body {
   box-shadow: none !important;
 }
 .el-card:hover { border-color: var(--ns-border-strong); box-shadow: none !important; }
-.el-card__header { padding: 14px 18px; border-bottom-color: var(--ns-border); }
+.el-card__header { padding: 14px 18px; border-bottom-color: var(--ns-border); background: var(--ns-table-header); }
 .el-card__body { padding: 18px; }
 .metric-card, .ov-kpi, .sit-kpi {
   border-radius: var(--ns-radius-md);

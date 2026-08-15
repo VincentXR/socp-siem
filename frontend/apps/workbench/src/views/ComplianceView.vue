@@ -58,7 +58,7 @@ onMounted(loadCompliance)
 
     <el-card v-for="framework in (coverage?.byFramework ?? [])" :key="framework.framework" shadow="never" class="compliance-card">
       <div class="compliance-card-head"><strong>{{ framework.framework }}</strong><span>{{ framework.coverage }}%</span></div>
-      <el-table :data="framework.controls" size="small">
+      <el-table :data="framework.controls" size="small" border>
         <el-table-column prop="id" label="控制项" width="120" />
         <el-table-column prop="name" label="名称" min-width="200" show-overflow-tooltip />
         <el-table-column label="覆盖" width="90"><template #default="{ row }"><el-tag :type="row.covered ? 'success' : 'danger'" size="small">{{ row.covered ? '已覆盖' : '缺失' }}</el-tag></template></el-table-column>

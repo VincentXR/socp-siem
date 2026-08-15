@@ -180,7 +180,7 @@ onUnmounted(() => {
                 <el-col :span="14">
                   <el-card shadow="never">
                     <template #header>实体明细（点击行下钻）</template>
-                    <el-table :data="riskEntities" size="small" height="340" @row-click="openEntity">
+                    <el-table :data="riskEntities" size="small" border height="340" @row-click="openEntity">
                       <el-table-column label="风险" width="80">
                         <template #default="{ row }"><span class="risk-pill" :style="{ background: riskColor(row.level) }">{{ row.risk }}</span></template>
                       </el-table-column>

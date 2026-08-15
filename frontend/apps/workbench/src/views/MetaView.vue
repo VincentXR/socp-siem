@@ -91,7 +91,7 @@ onMounted(loadMeta)
         </el-dialog>
         <el-card shadow="never">
           <template #header>接入方式注册表（9 类内置 + 可扩展）</template>
-          <el-table :data="dataSourceTypes" size="small">
+          <el-table :data="dataSourceTypes" size="small" border>
             <el-table-column prop="code" label="编码" width="130" />
             <el-table-column prop="name" label="名称" width="150" />
             <el-table-column prop="description" label="说明" min-width="300" show-overflow-tooltip />
@@ -118,7 +118,7 @@ onMounted(loadMeta)
         </el-dialog>
         <el-card shadow="never">
           <template #header>日志分类体系（对齐 SIEM Taxonomy / MITRE ATT&CK）</template>
-          <el-table :data="logCategories" size="small">
+          <el-table :data="logCategories" size="small" border>
             <el-table-column prop="code" label="编码" width="120" />
             <el-table-column prop="name" label="名称" width="130" />
             <el-table-column prop="description" label="说明" min-width="260" show-overflow-tooltip />
@@ -147,7 +147,7 @@ onMounted(loadMeta)
         </el-dialog>
         <el-card shadow="never">
           <template #header>字段字典（统一字段语义，解析/检索/告警共用）</template>
-          <el-table :data="fieldDefs" size="small">
+          <el-table :data="fieldDefs" size="small" border>
             <el-table-column prop="fieldName" label="字段名" width="130" />
             <el-table-column prop="fieldLabel" label="中文名" width="110" />
             <el-table-column prop="fieldType" label="类型" width="80" />

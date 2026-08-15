@@ -12,10 +12,12 @@ import DataTableCard from '../components/DataTableCard.vue'
 import FilterToolbar from '../components/FilterToolbar.vue'
 import MetricCard from '../components/MetricCard.vue'
 import PageHeader from '../components/PageHeader.vue'
+import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { useResourceList } from '../composables/useResourceList'
 import { assetApi, type Asset } from '../api/domains'
 
 const assetStat = ref<{ total: number; byType: Record<string, number>; byCriticality: Record<string, number> } | null>(null)
+const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('assets')
 const assetsList = useResourceList<Asset>({
   searchFields: asset => [asset.name, asset.type, asset.ip, asset.os, asset.owner, asset.criticality],
 })
@@ -63,16 +65,16 @@ onMounted(loadAssets)
         <span class="toolbar-count">共 {{ assetsFiltered.length }} 条</span>
         </FilterToolbar>
       </template>
-      <el-table :data="assetsPaged" size="small">
-        <el-table-column prop="name" label="名称" width="140" sortable show-overflow-tooltip />
-        <el-table-column prop="type" label="类型" width="100" sortable />
-        <el-table-column prop="ip" label="IP" width="120" sortable />
-        <el-table-column prop="os" label="系统" min-width="140" sortable show-overflow-tooltip />
-        <el-table-column prop="owner" label="负责人" width="100" sortable show-overflow-tooltip />
-        <el-table-column prop="criticality" label="关键度" width="90" sortable>
+      <el-table :data="assetsPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd">
+        <el-table-column prop="name" column-key="name" label="名称" :width="columnWidth('name', 140)" sortable show-overflow-tooltip />
+        <el-table-column prop="type" column-key="type" label="类型" :width="columnWidth('type', 100)" sortable />
+        <el-table-column prop="ip" column-key="ip" label="IP" :width="columnWidth('ip', 120)" sortable />
+        <el-table-column prop="os" column-key="os" label="系统" :width="columnWidth('os')" min-width="140" sortable show-overflow-tooltip />
+        <el-table-column prop="owner" column-key="owner" label="负责人" :width="columnWidth('owner', 100)" sortable show-overflow-tooltip />
+        <el-table-column prop="criticality" column-key="criticality" label="关键度" :width="columnWidth('criticality', 90)" sortable>
           <template #default="{ row }"><el-tag :type="row.criticality === 'CRITICAL' ? 'danger' : row.criticality === 'HIGH' ? 'warning' : 'info'" size="small">{{ row.criticality }}</el-tag></template>
         </el-table-column>
-        <el-table-column label="操作" width="70">
+        <el-table-column label="操作" width="70" :resizable="false">
           <template #default="{ row }"><el-button link type="danger" size="small" @click="removeAsset(row.id)">删除</el-button></template>
         </el-table-column>
       </el-table>

@@ -13,6 +13,7 @@ import FilterToolbar from '../components/FilterToolbar.vue'
 import MetricCard from '../components/MetricCard.vue'
 import PageHeader from '../components/PageHeader.vue'
 import { useResourceList } from '../composables/useResourceList'
+import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { endpointApi, type Endpoint } from '../api/domains'
 
 const endpointStat = ref<{ total: number; online: number; byType: Record<string, number> } | null>(null)
@@ -20,6 +21,7 @@ const endpointsList = useResourceList<Endpoint>({
   searchFields: endpoint => [endpoint.hostname, endpoint.ip, endpoint.os, endpoint.agentVersion, endpoint.status],
 })
 const { items: endpoints, page, size, keyword, loading, filtered: endpointsFiltered, paged: endpointsPaged, setItems } = endpointsList
+const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('endpoints')
 
 async function loadEndpoints() {
   if (loading.value) return
@@ -63,15 +65,15 @@ onMounted(loadEndpoints)
         <span class="toolbar-count">共 {{ endpointsFiltered.length }} 条</span>
         </FilterToolbar>
       </template>
-      <el-table :data="endpointsPaged" size="small">
-        <el-table-column prop="hostname" label="主机名" width="140" sortable show-overflow-tooltip />
-        <el-table-column prop="ip" label="IP" width="120" sortable />
-        <el-table-column prop="os" label="系统" min-width="140" sortable show-overflow-tooltip />
-        <el-table-column prop="agentVersion" label="Agent 版本" width="120" sortable show-overflow-tooltip />
-        <el-table-column prop="status" label="状态" width="80" sortable>
+      <el-table :data="endpointsPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd">
+        <el-table-column prop="hostname" column-key="hostname" label="主机名" :width="columnWidth('hostname', 140)" sortable show-overflow-tooltip />
+        <el-table-column prop="ip" column-key="ip" label="IP" :width="columnWidth('ip', 120)" sortable />
+        <el-table-column prop="os" column-key="os" label="系统" :width="columnWidth('os')" min-width="140" sortable show-overflow-tooltip />
+        <el-table-column prop="agentVersion" column-key="agentVersion" label="Agent 版本" :width="columnWidth('agentVersion', 120)" sortable show-overflow-tooltip />
+        <el-table-column prop="status" column-key="status" label="状态" :width="columnWidth('status', 80)" sortable>
           <template #default="{ row }"><el-tag :type="row.status === 'ONLINE' ? 'success' : 'info'" size="small">{{ row.status }}</el-tag></template>
         </el-table-column>
-        <el-table-column label="操作" width="70">
+        <el-table-column label="操作" width="70" :resizable="false">
           <template #default="{ row }"><el-button link type="danger" size="small" @click="removeEndpoint(row.id)">注销</el-button></template>
         </el-table-column>
       </el-table>

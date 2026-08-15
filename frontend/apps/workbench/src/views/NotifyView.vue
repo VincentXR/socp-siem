@@ -61,7 +61,7 @@ onMounted(loadNotify)
 
     <el-card shadow="never" class="notify-card">
       <template #header><span>通知渠道</span></template>
-      <el-table :data="channels" size="small">
+      <el-table :data="channels" size="small" border>
         <el-table-column prop="name" label="名称" width="140" />
         <el-table-column prop="type" label="类型" width="100" />
         <el-table-column prop="target" label="目标" min-width="200" show-overflow-tooltip />
@@ -72,7 +72,7 @@ onMounted(loadNotify)
 
     <el-card shadow="never">
       <template #header>分发日志（告警触发后实时写入）</template>
-      <el-table :data="logs" size="small">
+      <el-table :data="logs" size="small" border>
         <el-table-column prop="ts" label="时间" width="220" />
         <el-table-column prop="channel" label="渠道" width="120" />
         <el-table-column prop="type" label="类型" width="90" />

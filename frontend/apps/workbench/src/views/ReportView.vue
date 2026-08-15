@@ -134,11 +134,11 @@ onUnmounted(() => {
     </el-row>
     <el-card shadow="never" style="margin-top:14px" v-if="report">
       <template #header>TOP 规则</template>
-      <el-table :data="report.byRule" size="small"><el-table-column prop="rule" label="规则" show-overflow-tooltip /><el-table-column prop="count" label="告警数" width="120" /></el-table>
+      <el-table :data="report.byRule" size="small" border><el-table-column prop="rule" label="规则" show-overflow-tooltip /><el-table-column prop="count" label="告警数" width="120" /></el-table>
     </el-card>
     <el-card shadow="never" style="margin-top:14px" v-if="archiveInfo?.objects.length">
       <template #header>MinIO 归档对象</template>
-      <el-table :data="archiveInfo.objects" size="small">
+      <el-table :data="archiveInfo.objects" size="small" border>
         <el-table-column prop="key" label="对象 Key" min-width="240" show-overflow-tooltip />
         <el-table-column prop="size" label="大小" width="120"><template #default="{ row }">{{ (row.size / 1024).toFixed(1) }} KB</template></el-table-column>
       </el-table>
