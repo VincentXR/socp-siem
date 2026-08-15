@@ -66,11 +66,12 @@ const sitEngine = computed<GasStats | null>(() => situationQuery.data.value?.eng
 const sitIngest = computed<IngestSummary | null>(() => situationQuery.data.value?.ingest ?? null)
 
 function sevColor(severity: string) {
-  return { CRITICAL: '#f56c6c', HIGH: '#e63946', MEDIUM: '#e6a23c', LOW: '#909399', INFO: '#909399' }[severity] ?? '#909399'
+  return { CRITICAL: '#fb7185', HIGH: '#ef4444', MEDIUM: '#f59e0b', LOW: '#94a3b8', INFO: '#64748b' }[severity] ?? '#64748b'
 }
 function tc(light: string, dark: string) { return props.theme === 'dark' ? dark : light }
 const feedView = computed(() => liveSevFilter.value ? liveFeed.value.filter(alert => alert.severity === liveSevFilter.value) : liveFeed.value)
 const queuePct = computed(() => Math.round((sitEngine.value?.queueLoad ?? 0) * 1000) / 10)
+const queueColor = computed(() => queuePct.value > 70 ? '#fb7185' : queuePct.value > 30 ? '#f59e0b' : '#22c55e')
 
 function openAlertStream() {
   try {

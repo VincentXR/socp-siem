@@ -2,19 +2,14 @@
 /**
  * 告警级别徽标（CRITICAL/HIGH/MEDIUM/LOW/INFO → 配色）。
  */
+import { computed } from 'vue'
+
 const props = defineProps<{ value: string }>()
-const COLORS: Record<string, string> = {
-  CRITICAL: '#f56c6c',
-  HIGH: '#e63946',
-  MEDIUM: '#e6a23c',
-  LOW: '#909399',
-  INFO: '#909399',
-}
-const color = () => COLORS[props.value] ?? '#909399'
+const tone = computed(() => props.value.trim().toLowerCase() || 'info')
 </script>
 
 <template>
-  <span :style="`background:${color()};color:#fff;border-radius:4px;padding:0 8px;font-size:12px;font-weight:600;display:inline-block;line-height:20px`">
+  <span class="sev-badge" :class="`sev-${tone}`">
     {{ value }}
   </span>
 </template>

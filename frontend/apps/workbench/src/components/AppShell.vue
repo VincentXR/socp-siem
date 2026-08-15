@@ -54,6 +54,11 @@ function onSearchUpdate(value: string | number) {
           </button>
         </template>
       </nav>
+      <div class="socp-sidebar-footer" aria-label="Platform status">
+        <span class="sidebar-status-dot" aria-hidden="true" />
+        <span>Platform healthy</span>
+        <span class="sidebar-version mono">v1.0</span>
+      </div>
     </aside>
 
     <div class="socp-main">
