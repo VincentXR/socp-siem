@@ -21,7 +21,9 @@ source "$SCRIPT_DIR/ports.env"
 
 ROOT="$SOCP_ROOT"
 LOGDIR="$ROOT/.cache"
-SLICE="alert-web search-config detect-web api-gateway"
+# The slice check only needs the alert persistence service and gateway.
+# Kafka/OpenSearch-backed ingestion services belong to the pipeline workflow.
+SLICE="alert-web api-gateway"
 
 export SOCP_JWT_SECRET="${SOCP_JWT_SECRET:-socp-demo-jwt-secret-0123456789abcdef0123456789abcdef}"
 export SOCP_LOGIN_SECRET="${SOCP_LOGIN_SECRET:-$SOCP_JWT_SECRET}"

@@ -82,6 +82,17 @@ jobs:
       - name: Build backend
         run: bash build/mvnw.sh -DskipTests package
 
+      - name: Prepare PostgreSQL databases
+        run: |
+          pg_container="$(docker ps --filter 'ancestor=postgres:18' --format '{{.ID}}' | head -n 1)"
+          test -n "$pg_container"
+          for database in alert; do
+            exists="$(docker exec "$pg_container" psql -U socp -d socp -Atqc "SELECT 1 FROM pg_database WHERE datname = '$database'")"
+            if [ "$exists" != "1" ]; then
+              docker exec "$pg_container" createdb -U socp "$database"
+            fi
+          done
+
       - name: Start minimal slice (alert-web + gateway)
         run: |
           mkdir -p .cache
@@ -109,6 +120,14 @@ jobs:
       - name: Run slice E2E (auth/tenant/audit/ratelimit/trace)
         run: python3 build/verify-slice.py
 
+      - name: Upload slice logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: slice-e2e-logs
+          path: .cache/
+          if-no-files-found: ignore
+
   e2e-pipeline:
     runs-on: ubuntu-latest
     needs: build
@@ -130,7 +149,6 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U socp"
           --health-interval 5s --health-timeout 5s --health-retries 10
-          --volume ${{ github.workspace }}/.github/pg-init:/docker-entrypoint-initdb.d
       kafka:
         image: apache/kafka:4.0.0
         ports: ["9092:9092"]
@@ -168,6 +186,17 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 15
     steps:
       - uses: actions/checkout@v4
+
+      - name: Prepare PostgreSQL databases
+        run: |
+          pg_container="$(docker ps --filter 'ancestor=postgres:18' --format '{{.ID}}' | head -n 1)"
+          test -n "$pg_container"
+          for database in alert report detect search incident threat asset audit; do
+            exists="$(docker exec "$pg_container" psql -U socp -d socp -Atqc "SELECT 1 FROM pg_database WHERE datname = '$database'")"
+            if [ "$exists" != "1" ]; then
+              docker exec "$pg_container" createdb -U socp "$database"
+            fi
+          done
 
       - name: Set up JDK 21
         uses: actions/setup-java@v5
@@ -222,3 +251,11 @@ jobs:
 
       - name: Run true-pipeline E2E (Kafka -> Detect -> stores)
         run: python3 build/verify-pipeline.py
+
+      - name: Upload pipeline logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-e2e-logs
+          path: .cache/
+          if-no-files-found: ignore
