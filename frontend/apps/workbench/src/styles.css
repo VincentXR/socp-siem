@@ -975,7 +975,8 @@ body {
   letter-spacing: 0;
   line-height: 19px;
 }
-.sev-critical, .sev-high { color: var(--ns-danger); background: color-mix(in srgb, var(--ns-danger) 12%, transparent); border-color: color-mix(in srgb, var(--ns-danger) 24%, transparent); }
+.sev-critical { color: var(--ns-danger); background: color-mix(in srgb, var(--ns-danger) 12%, transparent); border-color: color-mix(in srgb, var(--ns-danger) 24%, transparent); }
+.sev-high { color: var(--ns-danger); background: color-mix(in srgb, var(--ns-danger) 10%, transparent); border-color: color-mix(in srgb, var(--ns-danger) 22%, transparent); }
 .sev-medium { color: var(--ns-warning); background: color-mix(in srgb, var(--ns-warning) 13%, transparent); border-color: color-mix(in srgb, var(--ns-warning) 25%, transparent); }
 .sev-low, .sev-info { color: var(--ns-text-2); background: var(--ns-bg-inset); border-color: var(--ns-border); }
 
