@@ -109,7 +109,7 @@ onMounted(loadTi)
       </el-card>
     </div>
     <el-card shadow="never" style="margin-bottom:14px">
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <div class="ti-match-toolbar">
         <el-input v-model="tiMatchValue" placeholder="匹配情报，如 185.220.101.45 或 evil-c2.com" style="width:320px" @keyup.enter="doTiMatch" />
         <el-button type="primary" @click="doTiMatch">查询命中</el-button>
         <el-select v-model="iocType" placeholder="全部类型" clearable style="width:140px" @change="loadTi">

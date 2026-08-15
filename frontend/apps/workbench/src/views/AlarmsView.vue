@@ -137,19 +137,22 @@ function openAlarmRow(row: unknown) {
   <div class="page-pad view-enter">
     <PageHeader title="告警查询" description="按规则、实体和严重级别筛选告警，并从右侧抽屉完成处置。" />
     <div class="alarm-toolbar">
-      <el-input v-model="keyword" placeholder="关键词：实体 / 消息" clearable style="width:230px" @keyup.enter="props.onSearch" @clear="props.onSearch" />
-      <el-input v-model="rule" placeholder="规则 ID" clearable style="width:170px" @keyup.enter="props.onSearch" @clear="props.onSearch" />
-      <el-select v-model="severity" placeholder="全部级别" clearable style="width:140px" @change="props.onSearch">
-        <el-option v-for="s in SEVERITIES" :key="s" :label="s" :value="s" />
-      </el-select>
-      <el-select v-model="status" placeholder="全部状态" clearable style="width:150px" @change="props.onSearch">
-        <el-option v-for="s in DISP_STATUSES" :key="s" :label="s" :value="s" />
-      </el-select>
-      <el-button size="small" @click="props.onSearch">查询</el-button>
-      <span class="toolbar-count">共 {{ props.alarmPageData.total }} 条</span>
-      <span class="toolbar-spacer" />
-      <el-button size="small" @click="props.exportCsv">导出 CSV</el-button>
-      <el-button size="small" @click="props.exportJson">导出 JSON</el-button>
+      <div class="alarm-filter-controls">
+        <el-input class="alarm-keyword-input" v-model="keyword" placeholder="关键词：实体 / 消息" clearable style="width:230px" @keyup.enter="props.onSearch" @clear="props.onSearch" />
+        <el-input class="alarm-rule-input" v-model="rule" placeholder="规则 ID" clearable style="width:170px" @keyup.enter="props.onSearch" @clear="props.onSearch" />
+        <el-select v-model="severity" placeholder="全部级别" clearable style="width:140px" @change="props.onSearch">
+          <el-option v-for="s in SEVERITIES" :key="s" :label="s" :value="s" />
+        </el-select>
+        <el-select v-model="status" placeholder="全部状态" clearable style="width:150px" @change="props.onSearch">
+          <el-option v-for="s in DISP_STATUSES" :key="s" :label="s" :value="s" />
+        </el-select>
+        <el-button size="small" @click="props.onSearch">查询</el-button>
+      </div>
+      <div class="alarm-toolbar-actions">
+        <span class="toolbar-count">共 {{ props.alarmPageData.total }} 条</span>
+        <el-button size="small" @click="props.exportCsv">导出 CSV</el-button>
+        <el-button size="small" @click="props.exportJson">导出 JSON</el-button>
+      </div>
     </div>
 
     <el-card shadow="never" class="alarm-table-card">

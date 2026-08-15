@@ -278,8 +278,12 @@ body {
 }
 .alarm-toolbar .el-input { width: min(280px, 100%); }
 .alarm-toolbar .el-select { width: 140px; }
-.alarm-toolbar .toolbar-count { color: var(--ns-text-3); font-size: 12px; line-height: 32px; }
-.alarm-toolbar .toolbar-spacer { flex: 1; }
+.alarm-filter-controls { display: flex; align-items: center; gap: var(--ns-space-2); flex: 1 1 auto; flex-wrap: nowrap; min-width: 0; }
+.alarm-filter-controls .alarm-keyword-input { flex: 1 1 230px; min-width: 220px; }
+.alarm-filter-controls .alarm-rule-input { flex: 0 1 170px; min-width: 150px; }
+.alarm-filter-controls .el-select { flex: 0 0 auto; }
+.alarm-toolbar-actions { display: flex; align-items: center; gap: var(--ns-space-2); flex: 0 0 auto; margin-left: auto; }
+.alarm-toolbar-actions .toolbar-count { color: var(--ns-text-3); font-size: 12px; line-height: 32px; white-space: nowrap; }
 .alarm-pagination { display: flex; justify-content: flex-end; margin-top: var(--ns-space-4); }
 .list-toolbar {
   display: flex; align-items: center; gap: var(--ns-space-2); flex-wrap: wrap;
@@ -315,6 +319,9 @@ body {
 .search-toolbar { margin-bottom: var(--ns-space-4); }
 .search-query-row { display: flex; align-items: center; gap: var(--ns-space-2); }
 .search-query-row .el-input { flex: 1; min-width: 0; }
+.ti-match-toolbar { display: flex; align-items: center; gap: var(--ns-space-2); flex-wrap: nowrap; }
+.ti-match-toolbar .el-input { flex: 1 1 320px; min-width: 280px; }
+.ti-match-toolbar .el-select { flex: 0 0 140px; }
 .search-examples { display: flex; flex-wrap: wrap; gap: var(--ns-space-2); margin-top: var(--ns-space-3); }
 .search-examples .el-tag { cursor: pointer; }
 .search-error { margin-bottom: var(--ns-space-4); }
@@ -957,14 +964,10 @@ body {
   border-radius: var(--ns-radius-md);
   background: var(--ns-surface);
 }
-.filter-toolbar-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
-.filter-toolbar-controls > .el-input { width: min(360px, 100%); }
-.filter-toolbar-controls > .el-select { width: 150px; }
-.filter-toolbar .toolbar-count { margin-left: auto; color: var(--ns-text-3); font-size: 11px; white-space: nowrap; }
-.cases-filter-toolbar .filter-toolbar-controls { flex: 1 1 auto; flex-wrap: nowrap; }
-.cases-filter-toolbar .filter-toolbar-controls > .el-input { flex: 1 1 360px; width: min(360px, 100%); min-width: 240px; }
-.cases-filter-toolbar .filter-toolbar-controls > .el-select { flex: 0 0 150px; width: 150px; }
-.cases-filter-toolbar > .toolbar-count { flex: none; }
+.filter-toolbar-controls { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; flex-wrap: nowrap; min-width: 0; }
+.filter-toolbar-controls > .el-input { flex: 1 1 360px; width: min(360px, 100%); min-width: 240px; }
+.filter-toolbar-controls > .el-select { flex: 0 0 150px; width: 150px; }
+.filter-toolbar > .toolbar-count { flex: none; margin-left: auto; color: var(--ns-text-3); font-size: 11px; white-space: nowrap; }
 .data-table-card .el-card__body { min-width: 0; }
 .data-table-content { min-width: 0; overflow-x: auto; }
 .el-pagination { margin-top: 12px; }
@@ -1036,13 +1039,17 @@ body {
   .socp-sidebar-footer { display: none; }
   .page-title, .ov-title { font-size: 22px; }
   .alarm-toolbar, .list-toolbar, .search-toolbar { padding: 10px; }
+  .alarm-filter-controls { width: 100%; flex-wrap: wrap; }
+  .alarm-filter-controls .el-input, .alarm-filter-controls .el-select { flex: 1 1 100%; min-width: 0; width: 100%; }
+  .alarm-toolbar-actions { width: 100%; flex-wrap: wrap; margin-left: 0; }
+  .alarm-toolbar-actions .toolbar-count { order: 5; width: 100%; }
+  .alarm-toolbar-actions .el-button { flex: 1; }
+  .ti-match-toolbar { flex-wrap: wrap; }
+  .ti-match-toolbar .el-input, .ti-match-toolbar .el-select, .ti-match-toolbar .el-button { flex: 1 1 100%; width: 100%; min-width: 0; }
   .filter-toolbar { padding: 10px; }
   .filter-toolbar-controls { width: 100%; }
   .filter-toolbar-controls > .el-input,
-  .filter-toolbar-controls > .el-select { width: 100%; }
-  .cases-filter-toolbar .filter-toolbar-controls { flex-wrap: wrap; }
-  .cases-filter-toolbar .filter-toolbar-controls > .el-input,
-  .cases-filter-toolbar .filter-toolbar-controls > .el-select { flex: 1 1 100%; min-width: 0; }
+  .filter-toolbar-controls > .el-select { flex: 1 1 100%; width: 100%; min-width: 0; }
   .filter-toolbar .toolbar-count { width: 100%; margin-left: 0; }
   .el-card__body { padding: 14px; }
   .el-card__body:has(.el-table) { overflow-x: auto; }
