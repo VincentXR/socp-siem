@@ -64,30 +64,22 @@ import AlarmsView from './views/AlarmsView.vue'
 import { getVisibleMenuGroups } from './app/navigation'
 import {
   listAlarms, listAlarmsPaged, getDisposition, setDispositionStatus, assignAlarm, addAlarmNote,
-  listSources, createSource, deleteSource, renderConfig,
-  listParseRules, createParseRule, deleteParseRule, previewParse,
-  listOutputs, createOutput, deleteOutput,
-  listDataSourceTypes, createDataSourceType, deleteDataSourceType,
-  listCategories, createCategory, deleteCategory,
-  listFields, createField, deleteField,
-  listRules, createGasRule, updateGasRule, deleteGasRule, gasStats, gasIngest,
   listTenants, socOverview,
   checkHealth, HEALTH_TARGETS,
   listCases,
   uebaEntities, uebaEntity, uebaSummary, uebaScore,
   listWatchlists, putWatchlist, appendWatchlist, deleteWatchlist,
-  listIngestTasks, ingestSummary, startIngestTask, stopIngestTask, testIngestTask,
+  ingestSummary,
   alarmStats, gasRecentAlerts, gasEngineStats,
   login as apiLogin, setToken, clearToken, getToken, setUnauthorizedHandler,
   exportAlarms,
-  SEVERITIES, SOURCE_TYPES, PARSE_FORMATS,
-  type Alarm, type AlarmPage, type LogSource, type ParseRule, type SinkTarget,
-  type DataSourceType, type LogCategory, type FieldDef,
+  SEVERITIES,
+  type Alarm, type AlarmPage,
   type Disposition,
   type TenantInfo,
   type CaseInfo,
   type RiskEntity, type RiskSummary, type ScoreBreakdown, type Watchlist,
-  type IngestTask, type IngestSummary, type AlarmStats, type GasAlert, type GasStats,
+  type IngestSummary, type AlarmStats, type GasAlert, type GasStats,
 } from './api'
 
 const AiAssistantView = defineAsyncComponent(() => import('./views/AiAssistantView.vue'))
@@ -103,6 +95,9 @@ const ComplianceView = defineAsyncComponent(() => import('./views/ComplianceView
 const ReportView = defineAsyncComponent(() => import('./views/ReportView.vue'))
 const ThreatIntelView = defineAsyncComponent(() => import('./views/ThreatIntelView.vue'))
 const AttackView = defineAsyncComponent(() => import('./views/AttackView.vue'))
+const IngestView = defineAsyncComponent(() => import('./views/IngestView.vue'))
+const MetaView = defineAsyncComponent(() => import('./views/MetaView.vue'))
+const DetectView = defineAsyncComponent(() => import('./views/DetectView.vue'))
 
 // ---------- 导航 ----------
 const activeMenu = ref('overview')
@@ -218,17 +213,7 @@ function doLogout() {
 
 // ---------- 弹窗状态（所有「新增」类操作统一走对话框） ----------
 const showWlDialog = ref(false)
-const showDsDialog = ref(false)
-const showCatDialog = ref(false)
-const showFieldDialog = ref(false)
-const showSourceDialog = ref(false)
-const showOutputDialog = ref(false)
 function openWlDialog() { newWl.value = { name: '', values: '' }; showWlDialog.value = true }
-function openDsDialog() { newDsType.value = { code: '', name: '', description: '', enabled: true }; showDsDialog.value = true }
-function openCatDialog() { newCategory.value = { code: '', name: '', description: '', defaultSeverity: 'MEDIUM', enabled: true }; showCatDialog.value = true }
-function openFieldDialog() { newField.value = { fieldName: '', fieldLabel: '', fieldType: 'string', source: 'custom', searchable: true, aggregatable: true, stored: true, description: '' }; showFieldDialog.value = true }
-function openSourceDialog() { newSource.value = { name: '', type: 'FILE' as string, format: 'AUTO' as string, path: '', address: '', topic: '', env: 'local', readFrom: 'beginning', multiline: '', protocol: 'tcp', charset: 'utf-8', timezone: 'Asia/Shanghai', tags: '', frequency: 1, categoryId: '', groupId: '', enabled: true }; showSourceDialog.value = true }
-function openOutputDialog() { newOutput.value = { name: '', type: 'GLS_INGEST', uri: '', authToken: '', enabled: true }; showOutputDialog.value = true }
 
 // ---------- 概览 ----------
 const alarms = ref<Alarm[]>([])
@@ -304,209 +289,13 @@ async function doAddNote() {
   newNote.value = ''
 }
 
-// ---------- 接入（三子标签：输入源 / 输出配置 / 解析规则） ----------
-const ingestTab = ref('tasks')
-const sources = ref<LogSource[]>([])
-const newSource = ref({ name: '', type: 'FILE' as string, format: 'AUTO' as string, path: '', address: '', topic: '', env: 'local', readFrom: 'beginning', multiline: '', protocol: 'tcp', charset: 'utf-8', timezone: 'Asia/Shanghai', tags: '', frequency: 1, categoryId: '', groupId: '', enabled: true })
-const renderText = ref('')
-const showRender = ref(false)
-
-// 输出配置
-const outputs = ref<SinkTarget[]>([])
-const newOutput = ref({ name: '', type: 'GLS_INGEST', uri: '', authToken: '', enabled: true })
-// 解析规则
-const parseRules = ref<ParseRule[]>([])
-const newRule = ref({ name: '', format: 'REGEX' as string, pattern: '', sourceId: '', enabled: true, order: 10 })
-const showRuleDialog = ref(false)
-// 预览
-const previewLine = ref('Aug 07 01:00:00 web01 sshd[123]: Failed password for admin from 10.0.0.99 port 55006 ssh2')
-const previewRuleId = ref('')
-const previewResult = ref<{ matched: boolean; fields: Record<string, string>; error?: string } | null>(null)
-
-async function loadSources() { sources.value = await listSources() }
-async function loadOutputs() { outputs.value = await listOutputs() }
-async function loadParseRules() { parseRules.value = await listParseRules() }
-function onIngestTab(key: string) {
-  ingestTab.value = key
-  if (key === 'sources') loadSources()
-  if (key === 'outputs') loadOutputs()
-  if (key === 'rules') loadParseRules()
-  if (key === 'tasks') loadTasks()
-}
-async function addSource() {
-  const s: Record<string, unknown> = {
-    name: newSource.value.name, type: newSource.value.type, format: newSource.value.format,
-    env: newSource.value.env, enabled: newSource.value.enabled, readFrom: newSource.value.readFrom,
-    protocol: newSource.value.protocol, charset: newSource.value.charset, timezone: newSource.value.timezone,
-    frequency: Number(newSource.value.frequency) || 1, groupId: newSource.value.groupId || null,
-    categoryId: newSource.value.categoryId || null,
-  }
-  if (newSource.value.multiline.trim()) s.multiline = newSource.value.multiline.trim()
-  if (newSource.value.tags.trim()) s.tags = newSource.value.tags.split(/[,，\s]+/).filter(Boolean)
-  if (newSource.value.type === 'FILE') s.path = newSource.value.path || 'demo/sample.log'
-  if (newSource.value.type === 'SOCKET' || newSource.value.type === 'SYSLOG') s.address = newSource.value.address || '0.0.0.0:5514'
-  if (newSource.value.type === 'KAFKA') s.topic = newSource.value.topic || 'socp-raw'
-  await createSource(s); newSource.value.name = ''; await loadSources()
-}
-async function removeSource(id: string) { await deleteSource(id); await loadSources() }
-async function doRender() { renderText.value = await renderConfig(); showRender.value = true }
-function copyRender() { navigator.clipboard.writeText(renderText.value) }
-
-async function addOutput() {
-  await createOutput({ name: newOutput.value.name, type: newOutput.value.type, uri: newOutput.value.uri, authToken: newOutput.value.authToken || null, enabled: newOutput.value.enabled })
-  newOutput.value = { name: '', type: 'GLS_INGEST', uri: '', authToken: '', enabled: true }
-  await loadOutputs()
-}
-async function removeOutput(id: string) { await deleteOutput(id); await loadOutputs() }
-
-async function addParseRule() {
-  const rule: Partial<ParseRule> = {
-    name: newRule.value.name, format: newRule.value.format,
-    pattern: newRule.value.format === 'REGEX' ? newRule.value.pattern : null,
-    sourceId: newRule.value.sourceId || null, enabled: newRule.value.enabled, order: newRule.value.order,
-    mapping: [], setFields: [],
-  }
-  await createParseRule(rule)
-  showRuleDialog.value = false
-  newRule.value = { name: '', format: 'REGEX', pattern: '', sourceId: '', enabled: true, order: 10 }
-  await loadParseRules()
-}
-async function removeParseRule(id: string) { await deleteParseRule(id); await loadParseRules() }
-
-async function doPreview() {
-  try {
-    previewResult.value = await previewParse({
-      ruleId: previewRuleId.value || undefined,
-      line: previewLine.value,
-    })
-  } catch (e) {
-    previewResult.value = { matched: false, fields: {}, error: e instanceof Error ? e.message : String(e) }
-  }
-}
-
-// ---------- 元数据（数据源分类 / 日志类别 / 字段字典） ----------
-const metaTab = ref('ds')
-const dataSourceTypes = ref<DataSourceType[]>([])
-const logCategories = ref<LogCategory[]>([])
-const fieldDefs = ref<FieldDef[]>([])
-const newDsType = ref({ code: '', name: '', description: '', enabled: true })
-const newCategory = ref({ code: '', name: '', description: '', defaultSeverity: 'MEDIUM', enabled: true })
-const newField = ref({ fieldName: '', fieldLabel: '', fieldType: 'string', source: 'custom', searchable: true, aggregatable: true, stored: true, description: '' })
-
-async function loadMeta() {
-  dataSourceTypes.value = await listDataSourceTypes()
-  logCategories.value = await listCategories()
-  fieldDefs.value = await listFields()
-}
-function onMetaTab(key: string) { metaTab.value = key }
-async function addDsType() {
-  await createDataSourceType({ code: newDsType.value.code, name: newDsType.value.name, description: newDsType.value.description, enabled: newDsType.value.enabled })
-  newDsType.value = { code: '', name: '', description: '', enabled: true }
-  await loadMeta()
-}
-async function removeDsType(id: string) { await deleteDataSourceType(id); await loadMeta() }
-async function addCategory() {
-  await createCategory({ code: newCategory.value.code, name: newCategory.value.name, description: newCategory.value.description, defaultSeverity: newCategory.value.defaultSeverity, enabled: newCategory.value.enabled })
-  newCategory.value = { code: '', name: '', description: '', defaultSeverity: 'MEDIUM', enabled: true }
-  await loadMeta()
-}
-async function removeCategory(id: string) { await deleteCategory(id); await loadMeta() }
-async function addField() {
-  await createField(newField.value)
-  newField.value = { fieldName: '', fieldLabel: '', fieldType: 'string', source: 'custom', searchable: true, aggregatable: true, stored: true, description: '' }
-  await loadMeta()
-}
-async function removeField(id: string) { await deleteField(id); await loadMeta() }
-
-// ---------- 检测 ----------
-const rules = ref<unknown[]>([])
-const gasStat = ref<Record<string, unknown>>({})
-const ingestMsg = ref(''); const ingestSource = ref('auth'); const ingestResult = ref('')
-async function loadRules() { rules.value = await listRules(); gasStat.value = await gasStats() }
-async function doIngest() {
-  try {
-    const r = await gasIngest({ source: ingestSource.value, msg: ingestMsg.value, fields: { src_ip: '10.0.0.9' } }) as Record<string, unknown>
-    ingestResult.value = JSON.stringify(r)
-  } catch (e) { ingestResult.value = String(e) }
-}
-
-// ---------- 规则编辑器 ----------
-const showRuleEditor = ref(false)
-const ruleEditingId = ref<string | null>(null)
-const ruleForm = ref({
-  id: '', name: '', type: 'pattern', severity: 'HIGH', message: '',
-  keyField: 'src_ip', threshold: 5, window: '60s', enabled: true,
-  match: [{ field: 'msg', op: 'contains', value: '' }],
-  steps: [] as Array<Array<{ field: string; op: string; value: string }>>,
-})
-const COND_FIELDS = ['source', 'host', 'msg', 'severity', 'src_ip', 'dst_ip', 'user', 'action', 'http_method', 'url', 'bytes']
-const COND_OPS = ['eq', 'ne', 'contains', 'startswith', 'endswith', 'regex', 'gt', 'gte', 'lt', 'lte', 'ge']
-
-function openRuleEditor(rule?: Record<string, unknown>) {
-  if (rule) {
-    ruleEditingId.value = String(rule.id)
-    ruleForm.value = {
-      id: String(rule.id), name: String(rule.name ?? ''), type: String(rule.type ?? 'pattern'),
-      severity: String(rule.severity ?? 'HIGH'), message: String(rule.message ?? ''),
-      keyField: String(rule.keyField ?? 'src_ip'), threshold: Number(rule.threshold ?? 5),
-      window: String(rule.window ?? '60s'), enabled: Boolean(rule.enabled ?? true),
-      match: (rule.match as Array<{ field: string; op: string; value: string }> | undefined)?.length
-        ? JSON.parse(JSON.stringify(rule.match))
-        : [{ field: 'msg', op: 'contains', value: '' }],
-      steps: rule.steps ? JSON.parse(JSON.stringify(rule.steps)) : [],
-    }
-  } else {
-    ruleEditingId.value = null
-    ruleForm.value = { id: '', name: '', type: 'pattern', severity: 'HIGH', message: '', keyField: 'src_ip', threshold: 5, window: '60s', enabled: true, match: [{ field: 'msg', op: 'contains', value: '' }], steps: [] }
-  }
-  showRuleEditor.value = true
-}
-
-async function saveRule() {
-  if (!ruleForm.value.name.trim()) return
-  const spec: Record<string, unknown> = {
-    id: ruleEditingId.value || undefined,
-    name: ruleForm.value.name, type: ruleForm.value.type,
-    severity: ruleForm.value.severity, message: ruleForm.value.message,
-    enabled: ruleForm.value.enabled, window: ruleForm.value.window,
-  }
-  if (ruleForm.value.type === 'threshold') {
-    spec.keyField = ruleForm.value.keyField
-    spec.threshold = ruleForm.value.threshold
-    spec.match = ruleForm.value.match.filter(c => c.value !== '')
-  } else if (ruleForm.value.type === 'pattern') {
-    spec.match = ruleForm.value.match.filter(c => c.value !== '')
-  } else {
-    spec.keyField = ruleForm.value.keyField
-    spec.steps = ruleForm.value.steps.filter(s => s.some(c => c.value !== ''))
-  }
-  try {
-    if (ruleEditingId.value) await updateGasRule(ruleEditingId.value, spec)
-    else await createGasRule(spec)
-    showRuleEditor.value = false
-    await loadRules()
-  } catch (e) {
-    ingestResult.value = `保存失败: ${e instanceof Error ? e.message : e}`
-  }
-}
-
-async function removeRule(id: string) {
-  if (!confirm('确认删除该规则？删除后立即热更新引擎。')) return
-  await deleteGasRule(id)
-  await loadRules()
-}
-
-async function toggleRule(rule: Record<string, unknown>) {
-  await updateGasRule(String(rule.id), { ...rule, enabled: !rule.enabled })
-  await loadRules()
-}
-
 /** 顶栏全局搜索：回车后跳到日志检索页并执行 */
 const topSearch = ref('')
 function onTopSearch() {
   if (!topSearch.value.trim()) return
   onMenuChange('search')
 }
+
 // ---------- SOC ----------
 const tenants = ref<TenantInfo[]>([]); const socInfo = ref<Record<string, unknown>>({})
 async function loadSoc() { tenants.value = await listTenants(); socInfo.value = await socOverview() }
@@ -717,58 +506,8 @@ async function doDeleteWl(name: string) {
   watchlists.value = await listWatchlists()
 }
 function riskColor(level: string) { return sevColor(level) }
+function fmtTime(value: string | null) { return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—' }
 
-// ---------- 接入任务（ingest 页第 4 个子标签） ----------
-const tasks = ref<IngestTask[]>([])
-const taskSummary = ref<IngestSummary | null>(null)
-const taskBusy = ref<Record<string, boolean>>({})
-const testDialog = ref(false)
-const testTarget = ref<IngestTask | null>(null)
-const testSample = ref('')
-const testResult = ref<Record<string, unknown> | null>(null)
-const testLoading = ref(false)
-
-const HEALTH_META: Record<string, { text: string; type: string }> = {
-  HEALTHY: { text: '正常', type: 'success' },
-  DEGRADED: { text: '降级', type: 'warning' },
-  STALE: { text: '静默', type: 'warning' },
-  IDLE: { text: '待接入', type: 'info' },
-  ERROR: { text: '异常', type: 'danger' },
-  DISABLED: { text: '已停用', type: 'info' },
-}
-function healthMeta(h: string) { return HEALTH_META[h] ?? { text: h, type: 'info' } }
-function fmtBytes(n: number) {
-  if (!n) return '0 B'
-  const u = ['B', 'KB', 'MB', 'GB']; let i = 0; let v = n
-  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++ }
-  return `${Math.round(v * 10) / 10} ${u[i]}`
-}
-function fmtTime(s: string | null) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '—' }
-
-async function loadTasks() {
-  const [t, s] = await Promise.allSettled([listIngestTasks(), ingestSummary()])
-  tasks.value = t.status === 'fulfilled' ? t.value : []
-  taskSummary.value = s.status === 'fulfilled' ? s.value : null
-}
-async function toggleTask(t: IngestTask) {
-  taskBusy.value = { ...taskBusy.value, [t.id]: true }
-  try { t.enabled ? await stopIngestTask(t.id) : await startIngestTask(t.id); await loadTasks() } finally {
-    taskBusy.value = { ...taskBusy.value, [t.id]: false }
-  }
-}
-function openTest(t: IngestTask) {
-  testTarget.value = t; testSample.value = ''; testResult.value = null; testDialog.value = true
-}
-async function runTest() {
-  if (!testTarget.value) return
-  testLoading.value = true
-  try {
-    testResult.value = await testIngestTask(testTarget.value.id, testSample.value.trim() || undefined) as unknown as Record<string, unknown>
-    await loadTasks()
-  } catch (err) {
-    testResult.value = { ok: false, error: String(err) }
-  } finally { testLoading.value = false }
-}
 
 // ---------- 系统健康看板 ----------
 // ---------- 生命周期 ----------
@@ -778,9 +517,6 @@ function onMenuChange(key: string) {
     case 'overview': refreshOverview(); break
     case 'alarms': loadAlarmPage(); break
     case 'situation': loadSituation(); if (liveOn.value) startLive(); break
-    case 'ingest': loadSources(); loadOutputs(); loadParseRules(); loadTasks(); break
-    case 'meta': loadMeta(); break
-    case 'detect': loadRules(); break
     case 'ueba': loadUeba(); break
   }
 }
@@ -1014,473 +750,12 @@ function relTime(iso?: string): string {
 
         <SearchView v-else-if="activeMenu === 'search'" :initial-query="topSearch" />
 
-        <!-- 日志接入（接入任务 / 输入源 / 输出配置 / 解析规则） -->
-        <div v-else-if="activeMenu === 'ingest'" class="page-pad view-enter">
-          <el-tabs v-model="ingestTab" @tab-change="onIngestTab">
-            <!-- 接入任务：配置 + 运行态一屏 -->
-            <el-tab-pane label="接入任务" name="tasks">
-              <el-row :gutter="12" style="margin-bottom:14px">
-                <el-col :span="4"><el-card shadow="never"><div class="stat-card"><div class="num">{{ taskSummary?.enabledSources ?? 0 }}/{{ taskSummary?.sources ?? 0 }}</div><div class="label">运行中 / 总任务</div></div></el-card></el-col>
-                <el-col :span="4"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#409eff">{{ taskSummary?.eps1m ?? 0 }}</div><div class="label">总 EPS(1m)</div></div></el-card></el-col>
-                <el-col :span="4"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#67c23a">{{ taskSummary?.accepted ?? 0 }}</div><div class="label">已接收</div></div></el-card></el-col>
-                <el-col :span="4"><el-card shadow="never"><div class="stat-card"><div class="num">{{ taskSummary?.forwarded ?? 0 }}</div><div class="label">已转发检测</div></div></el-card></el-col>
-                <el-col :span="4"><el-card shadow="never"><div class="stat-card"><div class="num" :style="{ color: (taskSummary?.skipped ?? 0) > 0 ? '#e6a23c' : '#909399' }">{{ taskSummary?.skipped ?? 0 }}</div><div class="label">解析跳过</div></div></el-card></el-col>
-                <el-col :span="4"><el-card shadow="never"><div class="stat-card"><div class="num">{{ fmtBytes(taskSummary?.bytes ?? 0) }}</div><div class="label">累计流量</div></div></el-card></el-col>
-              </el-row>
+        <IngestView v-else-if="activeMenu === 'ingest'" />
 
-              <el-card shadow="never">
-                <template #header>
-                  <div style="display:flex;align-items:center;gap:10px">
-                    <span>接入任务（配置 + 运行指标）</span>
-                    <el-tag v-for="(c, h) in (taskSummary?.byHealth ?? {})" :key="h" size="small"
-                      :type="healthMeta(String(h)).type" style="margin-left:2px">{{ healthMeta(String(h)).text }} {{ c }}</el-tag>
-                    <el-button size="small" style="margin-left:auto" @click="loadTasks">刷新</el-button>
-                  </div>
-                </template>
-                <el-table :data="tasks" size="small">
-                  <el-table-column label="状态" width="92">
-                    <template #default="{ row }">
-                      <el-tag :type="healthMeta(row.runtime.health).type" size="small" effect="dark">{{ healthMeta(row.runtime.health).text }}</el-tag>
-                    </template>
-                  </el-table-column>
-                  <el-table-column label="任务" min-width="150">
-                    <template #default="{ row }">
-                      <div style="font-weight:600">{{ row.name }}</div>
-                      <div class="mono" style="font-size:11px;color:#909399">{{ row.collector }}</div>
-                    </template>
-                  </el-table-column>
-                  <el-table-column prop="type" label="接入方式" width="110" />
-                  <el-table-column prop="format" label="解析格式" width="90" />
-                  <el-table-column label="采集目标" min-width="180" show-overflow-tooltip>
-                    <template #default="{ row }"><span class="mono" style="font-size:12px">{{ row.target }}</span></template>
-                  </el-table-column>
-                  <el-table-column label="EPS(1m/5m)" width="110">
-                    <template #default="{ row }">
-                      <span :style="{ color: row.runtime.eps1m > 0 ? '#67c23a' : '#c0c4cc', fontWeight: 600 }">{{ row.runtime.eps1m }}</span>
-                      <span style="color:#c0c4cc"> / {{ row.runtime.eps5m }}</span>
-                    </template>
-                  </el-table-column>
-                  <el-table-column label="接收 / 转发 / 跳过" width="150">
-                    <template #default="{ row }">
-                      <span class="mono" style="font-size:12px">{{ row.runtime.accepted }} / {{ row.runtime.forwarded }} /
-                        <span :style="{ color: row.runtime.skipped > 0 ? '#e6a23c' : 'inherit' }">{{ row.runtime.skipped }}</span>
-                      </span>
-                    </template>
-                  </el-table-column>
-                  <el-table-column label="最近数据" width="150">
-                    <template #default="{ row }"><span class="mono" style="font-size:12px">{{ fmtTime(row.runtime.lastAt) }}</span></template>
-                  </el-table-column>
-                  <el-table-column label="操作" width="170">
-                    <template #default="{ row }">
-                      <el-button link :type="row.enabled ? 'warning' : 'success'" size="small"
-                        :loading="taskBusy[row.id]" @click="toggleTask(row)">{{ row.enabled ? '停止' : '启动' }}</el-button>
-                      <el-button link type="primary" size="small" @click="openTest(row)">连通性自测</el-button>
-                    </template>
-                  </el-table-column>
-                  <el-table-column type="expand">
-                    <template #default="{ row }">
-                      <div style="padding:8px 20px;font-size:12px;color:#606266">
-                        <div>环境：{{ row.env || '—' }} · 类别：{{ row.categoryId || '—' }} · 输出：{{ row.sinkTargetId || '默认' }} · 创建：{{ fmtTime(row.createdAt) }}</div>
-                        <div style="margin-top:4px">绑定解析规则：
-                          <el-tag v-for="p in row.parseRuleIds" :key="p" size="small" style="margin-right:4px">{{ p }}</el-tag>
-                          <span v-if="!row.parseRuleIds?.length" style="color:#c0c4cc">自动识别</span>
-                        </div>
-                        <div v-if="row.runtime.lastError" style="margin-top:4px;color:#f56c6c">
-                          最近错误（{{ fmtTime(row.runtime.lastErrorAt ?? null) }}）：{{ row.runtime.lastError }}
-                        </div>
-                      </div>
-                    </template>
-                  </el-table-column>
-                </el-table>
-              </el-card>
+        <MetaView v-else-if="activeMenu === 'meta'" />
 
-              <el-dialog v-model="testDialog" :title="`连通性自测 · ${testTarget?.name ?? ''}`" width="680px">
-                <div style="font-size:12px;color:#909399;margin-bottom:8px">
-                  留空则按该源类型自动生成样例日志；样例会真实走完 解析 → 富化 → 转发检测 全链路。
-                </div>
-                <el-input v-model="testSample" type="textarea" :rows="4" placeholder='留空使用默认样例，或粘贴一行原始日志 / 一条 JSON' />
-                <div v-if="testResult" style="margin-top:12px">
-                  <el-alert :type="testResult.ok ? 'success' : 'error'" :closable="false"
-                    :title="testResult.ok ? '管线贯通：样例已被接收并转发' : '未通过：样例未被接收，检查解析规则或输出配置'" />
-                  <pre class="mono test-out">{{ JSON.stringify(testResult, null, 2) }}</pre>
-                </div>
-                <template #footer>
-                  <el-button @click="testDialog = false">关闭</el-button>
-                  <el-button type="primary" :loading="testLoading" @click="runTest">执行自测</el-button>
-                </template>
-              </el-dialog>
-            </el-tab-pane>
 
-            <!-- 输入源 -->
-            <el-tab-pane label="输入源" name="sources">
-              <div class="add-bar">
-                <el-button type="primary" @click="openSourceDialog">+ 新增日志源</el-button>
-                <el-button @click="loadSources">刷新</el-button>
-                <el-button type="primary" plain @click="doRender">渲染 vector.toml</el-button>
-                <span class="hint">接入方式 + 完整参数；保存后渲染 vector.toml</span>
-              </div>
-              <el-dialog v-model="showSourceDialog" title="新增日志源" width="640px">
-                <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px">
-                  <el-input v-model="newSource.name" placeholder="名称，如 fw-syslog" />
-                  <el-select v-model="newSource.type" placeholder="接入方式">
-                    <el-option v-for="t in SOURCE_TYPES" :key="t" :label="t" :value="t" />
-                  </el-select>
-                  <el-select v-model="newSource.format" placeholder="解析格式">
-                    <el-option v-for="f in PARSE_FORMATS" :key="f" :label="f" :value="f" />
-                  </el-select>
-                  <el-select v-model="newSource.categoryId" placeholder="日志类别" clearable>
-                    <el-option v-for="c in logCategories" :key="c.id" :label="`${c.code} ${c.name}`" :value="c.id" />
-                  </el-select>
-                  <el-input v-model="newSource.env" placeholder="环境标签" />
-                </div>
-                <div v-if="newSource.type==='FILE'" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:10px">
-                  <el-input v-model="newSource.path" placeholder="文件路径/glob，如 /var/log/auth.log" />
-                  <el-select v-model="newSource.readFrom">
-                    <el-option label="beginning 全量回放" value="beginning" /><el-option label="end 只收新增" value="end" />
-                  </el-select>
-                  <el-input v-model.number="newSource.frequency" placeholder="轮询间隔(秒)" />
-                </div>
-                <div v-else-if="newSource.type==='SOCKET'||newSource.type==='SYSLOG'" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:10px">
-                  <el-input v-model="newSource.address" placeholder="监听 host:port，如 0.0.0.0:514" />
-                  <el-select v-model="newSource.protocol">
-                    <el-option label="UDP" value="udp" /><el-option label="TCP" value="tcp" /><el-option label="TLS" value="tls" />
-                  </el-select>
-                </div>
-                <div v-else-if="newSource.type==='KAFKA'" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:10px">
-                  <el-input v-model="newSource.topic" placeholder="主题，如 socp-raw" />
-                  <el-input v-model="newSource.groupId" placeholder="消费组，如 search-group" />
-                </div>
-                <div v-else-if="newSource.type==='WINDOWS_EVENT'||newSource.type==='AGENT'||newSource.type==='HTTP_API'||newSource.type==='DATABASE'||newSource.type==='CLOUD'" style="margin-top:10px">
-                  <el-alert type="info" :closable="false" :title="`${newSource.type} 由对应采集器负责（Winlogbeat/Agent/Webhook/DB CDC/云 SDK），采集器输出统一走 NDJSON → SEARCH ingest`" />
-                </div>
-                <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:10px">
-                  <el-select v-model="newSource.charset" placeholder="字符集">
-                    <el-option label="UTF-8" value="utf-8" /><el-option label="GBK" value="gbk" /><el-option label="ISO-8859-1" value="iso-8859-1" />
-                  </el-select>
-                  <el-select v-model="newSource.timezone" placeholder="时区">
-                    <el-option label="Asia/Shanghai" value="Asia/Shanghai" /><el-option label="UTC" value="UTC" /><el-option label="Asia/Tokyo" value="Asia/Tokyo" />
-                  </el-select>
-                  <el-input v-model="newSource.tags" placeholder="标签（逗号分隔），如 app=nginx,team=infra" />
-                </div>
-                <template #footer>
-                  <el-switch v-model="newSource.enabled" active-text="启用" style="margin-right:12px" />
-                  <el-button @click="showSourceDialog = false">取消</el-button>
-                  <el-button type="success" @click="addSource(); showSourceDialog = false">新增日志源</el-button>
-                </template>
-              </el-dialog>
-              <el-card shadow="never">
-                <el-table :data="sources" size="small">
-                  <el-table-column prop="name" label="名称" width="130" />
-                  <el-table-column prop="type" label="类型" width="110" />
-                  <el-table-column prop="format" label="格式" width="80" />
-                  <el-table-column label="目标" min-width="160"><template #default="{ row }">{{ row.path || row.address || row.topic || '-' }}</template></el-table-column>
-                  <el-table-column label="协议" width="70"><template #default="{ row }">{{ row.protocol || '-' }}</template></el-table-column>
-                  <el-table-column prop="env" label="环境" width="65" />
-                  <el-table-column label="启用" width="65"><template #default="{ row }"><el-tag :type="row.enabled?'success':'info'" size="small">{{ row.enabled ? '是' : '否' }}</el-tag></template></el-table-column>
-                  <el-table-column label="操作" width="70"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeSource(row.id)">删除</el-button></template></el-table-column>
-                </el-table>
-              </el-card>
-            </el-tab-pane>
-
-            <!-- 输出配置 -->
-            <el-tab-pane label="输出配置" name="outputs">
-              <div class="add-bar">
-                <el-button type="primary" @click="openOutputDialog">+ 新增输出</el-button>
-                <span class="hint">渲染时取第一个启用的输出作为 Vector sink 目标；缺省为 SEARCH 自身 ingest</span>
-              </div>
-              <el-dialog v-model="showOutputDialog" title="新增输出" width="560px">
-                <el-form label-width="80px">
-                  <el-form-item label="名称"><el-input v-model="newOutput.name" placeholder="名称" /></el-form-item>
-                  <el-form-item label="类型">
-                    <el-select v-model="newOutput.type" style="width:200px">
-                      <el-option label="GLS_INGEST" value="GLS_INGEST" /><el-option label="OPENSEARCH" value="OPENSEARCH" /><el-option label="HTTP" value="HTTP" />
-                    </el-select>
-                  </el-form-item>
-                  <el-form-item label="目标 URL"><el-input v-model="newOutput.uri" placeholder="如 http://host:9200/_bulk" /></el-form-item>
-                  <el-form-item label="启用"><el-switch v-model="newOutput.enabled" active-text="启用" /></el-form-item>
-                </el-form>
-                <template #footer><el-button @click="showOutputDialog = false">取消</el-button><el-button type="success" @click="addOutput(); showOutputDialog = false">新增输出</el-button></template>
-              </el-dialog>
-              <el-card shadow="never">
-                <el-table :data="outputs" size="small">
-                  <el-table-column prop="name" label="名称" width="180" />
-                  <el-table-column prop="type" label="类型" width="130" />
-                  <el-table-column prop="uri" label="目标 URL" min-width="280" show-overflow-tooltip />
-                  <el-table-column label="启用" width="70"><template #default="{ row }"><el-tag :type="row.enabled?'success':'info'" size="small">{{ row.enabled ? '是' : '否' }}</el-tag></template></el-table-column>
-                  <el-table-column label="操作" width="70"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeOutput(row.id)">删除</el-button></template></el-table-column>
-                </el-table>
-              </el-card>
-            </el-tab-pane>
-
-            <!-- 解析规则 -->
-            <el-tab-pane label="解析规则" name="rules">
-              <div style="margin-bottom:12px">
-                <el-button type="primary" @click="showRuleDialog = true">新增解析规则</el-button>
-                <el-button @click="loadParseRules">刷新</el-button>
-                <span style="color:#909399;font-size:12px;margin-left:8px">定义「一行日志 → 字段」的提取方式，可现场用示例行验证</span>
-              </div>
-              <el-card shadow="never">
-                <el-table :data="parseRules" size="small">
-                  <el-table-column prop="name" label="规则名" width="180" />
-                  <el-table-column prop="format" label="格式" width="90" />
-                  <el-table-column prop="pattern" label="正则/描述" min-width="300" show-overflow-tooltip />
-                  <el-table-column label="启用" width="65"><template #default="{ row }"><el-tag :type="row.enabled?'success':'info'" size="small">{{ row.enabled ? '是' : '否' }}</el-tag></template></el-table-column>
-                  <el-table-column label="操作" width="70"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeParseRule(row.id)">删除</el-button></template></el-table-column>
-                </el-table>
-              </el-card>
-
-              <!-- 预览面板 -->
-              <el-card shadow="never" style="margin-top:14px">
-                <template #header>解析预览（用示例行验证规则）</template>
-                <div style="display:flex;gap:10px;margin-bottom:10px">
-                  <el-select v-model="previewRuleId" placeholder="选择已有规则（留空用临时正则）" clearable style="width:260px">
-                    <el-option v-for="r in parseRules" :key="r.id" :label="r.name" :value="r.id" />
-                  </el-select>
-                  <el-button type="primary" @click="doPreview">预览</el-button>
-                </div>
-                <el-input v-model="previewLine" type="textarea" :rows="2" placeholder="示例日志行" />
-                <div v-if="previewResult" style="margin-top:12px;background:var(--ns-bg-subtle);border-radius:6px;padding:12px">
-                  <p style="margin:0 0 6px">
-                    结果：<el-tag :type="previewResult.matched ? 'success' : 'danger'" size="small">{{ previewResult.matched ? '命中' : '未命中' }}</el-tag>
-                    <span v-if="previewResult.error" style="color:#f56c6c;margin-left:8px">{{ previewResult.error }}</span>
-                  </p>
-                  <pre class="mono" style="margin:0;font-size:12px">{{ JSON.stringify(previewResult.fields, null, 2) }}</pre>
-                </div>
-              </el-card>
-            </el-tab-pane>
-          </el-tabs>
-          <el-dialog v-model="showRender" title="vector.toml" width="720px">
-            <el-button size="small" type="primary" @click="copyRender">复制</el-button>
-            <pre style="background:var(--ns-bg-subtle);border:1px solid var(--ns-border);border-radius:6px;padding:12px;font-size:12px;overflow:auto;max-height:440px;margin-top:10px">{{ renderText }}</pre>
-          </el-dialog>
-          <el-dialog v-model="showRuleDialog" title="新增解析规则" width="560px">
-            <el-form label-width="90px">
-              <el-form-item label="名称"><el-input v-model="newRule.name" placeholder="如：SSHD 认证失败提取" /></el-form-item>
-              <el-form-item label="格式">
-                <el-select v-model="newRule.format" style="width:200px">
-                  <el-option v-for="f in ['REGEX','JSON','KV','SYSLOG','CEF','LEEF']" :key="f" :label="f" :value="f" />
-                </el-select>
-              </el-form-item>
-              <el-form-item v-if="newRule.format === 'REGEX'" label="正则">
-                <el-input v-model="newRule.pattern" type="textarea" :rows="3" placeholder='命名分组正则，如：Failed password for (?&lt;user&gt;\S+) from (?&lt;srcip&gt;\d+\.\d+\.\d+\.\d+)&#10;注意：组名不支持下划线（用 srcip 再映射为 src_ip）' />
-              </el-form-item>
-              <el-form-item label="作用于源"><el-input v-model="newRule.sourceId" placeholder="留空=全局规则" /></el-form-item>
-              <el-form-item label="启用"><el-switch v-model="newRule.enabled" /></el-form-item>
-            </el-form>
-            <template #footer><el-button @click="showRuleDialog = false">取消</el-button><el-button type="primary" @click="addParseRule">保存</el-button></template>
-          </el-dialog>
-        </div>
-
-        <!-- 元数据（数据源分类 / 日志类别 / 字段字典） -->
-        <div v-else-if="activeMenu === 'meta'" class="page-pad view-enter">
-          <el-tabs v-model="metaTab" @tab-change="onMetaTab">
-            <!-- 数据源分类 -->
-            <el-tab-pane label="数据源分类" name="ds">
-              <div class="add-bar">
-                <el-button type="primary" @click="openDsDialog">+ 新增数据源分类</el-button>
-                <span class="hint">接入方式注册表：9 类内置 + 可扩展</span>
-              </div>
-              <el-dialog v-model="showDsDialog" title="新增数据源分类" width="520px">
-                <el-form label-width="80px">
-                  <el-form-item label="编码"><el-input v-model="newDsType.code" placeholder="如 SYSLOG" /></el-form-item>
-                  <el-form-item label="名称"><el-input v-model="newDsType.name" placeholder="如 Syslog 协议" /></el-form-item>
-                  <el-form-item label="说明"><el-input v-model="newDsType.description" placeholder="说明" /></el-form-item>
-                  <el-form-item label="启用"><el-switch v-model="newDsType.enabled" /></el-form-item>
-                </el-form>
-                <template #footer><el-button @click="showDsDialog = false">取消</el-button><el-button type="success" @click="addDsType(); showDsDialog = false">新增分类</el-button></template>
-              </el-dialog>
-              <el-card shadow="never">
-                <template #header>接入方式注册表（9 类内置 + 可扩展）</template>
-                <el-table :data="dataSourceTypes" size="small">
-                  <el-table-column prop="code" label="编码" width="130" />
-                  <el-table-column prop="name" label="名称" width="150" />
-                  <el-table-column prop="description" label="说明" min-width="300" show-overflow-tooltip />
-                  <el-table-column label="启用" width="65"><template #default="{ row }"><el-tag :type="row.enabled?'success':'info'" size="small">{{ row.enabled ? '是' : '否' }}</el-tag></template></el-table-column>
-                  <el-table-column label="操作" width="70"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeDsType(row.id)">删除</el-button></template></el-table-column>
-                </el-table>
-              </el-card>
-            </el-tab-pane>
-
-            <!-- 日志类别 -->
-            <el-tab-pane label="日志类别" name="cats">
-              <div class="add-bar">
-                <el-button type="primary" @click="openCatDialog">+ 新增日志类别</el-button>
-                <span class="hint">日志分类体系：对齐 SIEM Taxonomy / MITRE ATT&CK</span>
-              </div>
-              <el-dialog v-model="showCatDialog" title="新增日志类别" width="520px">
-                <el-form label-width="80px">
-                  <el-form-item label="编码"><el-input v-model="newCategory.code" placeholder="如 AUTH" /></el-form-item>
-                  <el-form-item label="名称"><el-input v-model="newCategory.name" placeholder="名称" /></el-form-item>
-                  <el-form-item label="基线级别">
-                    <el-select v-model="newCategory.defaultSeverity" style="width:160px">
-                      <el-option v-for="s in SEVERITIES" :key="s" :label="s" :value="s" />
-                    </el-select>
-                  </el-form-item>
-                  <el-form-item label="说明"><el-input v-model="newCategory.description" placeholder="说明" /></el-form-item>
-                  <el-form-item label="启用"><el-switch v-model="newCategory.enabled" /></el-form-item>
-                </el-form>
-                <template #footer><el-button @click="showCatDialog = false">取消</el-button><el-button type="success" @click="addCategory(); showCatDialog = false">新增类别</el-button></template>
-              </el-dialog>
-              <el-card shadow="never">
-                <template #header>日志分类体系（对齐 SIEM Taxonomy / MITRE ATT&CK）</template>
-                <el-table :data="logCategories" size="small">
-                  <el-table-column prop="code" label="编码" width="120" />
-                  <el-table-column prop="name" label="名称" width="130" />
-                  <el-table-column prop="description" label="说明" min-width="260" show-overflow-tooltip />
-                  <el-table-column label="基线级别" width="100"><template #default="{ row }"><SevBadge :value="row.defaultSeverity" /></template></el-table-column>
-                  <el-table-column label="启用" width="65"><template #default="{ row }"><el-tag :type="row.enabled?'success':'info'" size="small">{{ row.enabled ? '是' : '否' }}</el-tag></template></el-table-column>
-                  <el-table-column label="操作" width="70"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeCategory(row.id)">删除</el-button></template></el-table-column>
-                </el-table>
-              </el-card>
-            </el-tab-pane>
-
-            <!-- 字段字典 -->
-            <el-tab-pane label="字段字典" name="fields">
-              <div class="add-bar">
-                <el-button type="primary" @click="openFieldDialog">+ 新增字段</el-button>
-                <span class="hint">统一字段语义，解析 / 检索 / 告警共用</span>
-              </div>
-              <el-dialog v-model="showFieldDialog" title="新增字段" width="540px">
-                <el-form label-width="80px">
-                  <el-form-item label="字段名"><el-input v-model="newField.fieldName" placeholder="如 src_ip" /></el-form-item>
-                  <el-form-item label="中文名"><el-input v-model="newField.fieldLabel" placeholder="中文名" /></el-form-item>
-                  <el-form-item label="类型">
-                    <el-select v-model="newField.fieldType" style="width:160px">
-                      <el-option v-for="t in ['string','int','long','float','ip','date','bool','json']" :key="t" :label="t" :value="t" />
-                    </el-select>
-                  </el-form-item>
-                  <el-form-item label="来源">
-                    <el-select v-model="newField.source" style="width:160px">
-                      <el-option label="system" value="system" /><el-option label="parse" value="parse" /><el-option label="custom" value="custom" />
-                    </el-select>
-                  </el-form-item>
-                  <el-form-item label="索引策略">
-                    <el-checkbox v-model="newField.searchable">检索</el-checkbox>
-                    <el-checkbox v-model="newField.aggregatable">聚合</el-checkbox>
-                    <el-checkbox v-model="newField.stored">存储</el-checkbox>
-                  </el-form-item>
-                  <el-form-item label="说明"><el-input v-model="newField.description" placeholder="说明" /></el-form-item>
-                </el-form>
-                <template #footer><el-button @click="showFieldDialog = false">取消</el-button><el-button type="success" @click="addField(); showFieldDialog = false">新增字段</el-button></template>
-              </el-dialog>
-              <el-card shadow="never">
-                <template #header>字段字典（统一字段语义，解析/检索/告警共用）</template>
-                <el-table :data="fieldDefs" size="small">
-                  <el-table-column prop="fieldName" label="字段名" width="130" />
-                  <el-table-column prop="fieldLabel" label="中文名" width="110" />
-                  <el-table-column prop="fieldType" label="类型" width="80" />
-                  <el-table-column prop="source" label="来源" width="80" />
-                  <el-table-column label="索引策略" width="150">
-                    <template #default="{ row }">
-                      <el-tag v-if="row.searchable" size="small" type="success" style="margin-right:4px">检索</el-tag>
-                      <el-tag v-if="row.aggregatable" size="small" type="warning" style="margin-right:4px">聚合</el-tag>
-                      <el-tag v-if="row.stored" size="small" type="info">存储</el-tag>
-                    </template>
-                  </el-table-column>
-                  <el-table-column prop="description" label="说明" min-width="200" show-overflow-tooltip />
-                  <el-table-column label="操作" width="70"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeField(row.id)">删除</el-button></template></el-table-column>
-                </el-table>
-              </el-card>
-            </el-tab-pane>
-          </el-tabs>
-        </div>
-
-        <!-- 检测规则 -->
-        <div v-else-if="activeMenu === 'detect'" class="page-pad view-enter">
-          <el-row :gutter="12" style="margin-bottom:14px">
-            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ gasStat.rules ?? 0 }}</div><div class="label">规则数</div></div></el-card></el-col>
-            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ gasStat.eventCount ?? 0 }}</div><div class="label">事件数</div></div></el-card></el-col>
-            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#f56c6c">{{ gasStat.alertCount ?? 0 }}</div><div class="label">告警数</div></div></el-card></el-col>
-            <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ ((gasStat.queueLoad ?? 0) as number * 100).toFixed(0) }}%</div><div class="label">队列水位</div></div></el-card></el-col>
-          </el-row>
-          <el-card shadow="never" style="margin-bottom:14px">
-            <template #header>模拟事件投递</template>
-            <div style="display:flex;gap:10px;align-items:center">
-              <el-select v-model="ingestSource" style="width:120px"><el-option label="auth" value="auth" /><el-option label="web" value="web" /><el-option label="firewall" value="firewall" /></el-select>
-              <el-input v-model="ingestMsg" placeholder="如：Failed password for admin" style="width:360px" />
-              <el-button type="primary" @click="doIngest">投递</el-button>
-              <span v-if="ingestResult" class="mono" style="font-size:12px;color:#67c23a">{{ ingestResult }}</span>
-            </div>
-          </el-card>
-          <el-card shadow="never">
-            <template #header>
-              <div style="display:flex;justify-content:space-between;align-items:center">
-                <span>规则列表（可新建/编辑/删除/启停，保存后引擎热更新）</span>
-                <el-button type="primary" size="small" @click="openRuleEditor()">新建规则</el-button>
-              </div>
-            </template>
-            <el-table :data="rules" size="small">
-              <el-table-column prop="id" label="ID" width="150" />
-              <el-table-column prop="name" label="名称" min-width="150" />
-              <el-table-column prop="type" label="类型" width="90" />
-              <el-table-column prop="severity" label="级别" width="85"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
-              <el-table-column label="匹配条件" min-width="220" show-overflow-tooltip>
-                <template #default="{ row }">{{ (row.match || []).map((c: { field: string; op: string; value: string }) => `${c.field} ${c.op} ${c.value}`).join(' AND ') || (row.steps || []).length + ' 步关联' || '-' }}</template>
-              </el-table-column>
-              <el-table-column label="启用" width="70"><template #default="{ row }"><el-tag :type="row.enabled?'success':'info'" size="small">{{ row.enabled ? '是' : '否' }}</el-tag></template></el-table-column>
-              <el-table-column label="操作" width="170">
-                <template #default="{ row }">
-                  <el-button link type="primary" size="small" @click="openRuleEditor(row)">编辑</el-button>
-                  <el-button link size="small" @click="toggleRule(row)">{{ row.enabled ? '停用' : '启用' }}</el-button>
-                  <el-button link type="danger" size="small" @click="removeRule(row.id)">删除</el-button>
-                </template>
-              </el-table-column>
-            </el-table>
-          </el-card>
-
-          <!-- 规则编辑对话框 -->
-          <el-dialog v-model="showRuleEditor" :title="ruleEditingId ? '编辑规则' : '新建规则'" width="640px">
-            <el-form label-width="90px">
-              <el-form-item label="名称"><el-input v-model="ruleForm.name" placeholder="如：SSH 暴力破解" /></el-form-item>
-              <el-form-item label="类型">
-                <el-radio-group v-model="ruleForm.type">
-                  <el-radio value="pattern">模式</el-radio>
-                  <el-radio value="threshold">阈值</el-radio>
-                  <el-radio value="correlation">关联</el-radio>
-                </el-radio-group>
-              </el-form-item>
-              <el-form-item label="级别">
-                <el-select v-model="ruleForm.severity" style="width:160px">
-                  <el-option v-for="s in SEVERITIES" :key="s" :label="s" :value="s" />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="告警消息"><el-input v-model="ruleForm.message" placeholder="支持 {key} {count} {host} 占位" /></el-form-item>
-              <el-form-item label="窗口"><el-input v-model="ruleForm.window" placeholder="如 60s / 5m / 1h" style="width:120px" /></el-form-item>
-              <template v-if="ruleForm.type === 'threshold'">
-                <el-form-item label="分组字段"><el-select v-model="ruleForm.keyField" style="width:160px"><el-option v-for="f in COND_FIELDS" :key="f" :label="f" :value="f" /></el-select></el-form-item>
-                <el-form-item label="触发阈值"><el-input v-model.number="ruleForm.threshold" type="number" style="width:120px" /></el-form-item>
-              </template>
-              <template v-if="ruleForm.type === 'correlation'">
-                <el-form-item label="关联字段"><el-select v-model="ruleForm.keyField" style="width:160px"><el-option v-for="f in COND_FIELDS" :key="f" :label="f" :value="f" /></el-select></el-form-item>
-                <el-form-item label="关联步骤">
-                  <div v-for="(step, si) in ruleForm.steps" :key="si" style="border:1px solid #e4e7ed;border-radius:6px;padding:8px;margin-bottom:8px">
-                    <div style="font-size:12px;color:#909399;margin-bottom:4px">步骤 {{ si + 1 }}（同一实体按序命中）</div>
-                    <div v-for="(c, ci) in step" :key="ci" style="display:flex;gap:6px;margin-bottom:4px">
-                      <el-select v-model="c.field" size="small" style="width:110px"><el-option v-for="f in COND_FIELDS" :key="f" :label="f" :value="f" /></el-select>
-                      <el-select v-model="c.op" size="small" style="width:100px"><el-option v-for="o in COND_OPS" :key="o" :label="o" :value="o" /></el-select>
-                      <el-input v-model="c.value" size="small" placeholder="值" style="flex:1" />
-                      <el-button size="small" type="danger" link @click="step.splice(ci, 1)">删</el-button>
-                    </div>
-                    <el-button size="small" link type="primary" @click="ruleForm.steps[si].push({ field: 'msg', op: 'contains', value: '' })">+ 条件</el-button>
-                    <el-button v-if="ruleForm.steps.length > 1" size="small" link type="danger" @click="ruleForm.steps.splice(si, 1)">删除步骤</el-button>
-                  </div>
-                  <el-button size="small" type="primary" plain @click="ruleForm.steps.push([{ field: 'msg', op: 'contains', value: '' }])">+ 步骤</el-button>
-                </el-form-item>
-              </template>
-              <el-form-item v-else label="匹配条件">
-                <div v-for="(c, ci) in ruleForm.match" :key="ci" style="display:flex;gap:6px;margin-bottom:4px;width:100%">
-                  <el-select v-model="c.field" size="small" style="width:110px"><el-option v-for="f in COND_FIELDS" :key="f" :label="f" :value="f" /></el-select>
-                  <el-select v-model="c.op" size="small" style="width:110px"><el-option v-for="o in COND_OPS" :key="o" :label="o" :value="o" /></el-select>
-                  <el-input v-model="c.value" size="small" placeholder="值（条件间为 AND）" style="flex:1" />
-                  <el-button size="small" type="danger" link @click="ruleForm.match.splice(ci, 1)">删</el-button>
-                </div>
-                <el-button size="small" type="primary" plain @click="ruleForm.match.push({ field: 'msg', op: 'contains', value: '' })">+ 条件</el-button>
-              </el-form-item>
-              <el-form-item label="启用"><el-switch v-model="ruleForm.enabled" /></el-form-item>
-            </el-form>
-            <template #footer><el-button @click="showRuleEditor = false">取消</el-button><el-button type="primary" @click="saveRule">保存并热更新</el-button></template>
-          </el-dialog>
-        </div>
+        <DetectView v-else-if="activeMenu === 'detect'" />
 
         <!-- UEBA 风险看板 -->
         <div v-else-if="activeMenu === 'ueba'" class="page-pad view-enter">
