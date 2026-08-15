@@ -216,15 +216,15 @@ jobs:
 
       - name: Start pipeline services
         run: |
-          mkdir -p .cache
+          mkdir -p "$GITHUB_WORKSPACE/.cache"
           export SOCP_OPENSEARCH_URL=http://localhost:9200
           export SOCP_OPENSEARCH_USERNAME=admin
           export SOCP_OPENSEARCH_PASSWORD=admin
-          java -jar services/search-config/target/search-config-1.0.0-SNAPSHOT.jar --server.port=18081 > .cache/search-config.log 2>&1 &
-          java -jar services/detect-web/target/detect-web-1.0.0-SNAPSHOT.jar --server.port=18082 > .cache/detect-web.log 2>&1 &
-          java -jar services/alert-web/target/alert-web-1.0.0-SNAPSHOT.jar --server.port=18080 > .cache/alert-web.log 2>&1 &
-          java -jar services/report-web/target/report-web-1.0.0-SNAPSHOT.jar --server.port=18084 > .cache/report-web.log 2>&1 &
-          java -jar services/api-gateway/target/api-gateway-1.0.0-SNAPSHOT.jar --server.port=18092 > .cache/api-gateway.log 2>&1 &
+          nohup java -jar services/search-config/target/search-config-1.0.0-SNAPSHOT.jar --server.port=18081 > "$GITHUB_WORKSPACE/.cache/search-config.log" 2>&1 &
+          nohup java -jar services/detect-web/target/detect-web-1.0.0-SNAPSHOT.jar --server.port=18082 > "$GITHUB_WORKSPACE/.cache/detect-web.log" 2>&1 &
+          nohup java -jar services/alert-web/target/alert-web-1.0.0-SNAPSHOT.jar --server.port=18080 > "$GITHUB_WORKSPACE/.cache/alert-web.log" 2>&1 &
+          nohup java -jar services/report-web/target/report-web-1.0.0-SNAPSHOT.jar --server.port=18084 > "$GITHUB_WORKSPACE/.cache/report-web.log" 2>&1 &
+          nohup java -jar services/api-gateway/target/api-gateway-1.0.0-SNAPSHOT.jar --server.port=18092 --spring.profiles.active=dev > "$GITHUB_WORKSPACE/.cache/api-gateway.log" 2>&1 &
           python3 - <<'EOF'
           import time
           import urllib.request
@@ -254,6 +254,15 @@ jobs:
 
       - name: Run true-pipeline E2E (Kafka -> Detect -> stores)
         run: python3 build/verify-pipeline.py
+
+      - name: Print pipeline logs on failure
+        if: failure()
+        run: |
+          ps -ef | grep -E 'search-config|detect-web|alert-web|report-web|api-gateway' | grep -v grep || true
+          for log in "$GITHUB_WORKSPACE"/.cache/*.log; do
+            echo "===== $log ====="
+            tail -n 120 "$log" || true
+          done
 
       - name: Upload pipeline logs
         if: always()
