@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import 'element-plus/es/components/button/style/css.mjs'
-import 'element-plus/es/components/card/style/css.mjs'
 import 'element-plus/es/components/descriptions/style/css.mjs'
 import 'element-plus/es/components/divider/style/css.mjs'
 import 'element-plus/es/components/drawer/style/css.mjs'
@@ -10,7 +9,6 @@ import 'element-plus/es/components/table/style/css.mjs'
 import 'element-plus/es/components/tag/style/css.mjs'
 import 'element-plus/es/components/timeline/style/css.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
-import ElCard from 'element-plus/es/components/card/index.mjs'
 import { ElDescriptions, ElDescriptionsItem } from 'element-plus/es/components/descriptions/index.mjs'
 import ElDivider from 'element-plus/es/components/divider/index.mjs'
 import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
@@ -20,9 +18,10 @@ import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.m
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { ElTimeline, ElTimelineItem } from 'element-plus/es/components/timeline/index.mjs'
 import { onMounted, ref } from 'vue'
+import DataTableCard from '../components/DataTableCard.vue'
+import FilterToolbar from '../components/FilterToolbar.vue'
 import MetricCard from '../components/MetricCard.vue'
 import PageHeader from '../components/PageHeader.vue'
-import PagerBar from '../components/PagerBar.vue'
 import SevBadge from '../components/SevBadge.vue'
 import { useResourceList } from '../composables/useResourceList'
 import { caseApi, type CaseInfo, type TimelineEvent } from '../api/domains'
@@ -79,14 +78,16 @@ onMounted(loadCases)
       <MetricCard label="已解决" tone="success">{{ stats.resolved ?? 0 }}</MetricCard>
     </div>
 
-    <el-card shadow="never">
-      <div class="list-toolbar">
+    <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="casesFiltered.length">
+      <template #toolbar>
+        <FilterToolbar>
         <el-input v-model="keyword" placeholder="搜索案件 ID / 标题 / 实体" clearable @input="page = 1" />
         <el-select v-model="statusFilter" placeholder="全部状态" clearable @change="page = 1">
           <el-option v-for="status in ['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']" :key="status" :label="status" :value="status" />
         </el-select>
         <span class="toolbar-count">共 {{ casesFiltered.length }} 条</span>
-      </div>
+        </FilterToolbar>
+      </template>
       <el-table :data="casesPaged" size="small">
         <el-table-column prop="id" label="案件 ID" width="180" sortable />
         <el-table-column prop="title" label="标题" min-width="180" sortable />
@@ -96,8 +97,7 @@ onMounted(loadCases)
         <el-table-column prop="alarmCount" label="关联告警" width="90" sortable><template #default="{ row }">{{ row.alarmIds.length }}</template></el-table-column>
         <el-table-column label="操作" width="90"><template #default="{ row }"><el-button link type="primary" size="small" @click="openCaseRow(row)">详情/时间线</el-button></template></el-table-column>
       </el-table>
-      <PagerBar v-model:current-page="page" v-model:page-size="size" :total="casesFiltered.length" />
-    </el-card>
+    </DataTableCard>
 
     <el-drawer v-model="drawerVisible" :title="`案件 · ${detail?.title ?? ''}`" size="520px">
       <template v-if="detail">

@@ -16,8 +16,9 @@ import ElInput from 'element-plus/es/components/input/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import { onMounted, ref } from 'vue'
+import DataTableCard from '../components/DataTableCard.vue'
+import FilterToolbar from '../components/FilterToolbar.vue'
 import PageHeader from '../components/PageHeader.vue'
-import PagerBar from '../components/PagerBar.vue'
 import SevBadge from '../components/SevBadge.vue'
 import { useResourceList } from '../composables/useResourceList'
 import { threatIntelApi, type Ioc } from '../api/domains'
@@ -128,11 +129,13 @@ onMounted(loadTi)
       </el-form>
       <template #footer><el-button @click="showIocDialog = false">取消</el-button><el-button type="success" @click="addIoc">新增情报</el-button></template>
     </el-dialog>
-    <el-card shadow="never">
-      <div class="list-toolbar">
+    <DataTableCard v-model:current-page="iocPage" v-model:page-size="iocSize" :total="iocsFiltered.length">
+      <template #toolbar>
+        <FilterToolbar>
         <el-input v-model="iocKeyword" placeholder="搜索情报值 / 来源 / 描述" clearable @input="iocPage = 1" />
         <span class="toolbar-count">共 {{ iocsFiltered.length }} 条</span>
-      </div>
+        </FilterToolbar>
+      </template>
       <el-table :data="iocsPaged" size="small">
         <el-table-column prop="type" label="类型" width="90" sortable />
         <el-table-column prop="value" label="值" min-width="160" sortable />
@@ -141,7 +144,6 @@ onMounted(loadTi)
         <el-table-column prop="description" label="描述" min-width="160" sortable show-overflow-tooltip />
         <el-table-column label="操作" width="80"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeIoc(row.id)">删除</el-button></template></el-table-column>
       </el-table>
-      <PagerBar v-model:current-page="iocPage" v-model:page-size="iocSize" :total="iocsFiltered.length" />
-    </el-card>
+    </DataTableCard>
   </div>
 </template>

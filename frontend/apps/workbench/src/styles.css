@@ -928,6 +928,21 @@ body {
 .alarm-toolbar .el-select, .list-toolbar .el-select { width: 132px; }
 .toolbar-count, .list-toolbar .toolbar-count { font-size: 11px; }
 .alarm-table-card { overflow: hidden; }
+.filter-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--ns-border);
+  border-radius: var(--ns-radius-md);
+  background: var(--ns-surface);
+}
+.filter-toolbar-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.filter-toolbar .toolbar-count { margin-left: auto; color: var(--ns-text-3); font-size: 11px; white-space: nowrap; }
+.data-table-card .el-card__body { min-width: 0; }
+.data-table-content { min-width: 0; overflow-x: auto; }
 .el-table {
   --el-table-border-color: var(--ns-border);
   --el-table-header-bg-color: var(--ns-table-header);
@@ -1008,5 +1023,8 @@ body {
   .socp-sidebar-footer { display: none; }
   .page-title, .ov-title { font-size: 22px; }
   .alarm-toolbar, .list-toolbar, .search-toolbar { padding: 10px; }
+  .filter-toolbar { padding: 10px; }
+  .filter-toolbar-controls { width: 100%; }
+  .filter-toolbar .toolbar-count { width: 100%; margin-left: 0; }
   .el-card__body { padding: 14px; }
 }

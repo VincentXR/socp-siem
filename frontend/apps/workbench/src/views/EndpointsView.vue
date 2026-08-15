@@ -1,18 +1,17 @@
 <script setup lang="ts">
 import 'element-plus/es/components/button/style/css.mjs'
-import 'element-plus/es/components/card/style/css.mjs'
 import 'element-plus/es/components/input/style/css.mjs'
 import 'element-plus/es/components/table/style/css.mjs'
 import 'element-plus/es/components/tag/style/css.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
-import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { onMounted, ref } from 'vue'
+import DataTableCard from '../components/DataTableCard.vue'
+import FilterToolbar from '../components/FilterToolbar.vue'
 import MetricCard from '../components/MetricCard.vue'
 import PageHeader from '../components/PageHeader.vue'
-import PagerBar from '../components/PagerBar.vue'
 import { useResourceList } from '../composables/useResourceList'
 import { endpointApi, type Endpoint } from '../api/domains'
 
@@ -57,11 +56,13 @@ onMounted(loadEndpoints)
       <MetricCard label="端点类型" tone="neutral">{{ Object.keys(endpointStat.byType || {}).length }}</MetricCard>
     </div>
 
-    <el-card shadow="never">
-      <div class="list-toolbar">
+    <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="endpointsFiltered.length">
+      <template #toolbar>
+        <FilterToolbar>
         <el-input v-model="keyword" placeholder="搜索主机名 / IP / 系统" clearable @input="page = 1" />
         <span class="toolbar-count">共 {{ endpointsFiltered.length }} 条</span>
-      </div>
+        </FilterToolbar>
+      </template>
       <el-table :data="endpointsPaged" size="small">
         <el-table-column prop="hostname" label="主机名" width="140" sortable />
         <el-table-column prop="ip" label="IP" width="120" sortable />
@@ -74,7 +75,6 @@ onMounted(loadEndpoints)
           <template #default="{ row }"><el-button link type="danger" size="small" @click="removeEndpoint(row.id)">注销</el-button></template>
         </el-table-column>
       </el-table>
-      <PagerBar v-model:current-page="page" v-model:page-size="size" :total="endpointsFiltered.length" />
-    </el-card>
+    </DataTableCard>
   </div>
 </template>

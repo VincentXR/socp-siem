@@ -1,18 +1,17 @@
 <script setup lang="ts">
 import 'element-plus/es/components/button/style/css.mjs'
-import 'element-plus/es/components/card/style/css.mjs'
 import 'element-plus/es/components/input/style/css.mjs'
 import 'element-plus/es/components/table/style/css.mjs'
 import 'element-plus/es/components/tag/style/css.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
-import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { onMounted, ref } from 'vue'
+import DataTableCard from '../components/DataTableCard.vue'
+import FilterToolbar from '../components/FilterToolbar.vue'
 import MetricCard from '../components/MetricCard.vue'
 import PageHeader from '../components/PageHeader.vue'
-import PagerBar from '../components/PagerBar.vue'
 import { useResourceList } from '../composables/useResourceList'
 import { assetApi, type Asset } from '../api/domains'
 
@@ -57,11 +56,13 @@ onMounted(loadAssets)
       <MetricCard label="资产类型" tone="neutral">{{ Object.keys(assetStat.byType || {}).length }}</MetricCard>
     </div>
 
-    <el-card shadow="never">
-      <div class="list-toolbar">
+    <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="assetsFiltered.length">
+      <template #toolbar>
+        <FilterToolbar>
         <el-input v-model="keyword" placeholder="搜索名称 / IP / 类型 / 负责人" clearable @input="page = 1" />
         <span class="toolbar-count">共 {{ assetsFiltered.length }} 条</span>
-      </div>
+        </FilterToolbar>
+      </template>
       <el-table :data="assetsPaged" size="small">
         <el-table-column prop="name" label="名称" width="140" sortable />
         <el-table-column prop="type" label="类型" width="100" sortable />
@@ -75,7 +76,6 @@ onMounted(loadAssets)
           <template #default="{ row }"><el-button link type="danger" size="small" @click="removeAsset(row.id)">删除</el-button></template>
         </el-table-column>
       </el-table>
-      <PagerBar v-model:current-page="page" v-model:page-size="size" :total="assetsFiltered.length" />
-    </el-card>
+    </DataTableCard>
   </div>
 </template>
