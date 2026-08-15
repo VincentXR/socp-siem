@@ -958,6 +958,8 @@ body {
   background: var(--ns-surface);
 }
 .filter-toolbar-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.filter-toolbar-controls > .el-input { width: min(360px, 100%); }
+.filter-toolbar-controls > .el-select { width: 150px; }
 .filter-toolbar .toolbar-count { margin-left: auto; color: var(--ns-text-3); font-size: 11px; white-space: nowrap; }
 .data-table-card .el-card__body { min-width: 0; }
 .data-table-content { min-width: 0; overflow-x: auto; }
@@ -1032,6 +1034,8 @@ body {
   .alarm-toolbar, .list-toolbar, .search-toolbar { padding: 10px; }
   .filter-toolbar { padding: 10px; }
   .filter-toolbar-controls { width: 100%; }
+  .filter-toolbar-controls > .el-input,
+  .filter-toolbar-controls > .el-select { width: 100%; }
   .filter-toolbar .toolbar-count { width: 100%; margin-left: 0; }
   .el-card__body { padding: 14px; }
   .el-card__body:has(.el-table) { overflow-x: auto; }
