@@ -13,7 +13,7 @@ bash build/mvnw.sh test -Dsurefire.failIfNoSpecifiedTests=false
 # Focused backend slice and required dependencies
 bash build/mvnw.sh -pl services/api-gateway,services/alert-web,services/detect-web -am test
 
-# Workbench API contracts and production artifact
+# Workbench API contracts, type check, and production artifact
 cd frontend/apps/workbench
 pnpm test
 pnpm verify
@@ -27,12 +27,16 @@ navigation, resource-list, and resource-import contract tests.
 
 - `socp-auth` and `api-gateway`: JWT configuration, production guard, missing
   credentials, viewer write denial, tenant propagation, and trace headers.
+- `socp-error`: HTTP status preservation for controller-declared 4xx/5xx
+  responses.
 - `socp-rule` and `detect-web`: rule evaluation, suppression, hot reload,
-  event deduplication, queue backpressure, and malformed-event handling.
-- `alert-web`: transactional Outbox creation, pending-event retry, alert
-  disposition, and downstream fan-out isolation.
-- `incident-web` and `soar-web`: case merge/idempotency and compensation or
-  in-process fallback behavior.
+  event deduplication, queue backpressure, malformed-event handling, and rule
+  API bulk/reload contracts.
+- `alert-web`: create validation, paged query contract, transactional Outbox
+  creation, pending-event retry, alert disposition, and downstream fan-out
+  isolation.
+- `incident-web` and `soar-web`: case API validation, case merge/idempotency,
+  and compensation or in-process fallback behavior.
 - Resource services: import, create/update, validation, pagination, and
   tenant-scoped access for assets, cases, ATT&CK techniques, and IOCs.
 
@@ -55,6 +59,13 @@ The pipeline check confirms canonical event acceptance, Kafka delivery,
 detection, PostgreSQL alert persistence, OpenSearch indexing, ClickHouse
 analytics, and report availability. The failure checks verify recovery behavior
 for Kafka, OpenSearch, Temporal, and PostgreSQL.
+
+The failure script is intentionally a manual/nightly check because it stops and
+restarts local middleware containers. It must restore every dependency before
+the run ends; it should not be used as a per-commit unit test.
+
+See [validation-matrix.md](validation-matrix.md) for pass criteria, cadence,
+and the single-node boundaries that the checks do not claim to cover.
 
 ## CI ownership
 

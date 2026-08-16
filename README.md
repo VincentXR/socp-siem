@@ -130,6 +130,8 @@ python build/verify-slice.py
 python build/verify-pipeline.py
 python build/verify-full.py
 python build/failure-tests.py
+# 可选：记录检测批量入口基线（不代表生产吞吐）
+python build/benchmark-pipeline.py --count 100
 ```
 
 `verify-pipeline.py` 验证事件进入 Kafka、检测命中、告警落库、OpenSearch 索引和 ClickHouse 明细写入。`failure-tests.py` 覆盖 Kafka、OpenSearch、Temporal 和 PostgreSQL 的停止与恢复场景。GitHub Actions 在推送和 Pull Request 时执行后端测试、前端验证、最小服务切片及真实事件管线 E2E。

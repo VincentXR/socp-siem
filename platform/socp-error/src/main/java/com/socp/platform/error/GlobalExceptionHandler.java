@@ -7,6 +7,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.server.ResponseStatusException;
 
 /**
  * 全局异常处理器：把一切异常归一为 ApiResult，避免把堆栈直接吐给前端。
@@ -31,6 +32,14 @@ public class GlobalExceptionHandler {
             builder.header("Retry-After", String.valueOf(e.getRetryAfterSeconds()));
         }
         return builder.body(ApiResult.fail(e.getCode(), e.getMessage()));
+    }
+
+    /** 保留 Controller 显式声明的 4xx/5xx 状态，避免被通用 Exception handler 改成 500。 */
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<ApiResult<Void>> handleResponseStatus(ResponseStatusException e) {
+        int code = e.getStatusCode().value();
+        String message = e.getReason() == null ? e.getMessage() : e.getReason();
+        return ResponseEntity.status(e.getStatusCode()).body(ApiResult.fail(code, message));
     }
 
     /** 只有落在标准 HTTP 错误区间的 code 才映射为真实状态码，业务码一律 200。 */

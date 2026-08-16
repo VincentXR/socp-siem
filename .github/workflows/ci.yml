@@ -33,7 +33,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
 
-      - name: Build backend (28 Maven modules)
+      - name: Build backend (Maven reactor)
         run: bash build/mvnw.sh -DskipTests package
 
       - name: Run backend tests
@@ -47,12 +47,8 @@ jobs:
         run: pnpm test
         working-directory: frontend/apps/workbench
 
-      - name: Build frontend (workbench)
-        run: pnpm build
-        working-directory: frontend/apps/workbench
-
-      - name: Verify frontend artifact
-        run: node scripts/verify-build.mjs
+      - name: Verify frontend (typecheck, build, and artifact)
+        run: pnpm verify
         working-directory: frontend/apps/workbench
 
   e2e:

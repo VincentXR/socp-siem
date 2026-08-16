@@ -12,7 +12,9 @@ SOCP 故障注入测试（P4，2026-08-12）：验证核心中间件故障下服
 前提：后端全栈 + 中间件在跑（bash build/run-all.sh backend + docker compose up -d）。
 用法：python build/failure-tests.py
 """
+import atexit
 import json
+import socket
 import subprocess
 import sys
 import time
@@ -22,6 +24,7 @@ GATEWAY = "http://localhost:18092"
 TOKEN = None
 PASS = 0
 FAIL = 0
+STOPPED_CONTAINERS = []
 
 
 def api(path, method="GET", body=None, token=True):
@@ -70,9 +73,30 @@ def check(name, ok, detail=""):
 
 
 def docker(action, *containers):
+    if action == "stop":
+        for container in containers:
+            try:
+                state = subprocess.run(
+                    ["docker", "inspect", "-f", "{{.State.Running}}", container],
+                    capture_output=True, text=True, timeout=10,
+                ).stdout.strip().lower()
+                if state == "true" and container not in STOPPED_CONTAINERS:
+                    STOPPED_CONTAINERS.append(container)
+            except Exception:
+                pass
     subprocess.run(["docker", action, *containers], check=False,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(3)
+
+
+def restore_containers():
+    """尽量恢复本脚本停止过、且停止前处于运行状态的容器。"""
+    for container in reversed(STOPPED_CONTAINERS):
+        subprocess.run(["docker", "start", container], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+atexit.register(restore_containers)
 
 
 def wait_http(url, expect_ok=True, timeout=40, step=3):
@@ -89,11 +113,27 @@ def wait_http(url, expect_ok=True, timeout=40, step=3):
 def port_listening(port):
     """检查端口是否有进程监听（判断服务进程存活，不依赖 HTTP 响应）。"""
     try:
-        out = subprocess.run(["netstat", "-ano", "-p", "tcp"], capture_output=True, text=True,
-                             timeout=10).stdout
-        for line in out.splitlines():
-            if f":{port} " in line and "LISTENING" in line:
-                return True
+        with socket.create_connection(("127.0.0.1", port), timeout=2):
+            return True
+    except OSError:
+        pass
+
+    # 连接探测不可用时再尝试系统命令；兼容 Linux ss、Unix netstat 和 Windows netstat。
+    try:
+        commands = [
+            ["ss", "-ltn"],
+            ["netstat", "-ano"],
+            ["netstat", "-an", "-p", "tcp"],
+        ]
+        for command in commands:
+            try:
+                out = subprocess.run(command, capture_output=True, text=True,
+                                     timeout=10).stdout
+            except (FileNotFoundError, OSError):
+                continue
+            for line in out.splitlines():
+                if f":{port} " in line and ("LISTEN" in line.upper() or "LISTENING" in line.upper()):
+                    return True
     except Exception:
         pass
     return False
