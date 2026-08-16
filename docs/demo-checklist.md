@@ -24,7 +24,7 @@ alert -> ClickHouse analytics
 
 ```bash
 docker compose -f infra/docker-compose.yml up -d
-bash build/run-all.sh backend
+bash build/run-all.sh start core
 bash build/run-vector.sh start
 ```
 

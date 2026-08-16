@@ -80,15 +80,19 @@ cd socp-siem
 # 启动 PostgreSQL、Kafka、OpenSearch、ClickHouse 等中间件
 docker compose -f infra/docker-compose.yml up -d
 
-# 构建并启动后端
-bash build/mvnw.sh -DskipTests package
-bash build/run-all.sh backend
-
-# 安装依赖并启动前端
+# 安装前端依赖
 cd frontend
 corepack pnpm install --frozen-lockfile
 cd ..
-bash build/start-frontend.sh
+
+# 构建后端并启动核心开发链路（含前端）
+bash build/mvnw.sh -DskipTests package
+bash build/run-all.sh start
+
+# 需要查看全部业务页面时，使用 ui profile；完整 E2E 使用 full profile
+# bash build/run-all.sh start ui
+# bash build/run-all.sh start full
+
 ```
 
 访问 `http://localhost:5173`，本地演示账号为 `demo / demo123`。该凭据仅用于开发环境。
@@ -103,7 +107,7 @@ python build/demos/golden-demo.py
 使用以下命令查看或停止本地服务：
 
 ```bash
-bash build/run-all.sh status
+bash build/run-all.sh status core
 bash build/run-all.sh stop
 docker compose -f infra/docker-compose.yml down
 ```

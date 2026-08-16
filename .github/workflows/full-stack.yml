@@ -56,7 +56,7 @@ jobs:
         run: python3 -m pip install kafka-python
 
       - name: Start all backend services
-        run: bash build/run-all.sh backend
+        run: bash build/run-all.sh backend full
 
       - name: Run full API verification
         run: python3 build/verify-full.py

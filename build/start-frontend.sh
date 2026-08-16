@@ -41,4 +41,4 @@ NODE="$(command -v node 2>/dev/null || echo "C:/Users/Ran/.workbuddy/binaries/no
 
 echo "启动前端 dev server: 端口 $PORT  根目录 $(cd -P "$WORKBENCH" && pwd)"
 cd -P "$WORKBENCH"
-exec "$NODE" "$VITE_BIN" --port "$PORT" --strictPort
+exec "$NODE" "$VITE_BIN" --host 0.0.0.0 --port "$PORT" --strictPort

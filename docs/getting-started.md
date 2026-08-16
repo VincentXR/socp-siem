@@ -40,11 +40,17 @@ SOCP_PORT_ALERT_WEB=28080 bash build/run-all.sh backend
 # PostgreSQL, Kafka, OpenSearch, ClickHouse and supporting middleware
 docker compose -f infra/docker-compose.yml up -d
 
-# Start built backend services and the workbench dev server
+# Start the core event path and the workbench dev server
 bash build/run-all.sh start
 
+# Start all page backends when inspecting every workbench module
+bash build/run-all.sh start ui
+
+# Start every backend and collector for full-stack verification
+bash build/run-all.sh start full
+
 # Or start only the backend and run the frontend separately
-bash build/run-all.sh backend
+bash build/run-all.sh backend core
 bash build/start-frontend.sh
 ```
 
@@ -96,7 +102,7 @@ the Golden Demo and the Kafka recovery walkthrough.
 ## Stop the environment
 
 ```bash
-bash build/run-all.sh status
+bash build/run-all.sh status core
 bash build/run-all.sh stop
 docker compose -f infra/docker-compose.yml down
 ```

@@ -33,8 +33,8 @@ mkdir -p "$LOGDIR"
 jar_of() { printf '%s/services/%s/target/%s-1.0.0-SNAPSHOT.jar' "$ROOT" "$1" "$1"; }
 
 pid_on_port() {
-  if command -v netstat >/dev/null 2>&1 && netstat -ano -p tcp >/dev/null 2>&1; then
-    netstat -ano -p tcp 2>/dev/null | grep -i listen | grep ":$1 " | awk '{print $NF}' | head -1
+  if command -v netstat >/dev/null 2>&1 && netstat -ano >/dev/null 2>&1; then
+    netstat -ano 2>/dev/null | grep -i listen | grep ":$1 " | awk '{print $NF}' | head -1
   elif command -v lsof >/dev/null 2>&1; then
     lsof -ti tcp:"$1" -s tcp:LISTEN 2>/dev/null | head -1
   fi

@@ -69,7 +69,7 @@ cat > "$PKG/RELEASE.md" <<'EOF'
 ## 启动 / 停止 / 状态
 ```bash
 bash socp/build/run-all.sh backend   # 启动 17 个后端服务（18080~18097）
-bash socp/build/run-all.sh status    # 探活
+bash socp/build/run-all.sh status full    # 全栈探活
 bash socp/build/run-all.sh stop      # 停止
 ```
 
