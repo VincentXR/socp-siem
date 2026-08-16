@@ -44,6 +44,11 @@ SERVICES = {
 }
 
 
+def ingest_url():
+    """Return the direct search-config ingest endpoint including its context path."""
+    return base_url("search-config") + "/search-config/api/v1/ingest"
+
+
 def unwrap(value):
     if isinstance(value, dict) and "data" in value:
         return value["data"]
@@ -263,7 +268,7 @@ def main():
         print(f"  appended {len(failed)} raw sshd lines to {args.log_file}")
     else:
         # request() intentionally serializes JSON bodies, so raw NDJSON uses urllib directly.
-        url = base_url("search-config") + "/api/v1/ingest"
+        url = ingest_url()
         req = urllib.request.Request(
             url,
             data=("\n".join(failed) + "\n").encode(),
@@ -334,7 +339,7 @@ def main():
         append_lines([accepted], Path(args.log_file))
         print("  appended one accepted sshd login to trigger correlation")
     else:
-        url = base_url("search-config") + "/api/v1/ingest"
+        url = ingest_url()
         req = urllib.request.Request(
             url,
             data=(accepted + "\n").encode(),
