@@ -17,8 +17,8 @@ import java.util.Properties;
 
 /**
  * Kafka 事件生产者（事件总线接线）：把归一化事件异步发到 `socp-events` 主题，
- * DETECT 检测引擎消费后进规则引擎。best-effort：Kafka 不可用时静默降级
- * （HTTP 直连转发仍保留为兜底路径）。
+ * 由 DETECT 和 OpenSearch 索引消费者分别处理。Kafka 不可用时由
+ * IngestPipeline 选择 OpenSearch 直写降级；本类只负责发送和记录失败。
  */
 @Component
 public class KafkaEventProducer {
@@ -86,7 +86,7 @@ public class KafkaEventProducer {
                             });
                 }
             } catch (Exception ex) {
-                log.warn("Kafka 发送异常（降级为 HTTP 直连兜底）: {}", ex.getMessage());
+                log.warn("Kafka 发送异常，采集管线将按可用性选择 OpenSearch 降级路径: {}", ex.getMessage());
             }
         });
     }

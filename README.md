@@ -54,6 +54,10 @@ flowchart LR
 
 系统采用 at-least-once 交付语义。Kafka 消费者通过事件 ID 去重和幂等写入处理重复投递；告警 Outbox 可重试发布，不声明跨 Kafka 与数据库的 exactly-once。
 
+正常事件路径是 `search-config → Kafka → Detection / OpenSearch Indexer`，不是
+Kafka 可用时的常规双写。只有 Kafka 暂时不可达时，采集管线才直接写入
+OpenSearch 作为明确的降级路径；Kafka 恢复后回到可重放的主路径。
+
 ## 技术栈
 
 - **后端**：Java 21、Spring Boot 3.5、Spring Cloud Gateway、MyBatis、Flyway

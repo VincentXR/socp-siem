@@ -24,7 +24,7 @@ tests and artifact checks are under `frontend/apps/workbench/scripts`.
 | Service | Port | Primary responsibility | Default persistence or dependency |
 |---|---:|---|---|
 | `api-gateway` | 18092 | Routing, login, JWT/RBAC, and trace propagation | Stateless |
-| `search-config` | 18081 | Source configuration, parsing, canonical event ingest | H2 + Kafka/OpenSearch |
+| `search-config` | 18081 | Source configuration, parsing, canonical event ingest | H2 + Kafka; direct OpenSearch fallback only when Kafka is unavailable |
 | `detect-web` | 18082 | Rule CRUD, hot reload, detection, and backpressure | H2 + in-process engine |
 | `detect-model` | 18090 | Secondary alert analysis and correlation endpoint | H2 |
 | `alert-web` | 18080 | Alert facts, enrichment, disposition, and Outbox | PostgreSQL |

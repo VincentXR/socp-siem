@@ -35,6 +35,10 @@ Detection and indexing consume the same event stream independently, so a
 search outage does not block detection and a detection restart can process
 Kafka backlog after recovery.
 
+The normal path is a single publish to Kafka. `search-config` writes OpenSearch
+directly only when Kafka is unavailable, as an explicit ingestion fallback;
+Kafka-available operation does not perform a routine Kafka/OpenSearch dual write.
+
 ## Responsibilities and storage
 
 | Concern | Implementation | Boundary |
