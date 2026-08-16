@@ -225,6 +225,41 @@ stop_backend() {
   done
 }
 
+service_is_known() {
+  local candidate="${1:-}"
+  case " $SOCP_SERVICE_NAMES " in
+    *" $candidate "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+start_one_service() {
+  local name="${1:-}" java
+  if ! service_is_known "$name"; then
+    echo "未知服务: $name" >&2
+    return 1
+  fi
+  java="$(socp_java)" || return 1
+  start_service "$java" "$name"
+  wait_for_batch "$name"
+}
+
+stop_one_service() {
+  local name="${1:-}" port pid
+  if ! service_is_known "$name"; then
+    echo "未知服务: $name" >&2
+    return 1
+  fi
+  port="$(socp_port "$name")"
+  pid="$(pid_on_port "$port")"
+  if [ -n "$pid" ]; then
+    kill_pid "$pid"
+    echo "  [停止] $name :$port PID=$pid"
+  else
+    echo "  [未运行] $name :$port"
+  fi
+}
+
 stop_all() {
   echo "=== 停止后端 ==="
   stop_backend full
@@ -270,11 +305,13 @@ case "${1:-start}" in
     ;;
   backend)  profile="${2:-full}"; start_backend "$profile"; status_all "$profile" ;;
   frontend) echo "=== 启动前端 ==="; start_frontend; nap 3; status_all ;;
+  start-service) start_one_service "${2:-}" ;;
+  stop-service)  stop_one_service "${2:-}" ;;
   restart)  profile="${2:-full}"; stop_all; start_backend "$profile"; start_frontend; status_all "$profile" ;;
   stop)     stop_all ;;
   status)   status_all "${2:-full}" ;;
   *)
-    echo "用法: $0 {doctor|start [core|ui|full]|stop|status [core|ui|full]|backend [core|ui|full]|frontend|restart [core|ui|full]}"
+    echo "用法: $0 {doctor|start [core|ui|full]|stop|status [core|ui|full]|backend [core|ui|full]|frontend|start-service <name>|stop-service <name>|restart [core|ui|full]}"
     exit 1
     ;;
 esac

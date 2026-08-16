@@ -83,6 +83,8 @@ that owns the corresponding schema. The production profile rejects H2.
 - `build/demos/golden-demo.py`: Vector → Kafka → detection → Outbox →
   Incident/SOAR/Notify walkthrough; `--transport ingest` is a troubleshooting
   shortcut after the collector boundary.
+- `build/demos/detection-recovery.py`: stops `detect-web`, proves Kafka backlog
+  growth, then verifies consumer recovery and offset catch-up.
 - `build/demos/attack-scenarios.py`: rule-engine playground scenarios.
 - `frontend/apps/workbench/scripts`: frontend API contract tests and production
   artifact verification.

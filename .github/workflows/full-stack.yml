@@ -64,6 +64,12 @@ jobs:
       - name: Run true event-pipeline verification
         run: python3 build/verify-pipeline.py
 
+      - name: Run Golden Demo
+        run: python3 build/demos/golden-demo.py --transport ingest
+
+      - name: Run Detection recovery demo
+        run: python3 build/demos/detection-recovery.py
+
       - name: Run attack scenario demo
         run: python3 build/demos/attack-scenarios.py
 

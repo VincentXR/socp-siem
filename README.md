@@ -105,6 +105,16 @@ bash build/run-vector.sh start
 python build/demos/golden-demo.py
 ```
 
+不启动 Vector 也可以从采集边界直接验证黄金链路：
+
+```bash
+python build/demos/golden-demo.py --transport ingest
+python build/demos/detection-recovery.py
+```
+
+第二个 Demo 会短暂停止并恢复 `detect-web`，验证事件仍由 Kafka 保留并在
+消费者恢复后继续处理。
+
 使用以下命令查看或停止本地服务：
 
 ```bash

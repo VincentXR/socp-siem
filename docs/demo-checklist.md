@@ -56,12 +56,17 @@ The local EMAIL channel records dispatches and does not send external mail.
 
 ## Failure Demo: detection recovery
 
-1. Start the Golden Demo prerequisites.
-2. Stop `detect-web` while the ingestion path remains available.
-3. Inject additional events and observe the `socp-events` consumer lag grow.
-4. Restart `detect-web` and confirm the lag decreases and alerts resume.
-5. Explain the behavior as at-least-once delivery with manual commits,
-   event-ID deduplication, and DLQ/error handling.
+Start the Golden Demo prerequisites, then run the repeatable recovery script:
+
+```bash
+python build/demos/detection-recovery.py
+```
+
+The script stops only `detect-web`, injects events through the normal ingest
+boundary, observes the `socp-events` backlog grow, restarts Detection, and
+waits for the committed offset to catch up. Explain the behavior as
+at-least-once delivery with manual commits, event-ID deduplication, and
+DLQ/error handling.
 
 The scripted dependency checks cover the same recovery family:
 

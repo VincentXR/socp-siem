@@ -13,6 +13,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
@@ -47,5 +48,24 @@ class KafkaEventConsumerTest {
         assertEquals(null, dlq.get(0).getKey());
         assertEquals(malformed, dlq.get(0).getValue());
         verify(engine, times(0)).ingest(any(SecurityEvent.class));
+    }
+
+    @Test
+    void engineFailureIsSentToDlqAndDoesNotEscapeRecordProcessing() {
+        KafkaEventConsumer consumer = new KafkaEventConsumer(engine);
+        List<Map.Entry<String, String>> dlq = new ArrayList<>();
+        consumer.setDlqSink((eventId, raw) -> dlq.add(
+                new java.util.AbstractMap.SimpleEntry<>(eventId, raw)));
+        given(engine.ingest(any(SecurityEvent.class)))
+                .willThrow(new IllegalStateException("detection queue full"));
+        String event = "{\"eventId\":\"consumer-test-101\",\"source\":\"auth\","
+                + "\"host\":\"web-1\",\"msg\":\"login failed\"}";
+
+        consumer.processRecord("key-1", event);
+
+        assertEquals(1, dlq.size());
+        assertEquals("consumer-test-101", dlq.get(0).getKey());
+        assertEquals(event, dlq.get(0).getValue());
+        verify(engine).ingest(any(SecurityEvent.class));
     }
 }

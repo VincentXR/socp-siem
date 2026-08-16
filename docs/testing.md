@@ -52,6 +52,8 @@ Start the required Docker middleware and backend slice before running these:
 python build/verify-slice.py       # gateway, auth, tenant, audit, and alert slice
 python build/verify-pipeline.py    # Kafka -> detection -> PostgreSQL/OpenSearch/ClickHouse
 python build/verify-full.py       # API, persistence, tenancy, auth, and tracing
+python build/demos/golden-demo.py --transport ingest  # SSH brute force -> incident/SOAR
+python build/demos/detection-recovery.py              # Detection down -> Kafka backlog -> recovery
 python build/failure-tests.py      # dependency stop/restart and fallback paths
 ```
 
@@ -63,6 +65,11 @@ for Kafka, OpenSearch, Temporal, and PostgreSQL.
 The failure script is intentionally a manual/nightly check because it stops and
 restarts local middleware containers. It must restore every dependency before
 the run ends; it should not be used as a per-commit unit test.
+
+The Detection recovery demo stops and restarts only `detect-web` through
+`build/run-all.sh`, verifies that Kafka retains the injected events, and waits
+for the consumer group to catch up. It is also an operational/manual check;
+run it only when the core event path is available.
 
 See [validation-matrix.md](validation-matrix.md) for pass criteria, cadence,
 and the single-node boundaries that the checks do not claim to cover.

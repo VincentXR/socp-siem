@@ -12,6 +12,8 @@ high-availability claim.
 | Workbench | `cd frontend/apps/workbench && pnpm test && pnpm verify` | API contracts, navigation permissions, type check, production build, artifact assertions | Every frontend change |
 | Cross-cutting slice | `python build/verify-slice.py` | Authentication, tenant propagation, audit, rate limiting, and trace headers | PR / release candidate |
 | Event pipeline | `python build/verify-pipeline.py` | Canonical event → Kafka → detection → alert persistence → OpenSearch/ClickHouse/report | PR with middleware / scheduled |
+| Golden scenario | `python build/demos/golden-demo.py --transport ingest` | SSH failed logins → canonical event → threshold/correlation alerts → Incident/Notify/SOAR | Manual / full-stack |
+| Detection recovery | `python build/demos/detection-recovery.py` | Ingestion remains available, Kafka lag grows while Detection is down, committed offset catches up after restart | Manual / weekly |
 | Bulk baseline | `python build/benchmark-pipeline.py --count 100` | Generic accepted/rejected counters and HTTP latency for the detection bulk boundary | Manual, repeat at 100/1,000/10,000 |
 | Full API | `python build/verify-full.py` | Resource CRUD, tenancy, import/export, threat and response contracts | Scheduled / release candidate |
 | Failure recovery | `python build/failure-tests.py` | Kafka, OpenSearch, Temporal, and PostgreSQL recovery assertions | Manual / scheduled |
@@ -50,5 +52,5 @@ multi-node failover, and production throughput claims.
 
 Push and pull-request CI runs the Java suite, frontend contracts/build, the
 minimal service slice, and the Kafka pipeline. The full-stack workflow is
-manual/weekly and runs full API, pipeline, attack-scenario, and dependency
-failure checks with logs uploaded as artifacts.
+manual/weekly and runs full API, pipeline, Golden Demo, Detection recovery,
+attack-scenario, and dependency failure checks with logs uploaded as artifacts.
