@@ -3,7 +3,7 @@ import test from 'node:test'
 import { getVisibleMenuGroups } from '../src/app/navigation.ts'
 
 test('viewer navigation keeps operational pages and hides configuration pages', () => {
-  const keys = getVisibleMenuGroups().flatMap(group => group.items.map(item => item.key))
+  const keys = getVisibleMenuGroups('viewer').flatMap(group => group.items.map(item => item.key))
 
   assert.ok(keys.includes('overview'))
   assert.ok(keys.includes('alarms'))
@@ -13,6 +13,22 @@ test('viewer navigation keeps operational pages and hides configuration pages', 
   assert.ok(!keys.includes('detect'))
   assert.ok(!keys.includes('soar'))
   assert.ok(!keys.includes('notify'))
+})
+
+test('analyst navigation exposes ingestion and detection management', () => {
+  const keys = getVisibleMenuGroups('analyst').flatMap(group => group.items.map(item => item.key))
+
+  assert.ok(keys.includes('ingest'))
+  assert.ok(keys.includes('detect'))
+  assert.ok(keys.includes('soar'))
+  assert.ok(keys.includes('notify'))
+})
+
+test('admin navigation exposes the same operator pages', () => {
+  const keys = getVisibleMenuGroups('admin').flatMap(group => group.items.map(item => item.key))
+
+  assert.ok(keys.includes('ingest'))
+  assert.ok(keys.includes('detect'))
 })
 
 test('navigation removes groups that have no visible items', () => {

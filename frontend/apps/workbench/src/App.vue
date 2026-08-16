@@ -29,8 +29,10 @@ const DetectView = defineAsyncComponent(() => import('./views/DetectView.vue'))
 const UebaView = defineAsyncComponent(() => import('./views/UebaView.vue'))
 const SituationView = defineAsyncComponent(() => import('./views/SituationView.vue'))
 
+const auth = useAuth()
+const { currentUser, currentRole, isAuthed, userInitials } = auth
 const activeMenu = ref('overview')
-const menuGroups = computed(() => getVisibleMenuGroups())
+const menuGroups = computed(() => getVisibleMenuGroups(currentRole.value))
 const activeLabel = computed(() => {
   for (const group of menuGroups.value) {
     const item = group.items.find(menuItem => menuItem.key === activeMenu.value)
@@ -40,8 +42,6 @@ const activeLabel = computed(() => {
 })
 
 const { theme, initTheme, toggleTheme } = useTheme()
-const auth = useAuth()
-const { currentUser, currentRole, isAuthed, userInitials } = auth
 const overview = useOverview(isAuthed)
 const { alarms, healths, sitStats, stat, refreshOverview, loadOverviewStats } = overview
 const alarmQuery = useAlarmQuery()

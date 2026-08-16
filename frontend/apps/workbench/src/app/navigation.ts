@@ -62,15 +62,16 @@ export const MENU_GROUPS: MenuGroup[] = [
   },
 ]
 
-// Preserve the current read-only navigation behavior while permissions are
-// still enforced by the existing API/auth layer.
+// Configuration pages are available to operators who can manage detections
+// and ingestion. Viewer remains intentionally read-only.
 const MENU_VIEWER_HIDDEN = new Set(['ingest', 'meta', 'detect', 'soar', 'notify', 'refset'])
 
-export function getVisibleMenuGroups(): MenuGroup[] {
+export function getVisibleMenuGroups(role = 'viewer'): MenuGroup[] {
+  const hidden = role === 'viewer' || !role ? MENU_VIEWER_HIDDEN : new Set<string>()
   return MENU_GROUPS
     .map(group => ({
       ...group,
-      items: group.items.filter(item => !MENU_VIEWER_HIDDEN.has(item.key)),
+      items: group.items.filter(item => !hidden.has(item.key)),
     }))
     .filter(group => group.items.length > 0)
 }
