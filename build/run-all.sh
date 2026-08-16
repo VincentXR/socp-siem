@@ -3,11 +3,11 @@
 #
 # 用法（在仓库任意位置执行都可以，路径全部从脚本自身推导）：
 #   bash build/run-all.sh doctor    # 环境自检：java / maven / pnpm / jar / 端口
-#   bash build/run-all.sh start     # 默认启动 core profile + 前端
+#   bash build/run-all.sh start     # 默认启动完整后端 + 前端
 #   bash build/run-all.sh start ui  # 启动全部业务页面依赖（不含采集器）+ 前端
-#   bash build/run-all.sh start full # 启动完整后端 + 前端
+#   bash build/run-all.sh start core # 只启动核心事件链 + 前端（低资源）
 #   bash build/run-all.sh stop      # 停止全部
-#   bash build/run-all.sh status    # 探活 core profile
+#   bash build/run-all.sh status    # 探活完整后端
 #   bash build/run-all.sh status full
 #   bash build/run-all.sh backend   # 只起完整后端（兼容 CI）
 #   bash build/run-all.sh backend core|ui|full
@@ -236,7 +236,7 @@ stop_all() {
 }
 
 status_all() {
-  local profile="${1:-core}" name port code up=0 total=0 services
+  local profile="${1:-full}" name port code up=0 total=0 services
   services="$(service_names "$profile")" || return 1
   echo "=== 后端服务 ==="
   for name in $services; do
@@ -262,7 +262,7 @@ nap() { sleep "$1" 2>/dev/null || python -c "import time;time.sleep($1)" 2>/dev/
 case "${1:-start}" in
   doctor)   doctor ;;
   start)
-    profile="${2:-core}"
+    profile="${2:-full}"
     start_backend "$profile"
     echo "=== 启动前端 (workbench) ==="; start_frontend
     echo "=== 等待启动（8s）==="; nap 8
@@ -270,9 +270,9 @@ case "${1:-start}" in
     ;;
   backend)  profile="${2:-full}"; start_backend "$profile"; status_all "$profile" ;;
   frontend) echo "=== 启动前端 ==="; start_frontend; nap 3; status_all ;;
-  restart)  profile="${2:-core}"; stop_all; start_backend "$profile"; start_frontend; status_all "$profile" ;;
+  restart)  profile="${2:-full}"; stop_all; start_backend "$profile"; start_frontend; status_all "$profile" ;;
   stop)     stop_all ;;
-  status)   status_all "${2:-core}" ;;
+  status)   status_all "${2:-full}" ;;
   *)
     echo "用法: $0 {doctor|start [core|ui|full]|stop|status [core|ui|full]|backend [core|ui|full]|frontend|restart [core|ui|full]}"
     exit 1

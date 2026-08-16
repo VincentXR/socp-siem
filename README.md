@@ -85,13 +85,14 @@ cd frontend
 corepack pnpm install --frozen-lockfile
 cd ..
 
-# 构建后端并启动核心开发链路（含前端）
+# 构建后端并启动完整开发栈（含前端）
 bash build/mvnw.sh -DskipTests package
 bash build/run-all.sh start
 
-# 需要查看全部业务页面时，使用 ui profile；完整 E2E 使用 full profile
+# 低资源开发或黄金 Demo 只启动核心事件链
+# bash build/run-all.sh start core
+# 只启动全部业务页面依赖（不含采集器）
 # bash build/run-all.sh start ui
-# bash build/run-all.sh start full
 
 ```
 
@@ -107,7 +108,7 @@ python build/demos/golden-demo.py
 使用以下命令查看或停止本地服务：
 
 ```bash
-bash build/run-all.sh status core
+bash build/run-all.sh status
 bash build/run-all.sh stop
 docker compose -f infra/docker-compose.yml down
 ```

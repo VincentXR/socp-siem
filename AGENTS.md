@@ -14,15 +14,15 @@ cd frontend && corepack pnpm build                  # Build workbench
 cd frontend/apps/workbench && pnpm test             # Run frontend API contract tests
 cd frontend/apps/workbench && pnpm verify           # Build and verify production artifacts
 docker compose -f infra/docker-compose.yml up -d    # Start middleware
-bash build/run-all.sh start                         # Start core backend path and frontend
-bash build/run-all.sh start ui                     # Start all business-page backends and frontend
-bash build/run-all.sh start full                   # Start the complete backend and frontend
+bash build/run-all.sh start                         # Start the complete backend and frontend
+bash build/run-all.sh start core                    # Start only the core event path and frontend
+bash build/run-all.sh start ui                      # Start all business-page backends and frontend
 python build/verify-slice.py                        # Run minimal integration checks
 python build/verify-pipeline.py                     # Verify Kafka-to-alert pipeline
 python build/failure-tests.py                       # Exercise dependency failures
 ```
 
-Use `bash build/run-all.sh status core|full` to inspect or `bash build/run-all.sh stop` to stop local services. Docker is required for middleware-backed checks.
+Use `bash build/run-all.sh status [core|ui|full]` to inspect or `bash build/run-all.sh stop` to stop local services. Docker is required for middleware-backed checks.
 
 ## Coding Style & Naming Conventions
 
