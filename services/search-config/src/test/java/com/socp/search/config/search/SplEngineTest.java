@@ -107,4 +107,18 @@ class SplEngineTest {
         assertEquals("timechart", t.stat().type());
         assertTrue(t.stat().rows().size() >= 2, "跨 7 天应有多个桶");
     }
+    @Test
+    void preservesEventIdentityAndEcsFieldsAcrossLocalPersistence() {
+        SearchEvent original = new SearchEvent("evt-42", java.time.Instant.parse("2026-08-18T10:00:00Z"),
+                "auth", "host-1", "HIGH", "failed login",
+                Map.of("user", "admin"), Map.of("source.ip", "10.0.0.9"));
+
+        SearchEventEntity entity = SearchStore.toEntity(original);
+        SearchEvent restored = SearchStore.fromEntity(entity);
+
+        assertEquals("evt-42", entity.getEventId());
+        assertEquals("evt-42", restored.eventId());
+        assertEquals("admin", restored.fields().get("user"));
+        assertEquals("10.0.0.9", restored.ecs().get("source.ip"));
+    }
 }

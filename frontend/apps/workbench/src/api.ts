@@ -31,6 +31,8 @@ export interface Alarm {
   occurredAt: string
   mitre?: string
   tiHits?: string
+  riskScore?: number
+  riskLevel?: string
 }
 export interface LogSource {
   id: string; name: string; type: string; format: string
@@ -204,6 +206,26 @@ export interface Disposition {
   notes: Array<{ author: string; content: string; at: string }>
 }
 export const getDisposition = (id: string) => get<Disposition>(`/alert-web/api/alarms/${encodeURIComponent(id)}/disposition`)
+export interface AlarmEvidence {
+  id: string
+  eventId: string | null
+  timestamp: string | null
+  source: string | null
+  host: string | null
+  severity: string | null
+  raw: string | null
+  fields: Record<string, string>
+  order: number
+}
+export interface AlarmEvidenceResponse {
+  alarmId: string
+  total: number
+  complete: boolean
+  query: string
+  items: AlarmEvidence[]
+}
+export const getAlarmEvidence = (id: string) =>
+  get<AlarmEvidenceResponse>(`/alert-web/api/alarms/${encodeURIComponent(id)}/evidence`)
 export const setDispositionStatus = (id: string, status: string) =>
   put<Disposition>(`/alert-web/api/alarms/${encodeURIComponent(id)}/status`, { status })
 export const assignAlarm = (id: string, assignee: string) =>
@@ -247,8 +269,8 @@ export const deleteField = (id: string) => del(`/search-config/api/v1/meta/field
 
 // ---------- SPL 检索 ----------
 export interface SearchEvent {
-  timestamp: string; source: string; host: string; severity: string; msg: string
-  fields: Record<string, string>
+  eventId: string; timestamp: string; source: string; host: string; severity: string; msg: string
+  fields: Record<string, string>; ecs?: Record<string, string>
 }
 export interface SearchResult {
   total: number

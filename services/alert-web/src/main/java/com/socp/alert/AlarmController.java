@@ -50,7 +50,7 @@ public class AlarmController {
         }
         // 检测侧（DETECT）已给出初评时先沿用；随后 THREAT 富化会二次修正
         a.setRiskScore(req.riskScore());
-        return ApiResult.ok(service.create(a));
+        return ApiResult.ok(service.create(a, req.evidence() == null ? List.of() : req.evidence()));
     }
 
     /** 查询告警：支持 severity / rule / q 过滤 + 分页（page 从 1 起，size 缺省 20）。
@@ -91,6 +91,13 @@ public class AlarmController {
     @GetMapping("/{id}")
     public ApiResult<Alarm> get(@PathVariable String id) {
         return ApiResult.ok(service.get(id));
+    }
+
+    /** Return source-event snapshots captured when the alert was created. */
+    @RateLimit(permits = 20, seconds = 1)
+    @GetMapping("/{id}/evidence")
+    public ApiResult<AlarmEvidenceResponse> evidence(@PathVariable String id) {
+        return ApiResult.ok(service.evidence(id));
     }
 
     /** 告警聚合统计：默认全量；window=7d 时返回近 7 个自然日数据。 */
@@ -159,6 +166,7 @@ public class AlarmController {
             /** 事件实际发生时间（ISO-8601，如 2026-08-06T10:00:00Z）；不传则取服务端接收时间 */
             Instant occurredAt,
             /** 检测侧初评的威胁评分 0~100，可空（空则由 ALERT 自行计算） */
-            Integer riskScore) {
+            Integer riskScore,
+            List<AlarmEvidenceInput> evidence) {
     }
 }

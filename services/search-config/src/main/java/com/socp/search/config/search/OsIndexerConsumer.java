@@ -164,7 +164,11 @@ public class OsIndexerConsumer {
             ts = java.time.Instant.parse(String.valueOf(m.getOrDefault("timestamp", ts)));
         } catch (Exception ignored) {
         }
-        return new SearchEvent(ts,
+        String eventId = String.valueOf(m.getOrDefault("eventId", "")).trim();
+        if (eventId.isBlank() || "null".equalsIgnoreCase(eventId)) {
+            eventId = java.util.UUID.randomUUID().toString();
+        }
+        return new SearchEvent(eventId, ts,
                 String.valueOf(m.getOrDefault("source", "unknown")),
                 String.valueOf(m.getOrDefault("host", "unknown")),
                 String.valueOf(m.getOrDefault("severity", "INFO")),

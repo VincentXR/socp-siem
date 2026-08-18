@@ -122,6 +122,7 @@ onMounted(() => {
         :export-csv="() => exportAlarms('csv')"
         :export-json="() => exportAlarms('json')"
         :go-case="() => onMenuChange('case')"
+        :go-search="() => onMenuChange('search')"
       />
 
       <SearchView v-else-if="activeMenu === 'search'" />

@@ -191,6 +191,10 @@ public class RuleController {
             fields = new LinkedHashMap<>(fields);
             fields.put("msg", String.valueOf(m.get("msg")));
         }
-        return new SecurityEvent(ts, source, host, raw, fields, severity);
+        String eventId = m.get("eventId") == null ? null : String.valueOf(m.get("eventId"));
+        if (eventId == null || eventId.isBlank() || "null".equalsIgnoreCase(eventId)) {
+            eventId = java.util.UUID.randomUUID().toString();
+        }
+        return new SecurityEvent(eventId, ts, source, host, raw, fields, severity);
     }
 }

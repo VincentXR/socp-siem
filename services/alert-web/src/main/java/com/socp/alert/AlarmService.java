@@ -1,5 +1,8 @@
 package com.socp.alert;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.socp.platform.client.IncidentClient;
 import com.socp.platform.client.NotifyClient;
 import com.socp.platform.client.ServiceCall;
@@ -36,6 +39,11 @@ public class AlarmService {
     private final IncidentClient incidentClient;
     private final SoarClient soarClient;
     private final OutboxRepository outboxRepo;
+    private final AlarmEvidenceRepository evidenceRepo;
+
+    private static final ObjectMapper MAPPER = new ObjectMapper()
+            .registerModule(new JavaTimeModule())
+            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
 
     private static final Pattern IP = Pattern.compile("\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b");
     private static final Pattern DOMAIN = Pattern.compile("\\b(?:[a-z0-9-]+\\.)+[a-z]{2,}\\b");
@@ -43,7 +51,7 @@ public class AlarmService {
     public AlarmService(AlarmRepository repo, CkReporter ckReporter,
                         ThreatClient threatClient, NotifyClient notifyClient,
                         IncidentClient incidentClient, SoarClient soarClient,
-                        OutboxRepository outboxRepo) {
+                        OutboxRepository outboxRepo, AlarmEvidenceRepository evidenceRepo) {
         this.repo = repo;
         this.ckReporter = ckReporter;
         this.threatClient = threatClient;
@@ -51,12 +59,17 @@ public class AlarmService {
         this.incidentClient = incidentClient;
         this.soarClient = soarClient;
         this.outboxRepo = outboxRepo;
+        this.evidenceRepo = evidenceRepo;
+    }
+
+    public Alarm create(Alarm alarm) {
+        return create(alarm, List.of());
     }
 
     @Transactional
-    public Alarm create(Alarm alarm) {
+    public Alarm create(Alarm alarm, List<AlarmEvidenceInput> evidence) {
         if (alarm.getTenantId() == null) {
-            alarm.setTenantId(TenantContext.get());
+            alarm.setTenantId(TenantContext.get() == null ? "default" : TenantContext.get());
         }
         // 威胁评分：检测侧未给初评则本地算一次（此刻还没做情报富化，tiHits=0）
         if (alarm.getRiskScore() == null) {
@@ -64,12 +77,22 @@ public class AlarmService {
         }
         alarm.setRiskLevel(com.socp.rule.score.RiskScorer.level(alarm.getRiskScore()));
         Alarm saved = repo.save(alarm);
+        List<AlarmEvidenceInput> captured = evidence == null ? List.of() : evidence.stream()
+                .filter(java.util.Objects::nonNull)
+                .limit(200)
+                .toList();
+        if (!captured.isEmpty()) {
+            String tenant = saved.getTenantId() == null ? TenantContext.get() : saved.getTenantId();
+            evidenceRepo.saveAll(java.util.stream.IntStream.range(0, captured.size())
+                    .mapToObj(i -> AlarmEvidence.from(saved.getId(), tenant, i, captured.get(i)))
+                    .toList());
+        }
         // P3 Outbox：同事务写告警事件（ALARM_CREATED），OutboxPublisher 发 Kafka socp-alarm-events，
         // 下游（CK/Incident/SOAR/Notify）由 AlarmEventConsumer 消费——失败可重放，不再跨系统双写。
         OutboxEvent oe = new OutboxEvent();
         oe.setAggregateId(saved.getId());
         oe.setEventType("ALARM_CREATED");
-        oe.setPayload(alarmJson(saved));
+        oe.setPayload(alarmJson(saved, captured));
         oe.setStatus("PENDING");
         oe.setCreatedAt(java.time.Instant.now());
         outboxRepo.save(oe);
@@ -77,6 +100,23 @@ public class AlarmService {
         Alarm finalSaved = saved;
         Thread.startVirtualThread(() -> enrichOnly(finalSaved));
         return saved;
+    }
+
+    @Transactional(readOnly = true)
+    public AlarmEvidenceResponse evidence(String alarmId) {
+        Alarm alarm = get(alarmId);
+        String tenant = TenantContext.get() == null ? "default" : TenantContext.get();
+        List<AlarmEvidenceView> items = evidenceRepo
+                .findByTenantIdAndAlarmIdOrderByEvidenceOrderAscIdAsc(tenant, alarmId)
+                .stream()
+                .map(AlarmEvidence::view)
+                .toList();
+        String query = items.stream()
+                .map(AlarmEvidenceView::eventId)
+                .filter(id -> id != null && !id.isBlank())
+                .map(id -> "eventId=" + id)
+                .collect(java.util.stream.Collectors.joining(" OR "));
+        return new AlarmEvidenceResponse(alarm.getId(), items.size(), !items.isEmpty(), query, items);
     }
 
     /**
@@ -313,7 +353,7 @@ public class AlarmService {
         return out;
     }
 
-    private String alarmJson(Alarm a) {
+    private String alarmJson(Alarm a, List<AlarmEvidenceInput> evidence) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", a.getId());
         m.put("ruleId", a.getRuleId());
@@ -325,7 +365,12 @@ public class AlarmService {
         m.put("riskScore", a.getRiskScore());
         m.put("riskLevel", a.getRiskLevel());
         m.put("occurredAt", a.getOccurredAt() == null ? null : DateTimeFormatter.ISO_INSTANT.format(a.getOccurredAt()));
-        return toJson(new ArrayList<>(m.entrySet()));
+        m.put("evidence", evidence == null ? List.of() : evidence);
+        try {
+            return MAPPER.writeValueAsString(m);
+        } catch (Exception e) {
+            return "{}";
+        }
     }
 
     private static String toJsonArray(List<String> values) {

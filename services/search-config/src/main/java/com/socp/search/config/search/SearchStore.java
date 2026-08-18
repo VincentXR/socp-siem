@@ -132,19 +132,24 @@ public class SearchStore {
 
     static SearchEventEntity toEntity(SearchEvent e) {
         SearchEventEntity en = new SearchEventEntity();
+        en.setEventId(e.eventId());
         en.setTimestamp(e.timestamp());
         en.setSource(e.source());
         en.setHost(e.host());
         en.setSeverity(e.severity());
         en.setMsg(e.msg());
         en.setFieldsJson(writeJson(e.fields()));
+        en.setEcsJson(writeJson(e.ecs()));
         return en;
     }
 
     static SearchEvent fromEntity(SearchEventEntity en) {
         Map<String, String> fields = readMap(en.getFieldsJson());
-        return new SearchEvent(en.getTimestamp(), en.getSource(), en.getHost(), en.getSeverity(),
-                en.getMsg(), fields == null ? Map.of() : fields);
+        Map<String, String> ecs = readMap(en.getEcsJson());
+        String eventId = en.getEventId();
+        if (eventId == null || eventId.isBlank()) eventId = en.getId();
+        return new SearchEvent(eventId, en.getTimestamp(), en.getSource(), en.getHost(), en.getSeverity(),
+                en.getMsg(), fields == null ? Map.of() : fields, ecs == null ? Map.of() : ecs);
     }
 
     private static String writeJson(Object o) {

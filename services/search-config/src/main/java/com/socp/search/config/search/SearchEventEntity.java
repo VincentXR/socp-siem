@@ -23,6 +23,9 @@ public class SearchEventEntity extends BaseEntity {
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
     private String id;
+    /** Pipeline-stable event identifier used to link detections back to source events. */
+    @Column(name = "event_id", length = 255)
+    private String eventId;
     private Instant timestamp;
     private String source;
     private String host;
@@ -31,6 +34,8 @@ public class SearchEventEntity extends BaseEntity {
     private String msg;
     @Column(name = "fields_json", length = 4000)
     private String fieldsJson;
+    @Column(name = "ecs_json", length = 4000)
+    private String ecsJson;
 
     public SearchEventEntity() {
     }
@@ -41,6 +46,14 @@ public class SearchEventEntity extends BaseEntity {
 
     public void setId(String id) {
         this.id = id;
+    }
+
+    public String getEventId() {
+        return eventId;
+    }
+
+    public void setEventId(String eventId) {
+        this.eventId = eventId;
     }
 
     public Instant getTimestamp() {
@@ -89,5 +102,13 @@ public class SearchEventEntity extends BaseEntity {
 
     public void setFieldsJson(String fieldsJson) {
         this.fieldsJson = fieldsJson;
+    }
+
+    public String getEcsJson() {
+        return ecsJson;
+    }
+
+    public void setEcsJson(String ecsJson) {
+        this.ecsJson = ecsJson;
     }
 }

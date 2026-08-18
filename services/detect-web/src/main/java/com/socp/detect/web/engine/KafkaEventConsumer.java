@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.util.UUID;
 import java.util.function.BiConsumer;
 
 /**
@@ -199,7 +200,11 @@ public class KafkaEventConsumer {
             timestamp = Instant.parse(String.valueOf(event.getOrDefault("timestamp", timestamp)));
         } catch (Exception ignored) {
         }
-        return new SecurityEvent(timestamp,
+        String eventId = String.valueOf(event.getOrDefault("eventId", "")).trim();
+        if (eventId.isBlank() || "null".equalsIgnoreCase(eventId)) {
+            eventId = UUID.randomUUID().toString();
+        }
+        return new SecurityEvent(eventId, timestamp,
                 String.valueOf(event.getOrDefault("source", "unknown")),
                 String.valueOf(event.getOrDefault("host", "unknown")),
                 message, fields, severity);

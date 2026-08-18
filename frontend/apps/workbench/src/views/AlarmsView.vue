@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import 'element-plus/es/components/alert/style/css.mjs'
 import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/card/style/css.mjs'
 import 'element-plus/es/components/descriptions/style/css.mjs'
@@ -11,6 +12,7 @@ import 'element-plus/es/components/select/style/css.mjs'
 import 'element-plus/es/components/table/style/css.mjs'
 import 'element-plus/es/components/tag/style/css.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
+import ElAlert from 'element-plus/es/components/alert/index.mjs'
 import ElCard from 'element-plus/es/components/card/index.mjs'
 import { ElDescriptions, ElDescriptionsItem } from 'element-plus/es/components/descriptions/index.mjs'
 import ElDivider from 'element-plus/es/components/divider/index.mjs'
@@ -32,8 +34,8 @@ import SevBadge from '../components/SevBadge.vue'
 import { relTime } from '../lib/ui'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import {
-  SEVERITIES, type Alarm, type Ioc,
-  getDisposition, setDispositionStatus, assignAlarm, addAlarmNote, listCases,
+  SEVERITIES, type Alarm, type AlarmEvidenceResponse, type Ioc,
+  getDisposition, getAlarmEvidence, setDispositionStatus, assignAlarm, addAlarmNote, listCases,
 } from '../api'
 
 const props = defineProps<{
@@ -46,6 +48,7 @@ const props = defineProps<{
   exportCsv: () => void
   exportJson: () => void
   goCase: () => void
+  goSearch: () => void
 }>()
 
 const keyword = defineModel<string>('keyword', { default: '' })
@@ -61,6 +64,8 @@ const DISP_STATUSES = ['OPEN', 'INVESTIGATING', 'RESOLVED', 'CLOSED']
 const drawerVisible = ref(false)
 const currentAlarm = ref<Alarm | null>(null)
 const disposition = ref<{ notes: Array<{ author: string; at: string; content: string }> } | null>(null)
+const evidence = ref<AlarmEvidenceResponse | null>(null)
+const evidenceError = ref('')
 const relatedCase = ref<{ id: string; title: string; status: string; entity: string; alarmIds: string[] } | null>(null)
 const newStatus = ref('OPEN')
 const newAssignee = ref('')
@@ -88,11 +93,12 @@ async function openAlarm(a: Alarm) {
   currentAlarm.value = a
   drawerVisible.value = true
   disposition.value = null
-  try {
-    disposition.value = await getDisposition(a.id)
-  } catch {
-    disposition.value = null
-  }
+  evidence.value = null
+  evidenceError.value = ''
+  const [disp, ev] = await Promise.allSettled([getDisposition(a.id), getAlarmEvidence(a.id)])
+  if (disp.status === 'fulfilled') disposition.value = disp.value
+  if (ev.status === 'fulfilled') evidence.value = ev.value
+  else evidenceError.value = '关联原始日志加载失败，请稍后重试'
   newStatus.value = a.status || 'OPEN'
   newAssignee.value = ''
   newNote.value = ''
@@ -130,6 +136,14 @@ function handleSortChange({ prop, order }: { prop?: string | null; order?: 'asce
 
 function openAlarmRow(row: unknown) {
   openAlarm(row as Alarm)
+}
+
+function openEvidenceSearch() {
+  const query = evidence.value?.query
+  if (!query) return
+  window.sessionStorage.setItem('socp.search.query', query)
+  drawerVisible.value = false
+  props.goSearch()
 }
 </script>
 
@@ -223,6 +237,29 @@ function openAlarmRow(row: unknown) {
             <span v-else style="color:#909399">—</span>
           </el-descriptions-item>
         </el-descriptions>
+
+        <el-divider content-position="left">关联原始日志</el-divider>
+        <el-alert v-if="evidenceError" :title="evidenceError" type="error" :closable="false" />
+        <template v-else-if="evidence && evidence.items.length">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;font-size:12px;color:#909399">
+            <span>已捕获 {{ evidence.total }} 条触发事件</span>
+            <div v-if="evidence.query" style="display:flex;align-items:center;gap:6px">
+              <span class="mono" style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="evidence.query">eventId 下钻可用</span>
+              <el-button link type="primary" size="small" @click="openEvidenceSearch">在日志检索中打开</el-button>
+            </div>
+          </div>
+          <div v-for="item in evidence.items" :key="item.id" style="border:1px solid var(--el-border-color-lighter);border-radius:6px;padding:8px 10px;margin-bottom:8px;background:var(--ns-bg-subtle)">
+            <div style="display:flex;gap:8px;align-items:center;font-size:12px;color:#909399;margin-bottom:4px">
+              <span>{{ item.timestamp || '-' }}</span>
+              <span>{{ item.source || '-' }}</span>
+              <span>{{ item.host || '-' }}</span>
+              <SevBadge v-if="item.severity" :value="item.severity" />
+            </div>
+            <div class="mono" style="white-space:pre-wrap;word-break:break-word;font-size:12px">{{ item.raw || '-' }}</div>
+            <div v-if="item.eventId" style="margin-top:5px;color:#909399;font-size:11px">eventId: {{ item.eventId }}</div>
+          </div>
+        </template>
+        <el-empty v-else description="该告警暂无已捕获的原始事件证据" :image-size="50" />
 
         <el-divider content-position="left">状态流转</el-divider>
         <div style="display:flex;gap:8px;margin-bottom:8px">

@@ -13,6 +13,12 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.stream.StreamSupport;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.BDDMockito.given;
@@ -42,6 +48,9 @@ class AlarmServiceTest {
     @Mock
     private OutboxRepository outboxRepository;
 
+    @Mock
+    private AlarmEvidenceRepository evidenceRepository;
+
     @InjectMocks
     private AlarmService service;
 
@@ -66,5 +75,49 @@ class AlarmServiceTest {
         assertEquals("PENDING", event.getValue().getStatus());
         assertTrue(event.getValue().getPayload().contains("AUTH-BRUTE"));
         assertTrue(event.getValue().getCreatedAt() != null);
+    }
+
+    @Test
+    void persistsEvidenceSnapshotAndIncludesItInOutbox() {
+        TenantContext.set("tenant-a");
+        Alarm alarm = new Alarm("AUTH-BRUTE", "SSH brute force", Severity.HIGH,
+                "failed login", "10.0.0.9");
+        given(repository.save(alarm)).willReturn(alarm);
+        AlarmEvidenceInput input = new AlarmEvidenceInput("event-1", Instant.parse("2026-08-18T10:00:00Z"),
+                "auth", "host-1", "HIGH", "failed login for admin",
+                Map.of("user", "admin", "src_ip", "10.0.0.9"));
+
+        service.create(alarm, List.of(input));
+
+        ArgumentCaptor<Iterable> evidenceCaptor = ArgumentCaptor.forClass(Iterable.class);
+        verify(evidenceRepository).saveAll(evidenceCaptor.capture());
+        List<AlarmEvidence> saved = StreamSupport.stream(evidenceCaptor.getValue().spliterator(), false)
+                .map(AlarmEvidence.class::cast).toList();
+        assertEquals(1, saved.size());
+        assertEquals("event-1", saved.get(0).getEventId());
+        assertEquals("tenant-a", saved.get(0).getTenantId());
+        assertEquals("10.0.0.9", saved.get(0).view().fields().get("src_ip"));
+        verify(outboxRepository).save(org.mockito.ArgumentMatchers.argThat(event ->
+                event.getPayload().contains("\"eventId\":\"event-1\"")));
+    }
+
+    @Test
+    void readsEvidenceOnlyForCurrentTenantAndBuildsDrilldownQuery() {
+        TenantContext.set("tenant-a");
+        Alarm alarm = new Alarm("AUTH-BRUTE", "SSH brute force", Severity.HIGH,
+                "failed login", "10.0.0.9");
+        AlarmEvidence evidence = AlarmEvidence.from("alarm-1", "tenant-a", 0,
+                new AlarmEvidenceInput("event-1", Instant.parse("2026-08-18T10:00:00Z"),
+                        "auth", "host-1", "HIGH", "failed login", Map.of()));
+        given(repository.findByTenantIdAndId("tenant-a", "alarm-1")).willReturn(Optional.of(alarm));
+        given(evidenceRepository.findByTenantIdAndAlarmIdOrderByEvidenceOrderAscIdAsc("tenant-a", "alarm-1"))
+                .willReturn(List.of(evidence));
+
+        AlarmEvidenceResponse response = service.evidence("alarm-1");
+
+        assertEquals(1, response.total());
+        assertTrue(response.complete());
+        assertEquals("eventId=event-1", response.query());
+        assertEquals("event-1", response.items().get(0).eventId());
     }
 }

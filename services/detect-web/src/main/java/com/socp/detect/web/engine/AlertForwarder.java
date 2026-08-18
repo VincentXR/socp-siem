@@ -1,5 +1,8 @@
 package com.socp.detect.web.engine;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.socp.detect.web.store.RuleSpecStore;
 import com.socp.detect.web.ueba.EntityRiskStore;
 import com.socp.platform.client.AlertClient;
@@ -13,6 +16,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -31,6 +35,9 @@ import java.util.Map;
 public class AlertForwarder {
 
     private static final Logger log = LoggerFactory.getLogger(AlertForwarder.class);
+    private static final ObjectMapper MAPPER = new ObjectMapper()
+            .registerModule(new JavaTimeModule())
+            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
 
     private final RuleSpecStore ruleStore;
     private final EntityRiskStore riskStore;
@@ -72,6 +79,10 @@ public class AlertForwarder {
         payload.put("occurredAt", DateTimeFormatter.ISO_INSTANT.format(a.timestamp()));
         payload.put("riskScore", score.score());
         if (mitre != null) payload.put("mitre", mitre);
+        payload.put("evidence", a.evidence() == null ? List.of() : a.evidence().stream()
+                .limit(200)
+                .map(AlertForwarder::evidencePayload)
+                .toList());
         String json = toJson(payload);
 
         // 主链路：告警落库。失败 = 检出的攻击丢失，必须显式告警到日志（客户端已打 WARN，
@@ -92,17 +103,22 @@ public class AlertForwarder {
     }
 
     private static String toJson(Map<String, Object> m) {
-        StringBuilder sb = new StringBuilder("{");
-        boolean first = true;
-        for (var e : m.entrySet()) {
-            if (!first) sb.append(",");
-            first = false;
-            sb.append('"').append(e.getKey()).append("\":");
-            Object v = e.getValue();
-            if (v == null) sb.append("null");
-            else if (v instanceof Number || v instanceof Boolean) sb.append(v);
-            else sb.append('"').append(String.valueOf(v).replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
+        try {
+            return MAPPER.writeValueAsString(m);
+        } catch (Exception e) {
+            return "{}";
         }
-        return sb.append("}").toString();
+    }
+
+    private static Map<String, Object> evidencePayload(com.socp.rule.model.SecurityEvent event) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("eventId", event.id());
+        out.put("timestamp", event.timestamp());
+        out.put("source", event.source());
+        out.put("host", event.host());
+        out.put("severity", event.severity() == null ? null : event.severity().name());
+        out.put("raw", event.raw());
+        out.put("fields", event.fields() == null ? Map.of() : event.fields());
+        return out;
     }
 }

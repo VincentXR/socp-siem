@@ -17,7 +17,8 @@ import SevBadge from '../components/SevBadge.vue'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { exportSearch, splSearch, type SearchResult } from '../api'
 
-const query = ref('source=auth severity=HIGH')
+const pendingQuery = typeof window === 'undefined' ? null : window.sessionStorage.getItem('socp.search.query')
+const query = ref(pendingQuery || 'source=auth severity=HIGH')
 const result = ref<SearchResult | null>(null)
 const loading = ref(false)
 const error = ref('')
@@ -50,7 +51,10 @@ function runExample(example: string) {
   search()
 }
 
-onMounted(search)
+onMounted(() => {
+  if (pendingQuery) window.sessionStorage.removeItem('socp.search.query')
+  search()
+})
 </script>
 
 <template>

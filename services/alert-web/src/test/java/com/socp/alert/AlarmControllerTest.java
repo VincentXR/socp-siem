@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.BDDMockito.given;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -45,7 +46,7 @@ class AlarmControllerTest {
     void createReturnsAlarmEnvelope() throws Exception {
         Alarm alarm = new Alarm("AUTH-BRUTE", "SSH brute force", Severity.HIGH,
                 "failed login", "203.0.113.10");
-        given(service.create(any(Alarm.class))).willReturn(alarm);
+        given(service.create(any(Alarm.class), anyList())).willReturn(alarm);
 
         mvc.perform(post("/api/alarms")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -87,5 +88,20 @@ class AlarmControllerTest {
                 .andExpect(jsonPath("$.data.total").value(1))
                 .andExpect(jsonPath("$.data.page").value(1))
                 .andExpect(jsonPath("$.data.size").value(20));
+    }
+
+    @Test
+    void evidenceEndpointReturnsCapturedEvents() throws Exception {
+        given(service.evidence("alarm-1")).willReturn(new AlarmEvidenceResponse(
+                "alarm-1", 1, true, "eventId=evt-1",
+                List.of(new AlarmEvidenceView("evidence-1", "evt-1", java.time.Instant.parse("2026-08-18T10:00:00Z"),
+                        "auth", "web-1", "HIGH", "failed login", Map.of("src_ip", "10.0.0.9"), 0))));
+
+        mvc.perform(get("/api/alarms/alarm-1/evidence"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.alarmId").value("alarm-1"))
+                .andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].eventId").value("evt-1"))
+                .andExpect(jsonPath("$.data.items[0].raw").value("failed login"));
     }
 }

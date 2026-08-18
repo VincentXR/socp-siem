@@ -216,7 +216,15 @@ public class IngestPipeline {
         if (severity.isBlank()) severity = "INFO";
         String msg = rawLog;
         String ts = pick(fields, "timestamp", "@timestamp", "time");
+        String eventId = firstNonBlank(
+                canonical.get("eventId"),
+                canonical.get("event.id"),
+                canonical.get("id"),
+                fields.get("eventId"),
+                fields.get("event_id"));
+        if (eventId == null) eventId = java.util.UUID.randomUUID().toString();
         Map<String, Object> norm = new LinkedHashMap<>();
+        norm.put("eventId", eventId);
         norm.put("source", source.isBlank() ? "unknown" : source);
         norm.put("host", host.isBlank() ? "unknown" : host);
         norm.put("severity", severity.toUpperCase());
@@ -275,6 +283,7 @@ public class IngestPipeline {
         Map<String, String> ecs = new LinkedHashMap<>();
         if (eo != null) for (var e : eo.entrySet()) ecs.put(e.getKey(), String.valueOf(e.getValue()));
         return new SearchEvent(
+                String.valueOf(norm.get("eventId")),
                 Instant.parse(String.valueOf(norm.get("timestamp"))),
                 String.valueOf(norm.get("source")),
                 String.valueOf(norm.get("host")),
@@ -333,6 +342,15 @@ public class IngestPipeline {
             if (fields.get(k) != null) return String.valueOf(fields.get(k));
         }
         return "";
+    }
+
+    private static String firstNonBlank(Object... values) {
+        for (Object candidate : values) {
+            if (candidate == null) continue;
+            String value = String.valueOf(candidate);
+            if (!value.isBlank() && !"null".equalsIgnoreCase(value)) return value;
+        }
+        return null;
     }
 
     private static String parseTs(String s) {
