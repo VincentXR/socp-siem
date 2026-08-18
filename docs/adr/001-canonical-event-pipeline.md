@@ -20,6 +20,8 @@ and allows the search index to be rebuilt from the event stream.
 
 The contract and replay path add operational complexity. Detection is at-least
 once: consumers use manual commit and event-id deduplication, but the system
-does not claim distributed exactly-once processing. Window state remains local
-to an engine instance; production deployments must partition keys or provide a
-shared state strategy.
+does not claim distributed exactly-once processing. The producer now routes by
+the stable tenant/entity detection key and consumers restore partition-owned
+windows from the journal. Rules grouped by a different entity dimension still
+need a shared state or fan-out strategy; the detailed contract is documented in
+`docs/detection-state-semantics.md`.

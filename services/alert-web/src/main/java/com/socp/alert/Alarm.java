@@ -17,7 +17,10 @@ import java.time.Instant;
  * 继承 BaseEntity 自动带 tenantId（多租户 SDK 级隔离）。
  */
 @Entity
-@Table(name = "t_alarm")
+@Table(name = "t_alarm", uniqueConstraints = {
+        @jakarta.persistence.UniqueConstraint(name = "uq_alarm_tenant_source_alert",
+                columnNames = {"tenant_id", "source_alert_id"})
+})
 public class Alarm extends BaseEntity {
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
@@ -53,6 +56,10 @@ public class Alarm extends BaseEntity {
     /** 风险档位（CRITICAL/HIGH/MEDIUM/LOW/INFO），由 riskScore 分档，便于列表着色与筛选 */
     @Column(name = "risk_level", length = 16)
     private String riskLevel;
+
+    /** Stable id emitted by Detection; used for alert transaction idempotency. */
+    @Column(name = "source_alert_id", length = 255)
+    private String sourceAlertId;
 
     private String status = "OPEN";
 
@@ -157,6 +164,14 @@ public class Alarm extends BaseEntity {
 
     public void setRiskLevel(String riskLevel) {
         this.riskLevel = riskLevel;
+    }
+
+    public String getSourceAlertId() {
+        return sourceAlertId;
+    }
+
+    public void setSourceAlertId(String sourceAlertId) {
+        this.sourceAlertId = sourceAlertId;
     }
 
     public String getStatus() {

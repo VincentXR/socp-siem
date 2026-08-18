@@ -8,6 +8,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.LinkedHashSet;
 import java.util.UUID;
 
 /**
@@ -169,9 +171,27 @@ public class RuleSpecStore {
     public RuleSpecStore(RuleRepository repo) {
         this.repo = repo;
         if (repo.count() == 0) {
+            Set<String> seededIds = new LinkedHashSet<>();
+            // The versioned content pack is executable content, not metadata
+            // only. Seed its specs first so a deployment runs the same rules
+            // that CI validates and the workbench can inspect.
+            Object rawRules = DetectionContentCatalog.manifest().get("rules");
+            if (rawRules instanceof List<?> rules) {
+                for (Object item : rules) {
+                    if (item instanceof Map<?, ?> map && map.get("spec") instanceof Map<?, ?> rawSpec) {
+                        Map<String, Object> spec = new LinkedHashMap<>();
+                        rawSpec.forEach((key, value) -> spec.put(String.valueOf(key), value));
+                        String id = String.valueOf(spec.getOrDefault("id", ""));
+                        if (!id.isBlank()) {
+                            save(spec);
+                            seededIds.add(id);
+                        }
+                    }
+                }
+            }
             for (String json : SEED_JSON) {
                 Map<String, Object> spec = Json.parseObject(json);
-                save(spec);
+                if (!seededIds.contains(String.valueOf(spec.get("id")))) save(spec);
             }
         }
     }

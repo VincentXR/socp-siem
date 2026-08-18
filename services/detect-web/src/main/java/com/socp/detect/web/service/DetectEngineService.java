@@ -19,6 +19,7 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -38,6 +39,7 @@ public class DetectEngineService {
     private final AtomicReference<RuleEngine> engineRef;
     private final RuleChangePublisher rulePublisher;
     private final DetectionStateStore stateStore;
+    private final AtomicReference<Set<Integer>> assignedPartitions = new AtomicReference<>(Set.of());
 
     @org.springframework.beans.factory.annotation.Autowired
     public DetectEngineService(RuleSpecStore store, RecentAlertSink sink, AlertForwarder forwarder,
@@ -47,7 +49,7 @@ public class DetectEngineService {
         this.forwarder = forwarder;
         this.rulePublisher = rulePublisher;
         this.stateStore = stateStore;
-        this.engineRef = new AtomicReference<>(buildEngine());
+        this.engineRef = new AtomicReference<>(buildEngine(List.of()));
     }
 
     /** Unit-test/source compatibility constructor; production uses the JPA journal. */
@@ -67,7 +69,7 @@ public class DetectEngineService {
         suppressor.close();
     }
 
-    private RuleEngine buildEngine() {
+    private RuleEngine buildEngine(List<SecurityEvent> history) {
         List<Rule> rules = store.list().stream()
                 .map(RuleSpec::new)
                 .filter(spec -> spec.enabled)
@@ -77,7 +79,7 @@ public class DetectEngineService {
         try {
             // The journal itself clamps this to its configured retention. 24h
             // covers the bundled UEBA baselines while keeping restart bounded.
-            engine.restore(stateStore.recent(Duration.ofHours(24)));
+            engine.restore(history);
         } catch (Exception ex) {
             // Detection must still start when a stale/corrupt state row exists;
             // the row-level conversion logs the exact event and the next live
@@ -90,9 +92,40 @@ public class DetectEngineService {
 
     /** 规则热更新：原子替换引擎（旧引擎毒丸退出），无需重启进程 */
     public void reload() {
-        RuleEngine old = engineRef.getAndSet(buildEngine());
+        Set<Integer> partitions = assignedPartitions.get();
+        List<SecurityEvent> history = partitions.isEmpty()
+                ? stateStore.recent(Duration.ofHours(24))
+                : stateStore.recentForPartitions(partitions, Duration.ofHours(24));
+        replaceEngine(buildEngine(history));
+    }
+
+    /**
+     * Rebuild only from the state owned by the current Kafka assignment. The
+     * callback is invoked before records from a new assignment are processed,
+     * so a rebalance cannot mix windows from another instance's partitions.
+     */
+    public synchronized void restoreForPartitions(Set<Integer> partitions) {
+        if (partitions == null || partitions.isEmpty()) return;
+        Set<Integer> normalized = Set.copyOf(partitions);
+        if (normalized.equals(assignedPartitions.get())) return;
+        assignedPartitions.set(normalized);
+        replaceEngine(buildEngine(stateStore.recentForPartitions(normalized, Duration.ofHours(24))));
+    }
+
+    /** Used when Kafka is disabled or for an operational full-state replay. */
+    public synchronized void restoreAll() {
+        assignedPartitions.set(Set.of());
+        replaceEngine(buildEngine(stateStore.recent(Duration.ofHours(24))));
+    }
+
+    public Set<Integer> assignedPartitions() {
+        return assignedPartitions.get();
+    }
+
+    private void replaceEngine(RuleEngine replacement) {
+        replacement.start();
+        RuleEngine old = engineRef.getAndSet(replacement);
         old.close();
-        engineRef.get().start();
     }
 
     public List<Map<String, Object>> listRules() {

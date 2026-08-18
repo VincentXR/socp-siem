@@ -11,6 +11,8 @@ import com.socp.rule.model.Severity;
 import jakarta.annotation.PostConstruct;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,7 +24,9 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Collection;
 import java.util.Properties;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.BiConsumer;
 
@@ -107,13 +111,27 @@ public class KafkaEventConsumer {
 
     /** Package-private hook used by focused tests and the polling loop. */
     void processRecord(String key, String raw) {
+        processRecord(null, null, key, raw);
+    }
+
+    /** Process a Kafka record while retaining ownership metadata for recovery. */
+    void processRecord(int partition, long offset, String key, String raw) {
+        processRecord(Integer.valueOf(partition), Long.valueOf(offset), key, raw);
+    }
+
+    private void processRecord(Integer partition, Long offset, String key, String raw) {
         String eventId = null;
         try {
             @SuppressWarnings("unchecked")
             Map<String, Object> event = MAPPER.readValue(raw, Map.class);
             eventId = String.valueOf(event.getOrDefault("eventId", key));
             SecurityEvent normalized = toEvent(event);
-            if (!stateStore.recordIfNew(normalized)) return;
+            String routingKey = com.socp.rule.partition.DetectionRoutingKey.forEvent(normalized);
+            if (key != null && !key.equals(routingKey)) {
+                log.warn("Kafka routing key mismatch eventId={} received={} expected={}; processing with expected ownership",
+                        normalized.id(), key, routingKey);
+            }
+            if (!stateStore.recordIfNew(normalized, partition, offset, routingKey)) return;
             if (!engine.ingestFromKafka(normalized)) {
                 stateStore.remove(normalized.id());
                 throw new IllegalStateException("detection queue full");
@@ -138,7 +156,25 @@ public class KafkaEventConsumer {
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
         props.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, 200);
         try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props)) {
-            consumer.subscribe(List.of(topic));
+            consumer.subscribe(List.of(topic), new ConsumerRebalanceListener() {
+                @Override
+                public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
+                    log.info("Detection partitions revoked: {}", partitions);
+                }
+
+                @Override
+                public void onPartitionsAssigned(Collection<TopicPartition> partitions) {
+                    Set<Integer> assigned = partitions.stream()
+                            .map(TopicPartition::partition)
+                            .collect(java.util.stream.Collectors.toUnmodifiableSet());
+                    try {
+                        engine.restoreForPartitions(assigned);
+                        log.info("Detection state restored for partitions={}", assigned);
+                    } catch (Exception ex) {
+                        throw new IllegalStateException("Detection partition state restore failed: " + ex.getMessage(), ex);
+                    }
+                }
+            });
             while (true) {
                 var records = consumer.poll(Duration.ofMillis(500));
                 for (var record : records) {
@@ -157,7 +193,7 @@ public class KafkaEventConsumer {
                         org.slf4j.MDC.put("traceId", traceId);
                     }
                     try {
-                        processRecord(record.key(), record.value());
+                        processRecord(record.partition(), record.offset(), record.key(), record.value());
                     } finally {
                         org.slf4j.MDC.remove("traceId");
                     }

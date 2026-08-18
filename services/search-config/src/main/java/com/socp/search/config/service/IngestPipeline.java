@@ -8,6 +8,8 @@ import com.socp.search.config.store.ParseRuleStore;
 import com.socp.search.config.store.ReferenceSetStore;
 import com.socp.platform.client.DetectClient;
 import com.socp.platform.client.ServiceCall;
+import com.socp.platform.tenant.TenantContext;
+import com.socp.rule.partition.DetectionRoutingKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -223,6 +225,10 @@ public class IngestPipeline {
                 fields.get("eventId"),
                 fields.get("event_id"));
         if (eventId == null) eventId = java.util.UUID.randomUUID().toString();
+        fields.putIfAbsent("tenant_id", TenantContext.get() == null ? "default" : TenantContext.get());
+        Map<String, String> routingFields = stringFields(fields);
+        fields.put("detection_routing_field", DetectionRoutingKey.field(source, host, routingFields));
+        fields.put("detection_routing_value", DetectionRoutingKey.value(source, host, routingFields));
         Map<String, Object> norm = new LinkedHashMap<>();
         norm.put("eventId", eventId);
         norm.put("source", source.isBlank() ? "unknown" : source);
@@ -255,6 +261,14 @@ public class IngestPipeline {
         if (v != null && m.get(key) == null) {
             m.put(key, v);
         }
+    }
+
+    private static Map<String, String> stringFields(Map<String, Object> fields) {
+        Map<String, String> out = new LinkedHashMap<>();
+        for (var entry : fields.entrySet()) {
+            if (entry.getValue() != null) out.put(entry.getKey(), String.valueOf(entry.getValue()));
+        }
+        return out;
     }
 
     private void enrich(Map<String, Object> fields) {

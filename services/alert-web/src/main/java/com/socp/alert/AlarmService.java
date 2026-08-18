@@ -71,6 +71,10 @@ public class AlarmService {
         if (alarm.getTenantId() == null) {
             alarm.setTenantId(TenantContext.get() == null ? "default" : TenantContext.get());
         }
+        if (alarm.getSourceAlertId() != null && !alarm.getSourceAlertId().isBlank()) {
+            var existing = repo.findByTenantIdAndSourceAlertId(alarm.getTenantId(), alarm.getSourceAlertId());
+            if (existing.isPresent()) return existing.get();
+        }
         // 威胁评分：检测侧未给初评则本地算一次（此刻还没做情报富化，tiHits=0）
         if (alarm.getRiskScore() == null) {
             alarm.setRiskScore(computeRisk(alarm, 0).score());

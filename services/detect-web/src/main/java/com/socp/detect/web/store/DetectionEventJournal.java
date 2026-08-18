@@ -5,6 +5,7 @@ import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -15,6 +16,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -46,6 +48,12 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Override
     @Transactional
     public boolean recordIfNew(SecurityEvent event) {
+        return recordIfNew(event, null, null, null);
+    }
+
+    @Override
+    @Transactional
+    public boolean recordIfNew(SecurityEvent event, Integer partition, Long offset, String routingKey) {
         if (event == null || event.id() == null || event.id().isBlank()) return false;
         if (repository.existsById(event.id())) return false;
         try {
@@ -55,7 +63,8 @@ public class DetectionEventJournal implements DetectionStateStore {
                     event.id(), safe(event.source(), "unknown", 64),
                     safe(event.host(), "unknown", 255), safe(event.raw(), "", 8192),
                     fields, event.severity() == null ? Severity.INFO.name() : event.severity().name(),
-                    event.timestamp() == null ? Instant.now() : event.timestamp()));
+                    event.timestamp() == null ? Instant.now() : event.timestamp(),
+                    partition, offset, routingKey));
             // Prune lazily so the hot path does not need a scheduler or a second
             // durable queue. A timestamp index keeps this cheap in both H2 and PG.
             if (writes.incrementAndGet() % 500 == 0) {
@@ -80,11 +89,24 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Override
     @Transactional(readOnly = true)
     public List<SecurityEvent> recent(Duration window) {
-        Duration requested = window == null || window.isNegative() || window.isZero()
-                ? retention : window;
-        Instant cutoff = Instant.now().minus(requested.compareTo(retention) > 0 ? retention : requested);
+        return fromRows(repository.findTop10000ByOccurredAtAfterOrderByOccurredAtAsc(cutoff(window)));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<SecurityEvent> recentForPartitions(Set<Integer> partitions, Duration window) {
+        if (partitions == null || partitions.isEmpty()) return List.of();
+        return fromRows(repository.findByKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
+                partitions, cutoff(window), PageRequest.of(0, 10_000)), false);
+    }
+
+    private List<SecurityEvent> fromRows(List<DetectionEventEntity> rows) {
+        return fromRows(rows, true);
+    }
+
+    private List<SecurityEvent> fromRows(List<DetectionEventEntity> rows, boolean sortByTimestamp) {
         List<SecurityEvent> out = new ArrayList<>();
-        for (DetectionEventEntity row : repository.findTop10000ByOccurredAtAfterOrderByOccurredAtAsc(cutoff)) {
+        for (DetectionEventEntity row : rows) {
             try {
                 Map<String, String> fields = com.socp.rule.util.Json.mapper()
                         .readValue(row.getFieldsJson(), FIELDS);
@@ -100,8 +122,14 @@ public class DetectionEventJournal implements DetectionStateStore {
                 log.warn("忽略无法恢复的检测事件 eventId={}: {}", row.getEventId(), ex.getMessage());
             }
         }
-        out.sort(Comparator.comparing(SecurityEvent::timestamp));
+        if (sortByTimestamp) out.sort(Comparator.comparing(SecurityEvent::timestamp));
         return out;
+    }
+
+    private Instant cutoff(Duration window) {
+        Duration requested = window == null || window.isNegative() || window.isZero()
+                ? retention : window;
+        return Instant.now().minus(requested.compareTo(retention) > 0 ? retention : requested);
     }
 
     public Duration retention() {

@@ -22,8 +22,11 @@ import argparse
 import base64
 import json
 import os
+import platform
 import ssl
 import statistics
+import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -114,27 +117,40 @@ def percentile(values, p):
     return ordered[lower] + (ordered[upper] - ordered[lower]) * (rank - lower)
 
 
-def kafka_offset():
+def kafka_snapshot():
+    consumer = None
     try:
         from kafka import KafkaConsumer
         from kafka.structs import TopicPartition
 
         consumer = KafkaConsumer(
             bootstrap_servers=os.environ.get("BENCH_KAFKA", "127.0.0.1:9092"),
-            group_id=f"benchmark-probe-{uuid.uuid4().hex[:8]}",
+            group_id=os.environ.get("BENCH_GROUP", "socp-detect"),
+            enable_auto_commit=False,
             request_timeout_ms=3000,
         )
         partitions = consumer.partitions_for_topic("socp-events") or set()
         tps = [TopicPartition("socp-events", p) for p in sorted(partitions)]
         if not tps:
-            consumer.close()
             return None
         consumer.assign(tps)
-        value = sum(consumer.end_offsets(tps).values())
-        consumer.close()
-        return value
+        ends = consumer.end_offsets(tps)
+        committed = {tp: consumer.committed(tp) for tp in tps}
+        end_total = sum(ends.values())
+        committed_total = sum((offset.offset if offset else 0) for offset in committed.values())
+        return {
+            "topic": "socp-events",
+            "group": os.environ.get("BENCH_GROUP", "socp-detect"),
+            "partitions": len(tps),
+            "endOffset": end_total,
+            "committedOffset": committed_total,
+            "lag": max(0, end_total - committed_total),
+        }
     except Exception:
         return None
+    finally:
+        if consumer is not None:
+            consumer.close()
 
 
 def optional_opensearch_count():
@@ -167,6 +183,70 @@ def optional_clickhouse_count():
     try:
         with urllib.request.urlopen(req, timeout=10) as response:
             return int(response.read().decode().strip() or "0")
+    except Exception:
+        return None
+
+
+def git_commit():
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+            timeout=3, check=False).stdout.strip() or None
+    except Exception:
+        return None
+
+
+def machine_profile():
+    profile = {
+        "platform": platform.platform(),
+        "python": sys.version.split()[0],
+        "cpuCount": os.cpu_count(),
+        "hostname": platform.node(),
+        "gitCommit": git_commit(),
+    }
+    try:
+        import psutil  # optional; the benchmark remains dependency-free without it
+
+        profile["memoryBytes"] = psutil.virtual_memory().total
+        profile["cpuPercent"] = psutil.cpu_percent(interval=0.1)
+    except ImportError:
+        profile["psutil"] = "not-installed"
+    return profile
+
+
+def detect_stats(gateway, token):
+    status, body, _ = request(
+        gateway + "/detect-web/api/v1/stats",
+        headers={"Authorization": "Bearer " + token}, timeout=10)
+    data = unwrap(body)
+    return data if status == 200 and isinstance(data, dict) else None
+
+
+def optional_prometheus_snapshot():
+    """Read a small runtime-metric sample when a Prometheus endpoint is supplied."""
+    url = os.environ.get("BENCH_PROMETHEUS_URL")
+    if not url:
+        return None
+    wanted = {
+        "process_cpu_usage", "system_cpu_usage", "jvm_memory_used_bytes",
+        "jvm_memory_max_bytes", "jvm_gc_pause_seconds_count",
+        "jvm_gc_pause_seconds_sum",
+    }
+    try:
+        with urllib.request.urlopen(url, timeout=10) as response:
+            text = response.read().decode("utf-8", errors="replace")
+        values = {}
+        for line in text.splitlines():
+            if not line or line.startswith("#") or " " not in line:
+                continue
+            sample, raw_value = line.rsplit(" ", 1)
+            name = sample.split("{", 1)[0]
+            if name in wanted:
+                try:
+                    values[sample] = float(raw_value)
+                except ValueError:
+                    continue
+        return values or None
     except Exception:
         return None
 
@@ -217,15 +297,24 @@ def main():
     parser.add_argument("--timeout", type=float, default=120.0,
                         help="seconds to wait for e2e alerts")
     parser.add_argument("--output", help="optional JSON report path")
+    parser.add_argument("--label", default="baseline",
+                        help="human-readable run label stored in the report")
+    parser.add_argument("--instances", type=int, default=1,
+                        help="number of Detection instances used for this run")
+    parser.add_argument("--rules", type=int, default=None,
+                        help="rule count configured for this run, if known")
     args = parser.parse_args()
     if args.count <= 0 or args.batch_size <= 0:
         parser.error("--count and --batch-size must be positive")
 
     gateway = args.gateway.rstrip("/")
     token = login(gateway)
+    profile = machine_profile()
+    stats_before = detect_stats(gateway, token)
+    runtime_before = optional_prometheus_snapshot()
     task_id = choose_ingest_task(gateway, token) if args.mode == "e2e" else None
     baseline_alerts = alert_total(gateway, token) if args.mode == "e2e" else None
-    kafka_before = kafka_offset() if args.mode == "e2e" else None
+    kafka_before = kafka_snapshot() if args.mode == "e2e" else None
     os_before = optional_opensearch_count() if args.mode == "e2e" else None
     ck_before = optional_clickhouse_count() if args.mode == "e2e" else None
 
@@ -265,6 +354,11 @@ def main():
 
     report = {
         "runId": run_id,
+        "label": args.label,
+        "recordedAt": datetime.now(timezone.utc).isoformat(),
+        "machine": profile,
+        "detectionInstances": args.instances,
+        "configuredRules": args.rules,
         "mode": args.mode,
         "requested": args.count,
         "batchSize": args.batch_size,
@@ -281,6 +375,10 @@ def main():
             "p99": round(percentile(latencies, 0.99), 2),
             "max": round(max(latencies), 2) if latencies else 0,
         },
+        "detectionStatsBefore": stats_before,
+        "detectionStatsAfter": detect_stats(gateway, token),
+        "runtimeMetricsBefore": runtime_before,
+        "runtimeMetricsAfter": optional_prometheus_snapshot(),
     }
     if args.mode == "e2e":
         report["ingestTaskId"] = task_id
@@ -292,8 +390,8 @@ def main():
         report["endToEndEventsPerSecond"] = round(
             accepted / (elapsed + (alert_wait or 0))
             if accepted and elapsed + (alert_wait or 0) else 0, 2)
-        report["kafkaOffsetBefore"] = kafka_before
-        report["kafkaOffsetAfter"] = kafka_offset()
+        report["kafkaBefore"] = kafka_before
+        report["kafkaAfter"] = kafka_snapshot()
         report["openSearchBefore"] = os_before
         report["openSearchAfter"] = optional_opensearch_count()
         report["clickHouseBefore"] = ck_before
@@ -302,6 +400,7 @@ def main():
     print("SOCP %s baseline" % ("end-to-end" if args.mode == "e2e" else "bulk ingest"))
     print(json.dumps(report, ensure_ascii=False, indent=2))
     if args.output:
+        os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
         with open(args.output, "w", encoding="utf-8") as output:
             json.dump(report, output, ensure_ascii=False, indent=2)
             output.write("\n")

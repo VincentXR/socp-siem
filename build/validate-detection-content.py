@@ -14,6 +14,7 @@ TYPES = {"pattern", "threshold", "correlation", "correlation-set", "baseline", "
 SEVERITIES = {"INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"}
 OPS = {"eq", "ne", "contains", "startswith", "endswith", "ge", "gtsev",
        "regex", "gt", "gte", "lt", "lte", "inlist", "notinlist"}
+MIN_RULES = 20
 
 
 def fail(errors, message):
@@ -58,6 +59,8 @@ def validate(path):
     if not isinstance(rules, list) or not rules:
         fail(errors, "rules must be a non-empty array")
         return errors
+    if len(rules) < MIN_RULES:
+        fail(errors, f"rules must contain at least {MIN_RULES} executable detections")
 
     ids = set()
     for index, item in enumerate(rules):

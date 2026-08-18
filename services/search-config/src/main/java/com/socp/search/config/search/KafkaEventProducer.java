@@ -3,6 +3,7 @@ package com.socp.search.config.search;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.socp.rule.partition.DetectionRoutingKey;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -73,8 +74,9 @@ public class KafkaEventProducer {
                 KafkaProducer<String, String> p = producer();
                 for (SearchEvent e : es) {
                     String value = MAPPER.writeValueAsString(e);
-                    // key=eventId：同一事件进同一分区且顺序保证，配合幂等实现重试安全
-                    var rec = new ProducerRecord<>(topic, e.eventId(), value);
+                    // key=tenant + entity：同一状态实体进入同一分区，重试仍由 eventId 去重
+                    String routingKey = DetectionRoutingKey.forSearchEvent(e.source(), e.host(), e.fields());
+                    var rec = new ProducerRecord<>(topic, routingKey, value);
                     if (traceparent != null) {
                         rec.headers().add("traceparent", traceparent.getBytes(java.nio.charset.StandardCharsets.UTF_8));
                     }

@@ -119,7 +119,6 @@ def kafka_snapshot():
         group_id=GROUP,
         enable_auto_commit=False,
         request_timeout_ms=5000,
-        api_version_auto_timeout_ms=5000,
     )
     try:
         partitions = consumer.partitions_for(TOPIC)

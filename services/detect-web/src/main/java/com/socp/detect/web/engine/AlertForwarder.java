@@ -71,6 +71,7 @@ public class AlertForwarder {
 
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("id", a.id());
+        payload.put("sourceAlertId", a.id());
         payload.put("ruleId", a.ruleId());
         payload.put("ruleName", a.ruleName());
         payload.put("severity", a.severity().name());

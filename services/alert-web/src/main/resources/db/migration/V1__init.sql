@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS t_alarm (
     ti_hits     VARCHAR(1024),
     risk_score  INTEGER,
     risk_level  VARCHAR(16),
+    source_alert_id VARCHAR(255),
     status      VARCHAR(255),
     occurred_at TIMESTAMP(6) WITH TIME ZONE,
     -- 以下三列来自 socp-data 的 BaseEntity（@MappedSuperclass）
@@ -36,3 +37,5 @@ CREATE INDEX IF NOT EXISTS idx_t_alarm_tenant_occurred ON t_alarm (tenant_id, oc
 CREATE INDEX IF NOT EXISTS idx_t_alarm_status ON t_alarm (status);
 CREATE INDEX IF NOT EXISTS idx_t_alarm_entity ON t_alarm (entity);
 CREATE INDEX IF NOT EXISTS idx_t_alarm_rule_id ON t_alarm (rule_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_alarm_tenant_source_alert
+    ON t_alarm (tenant_id, source_alert_id);

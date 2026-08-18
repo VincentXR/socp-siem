@@ -37,11 +37,26 @@ public class DetectionEventEntity {
     @Column(name = "occurred_at", nullable = false)
     private Instant occurredAt;
 
+    @Column(name = "kafka_partition")
+    private Integer kafkaPartition;
+
+    @Column(name = "kafka_offset")
+    private Long kafkaOffset;
+
+    @Column(name = "routing_key", length = 255)
+    private String routingKey;
+
     public DetectionEventEntity() {
     }
 
     public DetectionEventEntity(String eventId, String source, String host, String raw,
                                 String fieldsJson, String severity, Instant occurredAt) {
+        this(eventId, source, host, raw, fieldsJson, severity, occurredAt, null, null, null);
+    }
+
+    public DetectionEventEntity(String eventId, String source, String host, String raw,
+                                String fieldsJson, String severity, Instant occurredAt,
+                                Integer kafkaPartition, Long kafkaOffset, String routingKey) {
         this.eventId = eventId;
         this.source = source;
         this.host = host;
@@ -49,6 +64,9 @@ public class DetectionEventEntity {
         this.fieldsJson = fieldsJson;
         this.severity = severity;
         this.occurredAt = occurredAt;
+        this.kafkaPartition = kafkaPartition;
+        this.kafkaOffset = kafkaOffset;
+        this.routingKey = routingKey;
     }
 
     public String getEventId() { return eventId; }
@@ -58,4 +76,7 @@ public class DetectionEventEntity {
     public String getFieldsJson() { return fieldsJson; }
     public String getSeverity() { return severity; }
     public Instant getOccurredAt() { return occurredAt; }
+    public Integer getKafkaPartition() { return kafkaPartition; }
+    public Long getKafkaOffset() { return kafkaOffset; }
+    public String getRoutingKey() { return routingKey; }
 }

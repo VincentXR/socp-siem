@@ -14,6 +14,8 @@ high-availability claim.
 | Event pipeline | `python build/verify-pipeline.py` | Canonical event → Kafka → detection → alert persistence → OpenSearch/ClickHouse/report | PR with middleware / scheduled |
 | Golden scenario | `python build/demos/golden-demo.py --transport ingest` | SSH failed logins → canonical event → threshold/correlation alerts → Incident/Notify/SOAR | Manual / full-stack |
 | Detection recovery | `python build/demos/detection-recovery.py` | Ingestion remains available, Kafka lag grows while Detection is down, committed offset catches up after restart | Manual / weekly |
+| Chaos matrix | `python build/chaos-pipeline.py --scenario all --count 20` | Detection restart backlog recovery and duplicate delivery produce one logical Alert | Manual / weekly |
+| E2E benchmark | `python build/benchmark-pipeline.py --mode e2e --count 100 --batch-size 25` | Canonical ingest → Kafka → Detection → Alert latency, offsets, and before/after stats | Manual, repeat at 10k/100k/1m |
 | Bulk baseline | `python build/benchmark-pipeline.py --count 100` | Generic accepted/rejected counters and HTTP latency for the detection bulk boundary | Manual, repeat at 100/1,000/10,000 |
 | Full API | `python build/verify-full.py` | Resource CRUD, tenancy, import/export, threat and response contracts | Scheduled / release candidate |
 | Failure recovery | `python build/failure-tests.py` | Kafka, OpenSearch, Temporal, and PostgreSQL recovery assertions | Manual / scheduled |
@@ -37,11 +39,11 @@ high-availability claim.
 
 ## Scale baseline
 
-Run `benchmark-pipeline.py` with 100, 1,000, and 10,000 events, then combine
-its generic counters with the end-to-end pipeline results: alert count,
-processing latency, consumer lag, and whether recovery completed. Use the same
-test data shape and a clean test tenant for comparison. The benchmark measures
-the detect bulk boundary; it is not an end-to-end throughput number.
+Run the E2E mode at 10,000, 100,000, and 1,000,000 events, then retain the JSON
+reports with the machine profile, configured rule/instance counts, request and
+end-to-end percentiles, Kafka offsets, and Detection stats. Use the same test
+data shape and a clean test tenant for comparison. The result is a repeatable
+single-node baseline; it is not a production throughput or HA claim.
 
 Do not record or commit local usernames, absolute paths, hardware details,
 email addresses, tokens, passwords, or machine-specific screenshots. Report

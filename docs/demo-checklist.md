@@ -76,6 +76,15 @@ python build/failure-tests.py
 
 They exercise Kafka, OpenSearch, Temporal, and PostgreSQL stop/restart paths.
 
+For the focused Detection invariants, use the failure matrix. It records a
+before/after Kafka snapshot and verifies that duplicate delivery creates one
+logical Alert Web row:
+
+```bash
+python build/chaos-pipeline.py --scenario all --count 20 \
+  --output .cache/chaos/latest.json
+```
+
 ## Evidence to collect
 
 Use the workbench to inspect the canonical event, the two alerts and their

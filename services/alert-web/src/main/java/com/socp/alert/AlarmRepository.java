@@ -13,6 +13,8 @@ public interface AlarmRepository extends JpaRepository<Alarm, String> {
 
     Optional<Alarm> findByTenantIdAndId(String tenantId, String id);
 
+    Optional<Alarm> findByTenantIdAndSourceAlertId(String tenantId, String sourceAlertId);
+
     List<Alarm> findByTenantIdAndSeverity(String tenantId, Severity severity);
 
     @Query("""

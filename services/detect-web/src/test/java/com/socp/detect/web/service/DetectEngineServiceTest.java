@@ -2,6 +2,7 @@ package com.socp.detect.web.service;
 
 import com.socp.detect.web.engine.AlertForwarder;
 import com.socp.detect.web.engine.RecentAlertSink;
+import com.socp.detect.web.store.DetectionStateStore;
 import com.socp.detect.web.store.RuleSpecStore;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
@@ -16,6 +17,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -33,6 +35,9 @@ class DetectEngineServiceTest {
 
     @Mock
     private RuleChangePublisher rulePublisher;
+
+    @Mock
+    private DetectionStateStore stateStore;
 
     @Test
     void addingRuleReloadsEngineAndEvaluatesNewEvents() throws Exception {
@@ -77,6 +82,25 @@ class DetectEngineServiceTest {
         try {
             assertTrue(!service.deleteRule("missing"));
             verify(rulePublisher, org.mockito.Mockito.never()).publish("missing", "delete");
+        } finally {
+            service.stop();
+        }
+    }
+
+    @Test
+    void partitionRestoreReadsOnlyAssignedState() {
+        when(store.list()).thenReturn(List.of(patternRule()));
+        when(stateStore.recentForPartitions(org.mockito.ArgumentMatchers.eq(Set.of(2)),
+                org.mockito.ArgumentMatchers.any(Duration.class))).thenReturn(List.of());
+
+        DetectEngineService service = new DetectEngineService(
+                store, new RecentAlertSink(10, null, null), forwarder, rulePublisher, stateStore);
+        try {
+            service.restoreForPartitions(Set.of(2));
+
+            assertEquals(Set.of(2), service.assignedPartitions());
+            verify(stateStore).recentForPartitions(org.mockito.ArgumentMatchers.eq(Set.of(2)),
+                    org.mockito.ArgumentMatchers.any(Duration.class));
         } finally {
             service.stop();
         }

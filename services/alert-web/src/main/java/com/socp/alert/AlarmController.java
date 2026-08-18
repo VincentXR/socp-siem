@@ -44,6 +44,7 @@ public class AlarmController {
     public ApiResult<Alarm> create(@Valid @RequestBody CreateAlarmRequest req) {
         Alarm a = new Alarm(req.ruleId(), req.ruleName(), req.severity(), req.message(), req.entity(),
                 req.mitre(), null);
+        a.setSourceAlertId(req.sourceAlertId());
         // 采集侧可能延迟上报，尊重入参的事件发生时间；缺省才用服务端 now（Alarm 字段默认值）
         if (req.occurredAt() != null) {
             a.setOccurredAt(req.occurredAt());
@@ -167,6 +168,7 @@ public class AlarmController {
             Instant occurredAt,
             /** 检测侧初评的威胁评分 0~100，可空（空则由 ALERT 自行计算） */
             Integer riskScore,
-            List<AlarmEvidenceInput> evidence) {
+            List<AlarmEvidenceInput> evidence,
+            String sourceAlertId) {
     }
 }

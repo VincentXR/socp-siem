@@ -120,4 +120,22 @@ class AlarmServiceTest {
         assertEquals("eventId=event-1", response.query());
         assertEquals("event-1", response.items().get(0).eventId());
     }
+
+    @Test
+    void repeatedSourceAlertIsIdempotent() {
+        TenantContext.set("tenant-a");
+        Alarm existing = new Alarm("AUTH-PRIVESC", "Privilege escalation", Severity.HIGH,
+                "sudo", "host-1");
+        existing.setSourceAlertId("stable-alert-1");
+        given(repository.findByTenantIdAndSourceAlertId("tenant-a", "stable-alert-1"))
+                .willReturn(Optional.of(existing));
+
+        Alarm duplicate = new Alarm("AUTH-PRIVESC", "Privilege escalation", Severity.HIGH,
+                "sudo", "host-1");
+        duplicate.setSourceAlertId("stable-alert-1");
+
+        assertEquals(existing, service.create(duplicate));
+        org.mockito.Mockito.verify(outboxRepository, org.mockito.Mockito.never())
+                .save(org.mockito.ArgumentMatchers.any(OutboxEvent.class));
+    }
 }

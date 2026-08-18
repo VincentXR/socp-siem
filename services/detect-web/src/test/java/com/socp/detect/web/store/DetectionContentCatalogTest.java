@@ -1,10 +1,13 @@
 package com.socp.detect.web.store;
 
 import com.socp.rule.config.RuleSpec;
+import com.socp.rule.engine.Watchlists;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.rule.rules.Rule;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -18,6 +21,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /** Contract tests for the versioned content pack and its positive/negative vectors. */
 class DetectionContentCatalogTest {
 
+    @BeforeEach
+    void seedContentWatchlists() {
+        Watchlists.put("blocked_ips", List.of("10.0.0.66"));
+        Watchlists.put("high_risk_entities", List.of("HIGH", "CRITICAL"));
+    }
+
+    @AfterEach
+    void clearContentWatchlists() {
+        Watchlists.clear();
+    }
+
     @Test
     void everyPackRuleHasMetadataAndCounterexamples() {
         Map<String, Object> manifest = DetectionContentCatalog.manifest();
@@ -26,7 +40,7 @@ class DetectionContentCatalogTest {
 
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> rules = (List<Map<String, Object>>) manifest.get("rules");
-        assertTrue(rules.size() >= 4);
+        assertTrue(rules.size() >= 20, "content pack should keep a meaningful executable rule set");
         for (Map<String, Object> item : rules) {
             for (String field : List.of("id", "version", "owner", "dataSources", "mitre", "spec", "tests")) {
                 assertTrue(item.containsKey(field), () -> item.get("id") + " missing " + field);
