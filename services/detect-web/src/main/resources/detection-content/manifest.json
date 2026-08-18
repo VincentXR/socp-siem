@@ -1,0 +1,159 @@
+{
+  "packId": "socp-core-detections",
+  "version": "2026.08.19",
+  "schemaVersion": "1",
+  "maintainer": "socp-detection",
+  "rules": [
+    {
+      "id": "AUTH-BRUTE",
+      "version": "1.1.0",
+      "status": "ACTIVE",
+      "owner": "socp-detection",
+      "description": "同一源 IP 在短时间内连续失败登录。",
+      "dataSources": ["auth", "sshd"],
+      "mitre": ["T1110"],
+      "references": ["https://attack.mitre.org/techniques/T1110/"],
+      "spec": {
+        "id": "AUTH-BRUTE",
+        "name": "SSH 暴力破解",
+        "type": "threshold",
+        "severity": "HIGH",
+        "message": "源 {key} 在 {window} 内失败登录 {count} 次",
+        "keyField": "src_ip",
+        "threshold": 5,
+        "window": "60s",
+        "mitre": "T1110",
+        "match": [
+          {"field": "source", "op": "eq", "value": "auth"},
+          {"field": "msg", "op": "contains", "value": "Failed password"}
+        ]
+      },
+      "tests": [
+        {
+          "name": "five failures trigger",
+          "expectAlert": true,
+          "events": [
+            {"source": "auth", "host": "ssh-1", "msg": "Failed password", "fields": {"src_ip": "198.51.100.10"}},
+            {"source": "auth", "host": "ssh-1", "msg": "Failed password", "fields": {"src_ip": "198.51.100.10"}},
+            {"source": "auth", "host": "ssh-1", "msg": "Failed password", "fields": {"src_ip": "198.51.100.10"}},
+            {"source": "auth", "host": "ssh-1", "msg": "Failed password", "fields": {"src_ip": "198.51.100.10"}},
+            {"source": "auth", "host": "ssh-1", "msg": "Failed password", "fields": {"src_ip": "198.51.100.10"}}
+          ]
+        },
+        {
+          "name": "four failures do not trigger",
+          "expectAlert": false,
+          "events": [
+            {"source": "auth", "host": "ssh-1", "msg": "Failed password", "fields": {"src_ip": "198.51.100.11"}},
+            {"source": "auth", "host": "ssh-1", "msg": "Failed password", "fields": {"src_ip": "198.51.100.11"}},
+            {"source": "auth", "host": "ssh-1", "msg": "Failed password", "fields": {"src_ip": "198.51.100.11"}},
+            {"source": "auth", "host": "ssh-1", "msg": "Failed password", "fields": {"src_ip": "198.51.100.11"}}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "AUTH-BRUTE-SUCCESS",
+      "version": "1.0.0",
+      "status": "ACTIVE",
+      "owner": "socp-detection",
+      "description": "失败登录后同一源 IP 成功登录，形成攻击链。",
+      "dataSources": ["auth", "sshd"],
+      "mitre": ["T1110", "T1078"],
+      "references": ["https://attack.mitre.org/techniques/T1078/"],
+      "spec": {
+        "id": "AUTH-BRUTE-SUCCESS",
+        "name": "暴力破解得手（关联）",
+        "type": "correlation",
+        "severity": "CRITICAL",
+        "message": "源 {key} 在攻击链中疑似暴力破解得手",
+        "keyField": "src_ip",
+        "window": "120s",
+        "mitre": "T1078",
+        "steps": [
+          [{"field": "source", "op": "eq", "value": "auth"}, {"field": "msg", "op": "contains", "value": "Failed password"}],
+          [{"field": "source", "op": "eq", "value": "auth"}, {"field": "msg", "op": "contains", "value": "Accepted password"}]
+        ]
+      },
+      "tests": [
+        {
+          "name": "failure followed by success triggers",
+          "expectAlert": true,
+          "events": [
+            {"source": "auth", "host": "ssh-2", "msg": "Failed password", "fields": {"src_ip": "198.51.100.20"}},
+            {"source": "auth", "host": "ssh-2", "msg": "Accepted password", "fields": {"src_ip": "198.51.100.20"}}
+          ]
+        },
+        {
+          "name": "success without failure does not trigger",
+          "expectAlert": false,
+          "events": [
+            {"source": "auth", "host": "ssh-2", "msg": "Accepted password", "fields": {"src_ip": "198.51.100.21"}}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "AUTH-PRIVESC",
+      "version": "1.0.0",
+      "status": "ACTIVE",
+      "owner": "socp-detection",
+      "description": "识别 sudo 或显式权限提升痕迹。",
+      "dataSources": ["auth", "auditd", "linux"],
+      "mitre": ["T1548"],
+      "references": ["https://attack.mitre.org/techniques/T1548/"],
+      "spec": {
+        "id": "AUTH-PRIVESC",
+        "name": "权限提升",
+        "type": "pattern",
+        "severity": "CRITICAL",
+        "message": "检测到权限提升行为：{msg} @ {host}",
+        "mitre": "T1548",
+        "match": [{"field": "msg", "op": "regex", "value": "(?i)Privilege escalation|sudo:"}]
+      },
+      "tests": [
+        {
+          "name": "sudo command triggers",
+          "expectAlert": true,
+          "events": [{"source": "auth", "host": "linux-1", "msg": "sudo: user executed /bin/sh", "fields": {}}]
+        },
+        {
+          "name": "ordinary login does not trigger",
+          "expectAlert": false,
+          "events": [{"source": "auth", "host": "linux-1", "msg": "Accepted password", "fields": {}}]
+        }
+      ]
+    },
+    {
+      "id": "CRED-DUMP",
+      "version": "1.0.0",
+      "status": "ACTIVE",
+      "owner": "socp-detection",
+      "description": "识别常见凭据转储工具和敏感凭据文件访问。",
+      "dataSources": ["edr", "auditd", "sysmon"],
+      "mitre": ["T1003"],
+      "references": ["https://attack.mitre.org/techniques/T1003/"],
+      "spec": {
+        "id": "CRED-DUMP",
+        "name": "凭据转储",
+        "type": "pattern",
+        "severity": "CRITICAL",
+        "message": "检测到凭据转储行为：{msg} @ {host}",
+        "mitre": "T1003",
+        "match": [{"field": "msg", "op": "regex", "value": "(?i)mimikatz|lsass|sekurlsa|ntds|/etc/shadow"}]
+      },
+      "tests": [
+        {
+          "name": "mimikatz triggers",
+          "expectAlert": true,
+          "events": [{"source": "edr", "host": "win-1", "msg": "mimikatz sekurlsa::logonpasswords", "fields": {}}]
+        },
+        {
+          "name": "normal process does not trigger",
+          "expectAlert": false,
+          "events": [{"source": "edr", "host": "win-1", "msg": "explorer.exe started", "fields": {}}]
+        }
+      ]
+    }
+  ]
+}

@@ -6,6 +6,11 @@ import com.socp.platform.client.ServiceCall;
 import com.socp.platform.client.SocpHttpClient;
 import com.socp.soar.web.model.Playbook;
 import com.socp.soar.web.store.PlaybookStore;
+import com.socp.soar.web.store.ExecutionEntity;
+import com.socp.soar.web.store.ExecutionRepository;
+import com.socp.platform.tenant.TenantContext;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -36,20 +41,24 @@ public class PlaybookExecutor {
     private static final int WEBHOOK_TIMEOUT_MS = 3000;
 
     private final PlaybookStore store;
-    private final List<Map<String, Object>> executions = new CopyOnWriteArrayList<>();
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+    /** Only used by direct unit-test construction; Spring production always injects JPA. */
+    private final List<Map<String, Object>> transientExecutions = new CopyOnWriteArrayList<>();
     private final NotifyClient notifyClient;
     private final IncidentClient incidentClient;
     private final SocpHttpClient http;
     private final TemporalExecutor temporalExecutor;
+    private final ExecutionRepository executionRepository;
 
     public PlaybookExecutor(PlaybookStore store, NotifyClient notifyClient,
                             IncidentClient incidentClient, SocpHttpClient http,
-                            TemporalExecutor temporalExecutor) {
+                            TemporalExecutor temporalExecutor, ExecutionRepository executionRepository) {
         this.store = store;
         this.notifyClient = notifyClient;
         this.incidentClient = incidentClient;
         this.http = http;
         this.temporalExecutor = temporalExecutor;
+        this.executionRepository = executionRepository;
     }
 
     /** 按 ID 手动触发执行（忽略启用状态与触发条件）。 */
@@ -138,8 +147,30 @@ public class PlaybookExecutor {
 
     /** 记录一次执行结果（进程内与 Temporal 模式共用，前端 /executions 可见）。 */
     private void recordExecution(Map<String, Object> exec) {
-        if (executions.size() > 200) executions.remove(0);
-        executions.add(exec);
+        if (executionRepository == null) {
+            if (transientExecutions.size() >= 200) transientExecutions.remove(0);
+            transientExecutions.add(new LinkedHashMap<>(exec));
+            return;
+        }
+        try {
+            ExecutionEntity row = new ExecutionEntity();
+            row.setExecutionId(str(exec, "executionId"));
+            row.setPlaybookId(str(exec, "playbookId"));
+            row.setPlaybook(str(exec, "playbook"));
+            row.setStatus(str(exec, "status"));
+            row.setTrigger(str(exec, "trigger"));
+            Object retries = exec.get("retryCount");
+            row.setRetryCount(retries instanceof Number n ? n.intValue() : 0);
+            row.setError(exec.get("error") == null ? null : String.valueOf(exec.get("error")));
+            row.setResultsJson(MAPPER.writeValueAsString(exec.getOrDefault("results", List.of())));
+            row.setTs(parseInstant(exec.get("ts")));
+            row.setTenantId(tenant());
+            executionRepository.save(row);
+        } catch (Exception e) {
+            // The action itself has already completed; expose persistence loss
+            // loudly while keeping the response path available.
+            log.warn("SOAR 执行记录持久化失败 executionId={}: {}", exec.get("executionId"), e.getMessage());
+        }
     }
 
     /** 执行单个动作（含失败重试）；activeFailed 为 true 时跳过主动作、只允许补偿动作。
@@ -229,7 +260,10 @@ public class PlaybookExecutor {
     }
 
     public List<Map<String, Object>> executions() {
-        return List.copyOf(executions);
+        if (executionRepository == null) return List.copyOf(transientExecutions);
+        return executionRepository.findTop200ByTenantIdOrderByTsDesc(tenant()).stream()
+                .map(PlaybookExecutor::fromEntity)
+                .toList();
     }
 
     private static int sevLevel(String s) {
@@ -241,6 +275,35 @@ public class PlaybookExecutor {
             case "INFO" -> 1;
             default -> 0;
         };
+    }
+
+    private String tenant() {
+        String t = TenantContext.get();
+        return t == null ? "default" : t;
+    }
+
+    private static Map<String, Object> fromEntity(ExecutionEntity row) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("executionId", row.getExecutionId());
+        out.put("playbookId", row.getPlaybookId());
+        out.put("playbook", row.getPlaybook());
+        out.put("status", row.getStatus());
+        out.put("trigger", row.getTrigger());
+        out.put("retryCount", row.getRetryCount());
+        if (row.getError() != null) out.put("error", row.getError());
+        try {
+            out.put("results", MAPPER.readValue(row.getResultsJson(), new TypeReference<List<Map<String, Object>>>() {}));
+        } catch (Exception ignored) {
+            out.put("results", List.of());
+        }
+        out.put("ts", row.getTs() == null ? null : row.getTs().toString());
+        return out;
+    }
+
+    private static Instant parseInstant(Object value) {
+        if (value == null) return Instant.now();
+        try { return Instant.parse(String.valueOf(value)); }
+        catch (Exception ignored) { return Instant.now(); }
     }
 
     private static String str(Map<String, Object> m, String k) {

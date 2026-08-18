@@ -93,12 +93,15 @@ evidence for an event as it moves through the pipeline.
 
 ## Known scaling boundaries
 
-Detection window state is held in the engine process. A horizontally scaled
-deployment must keep the same detection key on one partition or introduce a
-shared state strategy. Logical tenancy is implemented, while physical tenant
-database isolation is outside the current scope. Kafka, OpenSearch,
-PostgreSQL, and ClickHouse are configured as single-node dependencies for
-local verification.
+Detection evaluates events in an in-process hot window, but `detect-web`
+persists accepted canonical events and event-id claims in `t_detection_event`.
+On startup (and rule reload) the engine replays the configured recovery window
+without re-emitting historical alerts. A horizontally scaled deployment must
+still keep the same detection key on one partition, or move the journal and
+window ownership to a shared partition-aware state service. Logical tenancy is
+implemented, while physical tenant database isolation is outside the current
+scope. Kafka, OpenSearch, PostgreSQL, and ClickHouse are configured as
+single-node dependencies for local verification.
 
 See [module-map.md](module-map.md), [getting-started.md](getting-started.md),
 [testing.md](testing.md), and the [architecture decision records](adr/).

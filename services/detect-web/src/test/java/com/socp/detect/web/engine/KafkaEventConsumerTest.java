@@ -25,13 +25,14 @@ class KafkaEventConsumerTest {
 
     @Test
     void duplicateEventIdIsSubmittedOnlyOnce() {
+        given(engine.ingestFromKafka(any(SecurityEvent.class))).willReturn(true);
         KafkaEventConsumer consumer = new KafkaEventConsumer(engine);
         String event = "{\"eventId\":\"consumer-test-100\",\"source\":\"auth\",\"host\":\"web-1\",\"msg\":\"login failed\"}";
 
         consumer.processRecord("key-1", event);
         consumer.processRecord("key-2", event);
 
-        verify(engine, times(1)).ingest(any(SecurityEvent.class));
+        verify(engine, times(1)).ingestFromKafka(any(SecurityEvent.class));
     }
 
     @Test
@@ -47,7 +48,7 @@ class KafkaEventConsumerTest {
         assertEquals(1, dlq.size());
         assertEquals(null, dlq.get(0).getKey());
         assertEquals(malformed, dlq.get(0).getValue());
-        verify(engine, times(0)).ingest(any(SecurityEvent.class));
+        verify(engine, times(0)).ingestFromKafka(any(SecurityEvent.class));
     }
 
     @Test
@@ -56,7 +57,7 @@ class KafkaEventConsumerTest {
         List<Map.Entry<String, String>> dlq = new ArrayList<>();
         consumer.setDlqSink((eventId, raw) -> dlq.add(
                 new java.util.AbstractMap.SimpleEntry<>(eventId, raw)));
-        given(engine.ingest(any(SecurityEvent.class)))
+        given(engine.ingestFromKafka(any(SecurityEvent.class)))
                 .willThrow(new IllegalStateException("detection queue full"));
         String event = "{\"eventId\":\"consumer-test-101\",\"source\":\"auth\","
                 + "\"host\":\"web-1\",\"msg\":\"login failed\"}";
@@ -66,6 +67,6 @@ class KafkaEventConsumerTest {
         assertEquals(1, dlq.size());
         assertEquals("consumer-test-101", dlq.get(0).getKey());
         assertEquals(event, dlq.get(0).getValue());
-        verify(engine).ingest(any(SecurityEvent.class));
+        verify(engine).ingestFromKafka(any(SecurityEvent.class));
     }
 }

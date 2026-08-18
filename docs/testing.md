@@ -55,6 +55,9 @@ python build/verify-full.py       # API, persistence, tenancy, auth, and tracing
 python build/demos/golden-demo.py --transport ingest  # SSH brute force -> incident/SOAR
 python build/demos/detection-recovery.py              # Detection down -> Kafka backlog -> recovery
 python build/failure-tests.py      # dependency stop/restart and fallback paths
+python build/validate-detection-content.py
+python build/benchmark-pipeline.py --mode e2e --count 100 --batch-size 25 \
+  --output .cache/benchmark-e2e.json
 ```
 
 The pipeline check confirms canonical event acceptance, Kafka delivery,
@@ -65,6 +68,24 @@ for Kafka, OpenSearch, Temporal, and PostgreSQL.
 The failure script is intentionally a manual/nightly check because it stops and
 restarts local middleware containers. It must restore every dependency before
 the run ends; it should not be used as a per-commit unit test.
+
+The benchmark has two deliberately different scopes. The default `bulk` mode
+measures the DETECT HTTP boundary. `--mode e2e` sends events through
+`search-config -> Kafka -> detect-web -> alert-web` and waits for the expected
+alert count; optional `BENCH_OS_URL` and `BENCH_CK_URL` environment variables
+add OpenSearch/ClickHouse before-and-after counters. The JSON report contains
+batch p50/p95/p99 latency, ingest throughput, alert wait/end-to-end latency,
+acceptance, Kafka offsets when the `kafka-python` probe is installed, and the
+observed end-to-end alert count. It is a repeatable single-node baseline, not a
+production capacity claim.
+
+Detection content is versioned in
+`services/detect-web/src/main/resources/detection-content/manifest.json`.
+Every content entry carries an owner, data-source and ATT&CK metadata plus a
+positive and a negative vector. The Java contract test executes those vectors;
+the Python validator provides a fast CI check before services are built.
+The detection journal replay window defaults to 24 hours and is configurable
+with `SOCP_DETECT_STATE_RETENTION`.
 
 The Detection recovery demo stops and restarts only `detect-web` through
 `build/run-all.sh`, verifies that Kafka retains the injected events, and waits

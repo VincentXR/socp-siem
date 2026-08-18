@@ -25,11 +25,11 @@ tests and artifact checks are under `frontend/apps/workbench/scripts`.
 |---|---:|---|---|
 | `api-gateway` | 18092 | Routing, login, JWT/RBAC, and trace propagation | Stateless |
 | `search-config` | 18081 | Source configuration, parsing, canonical event ingest | H2 + Kafka; direct OpenSearch fallback only when Kafka is unavailable |
-| `detect-web` | 18082 | Rule CRUD, hot reload, detection, and backpressure | H2 + in-process engine |
+| `detect-web` | 18082 | Rule CRUD, hot reload, detection, backpressure, and recoverable state journal | H2/PG + in-process hot engine + `t_detection_event` replay journal |
 | `detect-model` | 18090 | Secondary alert analysis and correlation endpoint | H2 |
 | `alert-web` | 18080 | Alert facts, enrichment, disposition, and Outbox | PostgreSQL |
 | `incident-web` | 18097 | Incident creation, merge, and timeline | PostgreSQL |
-| `soar-web` | 18083 | Playbook CRUD and execution | H2 + optional Temporal |
+| `soar-web` | 18083 | Playbook CRUD and execution | H2 + durable execution projection + optional Temporal |
 | `report-web` | 18084 | Daily and trend reporting | ClickHouse + optional MinIO |
 | `soc-base` | 18086 | Tenant, overview, compliance, and audit views | PostgreSQL |
 | `threat-web` | 18094 | IOC and threat-intelligence lookup | PostgreSQL |

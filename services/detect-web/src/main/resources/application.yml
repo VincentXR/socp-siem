@@ -27,6 +27,9 @@ socp:
     dev-bypass: ${SOCP_DEV_BYPASS:false}
   alert:
     url: http://localhost:18080
+  detect:
+    state:
+      retention: ${SOCP_DETECT_STATE_RETENTION:24h}
 
 management:
   endpoints:

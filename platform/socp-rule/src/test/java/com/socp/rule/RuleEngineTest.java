@@ -89,6 +89,25 @@ class RuleEngineTest {
     }
 
     @Test
+    void restoreRebuildsThresholdWindowWithoutReplayingHistoricalAlert() throws Exception {
+        CollectingSink sink = new CollectingSink();
+        List<SecurityEvent> history = List.of(
+                ev("auth", "Failed password for admin from 10.0.0.10", "10.0.0.10", null),
+                ev("auth", "Failed password for admin from 10.0.0.10", "10.0.0.10", null),
+                ev("auth", "Failed password for admin from 10.0.0.10", "10.0.0.10", null),
+                ev("auth", "Failed password for admin from 10.0.0.10", "10.0.0.10", null));
+        try (RuleEngine engine = new RuleEngine(Rules.defaultRules(), List.of(sink))) {
+            engine.restore(history);
+            assertTrue(sink.alerts.isEmpty(), "状态恢复不应重新发送历史告警");
+            engine.start();
+            engine.ingest(ev("auth", "Failed password for admin from 10.0.0.10", "10.0.0.10", null));
+
+            await(() -> sink.alerts.stream().anyMatch(a -> a.ruleId().equals("AUTH-BRUTE")));
+            assertEquals(1, sink.alerts.stream().filter(a -> a.ruleId().equals("AUTH-BRUTE")).count());
+        }
+    }
+
+    @Test
     void correlationRuleFiresOnFailedThenAccepted() throws Exception {
         CollectingSink sink = new CollectingSink();
         try (RuleEngine engine = new RuleEngine(Rules.defaultRules(), List.of(sink))) {

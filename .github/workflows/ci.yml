@@ -39,6 +39,9 @@ jobs:
       - name: Run backend tests
         run: bash build/mvnw.sh test -Dsurefire.failIfNoSpecifiedTests=false
 
+      - name: Validate versioned detection content
+        run: python3 build/validate-detection-content.py
+
       - name: Install frontend deps (pnpm frozen lockfile)
         run: pnpm install --frozen-lockfile
         working-directory: frontend

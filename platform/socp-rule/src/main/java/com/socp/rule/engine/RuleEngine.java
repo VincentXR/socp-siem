@@ -54,6 +54,22 @@ public final class RuleEngine implements AutoCloseable {
         worker = Thread.startVirtualThread(this::loop);
     }
 
+    /**
+     * Rebuild stateful rule windows from the durable detection journal before
+     * the worker starts.  Alerts emitted while replaying are intentionally
+     * drained and discarded: the alert/outbox path already owns historical
+     * facts, while this pass only reconstructs threshold/correlation/UEBA
+     * state needed for the next live event.
+     */
+    public void restore(List<SecurityEvent> history) {
+        if (history == null || history.isEmpty()) return;
+        for (SecurityEvent event : history) {
+            for (Rule rule : rulesRef.get()) rule.accept(event);
+            for (Rule rule : rulesRef.get()) rule.drain();
+        }
+        log.info("规则状态恢复完成，重放 {} 条事件", history.size());
+    }
+
     private void loop() {
         while (running) {
             try {

@@ -3,6 +3,7 @@ package com.socp.detect.web.api;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.detect.web.service.DetectEngineService;
+import com.socp.detect.web.store.DetectionContentCatalog;
 import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
@@ -44,6 +45,21 @@ public class RuleController {
     @GetMapping("/rules")
     public java.util.List<Map<String, Object>> listRules() {
         return engine.listRules();
+    }
+
+    /** Versioned detection content metadata used by review and release tooling. */
+    @GetMapping("/rules/content-manifest")
+    public Map<String, Object> contentManifest() {
+        return engine.contentManifest();
+    }
+
+    /** Validate a rule without persisting or hot-reloading it. */
+    @RequireRole({"admin", "analyst"})
+    @PostMapping("/rules/validate")
+    public Map<String, Object> validateRule(@RequestBody Map<String, Object> spec) {
+        Map<String, Object> enriched = DetectionContentCatalog.enrich(spec);
+        java.util.List<String> errors = DetectionContentCatalog.validateSpec(enriched);
+        return Map.of("valid", errors.isEmpty(), "errors", errors, "spec", enriched);
     }
 
     @RequireRole({"admin", "analyst"})

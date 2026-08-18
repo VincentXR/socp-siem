@@ -186,11 +186,26 @@ public class RuleSpecStore {
     }
 
     public Map<String, Object> save(Map<String, Object> spec) {
+        spec = DetectionContentCatalog.enrich(spec);
+        // The current workbench still sends the legacy enabled toggle. Keep it
+        // compatible with the lifecycle status while preserving explicit
+        // TESTING/DRAFT/ARCHIVED states owned by detection engineering.
+        if (spec.containsKey("enabled") && spec.get("status") != null) {
+            String status = String.valueOf(spec.get("status")).toUpperCase();
+            if ("ACTIVE".equals(status) || "DISABLED".equals(status)) {
+                spec.put("status", Boolean.parseBoolean(String.valueOf(spec.get("enabled")))
+                        ? "ACTIVE" : "DISABLED");
+            }
+        }
         Object id = spec.get("id");
         if (id == null || String.valueOf(id).isBlank()) {
             // 前端新建规则可不带 id，服务端生成
             spec = new LinkedHashMap<>(spec);
             spec.put("id", "RULE-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase());
+        }
+        List<String> errors = DetectionContentCatalog.validateSpec(spec);
+        if (!errors.isEmpty()) {
+            throw new IllegalArgumentException("规则内容校验失败: " + String.join(", ", errors));
         }
         RuleEntity e = new RuleEntity();
         e.setId(String.valueOf(spec.get("id")));
@@ -205,11 +220,19 @@ public class RuleSpecStore {
     }
 
     public List<Map<String, Object>> list() {
-        return repo.findByTenantId(tenant()).stream().map(e -> Json.parseObject(e.getSpec())).toList();
+        return repo.findByTenantId(tenant()).stream()
+                .map(e -> DetectionContentCatalog.enrich(Json.parseObject(e.getSpec())))
+                .toList();
     }
 
     public Map<String, Object> get(String id) {
-        return repo.findByIdAndTenantId(id, tenant()).map(e -> Json.parseObject(e.getSpec())).orElse(null);
+        return repo.findByIdAndTenantId(id, tenant())
+                .map(e -> DetectionContentCatalog.enrich(Json.parseObject(e.getSpec())))
+                .orElse(null);
+    }
+
+    public Map<String, Object> contentManifest() {
+        return DetectionContentCatalog.manifest();
     }
 
     public boolean delete(String id) {

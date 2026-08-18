@@ -74,7 +74,11 @@ public final class RuleSpec {
         } else {
             this.status = enB ? "ACTIVE" : "DISABLED"; // 旧规则无 status → 按 enabled 派生
         }
-        this.enabled = "ACTIVE".equals(this.status) || enB; // ACTIVE 或旧 enabled=true 进引擎
+        // A declared lifecycle status is authoritative.  The legacy enabled
+        // flag is only used when status is absent, so DISABLED/TESTING/DRAFT
+        // content cannot accidentally enter the live engine.
+        this.enabled = st != null && !String.valueOf(st).isBlank()
+                ? "ACTIVE".equals(this.status) : enB;
         this.match = parseConds((List<Object>) m.getOrDefault("match", List.of()));
         this.steps = parseSteps((List<Object>) m.getOrDefault("steps", List.of()));
 

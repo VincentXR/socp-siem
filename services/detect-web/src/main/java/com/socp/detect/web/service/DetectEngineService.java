@@ -2,6 +2,8 @@ package com.socp.detect.web.service;
 
 import com.socp.detect.web.engine.AlertForwarder;
 import com.socp.detect.web.engine.RecentAlertSink;
+import com.socp.detect.web.store.DetectionStateStore;
+import com.socp.detect.web.store.InMemoryDetectionStateStore;
 import com.socp.detect.web.store.RuleSpecStore;
 import com.socp.rule.config.RuleSpec;
 import com.socp.rule.engine.RuleEngine;
@@ -35,14 +37,23 @@ public class DetectEngineService {
     private final Suppressor suppressor = new Suppressor(Duration.ofMinutes(5));
     private final AtomicReference<RuleEngine> engineRef;
     private final RuleChangePublisher rulePublisher;
+    private final DetectionStateStore stateStore;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public DetectEngineService(RuleSpecStore store, RecentAlertSink sink, AlertForwarder forwarder,
-                               RuleChangePublisher rulePublisher) {
+                               RuleChangePublisher rulePublisher, DetectionStateStore stateStore) {
         this.store = store;
         this.sink = sink;
         this.forwarder = forwarder;
         this.rulePublisher = rulePublisher;
+        this.stateStore = stateStore;
         this.engineRef = new AtomicReference<>(buildEngine());
+    }
+
+    /** Unit-test/source compatibility constructor; production uses the JPA journal. */
+    public DetectEngineService(RuleSpecStore store, RecentAlertSink sink, AlertForwarder forwarder,
+                               RuleChangePublisher rulePublisher) {
+        this(store, sink, forwarder, rulePublisher, new InMemoryDetectionStateStore());
     }
 
     @PostConstruct
@@ -62,7 +73,19 @@ public class DetectEngineService {
                 .filter(spec -> spec.enabled)
                 .map(RuleSpec::toRule)
                 .toList();
-        return new RuleEngine(rules, List.of(sink), suppressor);
+        RuleEngine engine = new RuleEngine(rules, List.of(sink), suppressor);
+        try {
+            // The journal itself clamps this to its configured retention. 24h
+            // covers the bundled UEBA baselines while keeping restart bounded.
+            engine.restore(stateStore.recent(Duration.ofHours(24)));
+        } catch (Exception ex) {
+            // Detection must still start when a stale/corrupt state row exists;
+            // the row-level conversion logs the exact event and the next live
+            // event continues to be journaled normally.
+            org.slf4j.LoggerFactory.getLogger(DetectEngineService.class)
+                    .warn("检测状态恢复失败，将以空窗口启动: {}", ex.getMessage());
+        }
+        return engine;
     }
 
     /** 规则热更新：原子替换引擎（旧引擎毒丸退出），无需重启进程 */
@@ -74,6 +97,10 @@ public class DetectEngineService {
 
     public List<Map<String, Object>> listRules() {
         return store.list();
+    }
+
+    public Map<String, Object> contentManifest() {
+        return store.contentManifest();
     }
 
     public Map<String, Object> addRule(Map<String, Object> spec) {
@@ -104,6 +131,25 @@ public class DetectEngineService {
 
     /** 事件摄取：队列满回 false（接入端据此回 503 + Retry-After） */
     public boolean ingest(SecurityEvent ev) {
+        if (!stateStore.recordIfNew(ev)) {
+            // At-least-once callers may safely retry the same event id.
+            return true;
+        }
+        boolean accepted = enqueue(ev);
+        if (!accepted) stateStore.remove(ev.id());
+        return accepted;
+    }
+
+    /**
+     * Kafka path after the consumer has atomically claimed the event id in the
+     * same durable state store. Keeping this separate prevents a second claim
+     * while preserving the retry/delete behavior when the bounded queue is full.
+     */
+    public boolean ingestFromKafka(SecurityEvent ev) {
+        return enqueue(ev);
+    }
+
+    private boolean enqueue(SecurityEvent ev) {
         return engineRef.get().ingest(ev);
     }
 
@@ -121,6 +167,9 @@ public class DetectEngineService {
         m.put("suppressedCount", e.suppressedCount());
         m.put("queueLoad", e.queueLoad());
         m.put("ruleStats", e.ruleStats());
+        m.put("stateRecovery", Map.of(
+                "store", stateStore.getClass().getSimpleName(),
+                "replayWindow", stateStore.recoveryWindow()));
         return m;
     }
 }

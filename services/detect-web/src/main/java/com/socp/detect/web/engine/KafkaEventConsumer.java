@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.socp.detect.web.service.DetectEngineService;
+import com.socp.detect.web.store.DetectionStateStore;
+import com.socp.detect.web.store.InMemoryDetectionStateStore;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import jakarta.annotation.PostConstruct;
@@ -17,20 +19,17 @@ import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Collections;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
-import java.util.Set;
 import java.util.UUID;
 import java.util.function.BiConsumer;
 
 /**
  * Consumes canonical events from Kafka and submits them to the detection engine.
- * The consumer uses manual commits, bounded in-process deduplication and a DLQ
- * path for malformed or failed records.
+ * The consumer uses manual commits, a durable event-id claim/recovery journal
+ * and a DLQ path for malformed or failed records.
  */
 @Component
 public class KafkaEventConsumer {
@@ -39,17 +38,6 @@ public class KafkaEventConsumer {
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .registerModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-    private static final int DEDUP_MAX = 100_000;
-    private static final Set<String> DEDUP = Collections.synchronizedSet(new LinkedHashSet<>() {
-        @Override
-        public boolean add(String eventId) {
-            if (size() >= DEDUP_MAX) {
-                clear();
-            }
-            return super.add(eventId);
-        }
-    });
-
     @Value("${socp.kafka.bootstrap:localhost:9092}")
     private String bootstrap;
 
@@ -60,11 +48,19 @@ public class KafkaEventConsumer {
     private boolean enabled;
 
     private final DetectEngineService engine;
+    private final DetectionStateStore stateStore;
     private volatile org.apache.kafka.clients.producer.KafkaProducer<String, String> dlqProducer;
     private BiConsumer<String, String> dlqSink = this::publishDlq;
 
-    public KafkaEventConsumer(DetectEngineService engine) {
+    @org.springframework.beans.factory.annotation.Autowired
+    public KafkaEventConsumer(DetectEngineService engine, DetectionStateStore stateStore) {
         this.engine = engine;
+        this.stateStore = stateStore;
+    }
+
+    /** Unit-test/source compatibility constructor. */
+    public KafkaEventConsumer(DetectEngineService engine) {
+        this(engine, new InMemoryDetectionStateStore());
     }
 
     @PostConstruct
@@ -116,10 +112,12 @@ public class KafkaEventConsumer {
             @SuppressWarnings("unchecked")
             Map<String, Object> event = MAPPER.readValue(raw, Map.class);
             eventId = String.valueOf(event.getOrDefault("eventId", key));
-            if (eventId != null && !"null".equals(eventId) && !DEDUP.add(eventId)) {
-                return;
+            SecurityEvent normalized = toEvent(event);
+            if (!stateStore.recordIfNew(normalized)) return;
+            if (!engine.ingestFromKafka(normalized)) {
+                stateStore.remove(normalized.id());
+                throw new IllegalStateException("detection queue full");
             }
-            engine.ingest(toEvent(event));
         } catch (Exception ex) {
             log.warn("Failed to process Kafka event; sending to DLQ: {}", ex.getMessage());
             toDlq(eventId, raw);
