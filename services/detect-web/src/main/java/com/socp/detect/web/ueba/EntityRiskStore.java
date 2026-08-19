@@ -37,6 +37,7 @@ public class EntityRiskStore {
     private static final Duration RECENT_WINDOW = Duration.ofHours(1);
 
     private final Map<String, Profile> profiles = new ConcurrentHashMap<>();
+    private final Map<String, RiskScorer.Score> appliedAlertScores = new ConcurrentHashMap<>();
 
     private static final class Profile {
         final String entity;
@@ -64,6 +65,21 @@ public class EntityRiskStore {
     /** 记录一条告警，返回该告警的最终风险评分（含实体频次加权） */
     public RiskScorer.Score record(String entity, Severity severity, String mitre,
                                    String ruleId, String ruleName, int tiHits) {
+        return recordInternal(entity, severity, mitre, ruleId, ruleName, tiHits);
+    }
+
+    /** Idempotent risk projection for a deterministic Detection alert id. */
+    public RiskScorer.Score recordForAlert(String alertId, String entity, Severity severity, String mitre,
+                                           String ruleId, String ruleName, int tiHits) {
+        if (alertId == null || alertId.isBlank()) {
+            return recordInternal(entity, severity, mitre, ruleId, ruleName, tiHits);
+        }
+        return appliedAlertScores.computeIfAbsent(alertId,
+                ignored -> recordInternal(entity, severity, mitre, ruleId, ruleName, tiHits));
+    }
+
+    private RiskScorer.Score recordInternal(String entity, Severity severity, String mitre,
+                                            String ruleId, String ruleName, int tiHits) {
         Instant now = Instant.now();
         if (entity == null || entity.isBlank()) entity = "unknown";
         Profile p = profiles.computeIfAbsent(entity, Profile::new);
