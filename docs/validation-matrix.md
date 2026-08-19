@@ -1,24 +1,27 @@
 # Validation Matrix
 
-This matrix defines what SOCP proves on a single-node development stack. It is
-evidence for correctness and recovery behavior, not a production capacity or
-high-availability claim.
+This matrix defines what SOCP proves on a single-node development stack and
+what must be run explicitly for multi-instance semantics. It is evidence for
+correctness and recovery behavior, not a production capacity or HA claim.
 
-## Automated checks
+## Automated and operational checks
 
 | Layer | Command | Pass evidence | Cadence |
-| --- | --- | --- | --- |
-| Java modules | `bash build/mvnw.sh test -Dsurefire.failIfNoSpecifiedTests=false` | All module tests pass, including alert, detect, incident, auth, and shared error handling | Every change |
-| Workbench | `cd frontend/apps/workbench && pnpm test && pnpm verify` | API contracts, navigation permissions, type check, production build, artifact assertions | Every frontend change |
-| Cross-cutting slice | `python build/verify-slice.py` | Authentication, tenant propagation, audit, rate limiting, and trace headers | PR / release candidate |
-| Event pipeline | `python build/verify-pipeline.py` | Canonical event → Kafka → detection → alert persistence → OpenSearch/ClickHouse/report | PR with middleware / scheduled |
-| Golden scenario | `python build/demos/golden-demo.py --transport ingest` | SSH failed logins → canonical event → threshold/correlation alerts → Incident/Notify/SOAR | Manual / full-stack |
-| Detection recovery | `python build/demos/detection-recovery.py` | Ingestion remains available, Kafka lag grows while Detection is down, committed offset catches up after restart | Manual / weekly |
-| Chaos matrix | `python build/chaos-pipeline.py --scenario all --count 20` | Detection restart backlog recovery and duplicate delivery produce one logical Alert | Manual / weekly |
-| E2E benchmark | `python build/benchmark-pipeline.py --mode e2e --count 100 --batch-size 25` | Canonical ingest → Kafka → Detection → Alert latency, offsets, and before/after stats | Manual, repeat at 10k/100k/1m |
-| Bulk baseline | `python build/benchmark-pipeline.py --count 100` | Generic accepted/rejected counters and HTTP latency for the detection bulk boundary | Manual, repeat at 100/1,000/10,000 |
-| Full API | `python build/verify-full.py` | Resource CRUD, tenancy, import/export, threat and response contracts | Scheduled / release candidate |
-| Failure recovery | `python build/failure-tests.py` | Kafka, OpenSearch, Temporal, and PostgreSQL recovery assertions | Manual / scheduled |
+|---|---|---|---|
+| Java modules | `bash build/mvnw.sh test -Dsurefire.failIfNoSpecifiedTests=false` | Reactor tests pass, including auth, rules, Detection, Alert, incident, and shared error handling | Every change |
+| Workbench | `cd frontend/apps/workbench && pnpm test && pnpm verify` | API contracts, navigation permissions, type check, production build, artifact assertions | Frontend change |
+| Cross-cutting slice | `python build/verify-slice.py` | Authentication, tenancy, audit, rate limiting, and trace propagation | PR/release candidate |
+| Event pipeline | `python build/verify-pipeline.py` | Canonical event -> Kafka -> Detection -> Alert persistence -> OpenSearch/ClickHouse/report | Middleware change/scheduled |
+| Detection content | `python build/validate-detection-content.py` | Manifest schema, metadata, positive/negative vectors, ATT&CK references | Rule/content change |
+| Golden scenario | `python build/demos/golden-demo.py --transport ingest` | SSH brute force -> correlation -> Incident/Notify/SOAR | Manual/full-stack |
+| Detection restart | `python build/demos/detection-recovery.py` | Kafka backlog grows while Detection is down and catches up after restart | Manual/weekly |
+| Alert Web outage | `python build/chaos-pipeline.py --scenario alert_web_restart` | Detection Alert Outbox survives Alert Web outage and creates one alert after recovery | Manual/weekly |
+| Duplicate delivery | `python build/chaos-pipeline.py --scenario duplicate_delivery` | Same event produces one logical alert by source ID | Manual/weekly |
+| Multi-instance | `DETECTION_INSTANCE_URLS=... python build/chaos-pipeline.py --scenario multi_instance` | Disjoint ownership, rebalance, stable entity routing, and assignment restore | Release candidate |
+| E2E benchmark | `python build/benchmark-pipeline.py --mode e2e --count 100 --batch-size 25` | Ingress, end-to-end latency, offsets, lag, and before/after stats | Repeat at 10k/100k/1m |
+| Bulk baseline | `python build/benchmark-pipeline.py --count 100` | Detection HTTP accepted/rejected counters and latency percentiles | Manual |
+| Full API | `python build/verify-full.py` | Resource CRUD, tenancy, import/export, threat, and response contracts | Scheduled/release candidate |
+| Dependency failure | `python build/failure-tests.py` | Kafka, OpenSearch, Temporal, and PostgreSQL recovery assertions | Manual/scheduled |
 
 ## Reliability acceptance criteria
 
@@ -26,33 +29,37 @@ high-availability claim.
   side effect.
 - Malformed events are rejected or sent to DLQ without taking down the
   consumer.
-- A pending Outbox event remains pending when Kafka is unavailable and can be
-  published after recovery.
-- Stopping detection increases Kafka lag rather than blocking ingestion; after
-  restart, the consumer continues from the backlog.
-- OpenSearch degradation does not silently claim search success; recovery makes
-  the search path available again.
-- viewer writes are rejected, analyst operations remain available, and tenant
+- Detection Alert Outbox rows remain pending when Alert Web is unavailable and
+  retry after Alert Web recovers.
+- Alert Web duplicate creates resolve by `(tenant_id, source_alert_id)`.
+- Alert Outbox rows remain pending when Kafka is unavailable and are marked
+  published only after a broker acknowledgement.
+- Stopping Detection increases Kafka lag rather than silently losing the
+  backlog; after restart, the consumer catches up.
+- Multi-instance assignments are disjoint and stateful rules whose grouping
+  field equals the routing field produce one logical result after rebalance.
+- OpenSearch degradation does not claim search success; recovery restores the
+  search path.
+- Viewer writes are rejected, analyst operations remain available, and tenant
   headers/claims do not cross query boundaries.
-- Invalid client input returns the correct HTTP 4xx status and a sanitized
-  response envelope.
+- Invalid client input returns the intended 4xx status and sanitized envelope.
 
 ## Scale baseline
 
-Run the E2E mode at 10,000, 100,000, and 1,000,000 events, then retain the JSON
-reports with the machine profile, configured rule/instance counts, request and
-end-to-end percentiles, Kafka offsets, and Detection stats. Use the same test
-data shape and a clean test tenant for comparison. The result is a repeatable
-single-node baseline; it is not a production throughput or HA claim.
+Run E2E at 10,000, 100,000, and 1,000,000 events, retaining JSON reports with
+machine profile, commit, rules, instances, partitions, batch-request P50/P95/
+P99, aggregate alert-drain time, Kafka lag, Detection stats, and recovery
+observations. Use the same event shape and a clean test tenant. This is a
+repeatable local baseline, not a production throughput or HA claim.
 
-Do not record or commit local usernames, absolute paths, hardware details,
-email addresses, tokens, passwords, or machine-specific screenshots. Report
-the result as a repeatable single-node baseline and explicitly exclude HA,
-multi-node failover, and production throughput claims.
+Do not commit local usernames, absolute paths, hardware identifiers, email
+addresses, tokens, passwords, or machine-specific screenshots.
 
 ## CI ownership
 
 Push and pull-request CI runs the Java suite, frontend contracts/build, the
 minimal service slice, and the Kafka pipeline. The full-stack workflow is
 manual/weekly and runs full API, pipeline, Golden Demo, Detection recovery,
-attack-scenario, and dependency failure checks with logs uploaded as artifacts.
+attack scenarios, and dependency failure checks with logs uploaded as
+artifacts. Multi-instance and benchmark runs remain explicit operational
+checks because they require additional processes and a live middleware stack.

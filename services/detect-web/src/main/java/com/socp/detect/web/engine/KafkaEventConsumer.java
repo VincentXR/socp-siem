@@ -48,6 +48,9 @@ public class KafkaEventConsumer {
     @Value("${socp.kafka.topic:socp-events}")
     private String topic;
 
+    @Value("${socp.kafka.group-id:socp-detect}")
+    private String groupId;
+
     @Value("${socp.kafka.enabled:true}")
     private boolean enabled;
 
@@ -149,7 +152,7 @@ public class KafkaEventConsumer {
     private void run() {
         Properties props = new Properties();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap);
-        props.put(ConsumerConfig.GROUP_ID_CONFIG, "socp-detect");
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, groupId);
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");

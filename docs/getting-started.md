@@ -102,6 +102,29 @@ See [testing.md](testing.md) for test ownership and the smallest suitable
 check for each type of change. See [demo-checklist.md](demo-checklist.md) for
 the Golden Demo and the Kafka recovery walkthrough.
 
+## Multi-instance Detection check
+
+For a live state-ownership check, build the reactor once and start two
+`detect-web` processes with distinct ports, the `pg` profile, the same
+PostgreSQL database, and the same `SOCP_KAFKA_GROUP_ID`. The second process can
+be started directly from its jar, for example:
+
+```bash
+SOCP_KAFKA_GROUP_ID=socp-detect \
+  java -jar services/detect-web/target/detect-web-1.0.0-SNAPSHOT.jar \
+  --spring.profiles.active=pg --server.port=28082
+```
+
+Keep the normal `18082` instance as the first URL and run:
+
+```bash
+DETECTION_INSTANCE_URLS=http://127.0.0.1:18082,http://127.0.0.1:28082 \
+  python build/chaos-pipeline.py --scenario multi_instance --count 5
+```
+
+The script checks disjoint partition assignment, stops the first instance to
+force a rebalance, and verifies assignment restoration after restart.
+
 ## Stop the environment
 
 ```bash

@@ -14,8 +14,10 @@ sshd raw log
   -> search-config: parse + canonical normalization
   -> Kafka: socp-events
   -> detect-web: threshold + correlation
-  -> alert-web: PostgreSQL + Outbox
-       -> incident-web / soar-web / notify-web
+  -> Detection Alert Outbox (durable retry)
+  -> alert-web: PostgreSQL + idempotent sourceAlertId
+  -> Alert Outbox
+       -> incident-web / soar-web / notify-web / ClickHouse
 event -> OpenSearch investigation
 alert -> ClickHouse analytics
 ```
@@ -42,7 +44,8 @@ appends five `Failed password` records and one `Accepted password` record to
    and `user.name` fields.
 2. Rule `AUTH-BRUTE` produces an alert.
 3. Rule `AUTH-BRUTE-SUCCESS` correlates the failed and successful logins.
-4. The Outbox creates an Incident, records a notification, and starts SOAR.
+4. The Detection Outbox delivers once to Alert Web; the Alert Outbox creates
+   an Incident, records a notification, and starts SOAR.
 5. The reporting endpoint exposes downstream analytics and trace IDs.
 
 If Vector is not the focus of the check, inject directly after the collector
@@ -84,6 +87,16 @@ logical Alert Web row:
 python build/chaos-pipeline.py --scenario all --count 20 \
   --output .cache/chaos/latest.json
 ```
+
+To exercise the new durable hand-off directly, run the Alert Web outage probe:
+
+```bash
+python build/chaos-pipeline.py --scenario alert_web_restart
+```
+
+For multi-instance state ownership, start two Detection processes against the
+same PostgreSQL database and Kafka group, then run the `multi_instance`
+scenario described in [chaos/README.md](chaos/README.md).
 
 ## Evidence to collect
 

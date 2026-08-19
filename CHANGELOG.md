@@ -2,20 +2,30 @@
 
 ## Unreleased
 
-### Engineering quality
+### Detection reliability
 
-- Unified current architecture, module and startup documentation.
-- Added architecture decision records for the canonical event pipeline,
-  storage boundaries, transactional Outbox and runtime profiles.
-- Added frontend API/build artifact verification to pull-request CI.
-- Added a manual/weekly full-stack workflow for API, event-pipeline, attack
-  demo and dependency-failure verification with uploaded logs.
-- Added focused tests for authentication safety, Outbox delivery, detection
-  hot reload and incident merge idempotency.
-- Added the MIT License and Maven license metadata for portfolio reuse.
+- Added a durable Detection Alert Outbox with deterministic alert IDs,
+  tenant-aware retry, stale-claim recovery, and a separate detect-model
+  publication stage.
+- Removed Detection's direct SOAR call; Alert Web's transactional Outbox is
+  now the single downstream Incident/Notify/SOAR fan-out boundary.
+- Alert Outbox rows are marked `PUBLISHED` only after a broker acknowledgement.
+- Added focused tests for Alert Web outage retry, duplicate publisher claims,
+  and broker-ack failure behavior.
+
+### Verification and documentation
+
+- Added an Alert Web restart chaos scenario and an opt-in multi-instance
+  partition ownership/rebalance scenario.
+- Refreshed architecture, state semantics, testing, validation, benchmark,
+  chaos, demo, and module-map documentation to match the current code.
+- Removed the stale reference to a non-existent release checklist; release
+  readiness is defined by `docs/validation-matrix.md` and the operational
+  checks it links to.
 
 ## Release preparation
 
-Before creating `v1.0.0`, run the checklist in
-`docs/release-checklist.md`, run the full-stack workflow once, and attach the
-generated screenshots or demo recording to the release.
+Before creating a tagged release, run the full Java/frontend checks, the
+Golden Demo, the failure matrix, and the 10k/100k/1m benchmark series. Keep
+machine-specific reports outside source control unless they are deliberately
+sanitized and published as reproducible fixtures.

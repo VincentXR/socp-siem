@@ -85,7 +85,19 @@ public final class RuleEngine implements AutoCloseable {
                             continue; // 被抑制
                         }
                         alertCount.incrementAndGet();
-                        for (AlertSink s : sinks) s.publish(a);
+                        for (AlertSink s : sinks) {
+                            try {
+                                s.publish(a);
+                            } catch (RuntimeException ex) {
+                                // A sink (for example the durable Detection
+                                // Outbox) may be temporarily unavailable. Do
+                                // not kill the rule worker or hide the failure;
+                                // the owning pipeline exposes the error and
+                                // its configured retry/backpressure boundary.
+                                log.error("Alert sink failed alertId={} ruleId={}: {}",
+                                        a.id(), a.ruleId(), ex.getMessage(), ex);
+                            }
+                        }
                     }
                 }
             } catch (InterruptedException e) {

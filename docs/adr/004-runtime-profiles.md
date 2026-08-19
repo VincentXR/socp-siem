@@ -5,34 +5,30 @@
 
 ## Decision
 
-Use explicit Spring profiles and Compose profiles for different runtime needs:
+Use explicit Spring and Compose profiles for different runtime needs:
 
-- `dev`: local login defaults and demo credentials. The startup scripts use
-  this profile for the gateway; other services use their default configuration.
-- `pg`: services that provide `application-pg.yml` use PostgreSQL instead of
-  file-backed H2.
-- `prod`: `ProdGuard` performs fail-fast checks for database, credentials,
-  authentication bypass, ingest token, and Temporal configuration. Production
-  deployments normally combine it with `pg`.
-- Compose's `extra` profile adds Keycloak, Temporal, Jaeger, and dashboard
-  dependencies. It is independent of the Spring `prod` profile.
+- `dev`: local login defaults and disposable demo credentials;
+- `pg`: services with `application-pg.yml` use PostgreSQL instead of
+  file-backed H2;
+- `prod`: `ProdGuard` fails fast on H2, demo credentials, authentication
+  bypass, the default ingest token, and disabled Temporal;
+- Compose's `extra` profile adds Keycloak, Temporal, Jaeger, and dashboards.
 
-The default Docker Compose setup is the integration environment for Kafka,
-OpenSearch, PostgreSQL, and ClickHouse. HMAC JWT validation is supported for a
-single-node setup; JWKS/OIDC is available when an identity provider is used.
+Detection multi-instance checks additionally use a shared PostgreSQL database,
+distinct server ports, and the same `SOCP_KAFKA_GROUP_ID`.
 
 ## Rationale
 
 The complete middleware path is required to validate event delivery, search,
-analytics, and recovery. Local development also needs a lower-cost startup
-path. Separating the profiles keeps those trade-offs explicit and prevents
+analytics, and recovery. Local development needs a lower-cost startup path.
+Separating the profiles keeps those trade-offs explicit and prevents
 development fallbacks from silently being used with the production profile.
 
 ## Consequences
 
 - The local setup is convenient but is not a production deployment target.
-- H2-backed services need the `pg` profile before production validation.
+- H2-backed services need the `pg` profile before production-like validation.
 - `prod` fails fast when a development fallback or demo credential is detected.
-- Compose services remain single-node; high availability and horizontal
-  detection state are deployment concerns outside this repository's local
+- Compose services remain single-node; Kubernetes HA, rolling upgrades,
+  backup/restore, and disaster recovery are outside this repository's local
   verification target.

@@ -41,7 +41,9 @@ public class OutboxPublisher {
             return;
         }
         for (OutboxEvent e : pending) {
-            kafkaPublisher.sendAlarmEvent(e.getAggregateId(), e.getPayload());
+            if (!kafkaPublisher.sendAlarmEventAndAwait(e.getAggregateId(), e.getPayload())) {
+                continue;
+            }
             e.setStatus("PUBLISHED");
             e.setPublishedAt(Instant.now());
             try {

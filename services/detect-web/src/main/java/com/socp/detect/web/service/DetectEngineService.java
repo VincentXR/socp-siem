@@ -200,6 +200,7 @@ public class DetectEngineService {
         m.put("suppressedCount", e.suppressedCount());
         m.put("queueLoad", e.queueLoad());
         m.put("ruleStats", e.ruleStats());
+        m.put("assignedPartitions", assignedPartitions.get());
         m.put("stateRecovery", Map.of(
                 "store", stateStore.getClass().getSimpleName(),
                 "replayWindow", stateStore.recoveryWindow()));

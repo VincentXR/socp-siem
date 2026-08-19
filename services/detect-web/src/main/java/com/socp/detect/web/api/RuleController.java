@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.detect.web.service.DetectEngineService;
 import com.socp.detect.web.store.DetectionContentCatalog;
+import com.socp.platform.tenant.TenantContext;
 import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
@@ -183,6 +184,11 @@ public class RuleController {
     private static SecurityEvent toEvent(Map<String, Object> m) {
         @SuppressWarnings("unchecked")
         Map<String, String> fields = (Map<String, String>) m.getOrDefault("fields", Map.of());
+        String tenant = TenantContext.get();
+        if (tenant != null && !tenant.isBlank() && !tenant.equals(fields.get("tenant_id"))) {
+            fields = new LinkedHashMap<>(fields);
+            fields.put("tenant_id", tenant);
+        }
         String raw = m.get("raw") == null ? String.valueOf(m.getOrDefault("msg", "")) : String.valueOf(m.get("raw"));
         String source = m.get("source") == null ? "unknown" : String.valueOf(m.get("source"));
         String host = m.get("host") == null ? "unknown" : String.valueOf(m.get("host"));

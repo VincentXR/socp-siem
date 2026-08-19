@@ -30,6 +30,13 @@ socp:
   detect:
     state:
       retention: ${SOCP_DETECT_STATE_RETENTION:24h}
+  kafka:
+    group-id: ${SOCP_KAFKA_GROUP_ID:socp-detect}
+    # Polling is deliberately short; delivery is still bounded by the
+    # database-backed outbox and its exponential retry schedule.
+    alert-outbox:
+      poll-interval-ms: ${SOCP_DETECT_ALERT_OUTBOX_POLL_MS:1000}
+      initial-delay-ms: ${SOCP_DETECT_ALERT_OUTBOX_INITIAL_DELAY_MS:1000}
 
 management:
   endpoints:

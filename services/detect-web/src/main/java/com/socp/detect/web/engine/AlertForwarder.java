@@ -3,11 +3,10 @@ package com.socp.detect.web.engine;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.socp.detect.web.store.DetectionAlertOutboxService;
 import com.socp.detect.web.store.RuleSpecStore;
 import com.socp.detect.web.ueba.EntityRiskStore;
-import com.socp.platform.client.AlertClient;
-import com.socp.platform.client.ServiceCall;
-import com.socp.platform.client.SoarClient;
+import com.socp.platform.tenant.TenantContext;
 import com.socp.rule.model.Alert;
 import com.socp.rule.score.RiskScorer;
 import org.slf4j.Logger;
@@ -20,16 +19,10 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 告警转发器：把规则引擎产出的告警 best-effort 推送到 ALERT（落 t_alarm），
- * 附上规则的 MITRE ATT&CK 技术 ID，并在转发前完成两件事：
- * <ol>
- *   <li>把告警计入实体风险画像（UEBA 看板数据源）；</li>
- *   <li>算出该告警的威胁评分 riskScore 一并下发，ALERT 侧可直接按分排序处置。</li>
- * </ol>
- *
- * <p><b>best-effort ≠ 静默</b>：转发失败不会阻塞检测热路径，但一定会打 WARN。
- * 这条链路一旦断了，就意味着「攻击被检出、告警却没进库」，是最不能无声失败的地方。
- * 地址由 {@link AlertClient} / {@link SoarClient} 统一解析（支持 {@code SOCP_ALERT_URL} 等环境变量）。
+ * Materializes detection alerts into the durable Detection -> Alert Web
+ * outbox.  The detection worker never performs a remote HTTP call: the
+ * scheduled outbox publisher owns retries, tenant propagation, and the
+ * optional detect-model fan-out after Alert Web acknowledges the payload.
  */
 @Component
 public class AlertForwarder {
@@ -41,73 +34,78 @@ public class AlertForwarder {
 
     private final RuleSpecStore ruleStore;
     private final EntityRiskStore riskStore;
-    private final AlertClient alertClient;
-    private final SoarClient soarClient;
-    private final AlarmKafkaProducer alarmProducer;
+    private final DetectionAlertOutboxService outbox;
 
     public AlertForwarder(RuleSpecStore ruleStore, EntityRiskStore riskStore,
-                          AlertClient alertClient, SoarClient soarClient,
-                          AlarmKafkaProducer alarmProducer) {
+                          DetectionAlertOutboxService outbox) {
         this.ruleStore = ruleStore;
         this.riskStore = riskStore;
-        this.alertClient = alertClient;
-        this.soarClient = soarClient;
-        this.alarmProducer = alarmProducer;
+        this.outbox = outbox;
     }
 
-    /** 异步无关地转发（调用方在引擎虚拟线程里，避免在热路径阻塞）。 */
-    public void forward(Alert a) {
-        Thread.startVirtualThread(() -> doForward(a));
-    }
-
-    private void doForward(Alert a) {
-        Map<String, Object> spec = ruleStore.get(a.ruleId());
-        String mitre = spec != null ? String.valueOf(spec.getOrDefault("mitre", "")) : "";
-        if (mitre == null || mitre.isBlank() || "null".equals(mitre)) mitre = null;
-
-        // 威胁评分：情报命中由 ALERT 富化后二次修正，此处先给出检测侧初评
-        RiskScorer.Score score = riskStore.record(
-                a.entity(), a.severity(), mitre, a.ruleId(), a.ruleName(), 0);
-
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("id", a.id());
-        payload.put("sourceAlertId", a.id());
-        payload.put("ruleId", a.ruleId());
-        payload.put("ruleName", a.ruleName());
-        payload.put("severity", a.severity().name());
-        payload.put("message", a.message());
-        payload.put("entity", a.entity());
-        payload.put("occurredAt", DateTimeFormatter.ISO_INSTANT.format(a.timestamp()));
-        payload.put("riskScore", score.score());
-        if (mitre != null) payload.put("mitre", mitre);
-        payload.put("evidence", a.evidence() == null ? List.of() : a.evidence().stream()
-                .limit(200)
-                .map(AlertForwarder::evidencePayload)
-                .toList());
-        String json = toJson(payload);
-
-        // 主链路：告警落库。失败 = 检出的攻击丢失，必须显式告警到日志（客户端已打 WARN，
-        // 这里再补一条带业务上下文的，运维一眼能看出丢的是哪条规则、哪个实体）
-        ServiceCall forwarded = alertClient.forwardAlarm(json);
-        if (!forwarded.ok()) {
-            log.warn("告警转发失败，该告警未进入 alert-web：alertId={} ruleId={} ruleName={} entity={} severity={} 原因={}",
-                    a.id(), a.ruleId(), a.ruleName(), a.entity(), a.severity(), forwarded.failureReason());
+    /** Persist before the detection worker continues; remote delivery is retried asynchronously. */
+    public void forward(Alert alert) {
+        if (alert == null || alert.id() == null || alert.id().isBlank()) {
+            log.warn("Cannot persist detection alert without a deterministic alert id");
+            return;
         }
+        String tenant = resolveTenant(alert);
+        String previousTenant = TenantContext.get();
+        try {
+            // Kafka callbacks run on a worker thread, so the HTTP request's
+            // ThreadLocal tenant is not available here. The canonical event
+            // carries tenant_id specifically for this asynchronous boundary.
+            TenantContext.set(tenant);
+            Map<String, Object> spec = ruleStore.get(alert.ruleId());
+            String mitre = spec == null ? "" : String.valueOf(spec.getOrDefault("mitre", ""));
+            if (mitre.isBlank() || "null".equalsIgnoreCase(mitre)) mitre = null;
 
-        // DETECT MODEL 二次分析：告警落库成功后发原始告警到 socp-alarm-original（Kafka），
-        // detect-model 消费做窗口聚合/二次关联。best-effort：失败只 WARN，不影响告警本身。
-        alarmProducer.send(payload, a.id());
+            RiskScorer.Score score = riskStore.record(
+                    alert.entity(), alert.severity(), mitre, alert.ruleId(), alert.ruleName(), 0);
 
-        // SOAR 联动：best-effort 评估启用的剧本（命中则执行 NOTIFY/CASE/webhook 等动作）。
-        // 失败只影响自动化响应，不影响告警本身，交给客户端统一记 WARN 即可。
-        soarClient.evaluate(json);
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("id", alert.id());
+            payload.put("sourceAlertId", alert.id());
+            payload.put("ruleId", alert.ruleId());
+            payload.put("ruleName", alert.ruleName());
+            payload.put("severity", alert.severity().name());
+            payload.put("message", alert.message());
+            payload.put("entity", alert.entity());
+            payload.put("occurredAt", DateTimeFormatter.ISO_INSTANT.format(alert.timestamp()));
+            payload.put("riskScore", score.score());
+            if (mitre != null) payload.put("mitre", mitre);
+            payload.put("evidence", alert.evidence() == null ? List.of() : alert.evidence().stream()
+                    .limit(200)
+                    .map(AlertForwarder::evidencePayload)
+                    .toList());
+
+            outbox.enqueue(alert.id(), tenant, toJson(payload));
+            log.debug("Detection alert payload persisted alertId={} tenant={}", alert.id(), tenant);
+        } finally {
+            if (previousTenant == null) TenantContext.clear();
+            else TenantContext.set(previousTenant);
+        }
     }
 
-    private static String toJson(Map<String, Object> m) {
+    private static String resolveTenant(Alert alert) {
+        String current = TenantContext.get();
+        if (current != null && !current.isBlank()) return current;
+        if (alert.evidence() != null) {
+            for (var event : alert.evidence()) {
+                if (event == null || event.fields() == null) continue;
+                String tenant = event.fields().get("tenant_id");
+                if (tenant == null || tenant.isBlank()) tenant = event.fields().get("tenantId");
+                if (tenant != null && !tenant.isBlank()) return tenant;
+            }
+        }
+        return "default";
+    }
+
+    private static String toJson(Map<String, Object> payload) {
         try {
-            return MAPPER.writeValueAsString(m);
-        } catch (Exception e) {
-            return "{}";
+            return MAPPER.writeValueAsString(payload);
+        } catch (Exception ex) {
+            throw new IllegalStateException("Unable to serialize detection alert " + payload.get("id"), ex);
         }
     }
 

@@ -5,11 +5,15 @@
 This script is deliberately conservative: it only stops named SOCP services
 through ``build/run-all.sh`` and uses unique event IDs for every run. It does
 not claim exactly-once delivery; it checks the concrete invariants implemented
-by the current pipeline (Kafka backlog recovery and source-alert idempotency).
+by the current pipeline (Kafka backlog recovery, multi-instance partition
+ownership, durable Alert Web delivery, and source-alert idempotency).
 
 Examples (Linux/macOS/WSL):
   python build/chaos-pipeline.py --scenario all --output .cache/chaos.json
   python build/chaos-pipeline.py --scenario duplicate_delivery
+  python build/chaos-pipeline.py --scenario alert_web_restart
+  DETECTION_INSTANCE_URLS=http://127.0.0.1:18082,http://127.0.0.1:28082 \
+    python build/chaos-pipeline.py --scenario multi_instance
 """
 from __future__ import annotations
 
@@ -33,7 +37,7 @@ from ports import GATEWAY_URL, health_url  # noqa: E402
 
 BOOTSTRAP = os.environ.get("PIPELINE_KAFKA", "127.0.0.1:9092")
 TOPIC = os.environ.get("RECOVERY_TOPIC", "socp-events")
-GROUP = os.environ.get("RECOVERY_GROUP", "socp-detect")
+GROUP = os.environ.get("RECOVERY_GROUP", os.environ.get("SOCP_KAFKA_GROUP_ID", "socp-detect"))
 USER = os.environ.get("DEMO_USER", "demo")
 PASSWORD = os.environ.get("DEMO_PASS", "demo123")
 VECTOR_TOKEN = os.environ.get("SOCP_VECTOR_TOKEN", "dev-vector-token")
@@ -92,9 +96,23 @@ def wait_for(predicate, timeout=120, interval=2):
     return last
 
 
-def service_up(service):
-    status, _ = request(health_url(service), timeout=4)
+def service_up(service, token=None):
+    status, _ = request(health_url(service),
+                        headers=auth_headers(token) if token else {}, timeout=4)
     return status == 200
+
+
+def direct_instance_up(base_url, token=None):
+    status, _ = request(base_url.rstrip("/") + "/detect-web/actuator/health",
+                        headers=auth_headers(token) if token else {}, timeout=4)
+    return status == 200
+
+
+def direct_instance_stats(base_url, token=None):
+    status, body = request(base_url.rstrip("/") + "/detect-web/api/v1/stats",
+                           headers=auth_headers(token) if token else {}, timeout=5)
+    data = unwrap(body)
+    return data if status == 200 and isinstance(data, dict) else None
 
 
 def control(action, service):
@@ -180,50 +198,57 @@ def scenario_detection_restart(token, count):
         raise RuntimeError("Kafka snapshot unavailable; check kafka-python and the broker")
     if baseline["lag"] != 0:
         raise RuntimeError(f"detection restart scenario requires a drained baseline, got lag={baseline['lag']}")
-    control("stop-service", "detect-web")
-    stopped = wait_for(lambda: not service_up("detect-web"), timeout=30)
-    if not stopped:
-        raise RuntimeError("detect-web did not stop")
-    run_id = uuid.uuid4().hex[:10]
-    events = [{
-        "eventId": f"chaos-restart-{run_id}-{i}",
-        "source": "auth",
-        "host": f"chaos-restart-{run_id}",
-        "severity": "WARN",
-        "message": f"Failed password for invalid user root from 198.51.100.77 port {52000 + i} ssh2",
-        "src_ip": "198.51.100.77",
-        "user": "root",
-    } for i in range(count)]
-    accepted = ingest(token, events)
-    accepted_count = int(accepted.get("accepted", count)) if isinstance(accepted, dict) else count
+    stopped = False
+    try:
+        control("stop-service", "detect-web")
+        stopped = wait_for(lambda: not service_up("detect-web", token), timeout=30)
+        if not stopped:
+            raise RuntimeError("detect-web did not stop")
+        run_id = uuid.uuid4().hex[:10]
+        events = [{
+            "eventId": f"chaos-restart-{run_id}-{i}",
+            "source": "auth",
+            "host": f"chaos-restart-{run_id}",
+            "severity": "WARN",
+            "message": f"Failed password for invalid user root from 198.51.100.77 port {52000 + i} ssh2",
+            "src_ip": "198.51.100.77",
+            "user": "root",
+        } for i in range(count)]
+        accepted = ingest(token, events)
+        accepted_count = int(accepted.get("accepted", count)) if isinstance(accepted, dict) else count
 
-    def queued_snapshot():
-        snapshot = kafka_snapshot()
-        return snapshot if snapshot and snapshot["end"] >= baseline["end"] + accepted_count else None
+        def queued_snapshot():
+            snapshot = kafka_snapshot()
+            return snapshot if snapshot and snapshot["end"] >= baseline["end"] + accepted_count else None
 
-    queued = wait_for(queued_snapshot, timeout=30, interval=1) or kafka_snapshot()
-    if queued is None:
-        raise RuntimeError("Kafka backlog snapshot unavailable while detect-web was stopped")
-    control("start-service", "detect-web")
-    recovered = wait_for(lambda: kafka_snapshot() if service_up("detect-web") else None,
-                         timeout=120, interval=3)
-    if recovered is None:
-        raise RuntimeError("detect-web did not recover")
-    def drained_snapshot():
-        snapshot = kafka_snapshot()
-        return snapshot if snapshot and snapshot["lag"] == 0 else None
+        queued = wait_for(queued_snapshot, timeout=30, interval=1) or kafka_snapshot()
+        if queued is None:
+            raise RuntimeError("Kafka backlog snapshot unavailable while detect-web was stopped")
+        control("start-service", "detect-web")
+        stopped = False
+        recovered = wait_for(lambda: kafka_snapshot() if service_up("detect-web", token) else None,
+                             timeout=120, interval=3)
+        if recovered is None:
+            raise RuntimeError("detect-web did not recover")
 
-    recovered = wait_for(drained_snapshot, timeout=120, interval=3) or kafka_snapshot()
-    if recovered is None:
-        raise RuntimeError("Kafka snapshot unavailable while waiting for Detection recovery")
-    return {
-        "accepted": accepted,
-        "acceptedCount": accepted_count,
-        "baseline": baseline,
-        "whileStopped": queued,
-        "afterRecovery": recovered,
-        "pass": queued["end"] >= baseline["end"] + accepted_count and recovered["lag"] == 0,
-    }
+        def drained_snapshot():
+            snapshot = kafka_snapshot()
+            return snapshot if snapshot and snapshot["lag"] == 0 else None
+
+        recovered = wait_for(drained_snapshot, timeout=120, interval=3) or kafka_snapshot()
+        if recovered is None:
+            raise RuntimeError("Kafka snapshot unavailable while waiting for Detection recovery")
+        return {
+            "accepted": accepted,
+            "acceptedCount": accepted_count,
+            "baseline": baseline,
+            "whileStopped": queued,
+            "afterRecovery": recovered,
+            "pass": queued["end"] >= baseline["end"] + accepted_count and recovered["lag"] == 0,
+        }
+    finally:
+        if stopped and not service_up("detect-web", token):
+            control("start-service", "detect-web")
 
 
 def scenario_duplicate_delivery(token):
@@ -255,9 +280,152 @@ def scenario_duplicate_delivery(token):
     }
 
 
+def scenario_alert_web_restart(token):
+    """Verify Detection's durable outbox survives an Alert Web outage."""
+    if not service_up("detect-web", token):
+        raise RuntimeError("detect-web must be healthy before alert_web_restart")
+    run_id = uuid.uuid4().hex[:10]
+    host = f"chaos-alert-web-{run_id}"
+    event = {
+        "eventId": f"chaos-alert-web-{run_id}",
+        "source": "auth",
+        "host": host,
+        "severity": "CRITICAL",
+        "message": "sudo: alert-web outage delivery probe",
+    }
+    before = alert_total(token) or 0
+    stopped = False
+    try:
+        control("stop-service", "alert-web")
+        stopped = wait_for(lambda: not service_up("alert-web", token), timeout=30, interval=1)
+        if not stopped:
+            raise RuntimeError("alert-web did not stop")
+        accepted = ingest(token, [event])
+        time.sleep(5)
+        while_down = alert_total(token)
+        control("start-service", "alert-web")
+        stopped = False
+
+        def recovered_total():
+            value = alert_total(token)
+            return value if value is not None and value >= before + 1 else None
+
+        recovered = wait_for(recovered_total, timeout=180, interval=2)
+        matching = [item for item in list_alerts(token)
+                    if item.get("entity") == host and item.get("ruleId") == "AUTH-PRIVESC"]
+        return {
+            "accepted": accepted,
+            "before": before,
+            "whileAlertWebDown": while_down,
+            "afterRecovery": recovered,
+            "matchingAlerts": len(matching),
+            "sourceAlertIds": [item.get("sourceAlertId") for item in matching],
+            "pass": recovered is not None and len(matching) == 1,
+        }
+    finally:
+        if stopped and not service_up("alert-web", token):
+            control("start-service", "alert-web")
+
+
+def scenario_multi_instance(token, count):
+    """Prove stable entity routing, assignment ownership, rebalance, and recovery.
+
+    The first URL is the instance controlled by run-all.sh. Additional URLs
+    must be started manually with the same Kafka group and PostgreSQL profile,
+    for example with SOCP_KAFKA_GROUP_ID=socp-detect and distinct ports.
+    """
+    raw_urls = os.environ.get("DETECTION_INSTANCE_URLS", "")
+    urls = [item.strip().rstrip("/") for item in raw_urls.split(",") if item.strip()]
+    if len(urls) < 2:
+        raise RuntimeError("multi_instance requires DETECTION_INSTANCE_URLS with at least two URLs")
+
+    baseline = kafka_snapshot()
+    if not baseline or baseline["partitions"] < len(urls):
+        raise RuntimeError(
+            f"multi_instance requires at least {len(urls)} Kafka partitions; got {baseline}")
+    if not all(wait_for(lambda url=url: direct_instance_up(url, token), timeout=30, interval=1)
+               for url in urls):
+        raise RuntimeError(f"not all Detection instances are healthy: {urls}")
+
+    def assignments():
+        values = [direct_instance_stats(url, token) for url in urls]
+        if any(not isinstance(item, dict) for item in values):
+            return None
+        partitions = [set(item.get("assignedPartitions", [])) for item in values]
+        if any(not item for item in partitions):
+            return None
+        if set().union(*partitions) != set(range(baseline["partitions"])):
+            return None
+        if sum(len(item) for item in partitions) != len(set().union(*partitions)):
+            return None
+        return {"instances": urls, "assignedPartitions": [sorted(item) for item in partitions]}
+
+    initial = wait_for(assignments, timeout=90, interval=2)
+    if initial is None:
+        raise RuntimeError("Detection instances did not obtain disjoint full partition ownership")
+
+    run_id = uuid.uuid4().hex[:10]
+    src_ip = "198.51.100.222"
+    events = [{
+        "eventId": f"chaos-multi-{run_id}-{i}",
+        "source": "firewall",
+        "host": f"multi-host-{run_id}-{i}",
+        "severity": "HIGH",
+        "message": "RDP connection to 3389",
+        "src_ip": src_ip,
+    } for i in range(max(5, count))]
+    before = alert_total(token) or 0
+    ingest_result = ingest(token, events)
+    def observed_total():
+        value = alert_total(token)
+        return value if value is not None and value >= before + 1 else None
+
+    observed = wait_for(observed_total, timeout=120, interval=2)
+
+    def matching_alerts():
+        return [item for item in list_alerts(token)
+                if item.get("ruleId") == "LATERAL-RDP" and item.get("entity") == src_ip]
+
+    matching = wait_for(lambda: matching_alerts() or None, timeout=60, interval=2) or []
+
+    # Stop the canonical instance and verify the remaining instance receives
+    # the full assignment. This is the real rebalance boundary, not merely a
+    # two-process startup check.
+    stopped = False
+    try:
+        control("stop-service", "detect-web")
+        stopped = wait_for(lambda: not direct_instance_up(urls[0], token), timeout=30, interval=1)
+        if not stopped:
+            raise RuntimeError("canonical Detection instance did not stop for rebalance")
+        after_stop = wait_for(
+            lambda: direct_instance_stats(urls[1], token)
+            if direct_instance_up(urls[1], token) else None,
+            timeout=90, interval=2)
+        after_stop_partitions = (after_stop or {}).get("assignedPartitions", [])
+        rebalance_ok = len(after_stop_partitions) == baseline["partitions"]
+        control("start-service", "detect-web")
+        stopped = False
+        recovered = wait_for(lambda: assignments(), timeout=120, interval=2)
+        return {
+            "initialAssignments": initial,
+            "afterStop": {"instance": urls[1], "assignedPartitions": after_stop_partitions},
+            "afterRestart": recovered,
+            "ingest": ingest_result,
+            "alertsBefore": before,
+            "alertsAfter": observed,
+            "matchingAlerts": len(matching),
+            "sourceAlertIds": [item.get("sourceAlertId") for item in matching],
+            "pass": (observed is not None and len(matching) == 1 and rebalance_ok
+                      and recovered is not None),
+        }
+    finally:
+        if stopped and not direct_instance_up(urls[0], token):
+            control("start-service", "detect-web")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scenario", choices=("all", "detect_restart", "duplicate_delivery"), default="all")
+    parser.add_argument("--scenario", choices=("all", "detect_restart", "duplicate_delivery", "alert_web_restart", "multi_instance"), default="all")
     parser.add_argument("--count", type=int, default=20,
                         help="events used by the Detection restart scenario")
     parser.add_argument("--output", help="optional JSON result path")
@@ -271,6 +439,11 @@ def main():
         results["detect_restart"] = scenario_detection_restart(token, args.count)
     if args.scenario in ("all", "duplicate_delivery"):
         results["duplicate_delivery"] = scenario_duplicate_delivery(token)
+    if args.scenario in ("all", "alert_web_restart"):
+        results["alert_web_restart"] = scenario_alert_web_restart(token)
+    if args.scenario == "multi_instance" or (
+            args.scenario == "all" and os.environ.get("DETECTION_INSTANCE_URLS")):
+        results["multi_instance"] = scenario_multi_instance(token, args.count)
     report = {"recordedAt": time.time(), "topic": TOPIC, "group": GROUP, "results": results,
               "pass": all(result.get("pass") for result in results.values())}
     print(json.dumps(report, ensure_ascii=False, indent=2))

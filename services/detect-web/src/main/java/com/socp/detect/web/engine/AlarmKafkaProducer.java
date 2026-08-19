@@ -13,14 +13,9 @@ import org.springframework.stereotype.Component;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.TimeUnit;
 
-/**
- * 告警 Kafka 出口（DETECT MODEL 二次分析链路）：AlertForwarder 转发 ALERT 成功后，
- * 把原始告警异步发到 `socp-alarm-original` 主题，由 detect-model 消费做窗口聚合/二次关联。
- *
- * <p>best-effort：Kafka 不可用只打 WARN，不影响告警主链路（alert-web 落库仍在）。
- * 可靠性约定与事件总线一致：acks=all + 幂等 + 重试 + traceparent 透传（见 KafkaEventProducer）。
- */
+/** Publishes the original alert stream consumed by detect-model. */
 @Component
 public class AlarmKafkaProducer {
 
@@ -60,26 +55,31 @@ public class AlarmKafkaProducer {
         return p;
     }
 
-    /** 异步发送原始告警（不阻塞转发热路径）；失败 WARN（可观测，不静默）。 */
+    /**
+     * Compatibility fire-and-forget API. New durable outbox code uses
+     * {@link #sendAndAwait(Map, String)} so a failed send remains retryable.
+     */
     public void send(Map<String, Object> alarm, String alertId) {
-        if (!enabled || alarm == null) return;
-        String traceparent = com.socp.platform.obs.TraceIdFilter.buildTraceparent();
-        Thread.startVirtualThread(() -> {
-            try {
-                String value = MAPPER.writeValueAsString(alarm);
-                ProducerRecord<String, String> rec = new ProducerRecord<>(topic,
-                        alertId == null ? "unknown" : alertId, value);
-                if (traceparent != null) {
-                    rec.headers().add("traceparent", traceparent.getBytes(StandardCharsets.UTF_8));
-                }
-                producer().send(rec, (md, ex) -> {
-                    if (ex != null) {
-                        log.warn("告警 Kafka 发送失败 alertId={}（已触发重试）: {}", alertId, ex.getMessage());
-                    }
-                });
-            } catch (Exception ex) {
-                log.warn("告警 Kafka 发送异常（降级，不影响 alert-web 落库）: {}", ex.getMessage());
+        Thread.startVirtualThread(() -> sendAndAwait(alarm, alertId));
+    }
+
+    /** Send with a bounded acknowledgement wait for the Detection outbox. */
+    public boolean sendAndAwait(Map<String, Object> alarm, String alertId) {
+        if (!enabled || alarm == null) return true;
+        try {
+            String value = MAPPER.writeValueAsString(alarm);
+            ProducerRecord<String, String> record = new ProducerRecord<>(topic,
+                    alertId == null ? "unknown" : alertId, value);
+            String traceparent = com.socp.platform.obs.TraceIdFilter.buildTraceparent();
+            if (traceparent != null) {
+                record.headers().add("traceparent", traceparent.getBytes(StandardCharsets.UTF_8));
             }
-        });
+            producer().send(record).get(5, TimeUnit.SECONDS);
+            return true;
+        } catch (Exception ex) {
+            log.warn("Original alert Kafka publish failed alertId={} (Detection outbox will retry): {}",
+                    alertId, ex.getMessage());
+            return false;
+        }
     }
 }

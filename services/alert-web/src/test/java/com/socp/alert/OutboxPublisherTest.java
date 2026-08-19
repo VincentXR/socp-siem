@@ -38,7 +38,7 @@ class OutboxPublisherTest {
 
         assertEquals("PENDING", event.getStatus());
         assertNotNull(event.getCreatedAt());
-        verify(kafkaPublisher, never()).sendAlarmEvent(event.getAggregateId(), event.getPayload());
+        verify(kafkaPublisher, never()).sendAlarmEventAndAwait(event.getAggregateId(), event.getPayload());
         verify(outboxRepository, never()).save(event);
     }
 
@@ -47,13 +47,27 @@ class OutboxPublisherTest {
         OutboxEvent event = event("alarm-2");
         given(outboxRepository.findByStatusOrderByCreatedAtAsc("PENDING")).willReturn(List.of(event));
         given(kafkaPublisher.isAvailable()).willReturn(true);
+        given(kafkaPublisher.sendAlarmEventAndAwait("alarm-2", "{\"id\":\"alarm-2\"}")).willReturn(true);
 
         publisher.publish();
 
-        verify(kafkaPublisher).sendAlarmEvent("alarm-2", "{\"id\":\"alarm-2\"}");
+        verify(kafkaPublisher).sendAlarmEventAndAwait("alarm-2", "{\"id\":\"alarm-2\"}");
         verify(outboxRepository).save(event);
         assertEquals("PUBLISHED", event.getStatus());
         assertNotNull(event.getPublishedAt());
+    }
+
+    @Test
+    void brokerAcknowledgementFailureLeavesEventPending() {
+        OutboxEvent event = event("alarm-3");
+        given(outboxRepository.findByStatusOrderByCreatedAtAsc("PENDING")).willReturn(List.of(event));
+        given(kafkaPublisher.isAvailable()).willReturn(true);
+        given(kafkaPublisher.sendAlarmEventAndAwait("alarm-3", "{\"id\":\"alarm-3\"}")).willReturn(false);
+
+        publisher.publish();
+
+        assertEquals("PENDING", event.getStatus());
+        verify(outboxRepository, never()).save(event);
     }
 
     @Test

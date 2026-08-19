@@ -42,7 +42,8 @@ public class RecentAlertSink implements AlertSink {
         }
         // 实时推送给 SSE 订阅者（前端大屏即时刷新）
         if (streamHub != null) streamHub.broadcast(alert);
-        // best-effort 转发到 ALERT（异步虚拟线程，不阻塞检测热路径）
+        // Detection Alert Outbox 持久化在当前检测线程完成；远程 HTTP 与
+        // detect-model Kafka 发布由独立 Outbox publisher 异步重试。
         if (forwarder != null) forwarder.forward(alert);
     }
 
