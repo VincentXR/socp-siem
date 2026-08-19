@@ -83,9 +83,12 @@ def event_lines(run_id, start, end, mode, profile, ingest_at, alert_every):
                 profile == "realistic" and index % alert_every == 0)
             if should_alert:
                 expected_alerts += 1
-            # AUTH-PRIVESC is a single-event pattern. Unique hosts avoid the
-            # five-minute suppressor while the realistic profile keeps the
-            # hit rate low enough to exercise the normal no-alert path.
+            # AUTH-PRIVESC is a single-event pattern. Include the run id in
+            # the synthetic entity so neither the five-minute suppressor nor
+            # Alert Web idempotency can collide with an earlier benchmark.
+            # It intentionally is not a routable IP: this is a correctness
+            # oracle for generated events, not a network-address fixture.
+            src_ip = f"benchmark-{run_id}-{index}"
             rows.append({
                 "eventId": f"benchmark-{run_id}-{index}",
                 "source": "auth" if should_alert else "system",
@@ -95,7 +98,7 @@ def event_lines(run_id, start, end, mode, profile, ingest_at, alert_every):
                 "severity": "HIGH" if should_alert else "INFO",
                 "timestamp": ingest_at,
                 "socp_bench_ingest_time": ingest_at,
-                "src_ip": f"198.51.100.{(index % 240) + 1}",
+                "src_ip": src_ip,
                 "user": "benchmark-user",
             })
         else:
@@ -125,15 +128,25 @@ def percentile(values, p):
 
 def kafka_snapshot():
     consumer = None
+    admin = None
     try:
         from kafka import KafkaConsumer
+        from kafka.admin import KafkaAdminClient
         from kafka.structs import TopicPartition
 
+        group = os.environ.get("BENCH_GROUP", "socp-detect")
+        # Offset inspection must not join the live Detection group.  A
+        # diagnostic member would trigger a rebalance and invalidate the very
+        # benchmark being measured.
         consumer = KafkaConsumer(
             bootstrap_servers=os.environ.get("BENCH_KAFKA", "127.0.0.1:9092"),
-            group_id=os.environ.get("BENCH_GROUP", "socp-detect"),
+            group_id=None,
             enable_auto_commit=False,
             request_timeout_ms=3000,
+        )
+        admin = KafkaAdminClient(
+            bootstrap_servers=os.environ.get("BENCH_KAFKA", "127.0.0.1:9092"),
+            client_id="socp-benchmark-offset-inspector",
         )
         partitions = consumer.partitions_for_topic("socp-events") or set()
         tps = [TopicPartition("socp-events", p) for p in sorted(partitions)]
@@ -141,12 +154,15 @@ def kafka_snapshot():
             return None
         consumer.assign(tps)
         ends = consumer.end_offsets(tps)
-        committed = {tp: consumer.committed(tp) for tp in tps}
+        committed = admin.list_group_offsets({group: tps}).get(group, {})
         end_total = sum(ends.values())
-        committed_total = sum((offset.offset if offset else 0) for offset in committed.values())
+        committed_total = sum(
+            offset if isinstance(offset, int) else (offset.offset if offset else 0)
+            for offset in committed.values()
+        )
         return {
             "topic": "socp-events",
-            "group": os.environ.get("BENCH_GROUP", "socp-detect"),
+            "group": group,
             "partitions": len(tps),
             "endOffset": end_total,
             "committedOffset": committed_total,
@@ -155,8 +171,28 @@ def kafka_snapshot():
     except Exception:
         return None
     finally:
+        if admin is not None:
+            admin.close()
         if consumer is not None:
             consumer.close()
+
+
+def wait_for_kafka_drain(timeout=30.0):
+    """Return an offset snapshot after the production group reaches lag 0.
+
+    Alert publication can complete a fraction before the contiguous Kafka
+    commit catches up.  Taking the report snapshot immediately would make a
+    healthy run look incomplete, so the report waits briefly for the durable
+    transport frontier as well.
+    """
+    deadline = time.monotonic() + timeout
+    last = None
+    while time.monotonic() < deadline:
+        last = kafka_snapshot()
+        if last is not None and last.get("lag", 1) == 0:
+            return last, round(timeout - max(0.0, deadline - time.monotonic()), 3)
+        time.sleep(0.5)
+    return last, round(timeout, 3)
 
 
 def optional_opensearch_count():
@@ -226,6 +262,21 @@ def detect_stats(gateway, token):
         headers={"Authorization": "Bearer " + token}, timeout=10)
     data = unwrap(body)
     return data if status == 200 and isinstance(data, dict) else None
+
+
+def wait_for_detection_drain(gateway, token, timeout=30.0):
+    """Wait until the Detection journal and in-memory queue report drained."""
+    deadline = time.monotonic() + timeout
+    last = None
+    while time.monotonic() < deadline:
+        last = detect_stats(gateway, token)
+        if last is not None:
+            pending = int(last.get("pendingEvents", 0) or 0)
+            queue_load = float(last.get("queueLoad", 0.0) or 0.0)
+            if pending == 0 and queue_load <= 0.0:
+                return last, round(timeout - max(0.0, deadline - time.monotonic()), 3)
+        time.sleep(0.5)
+    return last, round(timeout, 3)
 
 
 def optional_prometheus_snapshot():
@@ -388,6 +439,7 @@ def main():
             gateway, token, expected_alerts, baseline_alerts or 0, args.timeout)
         alert_wait = time.perf_counter() - wait_started
 
+    detection_after, detection_drain_wait = wait_for_detection_drain(gateway, token)
     report = {
         "runId": run_id,
         "label": args.label,
@@ -414,7 +466,8 @@ def main():
             "max": round(max(latencies), 2) if latencies else 0,
         },
         "detectionStatsBefore": stats_before,
-        "detectionStatsAfter": detect_stats(gateway, token),
+        "detectionStatsAfter": detection_after,
+        "detectionDrainWaitSeconds": detection_drain_wait,
         "runtimeMetricsBefore": runtime_before,
         "runtimeMetricsAfter": optional_prometheus_snapshot(),
     }
@@ -431,7 +484,9 @@ def main():
             accepted / (elapsed + (alert_wait or 0))
             if accepted and elapsed + (alert_wait or 0) else 0, 2)
         report["kafkaBefore"] = kafka_before
-        report["kafkaAfter"] = kafka_snapshot()
+        kafka_after, kafka_drain_wait = wait_for_kafka_drain()
+        report["kafkaAfter"] = kafka_after
+        report["kafkaDrainWaitSeconds"] = kafka_drain_wait
         report["openSearchBefore"] = os_before
         report["openSearchAfter"] = optional_opensearch_count()
         report["clickHouseBefore"] = ck_before

@@ -1,5 +1,7 @@
 package com.socp.detect.web.engine;
 
+import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.admin.AdminClientConfig;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -48,15 +50,20 @@ public class ConsumerLagMonitor {
     private KafkaConsumer<String, String> client() {
         Properties props = new Properties();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap);
-        props.put(ConsumerConfig.GROUP_ID_CONFIG, GROUP);
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         return new KafkaConsumer<>(props);
     }
 
+    private AdminClient adminClient() {
+        Properties props = new Properties();
+        props.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap);
+        return AdminClient.create(props);
+    }
+
     @Scheduled(fixedDelay = 15_000, initialDelay = 30_000)
     public void reportLag() {
-        try (KafkaConsumer<String, String> c = client()) {
+        try (KafkaConsumer<String, String> c = client(); AdminClient admin = adminClient()) {
             List<org.apache.kafka.common.PartitionInfo> parts = c.partitionsFor(topic, Duration.ofSeconds(5));
             if (parts == null || parts.isEmpty()) return;
             java.util.Set<TopicPartition> tps = new java.util.LinkedHashSet<>();
@@ -65,8 +72,12 @@ public class ConsumerLagMonitor {
             // Java consumer 查询 committed offset 需先 assign（不参与消费，仅管理端查询）
             c.assign(tps);
             Map<TopicPartition, Long> ends = c.endOffsets(tps);
+            // The AdminClient reads the production group's offsets without
+            // adding a member, so lag reporting cannot trigger a rebalance.
             Map<TopicPartition, org.apache.kafka.clients.consumer.OffsetAndMetadata> committed =
-                    c.committed(tps, Duration.ofSeconds(5));
+                    admin.listConsumerGroupOffsets(GROUP)
+                            .partitionsToOffsetAndMetadata()
+                            .get(5, java.util.concurrent.TimeUnit.SECONDS);
 
             for (TopicPartition tp : tps) {
                 long end = ends.getOrDefault(tp, 0L);

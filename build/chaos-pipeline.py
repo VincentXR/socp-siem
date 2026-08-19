@@ -33,7 +33,7 @@ BUILD = Path(__file__).resolve().parent
 REPO = BUILD.parent
 sys.path.insert(0, str(BUILD))
 
-from ports import GATEWAY_URL, health_url  # noqa: E402
+from ports import GATEWAY_URL, health_url, port_of  # noqa: E402
 
 
 BOOTSTRAP = os.environ.get("PIPELINE_KAFKA", "127.0.0.1:9092")
@@ -43,7 +43,6 @@ USER = os.environ.get("DEMO_USER", "demo")
 PASSWORD = os.environ.get("DEMO_PASS", "demo123")
 VECTOR_TOKEN = os.environ.get("SOCP_VECTOR_TOKEN", "dev-vector-token")
 RUNNER = os.environ.get("SOCP_BASH", "bash")
-
 
 def request(url, method="GET", body=None, headers=None, timeout=20):
     data = None if body is None else (body if isinstance(body, bytes) else body.encode())
@@ -117,6 +116,53 @@ def direct_instance_stats(base_url, token=None):
 
 
 def control(action, service):
+    # The repository's shell runner is the canonical Unix/WSL path.  Native
+    # Windows installations often have no WSL bash, so keep the same explicit
+    # service semantics available through PowerShell: only the named service's
+    # port is stopped and only its built JAR is started.
+    if os.name == "nt" and "SOCP_BASH" not in os.environ:
+        port = port_of(service)
+        jar = REPO / "services" / service / "target" / f"{service}-1.0.0-SNAPSHOT.jar"
+        if action == "stop-service":
+            script = (
+                f"$c=Get-NetTCPConnection -State Listen -LocalPort {port} "
+                f"-ErrorAction SilentlyContinue; "
+                f"$c | Select-Object -ExpandProperty OwningProcess -Unique | "
+                f"ForEach-Object {{ Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }}"
+            )
+        elif action == "start-service":
+            if not jar.is_file():
+                raise RuntimeError(f"missing service JAR: {jar}")
+            log_out = REPO / ".cache" / f"{service}-chaos.out.log"
+            log_err = REPO / ".cache" / f"{service}-chaos.err.log"
+            env = os.environ.copy()
+            env.setdefault("SOCP_JWT_SECRET",
+                           "socp-demo-jwt-secret-0123456789abcdef0123456789abcdef")
+            env.setdefault("SOCP_LOGIN_SECRET", env["SOCP_JWT_SECRET"])
+            log_out.parent.mkdir(parents=True, exist_ok=True)
+            with log_out.open("ab") as stdout, log_err.open("ab") as stderr:
+                flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) \
+                        | getattr(subprocess, "DETACHED_PROCESS", 0)
+                arguments = ["java", "-Xms32m", "-Xmx256m", "-jar", str(jar),
+                             f"--server.port={port}"]
+                profile = os.environ.get("SOCP_DETECT_PROFILE")
+                if service == "detect-web" and profile:
+                    arguments.insert(-1, f"--spring.profiles.active={profile}")
+                subprocess.Popen(
+                    arguments,
+                    cwd=REPO, env=env, stdout=stdout, stderr=stderr,
+                    creationflags=flags,
+                    close_fds=True)
+            return
+        else:
+            raise RuntimeError(f"unsupported Windows control action: {action}")
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            cwd=REPO, capture_output=True, text=True, timeout=60, check=False)
+        if result.returncode != 0:
+            raise RuntimeError(f"{action} {service} failed: {result.stderr[-500:]}")
+        return
+
     result = subprocess.run(
         [RUNNER, str(REPO / "build" / "run-all.sh"), action, service],
         cwd=REPO, capture_output=True, text=True, timeout=60, check=False)
@@ -127,30 +173,45 @@ def control(action, service):
 def kafka_snapshot():
     try:
         from kafka import KafkaConsumer
+        from kafka.admin import KafkaAdminClient
         from kafka.structs import TopicPartition
     except ImportError as error:
         raise RuntimeError("kafka-python is required for chaos checks") from error
 
+    # Do not join the production consumer group just to inspect its offsets.
+    # A diagnostic consumer joining GROUP triggers a rebalance and can revoke
+    # live Detection partitions while a benchmark or chaos scenario is active.
     consumer = KafkaConsumer(
         bootstrap_servers=BOOTSTRAP,
-        group_id=GROUP,
+        group_id=None,
         enable_auto_commit=False,
         request_timeout_ms=5000,
     )
+    admin = None
     try:
+        admin = KafkaAdminClient(bootstrap_servers=BOOTSTRAP, client_id="socp-chaos-offset-inspector")
         partitions = consumer.partitions_for_topic(TOPIC)
         if not partitions:
             raise RuntimeError(f"Kafka topic {TOPIC} has no partitions")
         tps = [TopicPartition(TOPIC, p) for p in sorted(partitions)]
         consumer.assign(tps)
         ends = consumer.end_offsets(tps)
-        committed = {tp: consumer.committed(tp) for tp in tps}
+        committed = admin.list_group_offsets({GROUP: tps}).get(GROUP, {})
         end_total = sum(ends.values())
-        committed_total = sum((offset.offset if offset else 0) for offset in committed.values())
+        def committed_value(value):
+            if value is None:
+                return 0
+            if isinstance(value, int):
+                return value
+            return int(getattr(value, "offset", 0))
+
+        committed_total = sum(committed_value(offset) for offset in committed.values())
         return {"end": end_total, "committed": committed_total,
                 "lag": max(0, end_total - committed_total),
                 "partitions": len(tps)}
     finally:
+        if admin is not None:
+            admin.close()
         consumer.close()
 
 
@@ -279,7 +340,11 @@ def scenario_duplicate_delivery(token):
     }
     before = alert_total(token) or 0
     accepted = ingest(token, [event, event])
-    after = wait_for(lambda: (alert_total(token) or 0) >= before + 1, timeout=60, interval=1)
+    def recovered_total():
+        value = alert_total(token)
+        return value if value is not None and value >= before + 1 else None
+
+    after = wait_for(recovered_total, timeout=60, interval=1)
     # Pattern alert ids are derived from rule/entity/evidence, not event id;
     # sourceAlertId is therefore checked by counting the matching host/rule.
     all_alerts = list_alerts(token)
@@ -426,9 +491,18 @@ def scenario_multi_instance(token, count):
         stopped = wait_for(lambda: not direct_instance_up(urls[0], token), timeout=30, interval=1)
         if not stopped:
             raise RuntimeError("canonical Detection instance did not stop for rebalance")
+
+        def remaining_assignment():
+            if not direct_instance_up(urls[1], token):
+                return None
+            stats = direct_instance_stats(urls[1], token)
+            if not isinstance(stats, dict):
+                return None
+            owned = set(stats.get("assignedPartitions", []))
+            return stats if owned == set(range(baseline["partitions"])) else None
+
         after_stop = wait_for(
-            lambda: direct_instance_stats(urls[1], token)
-            if direct_instance_up(urls[1], token) else None,
+            remaining_assignment,
             timeout=90, interval=2)
         after_stop_partitions = (after_stop or {}).get("assignedPartitions", [])
         rebalance_ok = len(after_stop_partitions) == baseline["partitions"]

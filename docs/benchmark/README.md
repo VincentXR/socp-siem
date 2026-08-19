@@ -33,7 +33,15 @@ partition assignment output from the chaos check.
 Set `BENCH_PROMETHEUS_URL` to an actuator Prometheus endpoint to capture JVM
 heap, GC, and process CPU samples. Set `BENCH_OS_URL` and `BENCH_CK_URL` for
 optional OpenSearch/ClickHouse before-and-after counters. Install
-`kafka-python` if Kafka offset/lag snapshots are required.
+`kafka-python` if Kafka offset/lag snapshots are required. Offset snapshots use
+the Kafka Admin API and a group-less metadata consumer; they never join the
+live Detection group or trigger a rebalance.
+
+The `realistic` generator namespaces its synthetic `src_ip` entity with the
+run id. This keeps the expected-alert oracle independent across repeated runs
+and prevents the real five-minute suppressor or Alert Web idempotency key from
+turning a valid alert into a false shortfall. These values are deliberately
+synthetic identifiers, not routable IP fixtures.
 
 ## Report contract
 
@@ -46,6 +54,7 @@ Every report should contain or be accompanied by:
 - accepted/rejected counts and ingress events per second;
 - batch request P50/P95/P99/max latency;
 - aggregate alert-drain wait and end-to-end throughput for `--mode e2e`;
+- Detection drain wait and Kafka contiguous-commit drain wait;
 - `processingLatencyMs = alertCreatedAt - triggerIngestedAt`, measured from
   timestamps durably carried through Detection outbox and Alert Web. A report
   includes the sample count; zero means the running stack did not preserve the

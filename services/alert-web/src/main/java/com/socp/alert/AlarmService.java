@@ -14,6 +14,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -240,24 +241,39 @@ public class AlarmService {
         // 租户隔离：无上下文时按 default（机机约定），绝不 findAll 跨租户
         String tenant = TenantContext.get() == null ? "default" : TenantContext.get();
         List<Alarm> alarms = new ArrayList<>(repo.query(tenant, severity, rule, status, q));
-        Comparator<Alarm> comparator = comparatorFor(sort);
-        if ("descending".equalsIgnoreCase(order) || "desc".equalsIgnoreCase(order)) {
+        boolean descending = "descending".equalsIgnoreCase(order) || "desc".equalsIgnoreCase(order);
+        Comparator<Alarm> comparator = comparatorFor(sort, descending);
+        if (descending) {
             comparator = comparator.reversed();
         }
         alarms.sort(comparator.thenComparing(Alarm::getId, Comparator.nullsLast(String::compareTo)));
         return alarms;
     }
 
-    private static Comparator<Alarm> comparatorFor(String sort) {
+    /**
+     * Keep missing values at the end in both directions.  Descending order
+     * reverses the comparator, so its base comparator must put nulls first.
+     * Otherwise old alarms without the newer timestamp fields hide fresh
+     * benchmark samples at the beginning of the page.
+     */
+    private static Comparator<Alarm> comparatorFor(String sort, boolean descending) {
+        Comparator<Instant> instantOrder = descending
+                ? Comparator.nullsFirst(Instant::compareTo)
+                : Comparator.nullsLast(Instant::compareTo);
+        Comparator<String> stringOrder = descending
+                ? Comparator.nullsFirst(String.CASE_INSENSITIVE_ORDER)
+                : Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER);
+        Comparator<Integer> integerOrder = descending
+                ? Comparator.nullsFirst(Integer::compareTo)
+                : Comparator.nullsLast(Integer::compareTo);
         return switch (sort == null ? "occurredAt" : sort) {
             case "severity" -> Comparator.comparingInt(a -> severityRank(a.getSeverity()));
-            case "ruleName" -> Comparator.comparing(Alarm::getRuleName, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER));
-            case "entity" -> Comparator.comparing(Alarm::getEntity, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER));
-            case "status" -> Comparator.comparing(Alarm::getStatus, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER));
-            case "riskScore" -> Comparator.comparing(Alarm::getRiskScore, Comparator.nullsLast(Integer::compareTo));
-            case "alertCreatedAt" -> Comparator.comparing(Alarm::getAlertCreatedAt,
-                    Comparator.nullsLast(java.time.Instant::compareTo));
-            default -> Comparator.comparing(Alarm::getOccurredAt, Comparator.nullsLast(java.time.Instant::compareTo));
+            case "ruleName" -> Comparator.comparing(Alarm::getRuleName, stringOrder);
+            case "entity" -> Comparator.comparing(Alarm::getEntity, stringOrder);
+            case "status" -> Comparator.comparing(Alarm::getStatus, stringOrder);
+            case "riskScore" -> Comparator.comparing(Alarm::getRiskScore, integerOrder);
+            case "alertCreatedAt" -> Comparator.comparing(Alarm::getAlertCreatedAt, instantOrder);
+            default -> Comparator.comparing(Alarm::getOccurredAt, instantOrder);
         };
     }
 

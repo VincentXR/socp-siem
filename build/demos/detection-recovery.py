@@ -110,16 +110,20 @@ def control(action):
 def kafka_snapshot():
     try:
         from kafka import KafkaConsumer
+        from kafka.admin import KafkaAdminClient
         from kafka.structs import TopicPartition
     except ImportError as error:
         raise RuntimeError("kafka-python is required; install it before this demo") from error
 
+    # Read offsets through the admin API instead of becoming a member of the
+    # live Detection group and causing an unnecessary rebalance.
     consumer = KafkaConsumer(
         bootstrap_servers=BOOTSTRAP,
-        group_id=GROUP,
+        group_id=None,
         enable_auto_commit=False,
         request_timeout_ms=5000,
     )
+    admin = KafkaAdminClient(bootstrap_servers=BOOTSTRAP, client_id="socp-recovery-offset-inspector")
     try:
         partitions = consumer.partitions_for(TOPIC)
         if not partitions:
@@ -130,13 +134,10 @@ def kafka_snapshot():
         ]
         consumer.assign(topic_partitions)
         ends = consumer.end_offsets(topic_partitions)
-        committed = {
-            partition: consumer.committed(partition)
-            for partition in topic_partitions
-        }
+        committed = admin.list_group_offsets({GROUP: topic_partitions}).get(GROUP, {})
         end_total = sum(ends.values())
         committed_total = sum(
-            offset.offset if offset is not None else 0
+            offset if isinstance(offset, int) else (offset.offset if offset is not None else 0)
             for offset in committed.values()
         )
         return {
@@ -145,6 +146,7 @@ def kafka_snapshot():
             "lag": max(0, end_total - committed_total),
         }
     finally:
+        admin.close()
         consumer.close()
 
 

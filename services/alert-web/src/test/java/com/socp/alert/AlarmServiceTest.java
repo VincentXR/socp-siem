@@ -138,4 +138,22 @@ class AlarmServiceTest {
         org.mockito.Mockito.verify(outboxRepository, org.mockito.Mockito.never())
                 .save(org.mockito.ArgumentMatchers.any(OutboxEvent.class));
     }
+
+    @Test
+    void descendingTimestampSortKeepsMissingValuesLast() {
+        TenantContext.set("tenant-a");
+        Alarm legacy = new Alarm("AUTH-BRUTE", "SSH brute force", Severity.HIGH,
+                "legacy", "host-legacy");
+        legacy.setAlertCreatedAt(null);
+        Alarm fresh = new Alarm("AUTH-PRIVESC", "Privilege escalation", Severity.HIGH,
+                "fresh", "host-fresh");
+        fresh.setAlertCreatedAt(Instant.parse("2026-08-19T14:00:00Z"));
+        given(repository.query("tenant-a", null, null, null, null))
+                .willReturn(List.of(legacy, fresh));
+
+        List<Alarm> result = service.query(null, null, null, null,
+                "alertCreatedAt", "descending");
+
+        assertEquals(List.of(fresh, legacy), result);
+    }
 }
