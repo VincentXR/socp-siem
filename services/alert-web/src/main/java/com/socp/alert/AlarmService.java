@@ -255,6 +255,8 @@ public class AlarmService {
             case "entity" -> Comparator.comparing(Alarm::getEntity, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER));
             case "status" -> Comparator.comparing(Alarm::getStatus, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER));
             case "riskScore" -> Comparator.comparing(Alarm::getRiskScore, Comparator.nullsLast(Integer::compareTo));
+            case "alertCreatedAt" -> Comparator.comparing(Alarm::getAlertCreatedAt,
+                    Comparator.nullsLast(java.time.Instant::compareTo));
             default -> Comparator.comparing(Alarm::getOccurredAt, Comparator.nullsLast(java.time.Instant::compareTo));
         };
     }
@@ -369,6 +371,12 @@ public class AlarmService {
         m.put("riskScore", a.getRiskScore());
         m.put("riskLevel", a.getRiskLevel());
         m.put("occurredAt", a.getOccurredAt() == null ? null : DateTimeFormatter.ISO_INSTANT.format(a.getOccurredAt()));
+        m.put("triggerIngestedAt", a.getTriggerIngestedAt() == null ? null
+                : DateTimeFormatter.ISO_INSTANT.format(a.getTriggerIngestedAt()));
+        m.put("alertCreatedAt", a.getAlertCreatedAt() == null ? null
+                : DateTimeFormatter.ISO_INSTANT.format(a.getAlertCreatedAt()));
+        m.put("processingLatencyMs", a.getProcessingLatencyMs());
+        m.put("triggerEventId", a.getTriggerEventId());
         m.put("evidence", evidence == null ? List.of() : evidence);
         try {
             return MAPPER.writeValueAsString(m);

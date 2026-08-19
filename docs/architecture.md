@@ -114,7 +114,8 @@ consumer restores only journal rows for its assigned partitions.
 A stateful rule is strictly partition-local only when its `keyField` matches
 the event routing field. A rule grouped by another entity dimension requires a
 shared state or fan-out design and is explicitly outside the strict guarantee.
-Journal replay is bounded to the configured retention and 10,000 rows. Kafka,
+Journal replay is bounded to the configured retention and read in pages; the
+implementation does not silently truncate at a fixed row count. Kafka,
 OpenSearch, PostgreSQL, and ClickHouse are single-node dependencies in the
 local verification environment. See
 [`detection-state-semantics.md`](detection-state-semantics.md) for the exact

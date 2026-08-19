@@ -66,6 +66,20 @@ public class Alarm extends BaseEntity {
     @Column(name = "occurred_at")
     private Instant occurredAt = Instant.now();
 
+    /** Ingest timestamp of the event that completed the detection trigger. */
+    @Column(name = "trigger_ingested_at")
+    private Instant triggerIngestedAt;
+
+    /** Detection-side materialization timestamp, used for pipeline latency evidence. */
+    @Column(name = "alert_created_at")
+    private Instant alertCreatedAt;
+
+    @Column(name = "processing_latency_ms")
+    private Long processingLatencyMs;
+
+    @Column(name = "trigger_event_id", length = 128)
+    private String triggerEventId;
+
     public Alarm() {
     }
 
@@ -188,5 +202,37 @@ public class Alarm extends BaseEntity {
 
     public void setOccurredAt(Instant occurredAt) {
         this.occurredAt = occurredAt;
+    }
+
+    public Instant getTriggerIngestedAt() {
+        return triggerIngestedAt;
+    }
+
+    public void setTriggerIngestedAt(Instant triggerIngestedAt) {
+        this.triggerIngestedAt = triggerIngestedAt;
+    }
+
+    public Instant getAlertCreatedAt() {
+        return alertCreatedAt;
+    }
+
+    public void setAlertCreatedAt(Instant alertCreatedAt) {
+        this.alertCreatedAt = alertCreatedAt;
+    }
+
+    public Long getProcessingLatencyMs() {
+        return processingLatencyMs;
+    }
+
+    public void setProcessingLatencyMs(Long processingLatencyMs) {
+        this.processingLatencyMs = processingLatencyMs;
+    }
+
+    public String getTriggerEventId() {
+        return triggerEventId;
+    }
+
+    public void setTriggerEventId(String triggerEventId) {
+        this.triggerEventId = triggerEventId;
     }
 }

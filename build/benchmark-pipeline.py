@@ -10,7 +10,7 @@ and optional OpenSearch/ClickHouse counters.
 
 Examples:
   python build/benchmark-pipeline.py --count 100
-  python build/benchmark-pipeline.py --mode e2e --count 100 --batch-size 25 \
+  python build/benchmark-pipeline.py --mode e2e --profile realistic --count 100 --batch-size 25 \
       --output .cache/benchmark-e2e.json
 
 This is a repeatable single-node baseline, not a production capacity claim.
@@ -74,21 +74,27 @@ def unwrap(body):
     return body
 
 
-def event_lines(run_id, start, end, mode):
-    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+def event_lines(run_id, start, end, mode, profile, ingest_at, alert_every):
+    expected_alerts = 0
     rows = []
     for index in range(start, end):
         if mode == "e2e":
+            should_alert = profile == "alert-heavy" or (
+                profile == "realistic" and index % alert_every == 0)
+            if should_alert:
+                expected_alerts += 1
             # AUTH-PRIVESC is a single-event pattern. Unique hosts avoid the
-            # five-minute suppressor while preserving a deterministic alert
-            # expectation for the end-to-end wait.
+            # five-minute suppressor while the realistic profile keeps the
+            # hit rate low enough to exercise the normal no-alert path.
             rows.append({
                 "eventId": f"benchmark-{run_id}-{index}",
-                "source": "auth",
+                "source": "auth" if should_alert else "system",
                 "host": f"benchmark-{run_id}-{index}",
-                "message": "sudo: benchmark privilege escalation probe",
-                "severity": "HIGH",
-                "timestamp": now,
+                "message": "sudo: benchmark privilege escalation probe" if should_alert
+                           else "benchmark heartbeat",
+                "severity": "HIGH" if should_alert else "INFO",
+                "timestamp": ingest_at,
+                "socp_bench_ingest_time": ingest_at,
                 "src_ip": f"198.51.100.{(index % 240) + 1}",
                 "user": "benchmark-user",
             })
@@ -99,10 +105,10 @@ def event_lines(run_id, start, end, mode):
                 "host": "benchmark-host",
                 "msg": "Failed password for benchmark-user",
                 "severity": "HIGH",
-                "timestamp": now,
+                "timestamp": ingest_at,
                 "fields": {"src_ip": "198.51.100.10"},
             })
-    return "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n"
+    return "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n", expected_alerts
 
 
 def percentile(values, p):
@@ -277,6 +283,27 @@ def wait_for_alerts(gateway, token, expected, baseline, timeout):
     return last
 
 
+def recent_alerts(gateway, token, sample_size):
+    size = max(1, min(500, sample_size))
+    status, body, _ = request(
+        gateway + "/alert-web/api/alarms?page=1&size=%d&sort=alertCreatedAt&order=descending" % size,
+        headers={"Authorization": "Bearer " + token}, timeout=30)
+    data = unwrap(body)
+    if status != 200 or not isinstance(data, dict):
+        return []
+    items = data.get("items", [])
+    return items if isinstance(items, list) else []
+
+
+def measured_latency_ms(alarms):
+    values = []
+    for alarm in alarms:
+        raw = alarm.get("processingLatencyMs") if isinstance(alarm, dict) else None
+        if isinstance(raw, (int, float)) and raw >= 0:
+            values.append(float(raw))
+    return values
+
+
 def choose_ingest_task(gateway, token):
     status, body, _ = request(
         gateway + "/search-config/api/v1/ingest/tasks",
@@ -293,6 +320,10 @@ def main():
     parser.add_argument("--count", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--mode", choices=("bulk", "e2e"), default="bulk")
+    parser.add_argument("--profile", choices=("realistic", "alert-heavy"), default="realistic",
+                        help="e2e workload profile: low hit-rate realistic or alert-heavy")
+    parser.add_argument("--alert-every", type=int, default=10,
+                        help="realistic profile emits one pattern alert every N events")
     parser.add_argument("--gateway", default=os.environ.get("BENCH_GATEWAY", "http://127.0.0.1:18092"))
     parser.add_argument("--timeout", type=float, default=120.0,
                         help="seconds to wait for e2e alerts")
@@ -304,8 +335,8 @@ def main():
     parser.add_argument("--rules", type=int, default=None,
                         help="rule count configured for this run, if known")
     args = parser.parse_args()
-    if args.count <= 0 or args.batch_size <= 0:
-        parser.error("--count and --batch-size must be positive")
+    if args.count <= 0 or args.batch_size <= 0 or args.alert_every <= 0:
+        parser.error("--count, --batch-size, and --alert-every must be positive")
 
     gateway = args.gateway.rstrip("/")
     token = login(gateway)
@@ -320,6 +351,7 @@ def main():
 
     run_id = uuid.uuid4().hex[:10]
     accepted = rejected = forwarded = 0
+    expected_alerts = 0
     latencies = []
     started = time.perf_counter()
 
@@ -331,8 +363,11 @@ def main():
         else:
             target = gateway + "/detect-web/api/v1/ingest/bulk"
             content_type = "application/x-ndjson"
+        batch_ingest_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        body, batch_expected_alerts = event_lines(
+            run_id, start, end, args.mode, args.profile, batch_ingest_at, args.alert_every)
         status, body, latency = request(
-            target, "POST", event_lines(run_id, start, end, args.mode),
+            target, "POST", body,
             {"Authorization": "Bearer " + token, "Content-Type": content_type},
             timeout=60)
         latencies.append(latency)
@@ -342,6 +377,7 @@ def main():
         accepted += int(data.get("accepted", 0))
         rejected += int(data.get("rejected", data.get("skipped", 0)))
         forwarded += int(data.get("forwarded", 0))
+        expected_alerts += batch_expected_alerts
 
     elapsed = time.perf_counter() - started
     alerts_after = None
@@ -349,7 +385,7 @@ def main():
     if args.mode == "e2e":
         wait_started = time.perf_counter()
         alerts_after = wait_for_alerts(
-            gateway, token, accepted, baseline_alerts or 0, args.timeout)
+            gateway, token, expected_alerts, baseline_alerts or 0, args.timeout)
         alert_wait = time.perf_counter() - wait_started
 
     report = {
@@ -368,6 +404,8 @@ def main():
         "forwarded": forwarded,
         "elapsedSeconds": round(elapsed, 3),
         "eventsPerSecond": round(args.count / elapsed if elapsed else 0, 2),
+        "profile": args.profile if args.mode == "e2e" else None,
+        "alertEvery": args.alert_every if args.mode == "e2e" else None,
         "batchLatencyMs": {
             "avg": round(statistics.mean(latencies), 2) if latencies else 0,
             "p50": round(percentile(latencies, 0.50), 2),
@@ -383,8 +421,10 @@ def main():
     if args.mode == "e2e":
         report["ingestTaskId"] = task_id
         report["baselineAlerts"] = baseline_alerts
+        report["expectedAlerts"] = expected_alerts
         report["alertsAfter"] = alerts_after
         report["alertsObserved"] = ((alerts_after or 0) - (baseline_alerts or 0))
+        report["alertShortfall"] = max(0, expected_alerts - report["alertsObserved"])
         report["alertWaitSeconds"] = round(alert_wait or 0, 3)
         report["endToEndSeconds"] = round(elapsed + (alert_wait or 0), 3)
         report["endToEndEventsPerSecond"] = round(
@@ -396,6 +436,17 @@ def main():
         report["openSearchAfter"] = optional_opensearch_count()
         report["clickHouseBefore"] = ck_before
         report["clickHouseAfter"] = optional_clickhouse_count()
+        sampled = recent_alerts(gateway, token, min(500, max(expected_alerts, 1)))
+        processing = measured_latency_ms(sampled)
+        report["latencyDefinition"] = "alertCreatedAt - triggerIngestedAt"
+        report["latencySource"] = "durable Alert Web alarm fields"
+        report["latencySampleCount"] = len(processing)
+        report["processingLatencyMs"] = {
+            "p50": round(percentile(processing, 0.50), 2),
+            "p95": round(percentile(processing, 0.95), 2),
+            "p99": round(percentile(processing, 0.99), 2),
+            "max": round(max(processing), 2) if processing else 0,
+        }
 
     print("SOCP %s baseline" % ("end-to-end" if args.mode == "e2e" else "bulk ingest"))
     print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -406,8 +457,8 @@ def main():
             output.write("\n")
     if accepted + rejected != args.count:
         raise SystemExit("result count does not match requested event count")
-    if args.mode == "e2e" and (alerts_after or 0) < (baseline_alerts or 0) + accepted:
-        raise SystemExit("e2e timeout: alert count did not catch up to accepted events")
+    if args.mode == "e2e" and (alerts_after or 0) < (baseline_alerts or 0) + expected_alerts:
+        raise SystemExit("e2e timeout: expected alert count did not catch up")
 
 
 if __name__ == "__main__":

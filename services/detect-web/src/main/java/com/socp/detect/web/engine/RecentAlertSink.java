@@ -1,24 +1,24 @@
 package com.socp.detect.web.engine;
 
-import com.socp.rule.engine.AlertSink;
+import com.socp.rule.engine.EventAlertSink;
 import com.socp.rule.model.Alert;
+import com.socp.rule.model.SecurityEvent;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
-import java.util.concurrent.ArrayBlockingQueue;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
-/**
- * 告警出口（进程内实现）：保留最近 N 条告警供 API 查询/前端看板。
- * 生产环境替换为 Kafka sink（socp-detect-original-alarm 主题）→ GASModel 窗口聚合 → ALERT 落 PG。
- */
+/** Recent alert view plus the durable Detection -> Alert hand-off. */
 @Component
-public class RecentAlertSink implements AlertSink {
+public class RecentAlertSink implements EventAlertSink {
 
     private final List<Alert> recent = new CopyOnWriteArrayList<>();
     private final int capacity;
     private final AlertForwarder forwarder;
     private final AlertStreamHub streamHub;
+    private final Set<String> publishedIds = ConcurrentHashMap.newKeySet();
 
     @org.springframework.beans.factory.annotation.Autowired
     public RecentAlertSink(AlertForwarder forwarder, AlertStreamHub streamHub) {
@@ -35,16 +35,22 @@ public class RecentAlertSink implements AlertSink {
 
     @Override
     public void publish(Alert alert) {
-        recent.add(alert);
-        int over = recent.size() - capacity;
-        for (int i = 0; i < over && !recent.isEmpty(); i++) {
-            recent.remove(0);
+        publish(null, alert == null ? List.of() : List.of(alert));
+    }
+
+    @Override
+    public void publish(SecurityEvent event, List<Alert> alerts) {
+        List<Alert> safe = alerts == null ? List.of() : alerts;
+        // Durable persistence is deliberately first. A failure propagates to
+        // the Kafka completion future and prevents offset advancement.
+        if (forwarder != null) forwarder.forwardAll(event == null ? null : event.id(), safe);
+        for (Alert alert : safe) {
+            if (alert == null || alert.id() == null || !publishedIds.add(alert.id())) continue;
+            recent.add(alert);
+            int over = recent.size() - capacity;
+            for (int i = 0; i < over && !recent.isEmpty(); i++) recent.remove(0);
+            if (streamHub != null) streamHub.broadcast(alert);
         }
-        // 实时推送给 SSE 订阅者（前端大屏即时刷新）
-        if (streamHub != null) streamHub.broadcast(alert);
-        // Detection Alert Outbox 持久化在当前检测线程完成；远程 HTTP 与
-        // detect-model Kafka 发布由独立 Outbox publisher 异步重试。
-        if (forwarder != null) forwarder.forward(alert);
     }
 
     public List<Alert> recent() {
@@ -53,6 +59,6 @@ public class RecentAlertSink implements AlertSink {
 
     @Override
     public void close() {
-        // 共享 sink，引擎重建时不做清理
+        // Shared sink; the engine rebuild must not clear the view.
     }
 }

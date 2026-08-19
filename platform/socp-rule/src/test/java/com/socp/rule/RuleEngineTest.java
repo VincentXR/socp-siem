@@ -2,6 +2,7 @@ package com.socp.rule;
 
 import com.socp.rule.config.Rules;
 import com.socp.rule.engine.AlertSink;
+import com.socp.rule.engine.EventAlertSink;
 import com.socp.rule.engine.RuleEngine;
 import com.socp.rule.engine.Suppressor;
 import com.socp.rule.model.Alert;
@@ -14,6 +15,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -138,6 +140,51 @@ class RuleEngineTest {
             assertTrue(engine.suppressedCount() >= 1, "应有被抑制计数");
         } finally {
             suppressor.close();
+        }
+    }
+
+    @Test
+    void durableCompletionPropagatesSinkFailureToTheCaller() throws Exception {
+        AlertSink failing = new AlertSink() {
+            @Override
+            public void publish(Alert alert) {
+                throw new IllegalStateException("outbox unavailable");
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        try (RuleEngine engine = new RuleEngine(Rules.defaultRules(), List.of(failing))) {
+            engine.start();
+            var completion = engine.ingestAndAwait(
+                    ev("web", "SQLi attempt", "10.0.0.99", null));
+            var failure = org.junit.jupiter.api.Assertions.assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> completion.get(3, TimeUnit.SECONDS));
+            assertTrue(failure.getCause() instanceof IllegalStateException);
+        }
+    }
+
+    @Test
+    void durableCompletionIncludesZeroAlertEvents() throws Exception {
+        List<List<Alert>> results = new CopyOnWriteArrayList<>();
+        EventAlertSink sink = new EventAlertSink() {
+            @Override
+            public void publish(SecurityEvent event, List<Alert> alerts) {
+                results.add(alerts);
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        try (RuleEngine engine = new RuleEngine(Rules.defaultRules(), List.of(sink))) {
+            engine.start();
+            engine.ingestAndAwait(ev("system", "heartbeat", "10.0.0.100", null))
+                    .get(3, TimeUnit.SECONDS);
+            assertEquals(1, results.size());
+            assertTrue(results.get(0).isEmpty());
         }
     }
 }

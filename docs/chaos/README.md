@@ -22,7 +22,9 @@ python build/chaos-pipeline.py --scenario all --count 20 \
 - `duplicate_delivery`: submits the same canonical event twice and verifies
   one logical alert by `sourceAlertId`.
 - `multi_instance`: verifies disjoint partition assignment, stable entity
-  routing, rebalance after stopping the first instance, and assignment restore.
+  routing, rebalance after stopping the first instance, assignment restore,
+  contiguous completion (`pendingEvents == 0`), and deterministic alert-set
+  equality before and after rebalance.
 
 ## Multi-instance setup
 
@@ -51,8 +53,10 @@ returns to a disjoint multi-instance layout.
 ## Pass meaning
 
 `pass=true` means every selected invariant was observed: no silent dependency
-failure, no duplicate source alert, no missing backlog recovery, and no
-unaccounted partition ownership. The matrix does not claim exactly-once
+failure, no duplicate source alert, no missing backlog recovery, no pending
+Detection journal rows after recovery, and no unaccounted partition ownership.
+The multi-instance oracle compares expected deterministic alert IDs with the
+actual set after the rebalance. The matrix does not claim exactly-once
 delivery, strict cross-partition ordering, or production HA.
 
 Additional scenarios should record a before/after snapshot and an observable

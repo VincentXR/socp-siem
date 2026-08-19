@@ -3,6 +3,7 @@ package com.socp.detect.web.service;
 import com.socp.detect.web.engine.AlertForwarder;
 import com.socp.detect.web.engine.RecentAlertSink;
 import com.socp.detect.web.store.DetectionStateStore;
+import com.socp.detect.web.store.DetectionEventClaim;
 import com.socp.detect.web.store.InMemoryDetectionStateStore;
 import com.socp.detect.web.store.RuleSpecStore;
 import com.socp.rule.config.RuleSpec;
@@ -20,6 +21,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -105,9 +107,18 @@ public class DetectEngineService {
      * so a rebalance cannot mix windows from another instance's partitions.
      */
     public synchronized void restoreForPartitions(Set<Integer> partitions) {
+        restoreForPartitions(partitions, false);
+    }
+
+    /** Force a state rebuild after a durable sink failure before retrying. */
+    public synchronized void rebuildForPartitions(Set<Integer> partitions) {
+        restoreForPartitions(partitions, true);
+    }
+
+    private synchronized void restoreForPartitions(Set<Integer> partitions, boolean force) {
         if (partitions == null || partitions.isEmpty()) return;
         Set<Integer> normalized = Set.copyOf(partitions);
-        if (normalized.equals(assignedPartitions.get())) return;
+        if (!force && normalized.equals(assignedPartitions.get())) return;
         assignedPartitions.set(normalized);
         replaceEngine(buildEngine(stateStore.recentForPartitions(normalized, Duration.ofHours(24))));
     }
@@ -164,13 +175,21 @@ public class DetectEngineService {
 
     /** 事件摄取：队列满回 false（接入端据此回 503 + Retry-After） */
     public boolean ingest(SecurityEvent ev) {
-        if (!stateStore.recordIfNew(ev)) {
-            // At-least-once callers may safely retry the same event id.
+        DetectionEventClaim claim = stateStore.claim(ev);
+        if (claim == DetectionEventClaim.COMPLETED || claim == DetectionEventClaim.DEAD_LETTERED) {
             return true;
         }
-        boolean accepted = enqueue(ev);
-        if (!accepted) stateStore.remove(ev.id());
-        return accepted;
+        RuleEngine.Submission submission = engineRef.get().submit(ev, true);
+        if (!submission.accepted()) {
+            if (claim == DetectionEventClaim.NEW) stateStore.remove(ev.id());
+            return false;
+        }
+        submission.completion().whenComplete((ignored, failure) -> {
+            if (failure == null) {
+                stateStore.markCompleted(ev.id());
+            }
+        });
+        return true;
     }
 
     /**
@@ -180,6 +199,11 @@ public class DetectEngineService {
      */
     public boolean ingestFromKafka(SecurityEvent ev) {
         return enqueue(ev);
+    }
+
+    /** Completion is signalled only after EventAlertSink durable effects return. */
+    public CompletableFuture<Void> ingestFromKafkaAndAwait(SecurityEvent ev) {
+        return engineRef.get().ingestAndAwait(ev);
     }
 
     private boolean enqueue(SecurityEvent ev) {
@@ -201,6 +225,7 @@ public class DetectEngineService {
         m.put("queueLoad", e.queueLoad());
         m.put("ruleStats", e.ruleStats());
         m.put("assignedPartitions", assignedPartitions.get());
+        m.put("pendingEvents", stateStore.pendingCount());
         m.put("stateRecovery", Map.of(
                 "store", stateStore.getClass().getSimpleName(),
                 "replayWindow", stateStore.recoveryWindow()));

@@ -17,8 +17,8 @@ correctness and recovery behavior, not a production capacity or HA claim.
 | Detection restart | `python build/demos/detection-recovery.py` | Kafka backlog grows while Detection is down and catches up after restart | Manual/weekly |
 | Alert Web outage | `python build/chaos-pipeline.py --scenario alert_web_restart` | Detection Alert Outbox survives Alert Web outage and creates one alert after recovery | Manual/weekly |
 | Duplicate delivery | `python build/chaos-pipeline.py --scenario duplicate_delivery` | Same event produces one logical alert by source ID | Manual/weekly |
-| Multi-instance | `DETECTION_INSTANCE_URLS=... python build/chaos-pipeline.py --scenario multi_instance` | Disjoint ownership, rebalance, stable entity routing, and assignment restore | Release candidate |
-| E2E benchmark | `python build/benchmark-pipeline.py --mode e2e --count 100 --batch-size 25` | Ingress, end-to-end latency, offsets, lag, and before/after stats | Repeat at 10k/100k/1m |
+| Multi-instance | `DETECTION_INSTANCE_URLS=... python build/chaos-pipeline.py --scenario multi_instance` | Disjoint ownership, rebalance, deterministic alert-set equality, and `pendingEvents == 0` | Release candidate |
+| E2E benchmark | `python build/benchmark-pipeline.py --mode e2e --profile realistic --count 100 --batch-size 25` | Ingress, expected/observed alerts, ingest-to-alert latency, offsets, lag, and before/after stats | Repeat at 10k/100k/1m for both profiles |
 | Bulk baseline | `python build/benchmark-pipeline.py --count 100` | Detection HTTP accepted/rejected counters and latency percentiles | Manual |
 | Full API | `python build/verify-full.py` | Resource CRUD, tenancy, import/export, threat, and response contracts | Scheduled/release candidate |
 | Dependency failure | `python build/failure-tests.py` | Kafka, OpenSearch, Temporal, and PostgreSQL recovery assertions | Manual/scheduled |
@@ -27,6 +27,8 @@ correctness and recovery behavior, not a production capacity or HA claim.
 
 - Duplicate Kafka delivery does not repeat a logical detection or downstream
   side effect.
+- A partition commit never skips a lower pending offset; after recovery the
+  Detection journal has no pending rows for the processed workload.
 - Malformed events are rejected or sent to DLQ without taking down the
   consumer.
 - Detection Alert Outbox rows remain pending when Alert Web is unavailable and
@@ -46,9 +48,10 @@ correctness and recovery behavior, not a production capacity or HA claim.
 
 ## Scale baseline
 
-Run E2E at 10,000, 100,000, and 1,000,000 events, retaining JSON reports with
-machine profile, commit, rules, instances, partitions, batch-request P50/P95/
-P99, aggregate alert-drain time, Kafka lag, Detection stats, and recovery
+Run both E2E profiles at 10,000, 100,000, and 1,000,000 events, retaining JSON
+reports with machine profile, commit, rules, instances, partitions,
+batch-request P50/P95/P99, `alertCreatedAt - triggerIngestedAt` latency sample,
+Kafka lag, Detection stats, expected/observed alert counts, and recovery
 observations. Use the same event shape and a clean test tenant. This is a
 repeatable local baseline, not a production throughput or HA claim.
 

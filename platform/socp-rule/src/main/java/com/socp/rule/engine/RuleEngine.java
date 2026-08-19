@@ -8,27 +8,35 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * 规则引擎：单消费者模型。事件经队列进入，被所有规则评估，
- * 各规则产生的告警统一分发到全部 sink。消费者运行在虚拟线程上。
- * 由 com.siem 迁移（含背压 503 语义：ingest 返回 false 供接入端回 503）。
+ * Single-worker stateful rule engine.
+ *
+ * <p>The legacy {@link #ingest(SecurityEvent)} method keeps its non-blocking
+ * admission contract. Kafka uses {@link #ingestAndAwait(SecurityEvent)} so the
+ * caller receives a completion signal only after every durable sink has
+ * returned. This distinction is what lets the transport commit offset lag
+ * behind business processing without serialising the Kafka poll loop.</p>
  */
 public final class RuleEngine implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(RuleEngine.class);
+    private static final SecurityEvent POISON_EVENT = new SecurityEvent(
+            Instant.EPOCH, "POISON", "POISON", "POISON", Map.of(), Severity.INFO);
 
     private final AtomicReference<List<Rule>> rulesRef;
     private final List<AlertSink> sinks;
-    private final Suppressor suppressor; // 可空
-    private final BlockingQueue<SecurityEvent> queue = new ArrayBlockingQueue<>(100_000);
+    private final Suppressor suppressor;
+    private final BlockingQueue<WorkItem> queue = new ArrayBlockingQueue<>(100_000);
     private volatile boolean running = true;
     private Thread worker;
 
@@ -36,9 +44,13 @@ public final class RuleEngine implements AutoCloseable {
     private final AtomicLong alertCount = new AtomicLong();
     private final AtomicLong dropCount = new AtomicLong();
 
-    // 毒丸事件：用于唤醒消费者线程退出（BlockingQueue 不允许 null）
-    private static final SecurityEvent POISON = new SecurityEvent(
-            Instant.EPOCH, "POISON", "POISON", "POISON", Map.of(), Severity.INFO);
+    /** Immediate queue admission plus an optional durable completion signal. */
+    public record Submission(boolean accepted, CompletableFuture<Void> completion) {
+    }
+
+    private record WorkItem(SecurityEvent event, CompletableFuture<Void> completion,
+                            boolean durable) {
+    }
 
     public RuleEngine(List<Rule> rules, List<AlertSink> sinks) {
         this(rules, sinks, null);
@@ -55,11 +67,8 @@ public final class RuleEngine implements AutoCloseable {
     }
 
     /**
-     * Rebuild stateful rule windows from the durable detection journal before
-     * the worker starts.  Alerts emitted while replaying are intentionally
-     * drained and discarded: the alert/outbox path already owns historical
-     * facts, while this pass only reconstructs threshold/correlation/UEBA
-     * state needed for the next live event.
+     * Rebuild stateful rule windows without replaying historical alerts.
+     * Historical rows supplied here are completed durable events only.
      */
     public void restore(List<SecurityEvent> history) {
         if (history == null || history.isEmpty()) return;
@@ -67,37 +76,23 @@ public final class RuleEngine implements AutoCloseable {
             for (Rule rule : rulesRef.get()) rule.accept(event);
             for (Rule rule : rulesRef.get()) rule.drain();
         }
-        log.info("规则状态恢复完成，重放 {} 条事件", history.size());
+        log.info("Detection rule state restored events={}", history.size());
     }
 
     private void loop() {
         while (running) {
             try {
-                SecurityEvent ev = queue.take();
-                if (ev == POISON) break; // 毒丸，结束
-                eventCount.incrementAndGet();
-                List<Rule> rules = rulesRef.get();
-                for (Rule r : rules) r.accept(ev);
-                for (Rule r : rules) {
-                    List<Alert> alerts = r.drain();
-                    for (Alert a : alerts) {
-                        if (suppressor != null && !suppressor.allow(a)) {
-                            continue; // 被抑制
-                        }
-                        alertCount.incrementAndGet();
-                        for (AlertSink s : sinks) {
-                            try {
-                                s.publish(a);
-                            } catch (RuntimeException ex) {
-                                // A sink (for example the durable Detection
-                                // Outbox) may be temporarily unavailable. Do
-                                // not kill the rule worker or hide the failure;
-                                // the owning pipeline exposes the error and
-                                // its configured retry/backpressure boundary.
-                                log.error("Alert sink failed alertId={} ruleId={}: {}",
-                                        a.id(), a.ruleId(), ex.getMessage(), ex);
-                            }
-                        }
+                WorkItem item = queue.take();
+                if (item.event() == POISON_EVENT) break;
+                try {
+                    process(item);
+                    if (item.completion() != null) item.completion().complete(null);
+                } catch (Throwable ex) {
+                    if (item.completion() != null) {
+                        item.completion().completeExceptionally(ex);
+                    } else {
+                        log.error("Alert processing failed eventId={}: {}",
+                                item.event().id(), ex.getMessage(), ex);
                     }
                 }
             } catch (InterruptedException e) {
@@ -107,26 +102,67 @@ public final class RuleEngine implements AutoCloseable {
         }
     }
 
-    /**
-     * ingestion 入口：把解析后的事件投入处理队列。
-     * 队列满时先施加短暂背压（50ms），给消费者追赶的机会；仍满才丢弃并计数，
-     * 避免突发流量下静默丢失过多数据（生产中再升级为持久化/分片）。
-     *
-     * @return true=已入队；false=队列满被丢弃。调用方（如 HTTP 接入端点）据此
-     *         向上游采集器（Vector/Fluent Bit）返回 503，触发其重试而不是静默丢数据。
-     */
-    public boolean ingest(SecurityEvent ev) {
-        if (queue.offer(ev)) return true;
+    private void process(WorkItem item) {
+        SecurityEvent event = item.event();
+        eventCount.incrementAndGet();
+        List<Rule> rules = rulesRef.get();
+        for (Rule rule : rules) rule.accept(event);
+
+        List<Alert> emitted = new ArrayList<>();
+        for (Rule rule : rules) {
+            for (Alert alert : rule.drain()) {
+                if (suppressor != null && !suppressor.allow(alert)) continue;
+                alertCount.incrementAndGet();
+                emitted.add(alert);
+            }
+        }
+
+        for (AlertSink sink : sinks) {
+            try {
+                if (sink instanceof EventAlertSink eventSink) {
+                    // Empty results are intentional: they are still a
+                    // successful terminal outcome for the source event.
+                    eventSink.publish(event, List.copyOf(emitted));
+                } else {
+                    for (Alert alert : emitted) sink.publish(alert);
+                }
+            } catch (RuntimeException ex) {
+                if (item.durable()) throw ex;
+                // Direct HTTP callers retain the old non-fatal sink behavior.
+                // Kafka callers receive the exception through the completion
+                // future and must retry without advancing the offset.
+                log.error("Alert sink failed eventId={} alerts={}: {}",
+                        event.id(), emitted.size(), ex.getMessage(), ex);
+            }
+        }
+    }
+
+    /** Legacy non-blocking ingestion API. */
+    public boolean ingest(SecurityEvent event) {
+        return submit(event, false).accepted();
+    }
+
+    /** Submit an event and complete after durable sinks have finished. */
+    public CompletableFuture<Void> ingestAndAwait(SecurityEvent event) {
+        return submit(event, true).completion();
+    }
+
+    public Submission submit(SecurityEvent event, boolean durable) {
+        CompletableFuture<Void> completion = new CompletableFuture<>();
+        WorkItem item = new WorkItem(event, completion, durable);
+        if (queue.offer(item)) return new Submission(true, completion);
         try {
-            if (queue.offer(ev, 50, TimeUnit.MILLISECONDS)) return true;
-        } catch (InterruptedException ie) {
+            if (queue.offer(item, 50, TimeUnit.MILLISECONDS)) {
+                return new Submission(true, completion);
+            }
+        } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
         dropCount.incrementAndGet();
-        return false;
+        completion.completeExceptionally(new IllegalStateException("detection queue full"));
+        return new Submission(false, completion);
     }
 
-    /** 队列水位（0.0~1.0），供采集端做自适应限速 / 运维观测。 */
     public double queueLoad() {
         int cap = queue.size() + queue.remainingCapacity();
         return cap == 0 ? 0.0 : (double) queue.size() / cap;
@@ -134,7 +170,7 @@ public final class RuleEngine implements AutoCloseable {
 
     public void close() {
         running = false;
-        queue.offer(POISON); // 唤醒消费者退出
+        queue.offer(new WorkItem(POISON_EVENT, null, false));
         if (worker != null) {
             try {
                 worker.join();
@@ -146,17 +182,12 @@ public final class RuleEngine implements AutoCloseable {
         sinks.forEach(AlertSink::close);
     }
 
-    /**
-     * 热更新规则：关闭旧规则、原子替换为新规则集，无需重启进程。
-     * 进行中的事件可能由旧或新规则评估（窗口内瞬时不一致，可接受）。
-     */
     public void reload(List<Rule> newRules) {
         List<Rule> old = rulesRef.getAndSet(List.copyOf(newRules));
         old.forEach(Rule::close);
-        log.info("规则已热更新，当前 {} 条", newRules.size());
+        log.info("Detection rules reloaded count={}", newRules.size());
     }
 
-    /** 各规则命中统计（2026-08-10）：hits/alerts，用于规则健康度观测。 */
     public List<Map<String, Object>> ruleStats() {
         return rulesRef.get().stream().map(Rule::stats).toList();
     }

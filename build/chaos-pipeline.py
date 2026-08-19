@@ -18,6 +18,7 @@ Examples (Linux/macOS/WSL):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -178,6 +179,18 @@ def list_alerts(token):
     return data if isinstance(data, list) else []
 
 
+def java_name_uuid(value):
+    """Match java.util.UUID.nameUUIDFromBytes used by Alert.stableId."""
+    digest = bytearray(hashlib.md5(value.encode("utf-8")).digest())
+    digest[6] = (digest[6] & 0x0F) | 0x30
+    digest[8] = (digest[8] & 0x3F) | 0x80
+    return str(uuid.UUID(bytes=bytes(digest)))
+
+
+def expected_alert_id(rule_id, entity, event_ids):
+    return java_name_uuid("|".join([rule_id, entity, *event_ids]))
+
+
 def ingest(token, events):
     payload = "\n".join(json.dumps(event) for event in events) + "\n"
     headers = {
@@ -238,13 +251,16 @@ def scenario_detection_restart(token, count):
         recovered = wait_for(drained_snapshot, timeout=120, interval=3) or kafka_snapshot()
         if recovered is None:
             raise RuntimeError("Kafka snapshot unavailable while waiting for Detection recovery")
+        stats = direct_instance_stats(GATEWAY_URL, token)
         return {
             "accepted": accepted,
             "acceptedCount": accepted_count,
             "baseline": baseline,
             "whileStopped": queued,
             "afterRecovery": recovered,
-            "pass": queued["end"] >= baseline["end"] + accepted_count and recovered["lag"] == 0,
+            "pendingEventsAfterRecovery": (stats or {}).get("pendingEvents"),
+            "pass": queued["end"] >= baseline["end"] + accepted_count and recovered["lag"] == 0
+                    and (stats or {}).get("pendingEvents") == 0,
         }
     finally:
         if stopped and not service_up("detect-web", token):
@@ -365,28 +381,41 @@ def scenario_multi_instance(token, count):
         raise RuntimeError("Detection instances did not obtain disjoint full partition ownership")
 
     run_id = uuid.uuid4().hex[:10]
-    src_ip = "198.51.100.222"
-    events = [{
-        "eventId": f"chaos-multi-{run_id}-{i}",
-        "source": "firewall",
-        "host": f"multi-host-{run_id}-{i}",
-        "severity": "HIGH",
-        "message": "RDP connection to 3389",
-        "src_ip": src_ip,
-    } for i in range(max(5, count))]
+    group_count = max(1, count // 5)
+
+    def threshold_batch(prefix, ip_start):
+        events = []
+        expected = []
+        for group in range(group_count):
+            src_ip = f"198.51.100.{ip_start + group}"
+            ids = [f"chaos-multi-{prefix}-{run_id}-{group}-{i}" for i in range(5)]
+            events.extend({
+                "eventId": event_id,
+                "source": "firewall",
+                "host": f"multi-host-{run_id}-{prefix}-{group}-{i}",
+                "severity": "HIGH",
+                "message": "RDP connection to 3389",
+                "src_ip": src_ip,
+            } for i, event_id in enumerate(ids))
+            expected.append(expected_alert_id("LATERAL-RDP", src_ip, ids))
+        return events, expected
+
+    events, expected_initial = threshold_batch("initial", 220)
     before = alert_total(token) or 0
     ingest_result = ingest(token, events)
-    def observed_total():
+    def observed_total(expected_count=1):
         value = alert_total(token)
-        return value if value is not None and value >= before + 1 else None
+        return value if value is not None and value >= before + expected_count else None
 
-    observed = wait_for(observed_total, timeout=120, interval=2)
+    observed = wait_for(lambda: observed_total(len(expected_initial)), timeout=120, interval=2)
 
-    def matching_alerts():
+    def matching_alerts(expected_ids):
         return [item for item in list_alerts(token)
-                if item.get("ruleId") == "LATERAL-RDP" and item.get("entity") == src_ip]
+                if item.get("sourceAlertId") in expected_ids]
 
-    matching = wait_for(lambda: matching_alerts() or None, timeout=60, interval=2) or []
+    matching = wait_for(lambda: matching_alerts(set(expected_initial))
+                        if len(matching_alerts(set(expected_initial))) == len(expected_initial) else None,
+                        timeout=60, interval=2) or []
 
     # Stop the canonical instance and verify the remaining instance receives
     # the full assignment. This is the real rebalance boundary, not merely a
@@ -403,20 +432,37 @@ def scenario_multi_instance(token, count):
             timeout=90, interval=2)
         after_stop_partitions = (after_stop or {}).get("assignedPartitions", [])
         rebalance_ok = len(after_stop_partitions) == baseline["partitions"]
+        post_events, expected_post = threshold_batch("post-rebalance", 230)
+        post_ingest = ingest(token, post_events)
+        expected_all = expected_initial + expected_post
+        observed_post = wait_for(lambda: observed_total(len(expected_all)), timeout=120, interval=2)
+        matching_all = wait_for(
+            lambda: matching_alerts(set(expected_all))
+            if len(matching_alerts(set(expected_all))) == len(expected_all) else None,
+            timeout=60, interval=2) or []
         control("start-service", "detect-web")
         stopped = False
         recovered = wait_for(lambda: assignments(), timeout=120, interval=2)
+        instance_stats = [direct_instance_stats(url, token) for url in urls]
+        pending_values = [item.get("pendingEvents") for item in instance_stats if isinstance(item, dict)]
+        expected_ids = set(expected_all)
+        actual_ids = {item.get("sourceAlertId") for item in matching_all}
         return {
             "initialAssignments": initial,
             "afterStop": {"instance": urls[1], "assignedPartitions": after_stop_partitions},
             "afterRestart": recovered,
             "ingest": ingest_result,
+            "postRebalanceIngest": post_ingest,
             "alertsBefore": before,
-            "alertsAfter": observed,
-            "matchingAlerts": len(matching),
-            "sourceAlertIds": [item.get("sourceAlertId") for item in matching],
-            "pass": (observed is not None and len(matching) == 1 and rebalance_ok
-                      and recovered is not None),
+            "alertsAfter": observed_post,
+            "expectedAlertIds": sorted(expected_ids),
+            "actualAlertIds": sorted(actual_ids),
+            "missingAlertIds": sorted(expected_ids - actual_ids),
+            "unexpectedAlertIds": sorted(actual_ids - expected_ids),
+            "pendingEventsAfterRecovery": pending_values,
+            "pass": (observed_post is not None and actual_ids == expected_ids
+                      and all(value == 0 for value in pending_values)
+                      and rebalance_ok and recovered is not None),
         }
     finally:
         if stopped and not direct_instance_up(urls[0], token):

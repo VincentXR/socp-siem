@@ -55,7 +55,7 @@ python build/chaos-pipeline.py --scenario alert_web_restart
 python build/chaos-pipeline.py --scenario duplicate_delivery
 python build/failure-tests.py
 python build/validate-detection-content.py
-python build/benchmark-pipeline.py --mode e2e --count 100 --batch-size 25 \
+python build/benchmark-pipeline.py --mode e2e --profile realistic --count 100 --batch-size 25 \
   --output .cache/benchmark/e2e-100.json
 ```
 
@@ -67,9 +67,11 @@ Alert Outbox row survives a downstream outage.
 
 The benchmark has two scopes. `bulk` measures the Detection HTTP boundary;
 `--mode e2e` sends events through `search-config -> Kafka -> detect-web ->
-alert-web` and waits for the expected alerts. It records batch request
-P50/P95/P99, ingress throughput, aggregate alert-drain/end-to-end latency,
-Kafka offsets when `kafka-python` is installed, and optional
+alert-web` and waits for the expected alerts. Use `--profile realistic` for a
+low hit-rate mixed workload or `--profile alert-heavy` to stress the durable
+alert path. It records batch request P50/P95/P99, ingress throughput,
+`alertCreatedAt - triggerIngestedAt` processing latency from durable Alert Web
+fields, Kafka offsets when `kafka-python` is installed, and optional
 OpenSearch/ClickHouse counters. It is a repeatable single-node baseline, not a
 production capacity claim.
 

@@ -15,6 +15,48 @@ import java.util.List;
  */
 public interface DetectionStateStore {
 
+    /** Claim an event, retaining the distinction between replayable and terminal rows. */
+    default DetectionEventClaim claim(SecurityEvent event) {
+        return recordIfNew(event) ? DetectionEventClaim.NEW : DetectionEventClaim.COMPLETED;
+    }
+
+    default DetectionEventClaim claim(SecurityEvent event, Integer partition, Long offset,
+                                      String routingKey) {
+        return recordIfNew(event, partition, offset, routingKey)
+                ? DetectionEventClaim.NEW : DetectionEventClaim.COMPLETED;
+    }
+
+    /** Mark all durable effects for an event as committed. */
+    default void markCompleted(String eventId) {
+        // In-memory/unit-test implementations may not need a second phase.
+    }
+
+    /** Mark an accepted event as terminally persisted to DLQ. */
+    default void markDeadLettered(String eventId, String reason) {
+        // Optional for source-compatible test stores.
+    }
+
+    default void recordDeadLettered(String eventId, String raw, Integer partition, Long offset,
+                                    String reason) {
+        markDeadLettered(eventId, reason);
+    }
+
+    default long pendingCount() {
+        return 0L;
+    }
+
+    /** Pending rows left by a previous process are replayable after assignment. */
+    default List<SecurityEvent> pendingForPartitions(Set<Integer> partitions, Duration window) {
+        return List.of();
+    }
+
+    default List<PendingDetectionEvent> pendingRecordsForPartitions(Set<Integer> partitions,
+                                                                     Duration window) {
+        return pendingForPartitions(partitions, window).stream()
+                .map(event -> new PendingDetectionEvent(event, null, null))
+                .toList();
+    }
+
     /** Claim an event id and append the event to the recovery journal. */
     boolean recordIfNew(SecurityEvent event);
 

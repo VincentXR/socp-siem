@@ -123,7 +123,8 @@ benchmark; retain machine-specific output outside source control.
 - A stateful rule is strictly partition-local only when its grouping field
   matches the canonical event routing field.
 - Journal replay is bounded by `SOCP_DETECT_STATE_RETENTION` (24 hours by
-  default) and a 10,000-row recovery cap.
+  default) and paginated by `SOCP_DETECT_STATE_REPLAY_PAGE_SIZE`; it is not
+  truncated at a fixed row count.
 - Tenant isolation is logical (`tenant_id` and query filters), not physical
   database isolation.
 - H2 is a local convenience profile. Use PostgreSQL and `prod` guard checks

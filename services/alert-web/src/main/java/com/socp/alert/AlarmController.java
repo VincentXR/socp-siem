@@ -51,6 +51,10 @@ public class AlarmController {
         }
         // 检测侧（DETECT）已给出初评时先沿用；随后 THREAT 富化会二次修正
         a.setRiskScore(req.riskScore());
+        a.setTriggerIngestedAt(req.triggerIngestedAt());
+        a.setAlertCreatedAt(req.alertCreatedAt());
+        a.setProcessingLatencyMs(req.processingLatencyMs());
+        a.setTriggerEventId(req.triggerEventId());
         return ApiResult.ok(service.create(a, req.evidence() == null ? List.of() : req.evidence()));
     }
 
@@ -169,6 +173,10 @@ public class AlarmController {
             /** 检测侧初评的威胁评分 0~100，可空（空则由 ALERT 自行计算） */
             Integer riskScore,
             List<AlarmEvidenceInput> evidence,
-            String sourceAlertId) {
+            String sourceAlertId,
+            Instant triggerIngestedAt,
+            Instant alertCreatedAt,
+            Long processingLatencyMs,
+            String triggerEventId) {
     }
 }

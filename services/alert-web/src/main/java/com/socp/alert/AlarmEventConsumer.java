@@ -207,6 +207,20 @@ public class AlarmEventConsumer {
             a.setOccurredAt(m.get("occurredAt") == null ? null : Instant.parse(String.valueOf(m.get("occurredAt"))));
         } catch (Exception ignored) {
         }
+        try {
+            a.setTriggerIngestedAt(m.get("triggerIngestedAt") == null
+                    ? null : Instant.parse(String.valueOf(m.get("triggerIngestedAt"))));
+        } catch (Exception ignored) {
+        }
+        try {
+            a.setAlertCreatedAt(m.get("alertCreatedAt") == null
+                    ? null : Instant.parse(String.valueOf(m.get("alertCreatedAt"))));
+        } catch (Exception ignored) {
+        }
+        if (m.get("processingLatencyMs") instanceof Number n) {
+            a.setProcessingLatencyMs(n.longValue());
+        }
+        a.setTriggerEventId(str(m.get("triggerEventId")));
         return a;
     }
 

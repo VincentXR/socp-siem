@@ -30,6 +30,7 @@ socp:
   detect:
     state:
       retention: ${SOCP_DETECT_STATE_RETENTION:24h}
+      replay-page-size: ${SOCP_DETECT_STATE_REPLAY_PAGE_SIZE:1000}
   kafka:
     group-id: ${SOCP_KAFKA_GROUP_ID:socp-detect}
     # Polling is deliberately short; delivery is still bounded by the

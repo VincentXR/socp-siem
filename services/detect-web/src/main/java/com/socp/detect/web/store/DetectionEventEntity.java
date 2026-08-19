@@ -46,6 +46,18 @@ public class DetectionEventEntity {
     @Column(name = "routing_key", length = 255)
     private String routingKey;
 
+    @Column(nullable = false, length = 16)
+    private String status;
+
+    @Column(name = "status_reason", length = 1024)
+    private String statusReason;
+
+    @Column(name = "completed_at")
+    private Instant completedAt;
+
+    @Column(name = "dead_lettered_at")
+    private Instant deadLetteredAt;
+
     public DetectionEventEntity() {
     }
 
@@ -67,6 +79,7 @@ public class DetectionEventEntity {
         this.kafkaPartition = kafkaPartition;
         this.kafkaOffset = kafkaOffset;
         this.routingKey = routingKey;
+        this.status = DetectionEventStatus.PENDING.name();
     }
 
     public String getEventId() { return eventId; }
@@ -79,4 +92,12 @@ public class DetectionEventEntity {
     public Integer getKafkaPartition() { return kafkaPartition; }
     public Long getKafkaOffset() { return kafkaOffset; }
     public String getRoutingKey() { return routingKey; }
+    public String getStatus() { return status; }
+    public void setStatus(String status) { this.status = status; }
+    public String getStatusReason() { return statusReason; }
+    public void setStatusReason(String statusReason) { this.statusReason = statusReason; }
+    public Instant getCompletedAt() { return completedAt; }
+    public void setCompletedAt(Instant completedAt) { this.completedAt = completedAt; }
+    public Instant getDeadLetteredAt() { return deadLetteredAt; }
+    public void setDeadLetteredAt(Instant deadLetteredAt) { this.deadLetteredAt = deadLetteredAt; }
 }

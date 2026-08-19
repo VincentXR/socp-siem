@@ -5,7 +5,7 @@ import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.domain.PageRequest;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -20,13 +20,11 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * PostgreSQL/H2-backed recovery journal for accepted detection events.
+ * PostgreSQL/H2-backed journal for Detection event claims and state recovery.
  *
- * <p>The journal is deliberately bounded by a configurable replay window. It
- * is not an archive; OpenSearch remains the investigation store. Its purpose
- * is to make threshold/correlation/baseline/rare state recoverable after a
- * process restart and to provide a durable event-id claim for at-least-once
- * Kafka delivery.</p>
+ * <p>Only COMPLETED events rebuild hot rule windows. PENDING rows are replayed
+ * as live work after a restart/rebalance, while DEAD_LETTERED rows are
+ * terminal and never silently re-enter the detection engine.</p>
  */
 @Component
 public class DetectionEventJournal implements DetectionStateStore {
@@ -36,26 +34,33 @@ public class DetectionEventJournal implements DetectionStateStore {
 
     private final DetectionEventRepository repository;
     private final Duration retention;
+    private final int replayPageSize;
     private final AtomicLong writes = new AtomicLong();
 
     public DetectionEventJournal(DetectionEventRepository repository,
-                                 @org.springframework.beans.factory.annotation.Value(
-                                         "${socp.detect.state.retention:24h}") String retention) {
+                                 @Value("${socp.detect.state.retention:24h}") String retention,
+                                 @Value("${socp.detect.state.replay-page-size:1000}") int replayPageSize) {
         this.repository = repository;
         this.retention = parseDuration(retention);
+        this.replayPageSize = Math.max(100, Math.min(10_000, replayPageSize));
     }
 
     @Override
     @Transactional
-    public boolean recordIfNew(SecurityEvent event) {
-        return recordIfNew(event, null, null, null);
+    public DetectionEventClaim claim(SecurityEvent event) {
+        return claim(event, null, null, null);
     }
 
     @Override
     @Transactional
-    public boolean recordIfNew(SecurityEvent event, Integer partition, Long offset, String routingKey) {
-        if (event == null || event.id() == null || event.id().isBlank()) return false;
-        if (repository.existsById(event.id())) return false;
+    public DetectionEventClaim claim(SecurityEvent event, Integer partition, Long offset,
+                                     String routingKey) {
+        if (event == null || event.id() == null || event.id().isBlank()) {
+            throw new IllegalArgumentException("event id is required");
+        }
+        var existing = repository.findById(event.id());
+        if (existing.isPresent()) return claimOf(existing.get());
+
         try {
             String fields = com.socp.rule.util.Json.mapper().writeValueAsString(
                     event.fields() == null ? Map.of() : event.fields());
@@ -65,19 +70,74 @@ public class DetectionEventJournal implements DetectionStateStore {
                     fields, event.severity() == null ? Severity.INFO.name() : event.severity().name(),
                     event.timestamp() == null ? Instant.now() : event.timestamp(),
                     partition, offset, routingKey));
-            // Prune lazily so the hot path does not need a scheduler or a second
-            // durable queue. A timestamp index keeps this cheap in both H2 and PG.
             if (writes.incrementAndGet() % 500 == 0) {
                 repository.deleteByOccurredAtBefore(Instant.now().minus(retention));
             }
-            return true;
+            return DetectionEventClaim.NEW;
         } catch (DataIntegrityViolationException duplicate) {
-            // Two Kafka consumers can race on the same event id; the unique PK
-            // is the final arbiter, not the in-process cache.
-            return false;
+            // The primary key is the final arbiter when two consumers race.
+            // The caller retries; the next transaction observes the durable row.
+            throw duplicate;
         } catch (Exception ex) {
-            throw new IllegalStateException("无法写入检测状态日志: " + ex.getMessage(), ex);
+            throw new IllegalStateException("unable to write detection event journal: " + ex.getMessage(), ex);
         }
+    }
+
+    @Override
+    public boolean recordIfNew(SecurityEvent event) {
+        return claim(event) == DetectionEventClaim.NEW;
+    }
+
+    @Override
+    public boolean recordIfNew(SecurityEvent event, Integer partition, Long offset,
+                               String routingKey) {
+        return claim(event, partition, offset, routingKey) == DetectionEventClaim.NEW;
+    }
+
+    @Override
+    @Transactional
+    public void markCompleted(String eventId) {
+        if (eventId == null || eventId.isBlank()) return;
+        repository.findById(eventId).ifPresent(row -> {
+            if (DetectionEventStatus.DEAD_LETTERED.name().equals(row.getStatus())) return;
+            Instant now = Instant.now();
+            row.setStatus(DetectionEventStatus.COMPLETED.name());
+            row.setCompletedAt(now);
+            row.setStatusReason(null);
+            repository.saveAndFlush(row);
+        });
+    }
+
+    @Override
+    @Transactional
+    public void markDeadLettered(String eventId, String reason) {
+        if (eventId == null || eventId.isBlank()) return;
+        repository.findById(eventId).ifPresent(row -> {
+            Instant now = Instant.now();
+            row.setStatus(DetectionEventStatus.DEAD_LETTERED.name());
+            row.setDeadLetteredAt(now);
+            row.setStatusReason(truncate(reason));
+            repository.saveAndFlush(row);
+        });
+    }
+
+    @Override
+    @Transactional
+    public void recordDeadLettered(String eventId, String raw, Integer partition, Long offset,
+                                   String reason) {
+        if (eventId == null || eventId.isBlank() || "null".equalsIgnoreCase(eventId)) return;
+        var existing = repository.findById(eventId);
+        if (existing.isPresent()) {
+            markDeadLettered(eventId, reason);
+            return;
+        }
+        DetectionEventEntity row = new DetectionEventEntity(
+                eventId, "unknown", "unknown", safe(raw, "", 8192), "{}", Severity.INFO.name(),
+                Instant.now(), partition, offset, null);
+        row.setStatus(DetectionEventStatus.DEAD_LETTERED.name());
+        row.setDeadLetteredAt(Instant.now());
+        row.setStatusReason(truncate(reason));
+        repository.saveAndFlush(row);
     }
 
     @Override
@@ -89,22 +149,77 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Override
     @Transactional(readOnly = true)
     public List<SecurityEvent> recent(Duration window) {
-        return fromRows(repository.findTop10000ByOccurredAtAfterOrderByOccurredAtAsc(cutoff(window)));
+        return readPages((page, size) -> repository
+                .findByStatusAndOccurredAtAfterOrderByOccurredAtAscEventIdAsc(
+                        DetectionEventStatus.COMPLETED.name(), cutoff(window),
+                        org.springframework.data.domain.PageRequest.of(page, size)), true);
     }
 
     @Override
     @Transactional(readOnly = true)
     public List<SecurityEvent> recentForPartitions(Set<Integer> partitions, Duration window) {
         if (partitions == null || partitions.isEmpty()) return List.of();
-        return fromRows(repository.findByKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
-                partitions, cutoff(window), PageRequest.of(0, 10_000)), false);
+        return readPages((page, size) -> repository
+                .findByStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
+                        DetectionEventStatus.COMPLETED.name(), partitions, cutoff(window),
+                        org.springframework.data.domain.PageRequest.of(page, size)), false);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<SecurityEvent> pendingForPartitions(Set<Integer> partitions, Duration window) {
+        if (partitions == null || partitions.isEmpty()) return List.of();
+        return readPages((page, size) -> repository
+                .findByStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
+                        DetectionEventStatus.PENDING.name(), partitions, cutoff(window),
+                        org.springframework.data.domain.PageRequest.of(page, size)), false);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<PendingDetectionEvent> pendingRecordsForPartitions(Set<Integer> partitions,
+                                                                    Duration window) {
+        if (partitions == null || partitions.isEmpty()) return List.of();
+        List<DetectionEventEntity> rows = new ArrayList<>();
+        for (int page = 0; ; page++) {
+            List<DetectionEventEntity> batch = repository
+                    .findByStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
+                            DetectionEventStatus.PENDING.name(), partitions, cutoff(window),
+                            org.springframework.data.domain.PageRequest.of(page, replayPageSize));
+            rows.addAll(batch);
+            if (batch.size() < replayPageSize) break;
+        }
+        return rows.stream().map(this::pendingRow).filter(java.util.Objects::nonNull).toList();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public long pendingCount() {
+        return repository.countByStatus(DetectionEventStatus.PENDING.name());
+    }
+
+    @Override
+    public String recoveryWindow() {
+        return retention.toString();
+    }
+
+    public Duration retention() {
+        return retention;
+    }
+
+    private List<SecurityEvent> readPages(PageReader reader, boolean sortByTimestamp) {
+        List<DetectionEventEntity> rows = new ArrayList<>();
+        for (int page = 0; ; page++) {
+            List<DetectionEventEntity> batch = reader.read(page, replayPageSize);
+            rows.addAll(batch);
+            if (batch.size() < replayPageSize) break;
+        }
+        List<SecurityEvent> out = fromRows(rows);
+        if (sortByTimestamp) out.sort(Comparator.comparing(SecurityEvent::timestamp));
+        return out;
     }
 
     private List<SecurityEvent> fromRows(List<DetectionEventEntity> rows) {
-        return fromRows(rows, true);
-    }
-
-    private List<SecurityEvent> fromRows(List<DetectionEventEntity> rows, boolean sortByTimestamp) {
         List<SecurityEvent> out = new ArrayList<>();
         for (DetectionEventEntity row : rows) {
             try {
@@ -119,11 +234,27 @@ public class DetectionEventJournal implements DetectionStateStore {
                 out.add(new SecurityEvent(row.getEventId(), row.getOccurredAt(), row.getSource(),
                         row.getHost(), row.getRaw(), fields, severity));
             } catch (Exception ex) {
-                log.warn("忽略无法恢复的检测事件 eventId={}: {}", row.getEventId(), ex.getMessage());
+                log.warn("Unable to restore detection event eventId={}: {}",
+                        row.getEventId(), ex.getMessage());
             }
         }
-        if (sortByTimestamp) out.sort(Comparator.comparing(SecurityEvent::timestamp));
         return out;
+    }
+
+    private PendingDetectionEvent pendingRow(DetectionEventEntity row) {
+        List<SecurityEvent> events = fromRows(List.of(row));
+        if (events.isEmpty()) return null;
+        return new PendingDetectionEvent(events.get(0), row.getKafkaPartition(), row.getKafkaOffset());
+    }
+
+    private static DetectionEventClaim claimOf(DetectionEventEntity row) {
+        if (DetectionEventStatus.PENDING.name().equals(row.getStatus())) {
+            return DetectionEventClaim.PENDING;
+        }
+        if (DetectionEventStatus.DEAD_LETTERED.name().equals(row.getStatus())) {
+            return DetectionEventClaim.DEAD_LETTERED;
+        }
+        return DetectionEventClaim.COMPLETED;
     }
 
     private Instant cutoff(Duration window) {
@@ -132,18 +263,13 @@ public class DetectionEventJournal implements DetectionStateStore {
         return Instant.now().minus(requested.compareTo(retention) > 0 ? retention : requested);
     }
 
-    public Duration retention() {
-        return retention;
-    }
-
-    @Override
-    public String recoveryWindow() {
-        return retention.toString();
-    }
-
     private static String safe(String value, String fallback, int max) {
         if (value == null || value.isBlank()) return fallback;
         return value.length() <= max ? value : value.substring(0, max);
+    }
+
+    private static String truncate(String value) {
+        return safe(value, "unknown", 1024);
     }
 
     private static Duration parseDuration(String value) {
@@ -157,5 +283,10 @@ public class DetectionEventJournal implements DetectionStateStore {
         } catch (NumberFormatException ex) {
             return Duration.ofHours(24);
         }
+    }
+
+    @FunctionalInterface
+    private interface PageReader {
+        List<DetectionEventEntity> read(int page, int size);
     }
 }
