@@ -14,6 +14,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class DetectionEventJournalReplayTest {
@@ -36,6 +37,20 @@ class DetectionEventJournalReplayTest {
                 Set.of(2), Duration.ofHours(1), batch -> deliveredPageSizes.add(batch.size()));
 
         assertEquals(List.of(100, 1), deliveredPageSizes);
+    }
+
+    @Test
+    void retentionCleanupDeletesOnlyTerminalRowsOutsideTheClaimPath() {
+        DetectionEventRepository repository = mock(DetectionEventRepository.class);
+        when(repository.deleteTerminalBefore(any(), any(Instant.class))).thenReturn(7L);
+
+        DetectionEventJournal journal = new DetectionEventJournal(repository, "24h", 100);
+        journal.cleanupExpiredTerminalEvents();
+
+        verify(repository).deleteTerminalBefore(
+                eq(Set.of(DetectionEventStatus.COMPLETED.name(),
+                        DetectionEventStatus.DEAD_LETTERED.name())),
+                any(Instant.class));
     }
 
     private static List<DetectionEventEntity> rows(int start, int count) {

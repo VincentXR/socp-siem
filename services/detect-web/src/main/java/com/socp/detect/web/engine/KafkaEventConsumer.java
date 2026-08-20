@@ -39,6 +39,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.RejectedExecutionHandler;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -115,6 +117,8 @@ public class KafkaEventConsumer {
         if (consumerThread != null) consumerThread.interrupt();
         partitionLanes.values().forEach(ExecutorService::shutdownNow);
         partitionLanes.clear();
+        var producer = dlqProducer;
+        if (producer != null) producer.close(Duration.ofSeconds(5));
     }
 
     private org.apache.kafka.clients.producer.KafkaProducer<String, String> dlq() {
@@ -232,7 +236,28 @@ public class KafkaEventConsumer {
                 1, 1, 0L, TimeUnit.MILLISECONDS,
                 new ArrayBlockingQueue<>(1_000),
                 Thread.ofVirtual().name("detect-partition-" + partition + "-", 0).factory(),
-                new ThreadPoolExecutor.CallerRunsPolicy()));
+                blockingLaneBackpressure()));
+    }
+
+    /**
+     * Preserve Kafka's partition order when a lane is saturated. Caller-runs
+     * would execute the newest offset on the consumer thread ahead of the
+     * older offsets already queued for that partition. Blocking admission is
+     * intentional backpressure; max.poll.interval.ms is sized for recovery.
+     */
+    static RejectedExecutionHandler blockingLaneBackpressure() {
+        return (task, executor) -> {
+            try {
+                while (!executor.isShutdown()) {
+                    if (executor.getQueue().offer(task, 100, TimeUnit.MILLISECONDS)) return;
+                }
+                throw new RejectedExecutionException("Detection partition lane is closed");
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new RejectedExecutionException(
+                        "Interrupted while applying Detection partition backpressure", interrupted);
+            }
+        };
     }
 
     private void replayPending(Set<Integer> partitions) {

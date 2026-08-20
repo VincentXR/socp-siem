@@ -107,7 +107,7 @@ public class DetectionAlertOutboxPublisher {
                     if ("PENDING".equals(stage)) {
                         Instant claimedAt = performanceMetrics == null
                                 ? Instant.now() : performanceMetrics.outboxClaimed(event);
-                        deliverToAlertWeb(event, claimedAt);
+                        deliverAndPublish(event, claimedAt);
                     } else {
                         if (performanceMetrics != null) {
                             performanceMetrics.outboxStateTransaction("original_claim");
@@ -134,7 +134,7 @@ public class DetectionAlertOutboxPublisher {
         }
     }
 
-    private void deliverToAlertWeb(DetectionAlertOutboxEntity event, Instant claimedAt) {
+    private void deliverAndPublish(DetectionAlertOutboxEntity event, Instant claimedAt) {
         ServiceCall call;
         try {
             String deliveryPayload = payloadWithClaimedAt(event.getPayload(), claimedAt);
@@ -158,9 +158,14 @@ public class DetectionAlertOutboxPublisher {
         event.setNextAttemptAt(now);
         event.setUpdatedAt(now);
         event.setLastError(null);
-        save(event);
-        if (performanceMetrics != null) performanceMetrics.outboxStateTransaction("delivery_state");
-        log.debug("Detection alert accepted by alert-web alertId={}", event.getAlertId());
+        // Keep the database row PROCESSING while the optional original-alarm
+        // publication completes. The happy path now needs only claim + final
+        // PUBLISHED transactions. If this process crashes in between, stale
+        // claim recovery returns the row to PENDING and Alert Web's
+        // sourceAlertId idempotency safely absorbs the repeated HTTP request.
+        // A failed second stage persists DELIVERED and resumes there without
+        // repeating the already successful Alert Web request.
+        publishOriginalAlarm(event);
     }
 
     private void publishOriginalAlarm(DetectionAlertOutboxEntity event) {

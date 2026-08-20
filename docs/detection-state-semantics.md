@@ -123,7 +123,7 @@ incremented twice.
 
 ## Alert delivery stages
 
-The Detection alert outbox publisher advances rows through:
+The Detection alert outbox publisher has two logical delivery stages:
 
 ```text
 PENDING
@@ -131,11 +131,18 @@ PENDING
   -- original alarm Kafka acknowledgement --> PUBLISHED
 ```
 
-Failed Alert Web calls remain `PENDING` with exponential backoff. Failed
-detect-model Kafka calls remain `DELIVERED`, so retrying them does not recreate
-the HTTP alert. A publisher crash leaves `PROCESSING`; claims older than two
-minutes return to the correct stage. Alert Web enforces
-`(tenant_id, source_alert_id)` idempotency.
+On the normal path, `DELIVERED` is an in-memory transition: the publisher goes
+from its optimistic `PROCESSING` claim directly to durable `PUBLISHED`. This
+removes an intermediate database transaction from every alert. If the second
+stage fails, `DELIVERED` is persisted as the recovery point, so retrying it does
+not recreate the HTTP alert. Failed Alert Web calls return to `PENDING` with
+exponential backoff.
+
+A crash after Alert Web acknowledges but before `PUBLISHED` is saved leaves a
+stale `PROCESSING` row without a durable delivery timestamp. It is therefore
+returned to `PENDING` and may repeat the HTTP request; Alert Web enforces
+`(tenant_id, source_alert_id)` idempotency and absorbs that replay. This is the
+intentional at-least-once trade-off that permits the shorter happy path.
 
 ## Crash matrix
 

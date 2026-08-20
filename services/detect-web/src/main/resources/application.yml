@@ -31,17 +31,19 @@ socp:
     state:
       retention: ${SOCP_DETECT_STATE_RETENTION:24h}
       replay-page-size: ${SOCP_DETECT_STATE_REPLAY_PAGE_SIZE:1000}
-  kafka:
-    group-id: ${SOCP_KAFKA_GROUP_ID:socp-detect}
-    # Polling is deliberately short; delivery is still bounded by the
-    # database-backed outbox and its exponential retry schedule.
+      cleanup-interval-ms: ${SOCP_DETECT_STATE_CLEANUP_INTERVAL_MS:600000}
+      cleanup-initial-delay-ms: ${SOCP_DETECT_STATE_CLEANUP_INITIAL_DELAY_MS:600000}
     alert-outbox:
+      # Polling is deliberately short; delivery is still bounded by the
+      # database-backed outbox and its exponential retry schedule.
       poll-interval-ms: ${SOCP_DETECT_ALERT_OUTBOX_POLL_MS:1000}
       initial-delay-ms: ${SOCP_DETECT_ALERT_OUTBOX_INITIAL_DELAY_MS:1000}
       # Bound synchronous Alert Web calls per Detection instance. The verified
       # three-instance profile therefore offers at most six concurrent durable
       # deliveries without saturating the shared PostgreSQL instance.
       delivery-concurrency: ${SOCP_DETECT_ALERT_OUTBOX_CONCURRENCY:2}
+  kafka:
+    group-id: ${SOCP_KAFKA_GROUP_ID:socp-detect}
 
 management:
   endpoints:

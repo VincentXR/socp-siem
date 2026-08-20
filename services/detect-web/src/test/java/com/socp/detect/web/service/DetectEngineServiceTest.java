@@ -18,6 +18,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -101,6 +104,50 @@ class DetectEngineServiceTest {
                     org.mockito.ArgumentMatchers.any(Duration.class),
                     org.mockito.ArgumentMatchers.any());
         } finally {
+            service.stop();
+        }
+    }
+
+    @Test
+    void rebuildDrainsAcceptedWorkBeforeReadingTheJournalSnapshot() throws Exception {
+        when(store.list()).thenReturn(List.of());
+        when(stateStore.claim(org.mockito.ArgumentMatchers.any(SecurityEvent.class)))
+                .thenReturn(com.socp.detect.web.store.DetectionEventClaim.NEW);
+        CountDownLatch sinkEntered = new CountDownLatch(1);
+        CountDownLatch releaseSink = new CountDownLatch(1);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            sinkEntered.countDown();
+            assertTrue(releaseSink.await(3, TimeUnit.SECONDS));
+            return null;
+        }).when(forwarder).forwardAll(
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyList());
+
+        DetectEngineService service = new DetectEngineService(
+                store, new RecentAlertSink(10, forwarder, null),
+                forwarder, rulePublisher, stateStore);
+        service.start();
+        try {
+            assertTrue(service.ingest(new SecurityEvent(
+                    Instant.now(), "system", "host-1", "heartbeat", Map.of(), Severity.INFO)));
+            assertTrue(sinkEntered.await(2, TimeUnit.SECONDS));
+
+            CompletableFuture<Void> rebuild = CompletableFuture.runAsync(
+                    () -> service.rebuildForPartitions(Set.of(1)));
+            Thread.sleep(100);
+            verify(stateStore, org.mockito.Mockito.never()).replayRecentForPartitions(
+                    org.mockito.ArgumentMatchers.anySet(),
+                    org.mockito.ArgumentMatchers.any(Duration.class),
+                    org.mockito.ArgumentMatchers.any());
+
+            releaseSink.countDown();
+            rebuild.get(3, TimeUnit.SECONDS);
+            verify(stateStore).markCompleted(org.mockito.ArgumentMatchers.anyString());
+            verify(stateStore).replayRecentForPartitions(
+                    org.mockito.ArgumentMatchers.eq(Set.of(1)),
+                    org.mockito.ArgumentMatchers.any(Duration.class),
+                    org.mockito.ArgumentMatchers.any());
+        } finally {
+            releaseSink.countDown();
             service.stop();
         }
     }

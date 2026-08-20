@@ -13,9 +13,15 @@ import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -98,5 +104,42 @@ class KafkaEventConsumerTest {
                 eq("default|src_ip|198.51.100.9"));
         verify(stateStore, never()).markCompleted("partition-test-1");
         verify(engine).ingestFromKafkaAndAwait(any(SecurityEvent.class));
+    }
+
+    @Test
+    void saturatedPartitionLaneBlocksAdmissionWithoutReorderingOffsets() throws Exception {
+        List<Integer> executionOrder = new java.util.concurrent.CopyOnWriteArrayList<>();
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        ThreadPoolExecutor lane = new ThreadPoolExecutor(
+                1, 1, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(1),
+                KafkaEventConsumer.blockingLaneBackpressure());
+        try {
+            lane.execute(() -> {
+                executionOrder.add(1);
+                firstStarted.countDown();
+                try {
+                    releaseFirst.await();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            assertTrue(firstStarted.await(1, TimeUnit.SECONDS));
+            lane.execute(() -> executionOrder.add(2));
+
+            CompletableFuture<Void> thirdAdmission = CompletableFuture.runAsync(
+                    () -> lane.execute(() -> executionOrder.add(3)));
+            Thread.sleep(100);
+            assertFalse(thirdAdmission.isDone(), "saturated admission must apply backpressure");
+
+            releaseFirst.countDown();
+            thirdAdmission.get(1, TimeUnit.SECONDS);
+            lane.shutdown();
+            assertTrue(lane.awaitTermination(1, TimeUnit.SECONDS));
+            assertEquals(List.of(1, 2, 3), executionOrder);
+        } finally {
+            releaseFirst.countDown();
+            lane.shutdownNow();
+        }
     }
 }

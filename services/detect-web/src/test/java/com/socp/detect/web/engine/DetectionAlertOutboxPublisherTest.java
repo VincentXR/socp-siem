@@ -57,10 +57,7 @@ class DetectionAlertOutboxPublisherTest {
         DetectionAlertOutboxEntity event = event("alert-2");
         given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
                 eq("PENDING"), any(Instant.class))).willReturn(List.of(event));
-        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
-                eq("DELIVERED"), any(Instant.class))).willReturn(List.of(event));
         given(repository.claim(eq("alert-2"), eq("PENDING"), any(Instant.class))).willReturn(1);
-        given(repository.claim(eq("alert-2"), eq("DELIVERED"), any(Instant.class))).willReturn(1);
         given(alertClient.forwardAlarm(anyString())).willReturn(success());
         given(alarmProducer.sendAndAwait(any(), eq("alert-2"))).willReturn(true);
 
@@ -72,6 +69,7 @@ class DetectionAlertOutboxPublisherTest {
                 payload.contains("\"id\":\"alert-2\"")
                         && payload.contains("\"detectionOutboxClaimedAt\"")));
         verify(alarmProducer).sendAndAwait(any(), eq("alert-2"));
+        verify(repository, never()).claim(eq("alert-2"), eq("DELIVERED"), any(Instant.class));
     }
 
     @Test
@@ -107,6 +105,25 @@ class DetectionAlertOutboxPublisherTest {
         assertEquals("DELIVERED", event.getStatus());
         assertEquals(1, event.getAttempts());
         verify(alertClient, never()).forwardAlarm(anyString());
+    }
+
+    @Test
+    void secondStageFailureAfterHttpSuccessPersistsDeliveredRecoveryPoint() {
+        DetectionAlertOutboxEntity event = event("alert-inline-failure");
+        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+                eq("PENDING"), any(Instant.class))).willReturn(List.of(event));
+        given(repository.claim(eq("alert-inline-failure"), eq("PENDING"), any(Instant.class)))
+                .willReturn(1);
+        given(alertClient.forwardAlarm(anyString())).willReturn(success());
+        given(alarmProducer.sendAndAwait(any(), eq("alert-inline-failure"))).willReturn(false);
+
+        publisher().publishDue();
+
+        assertEquals("DELIVERED", event.getStatus());
+        assertEquals(1, event.getAttempts());
+        assertTrue(event.alertDelivered());
+        verify(repository, never()).claim(
+                eq("alert-inline-failure"), eq("DELIVERED"), any(Instant.class));
     }
 
     @Test
@@ -146,6 +163,7 @@ class DetectionAlertOutboxPublisherTest {
                 active.decrementAndGet();
             }
         });
+        given(alarmProducer.sendAndAwait(any(), anyString())).willReturn(true);
 
         DetectionAlertOutboxPublisher publisher = new DetectionAlertOutboxPublisher(
                 repository, alertClient, alarmProducer, null, 4);

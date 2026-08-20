@@ -13,10 +13,11 @@ import java.time.Instant;
  *
  * <p>The alert id is the primary key because Detection emits deterministic
  * alert identities.  A replay therefore becomes an idempotent lookup instead
- * of another alert row.  The two delivery stages are represented by status:
- * PENDING means Alert Web has not acknowledged the payload, DELIVERED means
- * it has acknowledged it but the optional detect-model event is still due,
- * and PUBLISHED means both stages have completed.</p>
+ * of another alert row. PENDING means Alert Web has not durably acknowledged
+ * the payload, DELIVERED is the persisted retry point when Alert Web succeeded
+ * but the optional detect-model event did not, and PUBLISHED means both stages
+ * have completed. The successful happy path may move directly from the
+ * PROCESSING claim to PUBLISHED.</p>
  */
 @Entity
 @Table(name = "t_detection_alert_outbox", indexes = {

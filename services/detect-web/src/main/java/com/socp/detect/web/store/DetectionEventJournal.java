@@ -7,6 +7,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -18,7 +19,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * PostgreSQL/H2-backed journal for Detection event claims and state recovery.
@@ -36,7 +36,6 @@ public class DetectionEventJournal implements DetectionStateStore {
     private final DetectionEventRepository repository;
     private final Duration retention;
     private final int replayPageSize;
-    private final AtomicLong writes = new AtomicLong();
 
     public DetectionEventJournal(DetectionEventRepository repository,
                                  @Value("${socp.detect.state.retention:24h}") String retention,
@@ -71,9 +70,6 @@ public class DetectionEventJournal implements DetectionStateStore {
                     fields, event.severity() == null ? Severity.INFO.name() : event.severity().name(),
                     event.timestamp() == null ? Instant.now() : event.timestamp(),
                     partition, offset, routingKey));
-            if (writes.incrementAndGet() % 500 == 0) {
-                repository.deleteByOccurredAtBefore(Instant.now().minus(retention));
-            }
             return DetectionEventClaim.NEW;
         } catch (DataIntegrityViolationException duplicate) {
             // The primary key is the final arbiter when two consumers race.
@@ -224,6 +220,26 @@ public class DetectionEventJournal implements DetectionStateStore {
 
     public Duration retention() {
         return retention;
+    }
+
+    /**
+     * Keep retention maintenance out of the per-event claim transaction.
+     * PENDING rows are deliberately excluded: they represent work whose Kafka
+     * offset cannot advance and must remain recoverable regardless of age.
+     */
+    @Scheduled(
+            fixedDelayString = "${socp.detect.state.cleanup-interval-ms:600000}",
+            initialDelayString = "${socp.detect.state.cleanup-initial-delay-ms:600000}")
+    public void cleanupExpiredTerminalEvents() {
+        try {
+            long deleted = repository.deleteTerminalBefore(
+                    Set.of(DetectionEventStatus.COMPLETED.name(),
+                            DetectionEventStatus.DEAD_LETTERED.name()),
+                    Instant.now().minus(retention));
+            if (deleted > 0) log.info("Expired Detection journal rows removed count={}", deleted);
+        } catch (Exception failure) {
+            log.warn("Detection journal retention cleanup deferred: {}", failure.getMessage());
+        }
     }
 
     private List<SecurityEvent> readPages(PageReader reader, boolean sortByTimestamp) {

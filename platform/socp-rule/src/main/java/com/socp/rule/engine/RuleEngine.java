@@ -72,7 +72,14 @@ public final class RuleEngine implements AutoCloseable {
     }
 
     public void start() {
-        worker = Thread.startVirtualThread(this::loop);
+        lifecycle.writeLock().lock();
+        try {
+            if (!running) throw new IllegalStateException("detection engine is closed");
+            if (worker != null && worker.isAlive()) return;
+            worker = Thread.startVirtualThread(this::loop);
+        } finally {
+            lifecycle.writeLock().unlock();
+        }
     }
 
     /**

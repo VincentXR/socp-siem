@@ -2,8 +2,10 @@ package com.socp.detect.web.store;
 
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
@@ -26,5 +28,10 @@ public interface DetectionEventRepository extends JpaRepository<DetectionEventEn
 
     long countByStatus(String status);
 
-    long deleteByOccurredAtBefore(Instant before);
+    @Modifying
+    @Transactional
+    @Query("delete from DetectionEventEntity e "
+            + "where e.status in :statuses and e.occurredAt < :before")
+    long deleteTerminalBefore(@Param("statuses") Set<String> statuses,
+                              @Param("before") Instant before);
 }

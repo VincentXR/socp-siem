@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * DETECT 检测引擎服务：把规则存储（RuleSpec）装配成可运行的 {@link RuleEngine}，
@@ -45,6 +46,7 @@ public class DetectEngineService {
     private final DetectionStateStore stateStore;
     private final RuleProcessingObserver processingObserver;
     private final AtomicReference<Set<Integer>> assignedPartitions = new AtomicReference<>(Set.of());
+    private final ReentrantReadWriteLock engineLifecycle = new ReentrantReadWriteLock(true);
 
     @org.springframework.beans.factory.annotation.Autowired
     public DetectEngineService(RuleSpecStore store, RecentAlertSink sink, AlertForwarder forwarder,
@@ -84,8 +86,13 @@ public class DetectEngineService {
 
     @PreDestroy
     public void stop() {
-        engineRef.get().close();
-        suppressor.close();
+        engineLifecycle.writeLock().lock();
+        try {
+            engineRef.get().close();
+            suppressor.close();
+        } finally {
+            engineLifecycle.writeLock().unlock();
+        }
     }
 
     private RuleEngine buildEngine(List<SecurityEvent> history) {
@@ -112,7 +119,7 @@ public class DetectEngineService {
     /** 规则热更新：原子替换引擎（旧引擎毒丸退出），无需重启进程 */
     public void reload() {
         Set<Integer> partitions = assignedPartitions.get();
-        replaceEngine(buildEngineFromState(partitions));
+        replaceEngineFromState(partitions);
     }
 
     /**
@@ -134,17 +141,16 @@ public class DetectEngineService {
         Set<Integer> normalized = Set.copyOf(partitions);
         if (!force && normalized.equals(assignedPartitions.get())) return;
         assignedPartitions.set(normalized);
-        replaceEngine(buildEngineFromState(normalized));
+        replaceEngineFromState(normalized);
     }
 
     /** Used when Kafka is disabled or for an operational full-state replay. */
     public synchronized void restoreAll() {
         assignedPartitions.set(Set.of());
-        replaceEngine(buildEngineFromState(Set.of()));
+        replaceEngineFromState(Set.of());
     }
 
-    private RuleEngine buildEngineFromState(Set<Integer> partitions) {
-        RuleEngine replacement = buildEngine(List.of());
+    private void restoreState(RuleEngine replacement, Set<Integer> partitions) {
         try {
             if (partitions == null || partitions.isEmpty()) {
                 stateStore.replayRecent(Duration.ofHours(24), replacement::restore);
@@ -156,17 +162,29 @@ public class DetectEngineService {
             org.slf4j.LoggerFactory.getLogger(DetectEngineService.class)
                     .warn("检测状态分页恢复失败，将保留已恢复窗口: {}", ex.getMessage());
         }
-        return replacement;
     }
 
     public Set<Integer> assignedPartitions() {
         return assignedPartitions.get();
     }
 
-    private void replaceEngine(RuleEngine replacement) {
-        replacement.start();
-        RuleEngine old = engineRef.getAndSet(replacement);
-        old.close();
+    private void replaceEngineFromState(Set<Integer> partitions) {
+        engineLifecycle.writeLock().lock();
+        try {
+            // Resolve the rules before closing the live engine so a temporary
+            // rule-store outage leaves it available. Once the replacement can
+            // be built, stop admission and drain all accepted events before
+            // reading the Journal. The new hot state therefore includes every
+            // durable completion that happened before the swap.
+            RuleEngine replacement = buildEngine(List.of());
+            RuleEngine old = engineRef.get();
+            old.close();
+            restoreState(replacement, partitions);
+            replacement.start();
+            engineRef.set(replacement);
+        } finally {
+            engineLifecycle.writeLock().unlock();
+        }
     }
 
     public List<Map<String, Object>> listRules() {
@@ -209,7 +227,13 @@ public class DetectEngineService {
         if (claim == DetectionEventClaim.COMPLETED || claim == DetectionEventClaim.DEAD_LETTERED) {
             return true;
         }
-        RuleEngine.Submission submission = engineRef.get().submit(ev, true);
+        RuleEngine.Submission submission;
+        engineLifecycle.readLock().lock();
+        try {
+            submission = engineRef.get().submit(ev, true);
+        } finally {
+            engineLifecycle.readLock().unlock();
+        }
         if (!submission.accepted()) {
             if (claim == DetectionEventClaim.NEW) stateStore.remove(ev.id());
             return false;
@@ -233,11 +257,21 @@ public class DetectEngineService {
 
     /** Completion is signalled only after EventAlertSink durable effects return. */
     public CompletableFuture<Void> ingestFromKafkaAndAwait(SecurityEvent ev) {
-        return engineRef.get().ingestAndAwait(ev);
+        engineLifecycle.readLock().lock();
+        try {
+            return engineRef.get().ingestAndAwait(ev);
+        } finally {
+            engineLifecycle.readLock().unlock();
+        }
     }
 
     private boolean enqueue(SecurityEvent ev) {
-        return engineRef.get().ingest(ev);
+        engineLifecycle.readLock().lock();
+        try {
+            return engineRef.get().ingest(ev);
+        } finally {
+            engineLifecycle.readLock().unlock();
+        }
     }
 
     public List<Alert> recentAlerts() {

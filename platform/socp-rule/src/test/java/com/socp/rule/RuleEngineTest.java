@@ -20,6 +20,7 @@ import java.util.function.BooleanSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -208,6 +209,7 @@ class RuleEngineTest {
         };
         RuleEngine engine = new RuleEngine(Rules.defaultRules(), List.of(slowSink));
         engine.start();
+        engine.start(); // lifecycle start is idempotent; never add a second state worker
         List<java.util.concurrent.CompletableFuture<Void>> accepted = new java.util.ArrayList<>();
         for (int i = 0; i < 50; i++) {
             accepted.add(engine.ingestAndAwait(
@@ -221,5 +223,6 @@ class RuleEngineTest {
                 ev("system", "after-close", "host-x", null), true);
         assertFalse(rejected.accepted());
         assertTrue(rejected.completion().isCompletedExceptionally());
+        assertThrows(IllegalStateException.class, engine::start);
     }
 }
