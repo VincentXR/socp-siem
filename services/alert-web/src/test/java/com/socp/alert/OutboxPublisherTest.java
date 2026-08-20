@@ -126,6 +126,7 @@ class OutboxPublisherTest {
         given(outboxRepository.recoverStale(any(Instant.class), any(Instant.class))).willReturn(3);
 
         publisher().publish();
+        publisher.publish();
 
         verify(outboxRepository).recoverStale(any(Instant.class), any(Instant.class));
     }

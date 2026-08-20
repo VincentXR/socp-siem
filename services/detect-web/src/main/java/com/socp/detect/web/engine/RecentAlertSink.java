@@ -5,20 +5,24 @@ import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 /** Recent alert view plus the durable Detection -> Alert hand-off. */
 @Component
 public class RecentAlertSink implements EventAlertSink {
 
-    private final List<Alert> recent = new CopyOnWriteArrayList<>();
+    private static final int DEDUP_CAPACITY = 100_000;
+    private final Deque<Alert> recent = new ArrayDeque<>();
     private final int capacity;
     private final AlertForwarder forwarder;
     private final AlertStreamHub streamHub;
-    private final Set<String> publishedIds = ConcurrentHashMap.newKeySet();
+    private final Set<String> publishedIds = new LinkedHashSet<>();
+    private final Object viewLock = new Object();
 
     @org.springframework.beans.factory.annotation.Autowired
     public RecentAlertSink(AlertForwarder forwarder, AlertStreamHub streamHub) {
@@ -45,16 +49,31 @@ public class RecentAlertSink implements EventAlertSink {
         // the Kafka completion future and prevents offset advancement.
         if (forwarder != null) forwarder.forwardAll(event == null ? null : event.id(), safe);
         for (Alert alert : safe) {
-            if (alert == null || alert.id() == null || !publishedIds.add(alert.id())) continue;
-            recent.add(alert);
-            int over = recent.size() - capacity;
-            for (int i = 0; i < over && !recent.isEmpty(); i++) recent.remove(0);
+            if (alert == null || alert.id() == null || !remember(alert)) continue;
             if (streamHub != null) streamHub.broadcast(alert);
         }
     }
 
     public List<Alert> recent() {
-        return List.copyOf(recent);
+        synchronized (viewLock) {
+            return List.copyOf(recent);
+        }
+    }
+
+    private boolean remember(Alert alert) {
+        synchronized (viewLock) {
+            if (!publishedIds.add(alert.id())) return false;
+            if (publishedIds.size() > DEDUP_CAPACITY) {
+                Iterator<String> oldest = publishedIds.iterator();
+                if (oldest.hasNext()) {
+                    oldest.next();
+                    oldest.remove();
+                }
+            }
+            recent.addLast(alert);
+            while (recent.size() > capacity) recent.removeFirst();
+            return true;
+        }
     }
 
     @Override

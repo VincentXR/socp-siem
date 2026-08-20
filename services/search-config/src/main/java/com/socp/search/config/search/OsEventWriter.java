@@ -36,6 +36,8 @@ public class OsEventWriter {
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .registerModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+    private static final DateTimeFormatter INDEX_DATE = DateTimeFormatter
+            .ofPattern("yyyy.MM.dd").withZone(ZoneOffset.UTC);
 
     @Value("${socp.opensearch.url:https://localhost:9200}")
     private String url;
@@ -48,6 +50,8 @@ public class OsEventWriter {
 
     @Value("${socp.opensearch.enabled:true}")
     private boolean enabled;
+
+    private volatile SSLSocketFactory sslSocketFactory;
 
     /** Asynchronous compatibility path used only when no Kafka indexing path is configured. */
     public void writeEvents(List<SearchEvent> es) {
@@ -69,8 +73,7 @@ public class OsEventWriter {
         try {
             StringBuilder sb = new StringBuilder(es.size() * 256);
             for (SearchEvent e : es) {
-                String index = "socp-events-" + DateTimeFormatter.ofPattern("yyyy.MM.dd")
-                        .withZone(ZoneOffset.UTC).format(e.timestamp());
+                String index = "socp-events-" + INDEX_DATE.format(e.timestamp());
                 // Tenant-scoped stable ID turns redelivery into an idempotent
                 // overwrite without allowing equal source IDs to collide.
                 String documentId = e.fields().getOrDefault("tenant_id", "default")
@@ -92,7 +95,7 @@ public class OsEventWriter {
                     (username + ":" + password).getBytes(StandardCharsets.UTF_8));
             c.setRequestProperty("Authorization", "Basic " + auth);
             if (c instanceof HttpsURLConnection https) {
-                https.setSSLSocketFactory(trustAllSsl());
+                https.setSSLSocketFactory(sslSocketFactory());
                 https.setHostnameVerifier((hostname, session) -> true);
             }
             try (OutputStream os = c.getOutputStream()) {
@@ -158,7 +161,16 @@ public class OsEventWriter {
         }
     }
 
-    private static SSLSocketFactory trustAllSsl() throws Exception {
+    private SSLSocketFactory sslSocketFactory() throws Exception {
+        SSLSocketFactory current = sslSocketFactory;
+        if (current != null) return current;
+        synchronized (this) {
+            if (sslSocketFactory == null) sslSocketFactory = createTrustAllSsl();
+            return sslSocketFactory;
+        }
+    }
+
+    private static SSLSocketFactory createTrustAllSsl() throws Exception {
         TrustManager[] tm = {new X509TrustManager() {
             @Override public void checkClientTrusted(X509Certificate[] chain, String authType) { }
             @Override public void checkServerTrusted(X509Certificate[] chain, String authType) { }

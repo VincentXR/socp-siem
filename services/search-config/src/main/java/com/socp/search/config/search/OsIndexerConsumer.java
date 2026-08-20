@@ -63,6 +63,9 @@ public class OsIndexerConsumer {
     @Value("${socp.os-indexer.enabled:true}")
     private boolean indexerEnabled;
 
+    @Value("${socp.os-indexer.retry-backoff-ms:1000}")
+    private long retryBackoffMs;
+
     private final OsEventWriter osWriter;
     private volatile boolean running;
     private volatile KafkaConsumer<String, String> activeConsumer;
@@ -109,13 +112,13 @@ public class OsIndexerConsumer {
         while (running) {
             ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(500));
             if (records.isEmpty()) continue;
-            processRecords(consumer, records);
+            if (!processRecords(consumer, records)) backoffAfterFailure();
         }
     }
 
     /** Advances only successful partitions and rewinds failed partitions. */
-    void processRecords(KafkaConsumer<String, String> consumer,
-                        ConsumerRecords<String, String> records) {
+    boolean processRecords(KafkaConsumer<String, String> consumer,
+                           ConsumerRecords<String, String> records) {
         Map<TopicPartition, OffsetAndMetadata> completed = new HashMap<>();
         for (TopicPartition partition : records.partitions()) {
             List<ConsumerRecord<String, String>> partitionRecords = records.records(partition);
@@ -127,6 +130,17 @@ public class OsIndexerConsumer {
             }
         }
         if (!completed.isEmpty()) consumer.commitSync(completed);
+        return completed.size() == records.partitions().size();
+    }
+
+    private void backoffAfterFailure() {
+        long delay = Math.max(100L, Math.min(10_000L, retryBackoffMs));
+        try {
+            Thread.sleep(delay);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            running = false;
+        }
     }
 
     /** Package-visible correctness seam used by focused tests. */

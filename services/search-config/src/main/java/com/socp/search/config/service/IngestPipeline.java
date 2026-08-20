@@ -99,7 +99,9 @@ public class IngestPipeline {
         // 按采集器分别累计：[accepted, skipped, forwarded, bytes]
         Map<String, long[]> perCollector = new LinkedHashMap<>();
         List<Map<String, Object>> pending = new ArrayList<>();
-        for (String line : body.split("\n", -1)) {
+        var lines = body.lines().iterator();
+        while (lines.hasNext()) {
+            String line = lines.next();
             String t = line.trim();
             if (t.isEmpty()) continue;
             long bytes = t.length();

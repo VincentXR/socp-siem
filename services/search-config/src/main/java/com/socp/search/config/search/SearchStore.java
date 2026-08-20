@@ -8,7 +8,8 @@ import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import java.util.ArrayList;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,7 +26,7 @@ public class SearchStore {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final int CAP = 20000;
 
-    private final List<SearchEvent> events = new ArrayList<>();
+    private final Deque<SearchEvent> events = new ArrayDeque<>(CAP);
 
     public SearchStore(SearchEventRepository repo, OsEventWriter osWriter) {
         this.repo = repo;
@@ -39,22 +40,18 @@ public class SearchStore {
             // SPL fallback deliberately exposes only its bounded hot window.
             List<SearchEventEntity> recent = repo.findAll(PageRequest.of(
                     0, CAP, Sort.by(Sort.Direction.DESC, "timestamp"))).getContent();
-            for (int i = recent.size() - 1; i >= 0; i--) events.add(fromEntity(recent.get(i)));
+            for (int i = recent.size() - 1; i >= 0; i--) events.addLast(fromEntity(recent.get(i)));
         }
     }
 
-    public List<SearchEvent> all() {
-        return events;
+    public synchronized List<SearchEvent> all() {
+        return List.copyOf(events);
     }
 
     /** 采集管线写入的归一化事件（真实接入数据），同时落库。超出容量时丢弃最旧。 */
     public synchronized void ingest(SearchEvent e) {
-        events.add(e);
-        int over = events.size() - CAP;
-        for (int i = 0; i < over && !events.isEmpty(); i++) {
-            events.remove(0);
-        }
         repo.save(toEntity(e));
+        remember(e);
         // 生产检索库：OpenSearch 异步落索引（best-effort，失败静默；null=单测跳过）
         if (osWriter != null) osWriter.writeEvents(List.of(e));
     }
@@ -77,14 +74,10 @@ public class SearchStore {
     /** Updates only the bounded local search window after a durable transaction commits. */
     public synchronized void rememberBatch(List<SearchEvent> es) {
         if (es == null || es.isEmpty()) return;
-        events.addAll(es);
-        int over = events.size() - CAP;
-        for (int i = 0; i < over && !events.isEmpty(); i++) {
-            events.remove(0);
-        }
+        for (SearchEvent event : es) remember(event);
     }
 
-    public int size() {
+    public synchronized int size() {
         return events.size();
     }
 
@@ -132,8 +125,13 @@ public class SearchStore {
     }
 
     private void save(SearchEvent e) {
-        events.add(e);
+        events.addLast(e);
         repo.save(toEntity(e));
+    }
+
+    private void remember(SearchEvent event) {
+        events.addLast(event);
+        while (events.size() > CAP) events.removeFirst();
     }
 
     private static SearchEvent ev(Instant ts, String source, String host, String severity, String msg, Map<String, String> fields) {

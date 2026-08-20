@@ -44,6 +44,8 @@ socp:
       poll-interval-ms: ${SOCP_INGEST_OUTBOX_POLL_MS:500}
       initial-delay-ms: ${SOCP_INGEST_OUTBOX_INITIAL_DELAY_MS:1000}
       delivery-concurrency: ${SOCP_INGEST_OUTBOX_CONCURRENCY:8}
+  os-indexer:
+    retry-backoff-ms: ${SOCP_OS_INDEXER_RETRY_BACKOFF_MS:1000}
 
 # 避开 8080（旧 SIEM 控制台占用）；与 alert-web(18080)/api-gateway(18092) 同处 18080~18092 段
 management:

@@ -24,6 +24,7 @@ public class IngestionOutboxPublisher {
     private final IngestionOutboxRepository repository;
     private final KafkaEventProducer producer;
     private final ExecutorService executor;
+    private Instant nextRecoveryAt = Instant.EPOCH;
 
     @Autowired
     public IngestionOutboxPublisher(IngestionOutboxRepository repository,
@@ -43,9 +44,10 @@ public class IngestionOutboxPublisher {
     @Scheduled(fixedDelayString = "${socp.ingest.outbox.poll-interval-ms:500}",
             initialDelayString = "${socp.ingest.outbox.initial-delay-ms:1000}")
     public void publish() {
+        if (!producer.isEnabled()) return;
         try {
             Instant now = Instant.now();
-            repository.recoverStale(now.minus(Duration.ofMinutes(2)), now);
+            recoverStaleIfDue(now);
             List<IngestionOutboxEvent> pending =
                     repository.findTop200ByStatusOrderByCreatedAtAsc("PENDING");
             List<CompletableFuture<Void>> deliveries = pending.stream()
@@ -55,6 +57,12 @@ public class IngestionOutboxPublisher {
         } catch (Exception failure) {
             log.warn("Ingestion outbox scan failed; next scan will retry: {}", failure.getMessage());
         }
+    }
+
+    private void recoverStaleIfDue(Instant now) {
+        if (now.isBefore(nextRecoveryAt)) return;
+        repository.recoverStale(now.minus(Duration.ofMinutes(2)), now);
+        nextRecoveryAt = now.plus(Duration.ofSeconds(30));
     }
 
     private void deliver(IngestionOutboxEvent event) {

@@ -7,6 +7,7 @@ import org.springframework.data.domain.Pageable;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
@@ -35,5 +36,23 @@ class SearchStoreRestoreTest {
                 store.all().stream().map(SearchEvent::eventId).toList());
         assertEquals(1_000_000L, store.realCount());
         verify(repository).findAll(any(Pageable.class));
+    }
+
+    @Test
+    void retainsTheNewestTwentyThousandEventsWithoutArrayHeadCopies() {
+        SearchEventRepository repository = mock(SearchEventRepository.class);
+        when(repository.count()).thenReturn(1L);
+        when(repository.findAll(any(Pageable.class))).thenReturn(new PageImpl<>(List.of()));
+        SearchStore store = new SearchStore(repository, null);
+        List<SearchEvent> events = IntStream.range(0, 20_100)
+                .mapToObj(i -> new SearchEvent("event-" + i, Instant.EPOCH.plusSeconds(i),
+                        "auth", "host-1", "INFO", "event", Map.of(), Map.of()))
+                .toList();
+
+        store.rememberBatch(events);
+
+        assertEquals(20_000, store.size());
+        assertEquals("event-100", store.all().getFirst().eventId());
+        assertEquals("event-20099", store.all().getLast().eventId());
     }
 }

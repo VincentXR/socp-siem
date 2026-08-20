@@ -79,6 +79,10 @@ public class KafkaEventProducer {
         }
     }
 
+    boolean isEnabled() {
+        return enabled;
+    }
+
     @PreDestroy
     void stop() {
         KafkaProducer<String, String> current = producer;

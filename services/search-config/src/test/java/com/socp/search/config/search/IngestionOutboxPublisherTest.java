@@ -25,6 +25,7 @@ class IngestionOutboxPublisherTest {
     void marksPublishedOnlyAfterBrokerAcknowledgement() {
         IngestionOutboxRepository repository = mock(IngestionOutboxRepository.class);
         KafkaEventProducer producer = mock(KafkaEventProducer.class);
+        when(producer.isEnabled()).thenReturn(true);
         IngestionOutboxEvent event = IngestionOutboxEvent.pending(
                 "event-1", "default|user|alice", "{}", "00-trace-01");
         when(repository.findTop200ByStatusOrderByCreatedAtAsc("PENDING"))
@@ -45,6 +46,7 @@ class IngestionOutboxPublisherTest {
     void releasesClaimWhenBrokerDoesNotAcknowledge() {
         IngestionOutboxRepository repository = mock(IngestionOutboxRepository.class);
         KafkaEventProducer producer = mock(KafkaEventProducer.class);
+        when(producer.isEnabled()).thenReturn(true);
         IngestionOutboxEvent event = IngestionOutboxEvent.pending(
                 "event-1", "route", "{}", null);
         when(repository.findTop200ByStatusOrderByCreatedAtAsc("PENDING"))
@@ -63,6 +65,7 @@ class IngestionOutboxPublisherTest {
     void competingInstanceThatLosesClaimDoesNotPublish() {
         IngestionOutboxRepository repository = mock(IngestionOutboxRepository.class);
         KafkaEventProducer producer = mock(KafkaEventProducer.class);
+        when(producer.isEnabled()).thenReturn(true);
         IngestionOutboxEvent event = IngestionOutboxEvent.pending("event-1", "route", "{}", null);
         when(repository.findTop200ByStatusOrderByCreatedAtAsc("PENDING"))
                 .thenReturn(List.of(event));
@@ -72,5 +75,32 @@ class IngestionOutboxPublisherTest {
         publisher.publish();
 
         verify(producer, never()).sendAndAwait(any(), any(), any());
+    }
+
+    @Test
+    void disabledKafkaDoesNotCreateAClaimReleaseWriteLoop() {
+        IngestionOutboxRepository repository = mock(IngestionOutboxRepository.class);
+        KafkaEventProducer producer = mock(KafkaEventProducer.class);
+        when(producer.isEnabled()).thenReturn(false);
+        publisher = new IngestionOutboxPublisher(repository, producer);
+
+        publisher.publish();
+
+        verify(repository, never()).recoverStale(any(), any());
+        verify(repository, never()).findTop200ByStatusOrderByCreatedAtAsc(any());
+    }
+
+    @Test
+    void throttlesStaleClaimRecoveryIndependentlyFromFastPolling() {
+        IngestionOutboxRepository repository = mock(IngestionOutboxRepository.class);
+        KafkaEventProducer producer = mock(KafkaEventProducer.class);
+        when(producer.isEnabled()).thenReturn(true);
+        when(repository.findTop200ByStatusOrderByCreatedAtAsc("PENDING")).thenReturn(List.of());
+        publisher = new IngestionOutboxPublisher(repository, producer);
+
+        publisher.publish();
+        publisher.publish();
+
+        verify(repository).recoverStale(any(), any());
     }
 }

@@ -33,6 +33,7 @@ public class OutboxPublisher {
     private final OutboxRepository outboxRepo;
     private final AlertKafkaPublisher kafkaPublisher;
     private final ExecutorService deliveryExecutor;
+    private Instant nextRecoveryAt = Instant.EPOCH;
 
     @Autowired
     public OutboxPublisher(OutboxRepository outboxRepo, AlertKafkaPublisher kafkaPublisher,
@@ -54,8 +55,7 @@ public class OutboxPublisher {
     public void publish() {
         try {
             Instant now = Instant.now();
-            int recovered = outboxRepo.recoverStale(
-                    now.minus(Duration.ofMinutes(2)), now);
+            int recovered = recoverStaleIfDue(now);
             if (recovered > 0) {
                 log.warn("Recovered stale Alert outbox claims count={}", recovered);
             }
@@ -73,6 +73,13 @@ public class OutboxPublisher {
         } catch (Exception failure) {
             log.warn("Alert outbox scan failed; next scan will retry: {}", failure.getMessage());
         }
+    }
+
+    private int recoverStaleIfDue(Instant now) {
+        if (now.isBefore(nextRecoveryAt)) return 0;
+        int recovered = outboxRepo.recoverStale(now.minus(Duration.ofMinutes(2)), now);
+        nextRecoveryAt = now.plus(Duration.ofSeconds(30));
+        return recovered;
     }
 
     private void deliver(OutboxEvent event) {
