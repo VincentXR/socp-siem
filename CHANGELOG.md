@@ -2,8 +2,13 @@
 
 ## Unreleased
 
-### Detection reliability
+### Pipeline durability and performance
 
+- Added an Ingestion Outbox so canonical event persistence and Kafka
+  publication intent commit in one transaction.
+- Made OpenSearch indexing partition-aware: offsets advance only after every
+  bulk item succeeds, failed partitions seek back, and stable document IDs
+  make replay idempotent.
 - Added a durable Detection Alert Outbox with deterministic alert IDs,
   tenant-aware retry, stale-claim recovery, and a separate detect-model
   publication stage.
@@ -19,6 +24,9 @@
   full recovery window in one persistence context.
 - Moved entity-risk alerts and profiles from instance-local memory into a
   shared idempotent database projection.
+- Reduced hot-path overhead with constant-time bounded event/alert windows,
+  bounded alert de-duplication, lazy NDJSON traversal, cached OpenSearch TLS
+  state, throttled stale-claim recovery, and dependency-failure backoff.
 
 ### Detection content and runtime verification
 
@@ -42,10 +50,3 @@
 - Removed the stale reference to a non-existent release checklist; release
   readiness is defined by `docs/validation-matrix.md` and the operational
   checks it links to.
-
-## Release preparation
-
-Before creating a tagged release, run the full Java/frontend checks, the
-Golden Demo, the failure matrix, and fixed-profile benchmark scale points. Keep
-machine-specific reports outside source control unless they are deliberately
-sanitized and published as reproducible fixtures.

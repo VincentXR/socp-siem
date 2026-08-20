@@ -73,9 +73,8 @@ python build/demos/detection-recovery.py
 
 The script stops only `detect-web`, injects events through the normal ingest
 boundary, observes the `socp-events` backlog grow, restarts Detection, and
-waits for the committed offset to catch up. Explain the behavior as
-at-least-once delivery with manual commits, event-ID deduplication, and
-DLQ/error handling.
+waits for the committed offset to catch up. Recovery uses at-least-once
+delivery, manual commits, event-ID deduplication, and durable DLQ handling.
 
 The scripted dependency checks cover the same recovery family:
 
@@ -94,7 +93,8 @@ python build/chaos-pipeline.py --scenario all --count 20 \
   --output .cache/chaos/latest.json
 ```
 
-To exercise the new durable hand-off directly, run the Alert Web outage probe:
+To exercise the durable Detection-to-Alert hand-off directly, run the Alert
+Web outage probe:
 
 ```bash
 python build/chaos-pipeline.py --scenario alert_web_restart
@@ -104,7 +104,7 @@ For multi-instance state ownership, start three Detection processes against the
 same PostgreSQL database and Kafka group, then run the `multi_instance`
 scenario described in [chaos/README.md](chaos/README.md).
 
-## Evidence to collect
+## Expected evidence
 
 Use the workbench to inspect the canonical events, the four primary alerts and their
 ATT&CK mappings, the Incident timeline, the SOAR execution, and audit/trace

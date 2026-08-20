@@ -14,7 +14,8 @@ Compose is single-node and is not a production HA deployment.
 ```mermaid
 flowchart LR
   S[Vector / Syslog / EDR / Falco] --> P[search-config<br/>parse + normalize]
-  P --> K[(Kafka<br/>socp-events)]
+  P --> IO[(Ingestion Outbox)]
+  IO --> K[(Kafka<br/>socp-events)]
   K --> D[detect-web<br/>stateful rules]
   K --> IX[OpenSearch indexer]
   IX --> OS[(OpenSearch)]
@@ -32,23 +33,28 @@ flowchart LR
   GW --> F
 ```
 
-The Detection Alert Outbox is the hand-off boundary between the stateful rule
-engine and Alert Web. The event journal completion and every resulting Outbox
-row are committed atomically. A scheduled publisher retries Alert Web until it
-acknowledges the deterministic source ID, then publishes the optional
-detect-model event. Alert Web has a second transactional Outbox for the Kafka
-fan-out hand-off.
+The ingestion transaction persists the canonical event and its Kafka
+publication intent together. The Detection Alert Outbox is the hand-off
+boundary between the stateful rule engine and Alert Web: journal completion
+and every resulting Outbox row are committed atomically. A scheduled publisher
+retries Alert Web until it acknowledges the deterministic source ID, then
+publishes the optional detect-model event. Alert Web has another transactional
+Outbox for the Kafka fan-out hand-off.
 
 ## Implemented capabilities
 
 - JSON, NDJSON, Syslog, CEF, LEEF, KV, Sysmon, auditd, and Falco parsing.
 - Canonical event fields and stable tenant/entity Kafka routing keys.
 - Pattern, threshold, correlation, correlation-set, baseline, and rare rules.
+- A versioned 25-rule Detection-as-Code pack with ATT&CK, data-source, and
+  positive/negative execution metadata.
 - Hot reload, suppression, partition-serial processing lanes, contiguous
   manual Kafka commits, durable DLQ acknowledgement, event-ID de-duplication,
   and time-bounded, paginated PostgreSQL/H2 journal replay.
 - Partition-owned state restore after restart and consumer rebalance.
 - Detection Alert Outbox and Alert Web idempotency using `sourceAlertId`.
+- Partition-scoped OpenSearch bulk acknowledgement, offset commits, replay,
+  and stable event document IDs.
 - Shared durable entity-risk projection, alert evidence, IOC enrichment, ATT&CK mapping,
   incidents, cases, notifications, SOAR playbooks, and reporting.
 - JWT/OIDC, RBAC, logical tenant isolation, audit records, metrics, traces,
@@ -56,6 +62,8 @@ fan-out hand-off.
 
 The versioned detection pack is at
 `services/detect-web/src/main/resources/detection-content/manifest.json`.
+On a fresh Detection database, the 25 packaged rules and 14 non-overlapping
+built-in seed rules produce 39 active rules before user customization.
 The exact partition and recovery contract is in
 `docs/detection-state-semantics.md`.
 

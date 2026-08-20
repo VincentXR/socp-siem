@@ -67,7 +67,7 @@ that owns the corresponding schema. The production profile rejects H2.
 | Kafka | search, detection, and fan-out consumers | Six-partition default for `socp-events`, plus rule changes, `socp-alarm-original`, and `socp-alarm-events` |
 | OpenSearch | Event index consumer and search API | Raw event investigation and field search |
 | ClickHouse | Alarm event consumer and reports | Alarm detail analytics and trends |
-| Redis | Docker Compose middleware | Available for future distributed rate limiting; current limiter is in-process |
+| Redis | Docker Compose middleware | Included for local integration; the current rate limiter remains in-process |
 | Temporal | SOAR optional profile | Durable Workflow/Activity execution |
 | Keycloak | Optional OIDC login | Identity provider for authorization-code login and JWKS validation |
 | Prometheus/Grafana/Jaeger | Optional observability profile | Metrics, dashboards, and trace inspection |

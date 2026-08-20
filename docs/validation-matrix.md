@@ -21,8 +21,8 @@ correctness and recovery behavior, not a production capacity or HA claim.
 | PostgreSQL outage | `python build/chaos-pipeline.py --scenario postgres_outage` | Kafka lag grows while durable completion is unavailable, then drains with no pending journal rows | Manual/weekly |
 | OpenSearch outage | `python build/chaos-pipeline.py --scenario opensearch_outage` | Detection remains available while search is degraded and indexing works after recovery | Manual/weekly |
 | Multi-instance | `DETECTION_INSTANCE_URLS=... python build/chaos-pipeline.py --scenario multi_instance` | Disjoint ownership, rebalance, deterministic alert-set equality, and `pendingEvents == 0` | Release candidate |
-| E2E benchmark | `python build/benchmark-pipeline.py --mode e2e --profile realistic --count 10000 --batch-size 500` | Run-scoped alerts, T0-T8 stages, transaction ratios, offsets, lag, and before/after stats | Performance closure / regression |
-| Steady state | `python build/benchmark-pipeline.py --mode e2e --profile realistic --offered-eps 100 --duration 120` | Offered/actual EPS, lag samples, peak/growth, final drain | Performance closure |
+| E2E benchmark | `python build/benchmark-pipeline.py --mode e2e --profile realistic --count 10000 --batch-size 500` | Run-scoped alerts, T0-T8 stages, transaction ratios, offsets, lag, and before/after stats | Performance regression |
+| Steady state | `python build/benchmark-pipeline.py --mode e2e --profile realistic --offered-eps 100 --duration 120` | Offered/actual EPS, lag samples, peak/growth, final drain | Performance regression |
 | Bulk baseline | `python build/benchmark-pipeline.py --count 100` | Detection HTTP accepted/rejected counters and latency percentiles | Manual |
 | Full API | `python build/verify-full.py` | Resource CRUD, tenancy, import/export, threat, and response contracts | Scheduled/release candidate |
 | Dependency failure | `python build/failure-tests.py` | Kafka, OpenSearch, Temporal, and PostgreSQL recovery assertions | Manual/scheduled |

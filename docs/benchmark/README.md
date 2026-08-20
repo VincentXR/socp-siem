@@ -9,7 +9,9 @@ belong under `.cache`; only sanitized evidence is published here.
 ## Reproducible runs
 
 Start middleware and the core services and keep the JVM/middleware
-configuration fixed:
+configuration fixed. A fresh database contains 25 packaged rules plus 14
+non-overlapping built-in seed rules, which is why the reference profile records
+39 active rules:
 
 ```bash
 python build/benchmark-pipeline.py --mode e2e --profile realistic --count 10000 --batch-size 500 \
@@ -78,7 +80,7 @@ python build/benchmark-pipeline.py --mode e2e --profile realistic --offered-eps 
 Repeat at 150 and 200 EPS. `steadyState.lagStable` verifies that lag does not
 grow continuously during the interval; final lag must still drain to zero.
 
-## Performance closure result
+## Reference benchmark results
 
 The 2026-08-21 run used one Windows development host, eight logical CPUs, six
 Kafka partitions, three 256 MiB Detection JVMs, PostgreSQL-backed state, and 39
