@@ -4,11 +4,17 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.slf4j.Logger;
@@ -16,19 +22,26 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.TimeUnit;
 
 /**
- * OpenSearch 索引消费者（2026-08-12，P2 可重放主链）。
+ * Replayable Kafka-to-OpenSearch indexer.
  *
- * <p>采集主链从「ingest 双写 Kafka+OS」改为「ingest 只发 Kafka，本消费者把 canonical
- * 事件写 OpenSearch」——OS 挂了恢复后可从 Kafka 重放重建索引，不再依赖跨系统双写的一致。
- *
- * <p>可靠性对齐 detect-web {@code KafkaEventConsumer}：原生 KafkaConsumer 手动 commit（至少一次）
- * + LRU 去重（幂等）+ 失败写 DLQ（socp-events-dlq）+ W3C traceparent 透传。
+ * <p>Offsets advance independently per partition only after every valid event
+ * in that partition's poll batch receives a successful OpenSearch bulk item
+ * acknowledgement, or an invalid event receives a broker-acknowledged DLQ
+ * record. Failed partitions seek back to the first polled offset. OpenSearch
+ * uses tenantId plus eventId as document _id, so replay is idempotent and
+ * tenant-scoped.</p>
  */
 @Component
 public class OsIndexerConsumer {
@@ -51,129 +64,184 @@ public class OsIndexerConsumer {
     private boolean indexerEnabled;
 
     private final OsEventWriter osWriter;
+    private volatile boolean running;
+    private volatile KafkaConsumer<String, String> activeConsumer;
+    private volatile KafkaProducer<String, String> dlqProducer;
+    private Thread worker;
 
     public OsIndexerConsumer(OsEventWriter osWriter) {
         this.osWriter = osWriter;
     }
 
-    /** 已处理 eventId 去重缓存（LRU，最多 10 万；配合至少一次语义实现幂等） */
-    private static final java.util.Set<String> DEDUP = java.util.Collections.synchronizedSet(
-            new java.util.LinkedHashSet<>() {
-                @Override
-                public boolean add(String e) {
-                    if (size() >= 100_000) clear();
-                    return super.add(e);
-                }
-            });
-
-    private volatile KafkaProducer<String, String> dlqProducer;
-
-    private KafkaProducer<String, String> dlq() {
-        KafkaProducer<String, String> p = dlqProducer;
-        if (p == null) {
-            synchronized (this) {
-                if (dlqProducer == null) {
-                    Properties props = new Properties();
-                    props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap);
-                    props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
-                    props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
-                    props.put(ProducerConfig.ACKS_CONFIG, "all");
-                    dlqProducer = new KafkaProducer<>(props);
-                }
-                p = dlqProducer;
-            }
-        }
-        return p;
-    }
-
-    private void toDlq(String eventId, String raw) {
-        try {
-            dlq().send(new ProducerRecord<>(topic + "-dlq",
-                    eventId == null ? "unknown" : eventId, raw));
-        } catch (Exception ex) {
-            log.warn("DLQ 写入失败 eventId={}: {}", eventId, ex.getMessage());
-        }
-    }
-
     @PostConstruct
     public void start() {
         if (!enabled || !indexerEnabled) return;
-        Thread.ofPlatform().name("os-indexer").daemon(true).start(() -> run());
-        log.info("OpenSearch 索引消费者已启动 bootstrap={} topic={}（P2 可重放主链）", bootstrap, topic);
+        running = true;
+        worker = Thread.ofPlatform().name("os-indexer").daemon(true).start(this::runLoop);
+        log.info("OpenSearch indexer started bootstrap={} topic={}", bootstrap, topic);
     }
 
-    private void run() {
+    private void runLoop() {
+        while (running) {
+            try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(consumerProperties())) {
+                activeConsumer = consumer;
+                consumer.subscribe(List.of(topic));
+                consume(consumer);
+            } catch (WakeupException wakeup) {
+                if (running) log.warn("OpenSearch indexer consumer was unexpectedly woken");
+            } catch (Exception failure) {
+                if (running) {
+                    log.warn("OpenSearch indexer consumer failed; restarting: {}", failure.getMessage());
+                    try {
+                        Thread.sleep(1_000L);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+            } finally {
+                activeConsumer = null;
+            }
+        }
+    }
+
+    private void consume(KafkaConsumer<String, String> consumer) {
+        while (running) {
+            ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(500));
+            if (records.isEmpty()) continue;
+            processRecords(consumer, records);
+        }
+    }
+
+    /** Advances only successful partitions and rewinds failed partitions. */
+    void processRecords(KafkaConsumer<String, String> consumer,
+                        ConsumerRecords<String, String> records) {
+        Map<TopicPartition, OffsetAndMetadata> completed = new HashMap<>();
+        for (TopicPartition partition : records.partitions()) {
+            List<ConsumerRecord<String, String>> partitionRecords = records.records(partition);
+            if (processPartition(partitionRecords)) {
+                long nextOffset = partitionRecords.getLast().offset() + 1;
+                completed.put(partition, new OffsetAndMetadata(nextOffset));
+            } else {
+                consumer.seek(partition, partitionRecords.getFirst().offset());
+            }
+        }
+        if (!completed.isEmpty()) consumer.commitSync(completed);
+    }
+
+    /** Package-visible correctness seam used by focused tests. */
+    boolean processPartition(List<ConsumerRecord<String, String>> records) {
+        String traceId = traceId(records.getFirst());
+        if (traceId != null) org.slf4j.MDC.put("traceId", traceId);
+        try {
+            List<SearchEvent> events = new ArrayList<>(records.size());
+            for (ConsumerRecord<String, String> record : records) {
+                try {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> value = MAPPER.readValue(record.value(), Map.class);
+                    events.add(toEvent(value, record.key()));
+                } catch (Exception invalid) {
+                    if (!sendToDlqAndAwait(record.key(), record.value())) {
+                        log.warn("Invalid event DLQ write failed partition={} offset={}",
+                                record.partition(), record.offset());
+                        return false;
+                    }
+                }
+            }
+            return events.isEmpty() || osWriter.writeEventsAndAwait(events);
+        } finally {
+            org.slf4j.MDC.remove("traceId");
+        }
+    }
+
+    private static String traceId(ConsumerRecord<String, String> record) {
+        try {
+            var header = record.headers().lastHeader("traceparent");
+            if (header == null) return null;
+            return com.socp.platform.obs.TraceIdFilter.parseTraceId(
+                    new String(header.value(), StandardCharsets.UTF_8));
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private boolean sendToDlqAndAwait(String eventId, String raw) {
+        try {
+            dlq().send(new ProducerRecord<>(topic + "-dlq",
+                            eventId == null ? "unknown" : eventId, raw))
+                    .get(30, TimeUnit.SECONDS);
+            return true;
+        } catch (Exception failure) {
+            log.warn("DLQ durable write failed eventId={}: {}", eventId, failure.getMessage());
+            return false;
+        }
+    }
+
+    private KafkaProducer<String, String> dlq() {
+        KafkaProducer<String, String> current = dlqProducer;
+        if (current != null) return current;
+        synchronized (this) {
+            if (dlqProducer == null) {
+                Properties props = new Properties();
+                props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap);
+                props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+                props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+                props.put(ProducerConfig.ACKS_CONFIG, "all");
+                props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "true");
+                props.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 30_000);
+                props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 3_000);
+                dlqProducer = new KafkaProducer<>(props);
+            }
+            return dlqProducer;
+        }
+    }
+
+    private Properties consumerProperties() {
         Properties props = new Properties();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap);
         props.put(ConsumerConfig.GROUP_ID_CONFIG, "socp-os-indexer");
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
-        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
+        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
         props.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, 500);
-        try (KafkaConsumer<String, String> c = new KafkaConsumer<>(props)) {
-            c.subscribe(List.of(topic));
-            while (true) {
-                var recs = c.poll(Duration.ofMillis(500));
-                for (var r : recs) {
-                    String raw = r.value();
-                    String eventId = null;
-                    String tp = null;
-                    try {
-                        var h = r.headers().lastHeader("traceparent");
-                        if (h != null) tp = new String(h.value(), java.nio.charset.StandardCharsets.UTF_8);
-                    } catch (Exception ignored) {
-                    }
-                    String restored = tp == null ? null : com.socp.platform.obs.TraceIdFilter.parseTraceId(tp);
-                    if (restored != null) org.slf4j.MDC.put("traceId", restored);
-                    try {
-                        @SuppressWarnings("unchecked")
-                        Map<String, Object> m = MAPPER.readValue(raw, Map.class);
-                        eventId = String.valueOf(m.getOrDefault("eventId", r.key()));
-                        if (eventId != null && !"null".equals(eventId) && !DEDUP.add(eventId)) {
-                            continue;
-                        }
-                        osWriter.writeEvents(List.of(toEvent(m)));
-                    } catch (Exception ex) {
-                        log.warn("OS 索引事件解析失败 → DLQ: {}", ex.getMessage());
-                        toDlq(eventId, raw);
-                    } finally {
-                        org.slf4j.MDC.remove("traceId");
-                    }
-                }
-                if (!recs.isEmpty()) {
-                    try {
-                        c.commitSync();
-                    } catch (Exception ex) {
-                        log.warn("Kafka commit 失败（下轮重试）: {}", ex.getMessage());
-                    }
-                }
-            }
-        } catch (Exception e) {
-            log.warn("OS indexer consumer 退出: {}", e.getMessage());
-        }
+        return props;
     }
 
-    private static SearchEvent toEvent(Map<String, Object> m) {
-        @SuppressWarnings("unchecked")
-        Map<String, String> fields = (Map<String, String>) m.getOrDefault("fields", Map.of());
-        @SuppressWarnings("unchecked")
-        Map<String, String> ecs = (Map<String, String>) m.getOrDefault("ecs", Map.of());
-        java.time.Instant ts = java.time.Instant.now();
+    private static SearchEvent toEvent(Map<String, Object> value, String fallbackId) {
+        Instant timestamp = Instant.now();
         try {
-            ts = java.time.Instant.parse(String.valueOf(m.getOrDefault("timestamp", ts)));
+            timestamp = Instant.parse(String.valueOf(value.getOrDefault("timestamp", timestamp)));
         } catch (Exception ignored) {
         }
-        String eventId = String.valueOf(m.getOrDefault("eventId", "")).trim();
+        String eventId = String.valueOf(value.getOrDefault("eventId", fallbackId)).trim();
         if (eventId.isBlank() || "null".equalsIgnoreCase(eventId)) {
-            eventId = java.util.UUID.randomUUID().toString();
+            throw new IllegalArgumentException("eventId is required for idempotent indexing");
         }
-        return new SearchEvent(eventId, ts,
-                String.valueOf(m.getOrDefault("source", "unknown")),
-                String.valueOf(m.getOrDefault("host", "unknown")),
-                String.valueOf(m.getOrDefault("severity", "INFO")),
-                String.valueOf(m.getOrDefault("msg", "")),
-                fields == null ? Map.of() : fields,
-                ecs == null ? Map.of() : ecs);
+        return new SearchEvent(eventId, timestamp,
+                String.valueOf(value.getOrDefault("source", "unknown")),
+                String.valueOf(value.getOrDefault("host", "unknown")),
+                String.valueOf(value.getOrDefault("severity", "INFO")),
+                String.valueOf(value.getOrDefault("msg", "")),
+                stringMap(value.get("fields")), stringMap(value.get("ecs")));
+    }
+
+    private static Map<String, String> stringMap(Object value) {
+        if (!(value instanceof Map<?, ?> source)) return Map.of();
+        Map<String, String> result = new LinkedHashMap<>();
+        source.forEach((key, item) -> {
+            if (key != null && item != null) result.put(String.valueOf(key), String.valueOf(item));
+        });
+        return Map.copyOf(result);
+    }
+
+    @PreDestroy
+    void stop() {
+        running = false;
+        KafkaConsumer<String, String> consumer = activeConsumer;
+        if (consumer != null) consumer.wakeup();
+        if (worker != null) worker.interrupt();
+        KafkaProducer<String, String> producer = dlqProducer;
+        if (producer != null) producer.close(Duration.ofSeconds(2));
     }
 }

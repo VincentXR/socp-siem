@@ -15,6 +15,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+
+import jakarta.annotation.PreDestroy;
 
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
@@ -25,6 +29,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 告警业务逻辑：创建（写入 t_alarm）+ 查询（按租户/级别/规则/关键字过滤）。
@@ -43,6 +51,13 @@ public class AlarmService {
     private final SoarClient soarClient;
     private final OutboxRepository outboxRepo;
     private final AlarmEvidenceRepository evidenceRepo;
+    private volatile ExecutorService enrichmentExecutor;
+
+    @org.springframework.beans.factory.annotation.Value("${socp.alert.enrichment.concurrency:4}")
+    private int enrichmentConcurrency = 4;
+
+    @org.springframework.beans.factory.annotation.Value("${socp.alert.enrichment.queue-capacity:1000}")
+    private int enrichmentQueueCapacity = 1000;
 
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .registerModule(new JavaTimeModule())
@@ -101,12 +116,65 @@ public class AlarmService {
         oe.setEventType("ALARM_CREATED");
         oe.setPayload(alarmJson(saved, captured));
         oe.setStatus("PENDING");
-        oe.setCreatedAt(java.time.Instant.now());
+        Instant outboxCreatedAt = Instant.now();
+        oe.setCreatedAt(outboxCreatedAt);
+        oe.setUpdatedAt(outboxCreatedAt);
         outboxRepo.save(oe);
         // 异步富化（threat-web IOC 命中 → 二次修正风险分，落 t_alarm）；扇出由 Kafka 消费者负责
-        Alarm finalSaved = saved;
-        Thread.startVirtualThread(() -> enrichOnly(finalSaved));
+        scheduleEnrichmentAfterCommit(saved);
         return saved;
+    }
+
+    /**
+     * Never let optional threat enrichment race the transaction that creates
+     * the alarm. When called outside a managed transaction (focused unit tests
+     * and compatibility callers), scheduling remains immediate.
+     */
+    private void scheduleEnrichmentAfterCommit(Alarm alarm) {
+        Runnable submit = () -> submitEnrichment(alarm);
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    submit.run();
+                }
+            });
+        } else {
+            submit.run();
+        }
+    }
+
+    private void submitEnrichment(Alarm alarm) {
+        try {
+            enrichmentExecutor().execute(() -> enrichOnly(alarm));
+        } catch (java.util.concurrent.RejectedExecutionException saturated) {
+            // Enrichment is explicitly optional. Protect Alert persistence and
+            // its Outbox from an unhealthy threat service or an alert storm.
+            log.warn("告警情报富化队列已满，跳过本次 best-effort 富化 alarmId={}", alarm.getId());
+        }
+    }
+
+    private ExecutorService enrichmentExecutor() {
+        ExecutorService current = enrichmentExecutor;
+        if (current != null) return current;
+        synchronized (this) {
+            if (enrichmentExecutor == null) {
+                int concurrency = Math.max(1, Math.min(32, enrichmentConcurrency));
+                int capacity = Math.max(100, Math.min(100_000, enrichmentQueueCapacity));
+                enrichmentExecutor = new ThreadPoolExecutor(
+                        concurrency, concurrency, 0L, TimeUnit.MILLISECONDS,
+                        new ArrayBlockingQueue<>(capacity),
+                        Thread.ofVirtual().name("alert-enrichment-", 0).factory(),
+                        new ThreadPoolExecutor.AbortPolicy());
+            }
+            return enrichmentExecutor;
+        }
+    }
+
+    @PreDestroy
+    void stopEnrichment() {
+        ExecutorService current = enrichmentExecutor;
+        if (current != null) current.shutdownNow();
     }
 
     @Transactional(readOnly = true)

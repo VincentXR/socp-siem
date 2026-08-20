@@ -1,0 +1,76 @@
+package com.socp.search.config.search;
+
+import com.sun.net.httpserver.HttpServer;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.test.util.ReflectionTestUtils;
+
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class OsEventWriterTest {
+
+    private HttpServer server;
+
+    @AfterEach
+    void stopServer() {
+        if (server != null) server.stop(0);
+    }
+
+    @Test
+    void usesStableEventIdAndRequiresEveryBulkItemToSucceed() throws Exception {
+        AtomicReference<String> request = new AtomicReference<>();
+        server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/_bulk", exchange -> {
+            request.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            byte[] response = "{\"errors\":false,\"items\":[{\"index\":{\"status\":201}}]}"
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, response.length);
+            exchange.getResponseBody().write(response);
+            exchange.close();
+        });
+        server.start();
+        OsEventWriter writer = writer();
+
+        assertTrue(writer.writeEventsAndAwait(List.of(event())));
+        assertTrue(request.get().contains("\"_id\":\"tenant-a|event-1\""));
+        assertTrue(request.get().contains("socp-events-2026.08.20"));
+    }
+
+    @Test
+    void rejectsHttpSuccessThatContainsAnItemFailure() throws Exception {
+        server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/_bulk", exchange -> {
+            byte[] response = ("{\"errors\":true,\"items\":[{\"index\":{\"status\":400,"
+                    + "\"error\":{\"reason\":\"mapping conflict\"}}}]}")
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, response.length);
+            exchange.getResponseBody().write(response);
+            exchange.close();
+        });
+        server.start();
+
+        assertFalse(writer().writeEventsAndAwait(List.of(event())));
+    }
+
+    private OsEventWriter writer() {
+        OsEventWriter writer = new OsEventWriter();
+        ReflectionTestUtils.setField(writer, "url", "http://localhost:" + server.getAddress().getPort());
+        ReflectionTestUtils.setField(writer, "username", "test");
+        ReflectionTestUtils.setField(writer, "password", "test");
+        ReflectionTestUtils.setField(writer, "enabled", true);
+        return writer;
+    }
+
+    private static SearchEvent event() {
+        return new SearchEvent("event-1", Instant.parse("2026-08-20T23:59:59Z"),
+                "auth", "host-1", "HIGH", "failed", Map.of("tenant_id", "tenant-a"), Map.of());
+    }
+}

@@ -9,7 +9,8 @@ the executable verification scripts remain the final source of truth.
 ```mermaid
 flowchart LR
   S[Vector / NDJSON / collectors] --> P[search-config<br/>parse + normalize + enrich]
-  P --> K[(Kafka<br/>socp-events)]
+  P --> IO[(Ingestion Outbox<br/>same DB transaction)]
+  IO --> K[(Kafka<br/>socp-events)]
   K --> D[detect-web<br/>rule engine + UEBA]
   K --> IX[OpenSearch index consumer]
   IX --> OS[(OpenSearch<br/>raw event search)]
@@ -32,9 +33,11 @@ flowchart LR
 ```
 
 `search-config` is the normalization boundary. It converts vendor-specific
-input into a canonical event before publishing to `socp-events`. Detection and
-indexing consume the same stream independently, so search indexing does not
-block detection and a Detection restart can process Kafka backlog.
+input into a canonical event and writes the local event plus an Ingestion
+Outbox row in one transaction. The publisher waits for Kafka acknowledgement
+before marking that row published. Detection and indexing consume the same
+stream independently, so search indexing does not block detection and either
+consumer can process Kafka backlog after recovery.
 
 Detection does not call Alert Web directly from the rule-engine worker. It
 materializes the alert payload and source identity in
@@ -50,6 +53,7 @@ analytics consumers.
 | Concern | Implementation | Boundary |
 |---|---|---|
 | Ingestion and parsing | Vector, collectors, `search-config` | Vendor formats stay outside detection rules |
+| Ingestion publication | `t_ingestion_outbox` | Event persistence and Kafka publication intent commit atomically |
 | Event transport | Kafka `socp-events`, rule-change, alarm topics | Separates ingestion, detection, indexing, and fan-out |
 | Detection | `socp-rule` embedded in `detect-web` | Rules, hot reload, suppression, windows, backpressure |
 | Detection recovery | `t_detection_event` | Event lifecycle, partition ownership, time-bounded paginated replay |
@@ -68,6 +72,11 @@ file-backed H2 by default and provide an `application-pg.yml` profile.
 ## Reliability semantics
 
 - Producers use `acks=all` and idempotence where configured.
+- Canonical ingestion returns only after the event and Ingestion Outbox intent
+  commit together; broker outages leave retryable `PENDING` rows.
+- The OpenSearch consumer commits each partition only after its complete bulk
+  succeeds. Failed partitions seek back, and stable event IDs make replay an
+  idempotent document overwrite.
 - Kafka consumers use manual offset commits, stable event IDs, database-backed
   claims, and DLQ paths.
 - Detection has a bounded queue. Queue rejection returns `503` with

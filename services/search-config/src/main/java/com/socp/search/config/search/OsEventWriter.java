@@ -19,7 +19,7 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
-import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.List;
@@ -49,21 +49,40 @@ public class OsEventWriter {
     @Value("${socp.opensearch.enabled:true}")
     private boolean enabled;
 
-    /** 异步 best-effort 写入（不阻塞采集热路径） */
+    /** Asynchronous compatibility path used only when no Kafka indexing path is configured. */
     public void writeEvents(List<SearchEvent> es) {
         if (!enabled || es == null || es.isEmpty()) return;
         Thread.startVirtualThread(() -> doWrite(es));
     }
 
-    private void doWrite(List<SearchEvent> es) {
-        String index = "socp-events-" + DateTimeFormatter.ofPattern("yyyy.MM.dd").format(LocalDate.now());
+    /**
+     * Performs a complete bulk request and returns only after every item has
+     * been durably acknowledged by OpenSearch.
+     */
+    public boolean writeEventsAndAwait(List<SearchEvent> es) {
+        if (!enabled || es == null || es.isEmpty()) return true;
+        return doWrite(es);
+    }
+
+    private boolean doWrite(List<SearchEvent> es) {
+        HttpURLConnection c = null;
         try {
             StringBuilder sb = new StringBuilder(es.size() * 256);
             for (SearchEvent e : es) {
-                sb.append("{\"index\":{\"_index\":\"").append(index).append("\"}}\n");
+                String index = "socp-events-" + DateTimeFormatter.ofPattern("yyyy.MM.dd")
+                        .withZone(ZoneOffset.UTC).format(e.timestamp());
+                // Tenant-scoped stable ID turns redelivery into an idempotent
+                // overwrite without allowing equal source IDs to collide.
+                String documentId = e.fields().getOrDefault("tenant_id", "default")
+                        + "|" + e.eventId();
+                sb.append("{\"index\":{\"_index\":")
+                        .append(MAPPER.writeValueAsString(index))
+                        .append(",\"_id\":")
+                        .append(MAPPER.writeValueAsString(documentId))
+                        .append("}}\n");
                 sb.append(MAPPER.writeValueAsString(e)).append('\n');
             }
-            HttpURLConnection c = (HttpURLConnection) new URL(url + "/_bulk").openConnection();
+            c = (HttpURLConnection) new URL(url + "/_bulk").openConnection();
             c.setRequestMethod("POST");
             c.setDoOutput(true);
             c.setConnectTimeout(3000);
@@ -81,21 +100,24 @@ public class OsEventWriter {
             }
             int code = c.getResponseCode();
             if (code >= 200 && code < 300) {
-                // 失败可见：bulk HTTP 200 不代表每条成功——逐条检查 items 的 error
                 String resp = new String(c.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
                 int failed = countBulkErrors(resp);
-                if (failed > 0) {
+                if (failed != 0) {
                     log.warn("OpenSearch bulk 写入 {}/{} 条失败（items error，HTTP {}）-> {} : {}",
-                            failed, es.size(), code, index, firstError(resp));
-                } else {
-                    log.info("OpenSearch bulk 写入 {} 事件 -> {} (HTTP {})", es.size(), index, code);
+                            failed, es.size(), code, url, firstError(resp));
+                    return false;
                 }
+                log.info("OpenSearch bulk durable acknowledgement events={} HTTP={}", es.size(), code);
+                return true;
             } else {
-                log.warn("OpenSearch bulk 失败 HTTP {} (静默降级)", code);
+                log.warn("OpenSearch bulk failed HTTP {}; Kafka offset remains uncommitted", code);
+                return false;
             }
-            c.disconnect();
         } catch (Exception e) {
-            log.warn("OpenSearch 写入异常（静默降级）: {}", e.toString());
+            log.warn("OpenSearch write failed; Kafka offset remains uncommitted: {}", e.toString());
+            return false;
+        } finally {
+            if (c != null) c.disconnect();
         }
     }
 
@@ -104,7 +126,8 @@ public class OsEventWriter {
         try {
             var root = MAPPER.readValue(resp, com.fasterxml.jackson.databind.JsonNode.class);
             var items = root.get("items");
-            if (items == null || !items.isArray()) return 0;
+            if (root.path("errors").asBoolean(false) && (items == null || !items.isArray())) return -1;
+            if (items == null || !items.isArray()) return -1;
             int n = 0;
             for (var it : items) {
                 var idx = it.get("index");
@@ -112,7 +135,7 @@ public class OsEventWriter {
             }
             return n;
         } catch (Exception e) {
-            return 0;
+            return -1;
         }
     }
 

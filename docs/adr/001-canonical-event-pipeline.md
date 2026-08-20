@@ -6,17 +6,20 @@
 ## Decision
 
 Normalize vendor-specific telemetry in `search-config` and publish one
-canonical event contract to Kafka topic `socp-events`. `detect-web` consumes
-that contract for rule evaluation, while an independent consumer indexes raw
-events in OpenSearch. Detection alerts cross into Alert Web through the durable
-Detection Alert Outbox rather than a direct remote call.
+canonical event contract to Kafka topic `socp-events`. The local event and an
+Ingestion Outbox publication intent commit in one database transaction.
+`detect-web` consumes that contract for rule evaluation, while an independent
+consumer indexes raw events in OpenSearch. Detection alerts cross into Alert
+Web through the durable Detection Alert Outbox rather than a direct remote call.
 
 ## Why
 
 Detection rules should not know whether an event came from Syslog, CEF, LEEF,
 Sysmon, Falco, or NDJSON. Kafka separates ingestion rate from detection rate
 and allows the search index to be rebuilt from the event stream. The Detection
-Outbox separates rule evaluation from Alert Web availability.
+Outbox separates rule evaluation from Alert Web availability. The OpenSearch
+consumer waits for every bulk item acknowledgement before committing its
+partition offset and uses event ID as document ID for idempotent replay.
 
 ## Trade-offs
 

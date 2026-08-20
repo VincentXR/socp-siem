@@ -30,9 +30,13 @@ navigation, resource-list, and resource-import contracts.
 - `socp-rule` and `detect-web`: rule evaluation, suppression, hot reload,
   routing keys, partition restore, event de-duplication, queue backpressure,
   malformed events, Detection Alert Outbox retry, and rule API contracts.
+- `search-config`: canonical event plus Ingestion Outbox creation, optimistic
+  publication claims, broker acknowledgement, stable OpenSearch document IDs,
+  partial bulk failure, and index-before-offset completion semantics.
 - `alert-web`: create validation, source-alert idempotency, paged query
   contracts, transactional Alert Outbox creation, broker-ack publishing,
-  pending retry, disposition, and fan-out isolation.
+  optimistic claim/stale recovery, post-commit enrichment scheduling, pending
+  retry, disposition, and fan-out isolation.
 - `incident-web` and `soar-web`: case validation, merge/idempotency, and
   Temporal or local fallback behavior.
 - Resource services: import, create/update, validation, pagination, and

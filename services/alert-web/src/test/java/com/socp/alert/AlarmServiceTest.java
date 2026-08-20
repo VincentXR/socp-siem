@@ -3,6 +3,8 @@ package com.socp.alert;
 import com.socp.platform.client.IncidentClient;
 import com.socp.platform.client.NotifyClient;
 import com.socp.platform.client.SoarClient;
+import com.socp.platform.client.ServiceCall;
+import com.socp.platform.client.SocpService;
 import com.socp.platform.client.ThreatClient;
 import com.socp.platform.tenant.TenantContext;
 import org.junit.jupiter.api.AfterEach;
@@ -12,6 +14,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Instant;
 import java.util.List;
@@ -23,6 +26,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.timeout;
 
 @ExtendWith(MockitoExtension.class)
 class AlarmServiceTest {
@@ -57,6 +62,10 @@ class AlarmServiceTest {
     @AfterEach
     void clearTenant() {
         TenantContext.clear();
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+        service.stopEnrichment();
     }
 
     @Test
@@ -155,5 +164,24 @@ class AlarmServiceTest {
                 "alertCreatedAt", "descending");
 
         assertEquals(List.of(fresh, legacy), result);
+    }
+
+    @Test
+    void threatEnrichmentStartsOnlyAfterTheAlarmTransactionCommits() {
+        TenantContext.set("tenant-a");
+        Alarm alarm = new Alarm("IOC-MATCH", "IOC match", Severity.HIGH,
+                "connection to 203.0.113.10", "203.0.113.10");
+        given(repository.save(alarm)).willReturn(alarm);
+        given(threatClient.matchIocs(org.mockito.ArgumentMatchers.anyString())).willReturn(
+                new ServiceCall(SocpService.THREAT, "http://threat", true,
+                        200, "{\"hits\":{}}", null, 1, false, 1));
+        TransactionSynchronizationManager.initSynchronization();
+
+        service.create(alarm);
+
+        verify(threatClient, never()).matchIocs(org.mockito.ArgumentMatchers.anyString());
+        TransactionSynchronizationManager.getSynchronizations()
+                .forEach(org.springframework.transaction.support.TransactionSynchronization::afterCommit);
+        verify(threatClient, timeout(1_000)).matchIocs(org.mockito.ArgumentMatchers.anyString());
     }
 }

@@ -30,7 +30,7 @@ public class OutboxEvent {
     @Column(columnDefinition = "TEXT")
     private String payload;
 
-    /** PENDING / PUBLISHED / FAILED */
+    /** PENDING / PROCESSING / PUBLISHED */
     private String status;
 
     @Column(name = "created_at")
@@ -38,6 +38,9 @@ public class OutboxEvent {
 
     @Column(name = "published_at")
     private Instant publishedAt;
+
+    @Column(name = "updated_at")
+    private Instant updatedAt;
 
     public String getId() {
         return id;
@@ -93,5 +96,13 @@ public class OutboxEvent {
 
     public void setPublishedAt(Instant publishedAt) {
         this.publishedAt = publishedAt;
+    }
+
+    public Instant getUpdatedAt() {
+        return updatedAt;
+    }
+
+    public void setUpdatedAt(Instant updatedAt) {
+        this.updatedAt = updatedAt;
     }
 }

@@ -1,9 +1,6 @@
 package com.socp.search.config.search;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-import com.socp.rule.partition.DetectionRoutingKey;
+import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -13,22 +10,18 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-import java.util.List;
 import java.util.Properties;
+import java.util.concurrent.TimeUnit;
 
 /**
- * Kafka 事件生产者（事件总线接线）：把归一化事件异步发到 `socp-events` 主题，
- * 由 DETECT 和 OpenSearch 索引消费者分别处理。Kafka 不可用时由
- * IngestPipeline 选择 OpenSearch 直写降级；本类只负责发送和记录失败。
+ * Kafka transport for durable canonical-event Outbox records. A successful
+ * return means the broker acknowledged the record; availability probes and
+ * fire-and-forget sends are deliberately not part of this boundary.
  */
 @Component
 public class KafkaEventProducer {
 
     private static final Logger log = LoggerFactory.getLogger(KafkaEventProducer.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper()
-            .registerModule(new JavaTimeModule())
-            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-
     @Value("${socp.kafka.bootstrap:localhost:9092}")
     private String bootstrap;
 
@@ -65,61 +58,30 @@ public class KafkaEventProducer {
         return p;
     }
 
-    /** 异步发送一批事件（不阻塞采集热路径）；发送失败打 WARN（可观测，不再静默）。
-     *  发送时透传 W3C traceparent（trace 上下文跨 Kafka 传播，见 detect-web 消费侧恢复 MDC）。 */
-    public void sendEvents(List<SearchEvent> es) {        if (!enabled || es == null || es.isEmpty()) return;
-        String traceparent = com.socp.platform.obs.TraceIdFilter.buildTraceparent();
-        Thread.startVirtualThread(() -> {
-            try {
-                KafkaProducer<String, String> p = producer();
-                for (SearchEvent e : es) {
-                    String value = MAPPER.writeValueAsString(e);
-                    // key=tenant + entity：同一状态实体进入同一分区，重试仍由 eventId 去重
-                    String routingKey = DetectionRoutingKey.forSearchEvent(e.source(), e.host(), e.fields());
-                    var rec = new ProducerRecord<>(topic, routingKey, value);
-                    if (traceparent != null) {
-                        rec.headers().add("traceparent", traceparent.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-                    }
-                    p.send(rec,
-                            (md, ex) -> {
-                                if (ex != null) {
-                                    log.warn("Kafka 发送失败 eventId={}（已触发重试）: {}", e.eventId(), ex.getMessage());
-                                }
-                            });
-                }
-            } catch (Exception ex) {
-                log.warn("Kafka 发送异常，采集管线将按可用性选择 OpenSearch 降级路径: {}", ex.getMessage());
+    /**
+     * Sends one durable outbox record and waits for the broker acknowledgement.
+     * The caller must not mark the outbox row published before this returns true.
+     */
+    public boolean sendAndAwait(String routingKey, String payload, String traceparent) {
+        if (!enabled) return false;
+        try {
+            ProducerRecord<String, String> record = new ProducerRecord<>(topic, routingKey, payload);
+            if (traceparent != null && !traceparent.isBlank()) {
+                record.headers().add("traceparent",
+                        traceparent.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             }
-        });
+            producer().send(record).get(30, TimeUnit.SECONDS);
+            return true;
+        } catch (Exception failure) {
+            log.warn("Kafka canonical event publish failed routingKey={}: {}",
+                    routingKey, failure.getMessage());
+            return false;
+        }
     }
 
-    // ---- P2（2026-08-12）：Kafka 可用性探测 ----
-    private volatile Boolean availableCache;
-    private volatile long availableAt;
-
-    /** Kafka broker 可达性（TCP 连接 bootstrap，5s 缓存）。不可达时采集管线降级直写 OpenSearch。
-     *  不用 partitionsFor：metadata 有 5 分钟缓存，broker 断开后仍可能命中缓存误判为可达。 */
-    public boolean isAvailable() {
-        if (!enabled) return false;
-        if (availableCache != null && System.currentTimeMillis() - availableAt < 5_000L) {
-            return availableCache;
-        }
-        boolean ok = false;
-        try {
-            String hp = bootstrap.trim();
-            int idx = hp.indexOf(':');
-            String host = idx > 0 ? hp.substring(0, idx) : hp;
-            int port = idx > 0 ? Integer.parseInt(hp.substring(idx + 1)) : 9092;
-            try (java.net.Socket s = new java.net.Socket()) {
-                s.connect(new java.net.InetSocketAddress(host, port), 2000);
-                ok = true;
-            }
-        } catch (Exception ex) {
-            log.warn("Kafka 探测不可达（降级直写 OpenSearch）: {}", ex.getMessage());
-            ok = false;
-        }
-        availableCache = ok;
-        availableAt = System.currentTimeMillis();
-        return ok;
+    @PreDestroy
+    void stop() {
+        KafkaProducer<String, String> current = producer;
+        if (current != null) current.close(java.time.Duration.ofSeconds(2));
     }
 }

@@ -3,7 +3,7 @@ package com.socp.search.config.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.search.config.domain.ReferenceSet;
 import com.socp.search.config.search.SearchEvent;
-import com.socp.search.config.search.SearchStore;
+import com.socp.search.config.search.IngestionCommitService;
 import com.socp.search.config.store.ParseRuleStore;
 import com.socp.search.config.store.ReferenceSetStore;
 import com.socp.platform.client.DetectClient;
@@ -35,10 +35,8 @@ public class IngestPipeline {
     private final ParsePreviewService preview;
     private final ParseRuleStore parseRules;
     private final ReferenceSetStore refSets;
-    private final SearchStore searchStore;
+    private final IngestionCommitService ingestionCommitService;
     private final IngestTaskMonitor monitor;
-    private final com.socp.search.config.search.KafkaEventProducer kafkaProducer;
-    private final com.socp.search.config.search.OsEventWriter osWriter;
     private final DetectClient detectClient;
     private final com.socp.search.config.parser.ParserRegistry parserRegistry;
 
@@ -61,20 +59,16 @@ public class IngestPipeline {
     private static final Logger log = LoggerFactory.getLogger(IngestPipeline.class);
 
     public IngestPipeline(ParsePreviewService preview, ParseRuleStore parseRules,
-                          ReferenceSetStore refSets, SearchStore searchStore,
+                          ReferenceSetStore refSets, IngestionCommitService ingestionCommitService,
                           IngestTaskMonitor monitor,
-                          com.socp.search.config.search.KafkaEventProducer kafkaProducer,
-                          com.socp.search.config.search.OsEventWriter osWriter,
                           DetectClient detectClient,
                           com.socp.search.config.parser.ParserRegistry parserRegistry,
                           io.micrometer.core.instrument.MeterRegistry meterRegistry) {
         this.preview = preview;
         this.parseRules = parseRules;
         this.refSets = refSets;
-        this.searchStore = searchStore;
+        this.ingestionCommitService = ingestionCommitService;
         this.monitor = monitor;
-        this.kafkaProducer = kafkaProducer;
-        this.osWriter = osWriter;
         this.detectClient = detectClient;
         this.parserRegistry = parserRegistry;
         this.meterRegistry = meterRegistry;
@@ -313,17 +307,10 @@ public class IngestPipeline {
      */
     private int flush(List<Map<String, Object>> batch, Map<String, long[]> perCollector, String defaultCollector) {
         if (batch.isEmpty()) return 0;
-        // 检索库批量落库（一次 saveAll 到 H2，先于 OS 保证不丢）
+        // Canonical event and Kafka publication intent commit atomically. A broker
+        // outage leaves durable PENDING rows instead of creating a send-loss window.
         List<SearchEvent> evs = batch.stream().map(this::toEvent).toList();
-        searchStore.saveBatch(evs);
-        // P2 可重放主链（2026-08-12）：Kafka 可用 → 只发 socp-events，OpenSearch 由
-        // OsIndexerConsumer 消费写入（OS 挂了可重放重建）；Kafka 不可达 → 降级直写 OS。
-        if (kafkaProducer.isAvailable()) {
-            kafkaProducer.sendEvents(evs);
-        } else {
-            log.warn("Kafka 不可达，降级直写 OpenSearch（{} 事件）", evs.size());
-            osWriter.writeEvents(evs);
-        }
+        ingestionCommitService.commit(evs);
         // HTTP 直连 DETECT 仅调试用（默认关闭）：同一事件不再双写进 Detection
         int fl = 0;
         if (forwardHttp) {

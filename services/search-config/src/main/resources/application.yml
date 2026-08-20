@@ -39,6 +39,11 @@ socp:
     token: ${SOCP_VECTOR_TOKEN:dev-vector-token}
   detect:
     url: http://localhost:18082
+  ingest:
+    outbox:
+      poll-interval-ms: ${SOCP_INGEST_OUTBOX_POLL_MS:500}
+      initial-delay-ms: ${SOCP_INGEST_OUTBOX_INITIAL_DELAY_MS:1000}
+      delivery-concurrency: ${SOCP_INGEST_OUTBOX_CONCURRENCY:8}
 
 # 避开 8080（旧 SIEM 控制台占用）；与 alert-web(18080)/api-gateway(18092) 同处 18080~18092 段
 management:

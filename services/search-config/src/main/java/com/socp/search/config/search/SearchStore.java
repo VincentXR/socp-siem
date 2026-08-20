@@ -70,12 +70,18 @@ public class SearchStore {
     /** 只落 H2（内存 List + repository），不写 OpenSearch——P2 后 OS 走 Kafka 消费侧写入。 */
     public synchronized void saveBatch(List<SearchEvent> es) {
         if (es == null || es.isEmpty()) return;
+        repo.saveAll(es.stream().map(SearchStore::toEntity).toList());
+        rememberBatch(es);
+    }
+
+    /** Updates only the bounded local search window after a durable transaction commits. */
+    public synchronized void rememberBatch(List<SearchEvent> es) {
+        if (es == null || es.isEmpty()) return;
         events.addAll(es);
         int over = events.size() - CAP;
         for (int i = 0; i < over && !events.isEmpty(); i++) {
             events.remove(0);
         }
-        repo.saveAll(es.stream().map(SearchStore::toEntity).toList());
     }
 
     public int size() {
@@ -137,7 +143,7 @@ public class SearchStore {
 
     // ---- 互转 ----
 
-    static SearchEventEntity toEntity(SearchEvent e) {
+    public static SearchEventEntity toEntity(SearchEvent e) {
         SearchEventEntity en = new SearchEventEntity();
         en.setEventId(e.eventId());
         en.setTimestamp(e.timestamp());

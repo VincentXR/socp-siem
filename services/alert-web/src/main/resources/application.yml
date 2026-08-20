@@ -48,6 +48,14 @@ socp:
     url: http://localhost:18097
   soar:
     url: http://localhost:18083
+  alert:
+    outbox:
+      poll-interval-ms: ${SOCP_ALERT_OUTBOX_POLL_MS:1000}
+      initial-delay-ms: ${SOCP_ALERT_OUTBOX_INITIAL_DELAY_MS:1000}
+      delivery-concurrency: ${SOCP_ALERT_OUTBOX_CONCURRENCY:4}
+    enrichment:
+      concurrency: ${SOCP_ALERT_ENRICHMENT_CONCURRENCY:4}
+      queue-capacity: ${SOCP_ALERT_ENRICHMENT_QUEUE_CAPACITY:1000}
 
 management:
   endpoints:
