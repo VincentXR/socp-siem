@@ -72,17 +72,29 @@ public class AlarmController {
             @RequestParam(defaultValue = "descending") String order,
             @RequestParam(required = false) Integer page,
             @RequestParam(required = false) Integer size) {
+        int sz = size == null || size <= 0 ? 20 : Math.min(size, 500);
+        int pg = page == null || page < 1 ? 1 : page;
+        boolean unfilteredTimestampPage = page != null
+                && severity == null && rule == null && status == null && q == null
+                && ("occurredAt".equals(sort) || "alertCreatedAt".equals(sort));
+        if (unfilteredTimestampPage) {
+            var result = service.pageByTimestamp(sort, order, pg, sz);
+            return ApiResult.ok(Map.of(
+                    "items", result.getContent(),
+                    "total", result.getTotalElements(),
+                    "page", pg,
+                    "size", sz));
+        }
+
         List<Alarm> all = service.query(severity, rule, status, q, sort, order);
         if (page == null && size == null) {
             return ApiResult.ok(all);
         }
-        int sz = size == null || size <= 0 ? 20 : Math.min(size, 500);
         if (page == null) {
             // 只传 size：按大小切片返回 List（保持旧契约）
             int to = Math.min(sz, all.size());
             return ApiResult.ok(all.subList(0, to));
         }
-        int pg = page < 1 ? 1 : page;
         int from = Math.min((pg - 1) * sz, all.size());
         int to = Math.min(from + sz, all.size());
         return ApiResult.ok(Map.of(

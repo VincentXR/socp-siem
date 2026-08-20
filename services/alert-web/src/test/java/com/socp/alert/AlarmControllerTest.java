@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.http.MediaType;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.validation.beanvalidation.SpringValidatorAdapter;
@@ -76,8 +77,8 @@ class AlarmControllerTest {
     void pagedQueryPreservesResponseContract() throws Exception {
         Alarm alarm = new Alarm("AUTH-BRUTE", "SSH brute force", Severity.HIGH,
                 "failed login", "203.0.113.10");
-        given(service.query(null, null, null, null, "occurredAt", "descending"))
-                .willReturn(List.of(alarm));
+        given(service.pageByTimestamp("occurredAt", "descending", 1, 20))
+                .willReturn(new PageImpl<>(List.of(alarm)));
 
         mvc.perform(get("/api/alarms")
                         .param("page", "1")

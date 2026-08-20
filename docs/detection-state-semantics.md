@@ -156,6 +156,14 @@ Pending events are evaluated by the currently active ruleset after restart.
 Rule reloads should drain affected in-flight work before replacing the active
 ruleset. The journal is not a historical rule-runtime store.
 
+## Shared entity-risk projection
+
+Rule windows remain partition-owned hot state, but entity risk is a shared
+PostgreSQL/H2 projection. `t_entity_risk_alert` uses the deterministic alert ID
+as its idempotency boundary; `t_entity_risk_profile` is updated under a row
+lock. Consequently, any Detection instance can serve the same accumulated
+risk after rebalance without relying on instance-local memory.
+
 ## Explicit non-guarantees
 
 The current design does not claim:

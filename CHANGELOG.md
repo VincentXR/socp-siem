@@ -8,10 +8,30 @@
   tenant-aware retry, stale-claim recovery, and a separate detect-model
   publication stage.
 - Removed Detection's direct SOAR call; Alert Web's transactional Outbox is
-  now the single downstream Incident/Notify/SOAR fan-out boundary.
+  now the single durable Kafka hand-off boundary for downstream fan-out.
 - Alert Outbox rows are marked `PUBLISHED` only after a broker acknowledgement.
 - Added focused tests for Alert Web outage retry, duplicate publisher claims,
   and broker-ack failure behavior.
+- Closed the Kafka completion gap with durable `PENDING`/`COMPLETED`/
+  `DEAD_LETTERED` lifecycle states, partition-serial lanes, and contiguous
+  offset commits.
+- Streamed time-bounded journal replay page by page to avoid accumulating a
+  full recovery window in one persistence context.
+- Moved entity-risk alerts and profiles from instance-local memory into a
+  shared idempotent database projection.
+
+### Detection content and runtime verification
+
+- Expanded the packaged Detection-as-Code catalog to 25 versioned rules with
+  positive and negative execution vectors, including rare, baseline, and
+  correlation-set families.
+- Added package-owned rule synchronization while preserving user-owned rules
+  and tolerating concurrent multi-instance startup.
+- Added six-partition/three-instance correctness, PostgreSQL/OpenSearch outage,
+  Detection Outbox replay, realistic benchmark, and alert-heavy benchmark
+  evidence contracts.
+- Extended the Golden Demo through privilege escalation, multi-stage host
+  correlation, shared entity risk, Incident, Notify, SOAR, and reporting.
 
 ### Verification and documentation
 
@@ -26,6 +46,6 @@
 ## Release preparation
 
 Before creating a tagged release, run the full Java/frontend checks, the
-Golden Demo, the failure matrix, and the 10k/100k/1m benchmark series. Keep
+Golden Demo, the failure matrix, and fixed-profile benchmark scale points. Keep
 machine-specific reports outside source control unless they are deliberately
 sanitized and published as reproducible fixtures.

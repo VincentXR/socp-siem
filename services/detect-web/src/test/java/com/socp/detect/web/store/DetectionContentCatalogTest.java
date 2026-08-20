@@ -87,8 +87,12 @@ class DetectionContentCatalogTest {
             map.forEach((k, v) -> fields.put(String.valueOf(k), String.valueOf(v)));
         }
         fields.put("msg", String.valueOf(input.getOrDefault("msg", "")));
+        Object rawTimestamp = input.get("timestamp");
+        Instant timestamp = rawTimestamp == null
+                ? Instant.parse("2026-01-01T00:00:0" + Math.min(index, 9) + "Z")
+                : Instant.parse(String.valueOf(rawTimestamp));
         return new SecurityEvent("content-test-" + index + "-" + input.hashCode(),
-                Instant.parse("2026-01-01T00:00:0" + Math.min(index, 9) + "Z"),
+                timestamp,
                 String.valueOf(input.getOrDefault("source", "unknown")),
                 String.valueOf(input.getOrDefault("host", "unknown")),
                 String.valueOf(input.getOrDefault("msg", "")), fields, Severity.HIGH);

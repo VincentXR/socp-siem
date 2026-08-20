@@ -86,7 +86,11 @@ class DetectionContentExecutionTest {
             Object rawHost = map.get("host");
             String source = rawSource == null ? "unknown" : String.valueOf(rawSource);
             String host = rawHost == null ? "test-host" : String.valueOf(rawHost);
-            out.add(new SecurityEvent(UUID.randomUUID().toString(), Instant.now(), source, host,
+            Object rawTimestamp = map.get("timestamp");
+            Instant timestamp = rawTimestamp == null
+                    ? Instant.now()
+                    : Instant.parse(String.valueOf(rawTimestamp));
+            out.add(new SecurityEvent(UUID.randomUUID().toString(), timestamp, source, host,
                     msg, fields, Severity.INFO));
         }
         return out;

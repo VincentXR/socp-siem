@@ -52,8 +52,9 @@ analytics consumers.
 | Ingestion and parsing | Vector, collectors, `search-config` | Vendor formats stay outside detection rules |
 | Event transport | Kafka `socp-events`, rule-change, alarm topics | Separates ingestion, detection, indexing, and fan-out |
 | Detection | `socp-rule` embedded in `detect-web` | Rules, hot reload, suppression, windows, backpressure |
-| Detection recovery | `t_detection_event` | Event claim, partition ownership, bounded state replay |
+| Detection recovery | `t_detection_event` | Event lifecycle, partition ownership, time-bounded paginated replay |
 | Detection alert hand-off | `t_detection_alert_outbox` | Durable Alert Web delivery and retry |
+| Entity risk | `t_entity_risk_profile`, `t_entity_risk_alert` | Shared, idempotent projection across Detection instances |
 | Alert facts | `alert-web` and PostgreSQL | Transactional lifecycle and tenant-scoped queries |
 | Alert fan-out | `outbox_event` in `alert-web` | At-least-once downstream delivery |
 | Event investigation | OpenSearch index consumer and search API | Full-text/field search stays separate from OLTP |
@@ -76,6 +77,9 @@ file-backed H2 by default and provide an `application-pg.yml` profile.
 - Alert Web uses `(tenant_id, source_alert_id)` idempotency, so replaying a
   Detection Outbox row returns the existing alert instead of creating another.
 - Alert Web writes its alert row and downstream Outbox row in one transaction.
+- The Alert Outbox's durable guarantee ends at Kafka broker acknowledgement.
+  The current combined fan-out consumer calls each downstream adapter
+  best-effort; per-destination durable retry is outside this implementation.
 - Kafka and downstream delivery are at-least-once. Consumers must remain
   idempotent; the system does not claim distributed exactly-once processing.
 - Temporal is optional for development. SOAR can use the local executor when
@@ -110,6 +114,10 @@ Detection keeps hot rule windows in process, while accepted events and event
 claims are persisted in `t_detection_event`. The producer routes by the stable
 `tenant_id | detection_routing_field | detection_routing_value` key, and a
 consumer restores only journal rows for its assigned partitions.
+
+Entity risk is not instance-local hot state. Deterministic alert IDs feed a
+shared risk-event table and a locked profile projection, so a rebalance does
+not change the served risk value.
 
 A stateful rule is strictly partition-local only when its `keyField` matches
 the event routing field. A rule grouped by another entity dimension requires a

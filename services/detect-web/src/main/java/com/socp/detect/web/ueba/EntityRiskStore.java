@@ -2,189 +2,185 @@ package com.socp.detect.web.ueba;
 
 import com.socp.rule.model.Severity;
 import com.socp.rule.score.RiskScorer;
+import com.socp.rule.util.Json;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.UUID;
 
-/**
- * 实体风险画像存储（UEBA 看板数据源）。
- *
- * <p>把散落的单条告警按"实体"（用户 / 主机 / IP）归并成一个持续演进的风险分：
- * <ul>
- *   <li><b>累积</b>：每条告警按其风险分的一定比例注入实体风险，反映"多次可疑行为叠加"；</li>
- *   <li><b>时间衰减</b>：半衰期 6 小时指数衰减，昨天的告警不该让今天的实体一直挂红；</li>
- *   <li><b>画像</b>：记录命中的 ATT&amp;CK 技术分布、触发规则 Top、首末次出现时间。</li>
- * </ul>
- * 分析师因此能直接回答"现在最该看哪个实体"，而不是在几千条同级别告警里翻。
- */
+/** Shared, durable entity-risk projection used by every Detection instance. */
 @Component
 public class EntityRiskStore {
 
-    /** 风险衰减半衰期 */
     private static final double HALF_LIFE_SECONDS = Duration.ofHours(6).toSeconds();
-    /** 单条告警注入实体风险的比例 */
     private static final double INJECT_RATIO = 0.45;
-    /** 最多跟踪的实体数，超出淘汰当前风险最低者 */
-    private static final int MAX_ENTITIES = 5000;
-    /** 近期告警窗口，用于评分的 frequency 分项 */
     private static final Duration RECENT_WINDOW = Duration.ofHours(1);
 
-    private final Map<String, Profile> profiles = new ConcurrentHashMap<>();
-    private final Map<String, RiskScorer.Score> appliedAlertScores = new ConcurrentHashMap<>();
+    private final EntityRiskProfileRepository profiles;
+    private final EntityRiskAlertRepository appliedAlerts;
 
-    private static final class Profile {
-        final String entity;
-        double score;
-        Instant scoreAt = Instant.now();
-        long alerts;
-        Instant firstSeen = Instant.now();
-        Instant lastSeen = Instant.now();
-        Severity maxSeverity = Severity.INFO;
-        final Map<String, Integer> mitre = new LinkedHashMap<>();
-        final Map<String, Integer> rules = new LinkedHashMap<>();
-        final ArrayList<Instant> recent = new ArrayList<>();
-
-        Profile(String entity) {
-            this.entity = entity;
-        }
-
-        /** 按半衰期把风险衰减到 now */
-        double decayed(Instant now) {
-            double elapsed = Math.max(0, now.getEpochSecond() - scoreAt.getEpochSecond());
-            return score * Math.pow(0.5, elapsed / HALF_LIFE_SECONDS);
-        }
+    public EntityRiskStore(EntityRiskProfileRepository profiles, EntityRiskAlertRepository appliedAlerts) {
+        this.profiles = profiles;
+        this.appliedAlerts = appliedAlerts;
     }
 
-    /** 记录一条告警，返回该告警的最终风险评分（含实体频次加权） */
     public RiskScorer.Score record(String entity, Severity severity, String mitre,
                                    String ruleId, String ruleName, int tiHits) {
-        return recordInternal(entity, severity, mitre, ruleId, ruleName, tiHits);
+        return recordForAlert("unkeyed-" + UUID.randomUUID(), entity, severity, mitre,
+                ruleId, ruleName, tiHits);
     }
 
-    /** Idempotent risk projection for a deterministic Detection alert id. */
+    /**
+     * Atomically project one deterministic Detection alert. The alert primary
+     * key is the idempotency boundary and the profile row is locked while its
+     * decayed score and counters are advanced.
+     */
+    @Transactional
     public RiskScorer.Score recordForAlert(String alertId, String entity, Severity severity, String mitre,
                                            String ruleId, String ruleName, int tiHits) {
-        if (alertId == null || alertId.isBlank()) {
-            return recordInternal(entity, severity, mitre, ruleId, ruleName, tiHits);
-        }
-        return appliedAlertScores.computeIfAbsent(alertId,
-                ignored -> recordInternal(entity, severity, mitre, ruleId, ruleName, tiHits));
-    }
+        if (alertId == null || alertId.isBlank()) alertId = "unkeyed-" + UUID.randomUUID();
+        EntityRiskAlertEntity existing = appliedAlerts.findById(alertId).orElse(null);
+        if (existing != null) return scoreOf(existing);
 
-    private RiskScorer.Score recordInternal(String entity, Severity severity, String mitre,
-                                            String ruleId, String ruleName, int tiHits) {
         Instant now = Instant.now();
-        if (entity == null || entity.isBlank()) entity = "unknown";
-        Profile p = profiles.computeIfAbsent(entity, Profile::new);
-        RiskScorer.Score score;
-        synchronized (p) {
-            p.recent.removeIf(t -> t.isBefore(now.minus(RECENT_WINDOW)));
-            int recentCount = p.recent.size();
-            score = RiskScorer.score(severity, mitre, tiHits, recentCount, criticality(entity));
+        String key = entity == null || entity.isBlank() ? "unknown" : entity;
+        EntityRiskProfileEntity profile = profiles.findForUpdate(key).orElseGet(() -> newProfile(key, now));
+        int recent = Math.toIntExact(Math.min(10,
+                appliedAlerts.countByEntityAndCreatedAtAfter(key, now.minus(RECENT_WINDOW))));
+        RiskScorer.Score score = RiskScorer.score(severity, mitre, tiHits, recent, criticality(key));
 
-            p.score = Math.min(100, p.decayed(now) + score.score() * INJECT_RATIO);
-            p.scoreAt = now;
-            p.alerts++;
-            p.lastSeen = now;
-            p.recent.add(now);
-            if (severity != null && severity.level() > p.maxSeverity.level()) p.maxSeverity = severity;
-            if (mitre != null && !mitre.isBlank() && !"null".equals(mitre)) p.mitre.merge(mitre, 1, Integer::sum);
-            if (ruleName != null && !ruleName.isBlank()) p.rules.merge(ruleName, 1, Integer::sum);
-        }
-        evictIfNeeded();
+        profile.setScore(Math.min(100, decayed(profile, now) + score.score() * INJECT_RATIO));
+        profile.setScoreAt(now);
+        profile.setAlerts(profile.getAlerts() + 1);
+        profile.setLastSeen(now);
+        Severity previous = Severity.valueOf(profile.getMaxSeverity());
+        if (severity != null && severity.level() > previous.level()) profile.setMaxSeverity(severity.name());
+        Map<String, Integer> mitreCounts = counts(profile.getMitreJson());
+        Map<String, Integer> ruleCounts = counts(profile.getRulesJson());
+        if (mitre != null && !mitre.isBlank() && !"null".equals(mitre)) mitreCounts.merge(mitre, 1, Integer::sum);
+        if (ruleName != null && !ruleName.isBlank()) ruleCounts.merge(ruleName, 1, Integer::sum);
+        profile.setMitreJson(json(mitreCounts));
+        profile.setRulesJson(json(ruleCounts));
+        profiles.save(profile);
+
+        EntityRiskAlertEntity applied = new EntityRiskAlertEntity();
+        applied.setAlertId(alertId);
+        applied.setEntity(key);
+        applied.setScore(score.score());
+        applied.setLevel(score.level());
+        applied.setBreakdownJson(json(score.breakdown()));
+        applied.setCreatedAt(now);
+        appliedAlerts.save(applied);
         return score;
     }
 
-    /** 核心资产命中观察名单则重要性拉满，否则按普通资产 */
-    private static int criticality(String entity) {
-        if (com.socp.rule.engine.Watchlists.contains("crown_jewels", entity)) return 3;
-        if (com.socp.rule.engine.Watchlists.contains("privileged_accounts", entity)) return 2;
-        return 0;
-    }
-
-    private void evictIfNeeded() {
-        if (profiles.size() <= MAX_ENTITIES) return;
-        Instant now = Instant.now();
-        profiles.entrySet().stream()
-                .sorted(Comparator.comparingDouble(e -> e.getValue().decayed(now)))
-                .limit(profiles.size() - MAX_ENTITIES)
-                .map(Map.Entry::getKey)
-                .toList()
-                .forEach(profiles::remove);
-    }
-
-    /** 风险 Top N 实体 */
     public List<Map<String, Object>> top(int limit) {
         Instant now = Instant.now();
-        return profiles.values().stream()
-                .map(p -> toMap(p, now))
+        return profiles.findAll().stream()
+                .map(profile -> toMap(profile, now))
                 .sorted((a, b) -> Double.compare((Double) b.get("risk"), (Double) a.get("risk")))
                 .limit(Math.max(1, limit))
                 .toList();
     }
 
     public Map<String, Object> get(String entity) {
-        Profile p = profiles.get(entity);
-        return p == null ? null : toMap(p, Instant.now());
+        return profiles.findById(entity).map(profile -> toMap(profile, Instant.now())).orElse(null);
     }
 
-    /** 全局摘要：实体总数 + 各风险档位分布 */
     public Map<String, Object> summary() {
         Instant now = Instant.now();
+        List<EntityRiskProfileEntity> all = profiles.findAll();
         Map<String, Integer> byLevel = new LinkedHashMap<>();
-        for (String l : List.of("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO")) byLevel.put(l, 0);
+        for (String level : List.of("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO")) byLevel.put(level, 0);
         double max = 0;
-        for (Profile p : profiles.values()) {
-            double d = p.decayed(now);
-            max = Math.max(max, d);
-            byLevel.merge(RiskScorer.level((int) Math.round(d)), 1, Integer::sum);
+        for (EntityRiskProfileEntity profile : all) {
+            double risk = decayed(profile, now);
+            max = Math.max(max, risk);
+            byLevel.merge(RiskScorer.level((int) Math.round(risk)), 1, Integer::sum);
         }
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("entities", profiles.size());
-        m.put("byLevel", byLevel);
-        m.put("maxRisk", Math.round(max * 10) / 10.0);
-        m.put("halfLifeHours", HALF_LIFE_SECONDS / 3600.0);
-        return m;
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("entities", all.size());
+        result.put("byLevel", byLevel);
+        result.put("maxRisk", Math.round(max * 10) / 10.0);
+        result.put("halfLifeHours", HALF_LIFE_SECONDS / 3600.0);
+        return result;
     }
 
-    private static Map<String, Object> toMap(Profile p, Instant now) {
-        double risk;
-        Map<String, Integer> mitre;
-        Map<String, Integer> rules;
-        long alerts;
-        Instant first, last;
-        Severity maxSev;
-        synchronized (p) {
-            risk = Math.round(p.decayed(now) * 10) / 10.0;
-            mitre = new LinkedHashMap<>(p.mitre);
-            rules = new LinkedHashMap<>(p.rules);
-            alerts = p.alerts;
-            first = p.firstSeen;
-            last = p.lastSeen;
-            maxSev = p.maxSeverity;
+    private static EntityRiskProfileEntity newProfile(String entity, Instant now) {
+        EntityRiskProfileEntity profile = new EntityRiskProfileEntity();
+        profile.setEntity(entity);
+        profile.setScore(0);
+        profile.setScoreAt(now);
+        profile.setAlerts(0);
+        profile.setFirstSeen(now);
+        profile.setLastSeen(now);
+        profile.setMaxSeverity(Severity.INFO.name());
+        profile.setMitreJson("{}");
+        profile.setRulesJson("{}");
+        return profile;
+    }
+
+    private static double decayed(EntityRiskProfileEntity profile, Instant now) {
+        double elapsed = Math.max(0, now.getEpochSecond() - profile.getScoreAt().getEpochSecond());
+        return profile.getScore() * Math.pow(0.5, elapsed / HALF_LIFE_SECONDS);
+    }
+
+    private static int criticality(String entity) {
+        if (com.socp.rule.engine.Watchlists.contains("crown_jewels", entity)) return 3;
+        if (com.socp.rule.engine.Watchlists.contains("privileged_accounts", entity)) return 2;
+        return 0;
+    }
+
+    private static Map<String, Object> toMap(EntityRiskProfileEntity profile, Instant now) {
+        double risk = Math.round(decayed(profile, now) * 10) / 10.0;
+        Map<String, Integer> mitre = counts(profile.getMitreJson());
+        Map<String, Integer> rules = counts(profile.getRulesJson());
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("entity", profile.getEntity());
+        result.put("risk", risk);
+        result.put("level", RiskScorer.level((int) Math.round(risk)));
+        result.put("alerts", profile.getAlerts());
+        result.put("maxSeverity", profile.getMaxSeverity());
+        result.put("firstSeen", profile.getFirstSeen().toString());
+        result.put("lastSeen", profile.getLastSeen().toString());
+        result.put("mitre", ranked(mitre, "technique", 8));
+        result.put("topRules", ranked(rules, "rule", 5));
+        result.put("critical", com.socp.rule.engine.Watchlists.contains("crown_jewels", profile.getEntity()));
+        return result;
+    }
+
+    private static List<Map<String, Object>> ranked(Map<String, Integer> values, String key, int limit) {
+        return values.entrySet().stream()
+                .sorted(Map.Entry.<String, Integer>comparingByValue(Comparator.reverseOrder()))
+                .limit(limit)
+                .map(entry -> Map.<String, Object>of(key, entry.getKey(), "count", entry.getValue()))
+                .toList();
+    }
+
+    private static RiskScorer.Score scoreOf(EntityRiskAlertEntity entity) {
+        return new RiskScorer.Score(entity.getScore(), entity.getLevel(), counts(entity.getBreakdownJson()));
+    }
+
+    private static Map<String, Integer> counts(String value) {
+        Map<String, Integer> result = new LinkedHashMap<>();
+        if (value == null || value.isBlank()) return result;
+        Json.parseObject(value).forEach((key, item) -> {
+            if (item instanceof Number number) result.put(key, number.intValue());
+        });
+        return result;
+    }
+
+    private static String json(Map<String, Integer> value) {
+        try {
+            return Json.mapper().writeValueAsString(value);
+        } catch (Exception error) {
+            throw new IllegalStateException("risk projection JSON serialization failed", error);
         }
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("entity", p.entity);
-        m.put("risk", risk);
-        m.put("level", RiskScorer.level((int) Math.round(risk)));
-        m.put("alerts", alerts);
-        m.put("maxSeverity", maxSev.name());
-        m.put("firstSeen", first.toString());
-        m.put("lastSeen", last.toString());
-        m.put("mitre", mitre.entrySet().stream()
-                .sorted((a, b) -> b.getValue() - a.getValue()).limit(8)
-                .map(e -> Map.of("technique", e.getKey(), "count", e.getValue())).toList());
-        m.put("topRules", rules.entrySet().stream()
-                .sorted((a, b) -> b.getValue() - a.getValue()).limit(5)
-                .map(e -> Map.of("rule", e.getKey(), "count", e.getValue())).toList());
-        m.put("critical", com.socp.rule.engine.Watchlists.contains("crown_jewels", p.entity));
-        return m;
     }
 }

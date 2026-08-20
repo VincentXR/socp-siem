@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""SOCP 黄金 Demo：sshd 暴力破解 -> 账户接管 -> 响应闭环。
+"""SOCP 黄金 Demo：暴力破解 -> 账户接管 -> 提权/执行 -> 风险与响应闭环。
 
 默认走真实采集链：demo/sample.log -> Vector -> search-config -> Kafka。
 如果只想快速验证 search-config 之后的链路，可使用 ``--transport ingest``。
@@ -36,6 +36,7 @@ TIMEOUT = float(os.environ.get("GOLDEN_DEMO_TIMEOUT", "90"))
 
 SERVICES = {
     "search": "search-config",
+    "detect": "detect-web",
     "alert": "alert-web",
     "incident": "incident-web",
     "soar": "soar-web",
@@ -135,7 +136,10 @@ def event_lines(source_ip, host):
         for i in range(5)
     ]
     accepted = f"{timestamp} {host} sshd[4200]: Accepted password for root from {source_ip} port 51299 ssh2"
-    return failed, accepted
+    host_session = f"<34>1 {timestamp} {host} auditd 4299 - - Accepted password session established"
+    sudo = f"<34>1 {timestamp} {host} sudo 4300 - - sudo: root executed /bin/sh"
+    execution = f"<34>1 {timestamp} {host} edr 4301 - - socat reverse shell started"
+    return failed, accepted, host_session, sudo, execution
 
 
 def append_lines(lines, log_path):
@@ -143,6 +147,26 @@ def append_lines(lines, log_path):
     with log_path.open("a", encoding="utf-8", newline="\n") as stream:
         for line in lines:
             stream.write(line + "\n")
+
+
+def ingest_lines(lines):
+    """Send raw lines to search-config without changing their parser semantics."""
+    req = urllib.request.Request(
+        ingest_url(),
+        data=("\n".join(lines) + "\n").encode(),
+        method="POST",
+        headers={
+            "Authorization": "Bearer " + VECTOR_TOKEN,
+            "X-SOCP-Collector": COLLECTOR,
+            "Content-Type": "application/x-ndjson",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            raw = response.read().decode()
+            return response.status, json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as error:
+        return error.code, error.read().decode(errors="replace")
 
 
 def list_alerts(token):
@@ -153,17 +177,40 @@ def list_alerts(token):
     return status, data if isinstance(data, list) else []
 
 
-def matching_alert(alerts, rule_id, source_ip):
+def matching_alert(alerts, rule_id, source_ip, excluded_ids=None):
+    excluded_ids = excluded_ids or set()
     entity_pattern = re.compile(r"(?<!\d)" + re.escape(source_ip) + r"(?!\d)")
     return next(
         (
             item
             for item in alerts
             if item.get("ruleId") == rule_id
+            and item.get("id") not in excluded_ids
             and entity_pattern.search(str(item.get("entity", "")))
         ),
         None,
     )
+
+
+def matching_entity_alert(alerts, rule_id, entity, excluded_ids=None):
+    excluded_ids = excluded_ids or set()
+    return next(
+        (
+            item
+            for item in alerts
+            if item.get("ruleId") == rule_id
+            and item.get("id") not in excluded_ids
+            and item.get("entity") == entity
+        ),
+        None,
+    )
+
+
+def detection_ready(token):
+    status, result, _ = request("detect", "/api/v1/stats", token=token)
+    data = unwrap(result)
+    partitions = data.get("assignedPartitions", []) if isinstance(data, dict) else []
+    return data if status == 200 and partitions else None
 
 
 def ensure_playbook(token):
@@ -256,35 +303,29 @@ def main():
     check("SOAR demo playbook ready", bool(playbook.get("id")), playbook.get("name"))
     check("local notification channel ready", bool(channel.get("id")), channel.get("name"))
 
+    # Spring health can become UP before the Kafka group has completed its first
+    # assignment.  Emitting during that window with auto.offset.reset=latest
+    # would make a fresh group skip the demo records.  Treat partition ownership
+    # as the real readiness boundary.
+    ready = wait_for("Detection partition assignment", lambda: detection_ready(token))
+    if not check("Detection owns Kafka partitions", bool(ready), ready):
+        return 1
+
+    _, existing_alerts = list_alerts(token)
+    baseline_alert_ids = {item.get("id") for item in existing_alerts if item.get("id")}
+
     epoch = int(time.time())
     run_id = str(epoch)
     source_ip = f"203.0.113.{10 + epoch % 200}"
     host = f"golden-ssh-{run_id}"
-    failed, accepted = event_lines(source_ip, host)
+    failed, accepted, host_session, sudo, execution_line = event_lines(source_ip, host)
     print(f"\nScenario: {len(failed)} failed SSH logins from {source_ip}, then one accepted login")
 
     if args.transport == "vector":
         append_lines(failed, Path(args.log_file))
         print(f"  appended {len(failed)} raw sshd lines to {args.log_file}")
     else:
-        # request() intentionally serializes JSON bodies, so raw NDJSON uses urllib directly.
-        url = ingest_url()
-        req = urllib.request.Request(
-            url,
-            data=("\n".join(failed) + "\n").encode(),
-            method="POST",
-            headers={
-                "Authorization": "Bearer " + VECTOR_TOKEN,
-                "X-SOCP-Collector": COLLECTOR,
-                "Content-Type": "application/x-ndjson",
-            },
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=20) as response:
-                status = response.status
-                result = json.loads(response.read().decode())
-        except urllib.error.HTTPError as error:
-            status, result = error.code, error.read().decode(errors="replace")
+        status, result = ingest_lines(failed)
         check("search-config accepted failed-log batch", status == 200, result)
         if status != 200:
             return 1
@@ -328,7 +369,7 @@ def main():
 
     def brute_alert():
         _, alerts = list_alerts(token)
-        return matching_alert(alerts, "AUTH-BRUTE", source_ip)
+        return matching_alert(alerts, "AUTH-BRUTE", source_ip, baseline_alert_ids)
 
     brute = wait_for("AUTH-BRUTE alert", brute_alert)
     if not check("threshold produced AUTH-BRUTE", bool(brute), brute):
@@ -339,28 +380,53 @@ def main():
         append_lines([accepted], Path(args.log_file))
         print("  appended one accepted sshd login to trigger correlation")
     else:
-        url = ingest_url()
-        req = urllib.request.Request(
-            url,
-            data=(accepted + "\n").encode(),
-            method="POST",
-            headers={
-                "Authorization": "Bearer " + VECTOR_TOKEN,
-                "X-SOCP-Collector": COLLECTOR,
-                "Content-Type": "application/x-ndjson",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=20) as response:
-            check("search-config accepted success-log", response.status == 200)
+        status, result = ingest_lines([accepted])
+        if not check("search-config accepted success-log", status == 200, result):
+            return 1
 
     def compromise_alert():
         _, alerts = list_alerts(token)
-        return matching_alert(alerts, "AUTH-BRUTE-SUCCESS", source_ip)
+        return matching_alert(alerts, "AUTH-BRUTE-SUCCESS", source_ip, baseline_alert_ids)
 
     compromise = wait_for("AUTH-BRUTE-SUCCESS alert", compromise_alert)
     if not check("correlation produced AUTH-BRUTE-SUCCESS", bool(compromise), compromise):
         return 1
     print(f"  alert: id={compromise.get('id')} severity={compromise.get('severity')} mitre={compromise.get('mitre')}")
+
+    # Continue the same host story.  The accepted login above supplies the first
+    # signal for CORR-ATTACK-SIGNALS; the next two arrive in arbitrary order.
+    if args.transport == "vector":
+        append_lines([execution_line, host_session, sudo], Path(args.log_file))
+        print("  appended host-local session, suspicious execution, and sudo events")
+    else:
+        status, result = ingest_lines([execution_line, host_session, sudo])
+        if not check("search-config accepted post-compromise events", status == 200, result):
+            return 1
+
+    def privilege_alert():
+        _, alerts = list_alerts(token)
+        return matching_entity_alert(alerts, "AUTH-PRIVESC", host, baseline_alert_ids)
+
+    privilege = wait_for("AUTH-PRIVESC alert", privilege_alert)
+    if not check("pattern produced AUTH-PRIVESC", bool(privilege), privilege):
+        return 1
+
+    def attack_story_alert():
+        _, alerts = list_alerts(token)
+        return matching_entity_alert(alerts, "CORR-ATTACK-SIGNALS", host, baseline_alert_ids)
+
+    attack_story = wait_for("CORR-ATTACK-SIGNALS alert", attack_story_alert)
+    if not check("correlation-set joined all host attack stages", bool(attack_story), attack_story):
+        return 1
+
+    def entity_risk():
+        encoded = urllib.parse.quote(source_ip, safe="")
+        status, result, _ = request("detect", f"/api/v1/ueba/entities/{encoded}", token=token)
+        return result if status == 200 and isinstance(result, dict) and result.get("alerts", 0) >= 2 else None
+
+    risk = wait_for("entity risk projection", entity_risk)
+    if not check("UEBA accumulated account-compromise risk", bool(risk), risk):
+        return 1
 
     def incident_for_alert():
         status, result, _ = request("incident", "/api/v1/incidents", token=token)
@@ -416,7 +482,7 @@ def main():
     if not check("report-web exposes downstream analytics", status == 200, report):
         return 1
     print(f"\nTrace IDs: login={login_trace or 'n/a'} search={search_trace or 'n/a'} report={report_headers.get('X-Trace-Id', 'n/a')}")
-    print("\nNow show in Workbench: canonical event -> AUTH-BRUTE -> AUTH-BRUTE-SUCCESS -> incident timeline -> SOAR execution -> audit/trace.")
+    print("\nNow show in Workbench: canonical event -> brute force -> account takeover -> privilege escalation -> multi-stage correlation -> entity risk -> incident/SOAR -> audit/trace.")
     print("This demo intentionally claims at-least-once + idempotent consumers, not exactly-once delivery.")
     return 0
 

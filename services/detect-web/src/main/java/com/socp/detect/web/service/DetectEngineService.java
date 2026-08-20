@@ -95,10 +95,7 @@ public class DetectEngineService {
     /** 规则热更新：原子替换引擎（旧引擎毒丸退出），无需重启进程 */
     public void reload() {
         Set<Integer> partitions = assignedPartitions.get();
-        List<SecurityEvent> history = partitions.isEmpty()
-                ? stateStore.recent(Duration.ofHours(24))
-                : stateStore.recentForPartitions(partitions, Duration.ofHours(24));
-        replaceEngine(buildEngine(history));
+        replaceEngine(buildEngineFromState(partitions));
     }
 
     /**
@@ -120,13 +117,29 @@ public class DetectEngineService {
         Set<Integer> normalized = Set.copyOf(partitions);
         if (!force && normalized.equals(assignedPartitions.get())) return;
         assignedPartitions.set(normalized);
-        replaceEngine(buildEngine(stateStore.recentForPartitions(normalized, Duration.ofHours(24))));
+        replaceEngine(buildEngineFromState(normalized));
     }
 
     /** Used when Kafka is disabled or for an operational full-state replay. */
     public synchronized void restoreAll() {
         assignedPartitions.set(Set.of());
-        replaceEngine(buildEngine(stateStore.recent(Duration.ofHours(24))));
+        replaceEngine(buildEngineFromState(Set.of()));
+    }
+
+    private RuleEngine buildEngineFromState(Set<Integer> partitions) {
+        RuleEngine replacement = buildEngine(List.of());
+        try {
+            if (partitions == null || partitions.isEmpty()) {
+                stateStore.replayRecent(Duration.ofHours(24), replacement::restore);
+            } else {
+                stateStore.replayRecentForPartitions(
+                        partitions, Duration.ofHours(24), replacement::restore);
+            }
+        } catch (Exception ex) {
+            org.slf4j.LoggerFactory.getLogger(DetectEngineService.class)
+                    .warn("检测状态分页恢复失败，将保留已恢复窗口: {}", ex.getMessage());
+        }
+        return replacement;
     }
 
     public Set<Integer> assignedPartitions() {

@@ -111,8 +111,13 @@ def kafka_topic_offsets():
         from kafka import KafkaConsumer
         from kafka.structs import TopicPartition
         c = KafkaConsumer(bootstrap_servers=os.environ.get("PIPELINE_KAFKA", "127.0.0.1:9092"),
-                          group_id="pipeline-verify")
-        tps = [TopicPartition("socp-events", p) for p in range(3)]
+                          group_id=None, enable_auto_commit=False,
+                          request_timeout_ms=5000)
+        partitions = c.partitions_for_topic("socp-events") or set()
+        tps = [TopicPartition("socp-events", p) for p in sorted(partitions)]
+        if not tps:
+            c.close()
+            return None
         c.assign(tps)
         ends = c.end_offsets(tps)
         c.close()

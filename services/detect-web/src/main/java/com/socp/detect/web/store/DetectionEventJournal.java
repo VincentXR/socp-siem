@@ -17,6 +17,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -166,6 +167,24 @@ public class DetectionEventJournal implements DetectionStateStore {
     }
 
     @Override
+    public void replayRecent(Duration window, Consumer<List<SecurityEvent>> batchConsumer) {
+        replayPages((page, size) -> repository
+                .findByStatusAndOccurredAtAfterOrderByOccurredAtAscEventIdAsc(
+                        DetectionEventStatus.COMPLETED.name(), cutoff(window),
+                        org.springframework.data.domain.PageRequest.of(page, size)), batchConsumer);
+    }
+
+    @Override
+    public void replayRecentForPartitions(Set<Integer> partitions, Duration window,
+                                          Consumer<List<SecurityEvent>> batchConsumer) {
+        if (partitions == null || partitions.isEmpty()) return;
+        replayPages((page, size) -> repository
+                .findByStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
+                        DetectionEventStatus.COMPLETED.name(), partitions, cutoff(window),
+                        org.springframework.data.domain.PageRequest.of(page, size)), batchConsumer);
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public List<SecurityEvent> pendingForPartitions(Set<Integer> partitions, Duration window) {
         if (partitions == null || partitions.isEmpty()) return List.of();
@@ -217,6 +236,15 @@ public class DetectionEventJournal implements DetectionStateStore {
         List<SecurityEvent> out = fromRows(rows);
         if (sortByTimestamp) out.sort(Comparator.comparing(SecurityEvent::timestamp));
         return out;
+    }
+
+    private void replayPages(PageReader reader, Consumer<List<SecurityEvent>> batchConsumer) {
+        for (int page = 0; ; page++) {
+            List<DetectionEventEntity> rows = reader.read(page, replayPageSize);
+            List<SecurityEvent> events = fromRows(rows);
+            if (!events.isEmpty()) batchConsumer.accept(events);
+            if (rows.size() < replayPageSize) break;
+        }
     }
 
     private List<SecurityEvent> fromRows(List<DetectionEventEntity> rows) {

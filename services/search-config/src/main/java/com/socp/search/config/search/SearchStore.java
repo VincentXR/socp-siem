@@ -2,6 +2,8 @@ package com.socp.search.config.search;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -13,7 +15,7 @@ import java.util.Map;
 
 /**
  * 检索事件库——本地切片用 H2 文件库（重启不丢，含种子样例）；生产由 OpenSearch 承载。
- * 内存中保留 List 供 SPL 引擎快速检索，写入同时落库。
+ * 内存中仅保留最近的有界窗口供 SPL 引擎快速检索，写入同时落库。
  */
 @Component
 public class SearchStore {
@@ -28,11 +30,16 @@ public class SearchStore {
     public SearchStore(SearchEventRepository repo, OsEventWriter osWriter) {
         this.repo = repo;
         this.osWriter = osWriter;
-        List<SearchEventEntity> existing = repo.findAll();
-        if (existing.isEmpty()) {
+        long persisted = repo.count();
+        if (persisted == 0) {
             seed();
         } else {
-            for (SearchEventEntity e : existing) events.add(fromEntity(e));
+            // Never materialize the full journal at startup. A long-running or
+            // benchmark environment can contain millions of rows while local
+            // SPL fallback deliberately exposes only its bounded hot window.
+            List<SearchEventEntity> recent = repo.findAll(PageRequest.of(
+                    0, CAP, Sort.by(Sort.Direction.DESC, "timestamp"))).getContent();
+            for (int i = recent.size() - 1; i >= 0; i--) events.add(fromEntity(recent.get(i)));
         }
     }
 
@@ -76,7 +83,7 @@ public class SearchStore {
     }
 
     public long realCount() {
-        return events.size();
+        return repo.count();
     }
 
     private void seed() {

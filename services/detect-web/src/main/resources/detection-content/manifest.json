@@ -1,6 +1,6 @@
 {
   "packId": "socp-core-detections",
-  "version": "2026.08.19",
+  "version": "2026.08.20",
   "schemaVersion": "1",
   "maintainer": "socp-detection",
   "rules": [
@@ -358,6 +358,54 @@
       "references": ["https://attack.mitre.org/techniques/T1078/"],
       "spec": {"id": "RISK-ENTITY-SPIKE", "name": "Entity risk accumulation", "type": "threshold", "severity": "CRITICAL", "message": "Entity {key} accumulated {count} high-risk findings", "keyField": "user", "routingField": "user", "threshold": 3, "window": "600s", "mitre": "T1078", "match": [{"field": "risk_level", "op": "inlist", "value": "high_risk_entities"}]},
       "tests": [{"name": "three high-risk findings", "expectAlert": true, "events": [{"source": "alert", "host": "risk-1", "msg": "risk finding", "fields": {"user": "alice", "risk_level": "HIGH"}}, {"source": "alert", "host": "risk-1", "msg": "risk finding", "fields": {"user": "alice", "risk_level": "CRITICAL"}}, {"source": "alert", "host": "risk-1", "msg": "risk finding", "fields": {"user": "alice", "risk_level": "HIGH"}}]}, {"name": "one low risk finding", "expectAlert": false, "events": [{"source": "alert", "host": "risk-1", "msg": "risk finding", "fields": {"user": "bob", "risk_level": "LOW"}}]}]
+    },
+    {
+      "id": "RARE-PROCESS",
+      "version": "1.0.0",
+      "status": "ACTIVE",
+      "owner": "socp-detection",
+      "description": "A host executes a process not observed during its learning period.",
+      "dataSources": ["sysmon", "auditd", "edr"],
+      "mitre": ["T1059"],
+      "references": ["https://attack.mitre.org/techniques/T1059/"],
+      "spec": {"id": "RARE-PROCESS", "name": "Rare process on host", "type": "rare", "severity": "HIGH", "message": "Host {key} executed first-seen {field}={value} after {observed} observations", "keyField": "host", "routingField": "host", "valueField": "process", "warmup": 3, "mitre": "T1059", "match": [{"field": "source", "op": "regex", "value": "(?i)^(sysmon|auditd|edr)$"}]},
+      "tests": [{"name": "first-seen process after warmup", "expectAlert": true, "events": [{"source": "edr", "host": "endpoint-rare-1", "msg": "process start", "fields": {"process": "bash"}}, {"source": "edr", "host": "endpoint-rare-1", "msg": "process start", "fields": {"process": "curl"}}, {"source": "edr", "host": "endpoint-rare-1", "msg": "process start", "fields": {"process": "python"}}, {"source": "edr", "host": "endpoint-rare-1", "msg": "process start", "fields": {"process": "socat"}}]}, {"name": "known process after warmup", "expectAlert": false, "events": [{"source": "edr", "host": "endpoint-rare-2", "msg": "process start", "fields": {"process": "bash"}}, {"source": "edr", "host": "endpoint-rare-2", "msg": "process start", "fields": {"process": "curl"}}, {"source": "edr", "host": "endpoint-rare-2", "msg": "process start", "fields": {"process": "python"}}, {"source": "edr", "host": "endpoint-rare-2", "msg": "process start", "fields": {"process": "bash"}}]}]
+    },
+    {
+      "id": "RARE-DOMAIN",
+      "version": "1.0.0",
+      "status": "ACTIVE",
+      "owner": "socp-detection",
+      "description": "A host contacts a destination domain not observed during its learning period.",
+      "dataSources": ["dns", "proxy", "edr"],
+      "mitre": ["T1071.004"],
+      "references": ["https://attack.mitre.org/techniques/T1071/004/"],
+      "spec": {"id": "RARE-DOMAIN", "name": "Rare destination domain", "type": "rare", "severity": "MEDIUM", "message": "Host {key} contacted first-seen {field}={value}", "keyField": "host", "routingField": "host", "valueField": "dst_domain", "warmup": 3, "mitre": "T1071.004", "match": [{"field": "source", "op": "regex", "value": "(?i)^(dns|proxy|edr)$"}]},
+      "tests": [{"name": "first-seen domain after warmup", "expectAlert": true, "events": [{"source": "dns", "host": "endpoint-dns-1", "msg": "dns query", "fields": {"dst_domain": "corp.example"}}, {"source": "dns", "host": "endpoint-dns-1", "msg": "dns query", "fields": {"dst_domain": "updates.example"}}, {"source": "dns", "host": "endpoint-dns-1", "msg": "dns query", "fields": {"dst_domain": "cdn.example"}}, {"source": "dns", "host": "endpoint-dns-1", "msg": "dns query", "fields": {"dst_domain": "new-c2.example"}}]}, {"name": "known domain after warmup", "expectAlert": false, "events": [{"source": "dns", "host": "endpoint-dns-2", "msg": "dns query", "fields": {"dst_domain": "corp.example"}}, {"source": "dns", "host": "endpoint-dns-2", "msg": "dns query", "fields": {"dst_domain": "updates.example"}}, {"source": "dns", "host": "endpoint-dns-2", "msg": "dns query", "fields": {"dst_domain": "cdn.example"}}, {"source": "dns", "host": "endpoint-dns-2", "msg": "dns query", "fields": {"dst_domain": "corp.example"}}]}]
+    },
+    {
+      "id": "BASELINE-AUTH-VOLUME",
+      "version": "1.0.0",
+      "status": "ACTIVE",
+      "owner": "socp-detection",
+      "description": "Authentication volume for one user exceeds its learned historical buckets.",
+      "dataSources": ["auth", "sshd", "windows"],
+      "mitre": ["T1078"],
+      "references": ["https://attack.mitre.org/techniques/T1078/"],
+      "spec": {"id": "BASELINE-AUTH-VOLUME", "name": "Authentication volume baseline deviation", "type": "baseline", "severity": "HIGH", "message": "User {key} generated {count} auth events versus baseline {baseline} ({z} sigma)", "keyField": "user", "routingField": "user", "window": "60s", "baselineWindows": 6, "warmup": 3, "sigma": 2.0, "minCount": 4, "mitre": "T1078", "match": [{"field": "source", "op": "eq", "value": "auth"}]},
+      "tests": [{"name": "auth spike above learned baseline", "expectAlert": true, "events": [{"timestamp": "2026-01-01T00:00:01Z", "source": "auth", "host": "auth-1", "msg": "login", "fields": {"user": "alice"}}, {"timestamp": "2026-01-01T00:01:01Z", "source": "auth", "host": "auth-1", "msg": "login", "fields": {"user": "alice"}}, {"timestamp": "2026-01-01T00:02:01Z", "source": "auth", "host": "auth-1", "msg": "login", "fields": {"user": "alice"}}, {"timestamp": "2026-01-01T00:03:01Z", "source": "auth", "host": "auth-1", "msg": "login", "fields": {"user": "alice"}}, {"timestamp": "2026-01-01T00:03:02Z", "source": "auth", "host": "auth-1", "msg": "login", "fields": {"user": "alice"}}, {"timestamp": "2026-01-01T00:03:03Z", "source": "auth", "host": "auth-1", "msg": "login", "fields": {"user": "alice"}}, {"timestamp": "2026-01-01T00:03:04Z", "source": "auth", "host": "auth-1", "msg": "login", "fields": {"user": "alice"}}]}, {"name": "auth volume remains near baseline", "expectAlert": false, "events": [{"timestamp": "2026-01-01T01:00:01Z", "source": "auth", "host": "auth-1", "msg": "login", "fields": {"user": "bob"}}, {"timestamp": "2026-01-01T01:01:01Z", "source": "auth", "host": "auth-1", "msg": "login", "fields": {"user": "bob"}}, {"timestamp": "2026-01-01T01:02:01Z", "source": "auth", "host": "auth-1", "msg": "login", "fields": {"user": "bob"}}, {"timestamp": "2026-01-01T01:03:01Z", "source": "auth", "host": "auth-1", "msg": "login", "fields": {"user": "bob"}}, {"timestamp": "2026-01-01T01:03:02Z", "source": "auth", "host": "auth-1", "msg": "login", "fields": {"user": "bob"}}]}]
+    },
+    {
+      "id": "CORR-ATTACK-SIGNALS",
+      "version": "1.0.0",
+      "status": "ACTIVE",
+      "owner": "socp-detection",
+      "description": "Unordered authentication, privilege-escalation, and suspicious-execution signals on one host.",
+      "dataSources": ["auth", "auditd", "edr"],
+      "mitre": ["T1078", "T1548", "T1059"],
+      "references": ["https://attack.mitre.org/techniques/T1078/", "https://attack.mitre.org/techniques/T1548/", "https://attack.mitre.org/techniques/T1059/"],
+      "spec": {"id": "CORR-ATTACK-SIGNALS", "name": "Multi-stage host attack signals", "type": "correlation-set", "severity": "CRITICAL", "message": "Host {key} observed all {count} attack-stage signals", "keyField": "host", "routingField": "host", "window": "600s", "mitre": "T1078", "steps": [[{"field": "msg", "op": "contains", "value": "Accepted password"}], [{"field": "msg", "op": "contains", "value": "sudo:"}], [{"field": "msg", "op": "regex", "value": "(?i)(powershell|socat|reverse shell)"}]]},
+      "tests": [{"name": "all stages in arbitrary order", "expectAlert": true, "events": [{"source": "edr", "host": "endpoint-corr-1", "msg": "socat reverse shell started", "fields": {"user": "alice"}}, {"source": "auth", "host": "endpoint-corr-1", "msg": "Accepted password for alice", "fields": {"user": "alice"}}, {"source": "auditd", "host": "endpoint-corr-1", "msg": "sudo: alice executed /bin/sh", "fields": {"user": "alice"}}]}, {"name": "missing privilege escalation", "expectAlert": false, "events": [{"source": "auth", "host": "endpoint-corr-2", "msg": "Accepted password for bob", "fields": {"user": "bob"}}, {"source": "edr", "host": "endpoint-corr-2", "msg": "powershell started", "fields": {"user": "bob"}}]}]
     }
   ]
 }

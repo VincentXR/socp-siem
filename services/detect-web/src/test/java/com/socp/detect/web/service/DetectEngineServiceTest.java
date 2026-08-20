@@ -90,17 +90,16 @@ class DetectEngineServiceTest {
     @Test
     void partitionRestoreReadsOnlyAssignedState() {
         when(store.list()).thenReturn(List.of(patternRule()));
-        when(stateStore.recentForPartitions(org.mockito.ArgumentMatchers.eq(Set.of(2)),
-                org.mockito.ArgumentMatchers.any(Duration.class))).thenReturn(List.of());
-
         DetectEngineService service = new DetectEngineService(
                 store, new RecentAlertSink(10, null, null), forwarder, rulePublisher, stateStore);
         try {
             service.restoreForPartitions(Set.of(2));
 
             assertEquals(Set.of(2), service.assignedPartitions());
-            verify(stateStore).recentForPartitions(org.mockito.ArgumentMatchers.eq(Set.of(2)),
-                    org.mockito.ArgumentMatchers.any(Duration.class));
+            verify(stateStore).replayRecentForPartitions(
+                    org.mockito.ArgumentMatchers.eq(Set.of(2)),
+                    org.mockito.ArgumentMatchers.any(Duration.class),
+                    org.mockito.ArgumentMatchers.any());
         } finally {
             service.stop();
         }

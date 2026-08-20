@@ -104,26 +104,32 @@ the Golden Demo and the Kafka recovery walkthrough.
 
 ## Multi-instance Detection check
 
-For a live state-ownership check, build the reactor once and start two
-`detect-web` processes with distinct ports, the `pg` profile, the same
-PostgreSQL database, and the same `SOCP_KAFKA_GROUP_ID`. The second process can
-be started directly from its jar, for example:
+For the reference state-ownership check, build the reactor once, configure six
+Kafka partitions, and start three `detect-web` processes with distinct ports,
+the `pg` profile, the same PostgreSQL database, and the same
+`SOCP_KAFKA_GROUP_ID`. Additional processes can be started directly from the
+same jar, for example:
 
 ```bash
 SOCP_KAFKA_GROUP_ID=socp-detect \
   java -jar services/detect-web/target/detect-web-1.0.0-SNAPSHOT.jar \
   --spring.profiles.active=pg --server.port=28082
+SOCP_KAFKA_GROUP_ID=socp-detect \
+  java -jar services/detect-web/target/detect-web-1.0.0-SNAPSHOT.jar \
+  --spring.profiles.active=pg --server.port=38082
 ```
 
 Keep the normal `18082` instance as the first URL and run:
 
 ```bash
-DETECTION_INSTANCE_URLS=http://127.0.0.1:18082,http://127.0.0.1:28082 \
-  python build/chaos-pipeline.py --scenario multi_instance --count 5
+SOCP_DETECT_PROFILE=pg \
+DETECTION_INSTANCE_URLS=http://127.0.0.1:18082,http://127.0.0.1:28082,http://127.0.0.1:38082 \
+  python build/chaos-pipeline.py --scenario multi_instance --count 30 --rebalance-cycles 3
 ```
 
-The script checks disjoint partition assignment, stops the first instance to
-force a rebalance, and verifies assignment restoration after restart.
+`SOCP_DETECT_PROFILE=pg` also makes the script restart the controlled instance
+against the shared store. The oracle checks disjoint ownership, alert-ID set
+equality, terminal event completion, and assignment restoration.
 
 ## Stop the environment
 

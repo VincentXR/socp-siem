@@ -25,6 +25,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -168,6 +169,40 @@ def control(action, service):
         cwd=REPO, capture_output=True, text=True, timeout=60, check=False)
     if result.returncode != 0:
         raise RuntimeError(f"{action} {service} failed: {result.stderr[-500:]}")
+
+
+def docker_container(action, container):
+    result = subprocess.run(
+        ["docker", action, container], cwd=REPO,
+        capture_output=True, text=True, timeout=90, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(f"docker {action} {container} failed: {result.stderr[-500:]}")
+
+
+def container_running(container):
+    result = subprocess.run(
+        ["docker", "inspect", "-f", "{{.State.Running}}", container],
+        cwd=REPO, capture_output=True, text=True, timeout=15, check=False)
+    return result.returncode == 0 and result.stdout.strip().lower() == "true"
+
+
+def container_healthy(container):
+    result = subprocess.run(
+        ["docker", "inspect", "-f",
+         "{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}",
+         container],
+        cwd=REPO, capture_output=True, text=True, timeout=15, check=False)
+    return result.returncode == 0 and result.stdout.strip().lower() in ("healthy", "running")
+
+
+def psql_scalar(database, sql):
+    result = subprocess.run(
+        ["docker", "exec", "socp-postgres", "psql", "-U", "socp", "-d", database,
+         "-tAc", sql],
+        cwd=REPO, capture_output=True, text=True, timeout=30, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(f"PostgreSQL query failed: {result.stderr[-500:]}")
+    return result.stdout.strip()
 
 
 def kafka_snapshot():
@@ -408,7 +443,189 @@ def scenario_alert_web_restart(token):
             control("start-service", "alert-web")
 
 
-def scenario_multi_instance(token, count):
+def scenario_postgres_outage(token):
+    """Prove PostgreSQL failure retains Kafka backlog and recovers exactly once."""
+    baseline = kafka_snapshot()
+    if not baseline or baseline["lag"] != 0:
+        raise RuntimeError(f"postgres_outage requires a drained baseline, got {baseline}")
+    run_id = uuid.uuid4().hex[:10]
+    host = f"chaos-pg-{run_id}"
+    event = {
+        "eventId": f"chaos-pg-{run_id}",
+        "source": "auth",
+        "host": host,
+        "severity": "CRITICAL",
+        "message": "sudo: postgres outage recovery probe",
+    }
+    before = alert_total(token) or 0
+    stopped = False
+    try:
+        docker_container("stop", "socp-postgres")
+        stopped = True
+        wait_for(lambda: not container_running("socp-postgres"), timeout=30, interval=1)
+        accepted = ingest(token, [event])
+
+        def queued_snapshot():
+            snapshot = kafka_snapshot()
+            return snapshot if snapshot and snapshot["end"] >= baseline["end"] + 1 else None
+
+        queued = wait_for(queued_snapshot, timeout=30, interval=1) or kafka_snapshot()
+        docker_container("start", "socp-postgres")
+        stopped = False
+
+        recovered_services = wait_for(
+            lambda: all(direct_instance_up(url, token) for url in detection_urls())
+                    and service_up("alert-web", token),
+            timeout=180, interval=3)
+
+        def matching():
+            values = [item for item in list_alerts(token)
+                      if item.get("entity") == host and item.get("ruleId") == "AUTH-PRIVESC"]
+            return values if len(values) == 1 else None
+
+        alarms = wait_for(matching, timeout=240, interval=2) or []
+        drained = wait_for(
+            lambda: (snapshot if (snapshot := kafka_snapshot())["lag"] == 0 else None),
+            timeout=240, interval=3) or kafka_snapshot()
+        stats = [direct_instance_stats(url, token) for url in detection_urls()]
+        pending = [item.get("pendingEvents") for item in stats if isinstance(item, dict)]
+        return {
+            "accepted": accepted,
+            "baseline": baseline,
+            "whilePostgresDown": queued,
+            "afterRecovery": drained,
+            "servicesRecovered": bool(recovered_services),
+            "matchingAlerts": len(alarms),
+            "pendingEventsAfterRecovery": pending,
+            "alertCountBefore": before,
+            "alertCountAfter": alert_total(token),
+            "pass": bool(recovered_services) and len(alarms) == 1
+                    and drained["lag"] == 0 and pending and all(value == 0 for value in pending),
+        }
+    finally:
+        if stopped or not container_running("socp-postgres"):
+            docker_container("start", "socp-postgres")
+
+
+def scenario_opensearch_outage(token):
+    """Prove Detection is independent from OpenSearch and indexing recovers."""
+    run_id = uuid.uuid4().hex[:10]
+    alert_host = f"chaos-os-alert-{run_id}"
+    recovery_host = f"chaos-os-recovery-{run_id}"
+    stopped = False
+    try:
+        docker_container("stop", "socp-opensearch")
+        stopped = True
+        wait_for(lambda: not container_running("socp-opensearch"), timeout=30, interval=1)
+        accepted = ingest(token, [{
+            "eventId": f"chaos-os-alert-{run_id}",
+            "source": "auth",
+            "host": alert_host,
+            "severity": "HIGH",
+            "message": "sudo: opensearch outage detection probe",
+        }])
+
+        def matching():
+            values = [item for item in list_alerts(token)
+                      if item.get("entity") == alert_host and item.get("ruleId") == "AUTH-PRIVESC"]
+            return values if len(values) == 1 else None
+
+        alarms = wait_for(matching, timeout=180, interval=2) or []
+        search_alive = service_up("search-config", token)
+        docker_container("start", "socp-opensearch")
+        stopped = False
+        # The local OpenSearch endpoint can require TLS/basic authentication;
+        # Docker health is the transport-readiness check, while the indexed
+        # recovery event below is the functional oracle.
+        os_ready = wait_for(
+            lambda: container_healthy("socp-opensearch"), timeout=120, interval=3)
+        recovery = ingest(token, [{
+            "eventId": f"chaos-os-recovery-{run_id}",
+            "source": "system",
+            "host": recovery_host,
+            "severity": "INFO",
+            "message": "opensearch recovery probe",
+        }])
+
+        def searchable():
+            query = urllib.parse.quote(f"host={recovery_host}", safe="")
+            status, body = request(
+                GATEWAY_URL + "/search-config/api/v1/search?q=" + query,
+                headers=auth_headers(token), timeout=10)
+            data = unwrap(body)
+            events = data.get("events", []) if isinstance(data, dict) else []
+            return any(item.get("host") == recovery_host for item in events)
+
+        indexed_after_recovery = wait_for(searchable, timeout=120, interval=3)
+        return {
+            "acceptedWhileDown": accepted,
+            "matchingAlertsWhileDown": len(alarms),
+            "searchConfigAliveWhileDown": search_alive,
+            "openSearchRecovered": bool(os_ready),
+            "acceptedAfterRecovery": recovery,
+            "recoveryEventIndexed": bool(indexed_after_recovery),
+            "pass": len(alarms) == 1 and search_alive and bool(os_ready)
+                    and bool(indexed_after_recovery),
+        }
+    finally:
+        if stopped or not container_running("socp-opensearch"):
+            docker_container("start", "socp-opensearch")
+
+
+def scenario_detection_outbox_replay(token):
+    """Simulate publish success followed by a crash before the durable ACK."""
+    run_id = uuid.uuid4().hex[:10]
+    host = f"chaos-outbox-{run_id}"
+    ingest_result = ingest(token, [{
+        "eventId": f"chaos-outbox-{run_id}",
+        "source": "auth",
+        "host": host,
+        "severity": "CRITICAL",
+        "message": "sudo: detection outbox replay probe",
+    }])
+
+    def matching():
+        values = [item for item in list_alerts(token)
+                  if item.get("entity") == host and item.get("ruleId") == "AUTH-PRIVESC"]
+        return values if len(values) == 1 else None
+
+    initial = wait_for(matching, timeout=180, interval=2) or []
+    if len(initial) != 1 or not initial[0].get("sourceAlertId"):
+        raise RuntimeError("outbox replay probe did not create its initial durable alert")
+    source_alert_id = initial[0]["sourceAlertId"]
+    changed = psql_scalar(
+        "detect",
+        "with replayed as (update t_detection_alert_outbox set status='PENDING', attempts=0, "
+        "next_attempt_at=now(), delivered_at=null, published_at=null, last_error=null "
+        f"where alert_id='{source_alert_id}' returning alert_id) select alert_id from replayed")
+    if changed != source_alert_id:
+        raise RuntimeError(f"unable to rewind Detection outbox row {source_alert_id}: {changed}")
+
+    published = wait_for(
+        lambda: psql_scalar(
+            "detect",
+            f"select status from t_detection_alert_outbox where alert_id='{source_alert_id}'") == "PUBLISHED",
+        timeout=120, interval=2)
+    replayed = [item for item in list_alerts(token)
+                if item.get("sourceAlertId") == source_alert_id]
+    return {
+        "accepted": ingest_result,
+        "sourceAlertId": source_alert_id,
+        "rewoundRow": changed,
+        "statusAfterReplay": psql_scalar(
+            "detect", f"select status from t_detection_alert_outbox where alert_id='{source_alert_id}'"),
+        "matchingAlerts": len(replayed),
+        "pass": bool(published) and len(replayed) == 1,
+    }
+
+
+def detection_urls():
+    raw_urls = os.environ.get("DETECTION_INSTANCE_URLS", "")
+    values = [item.strip().rstrip("/") for item in raw_urls.split(",") if item.strip()]
+    return values or [GATEWAY_URL]
+
+
+def scenario_multi_instance(token, count, rebalance_cycles=1):
     """Prove stable entity routing, assignment ownership, rebalance, and recovery.
 
     The first URL is the instance controlled by run-all.sh. Additional URLs
@@ -447,12 +664,17 @@ def scenario_multi_instance(token, count):
 
     run_id = uuid.uuid4().hex[:10]
     group_count = max(1, count // 5)
+    run_octets = (int(run_id[:2], 16), int(run_id[2:4], 16))
 
     def threshold_batch(prefix, ip_start):
         events = []
         expected = []
         for group in range(group_count):
-            src_ip = f"198.51.100.{ip_start + group}"
+            # A unique entity per run prevents a previous run's durable
+            # suppression/window state from hiding the current oracle alerts.
+            # ip_start only separates the pre/post-rebalance batches.
+            last_octet = 1 + ((ip_start + group) % 253)
+            src_ip = f"10.{run_octets[0]}.{run_octets[1]}.{last_octet}"
             ids = [f"chaos-multi-{prefix}-{run_id}-{group}-{i}" for i in range(5)]
             events.extend({
                 "eventId": event_id,
@@ -482,51 +704,75 @@ def scenario_multi_instance(token, count):
                         if len(matching_alerts(set(expected_initial))) == len(expected_initial) else None,
                         timeout=60, interval=2) or []
 
-    # Stop the canonical instance and verify the remaining instance receives
-    # the full assignment. This is the real rebalance boundary, not merely a
-    # two-process startup check.
+    # Stop/restart the canonical instance repeatedly. Survivors must jointly
+    # own a disjoint, complete assignment during every outage, and the full
+    # group must regain disjoint ownership after every restart.
     stopped = False
+    cycle_results = []
+    expected_all = list(expected_initial)
+    matching_all = matching
+    observed_post = observed
     try:
-        control("stop-service", "detect-web")
-        stopped = wait_for(lambda: not direct_instance_up(urls[0], token), timeout=30, interval=1)
-        if not stopped:
-            raise RuntimeError("canonical Detection instance did not stop for rebalance")
-
         def remaining_assignment():
-            if not direct_instance_up(urls[1], token):
+            survivor_urls = urls[1:]
+            if not all(direct_instance_up(url, token) for url in survivor_urls):
                 return None
-            stats = direct_instance_stats(urls[1], token)
-            if not isinstance(stats, dict):
+            stats = [direct_instance_stats(url, token) for url in survivor_urls]
+            if any(not isinstance(item, dict) for item in stats):
                 return None
-            owned = set(stats.get("assignedPartitions", []))
-            return stats if owned == set(range(baseline["partitions"])) else None
+            partitions = [set(item.get("assignedPartitions", [])) for item in stats]
+            owned = set().union(*partitions)
+            disjoint = sum(len(item) for item in partitions) == len(owned)
+            if owned != set(range(baseline["partitions"])) or not disjoint:
+                return None
+            return {
+                "instances": survivor_urls,
+                "assignedPartitions": [sorted(item) for item in partitions],
+            }
 
-        after_stop = wait_for(
-            remaining_assignment,
-            timeout=90, interval=2)
-        after_stop_partitions = (after_stop or {}).get("assignedPartitions", [])
-        rebalance_ok = len(after_stop_partitions) == baseline["partitions"]
-        post_events, expected_post = threshold_batch("post-rebalance", 230)
-        post_ingest = ingest(token, post_events)
-        expected_all = expected_initial + expected_post
-        observed_post = wait_for(lambda: observed_total(len(expected_all)), timeout=120, interval=2)
-        matching_all = wait_for(
-            lambda: matching_alerts(set(expected_all))
-            if len(matching_alerts(set(expected_all))) == len(expected_all) else None,
-            timeout=60, interval=2) or []
-        control("start-service", "detect-web")
-        stopped = False
-        recovered = wait_for(lambda: assignments(), timeout=120, interval=2)
+        for cycle in range(rebalance_cycles):
+            control("stop-service", "detect-web")
+            stopped = wait_for(
+                lambda: not direct_instance_up(urls[0], token), timeout=30, interval=1)
+            if not stopped:
+                raise RuntimeError(
+                    f"canonical Detection instance did not stop for rebalance cycle {cycle + 1}")
+
+            after_stop = wait_for(remaining_assignment, timeout=90, interval=2)
+            after_stop_partitions = (after_stop or {}).get("assignedPartitions", [])
+            rebalance_ok = sum(len(item) for item in after_stop_partitions) == baseline["partitions"]
+            post_events, expected_post = threshold_batch(
+                f"post-rebalance-{cycle + 1}", 20 + cycle * 20)
+            post_ingest = ingest(token, post_events)
+            expected_all.extend(expected_post)
+            observed_post = wait_for(
+                lambda: observed_total(len(expected_all)), timeout=120, interval=2)
+            matching_all = wait_for(
+                lambda: matching_alerts(set(expected_all))
+                if len(matching_alerts(set(expected_all))) == len(expected_all) else None,
+                timeout=60, interval=2) or []
+
+            control("start-service", "detect-web")
+            stopped = False
+            recovered = wait_for(lambda: assignments(), timeout=120, interval=2)
+            cycle_results.append({
+                "cycle": cycle + 1,
+                "afterStop": after_stop,
+                "postRebalanceIngest": post_ingest,
+                "afterRestart": recovered,
+                "rebalanceComplete": rebalance_ok and recovered is not None,
+            })
+            if not cycle_results[-1]["rebalanceComplete"]:
+                break
+
         instance_stats = [direct_instance_stats(url, token) for url in urls]
         pending_values = [item.get("pendingEvents") for item in instance_stats if isinstance(item, dict)]
         expected_ids = set(expected_all)
         actual_ids = {item.get("sourceAlertId") for item in matching_all}
         return {
             "initialAssignments": initial,
-            "afterStop": {"instance": urls[1], "assignedPartitions": after_stop_partitions},
-            "afterRestart": recovered,
+            "rebalanceCycles": cycle_results,
             "ingest": ingest_result,
-            "postRebalanceIngest": post_ingest,
             "alertsBefore": before,
             "alertsAfter": observed_post,
             "expectedAlertIds": sorted(expected_ids),
@@ -535,8 +781,9 @@ def scenario_multi_instance(token, count):
             "unexpectedAlertIds": sorted(actual_ids - expected_ids),
             "pendingEventsAfterRecovery": pending_values,
             "pass": (observed_post is not None and actual_ids == expected_ids
-                      and all(value == 0 for value in pending_values)
-                      and rebalance_ok and recovered is not None),
+                       and all(value == 0 for value in pending_values)
+                      and len(cycle_results) == rebalance_cycles
+                      and all(item["rebalanceComplete"] for item in cycle_results)),
         }
     finally:
         if stopped and not direct_instance_up(urls[0], token):
@@ -545,13 +792,22 @@ def scenario_multi_instance(token, count):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scenario", choices=("all", "detect_restart", "duplicate_delivery", "alert_web_restart", "multi_instance"), default="all")
+    parser.add_argument(
+        "--scenario",
+        choices=("all", "detect_restart", "duplicate_delivery", "alert_web_restart",
+                 "postgres_outage", "opensearch_outage", "detection_outbox_replay",
+                 "multi_instance"),
+        default="all")
     parser.add_argument("--count", type=int, default=20,
                         help="events used by the Detection restart scenario")
+    parser.add_argument("--rebalance-cycles", type=int, default=1,
+                        help="stop/restart cycles used by multi_instance (default: 1)")
     parser.add_argument("--output", help="optional JSON result path")
     args = parser.parse_args()
     if args.count < 5:
         parser.error("--count must be at least 5")
+    if args.rebalance_cycles < 1:
+        parser.error("--rebalance-cycles must be at least 1")
 
     token = login()
     results = {}
@@ -561,9 +817,16 @@ def main():
         results["duplicate_delivery"] = scenario_duplicate_delivery(token)
     if args.scenario in ("all", "alert_web_restart"):
         results["alert_web_restart"] = scenario_alert_web_restart(token)
+    if args.scenario in ("all", "postgres_outage"):
+        results["postgres_outage"] = scenario_postgres_outage(token)
+    if args.scenario in ("all", "opensearch_outage"):
+        results["opensearch_outage"] = scenario_opensearch_outage(token)
+    if args.scenario in ("all", "detection_outbox_replay"):
+        results["detection_outbox_replay"] = scenario_detection_outbox_replay(token)
     if args.scenario == "multi_instance" or (
             args.scenario == "all" and os.environ.get("DETECTION_INSTANCE_URLS")):
-        results["multi_instance"] = scenario_multi_instance(token, args.count)
+        results["multi_instance"] = scenario_multi_instance(
+            token, args.count, args.rebalance_cycles)
     report = {"recordedAt": time.time(), "topic": TOPIC, "group": GROUP, "results": results,
               "pass": all(result.get("pass") for result in results.values())}
     print(json.dumps(report, ensure_ascii=False, indent=2))

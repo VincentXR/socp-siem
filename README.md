@@ -33,21 +33,23 @@ flowchart LR
 ```
 
 The Detection Alert Outbox is the hand-off boundary between the stateful rule
-engine and Alert Web. An alert is written with its deterministic source ID
-before the detection worker continues. A scheduled publisher retries Alert Web
-until it acknowledges the request, then publishes the optional detect-model
-event. Alert Web has a second transactional Outbox for downstream fan-out.
+engine and Alert Web. The event journal completion and every resulting Outbox
+row are committed atomically. A scheduled publisher retries Alert Web until it
+acknowledges the deterministic source ID, then publishes the optional
+detect-model event. Alert Web has a second transactional Outbox for the Kafka
+fan-out hand-off.
 
 ## Implemented capabilities
 
 - JSON, NDJSON, Syslog, CEF, LEEF, KV, Sysmon, auditd, and Falco parsing.
 - Canonical event fields and stable tenant/entity Kafka routing keys.
 - Pattern, threshold, correlation, correlation-set, baseline, and rare rules.
-- Hot reload, suppression, bounded queues, manual Kafka commits, DLQ paths,
-  event-ID de-duplication, and a bounded PostgreSQL/H2 recovery journal.
+- Hot reload, suppression, partition-serial processing lanes, contiguous
+  manual Kafka commits, durable DLQ acknowledgement, event-ID de-duplication,
+  and time-bounded, paginated PostgreSQL/H2 journal replay.
 - Partition-owned state restore after restart and consumer rebalance.
 - Detection Alert Outbox and Alert Web idempotency using `sourceAlertId`.
-- Alert evidence, entity risk scoring, IOC enrichment, ATT&CK mapping,
+- Shared durable entity-risk projection, alert evidence, IOC enrichment, ATT&CK mapping,
   incidents, cases, notifications, SOAR playbooks, and reporting.
 - JWT/OIDC, RBAC, logical tenant isolation, audit records, metrics, traces,
   benchmark tooling, and failure-injection scripts.
@@ -102,14 +104,16 @@ python build/chaos-pipeline.py --scenario detect_restart
 python build/chaos-pipeline.py --scenario duplicate_delivery
 ```
 
-For a multi-instance check, start two or more `detect-web` processes with the
-`pg` profile, distinct ports, and the same `SOCP_KAFKA_GROUP_ID`. Then set
+For the reference multi-instance check, use six `socp-events` partitions and
+start three `detect-web` processes with the `pg` profile, distinct ports, and
+the same `SOCP_KAFKA_GROUP_ID`. Then set
 `DETECTION_INSTANCE_URLS` (the first URL is the instance controlled by
 `run-all.sh`) and run:
 
 ```bash
-DETECTION_INSTANCE_URLS=http://127.0.0.1:18082,http://127.0.0.1:28082 \
-  python build/chaos-pipeline.py --scenario multi_instance --count 5
+SOCP_DETECT_PROFILE=pg \
+DETECTION_INSTANCE_URLS=http://127.0.0.1:18082,http://127.0.0.1:28082,http://127.0.0.1:38082 \
+  python build/chaos-pipeline.py --scenario multi_instance --count 30 --rebalance-cycles 3
 ```
 
 Benchmark commands and the JSON report schema are documented in
@@ -120,6 +124,9 @@ benchmark; retain machine-specific output outside source control.
 
 - Delivery is at-least-once. Kafka, database, and downstream services do not
   form an exactly-once distributed transaction.
+- The Alert Outbox durably reaches Kafka. The current combined fan-out
+  consumer invokes Incident/Notify/SOAR adapters best-effort; it is not a
+  per-destination transactional workflow.
 - A stateful rule is strictly partition-local only when its grouping field
   matches the canonical event routing field.
 - Journal replay is bounded by `SOCP_DETECT_STATE_RETENTION` (24 hours by
@@ -155,6 +162,7 @@ docs/                     architecture, operating guides, tests, and ADRs
 - [Benchmark guide](docs/benchmark/README.md)
 - [Chaos guide](docs/chaos/README.md)
 - [Golden Demo checklist](docs/demo-checklist.md)
+- [Verification snapshot](docs/verification-2026-08-20.md)
 - [Architecture decision records](docs/adr/)
 
 ## License

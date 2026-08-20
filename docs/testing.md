@@ -70,8 +70,9 @@ The benchmark has two scopes. `bulk` measures the Detection HTTP boundary;
 alert-web` and waits for the expected alerts. Use `--profile realistic` for a
 low hit-rate mixed workload or `--profile alert-heavy` to stress the durable
 alert path. It records batch request P50/P95/P99, ingress throughput,
-`alertCreatedAt - triggerIngestedAt` processing latency from durable Alert Web
-fields, Kafka offsets when `kafka-python` is installed, and optional
+Detection processing latency carried in `processingLatencyMs`, plus the
+separate durable `Alert Web createdAt - triggerIngestedAt` latency, Kafka
+offsets when `kafka-python` is installed, and optional
 OpenSearch/ClickHouse counters. It is a repeatable single-node baseline, not a
 production capacity claim.
 

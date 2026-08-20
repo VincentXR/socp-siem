@@ -25,7 +25,7 @@ tests and artifact checks are under `frontend/apps/workbench/scripts`.
 |---|---:|---|---|
 | `api-gateway` | 18092 | Routing, login, JWT/RBAC, and trace propagation | Stateless |
 | `search-config` | 18081 | Source configuration, parsing, canonical event ingest | H2 + Kafka; direct OpenSearch fallback only when Kafka is unavailable |
-| `detect-web` | 18082 | Rule CRUD, hot reload, detection, backpressure, partition restore, and durable Alert Web hand-off | H2/PG + in-process hot engine + `t_detection_event` + `t_detection_alert_outbox` |
+| `detect-web` | 18082 | Rule CRUD, hot reload, detection, backpressure, partition restore, shared entity risk, and durable Alert Web hand-off | H2/PG + in-process hot engine + journal/outbox/risk projections |
 | `detect-model` | 18090 | Secondary alert analysis and correlation endpoint | H2 |
 | `alert-web` | 18080 | Alert facts, enrichment, disposition, idempotency, and Alert Outbox | PostgreSQL |
 | `incident-web` | 18097 | Incident creation, merge, and timeline | PostgreSQL |
@@ -64,7 +64,7 @@ that owns the corresponding schema. The production profile rejects H2.
 |---|---|---|
 | PostgreSQL | alert, incident, SOC base, threat, optional Detection | Transactional facts, event claims, and durable alert hand-off |
 | H2 / Flyway | Configurable stateful services | Low-resource local persistence; PostgreSQL profile for integration/production |
-| Kafka | search, detection, and fan-out consumers | `socp-events`, rule changes, `socp-alarm-original`, and `socp-alarm-events` |
+| Kafka | search, detection, and fan-out consumers | Six-partition default for `socp-events`, plus rule changes, `socp-alarm-original`, and `socp-alarm-events` |
 | OpenSearch | Event index consumer and search API | Raw event investigation and field search |
 | ClickHouse | Alarm event consumer and reports | Alarm detail analytics and trends |
 | Redis | Docker Compose middleware | Available for future distributed rate limiting; current limiter is in-process |

@@ -13,10 +13,13 @@ correctness and recovery behavior, not a production capacity or HA claim.
 | Cross-cutting slice | `python build/verify-slice.py` | Authentication, tenancy, audit, rate limiting, and trace propagation | PR/release candidate |
 | Event pipeline | `python build/verify-pipeline.py` | Canonical event -> Kafka -> Detection -> Alert persistence -> OpenSearch/ClickHouse/report | Middleware change/scheduled |
 | Detection content | `python build/validate-detection-content.py` | Manifest schema, metadata, positive/negative vectors, ATT&CK references | Rule/content change |
-| Golden scenario | `python build/demos/golden-demo.py --transport ingest` | SSH brute force -> correlation -> Incident/Notify/SOAR | Manual/full-stack |
+| Golden scenario | `python build/demos/golden-demo.py --transport ingest` | SSH brute force -> successful login -> privilege escalation -> multi-stage correlation -> entity risk -> Incident/Notify/SOAR | Manual/full-stack |
 | Detection restart | `python build/demos/detection-recovery.py` | Kafka backlog grows while Detection is down and catches up after restart | Manual/weekly |
 | Alert Web outage | `python build/chaos-pipeline.py --scenario alert_web_restart` | Detection Alert Outbox survives Alert Web outage and creates one alert after recovery | Manual/weekly |
+| Detection Outbox replay | `python build/chaos-pipeline.py --scenario detection_outbox_replay` | Rewound publisher state returns to `PUBLISHED` and Alert Web retains one logical alert | Manual/weekly |
 | Duplicate delivery | `python build/chaos-pipeline.py --scenario duplicate_delivery` | Same event produces one logical alert by source ID | Manual/weekly |
+| PostgreSQL outage | `python build/chaos-pipeline.py --scenario postgres_outage` | Kafka lag grows while durable completion is unavailable, then drains with no pending journal rows | Manual/weekly |
+| OpenSearch outage | `python build/chaos-pipeline.py --scenario opensearch_outage` | Detection remains available while search is degraded and indexing works after recovery | Manual/weekly |
 | Multi-instance | `DETECTION_INSTANCE_URLS=... python build/chaos-pipeline.py --scenario multi_instance` | Disjoint ownership, rebalance, deterministic alert-set equality, and `pendingEvents == 0` | Release candidate |
 | E2E benchmark | `python build/benchmark-pipeline.py --mode e2e --profile realistic --count 100 --batch-size 25` | Ingress, expected/observed alerts, ingest-to-alert latency, offsets, lag, and before/after stats | Repeat at 10k/100k/1m for both profiles |
 | Bulk baseline | `python build/benchmark-pipeline.py --count 100` | Detection HTTP accepted/rejected counters and latency percentiles | Manual |
@@ -48,12 +51,14 @@ correctness and recovery behavior, not a production capacity or HA claim.
 
 ## Scale baseline
 
-Run both E2E profiles at 10,000, 100,000, and 1,000,000 events, retaining JSON
-reports with machine profile, commit, rules, instances, partitions,
+Choose scale points appropriate to the fixed local machine and run both E2E
+profiles. Retain JSON reports with machine profile, commit, rules, instances, partitions,
 batch-request P50/P95/P99, `alertCreatedAt - triggerIngestedAt` latency sample,
 Kafka lag, Detection stats, expected/observed alert counts, and recovery
 observations. Use the same event shape and a clean test tenant. This is a
-repeatable local baseline, not a production throughput or HA claim.
+repeatable local baseline, not a production throughput or HA claim. The
+sanitized reference snapshot records 10,000 realistic events and 1,000
+alert-heavy events; larger runs are optional evidence, not a release gate.
 
 Do not commit local usernames, absolute paths, hardware identifiers, email
 addresses, tokens, passwords, or machine-specific screenshots.

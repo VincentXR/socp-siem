@@ -10,6 +10,9 @@ local or CI stack. It uses unique event IDs and reports JSON only when
 python build/chaos-pipeline.py --scenario detect_restart --count 20
 python build/chaos-pipeline.py --scenario alert_web_restart
 python build/chaos-pipeline.py --scenario duplicate_delivery
+python build/chaos-pipeline.py --scenario detection_outbox_replay
+python build/chaos-pipeline.py --scenario postgres_outage
+python build/chaos-pipeline.py --scenario opensearch_outage
 python build/chaos-pipeline.py --scenario all --count 20 \
   --output .cache/chaos/$(date +%Y%m%d-%H%M%S).json
 ```
@@ -21,6 +24,12 @@ python build/chaos-pipeline.py --scenario all --count 20 \
   Outbox eventually produces exactly one Alert Web row.
 - `duplicate_delivery`: submits the same canonical event twice and verifies
   one logical alert by `sourceAlertId`.
+- `detection_outbox_replay`: rewinds a published Detection Outbox row and
+  proves replay converges to `PUBLISHED` without a second logical Alert row.
+- `postgres_outage`: proves the committed frontier stops, lag grows, and the
+  journal drains after PostgreSQL recovery.
+- `opensearch_outage`: proves detection remains available during search
+  degradation and a recovery event becomes searchable afterwards.
 - `multi_instance`: verifies disjoint partition assignment, stable entity
   routing, rebalance after stopping the first instance, assignment restore,
   contiguous completion (`pendingEvents == 0`), and deterministic alert-set
@@ -40,8 +49,9 @@ first URL must be the instance that `build/run-all.sh stop-service/start-service
 detect-web` controls:
 
 ```bash
-DETECTION_INSTANCE_URLS=http://127.0.0.1:18082,http://127.0.0.1:28082 \
-  python build/chaos-pipeline.py --scenario multi_instance --count 5 \
+SOCP_DETECT_PROFILE=pg \
+DETECTION_INSTANCE_URLS=http://127.0.0.1:18082,http://127.0.0.1:28082,http://127.0.0.1:38082 \
+  python build/chaos-pipeline.py --scenario multi_instance --count 30 --rebalance-cycles 3 \
   --output .cache/chaos/multi-instance.json
 ```
 
@@ -62,3 +72,13 @@ delivery, strict cross-partition ordering, or production HA.
 Additional scenarios should record a before/after snapshot and an observable
 invariant. A restart alone is not a chaos test unless loss, duplication, lag,
 or downstream recovery is checked.
+
+## Sanitized reference result
+
+The 2026-08-20 local verification used six partitions and three Detection
+instances. Three consecutive stop/restart cycles retained disjoint ownership;
+all 12 deterministic expected alert IDs equaled the observed set and every
+instance reported zero pending events. Separate PostgreSQL, OpenSearch, and
+Detection Outbox replay probes also returned `pass=true`. Machine-specific
+JSON remains under `.cache`; the reproducible commands and acceptance criteria
+are the repository evidence contract.

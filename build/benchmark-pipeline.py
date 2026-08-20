@@ -355,6 +355,32 @@ def measured_latency_ms(alarms):
     return values
 
 
+def durable_alert_latency_ms(alarms):
+    """Measure ingress until the Alert Web row became durable.
+
+    ``processingLatencyMs`` is produced by Detection before its alert outbox
+    hand-off.  Alert Web's inherited ``createdAt`` timestamp includes that
+    durable delivery queue and is therefore the end-to-end pipeline metric.
+    """
+    values = []
+    for alarm in alarms:
+        if not isinstance(alarm, dict):
+            continue
+        started = alarm.get("triggerIngestedAt")
+        completed = alarm.get("createdAt")
+        if not started or not completed:
+            continue
+        try:
+            start_time = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
+            completed_time = datetime.fromisoformat(str(completed).replace("Z", "+00:00"))
+            elapsed = (completed_time - start_time).total_seconds() * 1000
+            if elapsed >= 0:
+                values.append(elapsed)
+        except (TypeError, ValueError):
+            continue
+    return values
+
+
 def choose_ingest_task(gateway, token):
     status, body, _ = request(
         gateway + "/search-config/api/v1/ingest/tasks",
@@ -492,15 +518,23 @@ def main():
         report["clickHouseBefore"] = ck_before
         report["clickHouseAfter"] = optional_clickhouse_count()
         sampled = recent_alerts(gateway, token, min(500, max(expected_alerts, 1)))
-        processing = measured_latency_ms(sampled)
-        report["latencyDefinition"] = "alertCreatedAt - triggerIngestedAt"
-        report["latencySource"] = "durable Alert Web alarm fields"
-        report["latencySampleCount"] = len(processing)
-        report["processingLatencyMs"] = {
-            "p50": round(percentile(processing, 0.50), 2),
-            "p95": round(percentile(processing, 0.95), 2),
-            "p99": round(percentile(processing, 0.99), 2),
-            "max": round(max(processing), 2) if processing else 0,
+        detection_latency = measured_latency_ms(sampled)
+        durable_latency = durable_alert_latency_ms(sampled)
+        report["detectionLatencyDefinition"] = "alertCreatedAt - triggerIngestedAt"
+        report["detectionLatencySampleCount"] = len(detection_latency)
+        report["detectionLatencyMs"] = {
+            "p50": round(percentile(detection_latency, 0.50), 2),
+            "p95": round(percentile(detection_latency, 0.95), 2),
+            "p99": round(percentile(detection_latency, 0.99), 2),
+            "max": round(max(detection_latency), 2) if detection_latency else 0,
+        }
+        report["durableAlertLatencyDefinition"] = "Alert Web createdAt - triggerIngestedAt"
+        report["durableAlertLatencySampleCount"] = len(durable_latency)
+        report["durableAlertLatencyMs"] = {
+            "p50": round(percentile(durable_latency, 0.50), 2),
+            "p95": round(percentile(durable_latency, 0.95), 2),
+            "p99": round(percentile(durable_latency, 0.99), 2),
+            "max": round(max(durable_latency), 2) if durable_latency else 0,
         }
 
     print("SOCP %s baseline" % ("end-to-end" if args.mode == "e2e" else "bulk ingest"))

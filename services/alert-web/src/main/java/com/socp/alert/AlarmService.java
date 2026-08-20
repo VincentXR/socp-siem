@@ -9,6 +9,8 @@ import com.socp.platform.client.ServiceCall;
 import com.socp.platform.client.SoarClient;
 import com.socp.platform.client.ThreatClient;
 import com.socp.platform.tenant.TenantContext;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -248,6 +250,25 @@ public class AlarmService {
         }
         alarms.sort(comparator.thenComparing(Alarm::getId, Comparator.nullsLast(String::compareTo)));
         return alarms;
+    }
+
+    /**
+     * Database-backed fast path for unfiltered timestamp pagination.  Large
+     * benchmark and analyst queues must not materialize and sort every alarm
+     * merely to obtain one page and its total count.
+     */
+    public Page<Alarm> pageByTimestamp(String sort, String order, int page, int size) {
+        String tenant = TenantContext.get() == null ? "default" : TenantContext.get();
+        boolean ascending = "ascending".equalsIgnoreCase(order) || "asc".equalsIgnoreCase(order);
+        var pageable = PageRequest.of(Math.max(0, page - 1), size);
+        if ("alertCreatedAt".equals(sort)) {
+            return ascending
+                    ? repo.pageByAlertCreatedAtAsc(tenant, pageable)
+                    : repo.pageByAlertCreatedAtDesc(tenant, pageable);
+        }
+        return ascending
+                ? repo.pageByOccurredAtAsc(tenant, pageable)
+                : repo.pageByOccurredAtDesc(tenant, pageable);
     }
 
     /**

@@ -2,6 +2,7 @@ package com.socp.detect.web.store;
 
 import com.socp.platform.tenant.TenantContext;
 import com.socp.rule.util.Json;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
@@ -170,30 +171,55 @@ public class RuleSpecStore {
 
     public RuleSpecStore(RuleRepository repo) {
         this.repo = repo;
-        if (repo.count() == 0) {
-            Set<String> seededIds = new LinkedHashSet<>();
-            // The versioned content pack is executable content, not metadata
-            // only. Seed its specs first so a deployment runs the same rules
-            // that CI validates and the workbench can inspect.
-            Object rawRules = DetectionContentCatalog.manifest().get("rules");
-            if (rawRules instanceof List<?> rules) {
-                for (Object item : rules) {
-                    if (item instanceof Map<?, ?> map && map.get("spec") instanceof Map<?, ?> rawSpec) {
-                        Map<String, Object> spec = new LinkedHashMap<>();
-                        rawSpec.forEach((key, value) -> spec.put(String.valueOf(key), value));
-                        String id = String.valueOf(spec.getOrDefault("id", ""));
-                        if (!id.isBlank()) {
-                            save(spec);
-                            seededIds.add(id);
-                        }
-                    }
-                }
-            }
+        boolean emptyAtStartup = repo.count() == 0;
+        Set<String> seededIds = syncPackagedContent();
+        if (emptyAtStartup) {
             for (String json : SEED_JSON) {
                 Map<String, Object> spec = Json.parseObject(json);
                 if (!seededIds.contains(String.valueOf(spec.get("id")))) save(spec);
             }
         }
+    }
+
+    /**
+     * Install new packaged rules and upgrade rules that are still owned by the
+     * packaged content set. User-created rules, including a colliding id that
+     * has no contentPack marker, remain untouched.
+     */
+    private Set<String> syncPackagedContent() {
+        Map<String, Object> manifest = DetectionContentCatalog.manifest();
+        String packId = String.valueOf(manifest.get("packId"));
+        String packVersion = String.valueOf(manifest.get("version"));
+        Set<String> packagedIds = new LinkedHashSet<>();
+        Object rawRules = manifest.get("rules");
+        if (!(rawRules instanceof List<?> rules)) return packagedIds;
+
+        for (Object item : rules) {
+            if (!(item instanceof Map<?, ?> map) || !(map.get("spec") instanceof Map<?, ?> rawSpec)) continue;
+            Map<String, Object> spec = new LinkedHashMap<>();
+            rawSpec.forEach((key, value) -> spec.put(String.valueOf(key), value));
+            String id = String.valueOf(spec.getOrDefault("id", ""));
+            if (id.isBlank()) continue;
+            packagedIds.add(id);
+
+            Optional<RuleEntity> current = repo.findByIdAndTenantId(id, tenant());
+            if (current.isEmpty()) {
+                try {
+                    save(spec);
+                } catch (DataIntegrityViolationException racedInstaller) {
+                    // Multiple Detection instances can start against the same
+                    // database. Another instance winning this idempotent insert
+                    // race means the packaged rule is already installed.
+                    if (repo.findByIdAndTenantId(id, tenant()).isEmpty()) throw racedInstaller;
+                }
+                continue;
+            }
+            Map<String, Object> stored = Json.parseObject(current.get().getSpec());
+            boolean packageOwned = packId.equals(String.valueOf(stored.get("contentPack")));
+            boolean currentVersion = packVersion.equals(String.valueOf(stored.get("contentVersion")));
+            if (packageOwned && !currentVersion) save(spec);
+        }
+        return packagedIds;
     }
 
     private String tenant() {

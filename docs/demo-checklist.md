@@ -5,15 +5,15 @@ event pipeline and its recovery behavior.
 
 ## Golden Demo: SSH brute force to account compromise
 
-The scenario sends five failed SSH logins from one source, followed by a
-successful login from the same source:
+The scenario sends five failed SSH logins, a successful login, then host-local
+session, suspicious execution, and sudo signals:
 
 ```text
 sshd raw log
   -> Vector
   -> search-config: parse + canonical normalization
   -> Kafka: socp-events
-  -> detect-web: threshold + correlation
+  -> detect-web: threshold + correlation + pattern + correlation-set
   -> Detection Alert Outbox (durable retry)
   -> alert-web: PostgreSQL + idempotent sourceAlertId
   -> Alert Outbox
@@ -44,9 +44,15 @@ appends five `Failed password` records and one `Accepted password` record to
    and `user.name` fields.
 2. Rule `AUTH-BRUTE` produces an alert.
 3. Rule `AUTH-BRUTE-SUCCESS` correlates the failed and successful logins.
-4. The Detection Outbox delivers once to Alert Web; the Alert Outbox creates
+4. `AUTH-PRIVESC` and `CORR-ATTACK-SIGNALS` complete the host attack story,
+   while the shared entity-risk projection accumulates the account risk.
+5. The Detection Outbox delivers once to Alert Web; the Alert Outbox creates
    an Incident, records a notification, and starts SOAR.
-5. The reporting endpoint exposes downstream analytics and trace IDs.
+6. The reporting endpoint exposes downstream analytics and trace IDs.
+
+The script first waits for Detection partition ownership and excludes every
+pre-existing alert ID from its oracle. This prevents a newly created Kafka
+group or historical demo data from producing a false pass.
 
 If Vector is not the focus of the check, inject directly after the collector
 boundary:
@@ -94,13 +100,13 @@ To exercise the new durable hand-off directly, run the Alert Web outage probe:
 python build/chaos-pipeline.py --scenario alert_web_restart
 ```
 
-For multi-instance state ownership, start two Detection processes against the
+For multi-instance state ownership, start three Detection processes against the
 same PostgreSQL database and Kafka group, then run the `multi_instance`
 scenario described in [chaos/README.md](chaos/README.md).
 
 ## Evidence to collect
 
-Use the workbench to inspect the canonical event, the two alerts and their
+Use the workbench to inspect the canonical events, the four primary alerts and their
 ATT&CK mappings, the Incident timeline, the SOAR execution, and audit/trace
 information. The infrastructure components are explained through their
 responsibilities in [architecture.md](architecture.md); they do not need to be

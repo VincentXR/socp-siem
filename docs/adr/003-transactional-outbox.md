@@ -15,8 +15,8 @@ SOCP uses two explicit Outbox boundaries:
    database transaction. `OutboxPublisher` waits for a Kafka broker
    acknowledgement before marking the row `PUBLISHED`.
 
-Alert Web enforces `(tenant_id, source_alert_id)` idempotency. Downstream
-consumers use the stable alarm ID for at-least-once de-duplication.
+Alert Web enforces `(tenant_id, source_alert_id)` idempotency. The Alert Outbox
+guarantees broker acknowledgement before its row becomes `PUBLISHED`.
 
 ## Why
 
@@ -30,5 +30,7 @@ boundary observable, retryable, and independently testable.
 There are two durable states and two retry loops to operate. Delivery remains
 at-least-once: a publisher crash after a broker accepts a message but before a
 database status update can produce a duplicate. Stable IDs and idempotent
-consumers are therefore required. The design does not claim a distributed
-exactly-once transaction.
+consumers are therefore required. The current combined fan-out consumer does
+not persist one retry task per destination, so the durable contract ends at
+Kafka and individual Incident/Notify/SOAR calls are best-effort. The design
+does not claim a distributed exactly-once transaction.

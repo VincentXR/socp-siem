@@ -5,6 +5,7 @@ import com.socp.rule.model.SecurityEvent;
 import java.time.Duration;
 import java.util.Set;
 import java.util.List;
+import java.util.function.Consumer;
 
 /**
  * Durable boundary for detection state.
@@ -78,6 +79,19 @@ public interface DetectionStateStore {
     /** Return only the state owned by the currently assigned Kafka partitions. */
     default List<SecurityEvent> recentForPartitions(Set<Integer> partitions, Duration window) {
         return recent(window);
+    }
+
+    /** Replay in bounded batches so large journals do not require one giant list. */
+    default void replayRecent(Duration window, Consumer<List<SecurityEvent>> batchConsumer) {
+        List<SecurityEvent> events = recent(window);
+        if (!events.isEmpty()) batchConsumer.accept(events);
+    }
+
+    /** Replay owned partition state in bounded batches and Kafka order. */
+    default void replayRecentForPartitions(Set<Integer> partitions, Duration window,
+                                           Consumer<List<SecurityEvent>> batchConsumer) {
+        List<SecurityEvent> events = recentForPartitions(partitions, window);
+        if (!events.isEmpty()) batchConsumer.accept(events);
     }
 
     /** Human-readable configured replay window for health/operations output. */

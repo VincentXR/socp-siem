@@ -2,6 +2,8 @@ package com.socp.alert;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 
 import java.util.List;
 import java.util.Optional;
@@ -10,6 +12,22 @@ import java.util.Optional;
 public interface AlarmRepository extends JpaRepository<Alarm, String> {
 
     List<Alarm> findByTenantId(String tenantId);
+
+    @Query(value = "select a from Alarm a where a.tenantId = :tenant order by a.occurredAt desc nulls last, a.id asc",
+           countQuery = "select count(a) from Alarm a where a.tenantId = :tenant")
+    Page<Alarm> pageByOccurredAtDesc(String tenant, Pageable pageable);
+
+    @Query(value = "select a from Alarm a where a.tenantId = :tenant order by a.occurredAt asc nulls last, a.id asc",
+           countQuery = "select count(a) from Alarm a where a.tenantId = :tenant")
+    Page<Alarm> pageByOccurredAtAsc(String tenant, Pageable pageable);
+
+    @Query(value = "select a from Alarm a where a.tenantId = :tenant order by a.alertCreatedAt desc nulls last, a.id asc",
+           countQuery = "select count(a) from Alarm a where a.tenantId = :tenant")
+    Page<Alarm> pageByAlertCreatedAtDesc(String tenant, Pageable pageable);
+
+    @Query(value = "select a from Alarm a where a.tenantId = :tenant order by a.alertCreatedAt asc nulls last, a.id asc",
+           countQuery = "select count(a) from Alarm a where a.tenantId = :tenant")
+    Page<Alarm> pageByAlertCreatedAtAsc(String tenant, Pageable pageable);
 
     Optional<Alarm> findByTenantIdAndId(String tenantId, String id);
 
