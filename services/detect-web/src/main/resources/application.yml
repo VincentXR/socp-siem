@@ -38,6 +38,10 @@ socp:
     alert-outbox:
       poll-interval-ms: ${SOCP_DETECT_ALERT_OUTBOX_POLL_MS:1000}
       initial-delay-ms: ${SOCP_DETECT_ALERT_OUTBOX_INITIAL_DELAY_MS:1000}
+      # Bound synchronous Alert Web calls per Detection instance. The verified
+      # three-instance profile therefore offers at most six concurrent durable
+      # deliveries without saturating the shared PostgreSQL instance.
+      delivery-concurrency: ${SOCP_DETECT_ALERT_OUTBOX_CONCURRENCY:2}
 
 management:
   endpoints:

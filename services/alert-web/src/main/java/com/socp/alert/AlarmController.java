@@ -32,9 +32,18 @@ public class AlarmController {
             .registerModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     private final AlarmService service;
+    private final AlertPerformanceMetrics performanceMetrics;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    public AlarmController(AlarmService service, AlertPerformanceMetrics performanceMetrics) {
+        this.service = service;
+        this.performanceMetrics = performanceMetrics;
+    }
+
+    /** Unit-test/source compatibility constructor. */
     public AlarmController(AlarmService service) {
         this.service = service;
+        this.performanceMetrics = null;
     }
 
     /** 写入告警（接入→检测→分析 的产物落 t_alarm）。带审计注解，结果进 Kafka socp-audit（Docker 环境）。 */
@@ -42,6 +51,8 @@ public class AlarmController {
     @AuditOperation(action = "CREATE_ALARM", target = "t_alarm")
     @PostMapping
     public ApiResult<Alarm> create(@Valid @RequestBody CreateAlarmRequest req) {
+        AlertPerformanceMetrics.Sample sample = performanceMetrics == null
+                ? null : performanceMetrics.requestReceived(req.detectionOutboxClaimedAt());
         Alarm a = new Alarm(req.ruleId(), req.ruleName(), req.severity(), req.message(), req.entity(),
                 req.mitre(), null);
         a.setSourceAlertId(req.sourceAlertId());
@@ -55,7 +66,16 @@ public class AlarmController {
         a.setAlertCreatedAt(req.alertCreatedAt());
         a.setProcessingLatencyMs(req.processingLatencyMs());
         a.setTriggerEventId(req.triggerEventId());
-        return ApiResult.ok(service.create(a, req.evidence() == null ? List.of() : req.evidence()));
+        try {
+            Alarm saved = service.create(a, req.evidence() == null ? List.of() : req.evidence());
+            if (performanceMetrics != null) {
+                performanceMetrics.committed(sample, req.triggerIngestedAt());
+            }
+            return ApiResult.ok(saved);
+        } catch (RuntimeException failure) {
+            if (performanceMetrics != null) performanceMetrics.failed();
+            throw failure;
+        }
     }
 
     /** 查询告警：支持 severity / rule / q 过滤 + 分页（page 从 1 起，size 缺省 20）。
@@ -189,6 +209,7 @@ public class AlarmController {
             Instant triggerIngestedAt,
             Instant alertCreatedAt,
             Long processingLatencyMs,
-            String triggerEventId) {
+            String triggerEventId,
+            Instant detectionOutboxClaimedAt) {
     }
 }

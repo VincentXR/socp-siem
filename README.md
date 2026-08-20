@@ -162,7 +162,6 @@ docs/                     architecture, operating guides, tests, and ADRs
 - [Benchmark guide](docs/benchmark/README.md)
 - [Chaos guide](docs/chaos/README.md)
 - [Golden Demo checklist](docs/demo-checklist.md)
-- [Verification snapshot](docs/verification-2026-08-20.md)
 - [Architecture decision records](docs/adr/)
 
 ## License

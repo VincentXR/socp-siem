@@ -12,10 +12,13 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
@@ -65,7 +68,9 @@ class DetectionAlertOutboxPublisherTest {
         publisher.publishDue();
 
         assertEquals("PUBLISHED", event.getStatus());
-        verify(alertClient).forwardAlarm("{\"id\":\"alert-2\"}");
+        verify(alertClient).forwardAlarm(argThat(payload ->
+                payload.contains("\"id\":\"alert-2\"")
+                        && payload.contains("\"detectionOutboxClaimedAt\"")));
         verify(alarmProducer).sendAndAwait(any(), eq("alert-2"));
     }
 
@@ -119,6 +124,39 @@ class DetectionAlertOutboxPublisherTest {
         assertEquals("PENDING", pending.getStatus());
         assertEquals("DELIVERED", delivered.getStatus());
         verify(repository, org.mockito.Mockito.times(2)).save(any(DetectionAlertOutboxEntity.class));
+    }
+
+    @Test
+    void pendingAlertDeliveryUsesConfiguredBoundedConcurrency() {
+        List<DetectionAlertOutboxEntity> events = java.util.stream.IntStream.range(0, 8)
+                .mapToObj(i -> event("parallel-" + i))
+                .toList();
+        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+                eq("PENDING"), any(Instant.class))).willReturn(events);
+        given(repository.claim(anyString(), eq("PENDING"), any(Instant.class))).willReturn(1);
+        AtomicInteger active = new AtomicInteger();
+        AtomicInteger peak = new AtomicInteger();
+        given(alertClient.forwardAlarm(anyString())).willAnswer(invocation -> {
+            int current = active.incrementAndGet();
+            peak.accumulateAndGet(current, Math::max);
+            try {
+                Thread.sleep(20);
+                return success();
+            } finally {
+                active.decrementAndGet();
+            }
+        });
+
+        DetectionAlertOutboxPublisher publisher = new DetectionAlertOutboxPublisher(
+                repository, alertClient, alarmProducer, null, 4);
+        try {
+            publisher.publishDue();
+        } finally {
+            publisher.stopDeliveryExecutor();
+        }
+
+        assertTrue(peak.get() > 1, "delivery should no longer be globally serial");
+        assertTrue(peak.get() <= 4, "delivery must respect the configured bound");
     }
 
     private DetectionAlertOutboxPublisher publisher() {

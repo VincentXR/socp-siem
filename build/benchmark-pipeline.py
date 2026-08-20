@@ -31,6 +31,8 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+import math
+import re
 from datetime import datetime, timezone
 
 
@@ -308,6 +310,117 @@ def optional_prometheus_snapshot():
         return None
 
 
+def performance_metric_urls():
+    raw_detect = os.environ.get("BENCH_DETECTION_URLS") or os.environ.get(
+        "DETECTION_INSTANCE_URLS", "http://127.0.0.1:18082")
+    detect = [url.strip().rstrip("/") + "/detect-web/actuator/prometheus"
+              for url in raw_detect.split(",") if url.strip()]
+    alert = os.environ.get("BENCH_ALERT_URL", "http://127.0.0.1:18080").rstrip("/")
+    return detect + [alert + "/alert-web/actuator/prometheus"]
+
+
+def parse_prometheus_labels(raw):
+    if not raw:
+        return {}
+    return {match.group(1): match.group(2).replace(r'\"', '"')
+            for match in re.finditer(r'(\w+)="((?:\\.|[^"])*)"', raw)}
+
+
+def performance_snapshot():
+    """Aggregate low-cardinality SOCP performance meters across instances."""
+    samples = {}
+    reachable = []
+    for url in performance_metric_urls():
+        try:
+            with urllib.request.urlopen(url, timeout=5) as response:
+                payload = response.read().decode("utf-8", errors="replace")
+            reachable.append(url)
+        except Exception:
+            continue
+        for line in payload.splitlines():
+            if not line or line.startswith("#") or " " not in line:
+                continue
+            sample, raw_value = line.rsplit(" ", 1)
+            name, _, raw_labels = sample.partition("{")
+            if not (name.startswith("socp_detection_") or name.startswith("socp_alert_")):
+                continue
+            labels = parse_prometheus_labels(raw_labels[:-1] if raw_labels else "")
+            key = (name, tuple(sorted(labels.items())))
+            try:
+                samples[key] = samples.get(key, 0.0) + float(raw_value)
+            except ValueError:
+                continue
+    return {"reachable": reachable, "samples": samples}
+
+
+def snapshot_delta(before, after):
+    keys = set((before or {}).get("samples", {})) | set((after or {}).get("samples", {}))
+    return {key: max(0.0, (after or {}).get("samples", {}).get(key, 0.0)
+                           - (before or {}).get("samples", {}).get(key, 0.0))
+            for key in keys}
+
+
+def histogram_quantile(buckets, quantile):
+    ordered = sorted((float(bound), count) for bound, count in buckets.items())
+    if not ordered or ordered[-1][1] <= 0:
+        return 0.0
+    wanted = ordered[-1][1] * quantile
+    previous_bound = 0.0
+    previous_count = 0.0
+    for bound, count in ordered:
+        if count >= wanted:
+            if math.isinf(bound) or count <= previous_count:
+                return previous_bound
+            fraction = (wanted - previous_count) / (count - previous_count)
+            return previous_bound + (bound - previous_bound) * fraction
+        previous_bound, previous_count = bound, count
+    return previous_bound
+
+
+def summarize_performance_metrics(before, after, event_count, alert_count):
+    delta = snapshot_delta(before, after)
+    histograms = {}
+    transactions = {}
+    for (name, labels_tuple), value in delta.items():
+        labels = dict(labels_tuple)
+        if name.endswith("_bucket") and "stage" in labels and "le" in labels:
+            base = name[:-7]
+            bound = float("inf") if labels["le"] == "+Inf" else float(labels["le"])
+            histograms.setdefault((base, labels["stage"]), {})[bound] = value
+        if name.endswith("_total") and ("db_transactions" in name):
+            scope = labels.get("scope", "unknown")
+            operation = labels.get("operation", "unknown")
+            owner = "detection" if name.startswith("socp_detection_") else "alertWeb"
+            transactions[f"{owner}.{scope}.{operation}"] = round(value, 3)
+
+    stages = {}
+    for (base, stage), buckets in histograms.items():
+        key = ("event." if "detection_event" in base else
+               "detectionAlert." if "detection_alert" in base else "alert.") + stage
+        stages[key] = {
+            "count": round(max(buckets.values(), default=0.0), 3),
+            "p50Ms": round(histogram_quantile(buckets, 0.50) * 1000, 3),
+            "p95Ms": round(histogram_quantile(buckets, 0.95) * 1000, 3),
+            "p99Ms": round(histogram_quantile(buckets, 0.99) * 1000, 3),
+        }
+    detection_tx = sum(value for key, value in transactions.items()
+                       if key.startswith("detection.event."))
+    outbox_tx = sum(value for key, value in transactions.items()
+                    if key.startswith("detection.alert."))
+    alert_web_tx = transactions.get("alertWeb.alert.create", 0.0)
+    return {
+        "metricEndpoints": (after or {}).get("reachable", []),
+        "stages": stages,
+        "transactions": transactions,
+        "ratios": {
+            "detectionDbTransactionsPerUniqueEvent": round(detection_tx / event_count, 3)
+            if event_count else 0,
+            "detectionOutboxDbTransactionsPerAlert": round(outbox_tx / alert_count, 3)
+            if alert_count else 0,
+            "alertWebDbTransactionsPerAlert": round(alert_web_tx / alert_count, 3)
+            if alert_count else 0,
+        },
+    }
 def alert_total(gateway, token):
     status, body, _ = request(
         gateway + "/alert-web/api/alarms?page=1&size=1",
@@ -334,16 +447,53 @@ def wait_for_alerts(gateway, token, expected, baseline, timeout):
     return last
 
 
-def recent_alerts(gateway, token, sample_size):
-    size = max(1, min(500, sample_size))
-    status, body, _ = request(
-        gateway + "/alert-web/api/alarms?page=1&size=%d&sort=alertCreatedAt&order=descending" % size,
-        headers={"Authorization": "Bearer " + token}, timeout=30)
-    data = unwrap(body)
-    if status != 200 or not isinstance(data, dict):
-        return []
-    items = data.get("items", [])
-    return items if isinstance(items, list) else []
+def wait_for_alert_stability(gateway, token, timeout=30.0, stable_polls=3):
+    """Wait until the durable Alert row count stops changing after Detection drains."""
+    deadline = time.monotonic() + timeout
+    last = None
+    stable = 0
+    while time.monotonic() < deadline:
+        current = alert_total(gateway, token)
+        if current is not None and current == last:
+            stable += 1
+            if stable >= stable_polls:
+                return current, round(timeout - max(0.0, deadline - time.monotonic()), 3)
+        else:
+            stable = 0
+            last = current
+        time.sleep(1)
+    return last, round(timeout, 3)
+
+
+def run_alerts(gateway, token, run_id, expected, max_pages=10):
+    """Return only alerts whose trigger event belongs to this benchmark run.
+
+    A delayed alert from an older stateful evaluation can become durable while
+    a new benchmark is running. Global row-count deltas still help detect a
+    drain, but they are not a valid run-level latency or correctness oracle.
+    """
+    prefix = f"benchmark-{run_id}-"
+    matched = []
+    size = 500
+    for page in range(1, max_pages + 1):
+        status, body, _ = request(
+            gateway + ("/alert-web/api/alarms?page=%d&size=%d"
+                       "&sort=alertCreatedAt&order=descending" % (page, size)),
+            headers={"Authorization": "Bearer " + token}, timeout=30)
+        data = unwrap(body)
+        if status != 200 or not isinstance(data, dict):
+            break
+        items = data.get("items", [])
+        if not isinstance(items, list) or not items:
+            break
+        matched.extend(
+            alarm for alarm in items
+            if isinstance(alarm, dict)
+            and str(alarm.get("triggerEventId", "")).startswith(prefix)
+        )
+        if len(matched) >= expected or len(items) < size:
+            break
+    return matched
 
 
 def measured_latency_ms(alarms):
@@ -411,7 +561,15 @@ def main():
                         help="number of Detection instances used for this run")
     parser.add_argument("--rules", type=int, default=None,
                         help="rule count configured for this run, if known")
+    parser.add_argument("--offered-eps", type=float, default=None,
+                        help="pace e2e ingestion at this offered load instead of burst mode")
+    parser.add_argument("--duration", type=float, default=180.0,
+                        help="steady-state offered-load duration in seconds")
     args = parser.parse_args()
+    if args.offered_eps is not None:
+        if args.mode != "e2e" or args.offered_eps <= 0 or args.duration <= 0:
+            parser.error("--offered-eps requires e2e mode and positive rate/duration")
+        args.count = max(1, math.ceil(args.offered_eps * args.duration))
     if args.count <= 0 or args.batch_size <= 0 or args.alert_every <= 0:
         parser.error("--count, --batch-size, and --alert-every must be positive")
 
@@ -420,6 +578,7 @@ def main():
     profile = machine_profile()
     stats_before = detect_stats(gateway, token)
     runtime_before = optional_prometheus_snapshot()
+    performance_before = performance_snapshot()
     task_id = choose_ingest_task(gateway, token) if args.mode == "e2e" else None
     baseline_alerts = alert_total(gateway, token) if args.mode == "e2e" else None
     kafka_before = kafka_snapshot() if args.mode == "e2e" else None
@@ -430,9 +589,16 @@ def main():
     accepted = rejected = forwarded = 0
     expected_alerts = 0
     latencies = []
+    lag_during_load = []
+    next_lag_sample = 0.0
     started = time.perf_counter()
 
     for start in range(0, args.count, args.batch_size):
+        if args.offered_eps:
+            target_elapsed = start / args.offered_eps
+            remaining = target_elapsed - (time.perf_counter() - started)
+            if remaining > 0:
+                time.sleep(remaining)
         end = min(start + args.batch_size, args.count)
         if args.mode == "e2e":
             target = gateway + "/search-config/api/v1/ingest"
@@ -455,6 +621,13 @@ def main():
         rejected += int(data.get("rejected", data.get("skipped", 0)))
         forwarded += int(data.get("forwarded", 0))
         expected_alerts += batch_expected_alerts
+        elapsed_load = time.perf_counter() - started
+        if args.offered_eps and elapsed_load >= next_lag_sample:
+            snapshot = kafka_snapshot()
+            if snapshot is not None:
+                lag_during_load.append({"elapsedSeconds": round(elapsed_load, 3),
+                                        "lag": snapshot.get("lag", 0)})
+            next_lag_sample = elapsed_load + 1.0
 
     elapsed = time.perf_counter() - started
     alerts_after = None
@@ -465,7 +638,8 @@ def main():
             gateway, token, expected_alerts, baseline_alerts or 0, args.timeout)
         alert_wait = time.perf_counter() - wait_started
 
-    detection_after, detection_drain_wait = wait_for_detection_drain(gateway, token)
+    detection_after, detection_drain_wait = wait_for_detection_drain(
+        gateway, token, timeout=args.timeout)
     report = {
         "runId": run_id,
         "label": args.label,
@@ -496,6 +670,9 @@ def main():
         "detectionDrainWaitSeconds": detection_drain_wait,
         "runtimeMetricsBefore": runtime_before,
         "runtimeMetricsAfter": optional_prometheus_snapshot(),
+        "loadShape": "steady-state" if args.offered_eps else "burst-drain",
+        "offeredEventsPerSecond": args.offered_eps,
+        "offeredDurationSeconds": args.duration if args.offered_eps else None,
     }
     if args.mode == "e2e":
         report["ingestTaskId"] = task_id
@@ -510,14 +687,23 @@ def main():
             accepted / (elapsed + (alert_wait or 0))
             if accepted and elapsed + (alert_wait or 0) else 0, 2)
         report["kafkaBefore"] = kafka_before
-        kafka_after, kafka_drain_wait = wait_for_kafka_drain()
+        kafka_after, kafka_drain_wait = wait_for_kafka_drain(timeout=args.timeout)
         report["kafkaAfter"] = kafka_after
         report["kafkaDrainWaitSeconds"] = kafka_drain_wait
+        final_alerts, alert_stability_wait = wait_for_alert_stability(
+            gateway, token, timeout=args.timeout)
+        report["alertStabilityWaitSeconds"] = alert_stability_wait
+        report["alertsAfterFinalDrain"] = final_alerts
+        report["alertsObservedFinal"] = ((final_alerts or 0) - (baseline_alerts or 0))
         report["openSearchBefore"] = os_before
         report["openSearchAfter"] = optional_opensearch_count()
         report["clickHouseBefore"] = ck_before
         report["clickHouseAfter"] = optional_clickhouse_count()
-        sampled = recent_alerts(gateway, token, min(500, max(expected_alerts, 1)))
+        sampled = run_alerts(gateway, token, run_id, max(expected_alerts, 1))
+        report["runAlertsObserved"] = len(sampled)
+        report["nonRunAlertsObserved"] = max(
+            0, report["alertsObservedFinal"] - report["runAlertsObserved"])
+        report["alertShortfall"] = max(0, expected_alerts - report["runAlertsObserved"])
         detection_latency = measured_latency_ms(sampled)
         durable_latency = durable_alert_latency_ms(sampled)
         report["detectionLatencyDefinition"] = "alertCreatedAt - triggerIngestedAt"
@@ -536,6 +722,18 @@ def main():
             "p99": round(percentile(durable_latency, 0.99), 2),
             "max": round(max(durable_latency), 2) if durable_latency else 0,
         }
+        performance_after = performance_snapshot()
+        report["performanceMetrics"] = summarize_performance_metrics(
+            performance_before, performance_after, accepted, report["runAlertsObserved"])
+        if args.offered_eps:
+            lags = [sample["lag"] for sample in lag_during_load]
+            lag_growth = (lags[-1] - lags[0]) if len(lags) >= 2 else 0
+            report["steadyState"] = {
+                "lagSamples": lag_during_load,
+                "peakLag": max(lags, default=0),
+                "lagGrowthDuringLoad": lag_growth,
+                "lagStable": lag_growth <= max(10, args.offered_eps * 0.1),
+            }
 
     print("SOCP %s baseline" % ("end-to-end" if args.mode == "e2e" else "bulk ingest"))
     print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -548,6 +746,17 @@ def main():
         raise SystemExit("result count does not match requested event count")
     if args.mode == "e2e" and (alerts_after or 0) < (baseline_alerts or 0) + expected_alerts:
         raise SystemExit("e2e timeout: expected alert count did not catch up")
+    if args.mode == "e2e" and report.get("alertShortfall", 0) > 0:
+        raise SystemExit(
+            "e2e incomplete: run-scoped durable alerts short by "
+            f"{report['alertShortfall']}")
+    if args.mode == "e2e" and report.get("kafkaAfter") is not None \
+            and report["kafkaAfter"].get("lag", 0) != 0:
+        raise SystemExit("e2e timeout: Kafka consumer lag did not drain to zero")
+    completed = (report.get("performanceMetrics", {}).get("stages", {})
+                 .get("event.consumer_to_durable", {}).get("count", 0))
+    if args.mode == "e2e" and completed < accepted:
+        raise SystemExit(f"e2e incomplete: durable event metrics {completed} < accepted {accepted}")
 
 
 if __name__ == "__main__":

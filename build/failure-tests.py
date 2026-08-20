@@ -13,14 +13,18 @@ SOCP 故障注入测试（P4，2026-08-12）：验证核心中间件故障下服
 用法：python build/failure-tests.py
 """
 import atexit
+import base64
 import json
+import os
 import socket
 import subprocess
 import sys
 import time
 import urllib.request
 
-GATEWAY = "http://localhost:18092"
+GATEWAY = os.environ.get("FAILURE_GATEWAY", "http://localhost:18092")
+OS_URL = os.environ.get("FAILURE_OS_URL", "https://localhost:9200").rstrip("/")
+OS_AUTH = os.environ.get("FAILURE_OS_AUTH", "admin:Socp!Sec2026xK")
 TOKEN = None
 PASS = 0
 FAIL = 0
@@ -140,13 +144,13 @@ def port_listening(port):
 
 
 def os_count():
-    import base64
-    req = urllib.request.Request("https://localhost:9200/socp-events-*/_count", method="GET")
-    auth = "Basic " + base64.b64encode(b"admin:Socp!Sec2026xK").decode()
+    req = urllib.request.Request(OS_URL + "/socp-events-*/_count", method="GET")
+    auth = "Basic " + base64.b64encode(OS_AUTH.encode()).decode()
     req.add_header("Authorization", auth)
     import ssl
     try:
-        with urllib.request.urlopen(req, timeout=8, context=ssl._create_unverified_context()) as r:
+        context = ssl._create_unverified_context() if OS_URL.startswith("https") else None
+        with urllib.request.urlopen(req, timeout=8, context=context) as r:
             return json.loads(r.read().decode()).get("count", -1)
     except Exception:
         return -1

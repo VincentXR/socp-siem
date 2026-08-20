@@ -2,12 +2,14 @@ package com.socp.detect.web.service;
 
 import com.socp.detect.web.engine.AlertForwarder;
 import com.socp.detect.web.engine.RecentAlertSink;
+import com.socp.detect.web.metrics.DetectionPerformanceMetrics;
 import com.socp.detect.web.store.DetectionStateStore;
 import com.socp.detect.web.store.DetectionEventClaim;
 import com.socp.detect.web.store.InMemoryDetectionStateStore;
 import com.socp.detect.web.store.RuleSpecStore;
 import com.socp.rule.config.RuleSpec;
 import com.socp.rule.engine.RuleEngine;
+import com.socp.rule.engine.RuleProcessingObserver;
 import com.socp.rule.engine.Suppressor;
 import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
@@ -41,9 +43,23 @@ public class DetectEngineService {
     private final AtomicReference<RuleEngine> engineRef;
     private final RuleChangePublisher rulePublisher;
     private final DetectionStateStore stateStore;
+    private final RuleProcessingObserver processingObserver;
     private final AtomicReference<Set<Integer>> assignedPartitions = new AtomicReference<>(Set.of());
 
     @org.springframework.beans.factory.annotation.Autowired
+    public DetectEngineService(RuleSpecStore store, RecentAlertSink sink, AlertForwarder forwarder,
+                               RuleChangePublisher rulePublisher, DetectionStateStore stateStore,
+                               DetectionPerformanceMetrics performanceMetrics) {
+        this.store = store;
+        this.sink = sink;
+        this.forwarder = forwarder;
+        this.rulePublisher = rulePublisher;
+        this.stateStore = stateStore;
+        this.processingObserver = performanceMetrics;
+        this.engineRef = new AtomicReference<>(buildEngine(List.of()));
+    }
+
+    /** Unit-test/source compatibility constructor with a caller-provided state store. */
     public DetectEngineService(RuleSpecStore store, RecentAlertSink sink, AlertForwarder forwarder,
                                RuleChangePublisher rulePublisher, DetectionStateStore stateStore) {
         this.store = store;
@@ -51,6 +67,7 @@ public class DetectEngineService {
         this.forwarder = forwarder;
         this.rulePublisher = rulePublisher;
         this.stateStore = stateStore;
+        this.processingObserver = RuleProcessingObserver.NOOP;
         this.engineRef = new AtomicReference<>(buildEngine(List.of()));
     }
 
@@ -77,7 +94,7 @@ public class DetectEngineService {
                 .filter(spec -> spec.enabled)
                 .map(RuleSpec::toRule)
                 .toList();
-        RuleEngine engine = new RuleEngine(rules, List.of(sink), suppressor);
+        RuleEngine engine = new RuleEngine(rules, List.of(sink), suppressor, processingObserver);
         try {
             // The journal itself clamps this to its configured retention. 24h
             // covers the bundled UEBA baselines while keeping restart bounded.

@@ -17,6 +17,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * Single-worker stateful rule engine.
@@ -36,7 +37,9 @@ public final class RuleEngine implements AutoCloseable {
     private final AtomicReference<List<Rule>> rulesRef;
     private final List<AlertSink> sinks;
     private final Suppressor suppressor;
+    private final RuleProcessingObserver observer;
     private final BlockingQueue<WorkItem> queue = new ArrayBlockingQueue<>(100_000);
+    private final ReentrantReadWriteLock lifecycle = new ReentrantReadWriteLock();
     private volatile boolean running = true;
     private Thread worker;
 
@@ -53,13 +56,19 @@ public final class RuleEngine implements AutoCloseable {
     }
 
     public RuleEngine(List<Rule> rules, List<AlertSink> sinks) {
-        this(rules, sinks, null);
+        this(rules, sinks, null, RuleProcessingObserver.NOOP);
     }
 
     public RuleEngine(List<Rule> rules, List<AlertSink> sinks, Suppressor suppressor) {
+        this(rules, sinks, suppressor, RuleProcessingObserver.NOOP);
+    }
+
+    public RuleEngine(List<Rule> rules, List<AlertSink> sinks, Suppressor suppressor,
+                      RuleProcessingObserver observer) {
         this.rulesRef = new AtomicReference<>(List.copyOf(rules));
         this.sinks = List.copyOf(sinks);
         this.suppressor = suppressor;
+        this.observer = observer == null ? RuleProcessingObserver.NOOP : observer;
     }
 
     public void start() {
@@ -80,7 +89,7 @@ public final class RuleEngine implements AutoCloseable {
     }
 
     private void loop() {
-        while (running) {
+        while (true) {
             try {
                 WorkItem item = queue.take();
                 if (item.event() == POISON_EVENT) break;
@@ -88,6 +97,7 @@ public final class RuleEngine implements AutoCloseable {
                     process(item);
                     if (item.completion() != null) item.completion().complete(null);
                 } catch (Throwable ex) {
+                    notifyFailure(item.event(), ex);
                     if (item.completion() != null) {
                         item.completion().completeExceptionally(ex);
                     } else {
@@ -116,6 +126,7 @@ public final class RuleEngine implements AutoCloseable {
                 emitted.add(alert);
             }
         }
+        notifyEvaluationCompleted(event, emitted.size());
 
         for (AlertSink sink : sinks) {
             try {
@@ -135,6 +146,31 @@ public final class RuleEngine implements AutoCloseable {
                         event.id(), emitted.size(), ex.getMessage(), ex);
             }
         }
+        notifyDurableSinksCompleted(event, emitted.size());
+    }
+
+    private void notifyEvaluationCompleted(SecurityEvent event, int emittedAlerts) {
+        try {
+            observer.evaluationCompleted(event, emittedAlerts);
+        } catch (RuntimeException metricsFailure) {
+            log.debug("Rule processing observer failed at evaluation boundary: {}", metricsFailure.getMessage());
+        }
+    }
+
+    private void notifyDurableSinksCompleted(SecurityEvent event, int emittedAlerts) {
+        try {
+            observer.durableSinksCompleted(event, emittedAlerts);
+        } catch (RuntimeException metricsFailure) {
+            log.debug("Rule processing observer failed at durable boundary: {}", metricsFailure.getMessage());
+        }
+    }
+
+    private void notifyFailure(SecurityEvent event, Throwable failure) {
+        try {
+            observer.processingFailed(event, failure);
+        } catch (RuntimeException metricsFailure) {
+            log.debug("Rule processing observer failed at failure boundary: {}", metricsFailure.getMessage());
+        }
     }
 
     /** Legacy non-blocking ingestion API. */
@@ -150,13 +186,22 @@ public final class RuleEngine implements AutoCloseable {
     public Submission submit(SecurityEvent event, boolean durable) {
         CompletableFuture<Void> completion = new CompletableFuture<>();
         WorkItem item = new WorkItem(event, completion, durable);
-        if (queue.offer(item)) return new Submission(true, completion);
+        lifecycle.readLock().lock();
         try {
-            if (queue.offer(item, 50, TimeUnit.MILLISECONDS)) {
-                return new Submission(true, completion);
+            if (!running) {
+                completion.completeExceptionally(new IllegalStateException("detection engine is closed"));
+                return new Submission(false, completion);
             }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+            if (queue.offer(item)) return new Submission(true, completion);
+            try {
+                if (queue.offer(item, 50, TimeUnit.MILLISECONDS)) {
+                    return new Submission(true, completion);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        } finally {
+            lifecycle.readLock().unlock();
         }
         dropCount.incrementAndGet();
         completion.completeExceptionally(new IllegalStateException("detection queue full"));
@@ -169,17 +214,40 @@ public final class RuleEngine implements AutoCloseable {
     }
 
     public void close() {
-        running = false;
-        queue.offer(new WorkItem(POISON_EVENT, null, false));
+        boolean interrupted = false;
+        lifecycle.writeLock().lock();
+        try {
+            if (!running) return;
+            // Admission is now closed. Every item already in the queue is
+            // before the poison marker and therefore receives its completion
+            // signal before the worker exits.
+            running = false;
+            for (;;) {
+                try {
+                    queue.put(new WorkItem(POISON_EVENT, null, false));
+                    break;
+                } catch (InterruptedException interruption) {
+                    // Closing without the marker can strand every accepted
+                    // completion forever. Preserve the signal only after the
+                    // marker is durably ordered behind accepted work.
+                    interrupted = true;
+                }
+            }
+        } finally {
+            lifecycle.writeLock().unlock();
+        }
         if (worker != null) {
-            try {
-                worker.join();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+            while (worker.isAlive()) {
+                try {
+                    worker.join();
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                }
             }
         }
         rulesRef.get().forEach(Rule::close);
         sinks.forEach(AlertSink::close);
+        if (interrupted) Thread.currentThread().interrupt();
     }
 
     public void reload(List<Rule> newRules) {

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.socp.detect.web.service.DetectEngineService;
+import com.socp.detect.web.metrics.DetectionPerformanceMetrics;
 import com.socp.detect.web.store.DetectionEventClaim;
 import com.socp.detect.web.store.DetectionStateStore;
 import com.socp.detect.web.store.InMemoryDetectionStateStore;
@@ -71,6 +72,7 @@ public class KafkaEventConsumer {
 
     private final DetectEngineService engine;
     private final DetectionStateStore stateStore;
+    private final DetectionPerformanceMetrics performanceMetrics;
     private final PartitionCompletionTracker completionTracker = new PartitionCompletionTracker();
     private final Map<Integer, ExecutorService> partitionLanes = new ConcurrentHashMap<>();
     private final BlockingQueue<RecordCompletion> completions = new LinkedBlockingQueue<>();
@@ -81,9 +83,18 @@ public class KafkaEventConsumer {
     private Thread consumerThread;
 
     @org.springframework.beans.factory.annotation.Autowired
+    public KafkaEventConsumer(DetectEngineService engine, DetectionStateStore stateStore,
+                              DetectionPerformanceMetrics performanceMetrics) {
+        this.engine = engine;
+        this.stateStore = stateStore;
+        this.performanceMetrics = performanceMetrics;
+    }
+
+    /** Unit-test/source compatibility constructor. */
     public KafkaEventConsumer(DetectEngineService engine, DetectionStateStore stateStore) {
         this.engine = engine;
         this.stateStore = stateStore;
+        this.performanceMetrics = null;
     }
 
     /** Unit-test/source compatibility constructor. */
@@ -259,7 +270,7 @@ public class KafkaEventConsumer {
                 log.warn("Detection processing pending partition={} offset={} retry={} reason={}",
                         record.partition(), record.offset(), delay, transientFailure.getMessage());
                 try {
-                    engine.rebuildForPartitions(Set.of(record.partition()));
+                    rebuildOwnedState(record.partition());
                 } catch (Exception rebuildFailure) {
                     log.warn("Detection state rebuild deferred partition={}: {}",
                             record.partition(), rebuildFailure.getMessage());
@@ -286,7 +297,7 @@ public class KafkaEventConsumer {
                 log.warn("Pending Detection replay deferred partition={} offset={} retry={} reason={}",
                         row.partition(), row.offset(), delay, failure.getMessage());
                 try {
-                    engine.rebuildForPartitions(Set.of(row.partition()));
+                    rebuildOwnedState(row.partition());
                 } catch (Exception rebuildFailure) {
                     log.warn("Pending Detection state rebuild deferred partition={}: {}",
                             row.partition(), rebuildFailure.getMessage());
@@ -335,10 +346,27 @@ public class KafkaEventConsumer {
         }
     }
 
+    private void rebuildOwnedState(int failedPartition) {
+        Set<Integer> owned = engine.assignedPartitions();
+        // RuleEngine is instance-wide, not partition-local. Replacing it from
+        // only the failed partition would silently discard hot windows for the
+        // other partitions still owned by this consumer.
+        engine.rebuildForPartitions(owned == null || owned.isEmpty()
+                ? Set.of(failedPartition) : owned);
+    }
+
     private void processNormalized(Integer partition, Long offset, String routingKey,
                                    SecurityEvent normalized) {
+        if (performanceMetrics != null) performanceMetrics.kafkaReceived(normalized);
         DetectionEventClaim claim = stateStore.claim(normalized, partition, offset, routingKey);
-        if (claim == DetectionEventClaim.COMPLETED || claim == DetectionEventClaim.DEAD_LETTERED) return;
+        if (performanceMetrics != null) performanceMetrics.journalCommitted(normalized.id());
+        if (claim == DetectionEventClaim.COMPLETED || claim == DetectionEventClaim.DEAD_LETTERED) {
+            if (performanceMetrics != null) {
+                performanceMetrics.terminalWithoutEvaluation(
+                        normalized.id(), claim.name().toLowerCase(java.util.Locale.ROOT));
+            }
+            return;
+        }
 
         CompletableFuture<Void> completion = engine.ingestFromKafkaAndAwait(normalized);
         if (completion == null) throw new IllegalStateException("detection completion signal is null");
@@ -353,10 +381,10 @@ public class KafkaEventConsumer {
             Throwable cause = failed.getCause() == null ? failed : failed.getCause();
             throw new IllegalStateException("durable detection result failed: " + cause.getMessage(), cause);
         }
-        // EventAlertSink normally commits this in the same transaction as its
-        // outbox rows. The idempotent call covers zero-alert/source-compatible
-        // sinks and gives the consumer a clear terminal boundary.
-        stateStore.markCompleted(normalized.id());
+        // A successful completion means EventAlertSink has atomically committed
+        // every outbox row and Journal COMPLETED, including the zero-alert case.
+        // Repeating markCompleted here used to add one full DB transaction per
+        // event without strengthening the durable boundary.
     }
 
     private void publishDlqAndAwait(String eventId, String raw) throws Exception {

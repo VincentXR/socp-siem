@@ -19,6 +19,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -186,5 +187,39 @@ class RuleEngineTest {
             assertEquals(1, results.size());
             assertTrue(results.get(0).isEmpty());
         }
+    }
+
+    @Test
+    void closeDrainsAcceptedDurableWorkAndRejectsNewSubmissions() throws Exception {
+        EventAlertSink slowSink = new EventAlertSink() {
+            @Override
+            public void publish(SecurityEvent event, List<Alert> alerts) {
+                try {
+                    Thread.sleep(5);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        RuleEngine engine = new RuleEngine(Rules.defaultRules(), List.of(slowSink));
+        engine.start();
+        List<java.util.concurrent.CompletableFuture<Void>> accepted = new java.util.ArrayList<>();
+        for (int i = 0; i < 50; i++) {
+            accepted.add(engine.ingestAndAwait(
+                    ev("system", "close-drain-" + i, "host-" + i, null)));
+        }
+
+        engine.close();
+
+        for (var completion : accepted) completion.get(1, TimeUnit.SECONDS);
+        RuleEngine.Submission rejected = engine.submit(
+                ev("system", "after-close", "host-x", null), true);
+        assertFalse(rejected.accepted());
+        assertTrue(rejected.completion().isCompletedExceptionally());
     }
 }

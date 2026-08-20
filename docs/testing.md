@@ -67,14 +67,20 @@ Alert Outbox row survives a downstream outage.
 
 The benchmark has two scopes. `bulk` measures the Detection HTTP boundary;
 `--mode e2e` sends events through `search-config -> Kafka -> detect-web ->
-alert-web` and waits for the expected alerts. Use `--profile realistic` for a
+alert-web` and waits for the expected run-scoped alerts. Use
+`--profile realistic` for a
 low hit-rate mixed workload or `--profile alert-heavy` to stress the durable
 alert path. It records batch request P50/P95/P99, ingress throughput,
-Detection processing latency carried in `processingLatencyMs`, plus the
-separate durable `Alert Web createdAt - triggerIngestedAt` latency, Kafka
-offsets when `kafka-python` is installed, and optional
-OpenSearch/ClickHouse counters. It is a repeatable single-node baseline, not a
-production capacity claim.
+T0-T8 event/alert stage histograms, explicitly scoped transaction ratios, the
+durable `Alert Web createdAt - triggerIngestedAt` latency, and Kafka offsets
+when `kafka-python` is installed. `BENCH_DETECTION_URLS` enables aggregation
+across all Detection instances. `--offered-eps` plus `--duration` runs the
+steady-state lag check. See the [benchmark contract](benchmark/README.md).
+
+When local Compose ports differ from defaults, set `PIPELINE_OS` for
+`verify-pipeline.py` and `FAILURE_OS_URL` for `failure-tests.py`. Both accept
+the corresponding `*_OS_AUTH` variable. This keeps failure checks aligned
+with the active Compose port mapping rather than a hard-coded host port.
 
 Detection content is versioned in
 `services/detect-web/src/main/resources/detection-content/manifest.json`.

@@ -21,6 +21,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
@@ -34,9 +35,11 @@ class KafkaEventConsumerTest {
 
     @Test
     void duplicateCompletedEventIdIsSubmittedOnlyOnce() {
+        given(stateStore.claim(any(SecurityEvent.class), eq(null), eq(null), anyString()))
+                .willReturn(DetectionEventClaim.NEW, DetectionEventClaim.COMPLETED);
         given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class)))
                 .willReturn(CompletableFuture.completedFuture(null));
-        KafkaEventConsumer consumer = new KafkaEventConsumer(engine);
+        KafkaEventConsumer consumer = new KafkaEventConsumer(engine, stateStore);
         String event = "{\"eventId\":\"consumer-test-100\",\"source\":\"auth\",\"host\":\"web-1\",\"msg\":\"login failed\"}";
 
         consumer.processRecord("key-1", event);
@@ -93,7 +96,7 @@ class KafkaEventConsumerTest {
 
         verify(stateStore).claim(any(SecurityEvent.class), eq(2), eq(42L),
                 eq("default|src_ip|198.51.100.9"));
-        verify(stateStore).markCompleted("partition-test-1");
+        verify(stateStore, never()).markCompleted("partition-test-1");
         verify(engine).ingestFromKafkaAndAwait(any(SecurityEvent.class));
     }
 }
