@@ -16,6 +16,8 @@ jobs:
     env:
       SOCP_JWT_SECRET: ci-full-stack-jwt-secret-0123456789abcdef0123456789abcdef
       SOCP_LOGIN_SECRET: ci-full-stack-jwt-secret-0123456789abcdef0123456789abcdef
+      SOCP_RUNTIME_PROFILES: dev,pg
+      SOCP_RATELIMIT_BACKEND: redis
       PIPELINE_OS: https://localhost:9200
       PIPELINE_OS_AUTH: "admin:Socp!Sec2026xK"
       PIPELINE_CK: http://localhost:8123
@@ -92,6 +94,7 @@ jobs:
         with:
           name: full-stack-e2e-logs
           path: .cache/
+          include-hidden-files: true
           if-no-files-found: ignore
 
       - name: Stop services

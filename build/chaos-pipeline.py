@@ -35,6 +35,7 @@ REPO = BUILD.parent
 sys.path.insert(0, str(BUILD))
 
 from ports import GATEWAY_URL, health_url, port_of  # noqa: E402
+from auth_client import login_token  # noqa: E402
 
 
 BOOTSTRAP = os.environ.get("PIPELINE_KAFKA", "127.0.0.1:9092")
@@ -72,14 +73,7 @@ def unwrap(body):
 
 
 def login():
-    status, body = request(
-        GATEWAY_URL + "/auth/login", "POST",
-        json.dumps({"username": USER, "password": PASSWORD}),
-        {"Content-Type": "application/json"})
-    token = body.get("token") if isinstance(body, dict) else None
-    if status != 200 or not token:
-        raise RuntimeError(f"gateway login failed HTTP {status}: {body}")
-    return token
+    return login_token(GATEWAY_URL, USER, PASSWORD)
 
 
 def auth_headers(token):

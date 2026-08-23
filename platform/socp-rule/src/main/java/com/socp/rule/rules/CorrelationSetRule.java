@@ -3,6 +3,7 @@ package com.socp.rule.rules;
 import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
+import com.socp.rule.state.RuleStateMap;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -11,7 +12,6 @@ import java.util.BitSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.function.Predicate;
 
@@ -30,7 +30,7 @@ public final class CorrelationSetRule extends AbstractRule {
         final Map<Integer, SecurityEvent> evidence = new LinkedHashMap<>();
     }
 
-    private final Map<String, State> states = new ConcurrentHashMap<>();
+    private final RuleStateMap<State> states = new RuleStateMap<>();
 
     public CorrelationSetRule(String id, String name,
                               Function<SecurityEvent, String> keyOf,
@@ -50,7 +50,7 @@ public final class CorrelationSetRule extends AbstractRule {
         String key = keyOf.apply(event);
         if (key == null) return;
 
-        State st = states.computeIfAbsent(key, k -> new State());
+        State st = states.get(key, State::new);
         synchronized (st) {
             if (st.firstTs != null && event.timestamp().minus(window).isAfter(st.firstTs)) {
                 st.bits.clear();
@@ -76,5 +76,12 @@ public final class CorrelationSetRule extends AbstractRule {
                 st.firstTs = null;
             }
         }
+    }
+
+    @Override
+    public Map<String, Object> stats() {
+        Map<String, Object> out = super.stats();
+        out.putAll(states.stats());
+        return out;
     }
 }

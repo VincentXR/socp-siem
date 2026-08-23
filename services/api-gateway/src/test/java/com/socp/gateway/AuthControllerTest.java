@@ -8,6 +8,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class AuthControllerTest {
 
@@ -32,6 +33,21 @@ class AuthControllerTest {
 
         assertNotNull(response);
         assertEquals(HttpStatus.UNAUTHORIZED, response.getStatusCode());
+    }
+
+    @Test
+    void browserLoginReturnsHttpOnlySessionCookieInsteadOfBearerJson() {
+        AuthController controller = controller();
+        ReflectionTestUtils.setField(controller, "usersJson", "{\"demo\":\"demo123\"}");
+        ReflectionTestUtils.setField(controller, "rolesJson", "{\"demo\":\"analyst\"}");
+        controller.init();
+
+        var response = controller.login(Map.of("username", "demo", "password", "demo123")).block();
+
+        assertNotNull(response);
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertNotNull(response.getHeaders().getFirst("Set-Cookie"));
+        assertFalse(((Map<?, ?>) response.getBody()).containsKey("token"));
     }
 
     private static AuthController controller() {

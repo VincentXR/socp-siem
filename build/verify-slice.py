@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ports import GATEWAY_URL  # noqa: E402
+from auth_client import login_token  # noqa: E402
 
 GW = sys.argv[1] if len(sys.argv) > 1 else GATEWAY_URL
 BASE = GW + "/alert-web/api/alarms"
@@ -21,33 +22,24 @@ PASS, FAIL = [], []
 
 
 _TOKEN = {"t": None}
+_AUTO_TOKEN = object()
 
 
 def real_token():
-    """登录网关拿真 JWT（dev-bypass 关闭后 demo-token 不再可用）。"""
+    """登录网关，从 HttpOnly session cookie 提取真 JWT。"""
     if _TOKEN["t"]:
         return _TOKEN["t"]
-    try:
-        req = urllib.request.Request(
-            GW + "/auth/login",
-            data=json.dumps({"username": "demo", "password": "demo123"}).encode(),
-            method="POST",
-        )
-        req.add_header("Content-Type", "application/json")
-        with urllib.request.urlopen(req, timeout=10) as r:
-            _TOKEN["t"] = json.loads(r.read().decode())["token"]
-    except Exception:
-        _TOKEN["t"] = "demo-token"
+    _TOKEN["t"] = login_token(GW, timeout=10)
     return _TOKEN["t"]
 
 
-def call(method="GET", path="", token="demo-token", tenant="t1", body=None):
+def call(method="GET", path="", token=_AUTO_TOKEN, tenant="t1", body=None):
     """返回 (http_status, headers, body_dict)。异常状态码不抛出，统一返回。
     未显式传 token 时自动用真实登录 token。"""
     url = BASE + path
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
-    if token == "demo-token":
+    if token is _AUTO_TOKEN:
         token = real_token()
     if token:
         req.add_header("Authorization", "Bearer " + token)
@@ -91,7 +83,7 @@ check("带 Bearer 令牌放行", st == 200 and bd.get("code") == 0, "HTTP=%s cod
 # ---------- 2. 写入 + occurredAt ----------
 print("\n[2] 告警写入（存储 + 审计 + occurredAt 尊重入参）")
 OCCURRED = "2026-01-15T08:30:00Z"
-st, hd, bd = call("POST", token="demo-token", tenant="t1", body={
+st, hd, bd = call("POST", tenant="t1", body={
     "ruleId": "R-SSH-BRUTE", "ruleName": "SSH 暴力破解", "severity": "HIGH",
     "message": "10 分钟内 50 次失败登录", "entity": "10.0.0.7", "occurredAt": OCCURRED})
 alarm = bd.get("data") or {}

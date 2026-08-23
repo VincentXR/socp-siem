@@ -29,6 +29,8 @@ export SOCP_JWT_SECRET="${SOCP_JWT_SECRET:-socp-demo-jwt-secret-0123456789abcdef
 export SOCP_LOGIN_SECRET="${SOCP_LOGIN_SECRET:-$SOCP_JWT_SECRET}"
 export SOCP_SECURITY_SERVICE_SECRET="${SOCP_SECURITY_SERVICE_SECRET:-socp-demo-service-secret-change-me}"
 export SOCP_AUDIT_SINK="${SOCP_AUDIT_SINK:-memory}"
+export SOCP_RATELIMIT_BACKEND="${SOCP_RATELIMIT_BACKEND:-memory}"
+RUNTIME_PROFILES="${SOCP_RUNTIME_PROFILES:-dev,pg}"
 
 mkdir -p "$LOGDIR"
 
@@ -64,11 +66,8 @@ case "${1:-start}" in
       # 网关的下游地址走 SOCP_*_URI 环境变量（ports.env 已 export），不要用命令行覆盖 routes[0].uri：
       # Spring Boot 绑定 List 时只取优先级最高的那个属性源，命令行里只写 uri 会导致
       # predicates 整个丢失，启动直接报 "Property: routes[0].predicates Value: []"。
-      if [ "$name" = "api-gateway" ]; then
-        "$JAVA" -jar "$jar" --server.port="$port" --spring.profiles.active=dev > "$LOGDIR/$name.log" 2>&1 &
-      else
-        "$JAVA" -jar "$jar" --server.port="$port" > "$LOGDIR/$name.log" 2>&1 &
-      fi
+      "$JAVA" -jar "$jar" --server.port="$port" \
+        --spring.profiles.active="$RUNTIME_PROFILES" > "$LOGDIR/$name.log" 2>&1 &
     done
     echo "日志目录：$LOGDIR"
     ;;

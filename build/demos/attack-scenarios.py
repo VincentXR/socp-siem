@@ -21,6 +21,9 @@ import time
 import urllib.request
 import urllib.error
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from auth_client import login_token  # noqa: E402
+
 GW = os.environ.get("DEMO_GATEWAY", "http://127.0.0.1:18092")
 USER = os.environ.get("DEMO_USER", "demo")
 PASSWD = os.environ.get("DEMO_PASS", "demo123")
@@ -99,10 +102,7 @@ def wait_for(fn, timeout=30.0, interval=1.0):
 
 
 def login():
-    req = urllib.request.Request(GW + "/auth/login",
-                                 data=json.dumps({"username": USER, "password": PASSWD}).encode(),
-                                 headers={"Content-Type": "application/json"})
-    return json.loads(urllib.request.urlopen(req, timeout=15).read())["token"]
+    return login_token(GW, USER, PASSWD)
 
 
 def api(tok, path, body=None, method=None):

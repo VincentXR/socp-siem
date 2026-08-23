@@ -35,6 +35,9 @@ import math
 import re
 from datetime import datetime, timezone
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from auth_client import login_token  # noqa: E402
+
 
 def request(url, method="GET", body=None, headers=None, timeout=30):
     data = None if body is None else body.encode()
@@ -61,13 +64,7 @@ def request(url, method="GET", body=None, headers=None, timeout=30):
 def login(gateway):
     user = os.environ.get("BENCH_USER", "demo")
     password = os.environ.get("BENCH_PASS", "demo123")
-    payload = json.dumps({"username": user, "password": password})
-    status, body, _ = request(
-        gateway + "/auth/login", "POST", payload,
-        {"Content-Type": "application/json"}, timeout=15)
-    if status != 200 or not body.get("token"):
-        raise RuntimeError("login failed; check the local gateway and test credentials")
-    return body["token"]
+    return login_token(gateway, user, password)
 
 
 def unwrap(body):

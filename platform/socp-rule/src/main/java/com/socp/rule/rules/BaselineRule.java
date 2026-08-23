@@ -3,13 +3,13 @@ package com.socp.rule.rules;
 import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
+import com.socp.rule.state.RuleStateMap;
 
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.function.Predicate;
 
@@ -44,7 +44,7 @@ public final class BaselineRule extends AbstractRule {
     private final Severity severity;
     private final String messageTemplate;
 
-    private final Map<String, State> states = new ConcurrentHashMap<>();
+    private final RuleStateMap<State> states = new RuleStateMap<>();
 
     private static final class State {
         long bucketIdx = Long.MIN_VALUE;
@@ -78,7 +78,7 @@ public final class BaselineRule extends AbstractRule {
         String key = keyOf.apply(event);
         if (key == null || key.isBlank()) return;
 
-        State st = states.computeIfAbsent(key, k -> new State());
+        State st = states.get(key, State::new);
         synchronized (st) {
             long idx = event.timestamp().getEpochSecond() / bucketSeconds;
             if (idx != st.bucketIdx) {
@@ -145,6 +145,13 @@ public final class BaselineRule extends AbstractRule {
                 out.add(m);
             }
         });
+        return out;
+    }
+
+    @Override
+    public Map<String, Object> stats() {
+        Map<String, Object> out = super.stats();
+        out.putAll(states.stats());
         return out;
     }
 }

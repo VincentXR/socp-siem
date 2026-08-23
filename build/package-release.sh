@@ -51,7 +51,7 @@ else
 fi
 
 # 3) 脚本
-for f in run-all.sh wait_health.py verify-full.py verify-slice.py mvnw.sh; do
+for f in auth_client.py run-all.sh wait_health.py verify-full.py verify-slice.py verify-pipeline.py mvnw.sh; do
   [ -f "$ROOT/socp/build/$f" ] && { mkdir -p "$PKG/socp/build"; cp "$ROOT/socp/build/$f" "$PKG/socp/build/"; }
 done
 # 4) 文档与声明

@@ -3,6 +3,7 @@ package com.socp.rule.rules;
 import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
+import com.socp.rule.state.RuleStateMap;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -10,7 +11,6 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.function.Predicate;
 
@@ -29,7 +29,7 @@ public final class ThresholdRule extends AbstractRule {
     private final String messageTemplate;
 
     // 每个实体维护一个时间戳窗口的事件队列
-    private final Map<String, ArrayDeque<SecurityEvent>> buckets = new ConcurrentHashMap<>();
+    private final RuleStateMap<ArrayDeque<SecurityEvent>> buckets = new RuleStateMap<>();
 
     public ThresholdRule(String id, String name,
                          Predicate<SecurityEvent> matcher,
@@ -51,7 +51,7 @@ public final class ThresholdRule extends AbstractRule {
         String key = keyOf.apply(event);
         if (key == null) return;
 
-        ArrayDeque<SecurityEvent> q = buckets.computeIfAbsent(key, k -> new ArrayDeque<>());
+        ArrayDeque<SecurityEvent> q = buckets.get(key, ArrayDeque::new);
         synchronized (q) {
             q.add(event);
             // 清理窗口外的旧事件
@@ -69,5 +69,12 @@ public final class ThresholdRule extends AbstractRule {
                 q.clear(); // 清空，避免短时间内重复刷屏告警
             }
         }
+    }
+
+    @Override
+    public Map<String, Object> stats() {
+        Map<String, Object> out = super.stats();
+        out.putAll(buckets.stats());
+        return out;
     }
 }

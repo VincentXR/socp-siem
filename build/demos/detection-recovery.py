@@ -27,6 +27,7 @@ REPO = BUILD.parent
 sys.path.insert(0, str(BUILD))
 
 from ports import GATEWAY_URL, health_url  # noqa: E402
+from auth_client import login_token  # noqa: E402
 
 
 SERVICE = "detect-web"
@@ -60,16 +61,7 @@ def request(url, method="GET", body=None, headers=None, timeout=15):
 
 
 def login():
-    status, body = request(
-        GATEWAY_URL + "/auth/login",
-        "POST",
-        json.dumps({"username": USER, "password": PASSWORD}).encode(),
-        {"Content-Type": "application/json"},
-    )
-    token = body.get("token") if isinstance(body, dict) else None
-    if status != 200 or not token:
-        raise RuntimeError(f"gateway login failed with HTTP {status}")
-    return token
+    return login_token(GATEWAY_URL, USER, PASSWORD)
 
 
 def check(name, condition, detail=""):

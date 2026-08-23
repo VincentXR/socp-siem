@@ -11,8 +11,8 @@
 #     - ClickHouse：alert-web CkReporter（alert_agg.alarm_detail，report-web 报表聚合优先查 CK）。
 #   **可选组件**：Redis（当前限流默认进程内）/ MinIO（对象存储扩展点）/
 #     Temporal（SOAR 可用时走 Workflow）/ Keycloak（可选 OIDC 登录与 JWKS）。
-#   **模式**：Local Dev 默认即「混合」——4 个 PostgreSQL + 9 个 H2 + 4 个无状态服务；
-#   起本 compose 后中间件就绪，核心链路（Kafka/OS/CK）立即生效。
+#   **模式**：run-all.sh 默认使用 dev,pg，业务服务与本 compose 的 PostgreSQL
+#   对齐；无 Docker 时可用 SOCP_RUNTIME_PROFILES=dev 显式回退 H2。
 #  2) 本文件需要本机具备 **Docker 运行时**，并非所有开发环境都具备。
 #     无 Docker 时仍可运行 H2/无状态服务；Kafka/OpenSearch/ClickHouse 等真实链路需要 Docker。
 #  3) 生产/集成模式：把 9 个 H2 服务切 PostgreSQL（SOCP_PG_* 环境变量 + 建库），
@@ -38,10 +38,15 @@ volumes:
   minio-data:
   temporal-data:
   kafka-data:
+  prometheus-data:
+  grafana-data:
+  loki-data:
+  jaeger-data:
 
 # Compose's deploy limits are not enforced consistently by every local Docker
 # runtime, so keep explicit per-service caps below as the local-dev guardrail.
 x-socp-runtime: &socp-runtime
+  restart: unless-stopped
   logging:
     driver: json-file
     options:
@@ -229,7 +234,7 @@ services:
   # 当前用于本地基础设施预留；业务对象存储接入不是核心事件链路的一部分。
   minio:
     <<: *socp-runtime
-    image: minio/minio:latest
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     container_name: socp-minio
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
@@ -312,21 +317,18 @@ services:
     mem_limit: 768m
 
   # ── 可观测栈（Prometheus + Grafana + Loki + Jaeger，P18） ─
-  # 🟡 部分就绪：micrometer-registry-prometheus 已是 17 个服务的依赖，但
-  #    /actuator/prometheus **目前只有 api-gateway 暴露**；其余 16 个服务的
-  #    management.endpoints.web.exposure.include 仅含 health,info
-  #    （detect-web / search-config / alert-web 另含 metrics），抓取会 404 —— 属预期。
-  #    开启方式：把 prometheus 加进各服务的 include 列表即可，无需改 prometheus.yml。
-  #    代码中无 OpenTelemetry（根 pom 仅声明 micrometer-tracing-bridge-otel，各服务未引入）；
-  #    架构图中提到的 OTel Collector 亦未纳入本编排，属规划项。
+  # 17 个服务均编译并暴露 Micrometer Prometheus 指标；Prometheus 配置按
+  # gateway/context-path 分开抓取。OTel trace 上报通过 SOCP_TRACING_ENABLED
+  # 开关控制，开启时由 extra profile 提供 Jaeger OTLP 接收端。
   prometheus:
     <<: *socp-runtime
-    image: prom/prometheus:latest
+    image: prom/prometheus@sha256:508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69
     container_name: socp-prometheus
     ports:
       - "9090:9090"
     volumes:
       - ./init-sql/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
     networks: [socp]
     deploy:
       resources:
@@ -336,13 +338,15 @@ services:
 
   grafana:
     <<: *socp-runtime
-    image: grafana/grafana:latest
+    image: grafana/grafana@sha256:ab5cb380e3ff3172d6c8bd2e7cfd31cce977d2881b260e1f5bc089bf0b759b43
     container_name: socp-grafana
     ports:
       - "3000:3000"
     environment:
       GF_SECURITY_ADMIN_PASSWORD: Socp@2026
     depends_on: [prometheus]
+    volumes:
+      - grafana-data:/var/lib/grafana
     networks: [socp]
     deploy:
       resources:
@@ -353,21 +357,25 @@ services:
   # ── 可选服务（默认不启动）：docker compose --profile extra up -d ──
   loki:
     <<: *socp-runtime
-    image: grafana/loki:latest
+    image: grafana/loki:3.5.0
     container_name: socp-loki
     ports:
       - "3100:3100"
     networks: [socp]
     profiles: ["extra"]
+    volumes:
+      - loki-data:/loki
     mem_limit: 512m
 
   jaeger:
     <<: *socp-runtime
-    image: jaegertracing/all-in-one:latest
+    image: jaegertracing/all-in-one@sha256:ab6f1a1f0fb49ea08bcd19f6b84f6081d0d44b364b6de148e1798eb5816bacac
     container_name: socp-jaeger
     ports:
       - "16686:16686"
       - "4317:4317"
     networks: [socp]
     profiles: ["extra"]
+    volumes:
+      - jaeger-data:/badger
     mem_limit: 512m

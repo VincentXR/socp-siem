@@ -22,6 +22,9 @@ import sys
 import time
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from auth_client import login_token  # noqa: E402
+
 GATEWAY = os.environ.get("FAILURE_GATEWAY", "http://localhost:18092")
 OS_URL = os.environ.get("FAILURE_OS_URL", "https://localhost:9200").rstrip("/")
 OS_AUTH = os.environ.get("FAILURE_OS_AUTH", "admin:Socp!Sec2026xK")
@@ -159,9 +162,12 @@ def os_count():
 def main():
     global TOKEN
     print("== 0. 前置 ==")
-    st, d = api("/auth/login", "POST", {"username": "demo", "password": "demo123"}, token=False)
-    TOKEN = d.get("token", "") if st == 200 else ""
-    check("登录拿 token", bool(TOKEN), f"st={st}")
+    try:
+        TOKEN = login_token(GATEWAY, timeout=10)
+    except RuntimeError as error:
+        TOKEN = ""
+        print(f"  [WARN] {error}")
+    check("登录拿 session token", bool(TOKEN))
     if not TOKEN:
         sys.exit(1)
 

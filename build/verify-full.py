@@ -22,6 +22,7 @@ PASS, FAIL = [], []
 # 想换端口跑： SOCP_PORT_ALERT_WEB=28080 python build/verify-full.py
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ports import SERVICES as SVC, base_url, health_url, GATEWAY_URL  # noqa: E402
+from auth_client import login_token  # noqa: E402
 
 #: 服务名 -> 基地址，供下面各用例拼 URL（不再出现任何硬编码端口）
 U = {name: base_url(name) for name in SVC}
@@ -55,21 +56,10 @@ _TOKEN = {"t": None}
 
 
 def token():
-    """登录网关拿真 JWT（dev-bypass 关闭后 demo-token 不再可用）。"""
+    """登录网关，从 HttpOnly session cookie 提取真 JWT。"""
     if _TOKEN["t"]:
         return _TOKEN["t"]
-    try:
-        req = urllib.request.Request(
-            GATEWAY_URL + "/auth/login",
-            data=json.dumps({"username": "demo", "password": "demo123"}).encode(),
-            method="POST",
-        )
-        req.add_header("Content-Type", "application/json")
-        with urllib.request.urlopen(req, timeout=10) as r:
-            _TOKEN["t"] = json.loads(r.read().decode())["token"]
-    except Exception as e:
-        print("  [WARN] 登录拿 token 失败，回退 demo-token:", e)
-        _TOKEN["t"] = "demo-token"
+    _TOKEN["t"] = login_token(GATEWAY_URL, timeout=10)
     return _TOKEN["t"]
 
 

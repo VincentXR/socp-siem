@@ -69,15 +69,18 @@ docker compose -f infra/docker-compose.yml --profile extra up -d
 
 ## Runtime configuration
 
-The startup scripts use the `dev` profile for local login defaults. Services
-with `application-pg.yml` support the `pg` profile for PostgreSQL-backed local
-or integration runs. Use `prod` with explicit environment configuration to
+The startup scripts use `dev,pg` by default so the local stack uses the same
+PostgreSQL-backed storage as Docker middleware. Set
+`SOCP_RUNTIME_PROFILES=dev` when Docker/PostgreSQL is unavailable and the
+lightweight H2 fallback is intentional. Services with `application-pg.yml`
+support the `pg` profile for PostgreSQL-backed local or integration runs. Use `prod` with explicit environment configuration to
 activate `ProdGuard`; it rejects H2, demo credentials, authentication bypass,
 the default ingest token, and disabled Temporal.
 
-Important variables include `SOCP_JWT_SECRET`, PostgreSQL connection settings,
-OIDC settings, and the Vector ingest token. `build/ports.env` documents the
-service URL overrides used by scripts and gateway configuration.
+Important variables include `SOCP_JWT_SECRET`, `SOCP_RUNTIME_PROFILES`,
+`SOCP_RATELIMIT_BACKEND`, `SOCP_RULE_STATE_MAX_KEYS`, PostgreSQL connection
+settings, OIDC settings, and the Vector ingest token. `build/ports.env`
+documents the service URL overrides used by scripts and gateway configuration.
 
 ## Verification
 

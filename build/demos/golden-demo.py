@@ -25,6 +25,7 @@ REPO = BUILD.parent
 sys.path.insert(0, str(BUILD))
 
 from ports import GATEWAY_URL, base_url  # noqa: E402
+from auth_client import login_token  # noqa: E402
 
 
 USER = os.environ.get("DEMO_USER", "demo")
@@ -106,13 +107,8 @@ def wait_for(label, fn, timeout=TIMEOUT, interval=1.0):
 
 
 def login():
-    status, result, headers = request(
-        "gateway", "/auth/login", body={"username": USER, "password": PASSWORD}
-    )
-    token = result.get("token") if isinstance(result, dict) else None
-    if status != 200 or not token:
-        raise RuntimeError(f"登录失败 status={status} body={result}")
-    return token, headers.get("X-Trace-Id", "")
+    token = login_token(GATEWAY_URL, USER, PASSWORD)
+    return token, ""
 
 
 def vector_running():

@@ -65,9 +65,11 @@ analytics consumers.
 | Reporting | ClickHouse alarm consumer and `report-web` | Aggregation does not compete with alert writes |
 | Response | `incident-web`, `notify-web`, `soar-web`, optional Temporal | Workflow state and compensation |
 
-The default development setup uses PostgreSQL for alert, incident, SOC base,
-and threat-intelligence data. Nine lower-resource stateful services use
-file-backed H2 by default and provide an `application-pg.yml` profile.
+The startup scripts default to `dev,pg`, which uses PostgreSQL for alert,
+incident, SOC base, and threat-intelligence data while keeping the nine
+lower-resource stateful services on file-backed H2 unless their
+`application-pg.yml` profile is enabled. Set `SOCP_RUNTIME_PROFILES=dev` for
+the intentional all-H2 fallback.
 
 ## Reliability semantics
 
@@ -107,9 +109,13 @@ outbox retry logs provide operational evidence for the event path.
 
 ## Runtime configuration
 
-- Startup scripts use the `dev` profile for disposable local credentials.
-- Services with `application-pg.yml` can switch from file-backed H2 to
-  PostgreSQL with the `pg` profile.
+- Startup scripts use `dev,pg` by default so local verification matches the
+  Docker PostgreSQL middleware; set `SOCP_RUNTIME_PROFILES=dev` for the
+  intentional lightweight H2 fallback.
+- Services with `application-pg.yml` switch from file-backed H2 to PostgreSQL
+  when the `pg` profile is present.
+- Stateful rule windows are bounded by `SOCP_RULE_STATE_MAX_KEYS` and
+  `SOCP_RULE_STATE_IDLE_TTL_MS`; eviction counts are exposed in rule stats.
 - `prod` enables `ProdGuard`, which rejects H2, demo credentials,
   authentication bypass, the default ingest token, and disabled Temporal.
 - Docker Compose is a single-node development/verification environment and is

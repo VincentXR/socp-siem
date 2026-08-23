@@ -3,13 +3,13 @@ package com.socp.rule.rules;
 import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
+import com.socp.rule.state.RuleStateMap;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.function.Predicate;
 
@@ -34,7 +34,7 @@ public final class CorrelationRule extends AbstractRule {
         final List<SecurityEvent> evidence = new ArrayList<>();
     }
 
-    private final Map<String, State> states = new ConcurrentHashMap<>();
+    private final RuleStateMap<State> states = new RuleStateMap<>();
 
     public CorrelationRule(String id, String name,
                            Function<SecurityEvent, String> keyOf,
@@ -54,7 +54,7 @@ public final class CorrelationRule extends AbstractRule {
         String key = keyOf.apply(event);
         if (key == null) return;
 
-        State st = states.computeIfAbsent(key, k -> new State());
+        State st = states.get(key, State::new);
         synchronized (st) {
             // 窗口过期则重置
             if (st.firstTs != null && event.timestamp().minus(window).isAfter(st.firstTs)) {
@@ -100,5 +100,12 @@ public final class CorrelationRule extends AbstractRule {
         st.firstTs = null;
         st.lastTs = null;
         st.evidence.clear();
+    }
+
+    @Override
+    public Map<String, Object> stats() {
+        Map<String, Object> out = super.stats();
+        out.putAll(states.stats());
+        return out;
     }
 }

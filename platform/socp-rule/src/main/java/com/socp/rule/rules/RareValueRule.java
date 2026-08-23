@@ -3,12 +3,12 @@ package com.socp.rule.rules;
 import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
+import com.socp.rule.state.RuleStateMap;
 
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.function.Predicate;
 
@@ -39,7 +39,7 @@ public final class RareValueRule extends AbstractRule {
     private final Severity severity;
     private final String messageTemplate;
 
-    private final Map<String, State> states = new ConcurrentHashMap<>();
+    private final RuleStateMap<State> states = new RuleStateMap<>();
 
     private static final class State {
         final Set<String> seen = new LinkedHashSet<>();
@@ -70,7 +70,7 @@ public final class RareValueRule extends AbstractRule {
         String value = valueOf.apply(event);
         if (value == null || value.isBlank()) return;
 
-        State st = states.computeIfAbsent(key, k -> new State());
+        State st = states.get(key, State::new);
         synchronized (st) {
             st.observed++;
             if (st.seen.contains(value)) return;
@@ -108,6 +108,13 @@ public final class RareValueRule extends AbstractRule {
                 out.add(m);
             }
         });
+        return out;
+    }
+
+    @Override
+    public Map<String, Object> stats() {
+        Map<String, Object> out = super.stats();
+        out.putAll(states.stats());
         return out;
     }
 }

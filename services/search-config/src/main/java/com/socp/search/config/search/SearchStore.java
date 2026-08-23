@@ -6,13 +6,11 @@ import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import java.util.ArrayDeque;
-import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.Set;
+import java.util.concurrent.locks.ReentrantLock;
 import com.socp.platform.tenant.TenantContext;
 
 /**
@@ -27,8 +25,7 @@ public class SearchStore {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final int CAP = 20000;
 
-    private final Map<String, Deque<SearchEvent>> eventsByTenant = new ConcurrentHashMap<>();
-    private final Set<String> initializedTenants = ConcurrentHashMap.newKeySet();
+    private final Map<String, TenantBuffer> eventsByTenant = new ConcurrentHashMap<>();
 
     public SearchStore(SearchEventRepository repo, OsEventWriter osWriter) {
         this.repo = repo;
@@ -41,12 +38,12 @@ public class SearchStore {
         }
     }
 
-    public synchronized List<SearchEvent> all() {
-        return List.copyOf(events(currentTenant()));
+    public List<SearchEvent> all() {
+        return events(currentTenant()).snapshot();
     }
 
     /** 采集管线写入的归一化事件（真实接入数据），同时落库。超出容量时丢弃最旧。 */
-    public synchronized void ingest(SearchEvent e) {
+    public void ingest(SearchEvent e) {
         repo.save(toEntity(e));
         remember(e);
         // 生产检索库：OpenSearch 异步落索引（best-effort，失败静默；null=单测跳过）
@@ -54,7 +51,7 @@ public class SearchStore {
     }
 
     /** 批量写入（攒批场景）：一次 saveAll 落库，避免逐条 H2 insert 拖慢采集吞吐。 */
-    public synchronized void ingestBatch(List<SearchEvent> es) {
+    public void ingestBatch(List<SearchEvent> es) {
         saveBatch(es);
         // 生产检索库：OpenSearch 异步落索引（best-effort，失败静默；null=单测跳过）。
         // 2026-08-12 P2：Kafka 可用时 OS 由 OsIndexerConsumer 消费写入（可重放），此直写仅作无 Kafka 回退。
@@ -62,19 +59,19 @@ public class SearchStore {
     }
 
     /** 只落 H2（内存 List + repository），不写 OpenSearch——P2 后 OS 走 Kafka 消费侧写入。 */
-    public synchronized void saveBatch(List<SearchEvent> es) {
+    public void saveBatch(List<SearchEvent> es) {
         if (es == null || es.isEmpty()) return;
         repo.saveAll(es.stream().map(SearchStore::toEntity).toList());
         rememberBatch(es);
     }
 
     /** Updates only the bounded local search window after a durable transaction commits. */
-    public synchronized void rememberBatch(List<SearchEvent> es) {
+    public void rememberBatch(List<SearchEvent> es) {
         if (es == null || es.isEmpty()) return;
         for (SearchEvent event : es) remember(event);
     }
 
-    public synchronized int size() {
+    public int size() {
         return events(currentTenant()).size();
     }
 
@@ -127,10 +124,7 @@ public class SearchStore {
     }
 
     private void remember(SearchEvent event) {
-        Deque<SearchEvent> events = events(eventTenant(event));
-        events.removeIf(existing -> existing.eventId().equals(event.eventId()));
-        events.addLast(event);
-        while (events.size() > CAP) events.removeFirst();
+        events(eventTenant(event)).remember(event);
     }
 
     private static SearchEvent ev(Instant ts, String source, String host, String severity, String msg, Map<String, String> fields) {
@@ -181,16 +175,69 @@ public class SearchStore {
         }
     }
 
-    private synchronized Deque<SearchEvent> events(String tenant) {
-        Deque<SearchEvent> events = eventsByTenant.computeIfAbsent(tenant,
-                ignored -> new ArrayDeque<>(CAP));
-        if (initializedTenants.add(tenant)) {
-            List<SearchEventEntity> recent = repo.findTop20000ByTenantIdOrderByTimestampDesc(tenant);
-            if (recent != null) {
-                for (int i = recent.size() - 1; i >= 0; i--) events.addLast(fromEntity(recent.get(i)));
+    private TenantBuffer events(String tenant) {
+        TenantBuffer buffer = eventsByTenant.computeIfAbsent(tenant, ignored -> new TenantBuffer(CAP));
+        buffer.initialize(tenant, repo);
+        return buffer;
+    }
+
+    /** Tenant-local bounded insertion-ordered index; writes no longer block unrelated tenants. */
+    private static final class TenantBuffer {
+        private final int cap;
+        private final LinkedHashMap<String, SearchEvent> events = new LinkedHashMap<>();
+        private final ReentrantLock lock = new ReentrantLock();
+        private volatile boolean initialized;
+
+        private TenantBuffer(int cap) {
+            this.cap = cap;
+        }
+
+        private void initialize(String tenant, SearchEventRepository repo) {
+            if (initialized) return;
+            lock.lock();
+            try {
+                if (initialized) return;
+                List<SearchEventEntity> recent = repo.findTop20000ByTenantIdOrderByTimestampDesc(tenant);
+                if (recent != null) {
+                    for (int i = recent.size() - 1; i >= 0; i--) {
+                        SearchEvent event = fromEntity(recent.get(i));
+                        events.put(event.eventId(), event);
+                    }
+                }
+                initialized = true;
+            } finally {
+                lock.unlock();
             }
         }
-        return events;
+
+        private void remember(SearchEvent event) {
+            lock.lock();
+            try {
+                events.remove(event.eventId());
+                events.put(event.eventId(), event);
+                while (events.size() > cap) events.remove(events.keySet().iterator().next());
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        private List<SearchEvent> snapshot() {
+            lock.lock();
+            try {
+                return List.copyOf(events.values());
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        private int size() {
+            lock.lock();
+            try {
+                return events.size();
+            } finally {
+                lock.unlock();
+            }
+        }
     }
 
     private static String eventTenant(SearchEvent event) {

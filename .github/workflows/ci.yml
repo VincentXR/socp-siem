@@ -70,6 +70,15 @@ jobs:
         run: pnpm verify
         working-directory: frontend/apps/workbench
 
+      - name: Package backend JARs for E2E jobs
+        run: tar -czf backend-jars.tgz $(find services -path '*/target/*.jar' -type f -print)
+
+      - name: Upload backend JARs
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-jars
+          path: backend-jars.tgz
+
   dependency-review:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -112,8 +121,14 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - name: Build backend
-        run: bash build/mvnw.sh -DskipTests package
+      - name: Download backend JARs
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-jars
+          path: .
+
+      - name: Extract backend JARs
+        run: tar -xzf backend-jars.tgz
 
       - name: Prepare PostgreSQL databases
         run: |
@@ -159,6 +174,7 @@ jobs:
         with:
           name: slice-e2e-logs
           path: .cache/
+          include-hidden-files: true
           if-no-files-found: ignore
 
   e2e-pipeline:
@@ -258,8 +274,14 @@ jobs:
           java-version: 21
           cache: maven
 
-      - name: Build backend
-        run: bash build/mvnw.sh -DskipTests package
+      - name: Download backend JARs
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-jars
+          path: .
+
+      - name: Extract backend JARs
+        run: tar -xzf backend-jars.tgz
 
       - name: Install kafka-python (pipeline probe)
         run: pip install kafka-python
@@ -270,11 +292,13 @@ jobs:
           export SOCP_OPENSEARCH_URL=http://localhost:9200
           export SOCP_OPENSEARCH_USERNAME=admin
           export SOCP_OPENSEARCH_PASSWORD=admin
-          nohup java -jar services/search-config/target/search-config-1.0.0-SNAPSHOT.jar --server.port=18081 > "$GITHUB_WORKSPACE/.cache/search-config.log" 2>&1 &
-          nohup java -jar services/detect-web/target/detect-web-1.0.0-SNAPSHOT.jar --server.port=18082 > "$GITHUB_WORKSPACE/.cache/detect-web.log" 2>&1 &
-          nohup java -jar services/alert-web/target/alert-web-1.0.0-SNAPSHOT.jar --server.port=18080 > "$GITHUB_WORKSPACE/.cache/alert-web.log" 2>&1 &
-          nohup java -jar services/report-web/target/report-web-1.0.0-SNAPSHOT.jar --server.port=18084 > "$GITHUB_WORKSPACE/.cache/report-web.log" 2>&1 &
-          nohup java -jar services/api-gateway/target/api-gateway-1.0.0-SNAPSHOT.jar --server.port=18092 --spring.profiles.active=dev > "$GITHUB_WORKSPACE/.cache/api-gateway.log" 2>&1 &
+          # Keep the pipeline E2E on the same PostgreSQL-backed profile used by
+          # the Docker services. The gateway also needs dev for demo accounts.
+          nohup java -jar services/search-config/target/search-config-1.0.0-SNAPSHOT.jar --server.port=18081 --spring.profiles.active=pg > "$GITHUB_WORKSPACE/.cache/search-config.log" 2>&1 &
+          nohup java -jar services/detect-web/target/detect-web-1.0.0-SNAPSHOT.jar --server.port=18082 --spring.profiles.active=pg > "$GITHUB_WORKSPACE/.cache/detect-web.log" 2>&1 &
+          nohup java -jar services/alert-web/target/alert-web-1.0.0-SNAPSHOT.jar --server.port=18080 --spring.profiles.active=pg > "$GITHUB_WORKSPACE/.cache/alert-web.log" 2>&1 &
+          nohup java -jar services/report-web/target/report-web-1.0.0-SNAPSHOT.jar --server.port=18084 --spring.profiles.active=pg > "$GITHUB_WORKSPACE/.cache/report-web.log" 2>&1 &
+          nohup java -jar services/api-gateway/target/api-gateway-1.0.0-SNAPSHOT.jar --server.port=18092 --spring.profiles.active=dev,pg > "$GITHUB_WORKSPACE/.cache/api-gateway.log" 2>&1 &
           python3 - <<'EOF'
           import time
           import urllib.request
@@ -320,4 +344,5 @@ jobs:
         with:
           name: pipeline-e2e-logs
           path: .cache/
+          include-hidden-files: true
           if-no-files-found: ignore

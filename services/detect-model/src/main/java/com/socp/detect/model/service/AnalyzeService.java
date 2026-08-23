@@ -19,7 +19,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.locks.ReentrantLock;
 
 /** Tenant-scoped secondary alert analysis and durable projection. */
 @Service
@@ -30,7 +30,7 @@ public class AnalyzeService {
 
     private final AnalyzedRepository repository;
     private final Map<String, List<Rule>> rulesByTenant = new ConcurrentHashMap<>();
-    private final Map<String, CopyOnWriteArrayList<Alert>> analyzedByTenant = new ConcurrentHashMap<>();
+    private final Map<String, AlertBuffer> analyzedByTenant = new ConcurrentHashMap<>();
     private final AlertWindowAggregator windowAggregator;
 
     public AnalyzeService(AnalyzedRepository repository, AlertWindowAggregator windowAggregator) {
@@ -44,7 +44,7 @@ public class AnalyzeService {
             for (AnalyzedEntity entity : repository.findAll()) {
                 analyzedFor(entity.getTenantId()).add(toAlert(entity));
             }
-            long loaded = analyzedByTenant.values().stream().mapToLong(List::size).sum();
+            long loaded = analyzedByTenant.values().stream().mapToLong(AlertBuffer::size).sum();
             if (loaded > 0) log.info("Restored {} tenant-scoped secondary analysis records", loaded);
         } catch (RuntimeException failure) {
             log.warn("Secondary analysis restore failed; starting with an empty cache: {}",
@@ -67,7 +67,7 @@ public class AnalyzeService {
         String source = String.valueOf(alarm.getOrDefault("source", "unknown"));
         SecurityEvent event = new SecurityEvent(Instant.now(), source, entity, message, fields, severity);
 
-        CopyOnWriteArrayList<Alert> analyzed = analyzedFor(tenant);
+        AlertBuffer analyzed = analyzedFor(tenant);
         int matched = 0;
         for (Rule rule : rulesFor(tenant)) {
             rule.accept(event);
@@ -77,9 +77,6 @@ public class AnalyzeService {
                 persist(tenant, alert);
             }
             matched += alerts.size();
-        }
-        if (analyzed.size() > ANALYZED_MAX) {
-            analyzed.subList(0, analyzed.size() - ANALYZED_MAX).clear();
         }
         if (matched > 0) windowAggregator.record(tenant, ruleId, entity, severity.name());
 
@@ -92,12 +89,12 @@ public class AnalyzeService {
     }
 
     public List<Alert> analyzed() {
-        return List.copyOf(analyzedFor(currentTenant()));
+        return analyzedFor(currentTenant()).snapshot();
     }
 
     public Map<String, Object> stats() {
         String tenant = currentTenant();
-        List<Alert> analyzed = analyzedFor(tenant);
+        List<Alert> analyzed = analyzedFor(tenant).snapshot();
         Map<String, Object> stats = new LinkedHashMap<>();
         stats.put("totalAnalyzed", analyzed.size());
         stats.put("rules", rulesFor(tenant).size());
@@ -126,9 +123,48 @@ public class AnalyzeService {
         return rulesByTenant.computeIfAbsent(tenant, ignored -> Rules.defaultRules());
     }
 
-    private CopyOnWriteArrayList<Alert> analyzedFor(String tenant) {
+    private AlertBuffer analyzedFor(String tenant) {
         String normalized = normalizeTenant(tenant);
-        return analyzedByTenant.computeIfAbsent(normalized, ignored -> new CopyOnWriteArrayList<>());
+        return analyzedByTenant.computeIfAbsent(normalized, ignored -> new AlertBuffer(ANALYZED_MAX));
+    }
+
+    /** Fixed-size per-tenant ring buffer; appends are O(1) and never copy the backing array. */
+    private static final class AlertBuffer {
+        private final int max;
+        private final java.util.ArrayDeque<Alert> entries = new java.util.ArrayDeque<>();
+        private final ReentrantLock lock = new ReentrantLock();
+
+        private AlertBuffer(int max) {
+            this.max = max;
+        }
+
+        private void add(Alert alert) {
+            lock.lock();
+            try {
+                entries.addLast(alert);
+                while (entries.size() > max) entries.removeFirst();
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        private int size() {
+            lock.lock();
+            try {
+                return entries.size();
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        private List<Alert> snapshot() {
+            lock.lock();
+            try {
+                return List.copyOf(entries);
+            } finally {
+                lock.unlock();
+            }
+        }
     }
 
     private static long count(List<Alert> alerts, Severity severity) {

@@ -31,6 +31,9 @@ import time
 import urllib.request
 import urllib.error
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from auth_client import login_token  # noqa: E402
+
 GW = os.environ.get("PIPELINE_GATEWAY", "http://127.0.0.1:18092")
 OS_URL = os.environ.get("PIPELINE_OS", "https://localhost:9200")
 OS_AUTH = os.environ.get("PIPELINE_OS_AUTH", "admin:Socp!Sec2026xK")
@@ -64,11 +67,7 @@ def login():
     global JWT
     if JWT:
         return
-    req = urllib.request.Request(GW + "/auth/login",
-                                 data=json.dumps({"username": USER, "password": PASSWD}).encode(),
-                                 headers={"Content-Type": "application/json"})
-    d = json.loads(urllib.request.urlopen(req, timeout=15).read())
-    JWT = d["token"]
+    JWT = login_token(GW, USER, PASSWD)
 
 
 def api(path, body=None, method=None):

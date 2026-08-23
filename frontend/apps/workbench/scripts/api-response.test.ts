@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { useRequest } from '../src/composables/useRequest.ts'
-import { unwrapApiBody } from '../src/lib/api-response.ts'
+import { unwrapApiBody, type ApiEnvelope } from '../src/lib/api-response.ts'
 import { withQuery } from '../src/lib/query.ts'
 import type { ReportSummary, ReportTrend, SearchResult } from '../src/api.ts'
 
 test('unwraps successful API envelopes', () => {
-  assert.deepEqual(unwrapApiBody<{ id: string }>({ code: 0, data: { id: 'a-1' } }), { id: 'a-1' })
+  const response: ApiEnvelope<{ id: string }> = {
+    code: 0, message: 'ok', data: { id: 'a-1' }, traceId: 'trace-1', timestamp: '2026-08-24T00:00:00Z',
+  }
+  assert.deepEqual(unwrapApiBody<{ id: string }>(response), { id: 'a-1' })
 })
 
 test('raises the server message for failed API envelopes', () => {

@@ -35,6 +35,9 @@ FRONTEND_PORT="$SOCP_PORT_FRONTEND_WORKBENCH"
 JVM_OPTS="${SOCP_JVM_OPTS:--Xms32m -Xmx256m}"
 START_BATCH_SIZE="${SOCP_START_BATCH_SIZE:-3}"
 START_HEALTH_TIMEOUT="${SOCP_START_HEALTH_TIMEOUT:-45}"
+# Comma-separated Spring profiles. The default matches the Docker-backed local
+# stack; use SOCP_RUNTIME_PROFILES=dev for a lightweight H2-only fallback.
+RUNTIME_PROFILES="${SOCP_RUNTIME_PROFILES:-dev,pg}"
 
 # core：Golden Demo 和日常后端开发所需的最小事件闭环。
 CORE_SERVICES="alert-web search-config detect-web incident-web soar-web notify-web report-web api-gateway"
@@ -49,6 +52,7 @@ export SOCP_LOGIN_SECRET="${SOCP_LOGIN_SECRET:-$SOCP_JWT_SECRET}"
 export SOCP_SECURITY_SERVICE_SECRET="${SOCP_SECURITY_SERVICE_SECRET:-socp-demo-service-secret-change-me}"
 export SOCP_AUDIT_SINK="${SOCP_AUDIT_SINK:-kafka}"
 export SOCP_AUDIT_FAIL_CLOSED="${SOCP_AUDIT_FAIL_CLOSED:-true}"
+export SOCP_RATELIMIT_BACKEND="${SOCP_RATELIMIT_BACKEND:-memory}"
 
 mkdir -p "$LOGDIR"
 
@@ -175,12 +179,8 @@ start_service() {
     echo "  [已运行] $name :$port PID=$existing"
     return 0
   fi
-  # 网关启用 dev profile 以加载演示账号；生产部署不传 profile 并注入真实密钥。
-  if [ "$name" = "api-gateway" ]; then
-    nohup "$java" $JVM_OPTS -jar "$jar" --server.port="$port" --spring.profiles.active=dev > "$LOGDIR/$name.log" 2>&1 < /dev/null &
-  else
-    nohup "$java" $JVM_OPTS -jar "$jar" --server.port="$port" > "$LOGDIR/$name.log" 2>&1 < /dev/null &
-  fi
+  nohup "$java" $JVM_OPTS -jar "$jar" --server.port="$port" \
+    --spring.profiles.active="$RUNTIME_PROFILES" > "$LOGDIR/$name.log" 2>&1 < /dev/null &
   echo "  [启动] $name -> :$port  (日志 .cache/$name.log)"
 }
 
