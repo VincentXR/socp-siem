@@ -3,6 +3,7 @@ package com.socp.detect.web.engine;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.socp.platform.client.kafka.KafkaClientSupport;
 import com.socp.detect.web.service.DetectEngineService;
 import com.socp.detect.web.metrics.DetectionPerformanceMetrics;
 import com.socp.detect.web.store.DetectionEventClaim;
@@ -18,7 +19,6 @@ import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.serialization.StringDeserializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -30,7 +30,6 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
@@ -126,14 +125,8 @@ public class KafkaEventConsumer {
         if (producer == null) {
             synchronized (this) {
                 if (dlqProducer == null) {
-                    Properties props = new Properties();
-                    props.put(org.apache.kafka.clients.producer.ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap);
-                    props.put(org.apache.kafka.clients.producer.ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG,
-                            org.apache.kafka.common.serialization.StringSerializer.class.getName());
-                    props.put(org.apache.kafka.clients.producer.ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG,
-                            org.apache.kafka.common.serialization.StringSerializer.class.getName());
-                    props.put(org.apache.kafka.clients.producer.ProducerConfig.ACKS_CONFIG, "all");
-                    dlqProducer = new org.apache.kafka.clients.producer.KafkaProducer<>(props);
+                    dlqProducer = new org.apache.kafka.clients.producer.KafkaProducer<>(
+                            KafkaClientSupport.reliableProducer(bootstrap));
                 }
                 producer = dlqProducer;
             }
@@ -183,14 +176,7 @@ public class KafkaEventConsumer {
     }
 
     private void run() {
-        Properties props = new Properties();
-        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap);
-        props.put(ConsumerConfig.GROUP_ID_CONFIG, groupId);
-        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
-        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
-        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
-        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
-        props.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, 200);
+        var props = KafkaClientSupport.reliableConsumer(bootstrap, groupId, "earliest", 200);
         props.put(ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG, 1_800_000);
         try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props)) {
             consumer.subscribe(List.of(topic), new ConsumerRebalanceListener() {
@@ -384,11 +370,11 @@ public class KafkaEventConsumer {
                                    SecurityEvent normalized) {
         if (performanceMetrics != null) performanceMetrics.kafkaReceived(normalized);
         DetectionEventClaim claim = stateStore.claim(normalized, partition, offset, routingKey);
-        if (performanceMetrics != null) performanceMetrics.journalCommitted(normalized.id());
+        if (performanceMetrics != null) performanceMetrics.journalCommitted(normalized);
         if (claim == DetectionEventClaim.COMPLETED || claim == DetectionEventClaim.DEAD_LETTERED) {
             if (performanceMetrics != null) {
                 performanceMetrics.terminalWithoutEvaluation(
-                        normalized.id(), claim.name().toLowerCase(java.util.Locale.ROOT));
+                        normalized, claim.name().toLowerCase(java.util.Locale.ROOT));
             }
             return;
         }
@@ -417,8 +403,7 @@ public class KafkaEventConsumer {
             dlqSink.accept(eventId, raw);
             return;
         }
-        dlq().send(new org.apache.kafka.clients.producer.ProducerRecord<>(topic + "-dlq",
-                eventId == null ? "unknown" : eventId, raw)).get(30, TimeUnit.SECONDS);
+        KafkaClientSupport.sendAndAwait(dlq(), topic + "-dlq", eventId, raw, Duration.ofSeconds(30));
     }
 
     private void publishDlq(String eventId, String raw) {

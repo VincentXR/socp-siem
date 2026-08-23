@@ -10,6 +10,9 @@ behavior; Python checks exercise running services and middleware.
 # Java reactor tests
 bash build/mvnw.sh test -Dsurefire.failIfNoSpecifiedTests=false
 
+# Complete quality gate: coverage, SpotBugs, migrations, contracts, and frontend
+bash build/quality-gate.sh
+
 # Focused backend slice
 bash build/mvnw.sh -pl services/api-gateway,services/alert-web,services/detect-web -am test
 
@@ -42,8 +45,19 @@ navigation, resource-list, and resource-import contracts.
 - Resource services: import, create/update, validation, pagination, and
   tenant-scoped access for assets, cases, ATT&CK techniques, and IOCs.
 
-The suite is risk-driven. There is no global coverage threshold; a behavior or
-failure-semantic change should add or update a test at its owning boundary.
+The suite is risk-driven and enforces an aggregate Java line-coverage floor of
+45%; every module containing production Java must emit a coverage report. The
+floor is intentionally a baseline, not a target: behavior or
+failure-semantic changes still need tests at their owning boundary. Run
+`mvn test -Pcoverage` followed by `python build/verify-coverage.py` to inspect
+the per-module and aggregate result. `mvn verify -Pquality -DskipTests` enforces
+JDK/Maven policy and high-confidence SpotBugs findings.
+
+`build/verify-migrations.py` rejects duplicate/misnamed migrations, version
+gaps, unmarked destructive statements, missing Flyway wiring, and tenant JPA
+entities without a `tenant_id` migration. `build/verify-contracts.py` keeps the
+Maven service modules, default process list, unique ports, gateway routes,
+legacy collector rewrites, and frontend health registry aligned.
 
 ## Integration checks
 
@@ -108,3 +122,8 @@ minimal service slice plus the Kafka pipeline E2E job.
 It starts the extended Compose profile, runs full API and pipeline checks,
 attack scenarios, and dependency failure injection, then uploads diagnostic
 logs.
+
+`.github/workflows/dependency-audit.yml` runs weekly or manually. It applies
+OWASP Dependency-Check to the Java reactor and `pnpm audit` to the workbench;
+pull requests also use GitHub dependency review to reject newly introduced
+high-severity vulnerabilities.

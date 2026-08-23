@@ -31,7 +31,7 @@ import {
   ingestSummary, listCategories, listIngestTasks, listOutputs, listParseRules, listSources,
   renderConfig, startIngestTask, stopIngestTask, testIngestTask, previewParse,
   SOURCE_TYPES, PARSE_FORMATS,
-  type IngestTask, type IngestSummary, type LogCategory, type LogSource, type ParseRule, type SinkTarget,
+  type IngestTask, type IngestSummary, type IngestTestResult, type LogCategory, type LogSource, type LogSourceInput, type ParseRule, type SinkTarget,
 } from '../api'
 
 const ingestTab = ref('tasks')
@@ -58,7 +58,7 @@ const taskBusy = ref<Record<string, boolean>>({})
 const testDialog = ref(false)
 const testTarget = ref<IngestTask | null>(null)
 const testSample = ref('')
-const testResult = ref<Record<string, unknown> | null>(null)
+const testResult = ref<IngestTestResult | null>(null)
 const testLoading = ref(false)
 
 type TagType = 'primary' | 'success' | 'warning' | 'info' | 'danger'
@@ -110,7 +110,7 @@ function openEditSource(source: LogSource) {
   showSourceDialog.value = true
 }
 async function saveSource() {
-  const source: Record<string, unknown> = {
+  const source: LogSourceInput = {
     name: newSource.value.name, type: newSource.value.type, format: newSource.value.format,
     env: newSource.value.env, enabled: newSource.value.enabled, readFrom: newSource.value.readFrom,
     protocol: newSource.value.protocol, charset: newSource.value.charset, timezone: newSource.value.timezone,
@@ -178,7 +178,7 @@ function openTestRow(row: unknown) { openTest(row as IngestTask) }
 async function runTest() {
   if (!testTarget.value) return
   testLoading.value = true
-  try { testResult.value = await testIngestTask(testTarget.value.id, testSample.value.trim() || undefined) as unknown as Record<string, unknown>; await loadTasks() }
+  try { testResult.value = await testIngestTask(testTarget.value.id, testSample.value.trim() || undefined); await loadTasks() }
   catch (error) { testResult.value = { ok: false, error: String(error) } }
   finally { testLoading.value = false }
 }

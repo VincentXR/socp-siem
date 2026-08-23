@@ -51,24 +51,7 @@ export function setChartTheme(theme: Theme): void {
 
 export function loadEcharts(): Promise<EChartsRuntime> {
   if (!runtimePromise) {
-    runtimePromise = Promise.all([
-      import('echarts/core'),
-      import('echarts/charts'),
-      import('echarts/components'),
-      import('echarts/renderers'),
-    ]).then(([echarts, charts, components, renderers]) => {
-      echarts.use([
-        charts.BarChart,
-        charts.GaugeChart,
-        charts.LineChart,
-        charts.PieChart,
-        components.GridComponent,
-        components.LegendComponent,
-        components.MarkPointComponent,
-        components.TitleComponent,
-        components.TooltipComponent,
-        renderers.CanvasRenderer,
-      ])
+    runtimePromise = import('./echarts-runtime').then(({ default: echarts }) => {
       registerChartTheme(echarts, activeTheme)
       return echarts
     }).catch(error => {

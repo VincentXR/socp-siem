@@ -129,6 +129,28 @@ class UebaRuleTest {
     }
 
     @Test
+    void watchlistOperator_isIsolatedByEventTenant() {
+        Watchlists.put("tenant-a", "shared_name", List.of("203.0.113.66"));
+        Watchlists.put("tenant-b", "shared_name", List.of("198.51.100.23"));
+        Rule rule = new RuleSpec(Json.parseObject("""
+                {"id":"W2","name":"tenant watchlist","type":"pattern","severity":"HIGH",
+                 "message":"watchlist hit","match":[{"field":"src_ip","op":"inlist","value":"shared_name"}]}
+                """)).toRule();
+        Instant now = Instant.parse("2026-01-01T00:00:00Z");
+
+        rule.accept(new SecurityEvent("same-id", now, "firewall", "h1", "raw",
+                Map.of("tenant_id", "tenant-a", "src_ip", "203.0.113.66"), Severity.INFO));
+        assertEquals(1, rule.drain().size());
+
+        rule.accept(new SecurityEvent("same-id", now, "firewall", "h1", "raw",
+                Map.of("tenant_id", "tenant-b", "src_ip", "203.0.113.66"), Severity.INFO));
+        assertTrue(rule.drain().isEmpty());
+
+        Watchlists.delete("tenant-a", "shared_name");
+        Watchlists.delete("tenant-b", "shared_name");
+    }
+
+    @Test
     void keyExtractor_supportsTopLevelHostField() {
         // 修复点：keyField=host 过去只查 fields，导致以主机聚合的规则永不触发
         Rule r = new RuleSpec(Json.parseObject("""

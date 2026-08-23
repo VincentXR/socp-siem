@@ -41,10 +41,21 @@ const createDialogVisible = ref(false)
 const caseForm = ref({ title: '', entity: '', severity: 'HIGH', assignee: '' })
 const newStatus = ref('')
 const statusFilter = ref('')
+const caseSorters: Record<string, (item: CaseInfo) => unknown> = {
+  alarmCount: item => item.alarmIds.length,
+  id: item => item.id,
+  title: item => item.title,
+  entity: item => item.entity,
+  severity: item => item.severity,
+  status: item => item.status,
+  assignee: item => item.assignee,
+  createdAt: item => item.createdAt ?? '',
+  updatedAt: item => item.updatedAt ?? '',
+}
 const casesList = useResourceList<CaseInfo>({
   searchFields: item => [item.id, item.title, item.entity, item.severity, item.status],
   filter: item => !statusFilter.value || item.status === statusFilter.value,
-  sortValue: (item, prop) => prop === 'alarmCount' ? item.alarmIds.length : (item as unknown as Record<string, unknown>)[prop],
+  sortValue: (item, prop) => caseSorters[prop]?.(item) ?? '',
 })
 const { items: cases, page, size, keyword, loading, filtered: casesFiltered, paged: casesPaged, setItems } = casesList
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('cases')

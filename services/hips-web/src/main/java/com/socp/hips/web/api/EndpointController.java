@@ -2,14 +2,12 @@ package com.socp.hips.web.api;
 
 import com.socp.hips.web.model.Endpoint;
 import com.socp.hips.web.store.EndpointStore;
+import com.socp.hips.web.store.EndpointEventStore;
 import org.springframework.web.bind.annotation.*;
 
-import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
 import com.socp.platform.auth.RequireRole;
 
@@ -21,10 +19,11 @@ import com.socp.platform.auth.RequireRole;
 public class EndpointController {
 
     private final EndpointStore store;
-    private final List<Map<String, Object>> events = new CopyOnWriteArrayList<>();
+    private final EndpointEventStore events;
 
-    public EndpointController(EndpointStore store) {
+    public EndpointController(EndpointStore store, EndpointEventStore events) {
         this.store = store;
+        this.events = events;
     }
 
     @GetMapping
@@ -46,22 +45,14 @@ public class EndpointController {
     /** 接收 hips-collect 上报的运行时检测事件（Falco 模拟），暂存 + 刷新对应端点心跳。 */
     @PostMapping("/events")
     public Map<String, Object> ingestEvent(@RequestBody Map<String, Object> event) {
-        Map<String, Object> record = new LinkedHashMap<>(event);
-        record.put("eventId", UUID.randomUUID().toString());
-        record.put("receivedAt", Instant.now().toString());
-        events.add(record);
-        String hostname = String.valueOf(event.getOrDefault("hostname", ""));
-        store.list().stream()
-                .filter(e -> e.hostname().equals(hostname))
-                .findFirst()
-                .ifPresent(e -> store.heartbeat(e.id()));
-        return Map.of("accepted", true, "eventId", record.get("eventId"), "total", events.size());
+        Map<String, Object> record = events.add(event);
+        return Map.of("accepted", true, "eventId", record.get("eventId"), "total", events.list().size());
     }
 
     /** 最近收到的端点事件。 */
     @GetMapping("/events")
     public List<Map<String, Object>> events() {
-        return List.copyOf(events);
+        return events.list();
     }
 
     /** 端点统计：在线数 / 事件数 / 事件类型分布。 */
@@ -75,8 +66,9 @@ public class EndpointController {
                 "ONLINE", all.stream().filter(e -> "ONLINE".equals(e.status())).count(),
                 "OFFLINE", all.stream().filter(e -> "OFFLINE".equals(e.status())).count()
         ));
-        out.put("events", events.size());
-        out.put("eventByType", events.stream().collect(Collectors.groupingBy(
+        List<Map<String, Object>> tenantEvents = events.list();
+        out.put("events", tenantEvents.size());
+        out.put("eventByType", tenantEvents.stream().collect(Collectors.groupingBy(
                 e -> String.valueOf(e.getOrDefault("type", "UNKNOWN")), Collectors.counting())));
         return out;
     }
@@ -89,4 +81,5 @@ public class EndpointController {
 
     public record RegisterRequest(String hostname, String ip, String os, String agentVersion) {
     }
+
 }

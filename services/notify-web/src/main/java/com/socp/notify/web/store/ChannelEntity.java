@@ -15,6 +15,7 @@ public class ChannelEntity {
     @Column(length = 512) private String target;
     @Column(nullable = false) private boolean enabled;
     @Column(length = 512) private String description;
+    @Column(name = "tenant_id", nullable = false, length = 64) private String tenantId;
 
     public ChannelEntity() {}
     public ChannelEntity(String id, String name, String type, String target, boolean enabled, String description) {
@@ -27,4 +28,6 @@ public class ChannelEntity {
     public String getTarget() { return target; }
     public boolean isEnabled() { return enabled; }
     public String getDescription() { return description; }
+    public String getTenantId() { return tenantId; }
+    public void setTenantId(String tenantId) { this.tenantId = tenantId; }
 }

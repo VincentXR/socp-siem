@@ -192,8 +192,8 @@ public final class RuleSpec {
                 // 数值比较：双方都能解析为数字才比较，否则视为不命中
                 case "gt", "gte", "lt", "lte" -> numericCompare(op, actual, value);
                 // 观察名单：value 为名单名，运营侧动态维护，规则本身不用改
-                case "inlist" -> Watchlists.contains(value, actual);
-                case "notinlist" -> !Watchlists.contains(value, actual);
+                case "inlist" -> Watchlists.contains(e.tenantId(), value, actual);
+                case "notinlist" -> !Watchlists.contains(e.tenantId(), value, actual);
                 default -> false;
             };
         };

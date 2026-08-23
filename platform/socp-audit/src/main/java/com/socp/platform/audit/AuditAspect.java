@@ -30,13 +30,25 @@ public class AuditAspect {
         AuditOperation ann = method.getAnnotation(AuditOperation.class);
         String action = ann.action().isEmpty() ? method.getName() : ann.action();
         String target = ann.target().isEmpty() ? method.getDeclaringClass().getSimpleName() : ann.target();
+        Object result;
         try {
-            Object r = pjp.proceed();
-            sink.publish(AuditRecord.of(action, target, "SUCCESS"));
-            return r;
-        } catch (Throwable t) {
-            sink.publish(AuditRecord.of(action, target, "FAIL:" + t.getMessage()));
-            throw t;
+            result = pjp.proceed();
+        } catch (Throwable operationFailure) {
+            try {
+                sink.publish(AuditRecord.of(action, target,
+                        "FAIL:" + safeMessage(operationFailure)));
+            } catch (RuntimeException auditFailure) {
+                operationFailure.addSuppressed(auditFailure);
+            }
+            throw operationFailure;
         }
+        sink.publish(AuditRecord.of(action, target, "SUCCESS"));
+        return result;
+    }
+
+    private static String safeMessage(Throwable failure) {
+        String message = failure.getMessage();
+        if (message == null || message.isBlank()) return failure.getClass().getSimpleName();
+        return message.length() <= 59 ? message : message.substring(0, 59);
     }
 }

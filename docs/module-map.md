@@ -35,15 +35,21 @@ tests and artifact checks are under `frontend/apps/workbench/scripts`.
 | `threat-web` | 18094 | IOC and threat-intelligence lookup | PostgreSQL |
 | `attack-web` | 18095 | ATT&CK catalog and detection coverage | H2 |
 | `notify-web` | 18096 | Notification channels and delivery records | H2 |
-| `asset-web` | 18085 | Asset inventory and imports | H2 |
-| `asset-collect` | 18091 | Asset and intelligence collection ingress | Stateless |
-| `hips-web` | 18087 | Endpoint registration and heartbeat state | H2 |
-| `hips-collect` | 18093 | Falco and endpoint event ingress | Stateless |
+| `asset-web` | 18085 | Asset inventory, imports, and asset collection ingress | H2 |
+| `asset-collect` | 18091 | Optional standalone compatibility launcher for asset collection | Stateless |
+| `hips-web` | 18087 | Endpoint registration, heartbeat state, and event ingress | H2 |
+| `hips-collect` | 18093 | Optional standalone compatibility launcher for endpoint collection | Stateless |
 | `ai-assistant` | 18088 | Keyword-backed security knowledge assistant | H2 |
 
 The nine services with `application-pg.yml` can switch from file-backed H2 to
 PostgreSQL with the `pg` profile. Flyway migrations are owned by the service
 that owns the corresponding schema. The production profile rejects H2.
+
+The default `full` deployment runs 15 JVMs. Asset and endpoint collection
+ingress are hosted by `asset-web` and `hips-web`; the gateway rewrites the
+legacy `/asset-collect/**` and `/hips-collect/**` paths so agents do not need to
+change URLs. The two collector modules remain buildable and can be launched
+explicitly for compatibility, but are not part of the default process set.
 
 ## Platform modules
 
@@ -51,7 +57,8 @@ that owns the corresponding schema. The production profile rejects H2.
   `@RequireRole`, and `ProdGuard`.
 - `socp-tenant` and `socp-data`: tenant context and shared persistence fields.
 - `socp-audit`, `socp-ratelimit`, `socp-obs`, and `socp-error`: audit,
-  in-process rate limiting, tracing/logging, and API error responses.
+  Redis-backed distributed rate limiting with a local-development fallback,
+  tracing/logging, and API error responses.
 - `socp-rule`: canonical `SecurityEvent`, executable rule families,
   suppression, routing keys, and UEBA primitives.
 - `socp-client`: typed service-to-service clients with explicit failure
@@ -67,7 +74,7 @@ that owns the corresponding schema. The production profile rejects H2.
 | Kafka | search, detection, and fan-out consumers | Six-partition default for `socp-events`, plus rule changes, `socp-alarm-original`, and `socp-alarm-events` |
 | OpenSearch | Event index consumer and search API | Raw event investigation and field search |
 | ClickHouse | Alarm event consumer and reports | Alarm detail analytics and trends |
-| Redis | Docker Compose middleware | Included for local integration; the current rate limiter remains in-process |
+| Redis | Docker Compose middleware | Shared production rate-limit counters; local profile can fall back to in-memory counters |
 | Temporal | SOAR optional profile | Durable Workflow/Activity execution |
 | Keycloak | Optional OIDC login | Identity provider for authorization-code login and JWKS validation |
 | Prometheus/Grafana/Jaeger | Optional observability profile | Metrics, dashboards, and trace inspection |

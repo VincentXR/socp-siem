@@ -132,9 +132,10 @@ benchmark; retain machine-specific output outside source control.
 
 - Delivery is at-least-once. Kafka, database, and downstream services do not
   form an exactly-once distributed transaction.
-- The Alert Outbox durably reaches Kafka. The current combined fan-out
-  consumer invokes Incident/Notify/SOAR adapters best-effort; it is not a
-  per-destination transactional workflow.
+- Alert creation atomically records both the Kafka Outbox event and one durable,
+  idempotent delivery intent per ClickHouse/Incident/Notify/SOAR destination.
+  Each destination is claimed independently and retried with bounded backoff;
+  the Kafka consumer reconciles any missing intents after replay.
 - A stateful rule is strictly partition-local only when its grouping field
   matches the canonical event routing field.
 - Journal replay is bounded by `SOCP_DETECT_STATE_RETENTION` (24 hours by

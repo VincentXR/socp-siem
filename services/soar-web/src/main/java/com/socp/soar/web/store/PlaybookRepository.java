@@ -11,4 +11,6 @@ public interface PlaybookRepository extends JpaRepository<PlaybookEntity, String
     List<PlaybookEntity> findByTenantId(String tenantId);
 
     Optional<PlaybookEntity> findByIdAndTenantId(String id, String tenantId);
+
+    long countByTenantId(String tenantId);
 }

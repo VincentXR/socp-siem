@@ -24,6 +24,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import com.socp.soar.web.service.AlarmEvaluationService;
 
 /**
  * SOAR 剧本 API 切片测试（PlaybookStore / PlaybookExecutor 被 mock）。
@@ -46,6 +47,9 @@ class PlaybookControllerTest {
 
     @MockitoBean
     private PlaybookExecutor executor;
+
+    @MockitoBean
+    private AlarmEvaluationService evaluationService;
 
     @Test
     void listSerialisesPlaybookWithActionsAndStatus() throws Exception {
@@ -84,7 +88,7 @@ class PlaybookControllerTest {
 
     @Test
     void evaluateDelegatesToExecutor() throws Exception {
-        given(executor.evaluate(anyMap())).willReturn(Map.of(
+        given(evaluationService.evaluate(anyMap())).willReturn(Map.of(
                 "alarmId", "AL-1", "triggered", 1, "playbooks", List.of(Map.of("playbook", "高危告警自动封禁"))));
 
         mvc.perform(post("/api/v1/playbooks/evaluate")

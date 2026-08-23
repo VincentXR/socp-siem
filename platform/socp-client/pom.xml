@@ -29,6 +29,10 @@
             <groupId>com.socp.platform</groupId>
             <artifactId>socp-tenant</artifactId>
         </dependency>
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>kafka-clients</artifactId>
+        </dependency>
         <!-- 调用指标 socp_client_calls / socp_client_latency；registry 由各服务的 actuator 提供，
              这里只依赖 micrometer-core 接口，缺失 registry 时客户端自动降级为不打点 -->
         <dependency>

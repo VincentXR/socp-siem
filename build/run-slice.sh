@@ -27,6 +27,8 @@ SLICE="alert-web api-gateway"
 
 export SOCP_JWT_SECRET="${SOCP_JWT_SECRET:-socp-demo-jwt-secret-0123456789abcdef0123456789abcdef}"
 export SOCP_LOGIN_SECRET="${SOCP_LOGIN_SECRET:-$SOCP_JWT_SECRET}"
+export SOCP_SECURITY_SERVICE_SECRET="${SOCP_SECURITY_SERVICE_SECRET:-socp-demo-service-secret-change-me}"
+export SOCP_AUDIT_SINK="${SOCP_AUDIT_SINK:-memory}"
 
 mkdir -p "$LOGDIR"
 

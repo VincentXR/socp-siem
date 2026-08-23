@@ -49,6 +49,10 @@ socp:
   soar:
     url: http://localhost:18083
   alert:
+    delivery:
+      poll-interval-ms: ${SOCP_ALARM_DELIVERY_POLL_MS:1000}
+      initial-delay-ms: ${SOCP_ALARM_DELIVERY_INITIAL_DELAY_MS:1000}
+      concurrency: ${SOCP_ALARM_DELIVERY_CONCURRENCY:8}
     outbox:
       poll-interval-ms: ${SOCP_ALERT_OUTBOX_POLL_MS:1000}
       initial-delay-ms: ${SOCP_ALERT_OUTBOX_INITIAL_DELAY_MS:1000}

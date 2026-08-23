@@ -1,43 +1,30 @@
 package com.socp.detect.model.kafka;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.detect.model.service.AnalyzeService;
+import com.socp.platform.client.kafka.KafkaClientSupport;
+import com.socp.platform.tenant.TenantContext;
+import com.socp.rule.model.Severity;
 import jakarta.annotation.PostConstruct;
-import org.apache.kafka.clients.consumer.ConsumerConfig;
-import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.clients.consumer.ConsumerRecords;
+import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.ProducerConfig;
-import org.apache.kafka.clients.producer.ProducerRecord;
-import org.apache.kafka.common.serialization.StringDeserializer;
-import org.apache.kafka.common.serialization.StringSerializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
-import java.util.Collections;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
-import java.util.Set;
 
-/**
- * 告警 Kafka 消费者（DETECT MODEL 二次分析链路）：订阅 DETECT 转发的 `socp-alarm-original`
- * 主题，把原始告警交给 {@link AnalyzeService} 做窗口聚合/二次关联——与 HTTP /analyze 同一路径。
- *
- * <p>可靠性约定与事件总线一致：手动 commit（处理完才提交，重启最多重放一批）+ LRU 幂等去重
- * （配合至少一次语义）+ 解析/处理失败写 DLQ（socp-alarm-original-dlq），不静默丢弃。
- */
+/** Reliable tenant-aware consumer for secondary alarm analysis. */
 @Component
 public class AlarmConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(AlarmConsumer.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final int DEDUP_MAX = 100_000;
+    private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
 
     @Value("${socp.kafka.bootstrap:localhost:9092}")
     private String bootstrap;
@@ -49,98 +36,158 @@ public class AlarmConsumer {
     private boolean enabled;
 
     private final AnalyzeService analyzeService;
+    private volatile boolean running;
+    private volatile KafkaConsumer<String, String> activeConsumer;
+    private volatile KafkaProducer<String, String> dlqProducer;
+    private Thread worker;
 
     public AlarmConsumer(AnalyzeService analyzeService) {
         this.analyzeService = analyzeService;
     }
 
-    /** 已处理 alertId 去重缓存（LRU：满则清空重建，配合至少一次语义实现幂等） */
-    private static final Set<String> DEDUP = Collections.synchronizedSet(new LinkedHashSet<>() {
-        @Override
-        public boolean add(String e) {
-            if (size() >= DEDUP_MAX) clear();
-            return super.add(e);
-        }
-    });
-
-    private volatile KafkaProducer<String, String> dlqProducer;
-
-    private KafkaProducer<String, String> dlq() {
-        KafkaProducer<String, String> p = dlqProducer;
-        if (p == null) {
-            synchronized (this) {
-                if (dlqProducer == null) {
-                    Properties props = new Properties();
-                    props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap);
-                    props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
-                    props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
-                    props.put(ProducerConfig.ACKS_CONFIG, "all");
-                    dlqProducer = new KafkaProducer<>(props);
-                }
-                p = dlqProducer;
-            }
-        }
-        return p;
-    }
-
-    /** 处理失败 → 写入 DLQ 主题，不静默丢弃 */
-    private void toDlq(String alertId, String raw) {
-        try {
-            dlq().send(new ProducerRecord<>(topic + "-dlq",
-                    alertId == null ? "unknown" : alertId, raw));
-        } catch (Exception ex) {
-            log.warn("DLQ 写入失败 alertId={}: {}", alertId, ex.getMessage());
-        }
-    }
-
     @PostConstruct
     public void start() {
         if (!enabled) return;
-        Thread.ofPlatform().name("alarm-consumer").daemon(true).start(() -> run());
-        log.info("告警 Kafka 消费者已启动 bootstrap={} topic={}", bootstrap, topic);
+        running = true;
+        worker = Thread.ofPlatform().name("alarm-consumer").daemon(true).start(this::runLoop);
+        log.info("Secondary alarm consumer started bootstrap={} topic={}", bootstrap, topic);
     }
 
-    private void run() {
-        Properties props = new Properties();
-        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap);
-        props.put(ConsumerConfig.GROUP_ID_CONFIG, "socp-detect-model");
-        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
-        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
-        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
-        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
-        KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props);
-        try {
-            consumer.subscribe(List.of(topic));
-            while (!Thread.currentThread().isInterrupted()) {
-                ConsumerRecords<String, String> records;
-                try {
-                    records = consumer.poll(Duration.ofMillis(500));
-                } catch (Exception ex) {
-                    log.warn("告警 Kafka poll 异常（重试）: {}", ex.getMessage());
-                    try { Thread.sleep(2000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
-                    continue;
+    private void runLoop() {
+        while (running) {
+            try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(
+                    KafkaClientSupport.reliableConsumer(bootstrap,
+                            "socp-detect-model", "earliest", 200))) {
+                activeConsumer = consumer;
+                consumer.subscribe(List.of(topic));
+                consume(consumer);
+            } catch (org.apache.kafka.common.errors.WakeupException wakeup) {
+                if (running) log.warn("Secondary alarm consumer was unexpectedly woken");
+            } catch (RuntimeException failure) {
+                if (running) {
+                    log.warn("Secondary alarm consumer failed; restarting: {}", failure.getMessage());
+                    backoff();
                 }
-                if (records.isEmpty()) continue;
-                for (ConsumerRecord<String, String> rec : records) {
-                    String alertId = rec.key();
-                    try {
-                        if (alertId != null && !DEDUP.add(alertId)) continue; // 幂等去重
-                        @SuppressWarnings("unchecked")
-                        Map<String, Object> alarm = MAPPER.readValue(rec.value(), Map.class);
-                        analyzeService.analyze(alarm);
-                    } catch (Exception ex) {
-                        log.warn("告警二次分析失败 alertId={}（写 DLQ）: {}", alertId, ex.getMessage());
-                        toDlq(alertId, rec.value());
+            } finally {
+                activeConsumer = null;
+            }
+        }
+    }
+
+    private void consume(KafkaConsumer<String, String> consumer) {
+        while (running) {
+            var records = consumer.poll(Duration.ofMillis(500));
+            if (records.isEmpty()) continue;
+            boolean retryBatch = false;
+            for (var record : records) {
+                try {
+                    processRecord(record.key(), record.value());
+                } catch (InvalidAlarmEventException invalid) {
+                    if (!toDlqAndAwait(record.key(), record.value())) {
+                        retryBatch = true;
+                        break;
                     }
-                }
-                try {
-                    consumer.commitSync();
-                } catch (Exception ex) {
-                    log.warn("告警 offset 提交失败（下次重放一批）: {}", ex.getMessage());
+                    log.warn("Invalid secondary alarm moved to DLQ alertId={}: {}",
+                            record.key(), invalid.getMessage());
+                } catch (RuntimeException transientFailure) {
+                    log.warn("Secondary analysis failed; Kafka batch will retry alertId={}: {}",
+                            record.key(), transientFailure.getMessage());
+                    retryBatch = true;
+                    break;
                 }
             }
+            if (retryBatch) {
+                KafkaClientSupport.rewindBatch(consumer, records);
+                backoff();
+            } else {
+                consumer.commitSync();
+            }
+        }
+    }
+
+    void processRecord(String key, String raw) {
+        ParsedAlarm parsed = parse(key, raw);
+        TenantContext.set(parsed.tenant());
+        try {
+            analyzeService.analyze(parsed.payload());
         } finally {
-            try { consumer.close(); } catch (Exception ignored) { }
+            TenantContext.clear();
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static ParsedAlarm parse(String key, String raw) {
+        try {
+            if (raw == null || raw.isBlank()) throw new IllegalArgumentException("empty alarm payload");
+            Map<String, Object> alarm = MAPPER.readValue(raw, Map.class);
+            String alarmId = text(alarm.get("id"));
+            if (alarmId == null) alarmId = text(key);
+            if (alarmId == null) throw new IllegalArgumentException("alarm id is required");
+            String tenant = text(alarm.get("tenantId"));
+            if (tenant == null) tenant = text(alarm.get("tenant_id"));
+            if (tenant == null) tenant = "default";
+            if (!TenantContext.isValid(tenant)) throw new IllegalArgumentException("invalid alarm tenant");
+            String severity = text(alarm.get("severity"));
+            if (severity != null) Severity.valueOf(severity.toUpperCase(java.util.Locale.ROOT));
+            return new ParsedAlarm(tenant, alarm);
+        } catch (JsonProcessingException | IllegalArgumentException invalid) {
+            throw new InvalidAlarmEventException(invalid.getMessage(), invalid);
+        }
+    }
+
+    private boolean toDlqAndAwait(String alertId, String raw) {
+        try {
+            KafkaClientSupport.sendAndAwait(dlq(), topic + "-dlq", alertId, raw, Duration.ofSeconds(10));
+            return true;
+        } catch (RuntimeException failure) {
+            log.warn("Secondary alarm DLQ acknowledgement failed alertId={}: {}",
+                    alertId, failure.getMessage());
+            return false;
+        }
+    }
+
+    private KafkaProducer<String, String> dlq() {
+        KafkaProducer<String, String> current = dlqProducer;
+        if (current != null) return current;
+        synchronized (this) {
+            if (dlqProducer == null) {
+                dlqProducer = new KafkaProducer<>(KafkaClientSupport.reliableProducer(bootstrap));
+            }
+            return dlqProducer;
+        }
+    }
+
+    private void backoff() {
+        try {
+            Thread.sleep(1_000L);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            running = false;
+        }
+    }
+
+    @PreDestroy
+    void stop() {
+        running = false;
+        KafkaConsumer<String, String> consumer = activeConsumer;
+        if (consumer != null) consumer.wakeup();
+        if (worker != null) worker.interrupt();
+        KafkaProducer<String, String> producer = dlqProducer;
+        if (producer != null) producer.close(Duration.ofSeconds(5));
+    }
+
+    private static String text(Object value) {
+        if (value == null) return null;
+        String result = String.valueOf(value).trim();
+        return result.isEmpty() || "null".equalsIgnoreCase(result) ? null : result;
+    }
+
+    private record ParsedAlarm(String tenant, Map<String, Object> payload) {
+    }
+
+    static final class InvalidAlarmEventException extends RuntimeException {
+        InvalidAlarmEventException(String message, Throwable cause) {
+            super(message, cause);
         }
     }
 }

@@ -1,14 +1,7 @@
 import { computed, ref } from 'vue'
 import { useQueryClient } from '@tanstack/vue-query'
 import ElMessage from 'element-plus/es/components/message/index.mjs'
-import { clearToken, setToken, setUnauthorizedHandler } from '../api'
-
-function decodeJwtPayload(token: string): Record<string, any> | null {
-  try {
-    const payload = token.split('.')[1]
-    return JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')))
-  } catch { return null }
-}
+import { currentSession, logout, setUnauthorizedHandler } from '../api'
 
 export function useAuth() {
   const currentUser = ref('')
@@ -21,50 +14,41 @@ export function useAuth() {
     currentUser.value = user
     currentRole.value = role
     isAuthed.value = true
+    try {
+      localStorage.setItem('socp_user', user)
+      localStorage.setItem('socp_role', role)
+    } catch { /* display metadata only */ }
   }
 
-  function doLogout() {
-    void queryClient.cancelQueries()
-    clearToken()
+  async function doLogout() {
+    await queryClient.cancelQueries()
+    try { await logout() } catch { /* an expired session is already logged out */ }
     currentUser.value = ''
     currentRole.value = ''
     isAuthed.value = false
     try {
       localStorage.removeItem('socp_user')
       localStorage.removeItem('socp_role')
-    } catch { /* ignore */ }
+      localStorage.removeItem('socp_token')
+    } catch { /* ignore unavailable browser storage */ }
     location.reload()
   }
 
-  function initAuth() {
+  async function initAuth(): Promise<boolean> {
     setUnauthorizedHandler(() => {
       ElMessage.warning('登录已过期，请重新登录')
-      setTimeout(doLogout, 600)
+      window.setTimeout(() => { void doLogout() }, 600)
     })
-
-    const oidcToken = new URLSearchParams(window.location.search).get('socp_oidc_token')
-    if (oidcToken) {
-      setToken(oidcToken)
-      const claims = decodeJwtPayload(oidcToken)
-      if (claims) {
-        try {
-          localStorage.setItem('socp_user', claims.sub || 'socp-user')
-          localStorage.setItem('socp_role', claims.role || 'analyst')
-        } catch { /* ignore */ }
-      }
-      window.history.replaceState({}, '', window.location.pathname)
-    }
-
     try {
-      currentUser.value = localStorage.getItem('socp_user') || ''
-      currentRole.value = localStorage.getItem('socp_role') || ''
-      isAuthed.value = !!(localStorage.getItem('socp_token') && currentUser.value)
+      const session = await currentSession()
+      onLoginDone(session.username, session.role)
+      return true
     } catch {
       currentUser.value = ''
       currentRole.value = ''
       isAuthed.value = false
+      return false
     }
-    return isAuthed.value
   }
 
   return { currentUser, currentRole, isAuthed, userInitials, onLoginDone, doLogout, initAuth }

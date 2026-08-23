@@ -1,6 +1,8 @@
 package com.socp.hips.web.store;
 
 import com.socp.hips.web.model.Endpoint;
+import com.socp.platform.tenant.TenantContext;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -19,6 +21,11 @@ import static org.mockito.Mockito.when;
  */
 class EndpointStoreTest {
 
+    @AfterEach
+    void clearTenant() {
+        TenantContext.clear();
+    }
+
     /** 空库启动（模拟首次运行灌种子）。 */
     private static EndpointStore freshStore() {
         EndpointRepository repo = mock(EndpointRepository.class);
@@ -26,6 +33,25 @@ class EndpointStoreTest {
         EndpointStore store = new EndpointStore(repo);
         store.init();
         return store;
+    }
+
+    @Test
+    void endpointIdentityAndMemoryViewAreTenantScoped() {
+        EndpointStore store = freshStore();
+        Endpoint shared = new Endpoint("shared-id", "tenant-a-host", "10.1.0.1", "Linux",
+                "1.0", "ONLINE", Instant.now());
+        TenantContext.set("tenant-a");
+        store.save(shared);
+
+        TenantContext.set("tenant-b");
+        assertTrue(store.list().isEmpty());
+        assertNull(store.heartbeat("shared-id"));
+        store.save(new Endpoint("shared-id", "tenant-b-host", "10.2.0.1", "Linux",
+                "1.0", "ONLINE", Instant.now()));
+
+        TenantContext.set("tenant-a");
+        assertEquals("tenant-a-host", store.heartbeat("shared-id").hostname());
+        assertEquals(1, store.list().size());
     }
 
     @Test

@@ -187,8 +187,8 @@ public class AlarmController {
     private static String toJson(List<Alarm> alarms) {
         try {
             return MAPPER.writeValueAsString(alarms);
-        } catch (Exception e) {
-            return "[]";
+        } catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
+            throw new IllegalStateException("cannot serialize alarm export", failure);
         }
     }
 

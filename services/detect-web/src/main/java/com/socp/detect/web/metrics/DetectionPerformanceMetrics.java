@@ -41,7 +41,7 @@ public class DetectionPerformanceMetrics implements RuleProcessingObserver {
     public void kafkaReceived(SecurityEvent event) {
         if (event == null || event.id() == null) return;
         long now = System.nanoTime();
-        events.put(event.id(), new EventTiming(now));
+        events.put(event.scopedId(), new EventTiming(now));
         Instant ingestedAt = ingestTime(event);
         if (ingestedAt != null) {
             recordInstant("socp.detection.event.stage", "kafka_queue", ingestedAt, Instant.now());
@@ -59,9 +59,17 @@ public class DetectionPerformanceMetrics implements RuleProcessingObserver {
                 "operation", "journal_claim").increment();
     }
 
+    public void journalCommitted(SecurityEvent event) {
+        if (event != null) journalCommitted(event.scopedId());
+    }
+
     public void terminalWithoutEvaluation(String eventId, String outcome) {
         events.remove(eventId);
         registry.counter("socp.detection.event.terminal", "outcome", outcome).increment();
+    }
+
+    public void terminalWithoutEvaluation(SecurityEvent event, String outcome) {
+        if (event != null) terminalWithoutEvaluation(event.scopedId(), outcome);
     }
 
     @Override
@@ -88,12 +96,12 @@ public class DetectionPerformanceMetrics implements RuleProcessingObserver {
                 emittedAlerts > 0 ? "alert" : "no_alert").increment();
         registry.counter("socp.detection.db.transactions", "scope", "event",
                 "operation", "outbox_and_completion").increment();
-        events.remove(event.id());
+        events.remove(event.scopedId());
     }
 
     @Override
     public void processingFailed(SecurityEvent event, Throwable failure) {
-        if (event != null) events.remove(event.id());
+        if (event != null) events.remove(event.scopedId());
         registry.counter("socp.detection.event.completed", "outcome", "failed").increment();
     }
 
@@ -131,7 +139,7 @@ public class DetectionPerformanceMetrics implements RuleProcessingObserver {
     }
 
     private EventTiming timing(SecurityEvent event) {
-        return event == null || event.id() == null ? null : events.get(event.id());
+        return event == null || event.id() == null ? null : events.get(event.scopedId());
     }
 
     private void recordNanos(String name, String stage, long nanos) {

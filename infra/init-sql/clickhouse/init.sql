@@ -34,6 +34,7 @@ ORDER BY (tenant_id, rule_id, severity);
 CREATE TABLE IF NOT EXISTS alert_agg.alarm_detail
 (
     tenant_id String,
+    alarm_id String,
     ts DateTime64(3),
     severity LowCardinality(String),
     rule_id String,
@@ -43,6 +44,11 @@ CREATE TABLE IF NOT EXISTS alert_agg.alarm_detail
 ENGINE = MergeTree()
 PARTITION BY toYYYYMM(ts)
 ORDER BY (ts);
+
+-- Existing installations created before alarm delivery became at-least-once
+-- need the stable alarm key as well. Reports use it to collapse redeliveries.
+ALTER TABLE alert_agg.alarm_detail
+    ADD COLUMN IF NOT EXISTS alarm_id String AFTER tenant_id;
 
 -- DETECT 聚合：5 分钟窗口匹配结果
 CREATE TABLE IF NOT EXISTS detect_agg.window_match

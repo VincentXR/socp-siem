@@ -23,3 +23,4 @@ CREATE TABLE IF NOT EXISTS t_ioc (
 -- 情报匹配的热路径是「按类型 + 值精确查」，富化时每条告警都会打一次
 CREATE INDEX IF NOT EXISTS idx_t_ioc_type_value ON t_ioc (type, ioc_value);
 CREATE INDEX IF NOT EXISTS idx_t_ioc_tenant ON t_ioc (tenant_id);
+CREATE INDEX IF NOT EXISTS idx_t_ioc_tenant_value ON t_ioc (tenant_id, ioc_value);

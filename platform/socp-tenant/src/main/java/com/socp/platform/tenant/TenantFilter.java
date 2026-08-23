@@ -26,6 +26,10 @@ public class TenantFilter extends OncePerRequestFilter {
         try {
             String tenant = req.getHeader(HEADER);
             if (tenant != null && !tenant.isBlank()) {
+                if (!TenantContext.isValid(tenant)) {
+                    res.sendError(HttpServletResponse.SC_BAD_REQUEST, "Invalid X-Tenant-Id");
+                    return;
+                }
                 TenantContext.set(tenant);
             }
             // 缺失租户时不在过滤器拦截（部分 actuator/health 无需租户），由 require() 在业务点强制

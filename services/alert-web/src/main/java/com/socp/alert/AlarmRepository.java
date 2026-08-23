@@ -54,10 +54,10 @@ public interface AlarmRepository extends JpaRepository<Alarm, String> {
     List<Alarm> query(String tenant, Severity severity, String rule, String status, String q);
 
     /** 同实体近期告警数，供威胁评分的"行为频次"分项使用 */
-    @Query("select count(a) from Alarm a where a.entity = :entity and a.occurredAt >= :since")
-    long countRecentByEntity(String entity, java.time.Instant since);
+    @Query("select count(a) from Alarm a where a.tenantId = :tenant and a.entity = :entity and a.occurredAt >= :since")
+    long countRecentByEntity(String tenant, String entity, java.time.Instant since);
 
     /** 风险 Top N（风险分倒序），供态势大屏"最该处置的告警" */
-    @Query("select a from Alarm a where a.riskScore is not null order by a.riskScore desc")
-    List<Alarm> topByRisk(org.springframework.data.domain.Pageable pageable);
+    @Query("select a from Alarm a where a.tenantId = :tenant and a.riskScore is not null order by a.riskScore desc")
+    List<Alarm> topByRisk(String tenant, org.springframework.data.domain.Pageable pageable);
 }

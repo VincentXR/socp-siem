@@ -10,6 +10,8 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -66,8 +68,10 @@ public class NotifyController {
 
     /** 告警外发入口：接收 alert-web 推送的告警，分发到启用渠道。 */
     @PostMapping("/notify/alert")
-    public Map<String, Object> notify(@RequestBody Map<String, Object> alarm) {
-        return dispatcher.dispatch(alarm);
+    public ResponseEntity<Map<String, Object>> notify(@RequestBody Map<String, Object> alarm) {
+        Map<String, Object> result = dispatcher.dispatch(alarm);
+        int failed = result.get("failed") instanceof Number number ? number.intValue() : 0;
+        return ResponseEntity.status(failed == 0 ? HttpStatus.OK : HttpStatus.BAD_GATEWAY).body(result);
     }
 
     @GetMapping("/dispatch-log")

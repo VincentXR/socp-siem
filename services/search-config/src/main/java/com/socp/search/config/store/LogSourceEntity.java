@@ -23,7 +23,11 @@ import java.time.Instant;
 @Table(name = "t_log_source")
 public class LogSourceEntity {
     @Id
-    private String id;
+    @Column(name = "id")
+    private String storageId;
+
+    @Column(name = "source_id", nullable = false)
+    private String sourceId;
 
     /** 多租户隔离列，落库前从 TenantContext 自动注入（等价 BaseEntity 的行为） */
     @Column(name = "tenant_id")
@@ -80,11 +84,19 @@ public class LogSourceEntity {
     }
 
     public String getId() {
-        return id;
+        return sourceId;
     }
 
     public void setId(String id) {
-        this.id = id;
+        this.sourceId = id;
+    }
+
+    public String getStorageId() {
+        return storageId;
+    }
+
+    public void setStorageId(String storageId) {
+        this.storageId = storageId;
     }
 
     public String getName() {

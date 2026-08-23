@@ -10,5 +10,7 @@ public interface RuleRepository extends JpaRepository<RuleEntity, String> {
 
     List<RuleEntity> findByTenantId(String tenantId);
 
-    Optional<RuleEntity> findByIdAndTenantId(String id, String tenantId);
+    Optional<RuleEntity> findByRuleIdAndTenantId(String ruleId, String tenantId);
+
+    long countByTenantId(String tenantId);
 }

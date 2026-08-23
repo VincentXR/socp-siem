@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onMounted, watch } from 'vue'
 import LoginView from './LoginView.vue'
 import AppShell from './components/AppShell.vue'
 import OverviewView from './views/OverviewView.vue'
@@ -10,6 +10,8 @@ import { useAlarmQuery } from './composables/useAlarmQuery'
 import { useAuth } from './composables/useAuth'
 import { useOverview } from './composables/useOverview'
 import { useTheme } from './composables/useTheme'
+import { useWorkbenchRoute } from './composables/useWorkbenchRoute'
+import { accessibleMenu, isMenuKey } from './app/routes'
 
 const AiAssistantView = defineAsyncComponent(() => import('./views/AiAssistantView.vue'))
 const AssetsView = defineAsyncComponent(() => import('./views/AssetsView.vue'))
@@ -31,7 +33,7 @@ const SituationView = defineAsyncComponent(() => import('./views/SituationView.v
 
 const auth = useAuth()
 const { currentUser, currentRole, isAuthed, userInitials } = auth
-const activeMenu = ref('overview')
+const { activeMenu, navigate } = useWorkbenchRoute()
 const menuGroups = computed(() => getVisibleMenuGroups(currentRole.value))
 const activeLabel = computed(() => {
   for (const group of menuGroups.value) {
@@ -66,14 +68,26 @@ function onLoginDone(user: string, role: string) {
 }
 
 function onMenuChange(key: string) {
-  activeMenu.value = key
-  if (key === 'overview') void refreshOverview()
-  if (key === 'alarms') void loadAlarmPage()
+  if (!isMenuKey(key)) return
+  const visibleMenus = new Set(menuGroups.value.flatMap(group => group.items.map(item => item.key)))
+  navigate(accessibleMenu(key, visibleMenus))
 }
 
-onMounted(() => {
+watch(activeMenu, key => {
+  if (key === 'overview') void refreshOverview()
+  if (key === 'alarms') void loadAlarmPage()
+})
+
+watch(menuGroups, groups => {
+  const visibleMenus = new Set(groups.flatMap(group => group.items.map(item => item.key)))
+  const allowed = accessibleMenu(activeMenu.value, visibleMenus)
+  if (allowed !== activeMenu.value) navigate(allowed, true)
+})
+
+onMounted(async () => {
   initTheme()
-  if (!auth.initAuth()) return
+  if (!await auth.initAuth()) return
+  onMenuChange(activeMenu.value)
   void refreshOverview()
   void loadOverviewStats()
 })

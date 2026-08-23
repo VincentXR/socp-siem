@@ -14,6 +14,10 @@ class EntityRiskProfileEntity {
 
     @Id
     @Column(name = "entity_value", length = 512)
+    private String storageId;
+    @Column(name = "tenant_id", length = 64, nullable = false)
+    private String tenantId;
+    @Column(name = "entity_key", length = 512, nullable = false)
     private String entity;
     private double score;
     @Column(name = "score_at", nullable = false)
@@ -36,6 +40,10 @@ class EntityRiskProfileEntity {
 
     String getEntity() { return entity; }
     void setEntity(String entity) { this.entity = entity; }
+    String getStorageId() { return storageId; }
+    void setStorageId(String storageId) { this.storageId = storageId; }
+    String getTenantId() { return tenantId; }
+    void setTenantId(String tenantId) { this.tenantId = tenantId; }
     double getScore() { return score; }
     void setScore(double score) { this.score = score; }
     Instant getScoreAt() { return scoreAt; }

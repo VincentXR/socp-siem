@@ -33,4 +33,20 @@ public class InMemoryAuditSink implements AuditSink {
         }
         return s.limit(limit).collect(Collectors.toList());
     }
+
+    @Override
+    public List<AuditRecord> recent(String tenantId, int limit, String action) {
+        java.util.ArrayList<AuditRecord> all = new java.util.ArrayList<>(buffer);
+        java.util.Collections.reverse(all);
+        return all.stream()
+                .filter(record -> tenantId.equals(record.tenantId()))
+                .filter(record -> action == null || action.isBlank() || record.action().contains(action))
+                .limit(limit)
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public int size(String tenantId) {
+        return (int) buffer.stream().filter(record -> tenantId.equals(record.tenantId())).count();
+    }
 }

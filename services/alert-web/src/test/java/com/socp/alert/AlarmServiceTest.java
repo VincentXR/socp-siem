@@ -1,11 +1,5 @@
 package com.socp.alert;
 
-import com.socp.platform.client.IncidentClient;
-import com.socp.platform.client.NotifyClient;
-import com.socp.platform.client.SoarClient;
-import com.socp.platform.client.ServiceCall;
-import com.socp.platform.client.SocpService;
-import com.socp.platform.client.ThreatClient;
 import com.socp.platform.tenant.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -26,8 +20,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.timeout;
 
 @ExtendWith(MockitoExtension.class)
 class AlarmServiceTest {
@@ -36,25 +28,22 @@ class AlarmServiceTest {
     private AlarmRepository repository;
 
     @Mock
-    private CkReporter ckReporter;
+    private AlarmEnrichmentService enrichmentService;
 
     @Mock
-    private ThreatClient threatClient;
+    private AlarmQueryService queryService;
 
     @Mock
-    private NotifyClient notifyClient;
-
-    @Mock
-    private IncidentClient incidentClient;
-
-    @Mock
-    private SoarClient soarClient;
+    private AlarmStatisticsService statisticsService;
 
     @Mock
     private OutboxRepository outboxRepository;
 
     @Mock
     private AlarmEvidenceRepository evidenceRepository;
+
+    @Mock
+    private AlarmDeliveryRegistrar deliveryRegistrar;
 
     @InjectMocks
     private AlarmService service;
@@ -73,7 +62,10 @@ class AlarmServiceTest {
         TenantContext.set("tenant-a");
         Alarm alarm = new Alarm("AUTH-BRUTE", "SSH brute force", Severity.HIGH,
                 "failed login", null);
-        given(repository.save(alarm)).willReturn(alarm);
+        given(repository.save(alarm)).willAnswer(invocation -> {
+            alarm.setId("alarm-tenant-a");
+            return alarm;
+        });
 
         Alarm saved = service.create(alarm);
 
@@ -83,7 +75,9 @@ class AlarmServiceTest {
         assertEquals("ALARM_CREATED", event.getValue().getEventType());
         assertEquals("PENDING", event.getValue().getStatus());
         assertTrue(event.getValue().getPayload().contains("AUTH-BRUTE"));
+        assertTrue(event.getValue().getPayload().contains("\"tenantId\":\"tenant-a\""));
         assertTrue(event.getValue().getCreatedAt() != null);
+        verify(deliveryRegistrar).register("tenant-a", "alarm-tenant-a", event.getValue().getPayload());
     }
 
     @Test
@@ -160,28 +154,23 @@ class AlarmServiceTest {
         given(repository.query("tenant-a", null, null, null, null))
                 .willReturn(List.of(legacy, fresh));
 
-        List<Alarm> result = service.query(null, null, null, null,
+        List<Alarm> result = new AlarmQueryService(repository).query(null, null, null, null,
                 "alertCreatedAt", "descending");
 
         assertEquals(List.of(fresh, legacy), result);
     }
 
     @Test
-    void threatEnrichmentStartsOnlyAfterTheAlarmTransactionCommits() {
+    void delegatesThreatEnrichmentSchedulingAfterTheTransactionalWrite() {
         TenantContext.set("tenant-a");
         Alarm alarm = new Alarm("IOC-MATCH", "IOC match", Severity.HIGH,
                 "connection to 203.0.113.10", "203.0.113.10");
-        given(repository.save(alarm)).willReturn(alarm);
-        given(threatClient.matchIocs(org.mockito.ArgumentMatchers.anyString())).willReturn(
-                new ServiceCall(SocpService.THREAT, "http://threat", true,
-                        200, "{\"hits\":{}}", null, 1, false, 1));
-        TransactionSynchronizationManager.initSynchronization();
-
+        given(repository.save(alarm)).willAnswer(invocation -> {
+            alarm.setId("alarm-tenant-a");
+            return alarm;
+        });
         service.create(alarm);
 
-        verify(threatClient, never()).matchIocs(org.mockito.ArgumentMatchers.anyString());
-        TransactionSynchronizationManager.getSynchronizations()
-                .forEach(org.springframework.transaction.support.TransactionSynchronization::afterCommit);
-        verify(threatClient, timeout(1_000)).matchIocs(org.mockito.ArgumentMatchers.anyString());
+        verify(enrichmentService).scheduleAfterCommit(alarm);
     }
 }

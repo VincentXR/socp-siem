@@ -6,12 +6,19 @@ package com.socp.platform.tenant;
  */
 public final class TenantContext {
     private static final ThreadLocal<String> CURRENT = new ThreadLocal<>();
+    private static final java.util.regex.Pattern VALID_ID =
+            java.util.regex.Pattern.compile("[A-Za-z0-9][A-Za-z0-9_-]{0,63}");
 
     private TenantContext() {
     }
 
     public static void set(String tenantId) {
+        if (!isValid(tenantId)) throw new IllegalArgumentException("Invalid tenant identifier");
         CURRENT.set(tenantId);
+    }
+
+    public static boolean isValid(String tenantId) {
+        return tenantId != null && VALID_ID.matcher(tenantId).matches();
     }
 
     public static String get() {

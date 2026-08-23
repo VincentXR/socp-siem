@@ -9,6 +9,12 @@ import java.util.List;
 @Repository
 public interface AuditRepository extends JpaRepository<AuditEntity, Long> {
 
+    boolean existsByEventId(String eventId);
+
     /** 按租户倒序取最近 N 条。 */
     List<AuditEntity> findTop500ByTenantIdOrderByTsDesc(String tenantId);
+
+    List<AuditEntity> findByTenantId(String tenantId);
+
+    long countByTenantId(String tenantId);
 }

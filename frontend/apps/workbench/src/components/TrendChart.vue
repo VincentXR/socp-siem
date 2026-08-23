@@ -15,6 +15,7 @@ const props = withDefaults(defineProps<{ data?: Record<string, number>; variant?
 const el = ref<HTMLElement>()
 let chart: ECharts | null = null
 let renderToken = 0
+let themeObserver: MutationObserver | null = null
 
 function themeColor(key: string): string {
   const dark = document.documentElement.classList.contains('dark')
@@ -92,16 +93,16 @@ async function render() {
 onMounted(() => {
   void render()
   // 主题切换时重绘（监听 html.dark class）
-  const mo = new MutationObserver(() => { void render() })
-  mo.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
-  ;(el.value as any)._mo = mo
+  themeObserver = new MutationObserver(() => { void render() })
+  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
 })
 
 watch(() => props.data, () => { void render() }, { deep: true })
 
 onBeforeUnmount(() => {
   renderToken++
-  ;(el.value as any)?._mo?.disconnect?.()
+  themeObserver?.disconnect()
+  themeObserver = null
   chart?.dispose()
   chart = null
 })

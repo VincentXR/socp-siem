@@ -32,9 +32,21 @@ public interface DetectionStateStore {
         // In-memory/unit-test implementations may not need a second phase.
     }
 
+    default void markCompleted(SecurityEvent event) {
+        if (event != null) markCompleted(event.tenantId(), event.id());
+    }
+
+    default void markCompleted(String tenantId, String eventId) {
+        markCompleted(eventId);
+    }
+
     /** Mark an accepted event as terminally persisted to DLQ. */
     default void markDeadLettered(String eventId, String reason) {
         // Optional for source-compatible test stores.
+    }
+
+    default void markDeadLettered(String tenantId, String eventId, String reason) {
+        markDeadLettered(eventId, reason);
     }
 
     default void recordDeadLettered(String eventId, String raw, Integer partition, Long offset,
@@ -44,6 +56,10 @@ public interface DetectionStateStore {
 
     default long pendingCount() {
         return 0L;
+    }
+
+    default long pendingCount(String tenantId) {
+        return pendingCount();
     }
 
     /** Pending rows left by a previous process are replayable after assignment. */
@@ -73,6 +89,14 @@ public interface DetectionStateStore {
     /** Release a claim when the bounded detection queue rejected the event. */
     void remove(String eventId);
 
+    default void remove(SecurityEvent event) {
+        if (event != null) remove(event.tenantId(), event.id());
+    }
+
+    default void remove(String tenantId, String eventId) {
+        remove(eventId);
+    }
+
     /** Return events that should be replayed before the rule worker starts. */
     List<SecurityEvent> recent(Duration window);
 
@@ -92,6 +116,16 @@ public interface DetectionStateStore {
                                            Consumer<List<SecurityEvent>> batchConsumer) {
         List<SecurityEvent> events = recentForPartitions(partitions, window);
         if (!events.isEmpty()) batchConsumer.accept(events);
+    }
+
+    default void replayRecentForTenant(String tenantId, Duration window,
+                                       Consumer<List<SecurityEvent>> batchConsumer) {
+        replayRecent(window, events -> {
+            List<SecurityEvent> tenantEvents = events.stream()
+                    .filter(event -> tenantId.equals(event.tenantId()))
+                    .toList();
+            if (!tenantEvents.isEmpty()) batchConsumer.accept(tenantEvents);
+        });
     }
 
     /** Human-readable configured replay window for health/operations output. */

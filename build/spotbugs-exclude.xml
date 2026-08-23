@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FindBugsFilter>
+    <!-- Spring/JPA instantiate these classes reflectively; they are not dead code. -->
+    <Match>
+        <Or>
+            <Annotation name="org.springframework.boot.autoconfigure.SpringBootApplication" />
+            <Annotation name="jakarta.persistence.Entity" />
+        </Or>
+        <Bug pattern="UWF_UNWRITTEN_FIELD,URF_UNREAD_FIELD" />
+    </Match>
+</FindBugsFilter>

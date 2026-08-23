@@ -5,11 +5,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.search.config.domain.LogSource;
 import com.socp.search.config.domain.ParseFormat;
 import com.socp.search.config.domain.SourceType;
+import com.socp.platform.tenant.TenantContext;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 
 /**
  * 日志源存储——本地切片用 H2 文件库（重启不丢）；生产由独立 search 库 PG 承载。
@@ -31,12 +34,12 @@ public class LogSourceStore {
     }
 
     public Optional<LogSource> get(String id) {
-        return repo.findById(id).map(LogSourceStore::fromEntity);
+        return repo.findByTenantIdAndSourceId(tenant(), id).map(LogSourceStore::fromEntity);
     }
 
     public List<LogSource> list() {
         List<LogSource> out = new ArrayList<>();
-        for (LogSourceEntity e : repo.findAll()) out.add(fromEntity(e));
+        for (LogSourceEntity e : repo.findByTenantId(tenant())) out.add(fromEntity(e));
         return out;
     }
 
@@ -45,8 +48,9 @@ public class LogSourceStore {
     }
 
     public synchronized boolean delete(String id) {
-        if (repo.existsById(id)) {
-            repo.deleteById(id);
+        Optional<LogSourceEntity> entity = repo.findByTenantIdAndSourceId(tenant(), id);
+        if (entity.isPresent()) {
+            repo.delete(entity.get());
             return true;
         }
         return false;
@@ -57,6 +61,10 @@ public class LogSourceStore {
     static LogSourceEntity toEntity(LogSource s) {
         LogSourceEntity e = new LogSourceEntity();
         e.setId(s.id());
+        String tenant = tenant();
+        e.setTenantId(tenant);
+        e.setStorageId(UUID.nameUUIDFromBytes((tenant + "|" + s.id())
+                .getBytes(StandardCharsets.UTF_8)).toString());
         e.setName(s.name());
         e.setType(s.type() == null ? null : s.type().name());
         e.setFormat(s.format() == null ? null : s.format().name());
@@ -112,5 +120,10 @@ public class LogSourceStore {
         } catch (Exception ex) {
             return null;
         }
+    }
+
+    private static String tenant() {
+        String tenant = TenantContext.get();
+        return tenant == null || tenant.isBlank() ? "default" : tenant;
     }
 }

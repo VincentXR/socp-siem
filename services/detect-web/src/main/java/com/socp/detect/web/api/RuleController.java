@@ -162,7 +162,8 @@ public class RuleController {
         java.io.PrintWriter out = resp.getWriter();
         out.write(": socp connected\n\n");
         out.flush();
-        streamHub.add(out);
+        String tenant = com.socp.platform.tenant.TenantContext.require();
+        streamHub.add(tenant, out);
         try {
             while (true) {
                 Thread.sleep(3000);

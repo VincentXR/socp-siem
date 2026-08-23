@@ -108,6 +108,10 @@ public class Alarm extends BaseEntity {
         return id;
     }
 
+    void setId(String id) {
+        this.id = id;
+    }
+
     public String getRuleId() {
         return ruleId;
     }

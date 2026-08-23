@@ -2,6 +2,9 @@ package com.socp.search.config.search;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.socp.platform.tenant.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -14,7 +17,7 @@ import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.net.URLEncoder;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
@@ -62,20 +65,23 @@ public class OsEventReader {
         String query = q == null ? "" : q.trim();
         try {
             String endpoint = url + "/" + index + "/_search";
-            String qs = "q=" + URLEncoder.encode(query, StandardCharsets.UTF_8)
-                    + "&size=" + Math.min(Math.max(size, 1), 500)
-                    + "&sort=timestamp:desc";
-            HttpURLConnection c = (HttpURLConnection) new URL(endpoint + "?" + qs).openConnection();
-            c.setRequestMethod("GET");
+            HttpURLConnection c = (HttpURLConnection) new URL(endpoint).openConnection();
+            c.setRequestMethod("POST");
+            c.setDoOutput(true);
             c.setConnectTimeout(3000);
             c.setReadTimeout(5000);
             String auth = Base64.getEncoder().encodeToString(
                     (username + ":" + password).getBytes(StandardCharsets.UTF_8));
             c.setRequestProperty("Authorization", "Basic " + auth);
             c.setRequestProperty("Accept", "application/json");
+            c.setRequestProperty("Content-Type", "application/json");
             if (c instanceof HttpsURLConnection https) {
                 https.setSSLSocketFactory(trustAllSsl());
                 https.setHostnameVerifier((hostname, session) -> true);
+            }
+            byte[] request = tenantQuery(query, size);
+            try (OutputStream output = c.getOutputStream()) {
+                output.write(request);
             }
             int code = c.getResponseCode();
             if (code < 200 || code >= 300) {
@@ -91,6 +97,25 @@ public class OsEventReader {
             log.warn("OpenSearch 检索异常（回退 H2 检索）: {}", e.toString());
             return null;
         }
+    }
+
+    private static byte[] tenantQuery(String query, int size) throws Exception {
+        ObjectNode root = MAPPER.createObjectNode();
+        root.put("size", Math.min(Math.max(size, 1), 500));
+        ArrayNode sort = root.putArray("sort");
+        sort.addObject().putObject("timestamp").put("order", "desc");
+
+        ObjectNode bool = root.putObject("query").putObject("bool");
+        String tenant = TenantContext.get();
+        if (tenant == null || tenant.isBlank()) tenant = "default";
+        bool.putArray("filter").addObject().putObject("term")
+                .put("fields.tenant_id.keyword", tenant);
+        if (query == null || query.isBlank()) {
+            bool.putArray("must").addObject().putObject("match_all");
+        } else {
+            bool.putArray("must").addObject().putObject("query_string").put("query", query);
+        }
+        return MAPPER.writeValueAsBytes(root);
     }
 
     /** 解析 _search 响应：hits.hits[]._source → SearchEvent（字段与写入端对称）。 */

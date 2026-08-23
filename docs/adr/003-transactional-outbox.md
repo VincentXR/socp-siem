@@ -20,7 +20,8 @@ SOCP uses three explicit Outbox boundaries:
    acknowledgement before marking the row `PUBLISHED`. It scans bounded
    batches, uses an optimistic `PENDING -> PROCESSING` claim across instances,
    publishes with bounded concurrency, and recovers stale claims after a
-   process crash.
+   process crash. The same transaction also creates a deterministic delivery
+   intent for each ClickHouse, Incident, Notify, and SOAR destination.
 
 Alert Web enforces `(tenant_id, source_alert_id)` idempotency. The Alert Outbox
 guarantees broker acknowledgement before its row becomes `PUBLISHED`.
@@ -34,12 +35,12 @@ boundary observable, retryable, and independently testable.
 
 ## Trade-offs
 
-There are three durable states and three retry loops to operate. Delivery remains
+There are multiple durable states and retry loops to operate. Delivery remains
 at-least-once: a publisher crash after a broker accepts a message but before a
 database status update can produce a duplicate. Stable IDs and idempotent
-consumers are therefore required. The current combined fan-out consumer does
-not persist one retry task per destination, so the durable contract ends at
-Kafka and individual Incident/Notify/SOAR calls are best-effort. The design
+consumers are therefore required. Each downstream destination has its own
+database-backed claim, retry schedule, stale-claim recovery, and deterministic
+identity; Kafka replay reconciles missing delivery intents. The design still
 does not claim a distributed exactly-once transaction.
 
 Threat-intelligence enrichment is outside the Alert transaction and starts

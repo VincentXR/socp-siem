@@ -25,10 +25,13 @@ import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.m
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { onMounted, ref } from 'vue'
 import SevBadge from '../components/SevBadge.vue'
-import { createGasRule, deleteGasRule, gasIngest, gasStats, listRules, SEVERITIES, updateGasRule } from '../api'
+import {
+  createGasRule, deleteGasRule, gasIngest, gasStats, listRules, SEVERITIES, updateGasRule,
+  type GasStats, type RuleSpec,
+} from '../api'
 
-const rules = ref<Array<Record<string, unknown>>>([])
-const gasStat = ref<Record<string, unknown>>({})
+const rules = ref<RuleSpec[]>([])
+const gasStat = ref<GasStats>({ rules: 0, eventCount: 0, alertCount: 0, dropCount: 0, suppressedCount: 0, queueLoad: 0 })
 const ingestMsg = ref('')
 const ingestSource = ref('auth')
 const ingestResult = ref('')
@@ -43,16 +46,16 @@ const COND_FIELDS = ['source', 'host', 'msg', 'severity', 'src_ip', 'dst_ip', 'u
 const COND_OPS = ['eq', 'ne', 'contains', 'startswith', 'endswith', 'regex', 'gt', 'gte', 'lt', 'lte', 'ge']
 
 async function loadRules() {
-  rules.value = await listRules() as Array<Record<string, unknown>>
+  rules.value = await listRules()
   gasStat.value = await gasStats()
 }
 async function doIngest() {
   try {
-    const result = await gasIngest({ source: ingestSource.value, msg: ingestMsg.value, fields: { src_ip: '10.0.0.9' } }) as Record<string, unknown>
+    const result = await gasIngest({ source: ingestSource.value, msg: ingestMsg.value, fields: { src_ip: '10.0.0.9' } })
     ingestResult.value = JSON.stringify(result)
   } catch (error) { ingestResult.value = String(error) }
 }
-function openRuleEditor(rule?: Record<string, unknown>) {
+function openRuleEditor(rule?: RuleSpec) {
   if (rule) {
     ruleEditingId.value = String(rule.id)
     ruleForm.value = {
@@ -70,7 +73,8 @@ function openRuleEditor(rule?: Record<string, unknown>) {
 }
 async function saveRule() {
   if (!ruleForm.value.name.trim()) return
-  const spec: Record<string, unknown> = { id: ruleEditingId.value || undefined, name: ruleForm.value.name, type: ruleForm.value.type, severity: ruleForm.value.severity, message: ruleForm.value.message, enabled: ruleForm.value.enabled, window: ruleForm.value.window }
+  const spec: Partial<RuleSpec> = { name: ruleForm.value.name, type: ruleForm.value.type, severity: ruleForm.value.severity, message: ruleForm.value.message, enabled: ruleForm.value.enabled, window: ruleForm.value.window }
+  if (ruleEditingId.value) spec.id = ruleEditingId.value
   if (ruleForm.value.type === 'threshold') {
     spec.keyField = ruleForm.value.keyField
     spec.threshold = ruleForm.value.threshold
@@ -93,13 +97,20 @@ async function removeRule(id: string) {
   await deleteGasRule(id)
   await loadRules()
 }
-async function toggleRule(rule: Record<string, unknown>) {
+async function toggleRule(rule: RuleSpec) {
   await updateGasRule(String(rule.id), { ...rule, enabled: !rule.enabled })
   await loadRules()
 }
-function openRuleEditorRow(row: unknown) { openRuleEditor(row as Record<string, unknown>) }
-function toggleRuleRow(row: unknown) { toggleRule(row as Record<string, unknown>) }
-function removeRuleRow(row: unknown) { removeRule(String((row as Record<string, unknown>).id)) }
+function isRuleSpec(row: unknown): row is RuleSpec {
+  if (!row || typeof row !== 'object') return false
+  const candidate = row as Partial<RuleSpec>
+  return typeof candidate.id === 'string' && typeof candidate.name === 'string'
+    && typeof candidate.type === 'string' && typeof candidate.severity === 'string'
+    && typeof candidate.enabled === 'boolean'
+}
+function openRuleEditorRow(row: unknown) { if (isRuleSpec(row)) openRuleEditor(row) }
+function toggleRuleRow(row: unknown) { if (isRuleSpec(row)) void toggleRule(row) }
+function removeRuleRow(row: unknown) { if (isRuleSpec(row)) void removeRule(row.id) }
 
 onMounted(loadRules)
 </script>
@@ -110,7 +121,7 @@ onMounted(loadRules)
       <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ gasStat.rules ?? 0 }}</div><div class="label">规则数</div></div></el-card></el-col>
       <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ gasStat.eventCount ?? 0 }}</div><div class="label">事件数</div></div></el-card></el-col>
       <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#f56c6c">{{ gasStat.alertCount ?? 0 }}</div><div class="label">告警数</div></div></el-card></el-col>
-      <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ ((gasStat.queueLoad ?? 0) as number * 100).toFixed(0) }}%</div><div class="label">队列水位</div></div></el-card></el-col>
+      <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ (gasStat.queueLoad * 100).toFixed(0) }}%</div><div class="label">队列水位</div></div></el-card></el-col>
     </el-row>
     <el-card shadow="never" style="margin-bottom:14px"><template #header>模拟事件投递</template><div style="display:flex;gap:10px;align-items:center"><el-select v-model="ingestSource" style="width:120px"><el-option label="auth" value="auth" /><el-option label="web" value="web" /><el-option label="firewall" value="firewall" /></el-select><el-input v-model="ingestMsg" placeholder="如：Failed password for admin" style="width:360px" /><el-button type="primary" @click="doIngest">投递</el-button><span v-if="ingestResult" class="mono" style="font-size:12px;color:#67c23a">{{ ingestResult }}</span></div></el-card>
     <el-card shadow="never"><template #header><div style="display:flex;justify-content:space-between;align-items:center"><span>规则列表（可新建/编辑/删除/启停，保存后引擎热更新）</span><el-button type="primary" size="small" @click="openRuleEditor()">新建规则</el-button></div></template>

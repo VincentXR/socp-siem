@@ -47,12 +47,12 @@ public class AlarmDispositionService {
     @PostConstruct
     void init() {
         for (DispositionEntity e : repo.findAll()) {
-            map.put(e.getAlarmId(), toDisposition(e));
+            map.put(key(e.getTenantId(), e.getAlarmId()), toDisposition(e));
         }
     }
 
     public Disposition get(String alarmId) {
-        return map.getOrDefault(alarmId, new Disposition("OPEN", null, List.of()));
+        return map.getOrDefault(key(tenant(), alarmId), new Disposition("OPEN", null, List.of()));
     }
 
     public Disposition setStatus(String alarmId, String status) {
@@ -84,11 +84,12 @@ public class AlarmDispositionService {
 
     /** 内存 + 库双写：写操作同步落 t_alarm_disposition，重启恢复。 */
     private Disposition persist(String alarmId, Disposition d) {
-        map.put(alarmId, d);
-        DispositionEntity e = repo.findByAlarmId(alarmId).orElseGet(() -> {
+        String tenant = tenant();
+        map.put(key(tenant, alarmId), d);
+        DispositionEntity e = repo.findByAlarmIdAndTenantId(alarmId, tenant).orElseGet(() -> {
             DispositionEntity n = new DispositionEntity();
             n.setAlarmId(alarmId);
-            n.setTenantId(TenantContext.get() == null ? "default" : TenantContext.get());
+            n.setTenantId(tenant);
             return n;
         });
         e.setStatus(d.status());
@@ -96,6 +97,15 @@ public class AlarmDispositionService {
         e.setNotes(writeNotes(d.notes()));
         repo.save(e);
         return d;
+    }
+
+    private static String tenant() {
+        String tenant = TenantContext.get();
+        return tenant == null || tenant.isBlank() ? "default" : tenant;
+    }
+
+    private static String key(String tenant, String alarmId) {
+        return tenant + "|" + alarmId;
     }
 
     private static Disposition toDisposition(DispositionEntity e) {

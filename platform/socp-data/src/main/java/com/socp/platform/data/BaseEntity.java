@@ -36,6 +36,7 @@ public abstract class BaseEntity {
     void onCreate() {
         if (tenantId == null) {
             tenantId = com.socp.platform.tenant.TenantContext.get();
+            if (tenantId == null || tenantId.isBlank()) tenantId = "default";
         }
         createdAt = Instant.now();
         updatedAt = createdAt;

@@ -58,14 +58,15 @@ public class DetectionEventJournal implements DetectionStateStore {
         if (event == null || event.id() == null || event.id().isBlank()) {
             throw new IllegalArgumentException("event id is required");
         }
-        var existing = repository.findById(event.id());
+        String tenant = event.tenantId();
+        var existing = repository.findByTenantIdAndSourceEventId(tenant, event.id());
         if (existing.isPresent()) return claimOf(existing.get());
 
         try {
             String fields = com.socp.rule.util.Json.mapper().writeValueAsString(
                     event.fields() == null ? Map.of() : event.fields());
             repository.saveAndFlush(new DetectionEventEntity(
-                    event.id(), safe(event.source(), "unknown", 64),
+                    tenant, event.id(), safe(event.source(), "unknown", 64),
                     safe(event.host(), "unknown", 255), safe(event.raw(), "", 8192),
                     fields, event.severity() == null ? Severity.INFO.name() : event.severity().name(),
                     event.timestamp() == null ? Instant.now() : event.timestamp(),
@@ -94,8 +95,14 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Override
     @Transactional
     public void markCompleted(String eventId) {
+        markCompleted("default", eventId);
+    }
+
+    @Override
+    @Transactional
+    public void markCompleted(String tenantId, String eventId) {
         if (eventId == null || eventId.isBlank()) return;
-        repository.findById(eventId).ifPresent(row -> {
+        repository.findByTenantIdAndSourceEventId(tenantId, eventId).ifPresent(row -> {
             if (DetectionEventStatus.DEAD_LETTERED.name().equals(row.getStatus())) return;
             Instant now = Instant.now();
             row.setStatus(DetectionEventStatus.COMPLETED.name());
@@ -108,8 +115,14 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Override
     @Transactional
     public void markDeadLettered(String eventId, String reason) {
+        markDeadLettered("default", eventId, reason);
+    }
+
+    @Override
+    @Transactional
+    public void markDeadLettered(String tenantId, String eventId, String reason) {
         if (eventId == null || eventId.isBlank()) return;
-        repository.findById(eventId).ifPresent(row -> {
+        repository.findByTenantIdAndSourceEventId(tenantId, eventId).ifPresent(row -> {
             Instant now = Instant.now();
             row.setStatus(DetectionEventStatus.DEAD_LETTERED.name());
             row.setDeadLetteredAt(now);
@@ -123,13 +136,14 @@ public class DetectionEventJournal implements DetectionStateStore {
     public void recordDeadLettered(String eventId, String raw, Integer partition, Long offset,
                                    String reason) {
         if (eventId == null || eventId.isBlank() || "null".equalsIgnoreCase(eventId)) return;
-        var existing = repository.findById(eventId);
+        String tenant = "default";
+        var existing = repository.findByTenantIdAndSourceEventId(tenant, eventId);
         if (existing.isPresent()) {
-            markDeadLettered(eventId, reason);
+            markDeadLettered(tenant, eventId, reason);
             return;
         }
         DetectionEventEntity row = new DetectionEventEntity(
-                eventId, "unknown", "unknown", safe(raw, "", 8192), "{}", Severity.INFO.name(),
+                tenant, eventId, "unknown", "unknown", safe(raw, "", 8192), "{}", Severity.INFO.name(),
                 Instant.now(), partition, offset, null);
         row.setStatus(DetectionEventStatus.DEAD_LETTERED.name());
         row.setDeadLetteredAt(Instant.now());
@@ -140,14 +154,21 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Override
     @Transactional
     public void remove(String eventId) {
-        if (eventId != null && !eventId.isBlank()) repository.deleteById(eventId);
+        remove("default", eventId);
+    }
+
+    @Override
+    @Transactional
+    public void remove(String tenantId, String eventId) {
+        if (eventId == null || eventId.isBlank()) return;
+        repository.findByTenantIdAndSourceEventId(tenantId, eventId).ifPresent(repository::delete);
     }
 
     @Override
     @Transactional(readOnly = true)
     public List<SecurityEvent> recent(Duration window) {
         return readPages((page, size) -> repository
-                .findByStatusAndOccurredAtAfterOrderByOccurredAtAscEventIdAsc(
+                .findByStatusAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
                         DetectionEventStatus.COMPLETED.name(), cutoff(window),
                         org.springframework.data.domain.PageRequest.of(page, size)), true);
     }
@@ -165,7 +186,7 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Override
     public void replayRecent(Duration window, Consumer<List<SecurityEvent>> batchConsumer) {
         replayPages((page, size) -> repository
-                .findByStatusAndOccurredAtAfterOrderByOccurredAtAscEventIdAsc(
+                .findByStatusAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
                         DetectionEventStatus.COMPLETED.name(), cutoff(window),
                         org.springframework.data.domain.PageRequest.of(page, size)), batchConsumer);
     }
@@ -177,6 +198,15 @@ public class DetectionEventJournal implements DetectionStateStore {
         replayPages((page, size) -> repository
                 .findByStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
                         DetectionEventStatus.COMPLETED.name(), partitions, cutoff(window),
+                        org.springframework.data.domain.PageRequest.of(page, size)), batchConsumer);
+    }
+
+    @Override
+    public void replayRecentForTenant(String tenantId, Duration window,
+                                      Consumer<List<SecurityEvent>> batchConsumer) {
+        replayPages((page, size) -> repository
+                .findByTenantIdAndStatusAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
+                        tenantId, DetectionEventStatus.COMPLETED.name(), cutoff(window),
                         org.springframework.data.domain.PageRequest.of(page, size)), batchConsumer);
     }
 
@@ -211,6 +241,12 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Transactional(readOnly = true)
     public long pendingCount() {
         return repository.countByStatus(DetectionEventStatus.PENDING.name());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public long pendingCount(String tenantId) {
+        return repository.countByTenantIdAndStatus(tenantId, DetectionEventStatus.PENDING.name());
     }
 
     @Override
@@ -269,6 +305,7 @@ public class DetectionEventJournal implements DetectionStateStore {
             try {
                 Map<String, String> fields = com.socp.rule.util.Json.mapper()
                         .readValue(row.getFieldsJson(), FIELDS);
+                fields.putIfAbsent("tenant_id", row.getTenantId());
                 Severity severity;
                 try {
                     severity = Severity.valueOf(row.getSeverity().toUpperCase());

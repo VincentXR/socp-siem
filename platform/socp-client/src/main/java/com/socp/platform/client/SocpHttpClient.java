@@ -55,16 +55,19 @@ public class SocpHttpClient {
     private final ServiceTokenProvider tokens;
     private final SocpClientProperties props;
     private final ObjectProvider<MeterRegistry> registry;
+    private final ServiceRequestSigner requestSigner;
     private final HttpClient http;
 
     public SocpHttpClient(ServiceEndpoints endpoints,
                           ServiceTokenProvider tokens,
                           SocpClientProperties props,
-                          ObjectProvider<MeterRegistry> registry) {
+                          ObjectProvider<MeterRegistry> registry,
+                          ServiceRequestSigner requestSigner) {
         this.endpoints = endpoints;
         this.tokens = tokens;
         this.props = props;
         this.registry = registry;
+        this.requestSigner = requestSigner;
         this.http = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofMillis(props.getConnectTimeoutMs()))
                 .version(HttpClient.Version.HTTP_1_1)
@@ -129,7 +132,7 @@ public class SocpHttpClient {
         while (attempts < max) {
             attempts++;
             try {
-                HttpRequest req = build(method, url, body, contentType, timeoutMs);
+                HttpRequest req = build(method, target, url, body, contentType, timeoutMs);
                 HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
                 status = resp.statusCode();
                 respBody = resp.body() == null ? "" : resp.body();
@@ -168,11 +171,17 @@ public class SocpHttpClient {
         return call;
     }
 
-    private HttpRequest build(String method, String url, String body, String contentType, int timeoutMs) {
-        HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(url))
+    private HttpRequest build(String method, SocpService target, String url,
+                              String body, String contentType, int timeoutMs) {
+        URI uri = URI.create(url);
+        String tenant = tenant();
+        HttpRequest.Builder b = HttpRequest.newBuilder(uri)
                 .timeout(Duration.ofMillis(timeoutMs > 0 ? timeoutMs : props.getRequestTimeoutMs()))
                 .header("Authorization", "Bearer " + tokens.token())
-                .header("X-Tenant-Id", tenant());
+                .header("X-Tenant-Id", tenant);
+        if (target != null) {
+            requestSigner.sign(b, method, uri, tenant);
+        }
         String traceparent = TraceIdFilter.buildTraceparent();
         if (traceparent != null) {
             b.header("traceparent", traceparent);

@@ -11,8 +11,11 @@ import jakarta.persistence.Table;
 public class RuleEntity {
 
     @Id
-    @Column(length = 64)
-    private String id;
+    @Column(name = "id", length = 160)
+    private String storageId;
+
+    @Column(name = "rule_id", length = 64, nullable = false)
+    private String ruleId;
 
     /** RuleSpec 完整 JSON（含 name/type/severity/match 等自由结构） */
     @Column(length = 4096, nullable = false)
@@ -24,8 +27,10 @@ public class RuleEntity {
     public RuleEntity() {
     }
 
-    public String getId() { return id; }
-    public void setId(String id) { this.id = id; }
+    public String getId() { return ruleId; }
+    public void setId(String id) { this.ruleId = id; }
+    public String getStorageId() { return storageId; }
+    public void setStorageId(String storageId) { this.storageId = storageId; }
     public String getSpec() { return spec; }
     public void setSpec(String spec) { this.spec = spec; }
     public String getTenantId() { return tenantId; }

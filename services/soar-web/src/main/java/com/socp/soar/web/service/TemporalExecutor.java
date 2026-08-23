@@ -1,5 +1,6 @@
 package com.socp.soar.web.service;
 
+import com.socp.platform.tenant.TenantContext;
 import com.socp.soar.web.model.Playbook;
 import com.socp.soar.web.temporal.PlaybookExecRequest;
 import com.socp.soar.web.temporal.PlaybookWorkflow;
@@ -11,6 +12,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.util.Map;
+import java.util.LinkedHashMap;
 import java.util.UUID;
 
 /**
@@ -72,7 +74,12 @@ public class TemporalExecutor {
 
     /** 用 Temporal Workflow 执行剧本，返回与进程内结构一致的执行结果。 */
     public Map<String, Object> run(Playbook pb, Map<String, Object> alarm) {
-        PlaybookExecRequest req = new PlaybookExecRequest(pb.id(), pb.name(), pb.trigger(), pb.actions(), alarm);
+        Map<String, Object> tenantAlarm = new LinkedHashMap<>(alarm);
+        String tenant = TenantContext.get();
+        tenantAlarm.putIfAbsent("tenantId", tenant == null || tenant.isBlank() ? "default" : tenant);
+        PlaybookExecRequest req = new PlaybookExecRequest(
+                pb.id(), pb.name(), pb.trigger(), pb.actions(),
+                java.util.Collections.unmodifiableMap(tenantAlarm));
         PlaybookWorkflow stub = workflowClient.newWorkflowStub(PlaybookWorkflow.class,
                 WorkflowOptions.newBuilder()
                         .setWorkflowId("playbook-" + pb.id() + "-" + UUID.randomUUID())

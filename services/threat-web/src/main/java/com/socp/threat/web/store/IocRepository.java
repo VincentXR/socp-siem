@@ -8,7 +8,11 @@ import java.util.Optional;
 /** 威胁情报 IOC 仓储。 */
 public interface IocRepository extends JpaRepository<IocEntity, String> {
 
-    Optional<IocEntity> findByValue(String value);
+    Optional<IocEntity> findByTenantIdAndValue(String tenantId, String value);
+
+    Optional<IocEntity> findByIdAndTenantId(String id, String tenantId);
 
     List<IocEntity> findByTenantId(String tenantId);
+
+    long countByTenantId(String tenantId);
 }

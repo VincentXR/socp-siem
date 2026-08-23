@@ -1,44 +1,33 @@
 package com.socp.soc.audit;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.socp.platform.client.kafka.KafkaClientSupport;
+import com.socp.platform.tenant.TenantContext;
 import jakarta.annotation.PostConstruct;
-import org.apache.kafka.clients.consumer.ConsumerConfig;
-import org.apache.kafka.clients.consumer.ConsumerRecord;
+import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.ProducerConfig;
-import org.apache.kafka.clients.producer.ProducerRecord;
-import org.apache.kafka.common.serialization.StringDeserializer;
-import org.apache.kafka.common.serialization.StringSerializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Collections;
-import java.util.LinkedHashSet;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
-import java.util.Set;
 
-/**
- * 审计 Kafka 消费者（审计链路收口）：订阅各服务 {@code @AuditOperation} 发到
- * {@code socp-audit} 主题的审计记录，落库 {@code t_audit}（PG/H2）。
- *
- * <p>可靠性约定与事件总线一致：手动 commit（处理完才提交）+ LRU 幂等去重 +
- * 解析/落库失败写 DLQ（socp-audit-dlq），不静默丢弃。
- * 时间戳兼容秒/毫秒/ISO（&lt;1e11 判秒），兼容不同发端的序列化差异。
- */
+/** Persists audit events with durable event-id idempotency and manual Kafka offsets. */
 @Component
 public class AuditConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(AuditConsumer.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final int DEDUP_MAX = 100_000;
+    private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
 
     @Value("${socp.kafka.bootstrap:localhost:9092}")
     private String bootstrap;
@@ -50,134 +39,164 @@ public class AuditConsumer {
     private boolean enabled;
 
     private final AuditRepository repository;
+    private volatile KafkaProducer<String, String> dlqProducer;
+    private volatile Thread worker;
 
     public AuditConsumer(AuditRepository repository) {
         this.repository = repository;
     }
 
-    /** 已处理消息去重缓存（LRU：满则清空重建，配合至少一次语义实现幂等） */
-    private static final Set<String> DEDUP = Collections.synchronizedSet(new LinkedHashSet<>() {
-        @Override
-        public boolean add(String e) {
-            if (size() >= DEDUP_MAX) clear();
-            return super.add(e);
-        }
-    });
-
-    private volatile KafkaProducer<String, String> dlqProducer;
-
-    private KafkaProducer<String, String> dlq() {
-        KafkaProducer<String, String> p = dlqProducer;
-        if (p == null) {
-            synchronized (this) {
-                if (dlqProducer == null) {
-                    Properties props = new Properties();
-                    props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap);
-                    props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
-                    props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
-                    props.put(ProducerConfig.ACKS_CONFIG, "all");
-                    dlqProducer = new KafkaProducer<>(props);
-                }
-                p = dlqProducer;
-            }
-        }
-        return p;
-    }
-
-    /** 处理失败 → 写入 DLQ 主题，不静默丢弃 */
-    private void toDlq(String key, String raw) {
-        try {
-            dlq().send(new ProducerRecord<>(topic + "-dlq",
-                    key == null ? "unknown" : key, raw));
-        } catch (Exception ex) {
-            log.warn("审计 DLQ 写入失败 key={}: {}", key, ex.getMessage());
-        }
-    }
-
     @PostConstruct
     public void start() {
         if (!enabled) return;
-        Thread.ofPlatform().name("audit-consumer").daemon(true).start(() -> run());
-        log.info("审计 Kafka 消费者已启动 bootstrap={} topic={}", bootstrap, topic);
+        worker = Thread.ofPlatform().name("audit-consumer").daemon(true).start(this::run);
+        log.info("Audit consumer started bootstrap={} topic={}", bootstrap, topic);
     }
 
     private void run() {
-        Properties props = new Properties();
-        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap);
-        props.put(ConsumerConfig.GROUP_ID_CONFIG, "socp-audit-sink");
-        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
-        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
-        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
-        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
-        KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props);
-        try {
+        var props = KafkaClientSupport.reliableConsumer(bootstrap,
+                "socp-audit-sink", "earliest", 200);
+        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props)) {
             consumer.subscribe(List.of(topic));
             while (!Thread.currentThread().isInterrupted()) {
-                ConsumerRecords<String, String> records;
-                try {
-                    records = consumer.poll(Duration.ofMillis(500));
-                } catch (Exception ex) {
-                    log.warn("审计 Kafka poll 异常（重试）: {}", ex.getMessage());
-                    try { Thread.sleep(2000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
-                    continue;
-                }
+                ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(500));
                 if (records.isEmpty()) continue;
-                for (ConsumerRecord<String, String> rec : records) {
-                    String key = rec.key();
+                boolean retryBatch = false;
+                for (var record : records) {
                     try {
-                        String dedupKey = (key == null ? "" : key) + ":" + rec.value().hashCode();
-                        if (!DEDUP.add(dedupKey)) continue; // 幂等去重
-                        AuditEntity entity = parse(rec.value());
-                        if (entity != null) {
-                            repository.save(entity);
+                        processRecord(record.key(), record.value());
+                    } catch (InvalidAuditEventException invalid) {
+                        if (!toDlqAndAwait(record.key(), record.value())) {
+                            retryBatch = true;
+                            break;
                         }
-                    } catch (Exception ex) {
-                        log.warn("审计落库失败 key={}（写 DLQ）: {}", key, ex.getMessage());
-                        toDlq(key, rec.value());
+                        log.warn("Invalid audit event moved to DLQ key={}: {}", record.key(), invalid.getMessage());
+                    } catch (RuntimeException persistenceFailure) {
+                        log.warn("Audit persistence failed; Kafka batch will retry key={}: {}",
+                                record.key(), persistenceFailure.getMessage());
+                        retryBatch = true;
+                        break;
                     }
                 }
-                try {
+                if (retryBatch) {
+                    KafkaClientSupport.rewindBatch(consumer, records);
+                } else {
                     consumer.commitSync();
-                } catch (Exception ex) {
-                    log.warn("审计 offset 提交失败（下次重放一批）: {}", ex.getMessage());
                 }
             }
-        } finally {
-            try { consumer.close(); } catch (Exception ignored) { }
+        } catch (RuntimeException failure) {
+            if (!Thread.currentThread().isInterrupted()) {
+                log.error("Audit consumer stopped unexpectedly", failure);
+            }
         }
     }
 
-    /** JSON → AuditEntity；timestamp 兼容 秒/毫秒/ISO（&lt;1e11 判秒）。 */
+    void processRecord(String key, String raw) {
+        AuditEntity entity;
+        try {
+            entity = parse(key, raw);
+        } catch (Exception invalid) {
+            throw new InvalidAuditEventException(invalid.getMessage(), invalid);
+        }
+        if (repository.existsByEventId(entity.getEventId())) return;
+        try {
+            repository.saveAndFlush(entity);
+        } catch (DataIntegrityViolationException race) {
+            if (!repository.existsByEventId(entity.getEventId())) throw race;
+        }
+    }
+
     @SuppressWarnings("unchecked")
-    private AuditEntity parse(String raw) throws Exception {
-        Map<String, Object> m = MAPPER.readValue(raw, Map.class);
-        String tenantId = str(m.get("tenantId"));
-        String action = str(m.get("action"));
-        String operator = str(m.get("operator"));
-        String target = str(m.get("target"));
-        String result = str(m.get("result"));
-        if (action == null || action.isBlank()) {
-            throw new IllegalArgumentException("audit 消息缺少 action: " + raw);
-        }
+    AuditEntity parse(String key, String raw) throws Exception {
+        if (raw == null || raw.isBlank()) throw new IllegalArgumentException("empty audit payload");
+        Map<String, Object> values = MAPPER.readValue(raw, Map.class);
+        String eventId = text(values.get("eventId"));
+        if (eventId == null) eventId = text(key);
+        if (eventId == null) eventId = legacyEventId(raw);
+        String tenantId = text(values.get("tenantId"));
+        if (tenantId == null) tenantId = "default";
+        String action = text(values.get("action"));
+        String operator = text(values.get("operator"));
+        String target = text(values.get("target"));
+        String result = text(values.get("result"));
+        if (!TenantContext.isValid(tenantId)) throw new IllegalArgumentException("invalid audit tenant");
+        if (action == null) throw new IllegalArgumentException("audit event is missing action");
+        requireLength("eventId", eventId, 128);
+        requireLength("action", action, 128);
+        requireLength("operator", operator, 128);
+        requireLength("target", target, 512);
+        requireLength("result", result, 64);
         return new AuditEntity(
-                tenantId == null || tenantId.isBlank() ? "default" : tenantId,
+                eventId,
+                tenantId,
                 action,
-                operator == null || operator.isBlank() ? "system" : operator,
+                operator == null ? "system" : operator,
                 target,
-                result == null || result.isBlank() ? "OK" : result,
-                parseTs(m.get("timestamp")));
+                result == null ? "OK" : result,
+                parseTimestamp(values.get("timestamp")));
     }
 
-    private static String str(Object o) {
-        return o == null ? null : String.valueOf(o);
-    }
-
-    private static Instant parseTs(Object ts) {
-        if (ts == null) return Instant.now();
-        if (ts instanceof Number n) {
-            long v = n.longValue();
-            return v < 100_000_000_000L ? Instant.ofEpochSecond(v) : Instant.ofEpochMilli(v);
+    private boolean toDlqAndAwait(String key, String raw) {
+        try {
+            KafkaClientSupport.sendAndAwait(dlq(), topic + "-dlq", key, raw, Duration.ofSeconds(10));
+            return true;
+        } catch (RuntimeException failure) {
+            log.warn("Audit DLQ acknowledgement failed key={}: {}", key, failure.getMessage());
+            return false;
         }
-        return Instant.parse(String.valueOf(ts));
+    }
+
+    private KafkaProducer<String, String> dlq() {
+        KafkaProducer<String, String> current = dlqProducer;
+        if (current != null) return current;
+        synchronized (this) {
+            if (dlqProducer == null) {
+                dlqProducer = new KafkaProducer<>(KafkaClientSupport.reliableProducer(bootstrap));
+            }
+            return dlqProducer;
+        }
+    }
+
+    @PreDestroy
+    void stop() {
+        Thread currentWorker = worker;
+        if (currentWorker != null) currentWorker.interrupt();
+        KafkaProducer<String, String> producer = dlqProducer;
+        if (producer != null) producer.close(Duration.ofSeconds(5));
+    }
+
+    private static String text(Object value) {
+        if (value == null) return null;
+        String result = String.valueOf(value).trim();
+        return result.isEmpty() ? null : result;
+    }
+
+    private static void requireLength(String field, String value, int maximum) {
+        if (value != null && value.length() > maximum) {
+            throw new IllegalArgumentException("audit " + field + " is too long");
+        }
+    }
+
+    private static Instant parseTimestamp(Object timestamp) {
+        if (timestamp == null) return Instant.now();
+        if (timestamp instanceof Number number) {
+            long value = number.longValue();
+            return value < 100_000_000_000L
+                    ? Instant.ofEpochSecond(value)
+                    : Instant.ofEpochMilli(value);
+        }
+        return Instant.parse(String.valueOf(timestamp));
+    }
+
+    private static String legacyEventId(String raw) throws Exception {
+        byte[] digest = MessageDigest.getInstance("SHA-256")
+                .digest(raw.getBytes(StandardCharsets.UTF_8));
+        return "legacy-" + HexFormat.of().formatHex(digest);
+    }
+
+    static final class InvalidAuditEventException extends RuntimeException {
+        InvalidAuditEventException(String message, Throwable cause) {
+            super(message, cause);
+        }
     }
 }

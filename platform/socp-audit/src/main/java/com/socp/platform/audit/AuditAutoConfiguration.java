@@ -3,8 +3,12 @@ package com.socp.platform.audit;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * 审计自动配置：根据 socp.audit.sink 选择出口。
@@ -31,11 +35,35 @@ public class AuditAutoConfiguration {
     @ConditionalOnProperty(name = "socp.audit.sink", havingValue = "kafka")
     static class KafkaAuditConfiguration {
 
+        @Bean("auditProducerFactory")
+        public org.springframework.kafka.core.ProducerFactory<String, String> auditProducerFactory(
+                @Value("${socp.kafka.bootstrap:${spring.kafka.bootstrap-servers:localhost:9092}}")
+                String bootstrap) {
+            Map<String, Object> properties = new HashMap<>();
+            properties.put(org.apache.kafka.clients.producer.ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap);
+            properties.put(org.apache.kafka.clients.producer.ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG,
+                    org.apache.kafka.common.serialization.StringSerializer.class);
+            properties.put(org.apache.kafka.clients.producer.ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG,
+                    org.apache.kafka.common.serialization.StringSerializer.class);
+            properties.put(org.apache.kafka.clients.producer.ProducerConfig.ACKS_CONFIG, "all");
+            properties.put(org.apache.kafka.clients.producer.ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
+            return new org.springframework.kafka.core.DefaultKafkaProducerFactory<>(properties);
+        }
+
+        @Bean("auditKafkaTemplate")
+        public org.springframework.kafka.core.KafkaTemplate<String, String> auditKafkaTemplate(
+                @Qualifier("auditProducerFactory")
+                org.springframework.kafka.core.ProducerFactory<String, String> producerFactory) {
+            return new org.springframework.kafka.core.KafkaTemplate<>(producerFactory);
+        }
+
         @Bean
         public AuditSink kafkaAuditSink(
-                org.springframework.kafka.core.KafkaTemplate<String, AuditRecord> template,
-                @Value("${socp.audit.topic:socp-audit}") String topic) {
-            return new KafkaAuditSink(template, topic);
+                @Qualifier("auditKafkaTemplate")
+                org.springframework.kafka.core.KafkaTemplate<String, String> template,
+                @Value("${socp.audit.topic:socp-audit}") String topic,
+                @Value("${socp.audit.fail-closed:false}") boolean failClosed) {
+            return new KafkaAuditSink(template, topic, failClosed);
         }
     }
 }

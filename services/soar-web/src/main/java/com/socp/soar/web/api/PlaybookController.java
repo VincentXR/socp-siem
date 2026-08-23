@@ -13,6 +13,9 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 import java.util.Map;
 import com.socp.platform.auth.RequireRole;
+import com.socp.soar.web.service.AlarmEvaluationService;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 
 /**
  * SOAR 剧本 API：CRUD + 启停。剧本元数据持久化；执行由
@@ -24,10 +27,13 @@ public class PlaybookController {
 
     private final PlaybookStore store;
     private final com.socp.soar.web.service.PlaybookExecutor executor;
+    private final AlarmEvaluationService evaluationService;
 
-    public PlaybookController(PlaybookStore store, com.socp.soar.web.service.PlaybookExecutor executor) {
+    public PlaybookController(PlaybookStore store, com.socp.soar.web.service.PlaybookExecutor executor,
+                              AlarmEvaluationService evaluationService) {
         this.store = store;
         this.executor = executor;
+        this.evaluationService = evaluationService;
     }
 
     @GetMapping
@@ -62,7 +68,11 @@ public class PlaybookController {
     /** 评估并编排执行：接收告警，命中启用的剧本触发条件则执行动作。 */
     @PostMapping("/evaluate")
     public Map<String, Object> evaluate(@RequestBody Map<String, Object> alarm) {
-        return executor.evaluate(alarm);
+        try {
+            return evaluationService.evaluate(alarm);
+        } catch (AlarmEvaluationService.EvaluationInProgressException inProgress) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, inProgress.getMessage(), inProgress);
+        }
     }
 
     /** 手动触发指定剧本执行（忽略触发条件，直接跑 actions）。 */

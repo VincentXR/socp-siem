@@ -9,6 +9,7 @@ import com.socp.detect.web.store.RuleSpecStore;
 import com.socp.detect.web.ueba.EntityRiskStore;
 import com.socp.platform.tenant.TenantContext;
 import com.socp.rule.model.Alert;
+import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.score.RiskScorer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -57,7 +58,7 @@ public class AlertForwarder {
 
     /** Persist before the detection worker continues; remote delivery is retried asynchronously. */
     public void forward(Alert alert) {
-        forwardAll(null, alert == null ? List.of() : List.of(alert));
+        forwardAll((SecurityEvent) null, alert == null ? List.of() : List.of(alert));
     }
 
     /**
@@ -65,6 +66,15 @@ public class AlertForwarder {
      * the same database transaction. An empty alert list is a valid result.
      */
     @Transactional
+    public void forwardAll(SecurityEvent sourceEvent, List<Alert> alerts) {
+        if (alerts == null) alerts = List.of();
+        for (Alert alert : alerts) forwardOne(alert);
+        if (stateStore != null && sourceEvent != null) {
+            stateStore.markCompleted(sourceEvent);
+        }
+    }
+
+    /** Compatibility overload for focused tests and non-Kafka callers. */
     public void forwardAll(String eventId, List<Alert> alerts) {
         if (alerts == null) alerts = List.of();
         for (Alert alert : alerts) forwardOne(alert);
@@ -95,6 +105,7 @@ public class AlertForwarder {
 
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("id", alert.id());
+            payload.put("tenantId", tenant);
             payload.put("sourceAlertId", alert.id());
             payload.put("ruleId", alert.ruleId());
             payload.put("ruleName", alert.ruleName());
@@ -130,8 +141,8 @@ public class AlertForwarder {
     }
 
     private static String resolveTenant(Alert alert) {
-        String current = TenantContext.get();
-        if (current != null && !current.isBlank()) return current;
+        // Evidence is the durable identity carried across asynchronous
+        // boundaries. A leftover ThreadLocal must never re-home an alert.
         if (alert.evidence() != null) {
             for (var event : alert.evidence()) {
                 if (event == null || event.fields() == null) continue;
@@ -140,6 +151,8 @@ public class AlertForwarder {
                 if (tenant != null && !tenant.isBlank()) return tenant;
             }
         }
+        String current = TenantContext.get();
+        if (current != null && !current.isBlank()) return current;
         return "default";
     }
 

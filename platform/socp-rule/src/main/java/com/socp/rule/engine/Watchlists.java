@@ -8,71 +8,153 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 观察名单 / 参考数据集全局注册表（watchlist、reference set）。
+ * Tenant-scoped watchlists used by rule conditions.
  *
- * <p>大厂 SIEM 的规则很少把 IP、账号硬编码在规则里，而是引用一个"名单"：
- * 离职人员名单、特权账号名单、暴露面资产名单、恶意 IP 名单。名单由运营侧动态维护，
- * 规则本身不用改——这是规则可运营性的关键。
- *
- * <p>规则条件通过 {@code op=inlist / notinlist、value=<名单名>} 引用本注册表。
- * 名单值统一小写归一，匹配大小写不敏感。进程内实现（集群无关），
- * 生产化后由 SEARCH ReferenceSet 服务定期下发刷新，接口契约不变。
+ * <p>Built-in templates are inherited until a tenant replaces or deletes a
+ * list. Tenant mutations never change another tenant's effective values.</p>
  */
 public final class Watchlists {
 
-    private static final Map<String, Set<String>> LISTS = new ConcurrentHashMap<>();
+    private static final String DEFAULT_TENANT = "default";
+    private static final Map<String, Set<String>> TEMPLATES = new ConcurrentHashMap<>();
+    private static final Map<String, Map<String, Set<String>>> LISTS = new ConcurrentHashMap<>();
+    private static final Map<String, Set<String>> DELETED = new ConcurrentHashMap<>();
 
     private Watchlists() {
     }
 
-    /** 全量替换一个名单 */
-    public static void put(String name, Collection<String> values) {
-        if (name == null || name.isBlank()) return;
-        Set<String> set = ConcurrentHashMap.newKeySet();
-        if (values != null) {
-            for (String v : values) {
-                if (v != null && !v.isBlank()) set.add(v.trim().toLowerCase());
-            }
-        }
-        LISTS.put(name.trim().toLowerCase(), set);
+    /** Register an inherited built-in list without making it tenant-owned. */
+    public static void putTemplate(String name, Collection<String> values) {
+        String normalizedName = normalizeName(name);
+        if (normalizedName == null) return;
+        TEMPLATES.put(normalizedName, normalizedValues(values));
     }
 
-    /** 向名单追加若干值（名单不存在则创建） */
+    public static void put(String tenantId, String name, Collection<String> values) {
+        String tenant = normalizeTenant(tenantId);
+        String normalizedName = normalizeName(name);
+        if (normalizedName == null) return;
+        LISTS.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>())
+                .put(normalizedName, normalizedValues(values));
+        DELETED.computeIfAbsent(tenant, ignored -> ConcurrentHashMap.newKeySet())
+                .remove(normalizedName);
+    }
+
+    public static void put(String name, Collection<String> values) {
+        put(DEFAULT_TENANT, name, values);
+    }
+
+    public static void add(String tenantId, String name, Collection<String> values) {
+        if (values == null) return;
+        String tenant = normalizeTenant(tenantId);
+        String normalizedName = normalizeName(name);
+        if (normalizedName == null) return;
+        Map<String, Set<String>> tenantLists = LISTS.computeIfAbsent(tenant,
+                ignored -> new ConcurrentHashMap<>());
+        tenantLists.compute(normalizedName, (ignored, existing) -> {
+            Set<String> result = ConcurrentHashMap.newKeySet();
+            if (existing != null) result.addAll(existing);
+            else if (!isDeleted(tenant, normalizedName)) {
+                result.addAll(TEMPLATES.getOrDefault(normalizedName, Set.of()));
+            }
+            result.addAll(normalizedValues(values));
+            return result;
+        });
+        DELETED.computeIfAbsent(tenant, ignored -> ConcurrentHashMap.newKeySet())
+                .remove(normalizedName);
+    }
+
     public static void add(String name, Collection<String> values) {
-        if (name == null || name.isBlank() || values == null) return;
-        Set<String> set = LISTS.computeIfAbsent(name.trim().toLowerCase(), k -> ConcurrentHashMap.newKeySet());
-        for (String v : values) {
-            if (v != null && !v.isBlank()) set.add(v.trim().toLowerCase());
-        }
+        add(DEFAULT_TENANT, name, values);
+    }
+
+    public static boolean delete(String tenantId, String name) {
+        String tenant = normalizeTenant(tenantId);
+        String normalizedName = normalizeName(name);
+        if (normalizedName == null) return false;
+        boolean existed = names(tenant).contains(normalizedName);
+        Map<String, Set<String>> tenantLists = LISTS.get(tenant);
+        if (tenantLists != null) tenantLists.remove(normalizedName);
+        DELETED.computeIfAbsent(tenant, ignored -> ConcurrentHashMap.newKeySet())
+                .add(normalizedName);
+        return existed;
     }
 
     public static boolean delete(String name) {
-        return name != null && LISTS.remove(name.trim().toLowerCase()) != null;
+        return delete(DEFAULT_TENANT, name);
     }
 
-    /** 规则条件求值入口：value 是否命中名单 name */
+    public static boolean contains(String tenantId, String name, String value) {
+        if (value == null) return false;
+        return values(tenantId, name).contains(value.trim().toLowerCase());
+    }
+
     public static boolean contains(String name, String value) {
-        if (name == null || value == null) return false;
-        Set<String> set = LISTS.get(name.trim().toLowerCase());
-        return set != null && set.contains(value.trim().toLowerCase());
+        return contains(DEFAULT_TENANT, name, value);
+    }
+
+    public static Set<String> names(String tenantId) {
+        String tenant = normalizeTenant(tenantId);
+        Set<String> result = new LinkedHashSet<>(TEMPLATES.keySet());
+        Map<String, Set<String>> tenantLists = LISTS.get(tenant);
+        if (tenantLists != null) result.addAll(tenantLists.keySet());
+        result.removeAll(DELETED.getOrDefault(tenant, Set.of()));
+        return Collections.unmodifiableSet(result);
     }
 
     public static Set<String> names() {
-        return Collections.unmodifiableSet(new LinkedHashSet<>(LISTS.keySet()));
+        return names(DEFAULT_TENANT);
+    }
+
+    public static Set<String> values(String tenantId, String name) {
+        String tenant = normalizeTenant(tenantId);
+        String normalizedName = normalizeName(name);
+        if (normalizedName == null || isDeleted(tenant, normalizedName)) return Set.of();
+        Map<String, Set<String>> tenantLists = LISTS.get(tenant);
+        Set<String> values = tenantLists == null ? null : tenantLists.get(normalizedName);
+        if (values == null) values = TEMPLATES.get(normalizedName);
+        return values == null ? Set.of()
+                : Collections.unmodifiableSet(new LinkedHashSet<>(values));
     }
 
     public static Set<String> values(String name) {
-        if (name == null) return Set.of();
-        Set<String> set = LISTS.get(name.trim().toLowerCase());
-        return set == null ? Set.of() : Collections.unmodifiableSet(new LinkedHashSet<>(set));
+        return values(DEFAULT_TENANT, name);
+    }
+
+    public static int size(String tenantId, String name) {
+        return values(tenantId, name).size();
     }
 
     public static int size(String name) {
-        return values(name).size();
+        return size(DEFAULT_TENANT, name);
     }
 
-    /** 仅供测试用：清空全部名单 */
+    /** Only for tests. */
     public static void clear() {
+        TEMPLATES.clear();
         LISTS.clear();
+        DELETED.clear();
+    }
+
+    private static boolean isDeleted(String tenant, String name) {
+        return DELETED.getOrDefault(tenant, Set.of()).contains(name);
+    }
+
+    private static String normalizeTenant(String tenantId) {
+        return tenantId == null || tenantId.isBlank() ? DEFAULT_TENANT : tenantId.trim();
+    }
+
+    private static String normalizeName(String name) {
+        return name == null || name.isBlank() ? null : name.trim().toLowerCase();
+    }
+
+    private static Set<String> normalizedValues(Collection<String> values) {
+        Set<String> result = ConcurrentHashMap.newKeySet();
+        if (values != null) {
+            for (String value : values) {
+                if (value != null && !value.isBlank()) result.add(value.trim().toLowerCase());
+            }
+        }
+        return result;
     }
 }

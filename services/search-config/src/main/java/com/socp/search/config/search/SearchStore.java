@@ -2,8 +2,6 @@ package com.socp.search.config.search;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -13,6 +11,9 @@ import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.Set;
+import com.socp.platform.tenant.TenantContext;
 
 /**
  * 检索事件库——本地切片用 H2 文件库（重启不丢，含种子样例）；生产由 OpenSearch 承载。
@@ -26,26 +27,22 @@ public class SearchStore {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final int CAP = 20000;
 
-    private final Deque<SearchEvent> events = new ArrayDeque<>(CAP);
+    private final Map<String, Deque<SearchEvent>> eventsByTenant = new ConcurrentHashMap<>();
+    private final Set<String> initializedTenants = ConcurrentHashMap.newKeySet();
 
     public SearchStore(SearchEventRepository repo, OsEventWriter osWriter) {
         this.repo = repo;
         this.osWriter = osWriter;
-        long persisted = repo.count();
+        long persisted = repo.countByTenantId("default");
         if (persisted == 0) {
             seed();
         } else {
-            // Never materialize the full journal at startup. A long-running or
-            // benchmark environment can contain millions of rows while local
-            // SPL fallback deliberately exposes only its bounded hot window.
-            List<SearchEventEntity> recent = repo.findAll(PageRequest.of(
-                    0, CAP, Sort.by(Sort.Direction.DESC, "timestamp"))).getContent();
-            for (int i = recent.size() - 1; i >= 0; i--) events.addLast(fromEntity(recent.get(i)));
+            events("default");
         }
     }
 
     public synchronized List<SearchEvent> all() {
-        return List.copyOf(events);
+        return List.copyOf(events(currentTenant()));
     }
 
     /** 采集管线写入的归一化事件（真实接入数据），同时落库。超出容量时丢弃最旧。 */
@@ -78,11 +75,11 @@ public class SearchStore {
     }
 
     public synchronized int size() {
-        return events.size();
+        return events(currentTenant()).size();
     }
 
     public long realCount() {
-        return repo.count();
+        return repo.countByTenantId(currentTenant());
     }
 
     private void seed() {
@@ -125,11 +122,13 @@ public class SearchStore {
     }
 
     private void save(SearchEvent e) {
-        events.addLast(e);
         repo.save(toEntity(e));
+        remember(e);
     }
 
     private void remember(SearchEvent event) {
+        Deque<SearchEvent> events = events(eventTenant(event));
+        events.removeIf(existing -> existing.eventId().equals(event.eventId()));
         events.addLast(event);
         while (events.size() > CAP) events.removeFirst();
     }
@@ -151,6 +150,7 @@ public class SearchStore {
         en.setMsg(e.msg());
         en.setFieldsJson(writeJson(e.fields()));
         en.setEcsJson(writeJson(e.ecs()));
+        en.setTenantId(eventTenant(e));
         return en;
     }
 
@@ -179,5 +179,28 @@ public class SearchStore {
         } catch (Exception ex) {
             return null;
         }
+    }
+
+    private synchronized Deque<SearchEvent> events(String tenant) {
+        Deque<SearchEvent> events = eventsByTenant.computeIfAbsent(tenant,
+                ignored -> new ArrayDeque<>(CAP));
+        if (initializedTenants.add(tenant)) {
+            List<SearchEventEntity> recent = repo.findTop20000ByTenantIdOrderByTimestampDesc(tenant);
+            if (recent != null) {
+                for (int i = recent.size() - 1; i >= 0; i--) events.addLast(fromEntity(recent.get(i)));
+            }
+        }
+        return events;
+    }
+
+    private static String eventTenant(SearchEvent event) {
+        String tenant = event.fields().get("tenant_id");
+        if (tenant == null || tenant.isBlank()) tenant = event.fields().get("tenantId");
+        return tenant == null || tenant.isBlank() ? currentTenant() : tenant;
+    }
+
+    private static String currentTenant() {
+        String tenant = TenantContext.get();
+        return tenant == null || tenant.isBlank() ? "default" : tenant;
     }
 }

@@ -33,6 +33,7 @@ public class ProdGuard {
 
     private static final String DEMO_JWT_SECRET = "socp-demo-jwt-secret-0123456789abcdef0123456789abcdef";
     private static final String DEMO_INGEST_TOKEN = "dev-vector-token";
+    private static final String DEMO_SERVICE_SECRET = "socp-demo-service-secret-change-me";
 
     public ProdGuard(Environment env) {
         List<String> violations = new ArrayList<>();
@@ -58,8 +59,32 @@ public class ProdGuard {
             violations.add("socp.security.ingest-token 使用了默认演示值 dev-vector-token");
         }
 
+        String serviceSecret = env.getProperty("socp.security.service-secret", "");
+        if (serviceSecret.isBlank()) {
+            violations.add("socp.security.service-secret is not configured");
+        } else if (DEMO_SERVICE_SECRET.equals(serviceSecret)) {
+            violations.add("socp.security.service-secret uses the development default");
+        }
+
         if (!"true".equalsIgnoreCase(env.getProperty("socp.temporal.enabled", "true"))) {
             violations.add("socp.temporal.enabled=false（生产禁止 SOAR 回退进程内执行器）");
+        }
+
+        if ("memory".equalsIgnoreCase(env.getProperty("socp.ratelimit.backend", "memory"))) {
+            violations.add("socp.ratelimit.backend=memory (production requires the shared Redis backend)");
+        }
+
+        if (!"kafka".equalsIgnoreCase(env.getProperty("socp.audit.sink", "memory"))) {
+            violations.add("socp.audit.sink must be kafka in production");
+        }
+
+        if (!"true".equalsIgnoreCase(env.getProperty("socp.audit.fail-closed", "false"))) {
+            violations.add("socp.audit.fail-closed must be true in production");
+        }
+
+        if ("api-gateway".equals(env.getProperty("spring.application.name"))
+                && !"true".equalsIgnoreCase(env.getProperty("socp.auth.cookie-secure", "false"))) {
+            violations.add("socp.auth.cookie-secure=false (production session cookies require HTTPS)");
         }
 
         if (!violations.isEmpty()) {

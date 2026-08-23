@@ -4,7 +4,6 @@ import com.socp.search.config.domain.LogCategory;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 日志类别存储（元数据）。进程内；生产替换为 PG search.t_log_category。
@@ -12,10 +11,12 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class LogCategoryStore {
 
-    private final ConcurrentHashMap<String, LogCategory> map = new ConcurrentHashMap<>();
+    private final TenantCatalog<LogCategory> catalog = new TenantCatalog<>(LogCategory::id);
+    private boolean seeding = true;
 
     public LogCategoryStore() {
         seed();
+        seeding = false;
     }
 
     private void seed() {
@@ -30,15 +31,18 @@ public class LogCategoryStore {
     }
 
     public List<LogCategory> list() {
-        return map.values().stream().toList();
+        return catalog.list();
     }
 
     public LogCategory save(LogCategory c) {
-        map.put(c.id(), c);
-        return c;
+        if (seeding) {
+            catalog.registerTemplate(c);
+            return c;
+        }
+        return catalog.save(c);
     }
 
     public boolean delete(String id) {
-        return map.remove(id) != null;
+        return catalog.delete(id);
     }
 }

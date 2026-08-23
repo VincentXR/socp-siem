@@ -14,6 +14,7 @@ import java.time.Instant;
 @Table(name = "t_analyzed")
 public class AnalyzedEntity {
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY) private Long id;
+    @Column(name = "tenant_id", nullable = false, length = 64) private String tenantId;
     @Column(name = "alert_id", length = 64) private String alertId;
     @Column(name = "rule_id", length = 128) private String ruleId;
     @Column(name = "rule_name", length = 256) private String ruleName;
@@ -23,11 +24,13 @@ public class AnalyzedEntity {
     @Column(nullable = false) private Instant ts;
 
     public AnalyzedEntity() {}
-    public AnalyzedEntity(String alertId, String ruleId, String ruleName, String severity, String message, String entity, Instant ts) {
-        this.alertId = alertId; this.ruleId = ruleId; this.ruleName = ruleName;
+    public AnalyzedEntity(String tenantId, String alertId, String ruleId, String ruleName,
+                          String severity, String message, String entity, Instant ts) {
+        this.tenantId = tenantId; this.alertId = alertId; this.ruleId = ruleId; this.ruleName = ruleName;
         this.severity = severity; this.message = message; this.entity = entity; this.ts = ts;
     }
     public Long getId() { return id; }
+    public String getTenantId() { return tenantId; }
     public String getAlertId() { return alertId; }
     public String getRuleId() { return ruleId; }
     public String getRuleName() { return ruleName; }

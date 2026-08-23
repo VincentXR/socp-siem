@@ -29,7 +29,7 @@ async function compute() {
   if (loading.value) return
   loading.value = true
   try {
-    const rules = await listRules() as Array<Record<string, unknown>>
+    const rules = await listRules()
     const ruleIds = rules.map(rule => String(rule.id ?? '')).filter(Boolean)
     coverage.value = await complianceCoverage(ruleIds)
   } finally { loading.value = false }

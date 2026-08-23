@@ -1,0 +1,29 @@
+package com.socp.detect.model.engine;
+
+import com.socp.platform.tenant.TenantContext;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+class AlertWindowAggregatorTest {
+
+    @AfterEach
+    void clearTenant() {
+        TenantContext.clear();
+    }
+
+    @Test
+    void windowsAreIsolatedByTenant() {
+        AlertWindowAggregator aggregator = new AlertWindowAggregator();
+        aggregator.record("tenant-a", "rule-a", "host-a", "HIGH");
+        aggregator.record("tenant-a", "rule-a", "host-a", "HIGH");
+        aggregator.record("tenant-b", "rule-b", "host-b", "LOW");
+
+        assertEquals(2L, aggregator.snapshot("tenant-a").get("total"));
+        assertEquals(1L, aggregator.snapshot("tenant-b").get("total"));
+
+        TenantContext.set("tenant-c");
+        assertEquals(0L, aggregator.snapshot().get("total"));
+    }
+}

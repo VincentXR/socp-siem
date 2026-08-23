@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
@@ -41,7 +42,7 @@ public class DetectEngineService {
     private final RecentAlertSink sink;
     private final AlertForwarder forwarder;
     private final Suppressor suppressor = new Suppressor(Duration.ofMinutes(5));
-    private final AtomicReference<RuleEngine> engineRef;
+    private final Map<String, RuleEngine> engines = new ConcurrentHashMap<>();
     private final RuleChangePublisher rulePublisher;
     private final DetectionStateStore stateStore;
     private final RuleProcessingObserver processingObserver;
@@ -58,7 +59,6 @@ public class DetectEngineService {
         this.rulePublisher = rulePublisher;
         this.stateStore = stateStore;
         this.processingObserver = performanceMetrics;
-        this.engineRef = new AtomicReference<>(buildEngine(List.of()));
     }
 
     /** Unit-test/source compatibility constructor with a caller-provided state store. */
@@ -70,7 +70,6 @@ public class DetectEngineService {
         this.rulePublisher = rulePublisher;
         this.stateStore = stateStore;
         this.processingObserver = RuleProcessingObserver.NOOP;
-        this.engineRef = new AtomicReference<>(buildEngine(List.of()));
     }
 
     /** Unit-test/source compatibility constructor; production uses the JPA journal. */
@@ -81,22 +80,23 @@ public class DetectEngineService {
 
     @PostConstruct
     public void start() {
-        engineRef.get().start();
+        engineFor("default");
     }
 
     @PreDestroy
     public void stop() {
         engineLifecycle.writeLock().lock();
         try {
-            engineRef.get().close();
+            engines.values().forEach(RuleEngine::close);
+            engines.clear();
             suppressor.close();
         } finally {
             engineLifecycle.writeLock().unlock();
         }
     }
 
-    private RuleEngine buildEngine(List<SecurityEvent> history) {
-        List<Rule> rules = store.list().stream()
+    private RuleEngine buildEngine(String tenant, List<SecurityEvent> history) {
+        List<Rule> rules = store.list(tenant).stream()
                 .map(RuleSpec::new)
                 .filter(spec -> spec.enabled)
                 .map(RuleSpec::toRule)
@@ -116,10 +116,18 @@ public class DetectEngineService {
         return engine;
     }
 
+    private RuleEngine engineFor(String tenant) {
+        String resolved = tenant == null || tenant.isBlank() ? "default" : tenant;
+        return engines.computeIfAbsent(resolved, key -> {
+            RuleEngine engine = buildEngine(key, List.of());
+            engine.start();
+            return engine;
+        });
+    }
+
     /** 规则热更新：原子替换引擎（旧引擎毒丸退出），无需重启进程 */
     public void reload() {
-        Set<Integer> partitions = assignedPartitions.get();
-        replaceEngineFromState(partitions);
+        replaceTenantEngine(store.tenant());
     }
 
     /**
@@ -141,22 +149,27 @@ public class DetectEngineService {
         Set<Integer> normalized = Set.copyOf(partitions);
         if (!force && normalized.equals(assignedPartitions.get())) return;
         assignedPartitions.set(normalized);
-        replaceEngineFromState(normalized);
+        replaceAllEnginesFromState(normalized);
     }
 
     /** Used when Kafka is disabled or for an operational full-state replay. */
     public synchronized void restoreAll() {
         assignedPartitions.set(Set.of());
-        replaceEngineFromState(Set.of());
+        replaceAllEnginesFromState(Set.of());
     }
 
-    private void restoreState(RuleEngine replacement, Set<Integer> partitions) {
+    private void restoreState(String tenant, RuleEngine replacement, Set<Integer> partitions) {
         try {
             if (partitions == null || partitions.isEmpty()) {
-                stateStore.replayRecent(Duration.ofHours(24), replacement::restore);
+                stateStore.replayRecentForTenant(tenant, Duration.ofHours(24), replacement::restore);
             } else {
                 stateStore.replayRecentForPartitions(
-                        partitions, Duration.ofHours(24), replacement::restore);
+                        partitions, Duration.ofHours(24), events -> {
+                            List<SecurityEvent> owned = events.stream()
+                                    .filter(event -> tenant.equals(event.tenantId()))
+                                    .toList();
+                            if (!owned.isEmpty()) replacement.restore(owned);
+                        });
             }
         } catch (Exception ex) {
             org.slf4j.LoggerFactory.getLogger(DetectEngineService.class)
@@ -168,7 +181,8 @@ public class DetectEngineService {
         return assignedPartitions.get();
     }
 
-    private void replaceEngineFromState(Set<Integer> partitions) {
+    private void replaceTenantEngine(String tenant) {
+        tenant = tenant == null || tenant.isBlank() ? "default" : tenant;
         engineLifecycle.writeLock().lock();
         try {
             // Resolve the rules before closing the live engine so a temporary
@@ -176,12 +190,32 @@ public class DetectEngineService {
             // be built, stop admission and drain all accepted events before
             // reading the Journal. The new hot state therefore includes every
             // durable completion that happened before the swap.
-            RuleEngine replacement = buildEngine(List.of());
-            RuleEngine old = engineRef.get();
-            old.close();
-            restoreState(replacement, partitions);
+            RuleEngine replacement = buildEngine(tenant, List.of());
+            RuleEngine old = engines.remove(tenant);
+            if (old != null) old.close();
+            restoreState(tenant, replacement, assignedPartitions.get());
             replacement.start();
-            engineRef.set(replacement);
+            engines.put(tenant, replacement);
+        } finally {
+            engineLifecycle.writeLock().unlock();
+        }
+    }
+
+    private void replaceAllEnginesFromState(Set<Integer> partitions) {
+        engineLifecycle.writeLock().lock();
+        try {
+            engines.values().forEach(RuleEngine::close);
+            engines.clear();
+            java.util.function.Consumer<List<SecurityEvent>> restoreBatch = events -> {
+                Map<String, List<SecurityEvent>> byTenant = events.stream()
+                        .collect(java.util.stream.Collectors.groupingBy(SecurityEvent::tenantId));
+                byTenant.forEach((tenant, owned) -> engineFor(tenant).restore(owned));
+            };
+            if (partitions == null || partitions.isEmpty()) {
+                stateStore.replayRecent(Duration.ofHours(24), restoreBatch);
+            } else {
+                stateStore.replayRecentForPartitions(partitions, Duration.ofHours(24), restoreBatch);
+            }
         } finally {
             engineLifecycle.writeLock().unlock();
         }
@@ -195,30 +229,48 @@ public class DetectEngineService {
         return store.contentManifest();
     }
 
+    @org.springframework.transaction.annotation.Transactional
     public Map<String, Object> addRule(Map<String, Object> spec) {
         Map<String, Object> saved = store.save(spec);
-        reload();
         rulePublisher.publish(String.valueOf(saved.get("id")), "add");
+        reloadAfterCommit();
         return saved;
     }
 
+    @org.springframework.transaction.annotation.Transactional
     public Map<String, Object> updateRule(Map<String, Object> spec) {
         if (store.get(String.valueOf(spec.get("id"))) == null) {
             throw new IllegalArgumentException("规则不存在: " + spec.get("id"));
         }
         Map<String, Object> saved = store.save(spec);
-        reload();
         rulePublisher.publish(String.valueOf(saved.get("id")), "update");
+        reloadAfterCommit();
         return saved;
     }
 
+    @org.springframework.transaction.annotation.Transactional
     public boolean deleteRule(String id) {
         boolean removed = store.delete(id);
         if (removed) {
-            reload();
             rulePublisher.publish(id, "delete");
+            reloadAfterCommit();
         }
         return removed;
+    }
+
+    private void reloadAfterCommit() {
+        if (!org.springframework.transaction.support.TransactionSynchronizationManager
+                .isSynchronizationActive()) {
+            reload();
+            return;
+        }
+        org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                new org.springframework.transaction.support.TransactionSynchronization() {
+                    @Override
+                    public void afterCommit() {
+                        reload();
+                    }
+                });
     }
 
     /** 事件摄取：队列满回 false（接入端据此回 503 + Retry-After） */
@@ -230,17 +282,17 @@ public class DetectEngineService {
         RuleEngine.Submission submission;
         engineLifecycle.readLock().lock();
         try {
-            submission = engineRef.get().submit(ev, true);
+            submission = engineFor(ev.tenantId()).submit(ev, true);
         } finally {
             engineLifecycle.readLock().unlock();
         }
         if (!submission.accepted()) {
-            if (claim == DetectionEventClaim.NEW) stateStore.remove(ev.id());
+            if (claim == DetectionEventClaim.NEW) stateStore.remove(ev);
             return false;
         }
         submission.completion().whenComplete((ignored, failure) -> {
             if (failure == null) {
-                stateStore.markCompleted(ev.id());
+                stateStore.markCompleted(ev);
             }
         });
         return true;
@@ -259,7 +311,7 @@ public class DetectEngineService {
     public CompletableFuture<Void> ingestFromKafkaAndAwait(SecurityEvent ev) {
         engineLifecycle.readLock().lock();
         try {
-            return engineRef.get().ingestAndAwait(ev);
+            return engineFor(ev.tenantId()).ingestAndAwait(ev);
         } finally {
             engineLifecycle.readLock().unlock();
         }
@@ -268,20 +320,21 @@ public class DetectEngineService {
     private boolean enqueue(SecurityEvent ev) {
         engineLifecycle.readLock().lock();
         try {
-            return engineRef.get().ingest(ev);
+            return engineFor(ev.tenantId()).ingest(ev);
         } finally {
             engineLifecycle.readLock().unlock();
         }
     }
 
     public List<Alert> recentAlerts() {
-        return sink.recent();
+        return sink.recent(store.tenant());
     }
 
     public Map<String, Object> stats() {
-        RuleEngine e = engineRef.get();
+        String tenant = store.tenant();
+        RuleEngine e = engineFor(tenant);
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("rules", store.list().size());
+        m.put("rules", store.list(tenant).size());
         m.put("eventCount", e.eventCount());
         m.put("alertCount", e.alertCount());
         m.put("dropCount", e.dropCount());
@@ -289,7 +342,7 @@ public class DetectEngineService {
         m.put("queueLoad", e.queueLoad());
         m.put("ruleStats", e.ruleStats());
         m.put("assignedPartitions", assignedPartitions.get());
-        m.put("pendingEvents", stateStore.pendingCount());
+        m.put("pendingEvents", stateStore.pendingCount(tenant));
         m.put("stateRecovery", Map.of(
                 "store", stateStore.getClass().getSimpleName(),
                 "replayWindow", stateStore.recoveryWindow()));

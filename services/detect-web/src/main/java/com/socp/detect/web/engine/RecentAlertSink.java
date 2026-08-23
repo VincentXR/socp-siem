@@ -47,10 +47,10 @@ public class RecentAlertSink implements EventAlertSink {
         List<Alert> safe = alerts == null ? List.of() : alerts;
         // Durable persistence is deliberately first. A failure propagates to
         // the Kafka completion future and prevents offset advancement.
-        if (forwarder != null) forwarder.forwardAll(event == null ? null : event.id(), safe);
+        if (forwarder != null) forwarder.forwardAll(event, safe);
         for (Alert alert : safe) {
             if (alert == null || alert.id() == null || !remember(alert)) continue;
-            if (streamHub != null) streamHub.broadcast(alert);
+            if (streamHub != null) streamHub.broadcast(tenantOf(alert), alert);
         }
     }
 
@@ -58,6 +58,21 @@ public class RecentAlertSink implements EventAlertSink {
         synchronized (viewLock) {
             return List.copyOf(recent);
         }
+    }
+
+    public List<Alert> recent(String tenant) {
+        synchronized (viewLock) {
+            return recent.stream().filter(alert -> tenant.equals(tenantOf(alert))).toList();
+        }
+    }
+
+    private static String tenantOf(Alert alert) {
+        if (alert != null && alert.evidence() != null) {
+            for (SecurityEvent event : alert.evidence()) {
+                if (event != null) return event.tenantId();
+            }
+        }
+        return "default";
     }
 
     private boolean remember(Alert alert) {

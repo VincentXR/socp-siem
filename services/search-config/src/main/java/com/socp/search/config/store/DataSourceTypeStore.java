@@ -4,7 +4,6 @@ import com.socp.search.config.domain.DataSourceType;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 数据源分类存储（元数据）。进程内；生产替换为 PG search.t_data_source_type。
@@ -12,10 +11,12 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class DataSourceTypeStore {
 
-    private final ConcurrentHashMap<String, DataSourceType> map = new ConcurrentHashMap<>();
+    private final TenantCatalog<DataSourceType> catalog = new TenantCatalog<>(DataSourceType::id);
+    private boolean seeding = true;
 
     public DataSourceTypeStore() {
         seed();
+        seeding = false;
     }
 
     private void seed() {
@@ -31,15 +32,18 @@ public class DataSourceTypeStore {
     }
 
     public List<DataSourceType> list() {
-        return map.values().stream().toList();
+        return catalog.list();
     }
 
     public DataSourceType save(DataSourceType t) {
-        map.put(t.id(), t);
-        return t;
+        if (seeding) {
+            catalog.registerTemplate(t);
+            return t;
+        }
+        return catalog.save(t);
     }
 
     public boolean delete(String id) {
-        return map.remove(id) != null;
+        return catalog.delete(id);
     }
 }

@@ -2,6 +2,7 @@ package com.socp.hips.collect.collector;
 
 import com.socp.platform.client.HipsClient;
 import com.socp.platform.client.ServiceCall;
+import com.socp.platform.tenant.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.EnableScheduling;
@@ -51,6 +52,7 @@ public class EndpointSimulator {
         ev.put("severity", round % 4 == 0 ? "CRITICAL" : "HIGH");
         ev.put("message", "Suspicious " + ev.get("type") + " on " + hosts[round % hosts.length]);
         ev.put("ts", Instant.now().toString());
+        ev.put("tenantId", "default");
         events.add(ev);
 
         ServiceCall call = hipsClient.reportEvent(toJson(ev));
@@ -61,7 +63,10 @@ public class EndpointSimulator {
     }
 
     public List<Map<String, Object>> events() {
-        return List.copyOf(events);
+        String tenant = TenantContext.get();
+        if (tenant == null || tenant.isBlank()) tenant = "default";
+        String selected = tenant;
+        return events.stream().filter(item -> selected.equals(item.get("tenantId"))).toList();
     }
 
     private static String toJson(Map<String, Object> m) {

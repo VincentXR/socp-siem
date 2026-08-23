@@ -1,191 +1,197 @@
 package com.socp.notify.web.service;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.notify.web.domain.Channel;
 import com.socp.notify.web.store.ChannelStore;
+import com.socp.notify.web.store.NotificationDeliveryEntity;
+import com.socp.notify.web.store.NotificationDeliveryRepository;
 import com.socp.platform.client.ServiceCall;
 import com.socp.platform.client.SocpHttpClient;
+import com.socp.platform.tenant.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 
-/**
- * 告警外发分发器：收到告警后推送到所有启用渠道。
- * WEBHOOK/SLACK 走真实 HTTP POST；EMAIL 仅记录（演示环境无 SMTP）。
- * 分发结果写入 dispatchLog 供前端展示。
- */
+/** Dispatches an alarm to enabled channels with per-alarm/channel idempotency. */
 @Service
 public class NotificationDispatcher {
 
     private static final Logger log = LoggerFactory.getLogger(NotificationDispatcher.class);
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() { };
+    private static final int TIMEOUT = 3000;
 
     private final ChannelStore channels;
     private final SocpHttpClient http;
+    private final NotificationDeliveryRepository deliveries;
     private final List<Map<String, Object>> dispatchLog = new CopyOnWriteArrayList<>();
-    private static final int TIMEOUT = 3000;
 
-    public NotificationDispatcher(ChannelStore channels, SocpHttpClient http) {
+    public NotificationDispatcher(ChannelStore channels, SocpHttpClient http,
+                                  NotificationDeliveryRepository deliveries) {
         this.channels = channels;
         this.http = http;
+        this.deliveries = deliveries;
     }
 
-    /** 接收告警（来自 alert-web）并分发。返回本次分发明细。 */
     public Map<String, Object> dispatch(Map<String, Object> alarm) {
+        String alarmId = text(alarm.get("id"));
+        if (alarmId == null) throw new IllegalArgumentException("alarm id is required");
+        String tenant = tenant();
         List<Map<String, Object>> results = new ArrayList<>();
-        for (Channel ch : channels.enabled()) {
-            Map<String, Object> r = send(ch, alarm);
-            results.add(r);
-            log(ch, r, alarm);
+        int failed = 0;
+        for (Channel channel : channels.enabled()) {
+            Map<String, Object> result = deliveredResult(tenant, alarmId, channel);
+            if (result == null) {
+                result = send(channel, alarm);
+                log(channel, result, alarm);
+                if ("failed".equals(result.get("status"))) {
+                    failed++;
+                } else {
+                    remember(tenant, alarmId, channel, result);
+                }
+            }
+            results.add(result);
         }
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("alarmId", alarm.get("id"));
-        out.put("ruleId", alarm.get("ruleId"));
-        out.put("dispatched", results.size());
-        out.put("results", results);
-        return out;
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("alarmId", alarmId);
+        response.put("ruleId", alarm.get("ruleId"));
+        response.put("dispatched", results.size());
+        response.put("failed", failed);
+        response.put("results", results);
+        return response;
     }
 
-    private Map<String, Object> send(Channel ch, Map<String, Object> alarm) {
-        Map<String, Object> r = new LinkedHashMap<>();
-        r.put("channel", ch.name());
-        r.put("type", ch.type());
-        if ("EMAIL".equals(ch.type())) {
-            r.put("status", "logged");
-            r.put("detail", "邮件已记入分发日志（演示未启 SMTP）-> " + ch.target());
-            return r;
+    private Map<String, Object> deliveredResult(String tenant, String alarmId, Channel channel) {
+        return deliveries.findByIdAndTenantId(deliveryId(tenant, alarmId, channel.id()), tenant)
+                .map(row -> {
+                    try {
+                        Map<String, Object> result = new LinkedHashMap<>(MAPPER.readValue(row.getResultJson(), MAP_TYPE));
+                        result.put("duplicate", true);
+                        return result;
+                    } catch (Exception corruptReceipt) {
+                        throw new IllegalStateException("invalid notification delivery receipt", corruptReceipt);
+                    }
+                })
+                .orElse(null);
+    }
+
+    private void remember(String tenant, String alarmId, Channel channel, Map<String, Object> result) {
+        try {
+            NotificationDeliveryEntity row = new NotificationDeliveryEntity();
+            row.setId(deliveryId(tenant, alarmId, channel.id()));
+            row.setTenantId(tenant);
+            row.setAlarmId(alarmId);
+            row.setChannelId(channel.id());
+            row.setResultJson(MAPPER.writeValueAsString(result));
+            row.setDeliveredAt(Instant.now());
+            deliveries.save(row);
+        } catch (Exception persistenceFailure) {
+            throw new IllegalStateException("notification receipt persistence failed", persistenceFailure);
         }
-        String json = buildPayload(ch, alarm);
-        // 渠道地址由用户配置（可能是外网 webhook），统一走 socp-client：超时受控、失败留痕
-        ServiceCall call = http.postExternal(ch.target(), json, SocpHttpClient.JSON, TIMEOUT);
-        r.put("status", call.ok() ? "sent" : "failed");
-        r.put("httpStatus", call.status());
-        r.put("detail", call.ok()
+    }
+
+    private Map<String, Object> send(Channel channel, Map<String, Object> alarm) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("channel", channel.name());
+        result.put("type", channel.type());
+        if ("EMAIL".equals(channel.type())) {
+            result.put("status", "logged");
+            result.put("detail", "Email delivery recorded; SMTP is not enabled: " + channel.target());
+            return result;
+        }
+        ServiceCall call = http.postExternal(channel.target(), buildPayload(channel, alarm),
+                SocpHttpClient.JSON, TIMEOUT);
+        if (call == null) {
+            result.put("status", "failed");
+            result.put("httpStatus", 0);
+            result.put("detail", "HTTP client returned no result");
+            return result;
+        }
+        result.put("status", call.ok() ? "sent" : "failed");
+        result.put("httpStatus", call.status());
+        result.put("detail", call.ok()
                 ? truncate(call.body(), 300)
                 : truncate(call.failureReason() + " | " + call.body(), 300));
         if (!call.ok()) {
-            log.warn("通知渠道分发失败 channel={} type={} target={} alarmId={} 原因={}",
-                    ch.name(), ch.type(), ch.target(), alarm.get("id"), call.failureReason());
+            log.warn("Notification channel failed channel={} type={} target={} alarmId={} reason={}",
+                    channel.name(), channel.type(), channel.target(), alarm.get("id"), call.failureReason());
         }
-        return r;
+        return result;
     }
 
-    /**
-     * 按渠道类型构造报文：
-     * - WEBHOOK：直接透传告警原始 JSON（工单/案件系统可直接消费）
-     * - SLACK/DINGTALK/WECOM：IM 文本卡片 {"text": "..."}
-     * - 其它：信封形式 {channel,type,alarm}
-     */
-    private static String buildPayload(Channel ch, Map<String, Object> alarm) {
-        String type = ch.type() == null ? "" : ch.type().toUpperCase();
-        switch (type) {
-            case "WEBHOOK" -> {
-                return toJson(alarm);
-            }
-            case "SLACK", "DINGTALK", "WECOM", "WECHAT" -> {
-                Map<String, Object> im = new LinkedHashMap<>();
-                im.put("text", imText(alarm));
-                return toJson(im);
-            }
-            default -> {
-                Map<String, Object> env = new LinkedHashMap<>();
-                env.put("channel", ch.name());
-                env.put("type", ch.type());
-                env.put("alarm", alarm);
-                return toJson(env);
-            }
+    private static String buildPayload(Channel channel, Map<String, Object> alarm) {
+        String type = channel.type() == null ? "" : channel.type().toUpperCase();
+        Object payload = switch (type) {
+            case "WEBHOOK" -> alarm;
+            case "SLACK", "DINGTALK", "WECOM", "WECHAT" -> Map.of("text", imText(alarm));
+            default -> Map.of("channel", channel.name(), "type", channel.type(), "alarm", alarm);
+        };
+        try {
+            return MAPPER.writeValueAsString(payload);
+        } catch (Exception failure) {
+            throw new IllegalArgumentException("notification payload cannot be serialized", failure);
         }
     }
 
-    private static String imText(Map<String, Object> a) {
-        String sev = String.valueOf(a.getOrDefault("severity", "-"));
-        String mitre = a.get("mitre") == null ? "" : " [" + a.get("mitre") + "]";
-        return "【" + sev + "】" + a.getOrDefault("ruleName", a.getOrDefault("ruleId", "告警")) + mitre
-                + "\n实体：" + a.getOrDefault("entity", "-")
-                + "\n详情：" + a.getOrDefault("message", "-")
-                + "\n时间：" + a.getOrDefault("occurredAt", "-")
-                + "\n告警ID：" + a.getOrDefault("id", "-");
+    private static String imText(Map<String, Object> alarm) {
+        String severity = String.valueOf(alarm.getOrDefault("severity", "-"));
+        String mitre = alarm.get("mitre") == null ? "" : " [" + alarm.get("mitre") + "]";
+        return "[" + severity + "] " + alarm.getOrDefault("ruleName", alarm.getOrDefault("ruleId", "Alarm")) + mitre
+                + "\nEntity: " + alarm.getOrDefault("entity", "-")
+                + "\nDetail: " + alarm.getOrDefault("message", "-")
+                + "\nTime: " + alarm.getOrDefault("occurredAt", "-")
+                + "\nAlarm ID: " + alarm.getOrDefault("id", "-");
     }
 
-    private static String truncate(String s, int max) {
-        if (s == null) return "";
-        return s.length() <= max ? s : s.substring(0, max) + "...";
-    }
-
-    private void log(Channel ch, Map<String, Object> r, Map<String, Object> alarm) {
+    private void log(Channel channel, Map<String, Object> result, Map<String, Object> alarm) {
         Map<String, Object> entry = new LinkedHashMap<>();
         entry.put("ts", Instant.now().toString());
-        entry.put("channel", ch.name());
-        entry.put("type", ch.type());
+        entry.put("channel", channel.name());
+        entry.put("type", channel.type());
         entry.put("alarmId", alarm.get("id"));
         entry.put("ruleId", alarm.get("ruleId"));
-        entry.put("status", r.get("status"));
-        if (dispatchLog.size() > 200) dispatchLog.remove(0);
+        entry.put("status", result.get("status"));
+        entry.put("tenantId", tenant());
+        if (dispatchLog.size() > 200) dispatchLog.removeFirst();
         dispatchLog.add(entry);
     }
 
     public List<Map<String, Object>> log() {
-        return List.copyOf(dispatchLog);
+        String tenant = tenant();
+        return dispatchLog.stream()
+                .filter(entry -> tenant.equals(entry.get("tenantId")))
+                .map(Map::copyOf)
+                .toList();
     }
 
-    /** 递归 JSON 序列化：正确处理嵌套 Map/List/数值/布尔，避免把 Map 的 Java toString 当成 JSON。 */
-    private static String toJson(Object v) {
-        StringBuilder sb = new StringBuilder();
-        write(sb, v);
-        return sb.toString();
+    private static String deliveryId(String tenant, String alarmId, String channelId) {
+        String key = tenant + "\u0000" + alarmId + "\u0000" + channelId;
+        return UUID.nameUUIDFromBytes(key.getBytes(StandardCharsets.UTF_8)).toString();
     }
 
-    private static void write(StringBuilder sb, Object v) {
-        if (v == null) {
-            sb.append("null");
-        } else if (v instanceof Map<?, ?> m) {
-            sb.append('{');
-            boolean first = true;
-            for (var e : m.entrySet()) {
-                if (!first) sb.append(',');
-                first = false;
-                writeString(sb, String.valueOf(e.getKey()));
-                sb.append(':');
-                write(sb, e.getValue());
-            }
-            sb.append('}');
-        } else if (v instanceof Iterable<?> it) {
-            sb.append('[');
-            boolean first = true;
-            for (Object o : it) {
-                if (!first) sb.append(',');
-                first = false;
-                write(sb, o);
-            }
-            sb.append(']');
-        } else if (v instanceof Number || v instanceof Boolean) {
-            sb.append(v);
-        } else {
-            writeString(sb, String.valueOf(v));
-        }
+    private static String tenant() {
+        String tenant = TenantContext.get();
+        return tenant == null || tenant.isBlank() ? "default" : tenant;
     }
 
-    private static void writeString(StringBuilder sb, String s) {
-        sb.append('"');
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            switch (c) {
-                case '"' -> sb.append("\\\"");
-                case '\\' -> sb.append("\\\\");
-                case '\n' -> sb.append("\\n");
-                case '\r' -> sb.append("\\r");
-                case '\t' -> sb.append("\\t");
-                default -> {
-                    if (c < 0x20) sb.append(String.format("\\u%04x", (int) c));
-                    else sb.append(c);
-                }
-            }
-        }
-        sb.append('"');
+    private static String text(Object value) {
+        if (value == null) return null;
+        String text = String.valueOf(value);
+        return text.isBlank() ? null : text;
+    }
+
+    private static String truncate(String value, int max) {
+        if (value == null) return "";
+        return value.length() <= max ? value : value.substring(0, max) + "...";
     }
 }

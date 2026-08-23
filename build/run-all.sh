@@ -22,7 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=toolchain.sh
 source "$SCRIPT_DIR/toolchain.sh"   # -> SOCP_ROOT / socp_java / socp_pnpm
 # shellcheck source=ports.env
-source "$SCRIPT_DIR/ports.env"      # -> SOCP_SERVICE_NAMES / socp_port / socp_ctx / 服务间 URL
+source "$SCRIPT_DIR/ports.env"      # -> SOCP_SERVICE_NAMES / SOCP_MODULE_NAMES / ports and service URLs
 
 ROOT="$SOCP_ROOT"
 LOGDIR="$ROOT/.cache"
@@ -31,7 +31,7 @@ FRONTEND_APP="workbench"
 FRONTEND_PORT="$SOCP_PORT_FRONTEND_WORKBENCH"
 
 # JVM 内存：开发默认使用较小堆；完整启动时可用 SOCP_JVM_OPTS 覆盖。
-# 17 个服务同时启动时，降低 Xms/Xmx 能明显减少内存峰值和 GC 竞争。
+# 15 个默认进程同时启动时，降低 Xms/Xmx 能明显减少内存峰值和 GC 竞争。
 JVM_OPTS="${SOCP_JVM_OPTS:--Xms32m -Xmx256m}"
 START_BATCH_SIZE="${SOCP_START_BATCH_SIZE:-3}"
 START_HEALTH_TIMEOUT="${SOCP_START_HEALTH_TIMEOUT:-45}"
@@ -46,6 +46,9 @@ UI_SERVICES="alert-web search-config detect-web detect-model soar-web report-web
 # 签发与验签必须同值：login-secret 默认 = jwt-secret（否则 /auth/login 签发的 token 业务服务验签失败）
 export SOCP_JWT_SECRET="${SOCP_JWT_SECRET:-socp-demo-jwt-secret-0123456789abcdef0123456789abcdef}"
 export SOCP_LOGIN_SECRET="${SOCP_LOGIN_SECRET:-$SOCP_JWT_SECRET}"
+export SOCP_SECURITY_SERVICE_SECRET="${SOCP_SECURITY_SERVICE_SECRET:-socp-demo-service-secret-change-me}"
+export SOCP_AUDIT_SINK="${SOCP_AUDIT_SINK:-kafka}"
+export SOCP_AUDIT_FAIL_CLOSED="${SOCP_AUDIT_FAIL_CLOSED:-true}"
 
 mkdir -p "$LOGDIR"
 
@@ -103,11 +106,11 @@ doctor() {
 
   echo "=== 构建产物 ==="
   local missing=0 name
-  for name in $SOCP_SERVICE_NAMES; do
+  for name in $SOCP_MODULE_NAMES; do
     [ -f "$(jar_of "$name")" ] || { missing=$((missing + 1)); echo "  ❌ 缺 jar: $name"; }
   done
   if [ "$missing" -eq 0 ]; then
-    echo "  ✅ 17/17 jar 就绪"
+    echo "  ✅ 17/17 模块 jar 就绪（默认部署 15 个进程）"
   else
     echo "  → 执行 bash build/mvnw.sh -DskipTests package 生成"
   fi
@@ -122,7 +125,7 @@ doctor() {
       echo "  ⚠️  :$port 已被 PID=$pid 占用（$name）→ 可用 SOCP_PORT_$(printf '%s' "$name" | tr 'a-z-' 'A-Z_')=<新端口> 改开"
     fi
   done
-  [ "$busy" -eq 0 ] && echo "  ✅ 17 个端口均空闲"
+  [ "$busy" -eq 0 ] && echo "  ✅ 15 个默认部署端口均空闲"
 
   echo
   [ "$fatal" -eq 0 ] && echo "自检通过，可以 bash build/run-all.sh start" || echo "存在致命问题，请先处理上面的 ❌"
@@ -227,7 +230,7 @@ stop_backend() {
 
 service_is_known() {
   local candidate="${1:-}"
-  case " $SOCP_SERVICE_NAMES " in
+  case " $SOCP_MODULE_NAMES " in
     *" $candidate "*) return 0 ;;
     *) return 1 ;;
   esac
@@ -263,6 +266,9 @@ stop_one_service() {
 stop_all() {
   echo "=== 停止后端 ==="
   stop_backend full
+  # Also stop optional standalone compatibility collectors if they were started explicitly.
+  stop_one_service asset-collect
+  stop_one_service hips-collect
   echo "=== 停止前端 ==="
   local pid
   pid="$(pid_on_port "$FRONTEND_PORT")"

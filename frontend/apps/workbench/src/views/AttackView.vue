@@ -19,12 +19,12 @@ import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.m
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { computed, onMounted, ref } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
-import { attackCoverage, listRules, listTactics, listTechniques, type Alarm, type Technique, updateTechnique } from '../api'
+import { attackCoverage, listRules, listTactics, listTechniques, type Alarm, type Tactic, type Technique, updateTechnique } from '../api'
 
 const props = defineProps<{ alarms: Alarm[] }>()
 type AttackCov = Awaited<ReturnType<typeof attackCoverage>>
 
-const tactics = ref<Array<{ id: string; name: string }>>([])
+const tactics = ref<Tactic[]>([])
 const techniques = ref<Technique[]>([])
 const attackTech = ref('')
 const attackCov = ref<AttackCov | null>(null)
@@ -34,7 +34,7 @@ const editingTechniqueId = ref('')
 const techniqueForm = ref({ name: '', tactic: '', url: '', description: '' })
 
 async function loadAttack() {
-  tactics.value = await listTactics() as Array<{ id: string; name: string }>
+  tactics.value = await listTactics()
   techniques.value = await listTechniques(attackTech.value || undefined)
   await computeAttackCov()
 }
@@ -42,7 +42,7 @@ async function loadAttack() {
 async function computeAttackCov() {
   attackLoading.value = true
   try {
-    const rules = await listRules() as Array<Record<string, unknown>>
+    const rules = await listRules()
     const techs = rules.map(rule => String(rule.mitre ?? '')).filter(Boolean)
     attackCov.value = await attackCoverage(techs)
   } catch { attackCov.value = null }

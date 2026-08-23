@@ -4,6 +4,7 @@ import com.socp.asset.collect.collector.AssetScanner;
 import com.socp.platform.client.ServiceCall;
 import com.socp.platform.client.SocpHttpClient;
 import com.socp.platform.client.SocpService;
+import com.socp.platform.tenant.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.*;
@@ -45,6 +46,7 @@ public class CollectController {
         record.put("collectedAt", Instant.now().toString());
         record.put("event.category", "asset");
         record.put("event.action", "discover");
+        record.put("tenantId", tenant());
         collected.add(record);
 
         // 真转发：归一化采集事件进 SEARCH 主链（NDJSON 单行契约）
@@ -56,14 +58,14 @@ public class CollectController {
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("accepted", true);
-        result.put("total", collected.size());
+        result.put("total", tenantCollected().size());
         result.put("forwarded", call.ok());
         return result;
     }
 
     @GetMapping("/collected")
     public List<Map<String, Object>> list() {
-        return List.copyOf(collected);
+        return tenantCollected();
     }
 
     /** 定时扫描模拟器发现的资产（已上报 asset-web）。 */
@@ -85,5 +87,15 @@ public class CollectController {
             else sb.append('"').append(String.valueOf(v).replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
         }
         return sb.append("}").toString();
+    }
+
+    private List<Map<String, Object>> tenantCollected() {
+        String tenant = tenant();
+        return collected.stream().filter(item -> tenant.equals(item.get("tenantId"))).toList();
+    }
+
+    private static String tenant() {
+        String tenant = TenantContext.get();
+        return tenant == null || tenant.isBlank() ? "default" : tenant;
     }
 }

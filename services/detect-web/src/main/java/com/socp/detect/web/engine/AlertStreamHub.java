@@ -23,19 +23,28 @@ public class AlertStreamHub {
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .registerModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-    private final CopyOnWriteArrayList<PrintWriter> writers = new CopyOnWriteArrayList<>();
+    private record Subscriber(String tenant, PrintWriter writer) {}
+    private final CopyOnWriteArrayList<Subscriber> subscribers = new CopyOnWriteArrayList<>();
 
     public void add(PrintWriter w) {
-        writers.add(w);
+        add("default", w);
+    }
+
+    public void add(String tenant, PrintWriter w) {
+        subscribers.add(new Subscriber(tenant, w));
     }
 
     public void remove(PrintWriter w) {
-        writers.remove(w);
+        subscribers.removeIf(subscriber -> subscriber.writer() == w);
     }
 
     /** 广播一条告警给所有订阅者；单个写失败即摘除该连接，不影响其他订阅者。 */
     public void broadcast(Alert alert) {
-        if (writers.isEmpty()) return;
+        broadcast("default", alert);
+    }
+
+    public void broadcast(String tenant, Alert alert) {
+        if (subscribers.isEmpty()) return;
         String json;
         try {
             json = MAPPER.writeValueAsString(alert);
@@ -43,17 +52,19 @@ public class AlertStreamHub {
             return;
         }
         String frame = "event: alert\ndata: " + json + "\n\n";
-        for (PrintWriter w : writers) {
+        for (Subscriber subscriber : subscribers) {
+            if (!subscriber.tenant().equals(tenant)) continue;
+            PrintWriter w = subscriber.writer();
             try {
                 w.write(frame);
                 w.flush();
             } catch (Exception e) {
-                writers.remove(w);
+                subscribers.remove(subscriber);
             }
         }
     }
 
     public int subscriberCount() {
-        return writers.size();
+        return subscribers.size();
     }
 }

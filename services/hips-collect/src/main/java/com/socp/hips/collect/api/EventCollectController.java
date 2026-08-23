@@ -4,6 +4,7 @@ import com.socp.hips.collect.collector.EndpointSimulator;
 import com.socp.platform.client.ServiceCall;
 import com.socp.platform.client.SocpHttpClient;
 import com.socp.platform.client.SocpService;
+import com.socp.platform.tenant.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.*;
@@ -43,6 +44,7 @@ public class EventCollectController {
         Map<String, Object> record = new LinkedHashMap<>(event);
         record.put("id", UUID.randomUUID().toString());
         record.put("receivedAt", Instant.now().toString());
+        record.put("tenantId", tenant());
         events.add(record);
 
         // 真转发：Falco 事件进 SEARCH 主链（FalcoParser 识别 rule/output/fields）
@@ -54,14 +56,14 @@ public class EventCollectController {
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("accepted", true);
-        result.put("total", events.size());
+        result.put("total", tenantEvents().size());
         result.put("forwarded", call.ok());
         return result;
     }
 
     @GetMapping("/events")
     public List<Map<String, Object>> list() {
-        return List.copyOf(events);
+        return tenantEvents();
     }
 
     /** 定时模拟器生成的端点事件（已上报 hips-web）。 */
@@ -83,5 +85,15 @@ public class EventCollectController {
             else sb.append('"').append(String.valueOf(v).replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
         }
         return sb.append("}").toString();
+    }
+
+    private List<Map<String, Object>> tenantEvents() {
+        String tenant = tenant();
+        return events.stream().filter(item -> tenant.equals(item.get("tenantId"))).toList();
+    }
+
+    private static String tenant() {
+        String tenant = TenantContext.get();
+        return tenant == null || tenant.isBlank() ? "default" : tenant;
     }
 }

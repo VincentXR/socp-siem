@@ -19,10 +19,10 @@ import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.m
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { onMounted, ref } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
-import { createChannel, deleteChannel, dispatchLog, listChannels, toggleChannel, type Channel } from '../api'
+import { createChannel, deleteChannel, dispatchLog, listChannels, toggleChannel, type Channel, type DispatchLogEntry } from '../api'
 
 const channels = ref<Channel[]>([])
-const logs = ref<Array<Record<string, unknown>>>([])
+const logs = ref<DispatchLogEntry[]>([])
 const dialogVisible = ref(false)
 const loading = ref(false)
 const form = ref({ name: '', type: 'SLACK', target: '', enabled: true, description: '' })
@@ -33,7 +33,7 @@ async function loadNotify() {
   try {
     const [channelResult, logResult] = await Promise.allSettled([listChannels(), dispatchLog()])
     channels.value = channelResult.status === 'fulfilled' ? channelResult.value : []
-    logs.value = logResult.status === 'fulfilled' ? logResult.value as Array<Record<string, unknown>> : []
+    logs.value = logResult.status === 'fulfilled' ? logResult.value : []
   } finally {
     loading.value = false
   }

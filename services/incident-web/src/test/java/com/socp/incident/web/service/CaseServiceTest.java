@@ -2,6 +2,7 @@ package com.socp.incident.web.service;
 
 import com.socp.incident.web.domain.Case;
 import com.socp.incident.web.store.CaseStore;
+import com.socp.incident.web.store.AlarmCaseLinkRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -22,10 +23,13 @@ class CaseServiceTest {
     @Mock
     private CaseStore store;
 
+    @Mock
+    private AlarmCaseLinkRepository alarmLinks;
+
     @Test
     void createsCaseForFirstAlarmOfAnEntity() {
         given(store.openCaseId("203.0.113.10")).willReturn(null);
-        CaseService service = new CaseService(store);
+        CaseService service = new CaseService(store, alarmLinks);
 
         Map<String, Object> result = service.fromAlarm(alarm("AL-1"));
 
@@ -42,7 +46,7 @@ class CaseServiceTest {
                                 java.time.Instant.now(), "ALARM", "initial", "detection", "AL-1"));
         given(store.openCaseId("203.0.113.10")).willReturn(existing.id());
         given(store.get(existing.id())).willReturn(existing);
-        CaseService service = new CaseService(store);
+        CaseService service = new CaseService(store, alarmLinks);
 
         Map<String, Object> result = service.fromAlarm(alarm("AL-2"));
 
@@ -60,7 +64,7 @@ class CaseServiceTest {
                                 java.time.Instant.now(), "ALARM", "initial", "detection", "AL-1"));
         given(store.openCaseId("203.0.113.10")).willReturn(existing.id());
         given(store.get(existing.id())).willReturn(existing);
-        CaseService service = new CaseService(store);
+        CaseService service = new CaseService(store, alarmLinks);
 
         Map<String, Object> result = service.fromAlarm(alarm("AL-1"));
 
@@ -72,7 +76,7 @@ class CaseServiceTest {
     @Test
     void createsManualCaseWithOpenStatusAndAssignee() {
         given(store.save(any(Case.class))).willAnswer(inv -> inv.getArgument(0));
-        CaseService service = new CaseService(store);
+        CaseService service = new CaseService(store, alarmLinks);
 
         Case created = service.create("Manual investigation", "10.0.0.8", "critical", "analyst");
 

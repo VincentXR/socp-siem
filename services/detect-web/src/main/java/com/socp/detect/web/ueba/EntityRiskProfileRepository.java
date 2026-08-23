@@ -10,6 +10,11 @@ import java.util.Optional;
 
 interface EntityRiskProfileRepository extends JpaRepository<EntityRiskProfileEntity, String> {
     @Lock(LockModeType.PESSIMISTIC_WRITE)
-    @Query("select p from EntityRiskProfileEntity p where p.entity = :entity")
-    Optional<EntityRiskProfileEntity> findForUpdate(@Param("entity") String entity);
+    @Query("select p from EntityRiskProfileEntity p where p.tenantId = :tenantId and p.entity = :entity")
+    Optional<EntityRiskProfileEntity> findForUpdate(@Param("tenantId") String tenantId,
+                                                    @Param("entity") String entity);
+
+    Optional<EntityRiskProfileEntity> findByTenantIdAndEntity(String tenantId, String entity);
+
+    java.util.List<EntityRiskProfileEntity> findByTenantId(String tenantId);
 }

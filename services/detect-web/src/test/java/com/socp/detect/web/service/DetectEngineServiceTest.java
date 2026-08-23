@@ -45,7 +45,7 @@ class DetectEngineServiceTest {
     @Test
     void addingRuleReloadsEngineAndEvaluatesNewEvents() throws Exception {
         List<Map<String, Object>> persisted = new ArrayList<>();
-        when(store.list()).thenAnswer(invocation -> List.copyOf(persisted));
+        when(store.list("default")).thenAnswer(invocation -> List.copyOf(persisted));
         when(store.save(org.mockito.ArgumentMatchers.anyMap())).thenAnswer(invocation -> {
             Map<String, Object> spec = new LinkedHashMap<>(invocation.getArgument(0));
             persisted.add(spec);
@@ -77,7 +77,6 @@ class DetectEngineServiceTest {
 
     @Test
     void deletingUnknownRuleDoesNotReloadEngine() {
-        when(store.list()).thenReturn(List.of());
         when(store.delete("missing")).thenReturn(false);
 
         DetectEngineService service = new DetectEngineService(
@@ -92,7 +91,6 @@ class DetectEngineServiceTest {
 
     @Test
     void partitionRestoreReadsOnlyAssignedState() {
-        when(store.list()).thenReturn(List.of(patternRule()));
         DetectEngineService service = new DetectEngineService(
                 store, new RecentAlertSink(10, null, null), forwarder, rulePublisher, stateStore);
         try {
@@ -110,7 +108,7 @@ class DetectEngineServiceTest {
 
     @Test
     void rebuildDrainsAcceptedWorkBeforeReadingTheJournalSnapshot() throws Exception {
-        when(store.list()).thenReturn(List.of());
+        when(store.list("default")).thenReturn(List.of());
         when(stateStore.claim(org.mockito.ArgumentMatchers.any(SecurityEvent.class)))
                 .thenReturn(com.socp.detect.web.store.DetectionEventClaim.NEW);
         CountDownLatch sinkEntered = new CountDownLatch(1);
@@ -120,7 +118,8 @@ class DetectEngineServiceTest {
             assertTrue(releaseSink.await(3, TimeUnit.SECONDS));
             return null;
         }).when(forwarder).forwardAll(
-                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyList());
+                org.mockito.ArgumentMatchers.any(SecurityEvent.class),
+                org.mockito.ArgumentMatchers.anyList());
 
         DetectEngineService service = new DetectEngineService(
                 store, new RecentAlertSink(10, forwarder, null),
@@ -141,7 +140,7 @@ class DetectEngineServiceTest {
 
             releaseSink.countDown();
             rebuild.get(3, TimeUnit.SECONDS);
-            verify(stateStore).markCompleted(org.mockito.ArgumentMatchers.anyString());
+            verify(stateStore).markCompleted(org.mockito.ArgumentMatchers.any(SecurityEvent.class));
             verify(stateStore).replayRecentForPartitions(
                     org.mockito.ArgumentMatchers.eq(Set.of(1)),
                     org.mockito.ArgumentMatchers.any(Duration.class),

@@ -30,7 +30,17 @@ public record Alert(
      * after detection but before the alert transaction completes.
      */
     private static String stableId(String ruleId, String entity, List<SecurityEvent> evidence) {
-        StringBuilder fingerprint = new StringBuilder(String.valueOf(ruleId))
+        String tenant = "default";
+        if (evidence != null) {
+            for (SecurityEvent event : evidence) {
+                if (event != null) {
+                    tenant = event.tenantId();
+                    break;
+                }
+            }
+        }
+        StringBuilder fingerprint = new StringBuilder(tenant)
+                .append('|').append(String.valueOf(ruleId))
                 .append('|').append(String.valueOf(entity));
         if (evidence != null) {
             for (SecurityEvent event : evidence) {

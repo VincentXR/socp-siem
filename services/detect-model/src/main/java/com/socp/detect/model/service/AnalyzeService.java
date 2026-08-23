@@ -3,6 +3,7 @@ package com.socp.detect.model.service;
 import com.socp.detect.model.engine.AlertWindowAggregator;
 import com.socp.detect.model.store.AnalyzedEntity;
 import com.socp.detect.model.store.AnalyzedRepository;
+import com.socp.platform.tenant.TenantContext;
 import com.socp.rule.config.Rules;
 import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
@@ -17,14 +18,10 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
-/**
- * 告警二次分析服务（DETECT MODEL 核心）：接收原始告警（HTTP /analyze 与 Kafka
- * socp-alarm-original 同一入口），用 socp-rule 规则引擎做二次关联分析，
- * 命中结果进入 5 分钟滑动窗口聚合器（AlertWindowAggregator），并落库 t_analyzed
- * （研判记录重启不丢，启动时自动恢复）。
- */
+/** Tenant-scoped secondary alert analysis and durable projection. */
 @Service
 public class AnalyzeService {
 
@@ -32,8 +29,8 @@ public class AnalyzeService {
     private static final int ANALYZED_MAX = 100_000;
 
     private final AnalyzedRepository repository;
-    private final List<Rule> rules = Rules.defaultRules();
-    private final List<Alert> analyzed = new CopyOnWriteArrayList<>();
+    private final Map<String, List<Rule>> rulesByTenant = new ConcurrentHashMap<>();
+    private final Map<String, CopyOnWriteArrayList<Alert>> analyzedByTenant = new ConcurrentHashMap<>();
     private final AlertWindowAggregator windowAggregator;
 
     public AnalyzeService(AnalyzedRepository repository, AlertWindowAggregator windowAggregator) {
@@ -44,49 +41,47 @@ public class AnalyzeService {
     @PostConstruct
     void load() {
         try {
-            for (AnalyzedEntity e : repository.findAll()) {
-                analyzed.add(toAlert(e));
+            for (AnalyzedEntity entity : repository.findAll()) {
+                analyzedFor(entity.getTenantId()).add(toAlert(entity));
             }
-            if (!analyzed.isEmpty()) {
-                log.info("已从 t_analyzed 恢复 {} 条二次分析记录", analyzed.size());
-            }
-        } catch (Exception ex) {
-            log.warn("t_analyzed 恢复失败（按空库启动）: {}", ex.toString());
+            long loaded = analyzedByTenant.values().stream().mapToLong(List::size).sum();
+            if (loaded > 0) log.info("Restored {} tenant-scoped secondary analysis records", loaded);
+        } catch (RuntimeException failure) {
+            log.warn("Secondary analysis restore failed; starting with an empty cache: {}",
+                    failure.getMessage());
         }
     }
 
-    /** 二次分析：规则引擎评估 + 窗口聚合 + 落库。返回统计结果（HTTP / Kafka 消费复用）。 */
     public Map<String, Object> analyze(Map<String, Object> alarm) {
+        String tenant = tenant(alarm);
         String ruleId = String.valueOf(alarm.getOrDefault("ruleId", "UNKNOWN"));
         String entity = String.valueOf(alarm.getOrDefault("entity", ""));
-        String msg = String.valueOf(alarm.getOrDefault("message", ""));
+        String message = String.valueOf(alarm.getOrDefault("message", ""));
         Severity severity = Severity.valueOf(
                 String.valueOf(alarm.getOrDefault("severity", "INFO")).toUpperCase());
 
         Map<String, String> fields = new LinkedHashMap<>();
-        fields.put("msg", msg);
+        fields.put("msg", message);
         fields.put("src_ip", entity);
+        fields.put("tenant_id", tenant);
         String source = String.valueOf(alarm.getOrDefault("source", "unknown"));
-        SecurityEvent ev = new SecurityEvent(Instant.now(), source, entity, msg, fields, severity);
+        SecurityEvent event = new SecurityEvent(Instant.now(), source, entity, message, fields, severity);
 
+        CopyOnWriteArrayList<Alert> analyzed = analyzedFor(tenant);
         int matched = 0;
-        for (Rule r : rules) {
-            r.accept(ev);
-            List<Alert> alerts = r.drain();
-            if (!alerts.isEmpty()) {
-                for (Alert a : alerts) {
-                    analyzed.add(a);
-                    persist(a);
-                }
-                matched += alerts.size();
+        for (Rule rule : rulesFor(tenant)) {
+            rule.accept(event);
+            List<Alert> alerts = rule.drain();
+            for (Alert alert : alerts) {
+                analyzed.add(alert);
+                persist(tenant, alert);
             }
+            matched += alerts.size();
         }
         if (analyzed.size() > ANALYZED_MAX) {
             analyzed.subList(0, analyzed.size() - ANALYZED_MAX).clear();
         }
-        if (matched > 0) {
-            windowAggregator.record(ruleId, entity, severity.name());
-        }
+        if (matched > 0) windowAggregator.record(tenant, ruleId, entity, severity.name());
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("inputRuleId", ruleId);
@@ -97,48 +92,81 @@ public class AnalyzeService {
     }
 
     public List<Alert> analyzed() {
-        return List.copyOf(analyzed);
+        return List.copyOf(analyzedFor(currentTenant()));
     }
 
     public Map<String, Object> stats() {
-        Map<String, Object> s = new LinkedHashMap<>();
-        s.put("totalAnalyzed", analyzed.size());
-        s.put("rules", rules.size());
-        s.put("bySeverity", Map.of(
-                "CRITICAL", analyzed.stream().filter(a -> a.severity() == Severity.CRITICAL).count(),
-                "HIGH", analyzed.stream().filter(a -> a.severity() == Severity.HIGH).count(),
-                "MEDIUM", analyzed.stream().filter(a -> a.severity() == Severity.MEDIUM).count(),
-                "LOW", analyzed.stream().filter(a -> a.severity() == Severity.LOW).count(),
-                "INFO", analyzed.stream().filter(a -> a.severity() == Severity.INFO).count()));
-        s.put("window", windowAggregator.snapshot());
-        return s;
+        String tenant = currentTenant();
+        List<Alert> analyzed = analyzedFor(tenant);
+        Map<String, Object> stats = new LinkedHashMap<>();
+        stats.put("totalAnalyzed", analyzed.size());
+        stats.put("rules", rulesFor(tenant).size());
+        stats.put("bySeverity", Map.of(
+                "CRITICAL", count(analyzed, Severity.CRITICAL),
+                "HIGH", count(analyzed, Severity.HIGH),
+                "MEDIUM", count(analyzed, Severity.MEDIUM),
+                "LOW", count(analyzed, Severity.LOW),
+                "INFO", count(analyzed, Severity.INFO)));
+        stats.put("window", windowAggregator.snapshot(tenant));
+        return stats;
     }
 
-    private void persist(Alert a) {
+    private void persist(String tenant, Alert alert) {
         try {
-            repository.save(new AnalyzedEntity(a.id(), a.ruleId(), a.ruleName(),
-                    a.severity().name(), truncate(a.message(), 1000), truncate(a.entity(), 250), a.timestamp()));
-        } catch (Exception ex) {
-            log.warn("t_analyzed 落库失败 alertId={}: {}", a.id(), ex.getMessage());
+            repository.save(new AnalyzedEntity(tenant, alert.id(), alert.ruleId(), alert.ruleName(),
+                    alert.severity().name(), truncate(alert.message(), 1000),
+                    truncate(alert.entity(), 250), alert.timestamp()));
+        } catch (RuntimeException failure) {
+            log.warn("Secondary analysis persistence failed alertId={}: {}",
+                    alert.id(), failure.getMessage());
         }
     }
 
-    private static Alert toAlert(AnalyzedEntity e) {
-        Severity sev;
-        try {
-            sev = Severity.valueOf(e.getSeverity());
-        } catch (Exception ex) {
-            sev = Severity.INFO;
-        }
-        return new Alert(e.getAlertId() == null ? "" : e.getAlertId(), e.getTs(),
-                e.getRuleId() == null ? "" : e.getRuleId(),
-                e.getRuleName() == null ? "" : e.getRuleName(),
-                sev, e.getMessage() == null ? "" : e.getMessage(),
-                e.getEntity() == null ? "" : e.getEntity(), List.of());
+    private List<Rule> rulesFor(String tenant) {
+        return rulesByTenant.computeIfAbsent(tenant, ignored -> Rules.defaultRules());
     }
 
-    private static String truncate(String s, int max) {
-        if (s == null) return "";
-        return s.length() <= max ? s : s.substring(0, max);
+    private CopyOnWriteArrayList<Alert> analyzedFor(String tenant) {
+        String normalized = normalizeTenant(tenant);
+        return analyzedByTenant.computeIfAbsent(normalized, ignored -> new CopyOnWriteArrayList<>());
+    }
+
+    private static long count(List<Alert> alerts, Severity severity) {
+        return alerts.stream().filter(alert -> alert.severity() == severity).count();
+    }
+
+    private static String tenant(Map<String, Object> alarm) {
+        String context = TenantContext.get();
+        if (context != null && !context.isBlank()) return context;
+        Object carried = alarm.get("tenantId");
+        if (carried == null) carried = alarm.get("tenant_id");
+        return normalizeTenant(carried == null ? null : String.valueOf(carried));
+    }
+
+    private static String currentTenant() {
+        return normalizeTenant(TenantContext.get());
+    }
+
+    private static String normalizeTenant(String tenant) {
+        return tenant == null || tenant.isBlank() ? "default" : tenant;
+    }
+
+    private static Alert toAlert(AnalyzedEntity entity) {
+        Severity severity;
+        try {
+            severity = Severity.valueOf(entity.getSeverity());
+        } catch (RuntimeException ignored) {
+            severity = Severity.INFO;
+        }
+        return new Alert(entity.getAlertId() == null ? "" : entity.getAlertId(), entity.getTs(),
+                entity.getRuleId() == null ? "" : entity.getRuleId(),
+                entity.getRuleName() == null ? "" : entity.getRuleName(), severity,
+                entity.getMessage() == null ? "" : entity.getMessage(),
+                entity.getEntity() == null ? "" : entity.getEntity(), List.of());
+    }
+
+    private static String truncate(String value, int max) {
+        if (value == null) return "";
+        return value.length() <= max ? value : value.substring(0, max);
     }
 }

@@ -60,10 +60,6 @@ scrape_configs:
         labels: { service: ai-assistant }   # 安全问答
       - targets: ['host.docker.internal:18090']
         labels: { service: detect-model }      # 二次关联分析（未接 Kafka）
-      - targets: ['host.docker.internal:18091']
-        labels: { service: asset-collect }    # 资产采集入口
-      - targets: ['host.docker.internal:18093']
-        labels: { service: hips-collect }   # 端点事件采集入口
       - targets: ['host.docker.internal:18094']
         labels: { service: threat-web }         # 威胁情报（H2）
       - targets: ['host.docker.internal:18095']

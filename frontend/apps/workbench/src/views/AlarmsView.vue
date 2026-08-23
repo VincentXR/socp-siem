@@ -34,7 +34,7 @@ import SevBadge from '../components/SevBadge.vue'
 import { relTime } from '../lib/ui'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import {
-  SEVERITIES, type Alarm, type AlarmEvidenceResponse, type Ioc,
+  SEVERITIES, type Alarm, type AlarmEvidenceResponse, type CaseInfo, type Ioc,
   getDisposition, getAlarmEvidence, setDispositionStatus, assignAlarm, addAlarmNote, listCases,
 } from '../api'
 
@@ -66,7 +66,7 @@ const currentAlarm = ref<Alarm | null>(null)
 const disposition = ref<{ notes: Array<{ author: string; at: string; content: string }> } | null>(null)
 const evidence = ref<AlarmEvidenceResponse | null>(null)
 const evidenceError = ref('')
-const relatedCase = ref<{ id: string; title: string; status: string; entity: string; alarmIds: string[] } | null>(null)
+const relatedCase = ref<CaseInfo | null>(null)
 const newStatus = ref('OPEN')
 const newAssignee = ref('')
 const newNote = ref('')
@@ -83,7 +83,7 @@ async function findRelatedCase(alarmId: string) {
   relatedCase.value = null
   try {
     const all = await listCases()
-    relatedCase.value = all.find((c: any) => c.alarmIds?.includes(alarmId)) ?? null
+    relatedCase.value = all.find(item => item.alarmIds.includes(alarmId)) ?? null
   } catch {
     relatedCase.value = null
   }

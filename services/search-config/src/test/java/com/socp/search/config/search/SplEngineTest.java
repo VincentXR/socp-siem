@@ -34,6 +34,8 @@ class SplEngineTest {
         @Override public List<SearchEventEntity> findAllById(Iterable<String> ids) { return List.of(); }
         @Override public boolean existsById(String s) { return false; }
         @Override public long count() { return 0; }
+        @Override public long countByTenantId(String tenantId) { return 0; }
+        @Override public List<SearchEventEntity> findTop20000ByTenantIdOrderByTimestampDesc(String tenantId) { return List.of(); }
         @Override public void deleteById(String s) { }
         @Override public void delete(SearchEventEntity e) { }
         @Override public void deleteAllById(Iterable<? extends String> ids) { }

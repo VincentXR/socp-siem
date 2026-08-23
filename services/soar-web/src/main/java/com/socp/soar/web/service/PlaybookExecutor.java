@@ -149,7 +149,9 @@ public class PlaybookExecutor {
     private void recordExecution(Map<String, Object> exec) {
         if (executionRepository == null) {
             if (transientExecutions.size() >= 200) transientExecutions.remove(0);
-            transientExecutions.add(new LinkedHashMap<>(exec));
+            Map<String, Object> tenantExecution = new LinkedHashMap<>(exec);
+            tenantExecution.put("tenantId", tenant());
+            transientExecutions.add(tenantExecution);
             return;
         }
         try {
@@ -166,7 +168,8 @@ public class PlaybookExecutor {
             row.setTs(parseInstant(exec.get("ts")));
             row.setTenantId(tenant());
             executionRepository.save(row);
-        } catch (Exception e) {
+        } catch (com.fasterxml.jackson.core.JsonProcessingException
+                 | org.springframework.dao.DataAccessException e) {
             // The action itself has already completed; expose persistence loss
             // loudly while keeping the response path available.
             log.warn("SOAR 执行记录持久化失败 executionId={}: {}", exec.get("executionId"), e.getMessage());
@@ -176,6 +179,22 @@ public class PlaybookExecutor {
     /** 执行单个动作（含失败重试）；activeFailed 为 true 时跳过主动作、只允许补偿动作。
      *  public 供 Temporal Activity 复用，保证两种执行模式动作语义一致。 */
     public Map<String, Object> executeAction(String action, Map<String, Object> alarm, boolean activeFailed) {
+        String previous = TenantContext.get();
+        Object carried = alarm == null ? null : alarm.get("tenantId");
+        if (carried == null && alarm != null) carried = alarm.get("tenant_id");
+        String tenant = carried == null ? (previous == null ? "default" : previous) : String.valueOf(carried);
+        if (!TenantContext.isValid(tenant)) throw new IllegalArgumentException("invalid playbook tenant");
+        try {
+            TenantContext.set(tenant);
+            return executeActionScoped(action, alarm, activeFailed);
+        } finally {
+            if (previous == null) TenantContext.clear();
+            else TenantContext.set(previous);
+        }
+    }
+
+    private Map<String, Object> executeActionScoped(String action, Map<String, Object> alarm,
+                                                    boolean activeFailed) {
         Map<String, Object> r = new LinkedHashMap<>();
         r.put("action", action);
         String a = action.toLowerCase();
@@ -217,7 +236,7 @@ public class PlaybookExecutor {
             } else {
                 r.put("status", "success");
             }
-        } catch (Exception e) {
+        } catch (RuntimeException e) {
             log.warn("剧本动作执行异常 action={} alarmId={} error={}: {}",
                     action, alarm.get("id"), e.getClass().getSimpleName(), e.getMessage());
             r.put("status", "failed");
@@ -233,6 +252,12 @@ public class PlaybookExecutor {
      * 不再出现「剧本显示 failed，但没人知道为什么」。
      */
     private static void fill(Map<String, Object> r, String target, ServiceCall call) {
+        if (call == null) {
+            r.put("status", "failed");
+            r.put("target", target);
+            r.put("error", "service returned no result");
+            return;
+        }
         r.put("status", call.ok() ? "success" : "failed");
         r.put("httpStatus", call.status());
         r.put("target", target);
@@ -260,7 +285,17 @@ public class PlaybookExecutor {
     }
 
     public List<Map<String, Object>> executions() {
-        if (executionRepository == null) return List.copyOf(transientExecutions);
+        if (executionRepository == null) {
+            String tenant = tenant();
+            return transientExecutions.stream()
+                    .filter(execution -> tenant.equals(execution.get("tenantId")))
+                    .map(execution -> {
+                        Map<String, Object> copy = new LinkedHashMap<>(execution);
+                        copy.remove("tenantId");
+                        return copy;
+                    })
+                    .toList();
+        }
         return executionRepository.findTop200ByTenantIdOrderByTsDesc(tenant()).stream()
                 .map(PlaybookExecutor::fromEntity)
                 .toList();
@@ -293,7 +328,7 @@ public class PlaybookExecutor {
         if (row.getError() != null) out.put("error", row.getError());
         try {
             out.put("results", MAPPER.readValue(row.getResultsJson(), new TypeReference<List<Map<String, Object>>>() {}));
-        } catch (Exception ignored) {
+        } catch (com.fasterxml.jackson.core.JsonProcessingException invalidStoredResult) {
             out.put("results", List.of());
         }
         out.put("ts", row.getTs() == null ? null : row.getTs().toString());
@@ -303,7 +338,7 @@ public class PlaybookExecutor {
     private static Instant parseInstant(Object value) {
         if (value == null) return Instant.now();
         try { return Instant.parse(String.valueOf(value)); }
-        catch (Exception ignored) { return Instant.now(); }
+        catch (java.time.format.DateTimeParseException invalid) { return Instant.now(); }
     }
 
     private static String str(Map<String, Object> m, String k) {
@@ -312,17 +347,10 @@ public class PlaybookExecutor {
     }
 
     private static String toJson(Map<String, Object> m) {
-        StringBuilder sb = new StringBuilder("{");
-        boolean first = true;
-        for (var e : m.entrySet()) {
-            if (!first) sb.append(",");
-            first = false;
-            sb.append('"').append(e.getKey()).append("\":");
-            Object v = e.getValue();
-            if (v == null) sb.append("null");
-            else if (v instanceof Number || v instanceof Boolean) sb.append(v);
-            else sb.append('"').append(String.valueOf(v).replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
+        try {
+            return MAPPER.writeValueAsString(m);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
+            throw new IllegalArgumentException("cannot serialize playbook action context", failure);
         }
-        return sb.append("}").toString();
     }
 }

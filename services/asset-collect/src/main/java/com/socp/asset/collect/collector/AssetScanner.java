@@ -2,6 +2,7 @@ package com.socp.asset.collect.collector;
 
 import com.socp.platform.client.AssetClient;
 import com.socp.platform.client.ServiceCall;
+import com.socp.platform.tenant.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.EnableScheduling;
@@ -50,6 +51,7 @@ public class AssetScanner {
             asset.put("owner", "platform");
             asset.put("criticality", round % 3 == 0 ? "CRITICAL" : "HIGH");
             asset.put("scannedAt", Instant.now().toString());
+            asset.put("tenantId", "default");
             discovered.add(asset);
 
             // 上报 asset-web 落库（best-effort，但失败必须可观测）
@@ -62,7 +64,10 @@ public class AssetScanner {
     }
 
     public List<Map<String, Object>> discovered() {
-        return List.copyOf(discovered);
+        String tenant = TenantContext.get();
+        if (tenant == null || tenant.isBlank()) tenant = "default";
+        String selected = tenant;
+        return discovered.stream().filter(item -> selected.equals(item.get("tenantId"))).toList();
     }
 
     private static String pick(String... xs) {

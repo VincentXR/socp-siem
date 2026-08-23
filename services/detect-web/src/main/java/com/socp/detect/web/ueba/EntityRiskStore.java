@@ -3,6 +3,7 @@ package com.socp.detect.web.ueba;
 import com.socp.rule.model.Severity;
 import com.socp.rule.score.RiskScorer;
 import com.socp.rule.util.Json;
+import com.socp.platform.tenant.TenantContext;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -45,15 +46,18 @@ public class EntityRiskStore {
     public RiskScorer.Score recordForAlert(String alertId, String entity, Severity severity, String mitre,
                                            String ruleId, String ruleName, int tiHits) {
         if (alertId == null || alertId.isBlank()) alertId = "unkeyed-" + UUID.randomUUID();
-        EntityRiskAlertEntity existing = appliedAlerts.findById(alertId).orElse(null);
+        String tenant = tenant();
+        EntityRiskAlertEntity existing = appliedAlerts.findByTenantIdAndAlertId(tenant, alertId).orElse(null);
         if (existing != null) return scoreOf(existing);
 
         Instant now = Instant.now();
         String key = entity == null || entity.isBlank() ? "unknown" : entity;
-        EntityRiskProfileEntity profile = profiles.findForUpdate(key).orElseGet(() -> newProfile(key, now));
+        EntityRiskProfileEntity profile = profiles.findForUpdate(tenant, key)
+                .orElseGet(() -> newProfile(tenant, key, now));
         int recent = Math.toIntExact(Math.min(10,
-                appliedAlerts.countByEntityAndCreatedAtAfter(key, now.minus(RECENT_WINDOW))));
-        RiskScorer.Score score = RiskScorer.score(severity, mitre, tiHits, recent, criticality(key));
+                appliedAlerts.countByTenantIdAndEntityAndCreatedAtAfter(
+                        tenant, key, now.minus(RECENT_WINDOW))));
+        RiskScorer.Score score = RiskScorer.score(severity, mitre, tiHits, recent, criticality(tenant, key));
 
         profile.setScore(Math.min(100, decayed(profile, now) + score.score() * INJECT_RATIO));
         profile.setScoreAt(now);
@@ -70,6 +74,8 @@ public class EntityRiskStore {
         profiles.save(profile);
 
         EntityRiskAlertEntity applied = new EntityRiskAlertEntity();
+        applied.setStorageId(storageId(tenant, alertId));
+        applied.setTenantId(tenant);
         applied.setAlertId(alertId);
         applied.setEntity(key);
         applied.setScore(score.score());
@@ -82,7 +88,7 @@ public class EntityRiskStore {
 
     public List<Map<String, Object>> top(int limit) {
         Instant now = Instant.now();
-        return profiles.findAll().stream()
+        return profiles.findByTenantId(tenant()).stream()
                 .map(profile -> toMap(profile, now))
                 .sorted((a, b) -> Double.compare((Double) b.get("risk"), (Double) a.get("risk")))
                 .limit(Math.max(1, limit))
@@ -90,12 +96,13 @@ public class EntityRiskStore {
     }
 
     public Map<String, Object> get(String entity) {
-        return profiles.findById(entity).map(profile -> toMap(profile, Instant.now())).orElse(null);
+        return profiles.findByTenantIdAndEntity(tenant(), entity)
+                .map(profile -> toMap(profile, Instant.now())).orElse(null);
     }
 
     public Map<String, Object> summary() {
         Instant now = Instant.now();
-        List<EntityRiskProfileEntity> all = profiles.findAll();
+        List<EntityRiskProfileEntity> all = profiles.findByTenantId(tenant());
         Map<String, Integer> byLevel = new LinkedHashMap<>();
         for (String level : List.of("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO")) byLevel.put(level, 0);
         double max = 0;
@@ -112,8 +119,10 @@ public class EntityRiskStore {
         return result;
     }
 
-    private static EntityRiskProfileEntity newProfile(String entity, Instant now) {
+    private static EntityRiskProfileEntity newProfile(String tenant, String entity, Instant now) {
         EntityRiskProfileEntity profile = new EntityRiskProfileEntity();
+        profile.setStorageId(storageId(tenant, entity));
+        profile.setTenantId(tenant);
         profile.setEntity(entity);
         profile.setScore(0);
         profile.setScoreAt(now);
@@ -126,14 +135,24 @@ public class EntityRiskStore {
         return profile;
     }
 
+    private static String tenant() {
+        String tenant = TenantContext.get();
+        return tenant == null || tenant.isBlank() ? "default" : tenant;
+    }
+
+    private static String storageId(String tenant, String localId) {
+        return UUID.nameUUIDFromBytes((tenant + "|" + localId)
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+    }
+
     private static double decayed(EntityRiskProfileEntity profile, Instant now) {
         double elapsed = Math.max(0, now.getEpochSecond() - profile.getScoreAt().getEpochSecond());
         return profile.getScore() * Math.pow(0.5, elapsed / HALF_LIFE_SECONDS);
     }
 
-    private static int criticality(String entity) {
-        if (com.socp.rule.engine.Watchlists.contains("crown_jewels", entity)) return 3;
-        if (com.socp.rule.engine.Watchlists.contains("privileged_accounts", entity)) return 2;
+    private static int criticality(String tenant, String entity) {
+        if (com.socp.rule.engine.Watchlists.contains(tenant, "crown_jewels", entity)) return 3;
+        if (com.socp.rule.engine.Watchlists.contains(tenant, "privileged_accounts", entity)) return 2;
         return 0;
     }
 
@@ -151,7 +170,8 @@ public class EntityRiskStore {
         result.put("lastSeen", profile.getLastSeen().toString());
         result.put("mitre", ranked(mitre, "technique", 8));
         result.put("topRules", ranked(rules, "rule", 5));
-        result.put("critical", com.socp.rule.engine.Watchlists.contains("crown_jewels", profile.getEntity()));
+        result.put("critical", com.socp.rule.engine.Watchlists.contains(
+                profile.getTenantId(), "crown_jewels", profile.getEntity()));
         return result;
     }
 

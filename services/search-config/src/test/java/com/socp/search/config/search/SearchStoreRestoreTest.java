@@ -1,8 +1,8 @@
 package com.socp.search.config.search;
 
+import com.socp.platform.tenant.TenantContext;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.data.domain.PageImpl;
-import org.springframework.data.domain.Pageable;
 
 import java.time.Instant;
 import java.util.List;
@@ -10,12 +10,16 @@ import java.util.Map;
 import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class SearchStoreRestoreTest {
+
+    @AfterEach
+    void clearTenant() {
+        TenantContext.clear();
+    }
 
     @Test
     void restoresOnlyTheBoundedHotWindowInsteadOfTheFullTable() {
@@ -26,23 +30,43 @@ class SearchStoreRestoreTest {
         SearchEventEntity older = SearchStore.toEntity(new SearchEvent(
                 "event-old", Instant.parse("2026-08-19T00:00:00Z"), "auth", "host-1",
                 "INFO", "older", Map.of(), Map.of()));
-        when(repository.count()).thenReturn(1_000_000L);
-        when(repository.findAll(any(Pageable.class)))
-                .thenReturn(new PageImpl<>(List.of(newest, older)));
+        when(repository.countByTenantId("default")).thenReturn(1_000_000L);
+        when(repository.findTop20000ByTenantIdOrderByTimestampDesc("default"))
+                .thenReturn(List.of(newest, older));
 
         SearchStore store = new SearchStore(repository, null);
 
         assertEquals(List.of("event-old", "event-new"),
                 store.all().stream().map(SearchEvent::eventId).toList());
         assertEquals(1_000_000L, store.realCount());
-        verify(repository).findAll(any(Pageable.class));
+        verify(repository).findTop20000ByTenantIdOrderByTimestampDesc("default");
+    }
+
+    @Test
+    void hotWindowIsTenantScoped() {
+        SearchEventRepository repository = mock(SearchEventRepository.class);
+        when(repository.findTop20000ByTenantIdOrderByTimestampDesc("default")).thenReturn(List.of());
+        when(repository.findTop20000ByTenantIdOrderByTimestampDesc("tenant-a")).thenReturn(List.of());
+        when(repository.findTop20000ByTenantIdOrderByTimestampDesc("tenant-b")).thenReturn(List.of());
+        SearchStore store = new SearchStore(repository, null);
+
+        store.rememberBatch(List.of(event("a-event", "tenant-a"), event("b-event", "tenant-b")));
+        TenantContext.set("tenant-a");
+        assertEquals(List.of("a-event"), store.all().stream().map(SearchEvent::eventId).toList());
+        TenantContext.set("tenant-b");
+        assertEquals(List.of("b-event"), store.all().stream().map(SearchEvent::eventId).toList());
+    }
+
+    private static SearchEvent event(String id, String tenant) {
+        return new SearchEvent(id, Instant.EPOCH, "auth", "host", "INFO", "event",
+                Map.of("tenant_id", tenant), Map.of());
     }
 
     @Test
     void retainsTheNewestTwentyThousandEventsWithoutArrayHeadCopies() {
         SearchEventRepository repository = mock(SearchEventRepository.class);
-        when(repository.count()).thenReturn(1L);
-        when(repository.findAll(any(Pageable.class))).thenReturn(new PageImpl<>(List.of()));
+        when(repository.countByTenantId("default")).thenReturn(1L);
+        when(repository.findTop20000ByTenantIdOrderByTimestampDesc("default")).thenReturn(List.of());
         SearchStore store = new SearchStore(repository, null);
         List<SearchEvent> events = IntStream.range(0, 20_100)
                 .mapToObj(i -> new SearchEvent("event-" + i, Instant.EPOCH.plusSeconds(i),

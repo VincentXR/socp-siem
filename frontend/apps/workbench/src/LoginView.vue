@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { login as apiLogin, setToken } from './api'
+import { login as apiLogin } from './api'
 import ElMessage from 'element-plus/es/components/message/index.mjs'
 
 const emit = defineEmits<{ (e: 'done', user: string, role: string): void }>()
@@ -14,7 +14,6 @@ async function doLogin() {
   busy.value = true
   try {
     const d = await apiLogin(username.value, password.value)
-    setToken(d.token)
     try {
       localStorage.setItem('socp_user', d.username)
       localStorage.setItem('socp_role', d.role)
@@ -32,7 +31,7 @@ function quickFill(u: string, p: string) {
   password.value = p
 }
 
-/** Keycloak OIDC 登录：跳网关 /auth/oidc/login（302 到 Keycloak），回调后带 ?socp_oidc_token= 回来 */
+/** Keycloak OIDC login returns with an HttpOnly SOCP session cookie. */
 function oidcLogin() {
   window.location.href = '/auth/oidc/login'
 }

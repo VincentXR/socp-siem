@@ -20,7 +20,7 @@ public class AssetStore {
 
     public AssetStore(AssetRepository repo) {
         this.repo = repo;
-        this.seeded = repo.count() > 0;
+        this.seeded = repo.countByTenantId("default") > 0;
         if (!seeded) {
             seed();
         }

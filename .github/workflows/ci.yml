@@ -36,8 +36,19 @@ jobs:
       - name: Build backend (Maven reactor)
         run: bash build/mvnw.sh -DskipTests package
 
-      - name: Run backend tests
-        run: bash build/mvnw.sh test -Dsurefire.failIfNoSpecifiedTests=false
+      - name: Run backend tests with coverage
+        run: bash build/mvnw.sh test -Pcoverage -Dsurefire.failIfNoSpecifiedTests=false
+
+      - name: Enforce coverage floor
+        run: python3 build/verify-coverage.py
+
+      - name: Verify migrations and deployment contracts
+        run: |
+          python3 build/verify-migrations.py
+          python3 build/verify-contracts.py
+
+      - name: Run build policy and SpotBugs
+        run: bash build/mvnw.sh verify -Pquality -DskipTests
 
       - name: Validate versioned detection content
         run: python3 build/validate-detection-content.py
@@ -53,6 +64,18 @@ jobs:
       - name: Verify frontend (typecheck, build, and artifact)
         run: pnpm verify
         working-directory: frontend/apps/workbench
+
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject newly introduced high-severity vulnerable dependencies
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
 
   e2e:
     runs-on: ubuntu-latest

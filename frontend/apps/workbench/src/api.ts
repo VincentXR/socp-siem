@@ -1,22 +1,13 @@
 // SOCP 统一控制台 API 客户端（聚合所有后端）
 import { unwrapApiBody } from './lib/api-response'
 import { withQuery } from './lib/query'
-// 令牌：登录成功后存 localStorage；未登录返回空串（强制验签下任何兜底 token 都 401）
-export function getToken(): string {
-  try { return localStorage.getItem('socp_token') || '' } catch { return '' }
-}
-export function setToken(t: string): void { try { localStorage.setItem('socp_token', t) } catch { /* ignore */ } }
-export function clearToken(): void { try { localStorage.removeItem('socp_token') } catch { /* ignore */ } }
-
-/** 网关登录：签发 JWT 并持久化；失败抛错 */
-export async function login(username: string, password: string): Promise<{ token: string; username: string; role: string; tenant: string; expiresIn: number }> {
-  const data = await requestJson<{ token: string; username: string; role: string; tenant: string; expiresIn: number }>('/auth/login', {
+/** Gateway login establishes an HttpOnly same-site session cookie. */
+export async function login(username: string, password: string): Promise<{ username: string; role: string; tenant: string; expiresIn: number }> {
+  return requestJson<{ username: string; role: string; tenant: string; expiresIn: number }>('/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
   }, { auth: false, notifyUnauthorized: false })
-  setToken(data.token)
-  return data
 }
 
 // ---------- 类型 ----------
@@ -80,7 +71,6 @@ export const SOURCE_TYPES = ['FILE', 'SOCKET', 'SYSLOG', 'KAFKA', 'WINDOWS_EVENT
 export const PARSE_FORMATS = ['AUTO', 'SYSLOG', 'JSON', 'KV', 'CEF', 'LEEF'] as const
 
 // ---------- 通用请求 ----------
-const authHeader = (): string => `Bearer ${getToken()}`
 const DEFAULT_TIMEOUT_MS = 15_000
 
 export interface ApiRequestOptions {
@@ -109,7 +99,6 @@ export function setUnauthorizedHandler(fn: (() => void) | null): void { unauthor
 
 async function assertOk(res: Response, notifyUnauthorized = true): Promise<void> {
   if (res.status === 401) {
-    clearToken()
     if (notifyUnauthorized) unauthorizedHandler?.()
     throw new ApiError(401, '登录已过期，请重新登录')
   }
@@ -143,10 +132,12 @@ function createRequestSignal(options: ApiRequestOptions): { signal: AbortSignal;
 async function requestRaw(path: string, init: RequestInit = {}, options: ApiRequestOptions = {}): Promise<{ response: Response; cleanup: () => void }> {
   const headers = new Headers(init.headers)
   if (!headers.has('Accept')) headers.set('Accept', 'application/json')
-  if (options.auth !== false && !headers.has('Authorization')) headers.set('Authorization', authHeader())
   const managed = createRequestSignal({ ...options, signal: options.signal ?? init.signal ?? undefined })
   try {
-    return { response: await fetch(path, { ...init, headers, signal: managed.signal }), cleanup: managed.cleanup }
+    return {
+      response: await fetch(path, { ...init, headers, signal: managed.signal, credentials: 'same-origin' }),
+      cleanup: managed.cleanup,
+    }
   } catch (error) {
     managed.cleanup()
     throw error
@@ -189,6 +180,13 @@ async function put<T>(path: string, data?: unknown, options?: ApiRequestOptions)
 async function del<T>(path: string, options?: ApiRequestOptions): Promise<T> {
   return requestJson<T>(path, { method: 'DELETE' }, options)
 }
+
+export const currentSession = () => get<{ username: string; role: string; tenant: string }>(
+  '/auth/session', { unwrap: false, notifyUnauthorized: false },
+)
+export const logout = () => post<void>(
+  '/auth/logout', undefined, { unwrap: false, notifyUnauthorized: false },
+)
 
 // ---------- ALERT 告警 ----------
 export const listAlarms = (q?: string, options?: ApiRequestOptions) => get<Alarm[]>(withQuery('/alert-web/api/alarms', { q }), options)
@@ -243,8 +241,9 @@ export interface ParseRule {
 }
 export interface SinkTarget { id: string; name: string; type: string; uri: string; authToken: string | null; enabled: boolean }
 export const listSources = () => get<LogSource[]>('/search-config/api/v1/sources')
-export const createSource = (s: Record<string, unknown>) => post<LogSource>('/search-config/api/v1/sources', s)
-export const updateSource = (id: string, s: Record<string, unknown>) => put<{ source: LogSource }>(`/search-config/api/v1/sources/${encodeURIComponent(id)}`, s)
+export type LogSourceInput = Partial<Omit<LogSource, 'id' | 'createdAt'>> & Pick<LogSource, 'name' | 'type' | 'format' | 'enabled'>
+export const createSource = (source: LogSourceInput) => post<LogSource>('/search-config/api/v1/sources', source)
+export const updateSource = (id: string, source: LogSourceInput) => put<{ source: LogSource }>(`/search-config/api/v1/sources/${encodeURIComponent(id)}`, source)
 export const deleteSource = (id: string) => del(`/search-config/api/v1/sources/${encodeURIComponent(id)}`)
 export const renderConfig = () => post<string>('/search-config/api/v1/render')
 export const listParseRules = () => get<ParseRule[]>('/search-config/api/v1/parse-rules')
@@ -280,17 +279,54 @@ export interface SearchResult {
 export const splSearch = (q: string, options?: ApiRequestOptions) => get<SearchResult>(withQuery('/search-config/api/v1/search', { q }), options)
 
 // ---------- DETECT 检测 ----------
-export const listRules = () => get<unknown[]>('/detect-web/api/v1/rules')
-export const createGasRule = (spec: Record<string, unknown>) => post<Record<string, unknown>>('/detect-web/api/v1/rules', spec)
-export const updateGasRule = (id: string, spec: Record<string, unknown>) => put<Record<string, unknown>>(`/detect-web/api/v1/rules/${encodeURIComponent(id)}`, spec)
+export interface RuleCondition { field: string; op: string; value: string }
+export interface RuleSpec {
+  id: string
+  name: string
+  type: string
+  severity: string
+  message?: string
+  enabled: boolean
+  window?: string
+  keyField?: string
+  threshold?: number
+  match?: RuleCondition[]
+  steps?: RuleCondition[][]
+  mitre?: string
+}
+export interface GasStats {
+  rules: number; eventCount: number; alertCount: number; dropCount: number
+  suppressedCount: number; queueLoad: number
+}
+export interface GasAlert {
+  id: string; timestamp: string; ruleId: string; ruleName: string
+  severity: string; message: string; entity: string; evidence?: unknown[]
+}
+export interface DetectionIngestResult { accepted: boolean; queueLoad: number; error?: string }
+export interface DetectionIngestEvent {
+  eventId?: string; timestamp?: string; source: string; host?: string; severity?: string
+  msg?: string; raw?: string; fields?: Record<string, string>
+}
+export const listRules = () => get<RuleSpec[]>('/detect-web/api/v1/rules')
+export const createGasRule = (spec: Partial<RuleSpec>) => post<RuleSpec>('/detect-web/api/v1/rules', spec)
+export const updateGasRule = (id: string, spec: Partial<RuleSpec>) => put<RuleSpec>(`/detect-web/api/v1/rules/${encodeURIComponent(id)}`, spec)
 export const deleteGasRule = (id: string) => del(`/detect-web/api/v1/rules/${encodeURIComponent(id)}`)
-export const gasStats = () => get<Record<string, unknown>>('/detect-web/api/v1/stats')
-export const gasAlerts = () => get<unknown[]>('/detect-web/api/v1/alerts')
-export const gasIngest = (ev: unknown) => post<unknown>('/detect-web/api/v1/ingest', ev)
+export const gasStats = () => get<GasStats>('/detect-web/api/v1/stats')
+export const gasAlerts = () => get<GasAlert[]>('/detect-web/api/v1/alerts')
+export const gasIngest = (event: DetectionIngestEvent) => post<DetectionIngestResult>('/detect-web/api/v1/ingest', event)
 
 // ---------- SOAR 编排 ----------
 export const listPlaybooks = () => get<Playbook[]>('/soar-web/api/v1/playbooks')
-export const listPlaybookExecutions = () => get<Array<Record<string, unknown>>>('/soar-web/api/v1/playbooks/executions')
+export interface PlaybookActionResult {
+  action: string; status: string; target?: string; httpStatus?: number
+  costMs?: number; error?: string; reason?: string
+}
+export interface PlaybookExecution {
+  executionId: string; playbookId: string; playbook: string; status: string
+  trigger: string; retryCount: number; error?: string; ts: string
+  results: PlaybookActionResult[]
+}
+export const listPlaybookExecutions = () => get<PlaybookExecution[]>('/soar-web/api/v1/playbooks/executions')
 export const createPlaybook = (p: { name: string; trigger: string; actions: string[]; enabled: boolean }) =>
   post<Playbook>('/soar-web/api/v1/playbooks', p)
 export const deletePlaybook = (id: string) => del(`/soar-web/api/v1/playbooks/${encodeURIComponent(id)}`)
@@ -333,8 +369,9 @@ export const tiMatch = (value: string, options?: ApiRequestOptions) => get<{ val
 export const tiStats = () => get<{ total: number; byType: Record<string, number> }>('/threat-web/api/v1/stats')
 
 // ---------- MITRE ATT&CK (attack-web) ----------
+export interface Tactic { id: string; name: string; order: number }
 export interface Technique { id: string; name: string; tactic: string; url: string; description: string }
-export const listTactics = () => get<unknown[]>('/attack-web/api/v1/tactics')
+export const listTactics = () => get<Tactic[]>('/attack-web/api/v1/tactics')
 export const listTechniques = (tactic?: string, options?: ApiRequestOptions) => get<Technique[]>(withQuery('/attack-web/api/v1/techniques', { tactic }), options)
 export const updateTechnique = (id: string, technique: Partial<Omit<Technique, 'id'>>) =>
   put<Technique>(`/attack-web/api/v1/techniques/${encodeURIComponent(id)}`, technique)
@@ -345,12 +382,16 @@ export const attackCoverage = (ruleTechs: string[]) => post<{
 
 // ---------- 通知集成 (notify-web) ----------
 export interface Channel { id: string; name: string; type: string; target: string; enabled: boolean; description: string }
+export interface DispatchLogEntry {
+  ts: string; channel: string; type: string; ruleId: string; status: string
+  alarmId?: string; error?: string
+}
 export const listChannels = () => get<Channel[]>('/notify-web/api/v1/channels')
 export const createChannel = (c: { name: string; type: string; target: string; enabled?: boolean; description?: string }) =>
   post<Channel>('/notify-web/api/v1/channels', c)
 export const deleteChannel = (id: string) => del(`/notify-web/api/v1/channels/${encodeURIComponent(id)}`)
 export const toggleChannel = (id: string) => post<{ channel: Channel }>(`/notify-web/api/v1/channels/${encodeURIComponent(id)}/toggle`)
-export const dispatchLog = () => get<unknown[]>('/notify-web/api/v1/dispatch-log')
+export const dispatchLog = () => get<DispatchLogEntry[]>('/notify-web/api/v1/dispatch-log')
 
 // ---------- 案件/时间线 (incident-web) ----------
 export interface TimelineEvent { ts: string; type: string; message: string; source: string }
@@ -450,8 +491,12 @@ export const listIngestTasks = () => get<IngestTask[]>('/search-config/api/v1/in
 export const ingestSummary = (options?: ApiRequestOptions) => get<IngestSummary>('/search-config/api/v1/ingest/tasks/summary', options)
 export const startIngestTask = (id: string) => post<{ id: string; enabled: boolean; task: IngestTask }>(`/search-config/api/v1/ingest/tasks/${encodeURIComponent(id)}/start`)
 export const stopIngestTask = (id: string) => post<{ id: string; enabled: boolean; task: IngestTask }>(`/search-config/api/v1/ingest/tasks/${encodeURIComponent(id)}/stop`)
+export interface IngestTestResult {
+  id?: string; collector?: string; sample?: string; ok: boolean
+  pipeline?: Record<string, unknown>; error?: string
+}
 export const testIngestTask = (id: string, sample?: string) =>
-  post<{ id: string; collector: string; sample: string; ok: boolean; pipeline: Record<string, unknown> }>(
+  post<IngestTestResult>(
     `/search-config/api/v1/ingest/tasks/${encodeURIComponent(id)}/test`, sample ? { sample } : {})
 
 // ---------- 态势大屏聚合 ----------
@@ -495,13 +540,7 @@ export const exportSearch = (q: string, format = 'json') =>
 export const downloadArchivedReport = (key: string) =>
   get<{ key: string; url: string }>(withQuery('/report-web/api/v1/reports/archive/download', { key }))
 
-export interface GasAlert {
-  id: string; timestamp: string; ruleId: string; ruleName: string
-  severity: string; message: string; entity: string
-  evidence?: unknown[]
-}
 export const gasRecentAlerts = (options?: ApiRequestOptions) => get<GasAlert[]>('/detect-web/api/v1/alerts', options)
-export interface GasStats { rules: number; eventCount: number; alertCount: number; dropCount: number; suppressedCount: number; queueLoad: number }
 export const gasEngineStats = (options?: ApiRequestOptions) => get<GasStats>('/detect-web/api/v1/stats', options)
 
 // ---------- AI 助手 ----------

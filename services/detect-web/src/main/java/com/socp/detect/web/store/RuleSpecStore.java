@@ -12,6 +12,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.LinkedHashSet;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 规则描述存储——JPA + H2 文件库（Flyway V1 建表），重启不丢；接口与原内存版一致。
@@ -21,6 +22,7 @@ import java.util.UUID;
 public class RuleSpecStore {
 
     private final RuleRepository repo;
+    private final Set<String> initializedTenants = ConcurrentHashMap.newKeySet();
 
     /** 启动种子规则：与 com.siem Rules.defaultRules 同语义，以 JSON 配置形态表达 */
     private static final List<String> SEED_JSON = List.of(
@@ -171,14 +173,7 @@ public class RuleSpecStore {
 
     public RuleSpecStore(RuleRepository repo) {
         this.repo = repo;
-        boolean emptyAtStartup = repo.count() == 0;
-        Set<String> seededIds = syncPackagedContent();
-        if (emptyAtStartup) {
-            for (String json : SEED_JSON) {
-                Map<String, Object> spec = Json.parseObject(json);
-                if (!seededIds.contains(String.valueOf(spec.get("id")))) save(spec);
-            }
-        }
+        ensureTenantContent("default");
     }
 
     /**
@@ -186,7 +181,7 @@ public class RuleSpecStore {
      * packaged content set. User-created rules, including a colliding id that
      * has no contentPack marker, remain untouched.
      */
-    private Set<String> syncPackagedContent() {
+    private Set<String> syncPackagedContent(String tenant) {
         Map<String, Object> manifest = DetectionContentCatalog.manifest();
         String packId = String.valueOf(manifest.get("packId"));
         String packVersion = String.valueOf(manifest.get("version"));
@@ -202,36 +197,40 @@ public class RuleSpecStore {
             if (id.isBlank()) continue;
             packagedIds.add(id);
 
-            Optional<RuleEntity> current = repo.findByIdAndTenantId(id, tenant());
+            Optional<RuleEntity> current = repo.findByRuleIdAndTenantId(id, tenant);
             if (current.isEmpty()) {
                 try {
-                    save(spec);
+                    save(spec, tenant);
                 } catch (DataIntegrityViolationException racedInstaller) {
                     // Multiple Detection instances can start against the same
                     // database. Another instance winning this idempotent insert
                     // race means the packaged rule is already installed.
-                    if (repo.findByIdAndTenantId(id, tenant()).isEmpty()) throw racedInstaller;
+                    if (repo.findByRuleIdAndTenantId(id, tenant).isEmpty()) throw racedInstaller;
                 }
                 continue;
             }
             Map<String, Object> stored = Json.parseObject(current.get().getSpec());
             boolean packageOwned = packId.equals(String.valueOf(stored.get("contentPack")));
             boolean currentVersion = packVersion.equals(String.valueOf(stored.get("contentVersion")));
-            if (packageOwned && !currentVersion) save(spec);
+            if (packageOwned && !currentVersion) save(spec, tenant);
         }
         return packagedIds;
     }
 
-    private String tenant() {
+    public String tenant() {
         String t = TenantContext.get();
         return t == null ? "default" : t;
     }
 
     public boolean isEmpty() {
-        return repo.count() == 0;
+        return repo.countByTenantId(tenant()) == 0;
     }
 
     public Map<String, Object> save(Map<String, Object> spec) {
+        return save(spec, tenant());
+    }
+
+    public Map<String, Object> save(Map<String, Object> spec, String tenant) {
         spec = DetectionContentCatalog.enrich(spec);
         // The current workbench still sends the legacy enabled toggle. Keep it
         // compatible with the lifecycle status while preserving explicit
@@ -253,26 +252,38 @@ public class RuleSpecStore {
         if (!errors.isEmpty()) {
             throw new IllegalArgumentException("规则内容校验失败: " + String.join(", ", errors));
         }
-        RuleEntity e = new RuleEntity();
+        String ruleId = String.valueOf(spec.get("id"));
+        RuleEntity e = repo.findByRuleIdAndTenantId(ruleId, tenant).orElseGet(RuleEntity::new);
         e.setId(String.valueOf(spec.get("id")));
+        if (e.getStorageId() == null) e.setStorageId(storageId(tenant, ruleId));
         try {
             e.setSpec(Json.mapper().writeValueAsString(spec));
         } catch (Exception ex) {
             throw new IllegalStateException("规则 JSON 序列化失败: " + ex.getMessage(), ex);
         }
-        e.setTenantId(tenant());
+        e.setTenantId(tenant);
         repo.save(e);
         return spec;
     }
 
     public List<Map<String, Object>> list() {
-        return repo.findByTenantId(tenant()).stream()
+        return list(tenant());
+    }
+
+    public List<Map<String, Object>> list(String tenant) {
+        ensureTenantContent(tenant);
+        return repo.findByTenantId(tenant).stream()
                 .map(e -> DetectionContentCatalog.enrich(Json.parseObject(e.getSpec())))
                 .toList();
     }
 
     public Map<String, Object> get(String id) {
-        return repo.findByIdAndTenantId(id, tenant())
+        return get(id, tenant());
+    }
+
+    public Map<String, Object> get(String id, String tenant) {
+        ensureTenantContent(tenant);
+        return repo.findByRuleIdAndTenantId(id, tenant)
                 .map(e -> DetectionContentCatalog.enrich(Json.parseObject(e.getSpec())))
                 .orElse(null);
     }
@@ -282,9 +293,33 @@ public class RuleSpecStore {
     }
 
     public boolean delete(String id) {
-        Optional<RuleEntity> e = repo.findByIdAndTenantId(id, tenant());
+        String tenant = tenant();
+        Optional<RuleEntity> e = repo.findByRuleIdAndTenantId(id, tenant);
         if (e.isEmpty()) return false;
         repo.delete(e.get());
         return true;
+    }
+
+    private static String storageId(String tenant, String ruleId) {
+        return UUID.nameUUIDFromBytes((tenant + "|" + ruleId)
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+    }
+
+    private void ensureTenantContent(String tenant) {
+        String normalized = tenant == null || tenant.isBlank() ? "default" : tenant;
+        if (!initializedTenants.add(normalized)) return;
+        try {
+            boolean empty = repo.countByTenantId(normalized) == 0;
+            Set<String> packagedIds = syncPackagedContent(normalized);
+            if (empty) {
+                for (String json : SEED_JSON) {
+                    Map<String, Object> spec = Json.parseObject(json);
+                    if (!packagedIds.contains(String.valueOf(spec.get("id")))) save(spec, normalized);
+                }
+            }
+        } catch (RuntimeException failure) {
+            initializedTenants.remove(normalized);
+            throw failure;
+        }
     }
 }

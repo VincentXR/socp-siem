@@ -1,5 +1,6 @@
 package com.socp.search.config.service;
 
+import com.socp.platform.tenant.TenantContext;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -44,7 +45,7 @@ public class IngestTaskMonitor {
 
     /** 记录一批投递的处理结果 */
     public void record(String collector, int accepted, int skipped, int forwarded, long bytes) {
-        String key = normalize(collector);
+        String key = key(collector);
         Stat s = stats.computeIfAbsent(key, k -> new Stat());
         Instant now = Instant.now();
         synchronized (s) {
@@ -66,7 +67,7 @@ public class IngestTaskMonitor {
     }
 
     public void recordError(String collector, String error) {
-        Stat s = stats.computeIfAbsent(normalize(collector), k -> new Stat());
+        Stat s = stats.computeIfAbsent(key(collector), k -> new Stat());
         synchronized (s) {
             s.lastError = error;
             s.lastErrorAt = Instant.now();
@@ -75,7 +76,7 @@ public class IngestTaskMonitor {
 
     /** 单个采集器的运行态快照；从未收到数据则返回全零快照 */
     public Map<String, Object> runtime(String collector, boolean enabled) {
-        Stat s = stats.get(normalize(collector));
+        Stat s = stats.get(key(collector));
         Map<String, Object> m = new LinkedHashMap<>();
         if (s == null) {
             m.put("accepted", 0L);
@@ -131,9 +132,14 @@ public class IngestTaskMonitor {
         long now = Instant.now().getEpochSecond();
         Map<String, Integer> byHealth = new LinkedHashMap<>();
         for (String h : List.of("HEALTHY", "DEGRADED", "STALE", "IDLE", "ERROR", "DISABLED")) byHealth.put(h, 0);
+        String prefix = tenant() + "|";
+        int collectors = 0;
         for (var e : stats.entrySet()) {
+            if (!e.getKey().startsWith(prefix)) continue;
+            collectors++;
             Stat s = e.getValue();
-            boolean enabled = enabledCollectors == null || enabledCollectors.contains(e.getKey());
+            String collector = e.getKey().substring(prefix.length());
+            boolean enabled = enabledCollectors == null || enabledCollectors.contains(collector);
             synchronized (s) {
                 accepted += s.accepted;
                 skipped += s.skipped;
@@ -144,7 +150,7 @@ public class IngestTaskMonitor {
             }
         }
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("collectors", stats.size());
+        m.put("collectors", collectors);
         m.put("accepted", accepted);
         m.put("skipped", skipped);
         m.put("forwarded", forwarded);
@@ -156,5 +162,14 @@ public class IngestTaskMonitor {
 
     private static String normalize(String collector) {
         return collector == null || collector.isBlank() ? "unknown" : collector.trim().toLowerCase();
+    }
+
+    private static String key(String collector) {
+        return tenant() + "|" + normalize(collector);
+    }
+
+    private static String tenant() {
+        String tenant = TenantContext.get();
+        return tenant == null || tenant.isBlank() ? "default" : tenant;
     }
 }

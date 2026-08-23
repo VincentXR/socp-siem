@@ -4,7 +4,6 @@ import com.socp.search.config.domain.FieldDef;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 字段字典存储（元数据）。进程内；生产替换为 PG search.t_field_dict。
@@ -13,10 +12,12 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class FieldDefStore {
 
-    private final ConcurrentHashMap<String, FieldDef> map = new ConcurrentHashMap<>();
+    private final TenantCatalog<FieldDef> catalog = new TenantCatalog<>(FieldDef::id);
+    private boolean seeding = true;
 
     public FieldDefStore() {
         seed();
+        seeding = false;
     }
 
     private void seed() {
@@ -41,15 +42,18 @@ public class FieldDefStore {
     }
 
     public List<FieldDef> list() {
-        return map.values().stream().toList();
+        return catalog.list();
     }
 
     public FieldDef save(FieldDef f) {
-        map.put(f.id(), f);
-        return f;
+        if (seeding) {
+            catalog.registerTemplate(f);
+            return f;
+        }
+        return catalog.save(f);
     }
 
     public boolean delete(String id) {
-        return map.remove(id) != null;
+        return catalog.delete(id);
     }
 }

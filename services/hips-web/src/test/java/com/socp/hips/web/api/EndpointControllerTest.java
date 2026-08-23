@@ -3,6 +3,7 @@ package com.socp.hips.web.api;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.hips.web.model.Endpoint;
 import com.socp.hips.web.store.EndpointStore;
+import com.socp.hips.web.store.EndpointEventStore;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -42,6 +43,9 @@ class EndpointControllerTest {
 
     @MockitoBean
     private EndpointStore store;
+
+    @MockitoBean
+    private EndpointEventStore events;
 
     @Test
     void listReturnsRegisteredAgents() throws Exception {

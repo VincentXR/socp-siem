@@ -9,5 +9,5 @@ import java.util.Optional;
  */
 public interface DispositionRepository extends JpaRepository<DispositionEntity, String> {
 
-    Optional<DispositionEntity> findByAlarmId(String alarmId);
+    Optional<DispositionEntity> findByAlarmIdAndTenantId(String alarmId, String tenantId);
 }

@@ -11,7 +11,9 @@ import java.time.Instant;
 @Entity
 @Table(name = "t_endpoint")
 public class EndpointEntity {
-    @Id @Column(length = 64) private String id;
+    @Id @Column(name = "id", length = 64) private String storageId;
+    @Column(name = "endpoint_id", nullable = false, length = 64) private String endpointId;
+    @Column(name = "tenant_id", nullable = false, length = 64) private String tenantId;
     @Column(nullable = false, length = 128) private String hostname;
     @Column(length = 64) private String ip;
     @Column(length = 64) private String os;
@@ -20,11 +22,15 @@ public class EndpointEntity {
     @Column(name = "last_heartbeat") private Instant lastHeartbeat;
 
     public EndpointEntity() {}
-    public EndpointEntity(String id, String hostname, String ip, String os, String agentVersion, String status, Instant lastHeartbeat) {
-        this.id = id; this.hostname = hostname; this.ip = ip; this.os = os;
+    public EndpointEntity(String storageId, String endpointId, String tenantId, String hostname, String ip,
+                          String os, String agentVersion, String status, Instant lastHeartbeat) {
+        this.storageId = storageId; this.endpointId = endpointId; this.tenantId = tenantId;
+        this.hostname = hostname; this.ip = ip; this.os = os;
         this.agentVersion = agentVersion; this.status = status; this.lastHeartbeat = lastHeartbeat;
     }
-    public String getId() { return id; }
+    public String getStorageId() { return storageId; }
+    public String getEndpointId() { return endpointId; }
+    public String getTenantId() { return tenantId; }
     public String getHostname() { return hostname; }
     public String getIp() { return ip; }
     public String getOs() { return os; }

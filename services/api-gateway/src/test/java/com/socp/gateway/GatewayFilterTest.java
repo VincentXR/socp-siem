@@ -2,6 +2,7 @@ package com.socp.gateway;
 
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.socp.platform.auth.JwtValidator;
+import com.socp.platform.tenant.ServiceRequestSignature;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -9,6 +10,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpCookie;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.mock.web.server.MockServerWebExchange;
 import org.springframework.web.server.ServerWebExchange;
@@ -46,6 +48,7 @@ class GatewayFilterTest {
     void viewerCannotWriteEvenWithValidToken() {
         GatewayFilter filter = new GatewayFilter(jwtValidator);
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .subject("viewer-user")
                 .claim("role", "viewer")
                 .claim("tenant", "tenant-a")
                 .build();
@@ -67,6 +70,7 @@ class GatewayFilterTest {
     void forwardsValidatedTenantAndTraceHeaders() {
         GatewayFilter filter = new GatewayFilter(jwtValidator);
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .subject("analyst-user")
                 .claim("role", "analyst")
                 .claim("tenant", "tenant-a")
                 .build();
@@ -79,6 +83,8 @@ class GatewayFilterTest {
                         .header("Authorization", "Bearer analyst-token")
                         .header("X-Tenant-Id", "attacker-tenant")
                         .header("X-Trace-Id", "trace-forwarded")
+                        .header(ServiceRequestSignature.SERVICE_HEADER, "forged-service")
+                        .header(ServiceRequestSignature.SIGNATURE_HEADER, "forged-signature")
                         .build());
 
         filter.filter(exchange, chain).block(Duration.ofSeconds(1));
@@ -89,5 +95,49 @@ class GatewayFilterTest {
         assertEquals("trace-forwarded", forwarded.getValue().getRequest().getHeaders().getFirst("X-Trace-Id"));
         assertEquals("Bearer analyst-token",
                 forwarded.getValue().getRequest().getHeaders().getFirst("Authorization"));
+        assertEquals("analyst-user",
+                forwarded.getValue().getRequest().getHeaders().getFirst("X-Socp-User"));
+        assertEquals(null, forwarded.getValue().getRequest().getHeaders()
+                .getFirst(ServiceRequestSignature.SERVICE_HEADER));
+        assertEquals(null, forwarded.getValue().getRequest().getHeaders()
+                .getFirst(ServiceRequestSignature.SIGNATURE_HEADER));
+    }
+
+    @Test
+    void rejectsCrossSiteMutationWhenSessionComesFromCookie() {
+        GatewayFilter filter = new GatewayFilter(jwtValidator);
+        JWTClaimsSet claims = new JWTClaimsSet.Builder().subject("analyst-user")
+                .claim("role", "analyst").claim("tenant", "tenant-a").build();
+        given(jwtValidator.validate("cookie-token")).willReturn(claims);
+        given(jwtValidator.extractTenant(claims)).willReturn("tenant-a");
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.post("/api/v1/alarms")
+                        .cookie(new HttpCookie(AuthController.SESSION_COOKIE, "cookie-token"))
+                        .header("Origin", "https://evil.example")
+                        .build());
+
+        filter.filter(exchange, chain).block(Duration.ofSeconds(1));
+
+        assertEquals(HttpStatus.FORBIDDEN, exchange.getResponse().getStatusCode());
+        verifyNoInteractions(chain);
+    }
+
+    @Test
+    void acceptsAllowedOriginForCookieMutation() {
+        GatewayFilter filter = new GatewayFilter(jwtValidator);
+        JWTClaimsSet claims = new JWTClaimsSet.Builder().subject("analyst-user")
+                .claim("role", "analyst").claim("tenant", "tenant-a").build();
+        given(jwtValidator.validate("cookie-token")).willReturn(claims);
+        given(jwtValidator.extractTenant(claims)).willReturn("tenant-a");
+        given(chain.filter(org.mockito.ArgumentMatchers.any())).willReturn(Mono.empty());
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.post("/api/v1/alarms")
+                        .cookie(new HttpCookie(AuthController.SESSION_COOKIE, "cookie-token"))
+                        .header("Origin", "http://localhost:5173")
+                        .build());
+
+        filter.filter(exchange, chain).block(Duration.ofSeconds(1));
+
+        verify(chain).filter(org.mockito.ArgumentMatchers.any());
     }
 }

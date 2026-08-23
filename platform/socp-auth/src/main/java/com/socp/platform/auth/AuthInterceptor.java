@@ -2,6 +2,7 @@ package com.socp.platform.auth;
 
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.socp.platform.error.ApiException;
+import com.socp.platform.tenant.ServiceRequestSignature;
 import com.socp.platform.tenant.TenantContext;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -9,113 +10,153 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Component;
+import org.springframework.web.method.HandlerMethod;
 import org.springframework.web.servlet.HandlerInterceptor;
 
-/**
- * 鉴权拦截器（Servlet 侧）：
- *  - 机机（M2M）：Authorization: Bearer &lt;client-credentials token&gt;；
- *  - 人机（H2M）：Keycloak OIDC 签发的 JWT。
- *
- * 校验交给 {@link JwtValidator}（验签 + exp/nbf + issuer），通过后从 claim 取租户写入
- * {@link TenantContext}；claim 缺租户时回退到 X-Client-Id 头（保留原有机机约定）。
- *
- * dev-bypass 模式下只校验 Bearer 非空——无 Docker/Keycloak 的本地切片靠这条继续跑 demo-token。
- * 见 architecture.md §0.3：Keycloak 26（人机）+ Spring Authorization Server（机机）。
- */
+import java.time.Instant;
+import java.util.concurrent.ConcurrentHashMap;
+
+/** Authenticates user JWTs, fixed ingest credentials, and signed internal service requests. */
 @Component
 public class AuthInterceptor implements HandlerInterceptor {
 
     private static final Logger log = LoggerFactory.getLogger(AuthInterceptor.class);
-    private static final String CLIENT_HEADER = "X-Client-Id";
     private static final String BEARER = "Bearer ";
 
     private final JwtValidator jwtValidator;
-    private final SocpSecurityProperties props;
+    private final SocpSecurityProperties properties;
+    private final ConcurrentHashMap<String, Long> serviceNonces = new ConcurrentHashMap<>();
+    private volatile long nextNonceCleanupAt;
 
-    public AuthInterceptor(JwtValidator jwtValidator, SocpSecurityProperties props) {
+    public AuthInterceptor(JwtValidator jwtValidator, SocpSecurityProperties properties) {
         this.jwtValidator = jwtValidator;
-        this.props = props;
+        this.properties = properties;
     }
 
     @Override
-    public boolean preHandle(HttpServletRequest req, HttpServletResponse res, Object handler) {
-        String auth = req.getHeader(HttpHeaders.AUTHORIZATION);
-        // 缺令牌 = 未认证 → 401（403 语义是"已认证但无权限"），与网关侧保持一致
-        if (auth == null || !auth.startsWith(BEARER)) {
-            throw ApiException.unauthorized("缺少 Bearer 令牌");
+    public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
+        String authorization = request.getHeader(HttpHeaders.AUTHORIZATION);
+        if (authorization == null || !authorization.startsWith(BEARER)) {
+            throw ApiException.unauthorized("Missing Bearer token");
         }
-        String token = auth.substring(BEARER.length()).trim();
-        if (token.isEmpty()) {
-            throw ApiException.unauthorized("空令牌");
-        }
+        String token = authorization.substring(BEARER.length()).trim();
+        if (token.isEmpty()) throw ApiException.unauthorized("Empty Bearer token");
 
-        String tenantFromClaim = null;
-        String role = null;
-        // 机机采集凭据（Vector/Agent 静态 token）：与 Authorization 精确匹配时跳过 JWT 验签，
-        // 按 analyst 角色放行（ingest/collect 为写端点且无 @RequireRole）。用于采集器连不上网关签发的场景。
-        String ingestToken = props.getIngestToken();
+        String tenant = null;
+        String role;
+        boolean ingestCredential = false;
+        String ingestToken = properties.getIngestToken();
         if (ingestToken != null && !ingestToken.isBlank() && ingestToken.equals(token)) {
+            tenant = "default";
             role = "analyst";
-        } else if (!jwtValidator.isDevBypass()) {
+            ingestCredential = true;
+        } else if (jwtValidator.isDevBypass()) {
+            role = request.getHeader("X-Role");
+        } else {
             JWTClaimsSet claims;
             try {
                 claims = jwtValidator.validate(token);
-            } catch (JwtValidationException e) {
-                log.warn("JWT 校验失败 path={} reason={}", req.getRequestURI(), e.getMessage());
-                throw ApiException.unauthorized(e.getMessage());
+            } catch (JwtValidationException invalid) {
+                log.warn("JWT rejected path={} reason={}", request.getRequestURI(), invalid.getMessage());
+                throw ApiException.unauthorized(invalid.getMessage());
             }
-            tenantFromClaim = jwtValidator.extractTenant(claims);
+            tenant = jwtValidator.extractTenant(claims);
             try {
                 role = claims.getStringClaim("role");
-            } catch (Exception ignored) {
-                // 无 role claim 的旧令牌按无限制处理
-            }
-        } else {
-            // dev-bypass 回退（仅本地切片）：从 X-Role 头取角色，缺省 analyst
-            role = req.getHeader("X-Role");
-        }
-
-        // RBAC：方法级 @RequireRole 检查（在租户解析之前即可执行，不依赖租户）
-        if (handler instanceof org.springframework.web.method.HandlerMethod hm) {
-            RequireRole rr = hm.getMethodAnnotation(RequireRole.class);
-            if (rr == null) {
-                rr = hm.getBeanType().getAnnotation(RequireRole.class);
-            }
-            if (rr != null && rr.value().length > 0) {
-                String userRole = role == null || role.isBlank() ? "anonymous" : role;
-                boolean allowed = false;
-                for (String r : rr.value()) {
-                    if (r.equalsIgnoreCase(userRole)) {
-                        allowed = true;
-                        break;
-                    }
-                }
-                if (!allowed) {
-                    log.warn("RBAC 拒绝 path={} role={} require={}", req.getRequestURI(), userRole,
-                            String.join(",", rr.value()));
-                    throw ApiException.forbidden(rr.message());
-                }
+            } catch (Exception missingRole) {
+                role = null;
             }
         }
 
-        if (tenantFromClaim != null && !tenantFromClaim.isBlank() && !"default".equals(tenantFromClaim)) {
-            // JWT 携带租户时以 claim 为准（生产多租户安全边界）。
-            // 例外：登录内置账号（demo/admin）token 固定 tenant=default——租户以请求头 X-Tenant-Id 为准。
-            TenantContext.set(tenantFromClaim);
-        } else {
-            // 回退 1：机机场景从 X-Tenant-Id 头取租户（集成/测试用，如 verify-slice 的 t1/t2）
-            String hdrTenant = req.getHeader("X-Tenant-Id");
-            if (hdrTenant != null && !hdrTenant.isBlank()) {
-                TenantContext.set(hdrTenant);
-                return true;
-            }
-            // 回退 2：机机场景从 X-Client-Id 取租户（形如 tenantA:svc-xxx）
-            String client = req.getHeader(CLIENT_HEADER);
-            if (client != null && !client.isBlank()) {
-                TenantContext.set(client.contains(":") ? client.substring(0, client.indexOf(':')) : client);
+        String delegatedTenant = verifyServiceIdentity(request);
+        if (delegatedTenant != null) {
+            tenant = delegatedTenant;
+            role = "analyst";
+        } else if (ingestCredential) {
+            String requestedTenant = request.getHeader("X-Tenant-Id");
+            if (requestedTenant != null && !requestedTenant.isBlank() && !"default".equals(requestedTenant)) {
+                throw ApiException.unauthorized("Static ingest credential is bound to the default tenant");
             }
         }
-        // 角色/权限注入（@PreAuthorize）在此扩展
+
+        requireRole(handler, role, request.getRequestURI());
+
+        if (tenant != null && !tenant.isBlank()) {
+            if (!TenantContext.isValid(tenant)) throw ApiException.unauthorized("Invalid tenant claim");
+            TenantContext.set(tenant);
+        } else if (jwtValidator.isDevBypass()) {
+            String headerTenant = request.getHeader("X-Tenant-Id");
+            if (headerTenant == null || headerTenant.isBlank()) headerTenant = "default";
+            if (!TenantContext.isValid(headerTenant)) throw ApiException.unauthorized("Invalid tenant header");
+            TenantContext.set(headerTenant);
+        } else {
+            throw ApiException.unauthorized("Authenticated identity has no tenant claim");
+        }
         return true;
+    }
+
+    private void requireRole(Object handler, String role, String path) {
+        if (!(handler instanceof HandlerMethod method)) return;
+        RequireRole requirement = method.getMethodAnnotation(RequireRole.class);
+        if (requirement == null) requirement = method.getBeanType().getAnnotation(RequireRole.class);
+        if (requirement == null || requirement.value().length == 0) return;
+        String effectiveRole = role == null || role.isBlank() ? "anonymous" : role;
+        for (String accepted : requirement.value()) {
+            if (accepted.equalsIgnoreCase(effectiveRole)) return;
+        }
+        log.warn("RBAC rejected path={} role={} required={}",
+                path, effectiveRole, String.join(",", requirement.value()));
+        throw ApiException.forbidden(requirement.message());
+    }
+
+    private String verifyServiceIdentity(HttpServletRequest request) {
+        String service = request.getHeader(ServiceRequestSignature.SERVICE_HEADER);
+        String timestamp = request.getHeader(ServiceRequestSignature.TIMESTAMP_HEADER);
+        String nonce = request.getHeader(ServiceRequestSignature.NONCE_HEADER);
+        String signature = request.getHeader(ServiceRequestSignature.SIGNATURE_HEADER);
+        boolean anyHeader = service != null || timestamp != null || nonce != null || signature != null;
+        if (!anyHeader) return null;
+        if (isBlank(service) || isBlank(timestamp) || isBlank(nonce) || isBlank(signature)) {
+            throw ApiException.unauthorized("Incomplete service identity proof");
+        }
+        if (!service.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,63}") || nonce.length() > 128) {
+            throw ApiException.unauthorized("Invalid service identity proof");
+        }
+        String secret = properties.getServiceSecret();
+        if (secret == null || secret.isBlank()) {
+            throw ApiException.unauthorized("Service identity verification is not configured");
+        }
+        long signedAt;
+        try {
+            signedAt = Long.parseLong(timestamp);
+        } catch (NumberFormatException invalidTimestamp) {
+            throw ApiException.unauthorized("Invalid service identity timestamp");
+        }
+        long now = Instant.now().getEpochSecond();
+        if (Math.abs(now - signedAt) > properties.getServiceMaxSkewSeconds()) {
+            throw ApiException.unauthorized("Expired service identity proof");
+        }
+        String tenant = request.getHeader("X-Tenant-Id");
+        if (!TenantContext.isValid(tenant)) throw ApiException.unauthorized("Invalid delegated tenant");
+        if (!ServiceRequestSignature.verify(secret, signature, service, request.getMethod(),
+                request.getRequestURI(), tenant, timestamp, nonce)) {
+            throw ApiException.unauthorized("Invalid service identity signature");
+        }
+        cleanupNonces(now);
+        if (serviceNonces.putIfAbsent(service + ':' + nonce, now) != null) {
+            throw ApiException.unauthorized("Replayed service identity proof");
+        }
+        return tenant;
+    }
+
+    private void cleanupNonces(long now) {
+        if (now < nextNonceCleanupAt) return;
+        long cutoff = now - properties.getServiceMaxSkewSeconds();
+        serviceNonces.entrySet().removeIf(entry -> entry.getValue() < cutoff);
+        nextNonceCleanupAt = now + properties.getServiceMaxSkewSeconds();
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 }

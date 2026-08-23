@@ -9,6 +9,8 @@ correctness and recovery behavior, not a production capacity or HA claim.
 | Layer | Command | Pass evidence | Cadence |
 |---|---|---|---|
 | Java modules | `bash build/mvnw.sh test -Dsurefire.failIfNoSpecifiedTests=false` | Reactor tests pass, including auth, rules, Detection, Alert, incident, and shared error handling | Every change |
+| Quality gate | `bash build/quality-gate.sh` | Coverage floor, SpotBugs, toolchain policy, migration/deployment contracts, detection content, and workbench checks | Every pull request |
+| Dependency audit | GitHub `Dependency Audit` workflow | No Java/frontend dependency at or above the configured high-severity threshold | Weekly/release candidate |
 | Workbench | `cd frontend/apps/workbench && pnpm test && pnpm verify` | API contracts, navigation permissions, type check, production build, artifact assertions | Frontend change |
 | Cross-cutting slice | `python build/verify-slice.py` | Authentication, tenancy, audit, rate limiting, and trace propagation | PR/release candidate |
 | Event pipeline | `python build/verify-pipeline.py` | Canonical event -> Kafka -> Detection -> Alert persistence -> OpenSearch/ClickHouse/report | Middleware change/scheduled |

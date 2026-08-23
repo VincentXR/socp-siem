@@ -86,9 +86,10 @@ file-backed H2 by default and provide an `application-pg.yml` profile.
 - Alert Web uses `(tenant_id, source_alert_id)` idempotency, so replaying a
   Detection Outbox row returns the existing alert instead of creating another.
 - Alert Web writes its alert row and downstream Outbox row in one transaction.
-- The Alert Outbox's durable guarantee ends at Kafka broker acknowledgement.
-  The current combined fan-out consumer calls each downstream adapter
-  best-effort; per-destination durable retry is outside this implementation.
+- Alert creation atomically records the Kafka Outbox row and one durable,
+  idempotent delivery intent for each ClickHouse/Incident/Notify/SOAR target.
+  Delivery workers use database claims, bounded retries, and stale-claim
+  recovery; Kafka replay reconciles any missing intents.
 - Kafka and downstream delivery are at-least-once. Consumers must remain
   idempotent; the system does not claim distributed exactly-once processing.
 - Temporal is optional for development. SOAR can use the local executor when

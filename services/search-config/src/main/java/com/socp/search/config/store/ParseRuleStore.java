@@ -4,7 +4,6 @@ import com.socp.search.config.domain.ParseRule;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 解析规则存储——进程内；生产替换为 PG search.t_parse_rule，接口不变。
@@ -12,10 +11,12 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class ParseRuleStore {
 
-    private final ConcurrentHashMap<String, ParseRule> map = new ConcurrentHashMap<>();
+    private final TenantCatalog<ParseRule> catalog = new TenantCatalog<>(ParseRule::id);
+    private boolean seeding = true;
 
     public ParseRuleStore() {
         seed();
+        seeding = false;
     }
 
     private void seed() {
@@ -42,7 +43,7 @@ public class ParseRuleStore {
     }
 
     public List<ParseRule> list() {
-        return map.values().stream().sorted((a, b) -> Integer.compare(a.order(), b.order())).toList();
+        return catalog.list().stream().sorted((a, b) -> Integer.compare(a.order(), b.order())).toList();
     }
 
     public List<ParseRule> enabled() {
@@ -50,15 +51,18 @@ public class ParseRuleStore {
     }
 
     public ParseRule save(ParseRule r) {
-        map.put(r.id(), r);
-        return r;
+        if (seeding) {
+            catalog.registerTemplate(r);
+            return r;
+        }
+        return catalog.save(r);
     }
 
     public ParseRule get(String id) {
-        return map.get(id);
+        return catalog.get(id);
     }
 
     public boolean delete(String id) {
-        return map.remove(id) != null;
+        return catalog.delete(id);
     }
 }

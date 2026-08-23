@@ -26,7 +26,7 @@ public class PlaybookStore {
 
     public PlaybookStore(PlaybookRepository repo) {
         this.repo = repo;
-        if (repo.count() == 0) {
+        if (repo.countByTenantId("default") == 0) {
             seed();
         }
     }

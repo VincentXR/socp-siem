@@ -20,7 +20,7 @@ import { loadEcharts } from '../lib/echarts'
 import TrendChart from '../components/TrendChart.vue'
 import SevBadge from '../components/SevBadge.vue'
 import {
-  alarmStats, gasEngineStats, gasRecentAlerts, getToken, ingestSummary, isAbortError, SEVERITIES,
+  alarmStats, currentSession, gasEngineStats, gasRecentAlerts, ingestSummary, isAbortError, SEVERITIES,
   type ApiRequestOptions,
   type AlarmStats, type GasAlert, type GasStats, type IngestSummary,
 } from '../api'
@@ -75,7 +75,7 @@ const queueColor = computed(() => queuePct.value > 70 ? '#fb7185' : queuePct.val
 
 function openAlertStream() {
   try {
-    alertStream = new EventSource('/detect-web/api/v1/stream?token=' + encodeURIComponent(getToken()))
+    alertStream = new EventSource('/detect-web/api/v1/stream')
     alertStream.addEventListener('alert', (event: MessageEvent) => {
       try {
         const value = JSON.parse(event.data)
@@ -91,7 +91,13 @@ function openAlertStream() {
       } catch { /* 忽略异常帧 */ }
     })
     alertStream.onerror = () => {
-      if (!getToken()) setTimeout(() => emit('session-expired'), 600)
+      setTimeout(async () => {
+        try {
+          await currentSession()
+        } catch {
+          emit('session-expired')
+        }
+      }, 600)
     }
   } catch { /* 不支持 SSE 时退化为轮询 */ }
 }

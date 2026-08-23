@@ -12,6 +12,10 @@ import java.time.Instant;
 class EntityRiskAlertEntity {
     @Id
     @Column(name = "alert_id", length = 128)
+    private String storageId;
+    @Column(name = "tenant_id", length = 64, nullable = false)
+    private String tenantId;
+    @Column(name = "source_alert_id", length = 128, nullable = false)
     private String alertId;
     @Column(name = "entity_value", length = 512, nullable = false)
     private String entity;
@@ -25,6 +29,10 @@ class EntityRiskAlertEntity {
 
     String getAlertId() { return alertId; }
     void setAlertId(String alertId) { this.alertId = alertId; }
+    String getStorageId() { return storageId; }
+    void setStorageId(String storageId) { this.storageId = storageId; }
+    String getTenantId() { return tenantId; }
+    void setTenantId(String tenantId) { this.tenantId = tenantId; }
     String getEntity() { return entity; }
     void setEntity(String entity) { this.entity = entity; }
     int getScore() { return score; }

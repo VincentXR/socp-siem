@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""SOCP 全栈端到端验证：17 个后端服务健康 + 采集→检测→告警→情报富化→通知→建案→SOAR 全链路。
+"""SOCP 全栈端到端验证：默认后端进程健康 + 采集→检测→告警→情报富化→通知→建案→SOAR 全链路。
 
 用法： python socp/build/verify-full.py
-前置： bash socp/build/run-all.sh backend  （17 个服务全部 UP）
+前置： bash socp/build/run-all.sh backend  （默认 15 个进程全部 UP）
 
 与 verify-slice.py 的分工：
   verify-slice.py  验证横切能力（鉴权/租户/审计/限流/追踪），只走网关 + alert-web。
@@ -86,7 +86,7 @@ def unwrap(body):
 
 
 # ---------------------------------------------------------------- 1. 健康
-print("\n=== 1. 服务健康（17 个后端） ===")
+print("\n=== 1. 默认部署服务健康 ===")
 for name, port in SVC.items():
     st, _ = call(health_url(name))
     check("%s:%d 健康" % (name, port), st == 200, st)

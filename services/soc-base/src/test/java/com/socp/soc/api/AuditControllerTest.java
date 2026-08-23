@@ -41,8 +41,8 @@ class AuditControllerTest {
     void recordsReturnedWithFilter() throws Exception {
         AuditRecord rec = new AuditRecord("default", "CREATE_IOC", "system", "threat",
                 "SUCCESS", java.time.Instant.parse("2026-08-09T10:00:00Z"));
-        given(sink.recent(50, "CREATE")).willReturn(List.of(rec));
-        given(sink.size()).willReturn(1);
+        given(sink.recent("default", 50, "CREATE")).willReturn(List.of(rec));
+        given(sink.size("default")).willReturn(1);
 
         mvc.perform(get("/api/v1/audit/records?limit=50&action=CREATE")
                         .header("Authorization", "Bearer test-token")
@@ -60,8 +60,8 @@ class AuditControllerTest {
                 "SUCCESS", java.time.Instant.parse("2026-08-09T10:00:00Z"));
         AuditRecord b = new AuditRecord("default", "CREATE_ALARM", "system", "t_alarm",
                 "FAIL:bad", java.time.Instant.parse("2026-08-09T10:01:00Z"));
-        given(sink.recent(100_000, null)).willReturn(List.of(a, b));
-        given(sink.size()).willReturn(2);
+        given(sink.recent("default", 100_000, null)).willReturn(List.of(a, b));
+        given(sink.size("default")).willReturn(2);
 
         mvc.perform(get("/api/v1/audit/stats")
                         .header("Authorization", "Bearer test-token"))

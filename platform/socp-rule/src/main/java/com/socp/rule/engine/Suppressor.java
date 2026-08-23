@@ -28,7 +28,17 @@ public final class Suppressor {
 
     /** 返回 true 表示放行；false 表示被抑制 */
     public boolean allow(Alert alert) {
-        String key = alert.ruleId() + "|" + (alert.entity() == null ? alert.message() : alert.entity());
+        String tenant = "default";
+        if (alert.evidence() != null) {
+            for (var event : alert.evidence()) {
+                if (event != null) {
+                    tenant = event.tenantId();
+                    break;
+                }
+            }
+        }
+        String key = tenant + "|" + alert.ruleId() + "|"
+                + (alert.entity() == null ? alert.message() : alert.entity());
         Instant now = Instant.now();
         Instant prev = lastFired.get(key);
         if (prev != null && prev.plus(window).isAfter(now)) {

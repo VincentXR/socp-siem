@@ -6,12 +6,18 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.socp.incident.web.domain.Case;
 import com.socp.incident.web.domain.TimelineEvent;
 import com.socp.incident.web.store.CaseStore;
+import com.socp.incident.web.store.AlarmCaseLinkEntity;
+import com.socp.incident.web.store.AlarmCaseLinkRepository;
+import com.socp.platform.tenant.TenantContext;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 
 /**
  * 案件服务：把告警归并为案件并维护调查时间线。
@@ -24,6 +30,7 @@ public class CaseService {
             .registerModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     private final CaseStore store;
+    private final AlarmCaseLinkRepository alarmLinks;
 
     /** 归档导出：全部案件（含时间线）序列化为 JSON。 */
     public String exportJson() {
@@ -34,11 +41,13 @@ public class CaseService {
         }
     }
 
-    public CaseService(CaseStore store) {
+    public CaseService(CaseStore store, AlarmCaseLinkRepository alarmLinks) {
         this.store = store;
+        this.alarmLinks = alarmLinks;
     }
 
     /** 由告警自动建案/归并。alarm 至少含 id/ruleId/ruleName/severity/entity/message/occurredAt。 */
+    @Transactional
     public Map<String, Object> fromAlarm(Map<String, Object> alarm) {
         String entity = str(alarm, "entity");
         String alarmId = str(alarm, "id");
@@ -50,22 +59,22 @@ public class CaseService {
         String tsStr = str(alarm, "occurredAt");
         Instant ts = parseTs(tsStr);
 
+        if (!alarmId.isBlank()) {
+            var existingLink = alarmLinks.findByTenantIdAndAlarmId(tenant(), alarmId);
+            if (existingLink.isPresent()) {
+                Case linked = store.get(existingLink.get().getCaseId());
+                if (linked != null) return response(linked, false, true);
+            }
+        }
+
         String existingId = store.openCaseId(entity);
         Case c;
         if (existingId != null) {
             Case open = store.get(existingId);
             // 幂等：同一告警可能被 alert-web 与 SOAR 剧本重复推送，已归并过则原样返回，避免时间线重复
             if (!alarmId.isBlank() && open.alarmIds().contains(alarmId)) {
-                Map<String, Object> dup = new LinkedHashMap<>();
-                dup.put("caseId", open.id());
-                dup.put("caseNo", open.caseNo());
-                dup.put("title", open.title());
-                dup.put("entity", open.entity());
-                dup.put("status", open.status());
-                dup.put("alarmCount", open.alarmIds().size());
-                dup.put("created", false);
-                dup.put("duplicate", true);
-                return dup;
+                rememberAlarm(alarmId, open.id());
+                return response(open, false, true);
             }
             TimelineEvent ev = new TimelineEvent(ts, "ALARM",
                     ruleId + (mitre.isEmpty() ? "" : " [" + mitre + "]") + ": " + message, "detection", alarmId);
@@ -81,15 +90,38 @@ public class CaseService {
             c = c.withAdded(ruleId, alarmId, ev);
             store.save(c);
         }
+        rememberAlarm(alarmId, c.id());
+        return response(c, existingId == null, false);
+    }
+
+    private void rememberAlarm(String alarmId, String caseId) {
+        if (alarmId == null || alarmId.isBlank()) return;
+        String tenant = tenant();
+        AlarmCaseLinkEntity link = new AlarmCaseLinkEntity();
+        link.setId(UUID.nameUUIDFromBytes((tenant + "\u0000" + alarmId).getBytes(StandardCharsets.UTF_8)).toString());
+        link.setTenantId(tenant);
+        link.setAlarmId(alarmId);
+        link.setCaseId(caseId);
+        link.setCreatedAt(Instant.now());
+        alarmLinks.save(link);
+    }
+
+    private static Map<String, Object> response(Case incident, boolean created, boolean duplicate) {
         Map<String, Object> out = new LinkedHashMap<>();
-        out.put("caseId", c.id());
-        out.put("caseNo", c.caseNo());
-        out.put("title", c.title());
-        out.put("entity", c.entity());
-        out.put("status", c.status());
-        out.put("alarmCount", c.alarmIds().size());
-        out.put("created", existingId == null);
+        out.put("caseId", incident.id());
+        out.put("caseNo", incident.caseNo());
+        out.put("title", incident.title());
+        out.put("entity", incident.entity());
+        out.put("status", incident.status());
+        out.put("alarmCount", incident.alarmIds().size());
+        out.put("created", created);
+        if (duplicate) out.put("duplicate", true);
         return out;
+    }
+
+    private static String tenant() {
+        String tenant = TenantContext.get();
+        return tenant == null || tenant.isBlank() ? "default" : tenant;
     }
 
     public List<Case> list() {

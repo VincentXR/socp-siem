@@ -27,7 +27,7 @@ public class IocStore {
 
     @PostConstruct
     void seed() {
-        if (repo.count() > 0) return;
+        if (repo.countByTenantId("default") > 0) return;
         add(Ioc.of("IP", "45.146.165.37", "CRITICAL", "AlienVault OTX", "已知 C2 回连地址", List.of("c2", "malware")));
         add(Ioc.of("IP", "185.220.101.1", "HIGH", "Tor Exit", "Tor 出口节点", List.of("tor", "anonymizer")));
         add(Ioc.of("IP", "10.0.0.66", "HIGH", "内部研判", "内网失陷主机（模拟）", List.of("compromised")));
@@ -55,17 +55,17 @@ public class IocStore {
     }
 
     public boolean delete(String id) {
-        if (repo.existsById(id)) {
-            repo.deleteById(id);
-            return true;
-        }
-        return false;
+        var entity = repo.findByIdAndTenantId(id, tenant());
+        if (entity.isEmpty()) return false;
+        repo.delete(entity.get());
+        return true;
     }
 
     /** 精确匹配单个值（大小写不敏感），命中返回 IOC，否则 null。 */
     public Ioc match(String value) {
         if (value == null || value.isBlank()) return null;
-        return repo.findByValue(value.trim().toLowerCase()).map(IocStore::fromEntity).orElse(null);
+        return repo.findByTenantIdAndValue(tenant(), value.trim().toLowerCase())
+                .map(IocStore::fromEntity).orElse(null);
     }
 
     /** 批量匹配：给定若干候选值，返回 value -> IOC 的命中映射。 */
@@ -80,15 +80,19 @@ public class IocStore {
     }
 
     public long count() {
-        return repo.count();
+        return repo.countByTenantId(tenant());
     }
 
     public List<Ioc> all() {
-        String tenant = com.socp.platform.tenant.TenantContext.get();
-        if (tenant == null) tenant = "default";
+        String tenant = tenant();
         List<Ioc> out = new ArrayList<>();
         for (IocEntity e : repo.findByTenantId(tenant)) out.add(fromEntity(e));
         return out;
+    }
+
+    private static String tenant() {
+        String tenant = com.socp.platform.tenant.TenantContext.get();
+        return tenant == null || tenant.isBlank() ? "default" : tenant;
     }
 
     // ---- 互转 ----

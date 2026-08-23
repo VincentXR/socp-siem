@@ -18,6 +18,9 @@ public class AuditEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Column(name = "event_id", length = 128, nullable = false, unique = true)
+    private String eventId;
+
     @Column(name = "tenant_id", length = 64, nullable = false)
     private String tenantId;
 
@@ -39,8 +42,9 @@ public class AuditEntity {
     public AuditEntity() {
     }
 
-    public AuditEntity(String tenantId, String action, String operator, String target,
+    public AuditEntity(String eventId, String tenantId, String action, String operator, String target,
                        String result, Instant ts) {
+        this.eventId = eventId;
         this.tenantId = tenantId;
         this.action = action;
         this.operator = operator;
@@ -49,7 +53,13 @@ public class AuditEntity {
         this.ts = ts;
     }
 
+    public AuditEntity(String tenantId, String action, String operator, String target,
+                       String result, Instant ts) {
+        this(java.util.UUID.randomUUID().toString(), tenantId, action, operator, target, result, ts);
+    }
+
     public Long getId() { return id; }
+    public String getEventId() { return eventId; }
     public String getTenantId() { return tenantId; }
     public String getAction() { return action; }
     public String getOperator() { return operator; }

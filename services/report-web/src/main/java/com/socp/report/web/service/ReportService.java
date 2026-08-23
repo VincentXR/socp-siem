@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.client.AlertClient;
 import com.socp.platform.client.ServiceCall;
 import com.socp.report.web.model.ReportSummary;
+import com.socp.platform.tenant.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -113,8 +114,10 @@ public class ReportService {
     }
 
     public ReportSummary dailyReport() {
+        String tenantPredicate = "tenant_id = '" + sqlLiteral(tenant()) + "'";
         // 优先 ClickHouse（明细表实时聚合）
-        List<String> sevRows = ckQuery("SELECT severity, count() FROM alert_agg.alarm_detail WHERE ts >= today() GROUP BY severity");
+        List<String> sevRows = ckQuery("SELECT severity, uniqExact(alarm_id) FROM alert_agg.alarm_detail WHERE "
+                + tenantPredicate + " AND ts >= today() GROUP BY severity");
         if (sevRows != null) {
             Map<String, Integer> bySeverity = new LinkedHashMap<>();
             int total = 0;
@@ -127,7 +130,8 @@ public class ReportService {
                 }
             }
             List<ReportSummary.RuleCount> byRule = new ArrayList<>();
-            List<String> ruleRows = ckQuery("SELECT rule_id, rule_name, count() c FROM alert_agg.alarm_detail WHERE ts >= today() GROUP BY rule_id, rule_name ORDER BY c DESC LIMIT 10");
+            List<String> ruleRows = ckQuery("SELECT rule_id, rule_name, uniqExact(alarm_id) c FROM alert_agg.alarm_detail WHERE "
+                    + tenantPredicate + " AND ts >= today() GROUP BY rule_id, rule_name ORDER BY c DESC LIMIT 10");
             if (ruleRows != null) {
                 for (String row : ruleRows) {
                     String[] parts = row.split("\t");
@@ -164,7 +168,8 @@ public class ReportService {
     @SuppressWarnings("unchecked")
     public Map<String, Object> trend7d() {
         // 优先 ClickHouse（按天聚合 7 天趋势）
-        List<String> rows = ckQuery("SELECT toDate(ts) d, count() FROM alert_agg.alarm_detail WHERE ts >= now() - INTERVAL 7 DAY GROUP BY d ORDER BY d");
+        List<String> rows = ckQuery("SELECT toDate(ts) d, uniqExact(alarm_id) FROM alert_agg.alarm_detail WHERE tenant_id = '"
+                + sqlLiteral(tenant()) + "' AND ts >= now() - INTERVAL 7 DAY GROUP BY d ORDER BY d");
         if (rows != null && !rows.isEmpty()) {
             List<String> days = new ArrayList<>();
             List<Integer> counts = new ArrayList<>();
@@ -193,5 +198,14 @@ public class ReportService {
             }
         }
         return Map.of("days", days, "counts", counts);
+    }
+
+    private static String tenant() {
+        String tenant = TenantContext.get();
+        return tenant == null || tenant.isBlank() ? "default" : tenant;
+    }
+
+    private static String sqlLiteral(String value) {
+        return value.replace("\\", "\\\\").replace("'", "\\'");
     }
 }

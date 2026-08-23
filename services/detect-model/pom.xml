@@ -14,6 +14,10 @@
     <description>DETECT Model（Kafka 窗口聚合，GASP7）</description>
 
     <dependencies>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-client</artifactId>
+        </dependency>
     <dependency>
             <groupId>com.socp.platform</groupId>
             <artifactId>socp-error</artifactId>

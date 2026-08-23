@@ -56,13 +56,19 @@ spring:
               predicates:
                 - Path=/detect-model/**
             - id: asset-collect
-              uri: ${SOCP_SAM_COLLECT_URI:http://localhost:18091}
+              # Compatibility route: the collection ingress is hosted by asset-web.
+              uri: ${SOCP_SAM_COLLECT_URI:http://localhost:18085}
               predicates:
                 - Path=/asset-collect/**
+              filters:
+                - RewritePath=/asset-collect/?(?<segment>.*), /asset-web/$\{segment}
             - id: hips-collect
-              uri: ${SOCP_HIPS_COLLECT_URI:http://localhost:18093}
+              # Compatibility route: the collection ingress is hosted by hips-web.
+              uri: ${SOCP_HIPS_COLLECT_URI:http://localhost:18087}
               predicates:
                 - Path=/hips-collect/**
+              filters:
+                - RewritePath=/hips-collect/?(?<segment>.*), /hips-web/$\{segment}
             - id: threat-web
               uri: ${SOCP_TI_URI:http://localhost:18094}
               predicates:
@@ -89,11 +95,14 @@ socp:
     # 生产鉴权（2026-08-09 启用）：HMAC HS256 验签，与网关 /auth/login 签发 secret 一致。
     jwt-secret: ${SOCP_JWT_SECRET}
     dev-bypass: ${SOCP_DEV_BYPASS:false}
+    service-secret: ${SOCP_SECURITY_SERVICE_SECRET:}
   auth:
     # 本地账号表由 application-dev.yml 提供（仅 dev profile）；生产请接 Keycloak/OIDC 或外部身份源。
     login-secret: ${SOCP_LOGIN_SECRET}
     users: ${SOCP_AUTH_USERS:}
     roles: ${SOCP_AUTH_ROLES:}
+    cookie-secure: ${SOCP_AUTH_COOKIE_SECURE:false}
+    allowed-origins: ${SOCP_AUTH_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:18092}
 
   # Keycloak OIDC 登录（PKCE 授权码，2026-08-12）：Keycloak 只作身份源，
   # 网关回调后统一签发 HS256 session token，业务服务保持 HMAC 验签零改动。

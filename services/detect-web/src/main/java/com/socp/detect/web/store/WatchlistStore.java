@@ -1,5 +1,6 @@
 package com.socp.detect.web.store;
 
+import com.socp.platform.tenant.TenantContext;
 import com.socp.rule.engine.Watchlists;
 import jakarta.annotation.PostConstruct;
 import org.springframework.stereotype.Component;
@@ -29,33 +30,38 @@ public class WatchlistStore {
 
     @PostConstruct
     public void init() {
-        SEED.forEach(Watchlists::put);
+        SEED.forEach(Watchlists::putTemplate);
     }
 
     public Map<String, Object> put(String name, List<String> values) {
-        Watchlists.put(name, values);
+        Watchlists.put(tenant(), name, values);
         return describe(name);
     }
 
     public Map<String, Object> append(String name, List<String> values) {
-        Watchlists.add(name, values);
+        Watchlists.add(tenant(), name, values);
         return describe(name);
     }
 
     public boolean delete(String name) {
-        return Watchlists.delete(name);
+        return Watchlists.delete(tenant(), name);
     }
 
     public List<Map<String, Object>> list() {
-        return Watchlists.names().stream().map(this::describe).toList();
+        return Watchlists.names(tenant()).stream().map(this::describe).toList();
     }
 
     public Map<String, Object> describe(String name) {
-        Set<String> vals = new LinkedHashSet<>(Watchlists.values(name));
+        Set<String> vals = new LinkedHashSet<>(Watchlists.values(tenant(), name));
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("name", name);
         m.put("size", vals.size());
         m.put("values", vals);
         return m;
+    }
+
+    private static String tenant() {
+        String tenant = TenantContext.get();
+        return tenant == null || tenant.isBlank() ? "default" : tenant;
     }
 }

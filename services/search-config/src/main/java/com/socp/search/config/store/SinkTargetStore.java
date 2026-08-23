@@ -4,7 +4,6 @@ import com.socp.search.config.domain.SinkTarget;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 输出目标存储——进程内；生产替换为 PG search.t_sink_target，接口不变。
@@ -13,17 +12,19 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class SinkTargetStore {
 
-    private final ConcurrentHashMap<String, SinkTarget> map = new ConcurrentHashMap<>();
+    private final TenantCatalog<SinkTarget> catalog = new TenantCatalog<>(SinkTarget::id);
+    private boolean seeding = true;
 
     public SinkTargetStore() {
         save(SinkTarget.create("SEARCH 默认 ingest", "GLS_INGEST",
                 "http://localhost:18081/search-config/api/v1/ingest", null, true));
         save(SinkTarget.create("OpenSearch 索引", "OPENSEARCH",
                 "http://localhost:9200/_bulk", null, false));
+        seeding = false;
     }
 
     public List<SinkTarget> list() {
-        return map.values().stream().toList();
+        return catalog.list();
     }
 
     public List<SinkTarget> enabled() {
@@ -31,15 +32,18 @@ public class SinkTargetStore {
     }
 
     public SinkTarget save(SinkTarget t) {
-        map.put(t.id(), t);
-        return t;
+        if (seeding) {
+            catalog.registerTemplate(t);
+            return t;
+        }
+        return catalog.save(t);
     }
 
     public SinkTarget get(String id) {
-        return map.get(id);
+        return catalog.get(id);
     }
 
     public boolean delete(String id) {
-        return map.remove(id) != null;
+        return catalog.delete(id);
     }
 }

@@ -9,6 +9,7 @@ import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.rule.score.RiskScorer;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -45,6 +46,11 @@ class AlertForwarderTest {
         TenantContext.clear();
     }
 
+    @BeforeEach
+    void startWithoutLeakedTenant() {
+        TenantContext.clear();
+    }
+
     @Test
     void resolvesTenantFromCanonicalEvidenceOnKafkaWorkerThread() {
         when(ruleStore.get("AUTH-PRIVESC")).thenReturn(Map.of("mitre", "T1548"));
@@ -61,11 +67,14 @@ class AlertForwarderTest {
         new AlertForwarder(ruleStore, riskStore, outbox).forward(alert);
 
         verify(outbox).enqueue(eq(alert.id()), eq("tenant-b"), anyString());
+        ArgumentCaptor<String> payload = ArgumentCaptor.forClass(String.class);
+        verify(outbox).enqueue(eq(alert.id()), eq("tenant-b"), payload.capture());
+        assertTrue(payload.getValue().contains("\"tenantId\":\"tenant-b\""));
         assertNull(TenantContext.get());
     }
 
     @Test
-    void requestTenantTakesPrecedenceAndIsRestored() {
+    void canonicalEvidenceTakesPrecedenceAndRequestTenantIsRestored() {
         TenantContext.set("tenant-request");
         when(ruleStore.get("AUTH-PRIVESC")).thenReturn(Map.of());
         when(riskStore.recordForAlert(anyString(), anyString(), eq(Severity.HIGH), eq(null),
@@ -80,7 +89,7 @@ class AlertForwarderTest {
 
         new AlertForwarder(ruleStore, riskStore, outbox).forward(alert);
 
-        verify(outbox).enqueue(eq(alert.id()), eq("tenant-request"), anyString());
+        verify(outbox).enqueue(eq(alert.id()), eq("tenant-evidence"), anyString());
         assertEquals("tenant-request", TenantContext.get());
     }
 

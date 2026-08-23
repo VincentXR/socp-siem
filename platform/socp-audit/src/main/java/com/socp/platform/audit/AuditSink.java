@@ -11,8 +11,19 @@ public interface AuditSink {
         return List.of();
     }
 
+    /** Tenant-scoped query used by user-facing audit APIs. */
+    default List<AuditRecord> recent(String tenantId, int limit, String action) {
+        return recent(limit, action).stream()
+                .filter(record -> tenantId.equals(record.tenantId()))
+                .toList();
+    }
+
     /** 已留痕的记录数（默认 0；InMemoryAuditSink 返回实际计数）。 */
     default int size() {
         return 0;
+    }
+
+    default int size(String tenantId) {
+        return recent(tenantId, Integer.MAX_VALUE, null).size();
     }
 }

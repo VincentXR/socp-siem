@@ -35,6 +35,12 @@ public class SocpSecurityProperties {
      *  仅用于采集端点（ingest/collect），比正式 JWT 简单且不依赖网关签发。默认关闭。 */
     private String ingestToken;
 
+    /** Shared HMAC key for signed tenant delegation between internal services. */
+    private String serviceSecret;
+
+    /** Maximum accepted clock skew for signed service requests. */
+    private int serviceMaxSkewSeconds = 60;
+
     /** 允许的时钟偏移（秒），用于 exp/nbf 校验 */
     private int clockSkewSeconds = 60;
 
@@ -122,6 +128,22 @@ public class SocpSecurityProperties {
 
     public void setIngestToken(String ingestToken) {
         this.ingestToken = ingestToken;
+    }
+
+    public String getServiceSecret() {
+        return serviceSecret;
+    }
+
+    public void setServiceSecret(String serviceSecret) {
+        this.serviceSecret = serviceSecret;
+    }
+
+    public int getServiceMaxSkewSeconds() {
+        return serviceMaxSkewSeconds;
+    }
+
+    public void setServiceMaxSkewSeconds(int serviceMaxSkewSeconds) {
+        this.serviceMaxSkewSeconds = Math.max(1, serviceMaxSkewSeconds);
     }
 
     public int getClockSkewSeconds() {

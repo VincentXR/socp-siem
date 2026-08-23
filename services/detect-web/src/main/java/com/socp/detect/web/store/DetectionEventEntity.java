@@ -17,7 +17,13 @@ public class DetectionEventEntity {
 
     @Id
     @Column(name = "event_id", length = 128)
-    private String eventId;
+    private String storageId;
+
+    @Column(name = "tenant_id", length = 64, nullable = false)
+    private String tenantId;
+
+    @Column(name = "source_event_id", length = 128, nullable = false)
+    private String sourceEventId;
 
     @Column(nullable = false, length = 64)
     private String source;
@@ -69,7 +75,17 @@ public class DetectionEventEntity {
     public DetectionEventEntity(String eventId, String source, String host, String raw,
                                 String fieldsJson, String severity, Instant occurredAt,
                                 Integer kafkaPartition, Long kafkaOffset, String routingKey) {
-        this.eventId = eventId;
+        this("default", eventId, source, host, raw, fieldsJson, severity, occurredAt,
+                kafkaPartition, kafkaOffset, routingKey);
+    }
+
+    public DetectionEventEntity(String tenantId, String eventId, String source, String host,
+                                String raw, String fieldsJson, String severity, Instant occurredAt,
+                                Integer kafkaPartition, Long kafkaOffset, String routingKey) {
+        this.tenantId = tenantId;
+        this.sourceEventId = eventId;
+        this.storageId = java.util.UUID.nameUUIDFromBytes((tenantId + "|" + eventId)
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
         this.source = source;
         this.host = host;
         this.raw = raw;
@@ -82,7 +98,9 @@ public class DetectionEventEntity {
         this.status = DetectionEventStatus.PENDING.name();
     }
 
-    public String getEventId() { return eventId; }
+    public String getEventId() { return sourceEventId; }
+    public String getStorageId() { return storageId; }
+    public String getTenantId() { return tenantId; }
     public String getSource() { return source; }
     public String getHost() { return host; }
     public String getRaw() { return raw; }

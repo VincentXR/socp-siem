@@ -27,13 +27,13 @@ public final class InMemoryDetectionStateStore implements DetectionStateStore {
         if (event == null || event.id() == null || event.id().isBlank()) {
             throw new IllegalArgumentException("event id is required");
         }
-        Entry existing = events.get(event.id());
+        Entry existing = events.get(event.scopedId());
         if (existing != null) return existing.status() == DetectionEventStatus.PENDING
                 ? DetectionEventClaim.PENDING
                 : existing.status() == DetectionEventStatus.DEAD_LETTERED
                 ? DetectionEventClaim.DEAD_LETTERED : DetectionEventClaim.COMPLETED;
         Entry created = new Entry(event, partition, offset, routingKey, DetectionEventStatus.PENDING);
-        Entry raced = events.putIfAbsent(event.id(), created);
+        Entry raced = events.putIfAbsent(event.scopedId(), created);
         return raced == null ? DetectionEventClaim.NEW
                 : raced.status() == DetectionEventStatus.PENDING
                 ? DetectionEventClaim.PENDING : DetectionEventClaim.COMPLETED;
@@ -51,19 +51,31 @@ public final class InMemoryDetectionStateStore implements DetectionStateStore {
 
     @Override
     public void markCompleted(String eventId) {
-        events.computeIfPresent(eventId, (id, entry) -> entry.withStatus(DetectionEventStatus.COMPLETED));
+        markCompleted("default", eventId);
+    }
+
+    @Override
+    public void markCompleted(String tenantId, String eventId) {
+        events.computeIfPresent(tenantId + "|" + eventId,
+                (id, entry) -> entry.withStatus(DetectionEventStatus.COMPLETED));
     }
 
     @Override
     public void markDeadLettered(String eventId, String reason) {
-        events.computeIfPresent(eventId, (id, entry) -> entry.withStatus(DetectionEventStatus.DEAD_LETTERED));
+        markDeadLettered("default", eventId, reason);
+    }
+
+    @Override
+    public void markDeadLettered(String tenantId, String eventId, String reason) {
+        events.computeIfPresent(tenantId + "|" + eventId,
+                (id, entry) -> entry.withStatus(DetectionEventStatus.DEAD_LETTERED));
     }
 
     @Override
     public void recordDeadLettered(String eventId, String raw, Integer partition, Long offset,
                                    String reason) {
         if (eventId == null || eventId.isBlank() || "null".equalsIgnoreCase(eventId)) return;
-        events.putIfAbsent(eventId, new Entry(
+        events.putIfAbsent("default|" + eventId, new Entry(
                 new SecurityEvent(eventId, Instant.now(), "unknown", "unknown", raw,
                         Map.of(), com.socp.rule.model.Severity.INFO),
                 partition, offset, null, DetectionEventStatus.DEAD_LETTERED));
@@ -72,7 +84,12 @@ public final class InMemoryDetectionStateStore implements DetectionStateStore {
 
     @Override
     public void remove(String eventId) {
-        if (eventId != null) events.remove(eventId);
+        remove("default", eventId);
+    }
+
+    @Override
+    public void remove(String tenantId, String eventId) {
+        if (eventId != null) events.remove(tenantId + "|" + eventId);
     }
 
     @Override
@@ -122,6 +139,14 @@ public final class InMemoryDetectionStateStore implements DetectionStateStore {
     @Override
     public long pendingCount() {
         return events.values().stream().filter(e -> e.status() == DetectionEventStatus.PENDING).count();
+    }
+
+    @Override
+    public long pendingCount(String tenantId) {
+        return events.values().stream()
+                .filter(e -> e.status() == DetectionEventStatus.PENDING
+                        && tenantId.equals(e.event().tenantId()))
+                .count();
     }
 
     @Override

@@ -18,10 +18,10 @@ import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { computed, onMounted, ref } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import PagerBar from '../components/PagerBar.vue'
-import { createPlaybook, deletePlaybook, listPlaybookExecutions, listPlaybooks, togglePlaybook, type Playbook } from '../api'
+import { createPlaybook, deletePlaybook, listPlaybookExecutions, listPlaybooks, togglePlaybook, type Playbook, type PlaybookExecution } from '../api'
 
 const playbooks = ref<Playbook[]>([])
-const executions = ref<Array<Record<string, unknown>>>([])
+const executions = ref<PlaybookExecution[]>([])
 const page = ref(1)
 const size = ref(10)
 const dialogVisible = ref(false)
@@ -84,7 +84,7 @@ onMounted(loadPlaybooks)
         <el-table-column prop="playbook" label="剧本" min-width="140" show-overflow-tooltip />
         <el-table-column prop="trigger" label="触发" min-width="160" show-overflow-tooltip />
         <el-table-column label="动作结果" min-width="320">
-          <template #default="{ row }"><span v-for="(result, index) in (row.results as any[] || [])" :key="index" class="soar-result-tag"><el-tag size="small" :type="String(result.status).startsWith('fail') ? 'danger' : (String(result.status).startsWith('sent') || String(result.status).startsWith('created') ? 'success' : 'info')">{{ result.action }} → {{ result.status }}</el-tag></span></template>
+          <template #default="{ row }"><span v-for="(result, index) in (row.results || [])" :key="index" class="soar-result-tag"><el-tag size="small" :type="String(result.status).startsWith('fail') ? 'danger' : (String(result.status).startsWith('sent') || String(result.status).startsWith('created') ? 'success' : 'info')">{{ result.action }} → {{ result.status }}</el-tag></span></template>
         </el-table-column>
       </el-table>
       <PagerBar v-model:current-page="page" v-model:page-size="size" :total="executions.length" />

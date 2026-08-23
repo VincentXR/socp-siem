@@ -28,4 +28,22 @@ public record SecurityEvent(
     public String get(String key) {
         return fields.get(key);
     }
+
+    /**
+     * Tenant carried by the canonical event. Detection runs asynchronously,
+     * so it must never depend on an HTTP thread-local for tenant ownership.
+     */
+    public String tenantId() {
+        if (fields != null) {
+            String tenant = fields.get("tenant_id");
+            if (tenant == null || tenant.isBlank()) tenant = fields.get("tenantId");
+            if (tenant != null && !tenant.isBlank()) return tenant;
+        }
+        return "default";
+    }
+
+    /** Globally unique identity for durable claims and in-memory state. */
+    public String scopedId() {
+        return tenantId() + "|" + id;
+    }
 }

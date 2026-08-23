@@ -3,20 +3,16 @@ package com.socp.search.config.search;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.socp.platform.client.kafka.KafkaClientSupport;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
-import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.ProducerConfig;
-import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.WakeupException;
-import org.apache.kafka.common.serialization.StringDeserializer;
-import org.apache.kafka.common.serialization.StringSerializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -30,8 +26,6 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Replayable Kafka-to-OpenSearch indexer.
@@ -181,11 +175,9 @@ public class OsIndexerConsumer {
 
     private boolean sendToDlqAndAwait(String eventId, String raw) {
         try {
-            dlq().send(new ProducerRecord<>(topic + "-dlq",
-                            eventId == null ? "unknown" : eventId, raw))
-                    .get(30, TimeUnit.SECONDS);
+            KafkaClientSupport.sendAndAwait(dlq(), topic + "-dlq", eventId, raw, Duration.ofSeconds(30));
             return true;
-        } catch (Exception failure) {
+        } catch (RuntimeException failure) {
             log.warn("DLQ durable write failed eventId={}: {}", eventId, failure.getMessage());
             return false;
         }
@@ -196,30 +188,15 @@ public class OsIndexerConsumer {
         if (current != null) return current;
         synchronized (this) {
             if (dlqProducer == null) {
-                Properties props = new Properties();
-                props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap);
-                props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
-                props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
-                props.put(ProducerConfig.ACKS_CONFIG, "all");
-                props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "true");
-                props.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 30_000);
-                props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 3_000);
-                dlqProducer = new KafkaProducer<>(props);
+                dlqProducer = new KafkaProducer<>(KafkaClientSupport.reliableProducer(bootstrap));
             }
             return dlqProducer;
         }
     }
 
-    private Properties consumerProperties() {
-        Properties props = new Properties();
-        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap);
-        props.put(ConsumerConfig.GROUP_ID_CONFIG, "socp-os-indexer");
-        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
-        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
-        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
-        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
-        props.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, 500);
-        return props;
+    private java.util.Properties consumerProperties() {
+        return KafkaClientSupport.reliableConsumer(bootstrap,
+                "socp-os-indexer", "earliest", 500);
     }
 
     private static SearchEvent toEvent(Map<String, Object> value, String fallbackId) {

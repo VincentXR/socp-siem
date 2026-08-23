@@ -1,10 +1,10 @@
 package com.socp.gateway;
 
 import com.nimbusds.jwt.JWTClaimsSet;
-import com.nimbusds.jwt.SignedJWT;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -22,71 +22,61 @@ import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
-import java.util.UUID;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * Keycloak OIDC 登录代理（2026-08-12，PKCE 授权码流程）。
- *
- * <p>Keycloak 只作身份源：回调里用 PKCE code 换到 id_token 后，解析 role/tenant claim，
- * <b>由网关统一签发 HS256 session token</b>（与 /auth/login 同一 secret），前端继续用
- * localStorage 存它调业务服务——业务服务保持 HMAC 验签零改动，demo 登录完全不受影响。
- *
- * <p>流程：GET /auth/oidc/login（302 → Keycloak 授权端点，带 state+PKCE challenge）
- * → Keycloak 登录页 → 302 回 GET /auth/oidc/callback?code&state
- * → 换 token → 签统一 token → 302 到前端 ?socp_oidc_token=xxx。
- */
+/** Keycloak OIDC authorization-code flow with PKCE, nonce and ID-token verification. */
 @RestController
 @RequestMapping("/auth/oidc")
 public class OidcAuthController {
 
+    private static final java.security.SecureRandom SECURE_RANDOM = new java.security.SecureRandom();
+
     private static final Logger log = LoggerFactory.getLogger(OidcAuthController.class);
+    private static final long STATE_TTL_MS = 10 * 60 * 1000L;
 
-    /** state → (PKCE verifier, 过期时间)；内存态，单实例可接受，网关重启丢 state（回调会重登）。 */
-    private static final long STATE_TTL_MS = 30 * 60 * 1000L;
     private final Map<String, StateEntry> states = new ConcurrentHashMap<>();
-    private final HttpClient http = HttpClient.newHttpClient();
-
-    @Value("${socp.oidc.issuer-uri:}")
-    private String issuerUri;
-
-    @Value("${socp.oidc.client-id:socp-spa}")
-    private String clientId;
-
-    @Value("${socp.oidc.redirect-uri:}")
-    private String redirectUri;
-
-    @Value("${socp.oidc.frontend-url:http://localhost:5173}")
-    private String frontendUrl;
-
+    private final HttpClient http = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(5)).build();
     private final AuthController authController;
+    private final OidcIdTokenValidator idTokenValidator;
 
-    public OidcAuthController(AuthController authController) {
+    @Value("${socp.oidc.issuer-uri:}") private String issuerUri;
+    @Value("${socp.oidc.client-id:socp-spa}") private String clientId;
+    @Value("${socp.oidc.redirect-uri:}") private String redirectUri;
+    @Value("${socp.oidc.frontend-url:http://localhost:5173}") private String frontendUrl;
+
+    public OidcAuthController(AuthController authController,
+                              OidcIdTokenValidator idTokenValidator) {
         this.authController = authController;
+        this.idTokenValidator = idTokenValidator;
     }
 
-    private record StateEntry(String verifier, long expiresAt) {
-    }
+    private record StateEntry(String verifier, String nonce, long expiresAt) {}
 
     @GetMapping("/login")
     public ResponseEntity<?> login() {
         if (issuerUri == null || issuerUri.isBlank()) {
-            return error(HttpStatus.INTERNAL_SERVER_ERROR, "socp.oidc.issuer-uri 未配置");
+            return error(HttpStatus.INTERNAL_SERVER_ERROR, "OIDC issuer is not configured");
         }
-        String verifier = Base64.getUrlEncoder().withoutPadding()
-                .encodeToString(UUID.randomUUID().toString().getBytes(StandardCharsets.UTF_8));
-        String state = UUID.randomUUID().toString();
-        states.put(state, new StateEntry(verifier, System.currentTimeMillis() + STATE_TTL_MS));
-        String authUrl = issuerUri + "/protocol/openid-connect/auth"
+        String verifier = randomUrlToken();
+        String state = randomUrlToken();
+        String nonce = randomUrlToken();
+        long now = System.currentTimeMillis();
+        states.entrySet().removeIf(item -> item.getValue().expiresAt() < now);
+        states.put(state, new StateEntry(verifier, nonce, now + STATE_TTL_MS));
+        String authUrl = issuer() + "/protocol/openid-connect/auth"
                 + "?client_id=" + enc(clientId)
                 + "&response_type=code"
-                + "&scope=openid"
+                + "&scope=openid%20profile"
                 + "&redirect_uri=" + enc(redirectUri)
                 + "&state=" + enc(state)
+                + "&nonce=" + enc(nonce)
                 + "&code_challenge=" + enc(codeChallenge(verifier))
                 + "&code_challenge_method=S256";
-        log.info("OIDC 登录跳转 issuer={} state={}", issuerUri, state);
         return ResponseEntity.status(HttpStatus.FOUND).location(URI.create(authUrl)).build();
     }
 
@@ -95,56 +85,89 @@ public class OidcAuthController {
                                       @RequestParam("state") String state) {
         StateEntry entry = states.remove(state);
         if (entry == null || entry.expiresAt() < System.currentTimeMillis()) {
-            return error(HttpStatus.UNAUTHORIZED, "OIDC state 无效或已过期，请重新登录");
+            return error(HttpStatus.UNAUTHORIZED, "OIDC state is invalid or expired");
         }
         try {
-            Map<String, Object> idClaims = exchangeCode(code, entry.verifier());
-            String subject = first(idClaims, "preferred_username", "sub");
-            String role = first(idClaims, "role", null);
-            String tenant = first(idClaims, "tenant", null);
-            String token = authController.sign(subject, role == null ? "analyst" : role, tenant);
-            String redirect = frontendUrl + "?socp_oidc_token=" + token;
-            log.info("OIDC 登录成功 subject={} role={} tenant={} → {}", subject, role, tenant, frontendUrl);
-            return ResponseEntity.status(HttpStatus.FOUND).location(URI.create(redirect)).build();
-        } catch (Exception e) {
-            log.warn("OIDC 回调处理失败: {}", e.getMessage());
-            return error(HttpStatus.UNAUTHORIZED, "OIDC 登录失败: " + e.getMessage());
+            Map<String, Object> claims = exchangeCode(code, entry.verifier(), entry.nonce());
+            String subject = first(claims, "preferred_username", "sub");
+            String role = role(claims);
+            String tenant = first(claims, "tenant", "tenant_id");
+            if (subject == null || subject.isBlank()) throw new IllegalArgumentException("OIDC subject is missing");
+            if (role == null) throw new IllegalArgumentException("OIDC user has no supported SOCP role");
+            if (tenant == null || tenant.isBlank()) throw new IllegalArgumentException("OIDC tenant claim is missing");
+
+            String token = authController.sign(subject, role, tenant);
+            log.info("OIDC login succeeded subject={} role={} tenant={}", subject, role, tenant);
+            return ResponseEntity.status(HttpStatus.FOUND)
+                    .header(HttpHeaders.SET_COOKIE, authController.sessionCookie(token).toString())
+                    .location(URI.create(frontendUrl))
+                    .build();
+        } catch (Exception failure) {
+            log.warn("OIDC callback rejected: {}", failure.getMessage());
+            return error(HttpStatus.UNAUTHORIZED, "OIDC login failed");
         }
     }
 
-    /** 用授权码 + PKCE verifier 换 token，解析 id_token 的 claims（可信 token 端点交换）。 */
-    private Map<String, Object> exchangeCode(String code, String verifier) throws Exception {
+    private Map<String, Object> exchangeCode(String code, String verifier, String nonce) throws Exception {
         String form = "grant_type=authorization_code"
                 + "&code=" + enc(code)
                 + "&redirect_uri=" + enc(redirectUri)
                 + "&client_id=" + enc(clientId)
                 + "&code_verifier=" + enc(verifier);
-        HttpRequest req = HttpRequest.newBuilder(URI.create(issuerUri + "/protocol/openid-connect/token"))
+        HttpRequest request = HttpRequest.newBuilder(
+                        URI.create(issuer() + "/protocol/openid-connect/token"))
                 .header("Content-Type", "application/x-www-form-urlencoded")
                 .timeout(Duration.ofSeconds(10))
                 .POST(HttpRequest.BodyPublishers.ofString(form))
                 .build();
-        HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
-        if (resp.statusCode() < 200 || resp.statusCode() >= 300) {
-            throw new IllegalStateException("token 端点返回 " + resp.statusCode() + ": " + resp.body());
+        HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            throw new IllegalStateException("OIDC token endpoint returned " + response.statusCode());
         }
         @SuppressWarnings("unchecked")
-        Map<String, Object> json = new com.fasterxml.jackson.databind.ObjectMapper()
-                .readValue(resp.body(), Map.class);
-        String idToken = String.valueOf(json.get("id_token"));
-        SignedJWT jwt = SignedJWT.parse(idToken);
-        JWTClaimsSet claims = jwt.getJWTClaimsSet();
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("sub", claims.getSubject());
-        out.put("preferred_username", claims.getStringClaim("preferred_username"));
-        out.put("role", claims.getStringClaim("role"));
-        out.put("tenant", claims.getStringClaim("tenant"));
-        return out;
+        Map<String, Object> body = new com.fasterxml.jackson.databind.ObjectMapper()
+                .readValue(response.body(), Map.class);
+        JWTClaimsSet claims = idTokenValidator.validate(String.valueOf(body.get("id_token")), nonce);
+        return new LinkedHashMap<>(claims.getClaims());
     }
 
-    private static String first(Map<String, Object> m, String k1, String fallback) {
-        Object v = m.get(k1);
-        return v == null || String.valueOf(v).isBlank() ? fallback : String.valueOf(v);
+    private String role(Map<String, Object> claims) {
+        Set<String> roles = new LinkedHashSet<>();
+        Object direct = claims.get("role");
+        if (direct != null) roles.add(String.valueOf(direct).toLowerCase());
+        collectRoles(roles, claims.get("realm_access"));
+        Object clients = claims.get("resource_access");
+        if (clients instanceof Map<?, ?> access) collectRoles(roles, access.get(clientId));
+        for (String supported : List.of("admin", "analyst", "viewer")) {
+            if (roles.contains(supported)) return supported;
+        }
+        return null;
+    }
+
+    private static void collectRoles(Set<String> out, Object container) {
+        if (!(container instanceof Map<?, ?> map)) return;
+        Object values = map.get("roles");
+        if (!(values instanceof Iterable<?> iterable)) return;
+        for (Object value : iterable) out.add(String.valueOf(value).toLowerCase());
+    }
+
+    private static String first(Map<String, Object> claims, String primary, String fallback) {
+        Object value = claims.get(primary);
+        if (value != null && !String.valueOf(value).isBlank()) return String.valueOf(value);
+        value = claims.get(fallback);
+        return value == null || String.valueOf(value).isBlank() ? null : String.valueOf(value);
+    }
+
+    private String issuer() {
+        String value = issuerUri == null ? "" : issuerUri.trim();
+        while (value.endsWith("/")) value = value.substring(0, value.length() - 1);
+        return value;
+    }
+
+    private static String randomUrlToken() {
+        byte[] bytes = new byte[32];
+        SECURE_RANDOM.nextBytes(bytes);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
     private static String codeChallenge(String verifier) {
@@ -152,19 +175,16 @@ public class OidcAuthController {
             byte[] hash = MessageDigest.getInstance("SHA-256")
                     .digest(verifier.getBytes(StandardCharsets.US_ASCII));
             return Base64.getUrlEncoder().withoutPadding().encodeToString(hash);
-        } catch (Exception e) {
-            throw new IllegalStateException("PKCE code_challenge 生成失败", e);
+        } catch (java.security.NoSuchAlgorithmException failure) {
+            throw new IllegalStateException("Unable to create PKCE challenge", failure);
         }
     }
 
-    private static String enc(String s) {
-        return URLEncoder.encode(s == null ? "" : s, StandardCharsets.UTF_8);
+    private static String enc(String value) {
+        return URLEncoder.encode(value == null ? "" : value, StandardCharsets.UTF_8);
     }
 
     private static ResponseEntity<?> error(HttpStatus status, String message) {
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("code", status.value());
-        body.put("message", message);
-        return ResponseEntity.status(status).body(body);
+        return ResponseEntity.status(status).body(Map.of("code", status.value(), "message", message));
     }
 }

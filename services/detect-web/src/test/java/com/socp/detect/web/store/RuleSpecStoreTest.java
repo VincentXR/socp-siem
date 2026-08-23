@@ -20,7 +20,7 @@ class RuleSpecStoreTest {
     @Test
     void seedsDefaultRulesWithValidJson() {
         RuleRepository repository = mock(RuleRepository.class);
-        when(repository.count()).thenReturn(0L);
+        when(repository.countByTenantId("default")).thenReturn(0L);
 
         new RuleSpecStore(repository);
 
@@ -33,8 +33,8 @@ class RuleSpecStoreTest {
         RuleEntity old = entity("AUTH-BRUTE", """
                 {"id":"AUTH-BRUTE","contentPack":"socp-core-detections","contentVersion":"2026.08.19"}
                 """);
-        when(repository.count()).thenReturn(1L);
-        when(repository.findByIdAndTenantId(any(), any())).thenAnswer(invocation ->
+        when(repository.countByTenantId("default")).thenReturn(1L);
+        when(repository.findByRuleIdAndTenantId(any(), any())).thenAnswer(invocation ->
                 "AUTH-BRUTE".equals(invocation.getArgument(0)) ? Optional.of(old) : Optional.empty());
 
         new RuleSpecStore(repository);
@@ -51,8 +51,8 @@ class RuleSpecStoreTest {
     void doesNotOverwriteAUserOwnedRuleWithACollidingId() {
         RuleRepository repository = mock(RuleRepository.class);
         RuleEntity userRule = entity("AUTH-BRUTE", "{\"id\":\"AUTH-BRUTE\",\"owner\":\"local-user\"}");
-        when(repository.count()).thenReturn(1L);
-        when(repository.findByIdAndTenantId(any(), any())).thenReturn(Optional.of(userRule));
+        when(repository.countByTenantId("default")).thenReturn(1L);
+        when(repository.findByRuleIdAndTenantId(any(), any())).thenReturn(Optional.of(userRule));
 
         new RuleSpecStore(repository);
 
@@ -65,8 +65,8 @@ class RuleSpecStoreTest {
         RuleEntity installed = entity("AUTH-BRUTE", """
                 {"id":"AUTH-BRUTE","contentPack":"socp-core-detections","contentVersion":"2026.08.20"}
                 """);
-        when(repository.count()).thenReturn(1L);
-        when(repository.findByIdAndTenantId(any(), any()))
+        when(repository.countByTenantId("default")).thenReturn(1L);
+        when(repository.findByRuleIdAndTenantId(any(), any()))
                 .thenReturn(Optional.empty(), Optional.of(installed))
                 .thenReturn(Optional.of(installed));
         when(repository.save(any(RuleEntity.class)))
