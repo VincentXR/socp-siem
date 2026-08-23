@@ -5,6 +5,9 @@
 网关地址默认取 build/ports.env（唯一来源），所有请求均经网关转发到 alert-web。
 """
 import json
+import base64
+import hashlib
+import hmac
 import os
 import sys
 import time
@@ -22,6 +25,7 @@ PASS, FAIL = [], []
 
 
 _TOKEN = {"t": None}
+_TENANT_TOKENS = {}
 _AUTO_TOKEN = object()
 
 
@@ -33,6 +37,46 @@ def real_token():
     return _TOKEN["t"]
 
 
+def tenant_token(tenant):
+    """Return a valid token whose signed tenant claim matches the test tenant.
+
+    Browser login intentionally issues the user's home tenant (``default``),
+    while this contract test needs two tenants.  When the CI/local HMAC secret
+    is available, mint short-lived test tokens with the same issuer and claims
+    as the gateway.  In dev-bypass mode the normal session token is sufficient
+    because the gateway resolves the tenant from ``X-Tenant-Id``.
+    """
+    if tenant in _TENANT_TOKENS:
+        return _TENANT_TOKENS[tenant]
+    secret = os.getenv("SOCP_JWT_SECRET") or os.getenv("SOCP_LOGIN_SECRET")
+    if not secret or tenant == "default":
+        token = real_token()
+    else:
+        now = int(time.time())
+
+        def encoded(value):
+            return base64.urlsafe_b64encode(
+                json.dumps(value, separators=(",", ":")).encode()
+            ).rstrip(b"=").decode()
+
+        header = encoded({"alg": "HS256", "typ": "JWT"})
+        payload = encoded({
+            "sub": "verify-slice",
+            "iss": "socp-gateway",
+            "tenant": tenant,
+            "role": "analyst",
+            "iat": now,
+            "exp": now + 600,
+        })
+        signing_input = f"{header}.{payload}".encode()
+        signature = base64.urlsafe_b64encode(
+            hmac.new(secret.encode(), signing_input, hashlib.sha256).digest()
+        ).rstrip(b"=").decode()
+        token = f"{header}.{payload}.{signature}"
+    _TENANT_TOKENS[tenant] = token
+    return token
+
+
 def call(method="GET", path="", token=_AUTO_TOKEN, tenant="t1", body=None):
     """返回 (http_status, headers, body_dict)。异常状态码不抛出，统一返回。
     未显式传 token 时自动用真实登录 token。"""
@@ -40,7 +84,7 @@ def call(method="GET", path="", token=_AUTO_TOKEN, tenant="t1", body=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     if token is _AUTO_TOKEN:
-        token = real_token()
+        token = tenant_token(tenant)
     if token:
         req.add_header("Authorization", "Bearer " + token)
     if tenant:
