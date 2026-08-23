@@ -5,6 +5,10 @@ on:
   schedule:
     - cron: "30 2 * * 1"
 
+env:
+  # Avoid depending on third-party mirror synchronization in hosted CI.
+  SOCP_MAVEN_SETTINGS: "none"
+
 jobs:
   full-stack:
     runs-on: ubuntu-latest

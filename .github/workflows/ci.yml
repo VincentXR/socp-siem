@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  # GitHub-hosted runners should use Maven Central directly. The repository
+  # mirror remains the default for local development in mainland China.
+  SOCP_MAVEN_SETTINGS: "none"
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -92,6 +97,12 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U socp"
           --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:8
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -173,6 +184,12 @@ jobs:
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U socp"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:8
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
           --health-interval 5s --health-timeout 5s --health-retries 10
       kafka:
         image: apache/kafka:4.0.0
