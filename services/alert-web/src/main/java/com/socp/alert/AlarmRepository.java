@@ -1,33 +1,18 @@
 package com.socp.alert;
 
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+import org.springframework.data.repository.query.Param;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
-/** 告警仓储：按租户隔离查询（多租户 SDK 级保证，见 §3.3） */
-public interface AlarmRepository extends JpaRepository<Alarm, String> {
+/** Tenant-scoped persistence plus database aggregation projections for alarms. */
+public interface AlarmRepository extends JpaRepository<Alarm, String>, AlarmRepositoryCustom {
 
     List<Alarm> findByTenantId(String tenantId);
-
-    @Query(value = "select a from Alarm a where a.tenantId = :tenant order by a.occurredAt desc nulls last, a.id asc",
-           countQuery = "select count(a) from Alarm a where a.tenantId = :tenant")
-    Page<Alarm> pageByOccurredAtDesc(String tenant, Pageable pageable);
-
-    @Query(value = "select a from Alarm a where a.tenantId = :tenant order by a.occurredAt asc nulls last, a.id asc",
-           countQuery = "select count(a) from Alarm a where a.tenantId = :tenant")
-    Page<Alarm> pageByOccurredAtAsc(String tenant, Pageable pageable);
-
-    @Query(value = "select a from Alarm a where a.tenantId = :tenant order by a.alertCreatedAt desc nulls last, a.id asc",
-           countQuery = "select count(a) from Alarm a where a.tenantId = :tenant")
-    Page<Alarm> pageByAlertCreatedAtDesc(String tenant, Pageable pageable);
-
-    @Query(value = "select a from Alarm a where a.tenantId = :tenant order by a.alertCreatedAt asc nulls last, a.id asc",
-           countQuery = "select count(a) from Alarm a where a.tenantId = :tenant")
-    Page<Alarm> pageByAlertCreatedAtAsc(String tenant, Pageable pageable);
 
     Optional<Alarm> findByTenantIdAndId(String tenantId, String id);
 
@@ -42,22 +27,81 @@ public interface AlarmRepository extends JpaRepository<Alarm, String> {
            """)
     List<Alarm> search(String tenant, String q);
 
+    /** Recent per-entity count used by risk enrichment. */
+    @Query("select count(a) from Alarm a where a.tenantId = :tenant and a.entity = :entity and a.occurredAt >= :since")
+    long countRecentByEntity(String tenant, String entity, Instant since);
+
+    @Query("""
+           select count(a) from Alarm a
+           where a.tenantId = :tenant
+             and (:since is null or a.occurredAt >= :since)
+           """)
+    long countForStatistics(@Param("tenant") String tenant, @Param("since") Instant since);
+
+    @Query("""
+           select new com.socp.alert.AlarmSeverityCount(a.severity, count(a))
+           from Alarm a
+           where a.tenantId = :tenant
+             and (:since is null or a.occurredAt >= :since)
+           group by a.severity
+           """)
+    List<AlarmSeverityCount> countBySeverityForStatistics(
+            @Param("tenant") String tenant, @Param("since") Instant since);
+
+    @Query("""
+           select new com.socp.alert.AlarmRuleCount(a.ruleId, count(a))
+           from Alarm a
+           where a.tenantId = :tenant
+             and (:since is null or a.occurredAt >= :since)
+           group by a.ruleId
+           order by count(a) desc, a.ruleId asc
+           """)
+    List<AlarmRuleCount> topRulesForStatistics(
+            @Param("tenant") String tenant, @Param("since") Instant since, Pageable pageable);
+
+    @Query("""
+           select new com.socp.alert.AlarmRiskLevelCount(
+             case
+               when a.riskScore >= 85 then 'CRITICAL'
+               when a.riskScore >= 65 then 'HIGH'
+               when a.riskScore >= 40 then 'MEDIUM'
+               when a.riskScore >= 20 then 'LOW'
+               else 'INFO'
+             end,
+             count(a))
+           from Alarm a
+           where a.tenantId = :tenant
+             and a.riskScore is not null
+             and (:since is null or a.occurredAt >= :since)
+           group by case
+               when a.riskScore >= 85 then 'CRITICAL'
+               when a.riskScore >= 65 then 'HIGH'
+               when a.riskScore >= 40 then 'MEDIUM'
+               when a.riskScore >= 20 then 'LOW'
+               else 'INFO'
+             end
+           """)
+    List<AlarmRiskLevelCount> countByRiskLevelForStatistics(
+            @Param("tenant") String tenant, @Param("since") Instant since);
+
+    @Query("""
+           select avg(a.riskScore) from Alarm a
+           where a.tenantId = :tenant
+             and a.riskScore is not null
+             and (:since is null or a.occurredAt >= :since)
+           """)
+    Double averageRiskForStatistics(@Param("tenant") String tenant, @Param("since") Instant since);
+
     @Query("""
            select a from Alarm a
            where a.tenantId = :tenant
-             and (:severity is null or a.severity = :severity)
-             and (:rule is null or a.ruleId = :rule)
-             and (:status is null or a.status = :status)
-             and (:q is null or (a.entity like %:q% or a.ruleName like %:q% or a.message like %:q%))
-           order by a.occurredAt desc
+             and a.riskScore is not null
+             and (:since is null or a.occurredAt >= :since)
+           order by a.riskScore desc, a.id asc
            """)
-    List<Alarm> query(String tenant, Severity severity, String rule, String status, String q);
+    List<Alarm> topRiskForStatistics(
+            @Param("tenant") String tenant, @Param("since") Instant since, Pageable pageable);
 
-    /** 同实体近期告警数，供威胁评分的"行为频次"分项使用 */
-    @Query("select count(a) from Alarm a where a.tenantId = :tenant and a.entity = :entity and a.occurredAt >= :since")
-    long countRecentByEntity(String tenant, String entity, java.time.Instant since);
-
-    /** 风险 Top N（风险分倒序），供态势大屏"最该处置的告警" */
-    @Query("select a from Alarm a where a.tenantId = :tenant and a.riskScore is not null order by a.riskScore desc")
-    List<Alarm> topByRisk(String tenant, org.springframework.data.domain.Pageable pageable);
+    long countByTenantIdAndOccurredAtGreaterThanEqualAndOccurredAtLessThan(
+            String tenantId, Instant startInclusive, Instant endExclusive);
 }

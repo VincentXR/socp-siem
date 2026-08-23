@@ -1,6 +1,8 @@
 package com.socp.search.config.store;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.search.config.domain.FieldDef;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -12,10 +14,19 @@ import java.util.List;
 @Component
 public class FieldDefStore {
 
-    private final TenantCatalog<FieldDef> catalog = new TenantCatalog<>(FieldDef::id);
+    private final TenantCatalog<FieldDef> catalog;
     private boolean seeding = true;
 
     public FieldDefStore() {
+        this(null, null);
+    }
+
+    @Autowired
+    public FieldDefStore(TenantCatalogPersistence persistence, ObjectMapper objectMapper) {
+        this.catalog = persistence == null
+                ? new TenantCatalog<>(FieldDef::id)
+                : new TenantCatalog<>(FieldDef::id, "field_def", FieldDef.class,
+                persistence, objectMapper);
         seed();
         seeding = false;
     }

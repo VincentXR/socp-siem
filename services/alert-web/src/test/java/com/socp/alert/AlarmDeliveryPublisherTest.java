@@ -17,6 +17,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
@@ -43,7 +44,7 @@ class AlarmDeliveryPublisherTest {
         AlarmDelivery delivery = delivery(AlarmDeliveryDestination.NOTIFY);
         given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
                 eq("PENDING"), any(Instant.class))).willReturn(List.of(delivery));
-        given(repository.claim(eq(delivery.getId()), any(Instant.class))).willReturn(1);
+        given(repository.claim(eq(delivery.getId()), any(Instant.class), anyInt())).willReturn(1);
         given(notifyClient.notifyAlert(delivery.getPayload())).willAnswer(invocation -> {
             assertEquals("tenant-b", TenantContext.get());
             return ok();
@@ -63,7 +64,7 @@ class AlarmDeliveryPublisherTest {
         incident.setId("delivery-incident");
         given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
                 eq("PENDING"), any(Instant.class))).willReturn(List.of(notify, incident));
-        given(repository.claim(any(), any())).willReturn(1);
+        given(repository.claim(any(), any(), anyInt())).willReturn(1);
         given(notifyClient.notifyAlert(notify.getPayload())).willReturn(new ServiceCall(
                 SocpService.NOTIFY, "http://notify", false, 503, "", "unavailable", 1, true, 1));
         given(incidentClient.createFromAlarm(incident.getPayload())).willReturn(ok());
@@ -73,6 +74,23 @@ class AlarmDeliveryPublisherTest {
 
         verify(repository).scheduleRetry(eq(notify.getId()), any(Instant.class), eq("unavailable"), any(Instant.class));
         verify(repository).markDelivered(eq(incident.getId()), any(Instant.class));
+    }
+
+    @Test
+    void retryLimitMovesFailedDeliveryToDead() {
+        AlarmDelivery delivery = delivery(AlarmDeliveryDestination.NOTIFY);
+        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+                eq("PENDING"), any(Instant.class))).willReturn(List.of(delivery));
+        given(repository.claim(eq(delivery.getId()), any(Instant.class), eq(1))).willReturn(1);
+        given(notifyClient.notifyAlert(delivery.getPayload())).willReturn(new ServiceCall(
+                SocpService.NOTIFY, "http://notify", false, 503, "", "unavailable", 1, true, 1));
+        publisher = new AlarmDeliveryPublisher(repository, ckReporter, notifyClient, incidentClient, soarClient,
+                null, 1, 1, 60_000L);
+
+        publisher.publish();
+
+        verify(repository).markDead(eq(delivery.getId()), eq("unavailable"), any(Instant.class));
+        verify(repository, never()).scheduleRetry(eq(delivery.getId()), any(), any(), any());
     }
 
     private static AlarmDelivery delivery(AlarmDeliveryDestination destination) {

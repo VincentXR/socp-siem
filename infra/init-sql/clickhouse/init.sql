@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS alert_agg.alarm_detail
 )
 ENGINE = MergeTree()
 PARTITION BY toYYYYMM(ts)
-ORDER BY (ts);
+ORDER BY (tenant_id, ts, alarm_id);
 
 -- Existing installations created before alarm delivery became at-least-once
 -- need the stable alarm key as well. Reports use it to collapse redeliveries.

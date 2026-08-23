@@ -1,7 +1,8 @@
 package com.socp.search.config.store;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.search.config.domain.ReferenceSet;
-import jakarta.annotation.PostConstruct;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -12,11 +13,24 @@ import java.util.Locale;
 @Component
 public class ReferenceSetStore {
 
-    private final TenantCatalog<ReferenceSet> catalog = new TenantCatalog<>(ReferenceSet::id);
+    private final TenantCatalog<ReferenceSet> catalog;
     private boolean seeding = true;
 
-    @PostConstruct
-    void seed() {
+    public ReferenceSetStore() {
+        this(null, null);
+    }
+
+    @Autowired
+    public ReferenceSetStore(TenantCatalogPersistence persistence, ObjectMapper objectMapper) {
+        this.catalog = persistence == null
+                ? new TenantCatalog<>(ReferenceSet::id)
+                : new TenantCatalog<>(ReferenceSet::id, "reference_set", ReferenceSet.class,
+                persistence, objectMapper);
+        seed();
+        seeding = false;
+    }
+
+    private void seed() {
         add(ReferenceSet.of("核心资产(critical_assets)", "需重点保护的核心服务器/网段",
                 List.of("web01", "db-prod", "10.0.0.1", "10.0.0.10")));
         add(ReferenceSet.of("关键人员(vip_users)", "高管/管理员账号",
@@ -25,7 +39,6 @@ public class ReferenceSetStore {
                 List.of("10.0.0.66", "45.146.165.37", "185.220.101.1")));
         add(ReferenceSet.of("威胁组织(threat_actors)", "已知 APT/攻击组织",
                 List.of("APT28", "Lazarus")));
-        seeding = false;
     }
 
     public synchronized ReferenceSet add(ReferenceSet rs) {

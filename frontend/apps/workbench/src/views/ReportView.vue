@@ -16,13 +16,13 @@ import type { ECharts } from 'echarts/core'
 import ElMessage from 'element-plus/es/components/message/index.mjs'
 import { loadEcharts } from '../lib/echarts'
 import { useRequest } from '../composables/useRequest'
-import { archiveReport, dailyReport, downloadArchivedReport, listArchive, trend7d, type ReportSummary } from '../api'
+import { archiveReport, dailyReport, downloadArchivedReport, listArchive, trend7d, type ReportSummary, type ReportTrend } from '../api'
 
 const props = defineProps<{ theme: 'light' | 'dark' }>()
 
 const report = ref<ReportSummary | null>(null)
-const trend = ref<{ days: string[]; counts: number[] } | null>(null)
-const reportRequest = useRequest<{ summary: ReportSummary; dailyTrend: { days: string[]; counts: number[] } }>()
+const trend = ref<ReportTrend | null>(null)
+const reportRequest = useRequest<{ summary: ReportSummary; dailyTrend: ReportTrend }>()
 const reportLoading = reportRequest.loading
 const reportError = reportRequest.error
 const archiveInfo = ref<Awaited<ReturnType<typeof listArchive>> | null>(null)
@@ -132,6 +132,8 @@ onUnmounted(() => {
       <span v-if="archiveInfo" style="font-size:12px;color:var(--ns-text-3)">已归档 {{ archiveInfo.count }} 个对象</span>
     </div>
     <el-alert v-if="reportError" type="error" title="报告加载失败，请重试" show-icon closable @close="reportRequest.reset" />
+    <el-alert v-if="report?.degraded" type="warning" :title="`当前报告来自 ${report.source} 降级路径`"
+      :description="report.degradationReason || '数据源未提供新鲜度水位，请结合来源状态判断。'" show-icon :closable="false" style="margin-bottom:12px" />
     <el-row :gutter="12" style="margin-bottom:14px" v-if="report">
       <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ report.total }}</div><div class="label">今日告警</div></div></el-card></el-col>
       <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#f56c6c">{{ report.bySeverity.CRITICAL ?? 0 }}</div><div class="label">CRITICAL</div></div></el-card></el-col>

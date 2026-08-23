@@ -3,6 +3,7 @@ package com.socp.report.web.api;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.auth.RequireRole;
 import com.socp.report.web.model.ReportSummary;
+import com.socp.report.web.model.ReportTrend;
 import com.socp.report.web.service.ReportService;
 import com.socp.report.web.store.ReportObjectStore;
 import com.socp.platform.tenant.TenantContext;
@@ -40,7 +41,7 @@ public class ReportController {
     }
 
     @GetMapping("/trend7d")
-    public Map<String, Object> trend7d() {
+    public ReportTrend trend7d() {
         return service.trend7d();
     }
 

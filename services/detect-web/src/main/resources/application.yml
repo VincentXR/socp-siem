@@ -28,6 +28,11 @@ socp:
   alert:
     url: http://localhost:18080
   detect:
+    watchlists:
+      # Shared database state is refreshed on this bounded interval so a
+      # mutation made through another Detection instance becomes effective
+      # without turning every inlist rule evaluation into a database query.
+      refresh-ms: ${SOCP_DETECT_WATCHLIST_REFRESH_MS:1000}
     state:
       retention: ${SOCP_DETECT_STATE_RETENTION:24h}
       replay-page-size: ${SOCP_DETECT_STATE_REPLAY_PAGE_SIZE:1000}
@@ -42,8 +47,17 @@ socp:
       # three-instance profile therefore offers at most six concurrent durable
       # deliveries without saturating the shared PostgreSQL instance.
       delivery-concurrency: ${SOCP_DETECT_ALERT_OUTBOX_CONCURRENCY:2}
+      max-attempts: ${SOCP_DETECT_ALERT_OUTBOX_MAX_ATTEMPTS:12}
+      retention-ms: ${SOCP_DETECT_ALERT_OUTBOX_RETENTION_MS:2592000000}
+      cleanup-interval-ms: ${SOCP_DETECT_ALERT_OUTBOX_CLEANUP_INTERVAL_MS:3600000}
+      cleanup-initial-delay-ms: ${SOCP_DETECT_ALERT_OUTBOX_CLEANUP_INITIAL_DELAY_MS:60000}
   kafka:
     group-id: ${SOCP_KAFKA_GROUP_ID:socp-detect}
+    rule-outbox:
+      max-attempts: ${SOCP_RULE_CHANGE_OUTBOX_MAX_ATTEMPTS:12}
+      retention-ms: ${SOCP_RULE_CHANGE_OUTBOX_RETENTION_MS:2592000000}
+      cleanup-interval-ms: ${SOCP_RULE_CHANGE_OUTBOX_CLEANUP_INTERVAL_MS:3600000}
+      cleanup-initial-delay-ms: ${SOCP_RULE_CHANGE_OUTBOX_CLEANUP_INITIAL_DELAY_MS:60000}
 
 management:
   endpoints:

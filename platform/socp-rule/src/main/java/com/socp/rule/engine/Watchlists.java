@@ -17,10 +17,18 @@ public final class Watchlists {
 
     private static final String DEFAULT_TENANT = "default";
     private static final Map<String, Set<String>> TEMPLATES = new ConcurrentHashMap<>();
-    private static final Map<String, Map<String, Set<String>>> LISTS = new ConcurrentHashMap<>();
-    private static final Map<String, Set<String>> DELETED = new ConcurrentHashMap<>();
+    private static volatile WatchlistStateStore stateStore = new InMemoryStateStore();
 
     private Watchlists() {
+    }
+
+    /**
+     * Installs a durable backing store for tenant mutations. Packaged templates
+     * remain in this module so rules retain the same inherited-list semantics.
+     */
+    public static void installStateStore(WatchlistStateStore store) {
+        if (store == null) throw new IllegalArgumentException("watchlist state store is required");
+        stateStore = store;
     }
 
     /** Register an inherited built-in list without making it tenant-owned. */
@@ -34,10 +42,7 @@ public final class Watchlists {
         String tenant = normalizeTenant(tenantId);
         String normalizedName = normalizeName(name);
         if (normalizedName == null) return;
-        LISTS.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>())
-                .put(normalizedName, normalizedValues(values));
-        DELETED.computeIfAbsent(tenant, ignored -> ConcurrentHashMap.newKeySet())
-                .remove(normalizedName);
+        stateStore.save(tenant, normalizedName, normalizedValues(values));
     }
 
     public static void put(String name, Collection<String> values) {
@@ -49,19 +54,9 @@ public final class Watchlists {
         String tenant = normalizeTenant(tenantId);
         String normalizedName = normalizeName(name);
         if (normalizedName == null) return;
-        Map<String, Set<String>> tenantLists = LISTS.computeIfAbsent(tenant,
-                ignored -> new ConcurrentHashMap<>());
-        tenantLists.compute(normalizedName, (ignored, existing) -> {
-            Set<String> result = ConcurrentHashMap.newKeySet();
-            if (existing != null) result.addAll(existing);
-            else if (!isDeleted(tenant, normalizedName)) {
-                result.addAll(TEMPLATES.getOrDefault(normalizedName, Set.of()));
-            }
-            result.addAll(normalizedValues(values));
-            return result;
-        });
-        DELETED.computeIfAbsent(tenant, ignored -> ConcurrentHashMap.newKeySet())
-                .remove(normalizedName);
+        Set<String> result = new LinkedHashSet<>(values(tenant, normalizedName));
+        result.addAll(normalizedValues(values));
+        stateStore.save(tenant, normalizedName, result);
     }
 
     public static void add(String name, Collection<String> values) {
@@ -73,10 +68,7 @@ public final class Watchlists {
         String normalizedName = normalizeName(name);
         if (normalizedName == null) return false;
         boolean existed = names(tenant).contains(normalizedName);
-        Map<String, Set<String>> tenantLists = LISTS.get(tenant);
-        if (tenantLists != null) tenantLists.remove(normalizedName);
-        DELETED.computeIfAbsent(tenant, ignored -> ConcurrentHashMap.newKeySet())
-                .add(normalizedName);
+        stateStore.delete(tenant, normalizedName);
         return existed;
     }
 
@@ -96,9 +88,11 @@ public final class Watchlists {
     public static Set<String> names(String tenantId) {
         String tenant = normalizeTenant(tenantId);
         Set<String> result = new LinkedHashSet<>(TEMPLATES.keySet());
-        Map<String, Set<String>> tenantLists = LISTS.get(tenant);
-        if (tenantLists != null) result.addAll(tenantLists.keySet());
-        result.removeAll(DELETED.getOrDefault(tenant, Set.of()));
+        for (String name : stateStore.names(tenant)) {
+            WatchlistStateStore.State state = stateStore.find(tenant, name);
+            if (state == null || state.deleted()) result.remove(name);
+            else result.add(name);
+        }
         return Collections.unmodifiableSet(result);
     }
 
@@ -109,10 +103,13 @@ public final class Watchlists {
     public static Set<String> values(String tenantId, String name) {
         String tenant = normalizeTenant(tenantId);
         String normalizedName = normalizeName(name);
-        if (normalizedName == null || isDeleted(tenant, normalizedName)) return Set.of();
-        Map<String, Set<String>> tenantLists = LISTS.get(tenant);
-        Set<String> values = tenantLists == null ? null : tenantLists.get(normalizedName);
-        if (values == null) values = TEMPLATES.get(normalizedName);
+        if (normalizedName == null) return Set.of();
+        WatchlistStateStore.State state = stateStore.find(tenant, normalizedName);
+        if (state != null) {
+            if (state.deleted()) return Set.of();
+            return Collections.unmodifiableSet(new LinkedHashSet<>(state.values()));
+        }
+        Set<String> values = TEMPLATES.get(normalizedName);
         return values == null ? Set.of()
                 : Collections.unmodifiableSet(new LinkedHashSet<>(values));
     }
@@ -132,12 +129,7 @@ public final class Watchlists {
     /** Only for tests. */
     public static void clear() {
         TEMPLATES.clear();
-        LISTS.clear();
-        DELETED.clear();
-    }
-
-    private static boolean isDeleted(String tenant, String name) {
-        return DELETED.getOrDefault(tenant, Set.of()).contains(name);
+        stateStore.clear();
     }
 
     private static String normalizeTenant(String tenantId) {
@@ -149,12 +141,43 @@ public final class Watchlists {
     }
 
     private static Set<String> normalizedValues(Collection<String> values) {
-        Set<String> result = ConcurrentHashMap.newKeySet();
+        Set<String> result = new LinkedHashSet<>();
         if (values != null) {
             for (String value : values) {
                 if (value != null && !value.isBlank()) result.add(value.trim().toLowerCase());
             }
         }
-        return result;
+        return Collections.unmodifiableSet(result);
+    }
+
+    private static final class InMemoryStateStore implements WatchlistStateStore {
+        private final Map<String, Map<String, State>> states = new ConcurrentHashMap<>();
+
+        @Override
+        public State find(String tenantId, String name) {
+            return states.getOrDefault(tenantId, Map.of()).get(name);
+        }
+
+        @Override
+        public Set<String> names(String tenantId) {
+            return Set.copyOf(states.getOrDefault(tenantId, Map.of()).keySet());
+        }
+
+        @Override
+        public void save(String tenantId, String name, Set<String> values) {
+            states.computeIfAbsent(tenantId, ignored -> new ConcurrentHashMap<>())
+                    .put(name, new State(values, false));
+        }
+
+        @Override
+        public void delete(String tenantId, String name) {
+            states.computeIfAbsent(tenantId, ignored -> new ConcurrentHashMap<>())
+                    .put(name, new State(Set.of(), true));
+        }
+
+        @Override
+        public void clear() {
+            states.clear();
+        }
     }
 }

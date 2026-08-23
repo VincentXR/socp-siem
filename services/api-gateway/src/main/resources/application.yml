@@ -111,6 +111,11 @@ socp:
     client-id: ${SOCP_OIDC_CLIENT_ID:socp-spa}
     redirect-uri: ${SOCP_OIDC_REDIRECT_URI:http://localhost:18092/auth/oidc/callback}
     frontend-url: ${SOCP_OIDC_FRONTEND_URL:http://localhost:5173}
+    state:
+      # Redis is the normal runtime backing so an authorization callback may
+      # land on any gateway instance. application-dev.yml opts into memory.
+      backend: ${SOCP_OIDC_STATE_BACKEND:redis}
+      redis-key-prefix: ${SOCP_OIDC_STATE_REDIS_PREFIX:socp:oidc:state:}
 
 management:
   endpoints:

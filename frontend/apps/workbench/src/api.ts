@@ -45,10 +45,23 @@ export interface Playbook {
   id: string; name: string; trigger: string
   actions: string[]; enabled: boolean; status: string
 }
+export type ReportSource = 'clickhouse' | 'clickhouse+alert-web' | 'alert-web' | 'unspecified'
 export interface ReportSummary {
   date: string; total: number
   bySeverity: Record<string, number>
   byRule: Array<{ rule: string; count: number }>
+  source: ReportSource
+  degraded: boolean
+  freshness: string | null
+  degradationReason: string | null
+}
+export interface ReportTrend {
+  days: string[]
+  counts: number[]
+  source: ReportSource
+  degraded: boolean
+  freshness: string | null
+  degradationReason: string | null
 }
 export interface Asset {
   id: string; name: string; type: string; ip: string
@@ -271,10 +284,15 @@ export interface SearchEvent {
   eventId: string; timestamp: string; source: string; host: string; severity: string; msg: string
   fields: Record<string, string>; ecs?: Record<string, string>
 }
+export type SearchSource = 'opensearch' | 'local-cache' | 'unspecified'
 export interface SearchResult {
   total: number
   events: SearchEvent[]
   stat: { type: string; rows: Array<{ key: string; count: number }> } | null
+  source: SearchSource
+  degraded: boolean
+  freshness: string | null
+  degradationReason: string | null
 }
 export const splSearch = (q: string, options?: ApiRequestOptions) => get<SearchResult>(withQuery('/search-config/api/v1/search', { q }), options)
 
@@ -334,7 +352,7 @@ export const togglePlaybook = (id: string) => post<Playbook>(`/soar-web/api/v1/p
 
 // ---------- REPORT 报表 ----------
 export const dailyReport = (options?: ApiRequestOptions) => get<ReportSummary>('/report-web/api/v1/reports/daily', options)
-export const trend7d = (options?: ApiRequestOptions) => get<{ days: string[]; counts: number[] }>('/report-web/api/v1/reports/trend7d', options)
+export const trend7d = (options?: ApiRequestOptions) => get<ReportTrend>('/report-web/api/v1/reports/trend7d', options)
 
 // ---------- ASSET 资产 ----------
 export const listAssets = () => get<Asset[]>('/asset-web/api/v1/assets')

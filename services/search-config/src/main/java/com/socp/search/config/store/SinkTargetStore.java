@@ -1,6 +1,8 @@
 package com.socp.search.config.store;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.search.config.domain.SinkTarget;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -12,10 +14,19 @@ import java.util.List;
 @Component
 public class SinkTargetStore {
 
-    private final TenantCatalog<SinkTarget> catalog = new TenantCatalog<>(SinkTarget::id);
+    private final TenantCatalog<SinkTarget> catalog;
     private boolean seeding = true;
 
     public SinkTargetStore() {
+        this(null, null);
+    }
+
+    @Autowired
+    public SinkTargetStore(TenantCatalogPersistence persistence, ObjectMapper objectMapper) {
+        this.catalog = persistence == null
+                ? new TenantCatalog<>(SinkTarget::id)
+                : new TenantCatalog<>(SinkTarget::id, "sink_target", SinkTarget.class,
+                persistence, objectMapper);
         save(SinkTarget.create("SEARCH 默认 ingest", "GLS_INGEST",
                 "http://localhost:18081/search-config/api/v1/ingest", null, true));
         save(SinkTarget.create("OpenSearch 索引", "OPENSEARCH",

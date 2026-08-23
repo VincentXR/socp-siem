@@ -32,11 +32,21 @@ public class IngestionOutboxEvent extends BaseEntity {
     @Column(nullable = false, length = 32)
     private String status;
 
+    /** PENDING / PROCESSING / PUBLISHED / DEAD. */
+    @Column(nullable = false)
+    private int attempts;
+
+    @Column(name = "next_attempt_at", nullable = false)
+    private Instant nextAttemptAt;
+
     @Column(name = "claimed_at")
     private Instant claimedAt;
 
     @Column(name = "published_at")
     private Instant publishedAt;
+
+    @Column(name = "last_error", length = 1024)
+    private String lastError;
 
     public IngestionOutboxEvent() {
     }
@@ -50,6 +60,8 @@ public class IngestionOutboxEvent extends BaseEntity {
         event.payload = payload;
         event.traceparent = traceparent;
         event.status = "PENDING";
+        event.attempts = 0;
+        event.nextAttemptAt = Instant.now();
         return event;
     }
 
@@ -81,7 +93,31 @@ public class IngestionOutboxEvent extends BaseEntity {
         return claimedAt;
     }
 
+    public int getAttempts() {
+        return attempts;
+    }
+
+    public void setAttempts(int attempts) {
+        this.attempts = attempts;
+    }
+
+    public Instant getNextAttemptAt() {
+        return nextAttemptAt;
+    }
+
+    public void setNextAttemptAt(Instant nextAttemptAt) {
+        this.nextAttemptAt = nextAttemptAt;
+    }
+
     public Instant getPublishedAt() {
         return publishedAt;
+    }
+
+    public String getLastError() {
+        return lastError;
+    }
+
+    public void setLastError(String lastError) {
+        this.lastError = lastError;
     }
 }

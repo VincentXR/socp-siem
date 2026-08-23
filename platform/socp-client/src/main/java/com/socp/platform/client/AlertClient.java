@@ -21,4 +21,10 @@ public class AlertClient {
     public ServiceCall stats() {
         return http.get(SocpService.ALERT, "/api/alarms/stats");
     }
+
+    /** Fetch an explicit statistics window, for example {@code today} or {@code 7d}. */
+    public ServiceCall stats(String window) {
+        if (window == null || window.isBlank()) return stats();
+        return http.get(SocpService.ALERT, "/api/alarms/stats?window=" + window.trim());
+    }
 }

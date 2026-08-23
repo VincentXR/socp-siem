@@ -19,9 +19,32 @@ public interface DetectionAlertOutboxRepository extends JpaRepository<DetectionA
 
     @Modifying
     @Transactional
-    @Query("update DetectionAlertOutboxEntity e set e.status = 'PROCESSING', e.updatedAt = :now " +
-            "where e.alertId = :alertId and e.status = :expectedStatus")
+    @Query("update DetectionAlertOutboxEntity e set e.status = 'PROCESSING', e.updatedAt = :now, " +
+            "e.attempts = e.attempts + 1 " +
+            "where e.alertId = :alertId and e.status = :expectedStatus and e.nextAttemptAt <= :now " +
+            "and e.attempts < :maxAttempts")
     int claim(@Param("alertId") String alertId,
               @Param("expectedStatus") String expectedStatus,
-              @Param("now") Instant now);
+              @Param("now") Instant now,
+              @Param("maxAttempts") int maxAttempts);
+
+    @Modifying
+    @Transactional
+    @Query("update DetectionAlertOutboxEntity e set e.status = 'DEAD', "
+            + "e.lastError = coalesce(e.lastError, :reason), e.updatedAt = :now "
+            + "where e.status in ('PENDING', 'DELIVERED') and e.attempts >= :maxAttempts")
+    int markExhausted(@Param("maxAttempts") int maxAttempts, @Param("reason") String reason,
+                      @Param("now") Instant now);
+
+    @Modifying
+    @Transactional
+    @Query("update DetectionAlertOutboxEntity e set e.status = 'PENDING', e.attempts = 0, "
+            + "e.nextAttemptAt = :now, e.lastError = null, e.updatedAt = :now "
+            + "where e.alertId = :alertId and e.status = 'DEAD'")
+    int requeueDead(@Param("alertId") String alertId, @Param("now") Instant now);
+
+    @Modifying
+    @Transactional
+    @Query("delete from DetectionAlertOutboxEntity e where e.status = 'PUBLISHED' and e.publishedAt < :cutoff")
+    int deletePublishedBefore(@Param("cutoff") Instant cutoff);
 }

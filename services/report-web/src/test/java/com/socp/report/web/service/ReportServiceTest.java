@@ -3,6 +3,7 @@ package com.socp.report.web.service;
 import com.socp.platform.client.AlertClient;
 import com.socp.platform.client.ServiceCall;
 import com.socp.platform.client.SocpService;
+import com.socp.platform.error.ApiException;
 import com.socp.report.web.model.ReportSummary;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -18,7 +19,7 @@ class ReportServiceTest {
     @Test
     void fallsBackToTypedAlertStatisticsWhenClickHouseIsUnavailable() {
         AlertClient alerts = mock(AlertClient.class);
-        given(alerts.stats()).willReturn(new ServiceCall(
+        given(alerts.stats("today")).willReturn(new ServiceCall(
                 SocpService.ALERT, "http://alert", true, 200,
                 "{\"data\":{\"total\":3,\"bySeverity\":{\"HIGH\":3},\"topRules\":[{\"ruleId\":\"R-1\",\"count\":3}]}}",
                 null, 1, false, 1));
@@ -32,19 +33,21 @@ class ReportServiceTest {
             assertThat(rule.rule()).isEqualTo("R-1");
             assertThat(rule.count()).isEqualTo(3);
         });
+        assertThat(report.source()).isEqualTo("alert-web");
+        assertThat(report.degraded()).isTrue();
     }
 
     @Test
-    void producesSevenEmptyDaysWhenEveryDataSourceIsEmpty() {
+    void failsExplicitlyWhenEveryTrendDataSourceIsUnavailable() {
         AlertClient alerts = mock(AlertClient.class);
-        given(alerts.stats()).willReturn(new ServiceCall(
+        given(alerts.stats("7d")).willReturn(new ServiceCall(
                 SocpService.ALERT, "http://alert", false, 503, "", "unavailable", 1, true, 1));
         ReportService service = serviceWithUnavailableClickHouse(alerts);
 
-        Map<String, Object> trend = service.trend7d();
-
-        assertThat((java.util.List<?>) trend.get("days")).hasSize(7);
-        assertThat((java.util.List<?>) trend.get("counts")).allMatch(Integer.valueOf(0)::equals);
+        org.assertj.core.api.Assertions.assertThatThrownBy(service::trend7d)
+                .isInstanceOf(ApiException.class)
+                .extracting(error -> ((ApiException) error).getCode())
+                .isEqualTo(503);
     }
 
     private static ReportService serviceWithUnavailableClickHouse(AlertClient alerts) {

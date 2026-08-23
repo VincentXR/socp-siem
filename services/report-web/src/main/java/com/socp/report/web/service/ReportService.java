@@ -3,8 +3,10 @@ package com.socp.report.web.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.client.AlertClient;
 import com.socp.platform.client.ServiceCall;
-import com.socp.report.web.model.ReportSummary;
+import com.socp.platform.error.ApiException;
 import com.socp.platform.tenant.TenantContext;
+import com.socp.report.web.model.ReportSummary;
+import com.socp.report.web.model.ReportTrend;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -15,7 +17,9 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
@@ -23,15 +27,14 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * REPORT 报表聚合服务：从 ALERT 告警聚合统计（真实数据）生成日报与趋势。
- * 2026-08-08 接线：报表聚合优先查 ClickHouse（alert_agg.alarm_detail 明细表），
- * CK 不可用时回退到 ALERT stats（原逻辑兜底）。
+ * Produces reports from ClickHouse first, with an explicitly marked alert-web fallback.
+ * A source failure is never represented as an all-zero report: when neither source can
+ * provide data the caller receives a 503 instead.
  */
 @Service
 public class ReportService {
 
     private static final Logger log = LoggerFactory.getLogger(ReportService.class);
-
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final AlertClient alertClient;
@@ -49,155 +52,217 @@ public class ReportService {
     @Value("${socp.ck.password:socp}")
     private String ckPassword;
 
-    /** 拉取 ALERT 统计；不可用或解析失败回退到空报表，避免前端报错（但一定留日志）。 */
     @SuppressWarnings("unchecked")
-    private Map<String, Object> fetchStats() {
-        ServiceCall call = alertClient.stats();
+    private StatsFetch fetchStats(String window) {
+        ServiceCall call = alertClient.stats(window);
         if (!call.ok()) {
-            log.warn("报表回退数据源不可用：alert-web 统计拉取失败，本次报表将为空 原因={}", call.failureReason());
-            return Map.of();
+            return StatsFetch.unavailable("alert-web statistics unavailable: " + call.failureReason());
         }
         String body = call.body();
-        if (body == null || body.isBlank()) return Map.of();
+        if (body == null || body.isBlank()) {
+            return StatsFetch.unavailable("alert-web statistics response was empty");
+        }
         try {
-            Map<String, Object> m = MAPPER.readValue(body, Map.class);
-            if (m.containsKey("data")) {
-                Object d = m.get("data");
-                if (d instanceof Map<?, ?> dm) return (Map<String, Object>) dm;
+            Map<String, Object> envelope = MAPPER.readValue(body, Map.class);
+            Object data = envelope.containsKey("data") ? envelope.get("data") : envelope;
+            if (!(data instanceof Map<?, ?> map)) {
+                return StatsFetch.unavailable("alert-web statistics response was invalid");
             }
-            return m;
-        } catch (Exception e) {
-            log.warn("alert-web 统计响应解析失败，本次报表将为空 error={}: {}",
-                    e.getClass().getSimpleName(), e.getMessage());
-            return Map.of();
+            Map<String, Object> stats = (Map<String, Object>) map;
+            if (!(stats.get("total") instanceof Number)) {
+                return StatsFetch.unavailable("alert-web statistics response did not contain total");
+            }
+            return StatsFetch.available(stats);
+        } catch (Exception failure) {
+            log.warn("Cannot parse alert-web statistics response: {}: {}",
+                    failure.getClass().getSimpleName(), failure.getMessage());
+            return StatsFetch.unavailable("alert-web statistics response was invalid");
         }
     }
 
-    /**
-     * 执行 CK 查询，成功返回结果行（TSV 每行一个字符串）；失败返回 null（触发回退到 alert-web）。
-     *
-     * <p>CK 不可用是**预期内**的降级路径（演示环境常不起 ClickHouse），因此记 debug 而非 warn；
-     * 真正的数据缺失会在 {@link #fetchStats()} 那一层以 warn 暴露。
-     */
-    private List<String> ckQuery(String sql) {
+    /** Executes a ClickHouse query and preserves the reason for a possible fallback. */
+    private CkFetch ckQuery(String sql) {
+        HttpURLConnection connection = null;
         try {
-            HttpURLConnection c = (HttpURLConnection) new URL(ckUrl).openConnection();
-            c.setRequestMethod("POST");
-            c.setDoOutput(true);
-            c.setConnectTimeout(3000);
-            c.setReadTimeout(5000);
-            c.setRequestProperty("Content-Type", "text/plain; charset=utf-8");
+            connection = (HttpURLConnection) new URL(ckUrl).openConnection();
+            connection.setRequestMethod("POST");
+            connection.setDoOutput(true);
+            connection.setConnectTimeout(3000);
+            connection.setReadTimeout(5000);
+            connection.setRequestProperty("Content-Type", "text/plain; charset=utf-8");
             String auth = Base64.getEncoder().encodeToString(
                     (ckUser + ":" + ckPassword).getBytes(StandardCharsets.UTF_8));
-            c.setRequestProperty("Authorization", "Basic " + auth);
-            try (OutputStream os = c.getOutputStream()) {
-                os.write(sql.getBytes(StandardCharsets.UTF_8));
+            connection.setRequestProperty("Authorization", "Basic " + auth);
+            try (OutputStream output = connection.getOutputStream()) {
+                output.write(sql.getBytes(StandardCharsets.UTF_8));
             }
-            int code = c.getResponseCode();
+            int code = connection.getResponseCode();
             if (code < 200 || code >= 300) {
-                log.debug("ClickHouse 查询非 2xx，回退 alert-web 统计 status={} url={}", code, ckUrl);
-                return null;
+                log.debug("ClickHouse query returned HTTP {}", code);
+                return CkFetch.unavailable("ClickHouse returned HTTP " + code);
             }
-            InputStream is = c.getInputStream();
-            String body = new String(is.readAllBytes(), StandardCharsets.UTF_8);
-            c.disconnect();
+            String body;
+            try (InputStream input = connection.getInputStream()) {
+                body = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+            }
             List<String> lines = new ArrayList<>();
-            for (String line : body.split("\n")) {
+            for (String line : body.split("\\n")) {
                 if (!line.isBlank()) lines.add(line.trim());
             }
-            return lines;
-        } catch (Exception e) {
-            log.debug("ClickHouse 不可达，回退 alert-web 统计 url={} error={}: {}",
-                    ckUrl, e.getClass().getSimpleName(), e.getMessage());
-            return null;
+            return CkFetch.available(lines);
+        } catch (Exception failure) {
+            log.debug("ClickHouse query unavailable: {}: {}",
+                    failure.getClass().getSimpleName(), failure.getMessage());
+            return CkFetch.unavailable("ClickHouse is unavailable");
+        } finally {
+            if (connection != null) connection.disconnect();
         }
     }
 
     public ReportSummary dailyReport() {
-        String tenantPredicate = "tenant_id = '" + sqlLiteral(tenant()) + "'";
-        // 优先 ClickHouse（明细表实时聚合）
-        List<String> sevRows = ckQuery("SELECT severity, uniqExact(alarm_id) FROM alert_agg.alarm_detail WHERE "
-                + tenantPredicate + " AND ts >= today() GROUP BY severity");
-        if (sevRows != null) {
-            Map<String, Integer> bySeverity = new LinkedHashMap<>();
-            int total = 0;
-            for (String row : sevRows) {
-                String[] parts = row.split("\t");
-                if (parts.length >= 2) {
-                    int cnt = Integer.parseInt(parts[1]);
-                    bySeverity.put(parts[0], bySeverity.getOrDefault(parts[0], 0) + cnt);
-                    total += cnt;
-                }
-            }
-            List<ReportSummary.RuleCount> byRule = new ArrayList<>();
-            List<String> ruleRows = ckQuery("SELECT rule_id, rule_name, uniqExact(alarm_id) c FROM alert_agg.alarm_detail WHERE "
-                    + tenantPredicate + " AND ts >= today() GROUP BY rule_id, rule_name ORDER BY c DESC LIMIT 10");
-            if (ruleRows != null) {
-                for (String row : ruleRows) {
-                    String[] parts = row.split("\t");
-                    if (parts.length >= 3) {
-                        byRule.add(new ReportSummary.RuleCount(parts[0] + " " + parts[1], Integer.parseInt(parts[2])));
-                    }
-                }
-            }
-            return new ReportSummary(LocalDate.now().toString(), total, bySeverity, byRule);
+        String predicate = "tenant_id = '" + sqlLiteral(tenant()) + "'";
+        CkFetch severityRows = ckQuery("SELECT severity, uniqExact(alarm_id) FROM alert_agg.alarm_detail WHERE "
+                + predicate + " AND ts >= today() GROUP BY severity");
+        if (!severityRows.available()) {
+            return fallbackDaily(severityRows.reason());
         }
-        // 回退：ALERT stats
-        Map<String, Object> stats = fetchStats();
-        int total = ((Number) stats.getOrDefault("total", 0)).intValue();
-        Map<String, Object> sevRaw = (Map<String, Object>) stats.getOrDefault("bySeverity", Map.of());
+
         Map<String, Integer> bySeverity = new LinkedHashMap<>();
-        for (var e : sevRaw.entrySet()) {
-            bySeverity.put(e.getKey(), ((Number) e.getValue()).intValue());
+        int total = 0;
+        for (String row : severityRows.rows()) {
+            String[] parts = row.split("\\t");
+            if (parts.length < 2) continue;
+            int count = parseCount(parts[1]);
+            bySeverity.merge(parts[0], count, Integer::sum);
+            total = Math.addExact(total, count);
         }
-        List<ReportSummary.RuleCount> byRule = new ArrayList<>();
-        Object topRaw = stats.get("topRules");
-        if (topRaw instanceof List<?> top) {
-            for (Object o : top) {
-                if (o instanceof Map<?, ?> rm) {
-                    Object ruleId = rm.get("ruleId");
-                    Object countObj = rm.get("count");
-                    int count = countObj instanceof Number ? ((Number) countObj).intValue() : 0;
-                    byRule.add(new ReportSummary.RuleCount(String.valueOf(ruleId), count));
-                }
+
+        CkFetch ruleRows = ckQuery("SELECT rule_id, rule_name, uniqExact(alarm_id) c FROM alert_agg.alarm_detail WHERE "
+                + predicate + " AND ts >= today() GROUP BY rule_id, rule_name ORDER BY c DESC LIMIT 10");
+        List<ReportSummary.RuleCount> byRule;
+        String source = "clickhouse";
+        boolean degraded = false;
+        String degradationReason = null;
+        if (ruleRows.available()) {
+            byRule = ruleCounts(ruleRows.rows());
+        } else {
+            StatsFetch fallback = fetchStats("today");
+            byRule = fallback.available() ? ruleCounts(fallback.stats()) : List.of();
+            source = fallback.available() ? "clickhouse+alert-web" : "clickhouse";
+            degraded = true;
+            degradationReason = "ClickHouse top-rule query failed"
+                    + (fallback.available() ? "; top rules came from alert-web" : "; top rules are unavailable");
+        }
+        return new ReportSummary(LocalDate.now(ZoneOffset.UTC).toString(), total, bySeverity, byRule,
+                source, degraded, ckFreshness(predicate), degradationReason);
+    }
+
+    public ReportTrend trend7d() {
+        String predicate = "tenant_id = '" + sqlLiteral(tenant()) + "'";
+        CkFetch rows = ckQuery("SELECT toDate(ts) d, uniqExact(alarm_id) FROM alert_agg.alarm_detail WHERE "
+                + predicate + " AND ts >= now() - INTERVAL 7 DAY GROUP BY d ORDER BY d");
+        if (rows.available()) {
+            Map<String, Integer> countsByDay = new LinkedHashMap<>();
+            for (String row : rows.rows()) {
+                String[] parts = row.split("\\t");
+                if (parts.length >= 2) countsByDay.put(parts[0], parseCount(parts[1]));
             }
+            return trendFromCounts(countsByDay, "clickhouse", false, ckFreshness(predicate), null);
         }
-        return new ReportSummary(LocalDate.now().toString(), total, bySeverity, byRule);
+
+        StatsFetch fallback = fetchStats("7d");
+        if (!fallback.available()) {
+            throw unavailable("seven-day trend", rows.reason(), fallback.reason());
+        }
+        return trendFromCounts(trendCounts(fallback.stats()), "alert-web", true, null,
+                "ClickHouse unavailable; result was computed by alert-web");
+    }
+
+    private ReportSummary fallbackDaily(String clickHouseReason) {
+        StatsFetch fallback = fetchStats("today");
+        if (!fallback.available()) {
+            throw unavailable("daily report", clickHouseReason, fallback.reason());
+        }
+        Map<String, Object> stats = fallback.stats();
+        Map<String, Integer> bySeverity = numberMap(stats.get("bySeverity"));
+        int total = ((Number) stats.get("total")).intValue();
+        return new ReportSummary(LocalDate.now(ZoneOffset.UTC).toString(), total, bySeverity,
+                ruleCounts(stats), "alert-web", true, null,
+                "ClickHouse unavailable; result was computed by alert-web");
+    }
+
+    private Instant ckFreshness(String predicate) {
+        CkFetch freshness = ckQuery("SELECT max(toUnixTimestamp64Milli(ts)) FROM alert_agg.alarm_detail WHERE " + predicate);
+        if (!freshness.available() || freshness.rows().isEmpty()) return null;
+        try {
+            long millis = Long.parseLong(freshness.rows().getFirst());
+            return millis <= 0 ? null : Instant.ofEpochMilli(millis);
+        } catch (RuntimeException invalid) {
+            return null;
+        }
+    }
+
+    private static ReportTrend trendFromCounts(Map<String, Integer> countsByDay, String source,
+                                                boolean degraded, Instant freshness, String reason) {
+        List<String> days = new ArrayList<>();
+        List<Integer> counts = new ArrayList<>();
+        LocalDate today = LocalDate.now(ZoneOffset.UTC);
+        for (int offset = 6; offset >= 0; offset--) {
+            String day = today.minusDays(offset).toString();
+            days.add(day.substring(5));
+            counts.add(countsByDay.getOrDefault(day, 0));
+        }
+        return new ReportTrend(days, counts, source, degraded, freshness, reason);
     }
 
     @SuppressWarnings("unchecked")
-    public Map<String, Object> trend7d() {
-        // 优先 ClickHouse（按天聚合 7 天趋势）
-        List<String> rows = ckQuery("SELECT toDate(ts) d, uniqExact(alarm_id) FROM alert_agg.alarm_detail WHERE tenant_id = '"
-                + sqlLiteral(tenant()) + "' AND ts >= now() - INTERVAL 7 DAY GROUP BY d ORDER BY d");
-        if (rows != null && !rows.isEmpty()) {
-            List<String> days = new ArrayList<>();
-            List<Integer> counts = new ArrayList<>();
-            for (String row : rows) {
-                String[] parts = row.split("\t");
-                if (parts.length >= 2) {
-                    days.add(parts[0].substring(5));
-                    counts.add(Integer.parseInt(parts[1]));
-                }
-            }
-            return Map.of("days", days, "counts", counts);
+    private static Map<String, Integer> numberMap(Object raw) {
+        Map<String, Integer> result = new LinkedHashMap<>();
+        if (!(raw instanceof Map<?, ?> map)) return result;
+        for (var entry : ((Map<String, Object>) map).entrySet()) {
+            if (entry.getValue() instanceof Number count) result.put(entry.getKey(), count.intValue());
         }
-        // 回退：ALERT stats
-        Map<String, Object> stats = fetchStats();
-        Map<String, Object> trendRaw = (Map<String, Object>) stats.getOrDefault("trend7d", Map.of());
-        List<String> days = new ArrayList<>();
-        List<Integer> counts = new ArrayList<>();
-        for (var e : trendRaw.entrySet()) {
-            days.add(e.getKey().substring(5));
-            counts.add(((Number) e.getValue()).intValue());
-        }
-        if (days.isEmpty()) {
-            for (int i = 6; i >= 0; i--) {
-                days.add(LocalDate.now().minusDays(i).toString().substring(5));
-                counts.add(0);
+        return result;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Integer> trendCounts(Map<String, Object> stats) {
+        return numberMap(stats.get("trend7d"));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<ReportSummary.RuleCount> ruleCounts(Map<String, Object> stats) {
+        Object raw = stats.get("topRules");
+        if (!(raw instanceof List<?> rows)) return List.of();
+        List<ReportSummary.RuleCount> result = new ArrayList<>();
+        for (Object row : rows) {
+            if (!(row instanceof Map<?, ?> values)) continue;
+            Object id = values.get("ruleId");
+            Object count = values.get("count");
+            if (count instanceof Number number) {
+                result.add(new ReportSummary.RuleCount(String.valueOf(id), number.intValue()));
             }
         }
-        return Map.of("days", days, "counts", counts);
+        return result;
+    }
+
+    private static List<ReportSummary.RuleCount> ruleCounts(List<String> rows) {
+        List<ReportSummary.RuleCount> result = new ArrayList<>();
+        for (String row : rows) {
+            String[] parts = row.split("\\t");
+            if (parts.length >= 3) {
+                result.add(new ReportSummary.RuleCount(parts[0] + " " + parts[1], parseCount(parts[2])));
+            }
+        }
+        return result;
+    }
+
+    private static int parseCount(String value) {
+        return Math.toIntExact(Long.parseLong(value));
+    }
+
+    private static ApiException unavailable(String report, String primaryReason, String fallbackReason) {
+        return ApiException.of(503, report + " is unavailable: " + primaryReason + "; " + fallbackReason);
     }
 
     private static String tenant() {
@@ -207,5 +272,33 @@ public class ReportService {
 
     private static String sqlLiteral(String value) {
         return value.replace("\\", "\\\\").replace("'", "\\'");
+    }
+
+    private record CkFetch(List<String> rows, String reason) {
+        static CkFetch available(List<String> rows) {
+            return new CkFetch(List.copyOf(rows), null);
+        }
+
+        static CkFetch unavailable(String reason) {
+            return new CkFetch(List.of(), reason);
+        }
+
+        boolean available() {
+            return reason == null;
+        }
+    }
+
+    private record StatsFetch(Map<String, Object> stats, String reason) {
+        static StatsFetch available(Map<String, Object> stats) {
+            return new StatsFetch(Map.copyOf(stats), null);
+        }
+
+        static StatsFetch unavailable(String reason) {
+            return new StatsFetch(Map.of(), reason);
+        }
+
+        boolean available() {
+            return reason == null;
+        }
     }
 }

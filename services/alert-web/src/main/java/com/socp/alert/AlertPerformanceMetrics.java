@@ -42,6 +42,17 @@ public class AlertPerformanceMetrics {
         registry.counter("socp.alert.persistence", "outcome", "failed").increment();
     }
 
+    /**
+     * Records operational lifecycle transitions for durable delivery rows.
+     * Tags deliberately use a small fixed vocabulary so an incident cannot
+     * create unbounded metric-cardinality through an error message or id.
+     */
+    public void outboxLifecycle(String outbox, String outcome, int count) {
+        if (count <= 0) return;
+        registry.counter("socp.alert.outbox.lifecycle", "outbox", outbox,
+                "outcome", outcome).increment(count);
+    }
+
     private void record(String stage, Duration duration) {
         if (duration == null) return;
         recordNanos(stage, Math.max(0L, duration.toNanos()));

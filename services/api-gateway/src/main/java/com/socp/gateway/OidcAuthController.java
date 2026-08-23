@@ -3,6 +3,7 @@ package com.socp.gateway;
 import com.nimbusds.jwt.JWTClaimsSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -11,6 +12,8 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.net.URI;
 import java.net.URLEncoder;
@@ -26,7 +29,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 /** Keycloak OIDC authorization-code flow with PKCE, nonce and ID-token verification. */
 @RestController
@@ -36,13 +38,13 @@ public class OidcAuthController {
     private static final java.security.SecureRandom SECURE_RANDOM = new java.security.SecureRandom();
 
     private static final Logger log = LoggerFactory.getLogger(OidcAuthController.class);
-    private static final long STATE_TTL_MS = 10 * 60 * 1000L;
+    private static final Duration STATE_TTL = Duration.ofMinutes(10);
 
-    private final Map<String, StateEntry> states = new ConcurrentHashMap<>();
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(5)).build();
     private final AuthController authController;
     private final OidcIdTokenValidator idTokenValidator;
+    private final OidcStateStore stateStore;
 
     @Value("${socp.oidc.issuer-uri:}") private String issuerUri;
     @Value("${socp.oidc.client-id:socp-spa}") private String clientId;
@@ -51,23 +53,27 @@ public class OidcAuthController {
 
     public OidcAuthController(AuthController authController,
                               OidcIdTokenValidator idTokenValidator) {
-        this.authController = authController;
-        this.idTokenValidator = idTokenValidator;
+        this(authController, idTokenValidator, new InMemoryOidcStateStore());
     }
 
-    private record StateEntry(String verifier, String nonce, long expiresAt) {}
+    @Autowired
+    public OidcAuthController(AuthController authController,
+                              OidcIdTokenValidator idTokenValidator,
+                              OidcStateStore stateStore) {
+        this.authController = authController;
+        this.idTokenValidator = idTokenValidator;
+        this.stateStore = stateStore;
+    }
 
     @GetMapping("/login")
-    public ResponseEntity<?> login() {
+    public Mono<ResponseEntity<?>> login() {
         if (issuerUri == null || issuerUri.isBlank()) {
-            return error(HttpStatus.INTERNAL_SERVER_ERROR, "OIDC issuer is not configured");
+            return Mono.just(error(HttpStatus.INTERNAL_SERVER_ERROR, "OIDC issuer is not configured"));
         }
         String verifier = randomUrlToken();
         String state = randomUrlToken();
         String nonce = randomUrlToken();
         long now = System.currentTimeMillis();
-        states.entrySet().removeIf(item -> item.getValue().expiresAt() < now);
-        states.put(state, new StateEntry(verifier, nonce, now + STATE_TTL_MS));
         String authUrl = issuer() + "/protocol/openid-connect/auth"
                 + "?client_id=" + enc(clientId)
                 + "&response_type=code"
@@ -77,16 +83,26 @@ public class OidcAuthController {
                 + "&nonce=" + enc(nonce)
                 + "&code_challenge=" + enc(codeChallenge(verifier))
                 + "&code_challenge_method=S256";
-        return ResponseEntity.status(HttpStatus.FOUND).location(URI.create(authUrl)).build();
+        ResponseEntity<?> redirect = ResponseEntity.status(HttpStatus.FOUND).location(URI.create(authUrl)).build();
+        return stateStore.save(state, new OidcStateStore.Entry(verifier, nonce, now + STATE_TTL.toMillis()), STATE_TTL)
+                .thenReturn(redirect);
     }
 
     @GetMapping("/callback")
-    public ResponseEntity<?> callback(@RequestParam("code") String code,
-                                      @RequestParam("state") String state) {
-        StateEntry entry = states.remove(state);
-        if (entry == null || entry.expiresAt() < System.currentTimeMillis()) {
-            return error(HttpStatus.UNAUTHORIZED, "OIDC state is invalid or expired");
-        }
+    public Mono<ResponseEntity<?>> callback(@RequestParam("code") String code,
+                                             @RequestParam("state") String state) {
+        return stateStore.consume(state)
+                .filter(entry -> entry.expiresAt() > System.currentTimeMillis())
+                .flatMap(entry -> Mono.<ResponseEntity<?>>fromCallable(() -> completeCallback(code, entry))
+                        .subscribeOn(Schedulers.boundedElastic()))
+                .switchIfEmpty(Mono.just(error(HttpStatus.UNAUTHORIZED, "OIDC state is invalid or expired")))
+                .onErrorResume(failure -> {
+                    log.warn("OIDC callback rejected: {}", failure.getMessage());
+                    return Mono.just(error(HttpStatus.UNAUTHORIZED, "OIDC login failed"));
+                });
+    }
+
+    private ResponseEntity<?> completeCallback(String code, OidcStateStore.Entry entry) {
         try {
             Map<String, Object> claims = exchangeCode(code, entry.verifier(), entry.nonce());
             String subject = first(claims, "preferred_username", "sub");

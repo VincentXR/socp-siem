@@ -1,6 +1,9 @@
 package com.socp.soc.store;
 
 import com.socp.soc.model.TenantInfo;
+import jakarta.annotation.PostConstruct;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -13,24 +16,71 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class TenantStore {
 
-    private final ConcurrentHashMap<String, TenantInfo> map = new ConcurrentHashMap<>();
+    private final TenantRepository repository;
+    private final ConcurrentHashMap<String, TenantInfo> fallback = new ConcurrentHashMap<>();
 
+    /**
+     * Lightweight fallback retained for isolated unit tests and local callers
+     * that construct the store outside Spring. Runtime wiring always chooses
+     * the JPA constructor below.
+     */
     public TenantStore() {
-        save(TenantInfo.create("默认租户", "default"));
-        save(TenantInfo.create("安全运营团队", "soc-team"));
-        save(TenantInfo.create("基础设施组", "infra"));
+        this.repository = null;
+        seedFallback();
+    }
+
+    @Autowired
+    public TenantStore(TenantRepository repository) {
+        this.repository = repository;
+    }
+
+    @PostConstruct
+    void initializePersistentDirectory() {
+        if (repository == null) return;
+        ensureSeed("默认租户", "default");
+        ensureSeed("安全运营团队", "soc-team");
+        ensureSeed("基础设施组", "infra");
     }
 
     public List<TenantInfo> list() {
-        return map.values().stream().toList();
+        if (repository == null) return fallback.values().stream().toList();
+        return repository.findAllByOrderByCodeAsc().stream().map(TenantEntity::toInfo).toList();
     }
 
     public TenantInfo save(TenantInfo t) {
-        map.put(t.id(), t);
+        if (repository == null) {
+            fallback.put(t.id(), t);
+            return t;
+        }
+        TenantEntity entity = repository.findById(t.id()).orElseGet(() -> new TenantEntity(t));
+        entity.update(t);
+        repository.save(entity);
         return t;
     }
 
     public TenantInfo get(String id) {
-        return map.get(id);
+        if (repository == null) return fallback.get(id);
+        return repository.findById(id).map(TenantEntity::toInfo).orElse(null);
+    }
+
+    private void seedFallback() {
+        putFallback(TenantInfo.create("默认租户", "default"));
+        putFallback(TenantInfo.create("安全运营团队", "soc-team"));
+        putFallback(TenantInfo.create("基础设施组", "infra"));
+    }
+
+    private void putFallback(TenantInfo tenant) {
+        fallback.put(tenant.id(), tenant);
+    }
+
+    private void ensureSeed(String name, String code) {
+        if (repository.findByCode(code).isPresent()) return;
+        try {
+            save(TenantInfo.create(name, code));
+        } catch (DataIntegrityViolationException racedInsert) {
+            // Multiple service instances can initialize against the same
+            // directory. The unique code key makes the loser harmless.
+            if (repository.findByCode(code).isEmpty()) throw racedInsert;
+        }
     }
 }

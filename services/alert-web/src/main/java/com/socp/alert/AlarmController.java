@@ -94,11 +94,11 @@ public class AlarmController {
             @RequestParam(required = false) Integer size) {
         int sz = size == null || size <= 0 ? 20 : Math.min(size, 500);
         int pg = page == null || page < 1 ? 1 : page;
-        boolean unfilteredTimestampPage = page != null
-                && severity == null && rule == null && status == null && q == null
-                && ("occurredAt".equals(sort) || "alertCreatedAt".equals(sort));
-        if (unfilteredTimestampPage) {
-            var result = service.pageByTimestamp(sort, order, pg, sz);
+        if (page != null || size != null) {
+            var result = service.page(severity, rule, status, q, sort, order, pg, sz);
+            if (page == null) {
+                return ApiResult.ok(result.getContent());
+            }
             return ApiResult.ok(Map.of(
                     "items", result.getContent(),
                     "total", result.getTotalElements(),

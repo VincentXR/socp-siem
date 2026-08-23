@@ -1,6 +1,8 @@
 package com.socp.search.config.store;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.search.config.domain.ParseRule;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -11,10 +13,19 @@ import java.util.List;
 @Component
 public class ParseRuleStore {
 
-    private final TenantCatalog<ParseRule> catalog = new TenantCatalog<>(ParseRule::id);
+    private final TenantCatalog<ParseRule> catalog;
     private boolean seeding = true;
 
     public ParseRuleStore() {
+        this(null, null);
+    }
+
+    @Autowired
+    public ParseRuleStore(TenantCatalogPersistence persistence, ObjectMapper objectMapper) {
+        this.catalog = persistence == null
+                ? new TenantCatalog<>(ParseRule::id)
+                : new TenantCatalog<>(ParseRule::id, "parse_rule", ParseRule.class,
+                persistence, objectMapper);
         seed();
         seeding = false;
     }

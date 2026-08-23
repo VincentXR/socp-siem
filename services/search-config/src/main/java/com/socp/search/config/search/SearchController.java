@@ -1,5 +1,6 @@
 package com.socp.search.config.search;
 
+import com.socp.platform.error.ApiException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -8,13 +9,20 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.Instant;
+import java.util.Comparator;
+import java.util.List;
+
 /**
- * SPL 检索 API：GET /api/v1/search?q=source=auth severity=HIGH | top src_ip 5
- * 以及归档导出：GET /api/v1/search/export?q=...&format=csv|json
+ * SPL search and export. OpenSearch is the authoritative source; the bounded local
+ * cache is only an explicitly marked degraded fallback and is never merged with it.
  */
 @RestController
 @RequestMapping("/api/v1/search")
 public class SearchController {
+
+    private static final int SEARCH_LIMIT = 200;
+    private static final int EXPORT_LIMIT = 500;
 
     private final SplEngine engine;
     private final SearchStore store;
@@ -28,49 +36,77 @@ public class SearchController {
 
     @GetMapping
     public SplEngine.QueryResult search(@RequestParam(value = "q", defaultValue = "") String q) {
-        // OpenSearch 优先（真实检索库）：可用返回 OS 结果；不可达/失败回退本地 H2 + SplEngine。
-        // OS 里只有 ingest 之后的实时数据，历史语料（进程启动前的）由本地 SearchStore 兜底，
-        // 因此查询两侧并取 total 大者更符合"全量检索"语义。
-        SplEngine.QueryResult os = osReader.search(q, 200);
-        SplEngine.QueryResult local = engine.execute(q, store.all());
-        if (os == null) return local;
-        if (os.total() >= local.total()) return os;
-        return local;
+        return resolve(q, SEARCH_LIMIT);
     }
 
-    /** 归档导出：检索结果下载为 JSON 或 CSV。 */
+    /** Export follows the same source-selection policy as interactive search. */
     @GetMapping("/export")
     public ResponseEntity<String> export(
             @RequestParam(value = "q", defaultValue = "") String q,
             @RequestParam(defaultValue = "json") String format) {
-        SplEngine.QueryResult r = engine.execute(q, store.all());
-        String fname, ctype, body;
+        SplEngine.QueryResult result = resolve(q, EXPORT_LIMIT);
+        String filename;
+        String contentType;
+        String body;
         if ("csv".equalsIgnoreCase(format)) {
-            fname = "search.csv";
-            ctype = "text/csv; charset=utf-8";
-            body = toCsv(r);
+            filename = "search.csv";
+            contentType = "text/csv; charset=utf-8";
+            body = toCsv(result);
         } else {
-            fname = "search.json";
-            ctype = "application/json";
-            body = SearchEventJson.toJson(r.events());
+            filename = "search.json";
+            contentType = "application/json";
+            body = SearchEventJson.toJson(result.events());
         }
-        return ResponseEntity.ok()
-                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + fname + "\"")
-                .contentType(MediaType.parseMediaType(ctype))
-                .body(body);
+        ResponseEntity.BodyBuilder response = ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                .header("X-SOCP-Search-Source", result.source())
+                .header("X-SOCP-Search-Degraded", String.valueOf(result.degraded()))
+                .header("X-SOCP-Search-Total", String.valueOf(result.total()));
+        if (result.freshness() != null) {
+            response.header("X-SOCP-Search-Freshness", result.freshness().toString());
+        }
+        return response.contentType(MediaType.parseMediaType(contentType)).body(body);
     }
 
-    private static String toCsv(SplEngine.QueryResult r) {
+    private SplEngine.QueryResult resolve(String q, int limit) {
+        SplEngine.QueryResult authoritative = osReader.search(q, limit);
+        if (authoritative != null) {
+            return authoritative.limitEvents(limit).withSource("opensearch", false,
+                    freshest(authoritative.events()), null);
+        }
+
+        List<SearchEvent> localEvents;
+        try {
+            localEvents = store.all();
+        } catch (RuntimeException failure) {
+            throw ApiException.of(503,
+                    "Search is unavailable: OpenSearch did not return a result and the local cache is unavailable");
+        }
+        if (localEvents == null) {
+            throw ApiException.of(503,
+                    "Search is unavailable: OpenSearch did not return a result and the local cache is unavailable");
+        }
+        SplEngine.QueryResult fallback = engine.execute(q, localEvents).limitEvents(limit);
+        return fallback.withSource("local-cache", true, freshest(fallback.events()),
+                "OpenSearch did not return a result; data is limited to the local cache");
+    }
+
+    private static Instant freshest(List<SearchEvent> events) {
+        return events.stream().map(SearchEvent::timestamp).filter(java.util.Objects::nonNull)
+                .max(Comparator.naturalOrder()).orElse(null);
+    }
+
+    private static String toCsv(SplEngine.QueryResult result) {
         StringBuilder sb = new StringBuilder("timestamp,source,host,severity,msg\n");
-        for (SearchEvent e : r.events()) {
-            sb.append(e.timestamp()).append(',').append(csv(e.source())).append(',').append(csv(e.host()))
-                    .append(',').append(e.severity()).append(',').append(csv(e.msg())).append('\n');
+        for (SearchEvent event : result.events()) {
+            sb.append(event.timestamp()).append(',').append(csv(event.source())).append(',').append(csv(event.host()))
+                    .append(',').append(event.severity()).append(',').append(csv(event.msg())).append('\n');
         }
         return sb.toString();
     }
 
-    private static String csv(String s) {
-        if (s == null) return "";
-        return "\"" + s.replace("\"", "\"\"") + "\"";
+    private static String csv(String value) {
+        if (value == null) return "";
+        return "\"" + value.replace("\"", "\"\"") + "\"";
     }
 }

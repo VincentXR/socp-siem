@@ -94,6 +94,23 @@ class NotificationDispatcherTest {
         verify(deliveries, never()).save(any());
     }
 
+    @Test
+    void unsupportedEmailChannelIsFailedAndNeverReceiptedAsDelivered() {
+        TenantContext.set("tenant-a");
+        Channel channel = new Channel("CH-EMAIL", "Mail", "EMAIL", "soc@example.com", true, "");
+        given(channels.enabled()).willReturn(List.of(channel));
+        given(deliveries.findByIdAndTenantId(any(), eq("tenant-a"))).willReturn(Optional.empty());
+        NotificationDispatcher dispatcher = new NotificationDispatcher(channels, http, deliveries);
+
+        Map<String, Object> result = dispatcher.dispatch(Map.of("id", "AL-1"));
+
+        assertEquals(1, result.get("failed"));
+        List<?> results = (List<?>) result.get("results");
+        assertEquals("failed", ((Map<?, ?>) results.getFirst()).get("status"));
+        verify(deliveries, never()).save(any());
+        verify(http, never()).postExternal(any(), any(), any(), any(Integer.class));
+    }
+
     private static ServiceCall ok() {
         return new ServiceCall(SocpService.NOTIFY, "http://ops", true,
                 200, "ok", null, 1, false, 1);

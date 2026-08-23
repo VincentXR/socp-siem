@@ -3,6 +3,7 @@ import test from 'node:test'
 import { useRequest } from '../src/composables/useRequest.ts'
 import { unwrapApiBody } from '../src/lib/api-response.ts'
 import { withQuery } from '../src/lib/query.ts'
+import type { ReportSummary, ReportTrend, SearchResult } from '../src/api.ts'
 
 test('unwraps successful API envelopes', () => {
   assert.deepEqual(unwrapApiBody<{ id: string }>({ code: 0, data: { id: 'a-1' } }), { id: 'a-1' })
@@ -17,6 +18,38 @@ test('raises the server message for failed API envelopes', () => {
 
 test('keeps non-envelope response bodies unchanged', () => {
   assert.deepEqual(unwrapApiBody<string[]>(['a', 'b']), ['a', 'b'])
+})
+
+test('keeps search and report provenance metadata from successful responses', () => {
+  const search = unwrapApiBody<SearchResult>({
+    code: 0,
+    data: {
+      total: 1,
+      events: [],
+      stat: null,
+      source: 'local-cache',
+      degraded: true,
+      freshness: '2026-08-23T11:00:00Z',
+      degradationReason: 'OpenSearch did not return a result',
+    },
+  })
+  const summary = unwrapApiBody<ReportSummary>({
+    code: 0,
+    data: {
+      date: '2026-08-23', total: 1, bySeverity: { HIGH: 1 }, byRule: [],
+      source: 'alert-web', degraded: true, freshness: null,
+      degradationReason: 'ClickHouse unavailable',
+    },
+  })
+  const trend: ReportTrend = {
+    days: ['08-23'], counts: [1], source: 'clickhouse', degraded: false,
+    freshness: '2026-08-23T11:00:00Z', degradationReason: null,
+  }
+
+  assert.equal(search.degraded, true)
+  assert.equal(search.source, 'local-cache')
+  assert.equal(summary.degradationReason, 'ClickHouse unavailable')
+  assert.equal(trend.freshness, '2026-08-23T11:00:00Z')
 })
 
 test('encodes query values and omits empty values', () => {

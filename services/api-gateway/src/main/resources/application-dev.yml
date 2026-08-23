@@ -1,6 +1,9 @@
 # 仅开发环境（--spring.profiles.active=dev / SOCP_PROFILE=dev）提供演示账号与 secret 默认值。
 # 生产禁止启用本 profile；密钥必须通过 SOCP_JWT_SECRET / SOCP_LOGIN_SECRET 环境变量注入。
 socp:
+  oidc:
+    state:
+      backend: memory
   security:
     dev-bypass: ${SOCP_DEV_BYPASS:false}
   auth:

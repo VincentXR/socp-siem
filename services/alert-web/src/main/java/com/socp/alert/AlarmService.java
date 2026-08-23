@@ -97,7 +97,12 @@ public class AlarmService {
     }
 
     public Page<Alarm> pageByTimestamp(String sort, String order, int page, int size) {
-        return queryService.pageByTimestamp(sort, order, page, size);
+        return queryService.page(null, null, null, null, sort, order, page, size);
+    }
+
+    public Page<Alarm> page(Severity severity, String rule, String status, String text,
+                            String sort, String order, int page, int size) {
+        return queryService.page(severity, rule, status, text, sort, order, page, size);
     }
 
     public Alarm get(String id) {
@@ -126,7 +131,9 @@ public class AlarmService {
         event.setEventType("ALARM_CREATED");
         event.setPayload(payload);
         event.setStatus("PENDING");
+        event.setAttempts(0);
         Instant now = Instant.now();
+        event.setNextAttemptAt(now);
         event.setCreatedAt(now);
         event.setUpdatedAt(now);
         return event;

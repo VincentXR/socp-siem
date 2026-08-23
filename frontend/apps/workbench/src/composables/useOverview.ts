@@ -1,11 +1,14 @@
 import { computed, type Ref } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
-import { alarmStats, checkHealth, HEALTH_TARGETS, listAlarms } from '../api'
+import { alarmStats, checkHealth, HEALTH_TARGETS, listAlarmsPaged } from '../api'
 
 export function useOverview(enabled: Ref<boolean>) {
   const alarmsQuery = useQuery({
     queryKey: ['overview', 'alarms'],
-    queryFn: ({ signal }) => listAlarms(undefined, { signal }),
+    // The overview only renders recent alarms. Keep its frequent refresh bounded
+    // instead of downloading every tenant alarm on each ten-second poll.
+    queryFn: ({ signal }) => listAlarmsPaged(1, 100, undefined, undefined, undefined, undefined,
+      'occurredAt', 'descending', { signal }),
     enabled,
     refetchInterval: 10_000,
     refetchIntervalInBackground: false,
@@ -32,7 +35,7 @@ export function useOverview(enabled: Ref<boolean>) {
     refetchIntervalInBackground: false,
   })
 
-  const alarms = computed(() => alarmsQuery.data.value ?? [])
+  const alarms = computed(() => alarmsQuery.data.value?.items ?? [])
   const healths = computed(() => healthQuery.data.value ?? {})
   const sitStats = computed(() => statsQuery.data.value ?? null)
   const recentAlarms = computed(() => {

@@ -41,7 +41,7 @@ class DetectionAlertOutboxPublisherTest {
         DetectionAlertOutboxEntity event = event("alert-1");
         given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
                 eq("PENDING"), any(Instant.class))).willReturn(List.of(event));
-        given(repository.claim(eq("alert-1"), eq("PENDING"), any(Instant.class))).willReturn(1);
+        given(repository.claim(eq("alert-1"), eq("PENDING"), any(Instant.class), any(Integer.class))).willReturn(1);
         given(alertClient.forwardAlarm(anyString())).willReturn(failure());
 
         DetectionAlertOutboxPublisher publisher = publisher();
@@ -57,7 +57,7 @@ class DetectionAlertOutboxPublisherTest {
         DetectionAlertOutboxEntity event = event("alert-2");
         given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
                 eq("PENDING"), any(Instant.class))).willReturn(List.of(event));
-        given(repository.claim(eq("alert-2"), eq("PENDING"), any(Instant.class))).willReturn(1);
+        given(repository.claim(eq("alert-2"), eq("PENDING"), any(Instant.class), any(Integer.class))).willReturn(1);
         given(alertClient.forwardAlarm(anyString())).willReturn(success());
         given(alarmProducer.sendAndAwait(any(), eq("alert-2"))).willReturn(true);
 
@@ -69,7 +69,7 @@ class DetectionAlertOutboxPublisherTest {
                 payload.contains("\"id\":\"alert-2\"")
                         && payload.contains("\"detectionOutboxClaimedAt\"")));
         verify(alarmProducer).sendAndAwait(any(), eq("alert-2"));
-        verify(repository, never()).claim(eq("alert-2"), eq("DELIVERED"), any(Instant.class));
+        verify(repository, never()).claim(eq("alert-2"), eq("DELIVERED"), any(Instant.class), any(Integer.class));
     }
 
     @Test
@@ -77,7 +77,7 @@ class DetectionAlertOutboxPublisherTest {
         DetectionAlertOutboxEntity event = event("alert-3");
         given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
                 eq("PENDING"), any(Instant.class))).willReturn(List.of(event));
-        given(repository.claim(eq("alert-3"), eq("PENDING"), any(Instant.class))).willReturn(0);
+        given(repository.claim(eq("alert-3"), eq("PENDING"), any(Instant.class), any(Integer.class))).willReturn(0);
 
         DetectionAlertOutboxPublisher publisher = publisher();
         publisher.publishDue();
@@ -97,7 +97,7 @@ class DetectionAlertOutboxPublisherTest {
                 eq("PENDING"), any(Instant.class))).willReturn(List.of());
         given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
                 eq("DELIVERED"), any(Instant.class))).willReturn(List.of(event));
-        given(repository.claim(eq("alert-4"), eq("DELIVERED"), any(Instant.class))).willReturn(1);
+        given(repository.claim(eq("alert-4"), eq("DELIVERED"), any(Instant.class), any(Integer.class))).willReturn(1);
         given(alarmProducer.sendAndAwait(any(), eq("alert-4"))).willReturn(false);
 
         publisher().publishDue();
@@ -112,7 +112,7 @@ class DetectionAlertOutboxPublisherTest {
         DetectionAlertOutboxEntity event = event("alert-inline-failure");
         given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
                 eq("PENDING"), any(Instant.class))).willReturn(List.of(event));
-        given(repository.claim(eq("alert-inline-failure"), eq("PENDING"), any(Instant.class)))
+        given(repository.claim(eq("alert-inline-failure"), eq("PENDING"), any(Instant.class), any(Integer.class)))
                 .willReturn(1);
         given(alertClient.forwardAlarm(anyString())).willReturn(success());
         given(alarmProducer.sendAndAwait(any(), eq("alert-inline-failure"))).willReturn(false);
@@ -123,7 +123,28 @@ class DetectionAlertOutboxPublisherTest {
         assertEquals(1, event.getAttempts());
         assertTrue(event.alertDelivered());
         verify(repository, never()).claim(
-                eq("alert-inline-failure"), eq("DELIVERED"), any(Instant.class));
+                eq("alert-inline-failure"), eq("DELIVERED"), any(Instant.class), any(Integer.class));
+    }
+
+    @Test
+    void retryLimitMovesFailedAlertHandoffToDead() {
+        DetectionAlertOutboxEntity event = event("alert-dead");
+        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+                eq("PENDING"), any(Instant.class))).willReturn(List.of(event));
+        given(repository.claim(eq("alert-dead"), eq("PENDING"), any(Instant.class), any(Integer.class))).willReturn(1);
+        given(alertClient.forwardAlarm(anyString())).willReturn(failure());
+
+        DetectionAlertOutboxPublisher publisher = new DetectionAlertOutboxPublisher(
+                repository, alertClient, alarmProducer, null, 1, 1, 60_000L);
+        try {
+            publisher.publishDue();
+        } finally {
+            publisher.stopDeliveryExecutor();
+        }
+
+        assertEquals("DEAD", event.getStatus());
+        assertEquals(1, event.getAttempts());
+        verify(repository).save(event);
     }
 
     @Test
@@ -150,7 +171,7 @@ class DetectionAlertOutboxPublisherTest {
                 .toList();
         given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
                 eq("PENDING"), any(Instant.class))).willReturn(events);
-        given(repository.claim(anyString(), eq("PENDING"), any(Instant.class))).willReturn(1);
+        given(repository.claim(anyString(), eq("PENDING"), any(Instant.class), any(Integer.class))).willReturn(1);
         AtomicInteger active = new AtomicInteger();
         AtomicInteger peak = new AtomicInteger();
         given(alertClient.forwardAlarm(anyString())).willAnswer(invocation -> {

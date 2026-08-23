@@ -30,8 +30,15 @@ public class OutboxEvent {
     @Column(columnDefinition = "TEXT")
     private String payload;
 
-    /** PENDING / PROCESSING / PUBLISHED */
+    /** PENDING / PROCESSING / PUBLISHED / DEAD */
     private String status;
+
+    /** Number of broker delivery attempts, including a stale claimed attempt. */
+    @Column(nullable = false)
+    private int attempts;
+
+    @Column(name = "next_attempt_at", nullable = false)
+    private Instant nextAttemptAt;
 
     @Column(name = "created_at")
     private Instant createdAt;
@@ -41,6 +48,9 @@ public class OutboxEvent {
 
     @Column(name = "updated_at")
     private Instant updatedAt;
+
+    @Column(name = "last_error", length = 1024)
+    private String lastError;
 
     public String getId() {
         return id;
@@ -82,6 +92,22 @@ public class OutboxEvent {
         this.status = status;
     }
 
+    public int getAttempts() {
+        return attempts;
+    }
+
+    public void setAttempts(int attempts) {
+        this.attempts = attempts;
+    }
+
+    public Instant getNextAttemptAt() {
+        return nextAttemptAt;
+    }
+
+    public void setNextAttemptAt(Instant nextAttemptAt) {
+        this.nextAttemptAt = nextAttemptAt;
+    }
+
     public Instant getCreatedAt() {
         return createdAt;
     }
@@ -104,5 +130,13 @@ public class OutboxEvent {
 
     public void setUpdatedAt(Instant updatedAt) {
         this.updatedAt = updatedAt;
+    }
+
+    public String getLastError() {
+        return lastError;
+    }
+
+    public void setLastError(String lastError) {
+        this.lastError = lastError;
     }
 }

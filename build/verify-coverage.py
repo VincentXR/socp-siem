@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Aggregate module JaCoCo XML reports and enforce the repository line floor."""
+"""Aggregate module JaCoCo XML reports and enforce repository/module line floors."""
 
 from __future__ import annotations
 
@@ -11,6 +11,20 @@ import xml.etree.ElementTree as ET
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# A repository total can hide an untested service behind highly-covered shared
+# modules. Keep a modest floor for every module and a stronger floor for the
+# event-path and authorization modules. Both thresholds are deliberately
+# configurable so they can be raised without changing the checker.
+DEFAULT_CRITICAL_MODULES = (
+    "platform/socp-auth",
+    "platform/socp-tenant",
+    "platform/socp-ratelimit",
+    "platform/socp-rule",
+    "services/alert-web",
+    "services/detect-web",
+    "services/search-config",
+)
 
 
 def line_counter(report: Path) -> tuple[int, int]:
@@ -29,9 +43,30 @@ def main() -> int:
         default=float(os.environ.get("SOCP_MIN_LINE_COVERAGE", "0.45")),
         help="minimum aggregate line ratio (default: 0.45)",
     )
+    parser.add_argument(
+        "--module-minimum",
+        type=float,
+        default=float(os.environ.get("SOCP_MIN_MODULE_LINE_COVERAGE", "0.15")),
+        help="minimum line ratio required from every production module (default: 0.15)",
+    )
+    parser.add_argument(
+        "--critical-module-minimum",
+        type=float,
+        default=float(os.environ.get("SOCP_MIN_CRITICAL_MODULE_LINE_COVERAGE", "0.30")),
+        help="minimum line ratio required from critical modules (default: 0.30)",
+    )
+    parser.add_argument(
+        "--critical-modules",
+        default=os.environ.get("SOCP_CRITICAL_COVERAGE_MODULES", ",".join(DEFAULT_CRITICAL_MODULES)),
+        help="comma-separated module paths which use the critical module floor",
+    )
     args = parser.parse_args()
-    if not 0 <= args.minimum <= 1:
-        parser.error("--minimum must be between 0 and 1")
+    for option in ("minimum", "module_minimum", "critical_module_minimum"):
+        if not 0 <= getattr(args, option) <= 1:
+            parser.error(f"--{option.replace('_', '-')} must be between 0 and 1")
+    critical_modules = {
+        item.strip().strip("/") for item in args.critical_modules.split(",") if item.strip()
+    }
 
     reports = sorted(ROOT.glob("platform/*/target/site/jacoco/jacoco.xml"))
     reports += sorted(ROOT.glob("services/*/target/site/jacoco/jacoco.xml"))
@@ -54,6 +89,7 @@ def main() -> int:
     total_missed = 0
     total_covered = 0
     measured = 0
+    module_failures: list[str] = []
     for report in reports:
         missed, covered = line_counter(report)
         if missed + covered == 0:
@@ -63,7 +99,10 @@ def main() -> int:
         total_covered += covered
         module = report.parents[3].relative_to(ROOT).as_posix()
         ratio = covered / (missed + covered)
-        print(f"  {module:<32} {ratio:>7.2%}  ({covered}/{missed + covered})")
+        required = args.critical_module_minimum if module in critical_modules else args.module_minimum
+        print(f"  {module:<32} {ratio:>7.2%}  ({covered}/{missed + covered}; required {required:.2%})")
+        if ratio < required:
+            module_failures.append(f"{module}={ratio:.2%} < {required:.2%}")
 
     if measured < 8:
         print(f"[FAIL] only {measured} modules produced measurable coverage", file=sys.stderr)
@@ -73,6 +112,10 @@ def main() -> int:
     print(f"Aggregate line coverage: {ratio:.2%} ({total_covered}/{lines}); required {args.minimum:.2%}")
     if ratio < args.minimum:
         print("[FAIL] aggregate line coverage is below the repository floor", file=sys.stderr)
+        return 1
+    if module_failures:
+        print("[FAIL] module line coverage is below its floor: " + ", ".join(module_failures),
+              file=sys.stderr)
         return 1
     return 0
 

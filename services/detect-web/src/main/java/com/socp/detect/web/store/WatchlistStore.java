@@ -19,6 +19,8 @@ import java.util.Set;
 @Component
 public class WatchlistStore {
 
+    private final PersistentWatchlistStateStore persistentState;
+
     /** 内置示例名单，让功能开箱即用 */
     private static final Map<String, List<String>> SEED = Map.of(
             "privileged_accounts", List.of("root", "administrator", "admin", "dbadmin", "svc_backup"),
@@ -28,8 +30,13 @@ public class WatchlistStore {
             "high_risk_geo", List.of("kp", "unknown", "tor-exit")
     );
 
+    public WatchlistStore(PersistentWatchlistStateStore persistentState) {
+        this.persistentState = persistentState;
+    }
+
     @PostConstruct
     public void init() {
+        Watchlists.installStateStore(persistentState);
         SEED.forEach(Watchlists::putTemplate);
     }
 

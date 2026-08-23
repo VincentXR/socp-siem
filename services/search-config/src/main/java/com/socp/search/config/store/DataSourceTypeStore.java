@@ -1,6 +1,8 @@
 package com.socp.search.config.store;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.search.config.domain.DataSourceType;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -11,12 +13,26 @@ import java.util.List;
 @Component
 public class DataSourceTypeStore {
 
-    private final TenantCatalog<DataSourceType> catalog = new TenantCatalog<>(DataSourceType::id);
+    private final TenantCatalog<DataSourceType> catalog;
     private boolean seeding = true;
 
     public DataSourceTypeStore() {
+        this(null, null);
+    }
+
+    @Autowired
+    public DataSourceTypeStore(TenantCatalogPersistence persistence, ObjectMapper objectMapper) {
+        this.catalog = persistentCatalog(persistence, objectMapper);
         seed();
         seeding = false;
+    }
+
+    private static TenantCatalog<DataSourceType> persistentCatalog(
+            TenantCatalogPersistence persistence, ObjectMapper objectMapper) {
+        return persistence == null
+                ? new TenantCatalog<>(DataSourceType::id)
+                : new TenantCatalog<>(DataSourceType::id, "data_source_type", DataSourceType.class,
+                persistence, objectMapper);
     }
 
     private void seed() {

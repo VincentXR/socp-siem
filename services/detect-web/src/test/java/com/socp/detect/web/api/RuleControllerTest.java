@@ -86,6 +86,30 @@ class RuleControllerTest {
     }
 
     @Test
+    void typedIngestContractPreservesBackpressureResponse() throws Exception {
+        given(engine.ingest(any())).willReturn(false);
+        given(engine.stats()).willReturn(Map.of("queueLoad", 9));
+
+        mvc.perform(post("/api/v1/ingest")
+                        .header("Authorization", BEARER)
+                        .header("X-Role", "analyst")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"eventId":"typed-ingest","source":"auth","host":"web-1",
+                                 "severity":"HIGH","msg":"failed login",
+                                 "fields":{"src_ip":"198.51.100.10","attempts":3}}
+                                """))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.accepted").value(false))
+                .andExpect(jsonPath("$.error").value("queue_full"))
+                .andExpect(jsonPath("$.queueLoad").value(9));
+
+        verify(engine).ingest(org.mockito.ArgumentMatchers.argThat(event ->
+                "3".equals(event.fields().get("attempts"))
+                        && "failed login".equals(event.fields().get("msg"))));
+    }
+
+    @Test
     void reloadReturnsCurrentRuleCount() throws Exception {
         given(engine.listRules()).willReturn(java.util.List.of(Map.of("id", "R-1"), Map.of("id", "R-2")));
 

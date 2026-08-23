@@ -1,6 +1,8 @@
 package com.socp.search.config.store;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.search.config.domain.LogCategory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -11,10 +13,19 @@ import java.util.List;
 @Component
 public class LogCategoryStore {
 
-    private final TenantCatalog<LogCategory> catalog = new TenantCatalog<>(LogCategory::id);
+    private final TenantCatalog<LogCategory> catalog;
     private boolean seeding = true;
 
     public LogCategoryStore() {
+        this(null, null);
+    }
+
+    @Autowired
+    public LogCategoryStore(TenantCatalogPersistence persistence, ObjectMapper objectMapper) {
+        this.catalog = persistence == null
+                ? new TenantCatalog<>(LogCategory::id)
+                : new TenantCatalog<>(LogCategory::id, "log_category", LogCategory.class,
+                persistence, objectMapper);
         seed();
         seeding = false;
     }

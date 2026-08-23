@@ -77,7 +77,7 @@ class AlarmControllerTest {
     void pagedQueryPreservesResponseContract() throws Exception {
         Alarm alarm = new Alarm("AUTH-BRUTE", "SSH brute force", Severity.HIGH,
                 "failed login", "203.0.113.10");
-        given(service.pageByTimestamp("occurredAt", "descending", 1, 20))
+        given(service.page(null, null, null, null, "occurredAt", "descending", 1, 20))
                 .willReturn(new PageImpl<>(List.of(alarm)));
 
         mvc.perform(get("/api/alarms")

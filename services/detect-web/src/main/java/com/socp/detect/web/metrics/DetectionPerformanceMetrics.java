@@ -138,6 +138,13 @@ public class DetectionPerformanceMetrics implements RuleProcessingObserver {
                 "operation", operation).increment();
     }
 
+    /** Records bounded lifecycle outcomes for durable publisher rows. */
+    public void outboxLifecycle(String outbox, String outcome, int count) {
+        if (count <= 0) return;
+        registry.counter("socp.detection.outbox.lifecycle", "outbox", outbox,
+                "outcome", outcome).increment(count);
+    }
+
     private EventTiming timing(SecurityEvent event) {
         return event == null || event.id() == null ? null : events.get(event.scopedId());
     }

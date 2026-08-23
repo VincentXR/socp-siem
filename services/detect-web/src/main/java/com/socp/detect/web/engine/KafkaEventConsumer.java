@@ -1,17 +1,11 @@
 package com.socp.detect.web.engine;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.socp.platform.client.kafka.KafkaClientSupport;
 import com.socp.detect.web.service.DetectEngineService;
 import com.socp.detect.web.metrics.DetectionPerformanceMetrics;
-import com.socp.detect.web.store.DetectionEventClaim;
 import com.socp.detect.web.store.DetectionStateStore;
 import com.socp.detect.web.store.InMemoryDetectionStateStore;
 import com.socp.detect.web.store.PendingDetectionEvent;
-import com.socp.rule.model.SecurityEvent;
-import com.socp.rule.model.Severity;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -25,15 +19,11 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
-import java.time.Instant;
 import java.util.Collection;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -54,9 +44,6 @@ import java.util.function.BiConsumer;
 public class KafkaEventConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(KafkaEventConsumer.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper()
-            .registerModule(new JavaTimeModule())
-            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     private static final Duration RETRY_MAX = Duration.ofSeconds(30);
 
     @Value("${socp.kafka.bootstrap:localhost:9092}")
@@ -74,6 +61,7 @@ public class KafkaEventConsumer {
     private final DetectEngineService engine;
     private final DetectionStateStore stateStore;
     private final DetectionPerformanceMetrics performanceMetrics;
+    private final DetectionRecordProcessor recordProcessor;
     private final PartitionCompletionTracker completionTracker = new PartitionCompletionTracker();
     private final Map<Integer, ExecutorService> partitionLanes = new ConcurrentHashMap<>();
     private final BlockingQueue<RecordCompletion> completions = new LinkedBlockingQueue<>();
@@ -89,6 +77,7 @@ public class KafkaEventConsumer {
         this.engine = engine;
         this.stateStore = stateStore;
         this.performanceMetrics = performanceMetrics;
+        this.recordProcessor = new DetectionRecordProcessor(engine, stateStore, performanceMetrics);
     }
 
     /** Unit-test/source compatibility constructor. */
@@ -96,6 +85,7 @@ public class KafkaEventConsumer {
         this.engine = engine;
         this.stateStore = stateStore;
         this.performanceMetrics = null;
+        this.recordProcessor = new DetectionRecordProcessor(engine, stateStore, null);
     }
 
     /** Unit-test/source compatibility constructor. */
@@ -138,10 +128,10 @@ public class KafkaEventConsumer {
     void processRecord(String key, String raw) {
         try {
             processOne(null, null, key, raw);
-        } catch (TerminalRecordException terminal) {
+        } catch (DetectionRecordProcessor.MalformedDetectionRecordException terminal) {
             try {
-                publishDlqAndAwait(terminal.eventId, terminal.raw);
-                stateStore.recordDeadLettered(terminal.eventId, terminal.raw, null, null,
+                publishDlqAndAwait(terminal.eventId(), terminal.raw());
+                stateStore.recordDeadLettered(terminal.eventId(), terminal.raw(), null, null,
                         terminal.getMessage());
             } catch (Exception ex) {
                 log.warn("Unable to persist terminal record to DLQ: {}", ex.getMessage());
@@ -155,10 +145,10 @@ public class KafkaEventConsumer {
     void processRecord(int partition, long offset, String key, String raw) {
         try {
             processOne(partition, offset, key, raw);
-        } catch (TerminalRecordException terminal) {
+        } catch (DetectionRecordProcessor.MalformedDetectionRecordException terminal) {
             try {
-                publishDlqAndAwait(terminal.eventId, terminal.raw);
-                stateStore.recordDeadLettered(terminal.eventId, terminal.raw, partition, offset,
+                publishDlqAndAwait(terminal.eventId(), terminal.raw());
+                stateStore.recordDeadLettered(terminal.eventId(), terminal.raw(), partition, offset,
                         terminal.getMessage());
             } catch (Exception ex) {
                 log.warn("Unable to persist terminal record to DLQ: {}", ex.getMessage());
@@ -266,16 +256,16 @@ public class KafkaEventConsumer {
                 processOne(record.partition(), record.offset(), record.key(), record.value());
                 completions.offer(new RecordCompletion(record.partition(), record.offset(), epoch));
                 return;
-            } catch (TerminalRecordException terminal) {
+            } catch (DetectionRecordProcessor.MalformedDetectionRecordException terminal) {
                 try {
-                    publishDlqAndAwait(terminal.eventId, terminal.raw);
-                    stateStore.recordDeadLettered(terminal.eventId, terminal.raw,
+                    publishDlqAndAwait(terminal.eventId(), terminal.raw());
+                    stateStore.recordDeadLettered(terminal.eventId(), terminal.raw(),
                             record.partition(), record.offset(), terminal.getMessage());
                     completions.offer(new RecordCompletion(record.partition(), record.offset(), epoch));
                     return;
                 } catch (Exception dlqFailure) {
                     log.warn("Terminal record DLQ unavailable; retrying eventId={}: {}",
-                            terminal.eventId, dlqFailure.getMessage());
+                            terminal.eventId(), dlqFailure.getMessage());
                 }
             } catch (Exception transientFailure) {
                 log.warn("Detection processing pending partition={} offset={} retry={} reason={}",
@@ -302,7 +292,7 @@ public class KafkaEventConsumer {
         while (running.get() && !Thread.currentThread().isInterrupted()) {
             try {
                 String routingKey = com.socp.rule.partition.DetectionRoutingKey.forEvent(row.event());
-                processNormalized(row.partition(), row.offset(), routingKey, row.event());
+                recordProcessor.processNormalized(row.partition(), row.offset(), routingKey, row.event());
                 return;
             } catch (Exception failure) {
                 log.warn("Pending Detection replay deferred partition={} offset={} retry={} reason={}",
@@ -340,21 +330,7 @@ public class KafkaEventConsumer {
     }
 
     private void processOne(Integer partition, Long offset, String key, String raw) {
-        String eventId = null;
-        try {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> event = MAPPER.readValue(raw, Map.class);
-            eventId = String.valueOf(event.getOrDefault("eventId", key));
-            SecurityEvent normalized = toEvent(event);
-            String routingKey = com.socp.rule.partition.DetectionRoutingKey.forEvent(normalized);
-            if (key != null && !key.equals(routingKey)) {
-                log.warn("Kafka routing key mismatch eventId={} received={} expected={}; using expected ownership",
-                        normalized.id(), key, routingKey);
-            }
-            processNormalized(partition, offset, routingKey, normalized);
-        } catch (com.fasterxml.jackson.core.JsonProcessingException | ClassCastException malformed) {
-            throw new TerminalRecordException(eventId, raw, malformed);
-        }
+        recordProcessor.process(partition, offset, key, raw);
     }
 
     private void rebuildOwnedState(int failedPartition) {
@@ -364,38 +340,6 @@ public class KafkaEventConsumer {
         // other partitions still owned by this consumer.
         engine.rebuildForPartitions(owned == null || owned.isEmpty()
                 ? Set.of(failedPartition) : owned);
-    }
-
-    private void processNormalized(Integer partition, Long offset, String routingKey,
-                                   SecurityEvent normalized) {
-        if (performanceMetrics != null) performanceMetrics.kafkaReceived(normalized);
-        DetectionEventClaim claim = stateStore.claim(normalized, partition, offset, routingKey);
-        if (performanceMetrics != null) performanceMetrics.journalCommitted(normalized);
-        if (claim == DetectionEventClaim.COMPLETED || claim == DetectionEventClaim.DEAD_LETTERED) {
-            if (performanceMetrics != null) {
-                performanceMetrics.terminalWithoutEvaluation(
-                        normalized, claim.name().toLowerCase(java.util.Locale.ROOT));
-            }
-            return;
-        }
-
-        CompletableFuture<Void> completion = engine.ingestFromKafkaAndAwait(normalized);
-        if (completion == null) throw new IllegalStateException("detection completion signal is null");
-        try {
-            completion.get(10, TimeUnit.MINUTES);
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("detection processing interrupted", interrupted);
-        } catch (java.util.concurrent.TimeoutException timeout) {
-            throw new IllegalStateException("detection processing timeout", timeout);
-        } catch (java.util.concurrent.ExecutionException failed) {
-            Throwable cause = failed.getCause() == null ? failed : failed.getCause();
-            throw new IllegalStateException("durable detection result failed: " + cause.getMessage(), cause);
-        }
-        // A successful completion means EventAlertSink has atomically committed
-        // every outbox row and Journal COMPLETED, including the zero-alert case.
-        // Repeating markCompleted here used to add one full DB transaction per
-        // event without strengthening the durable boundary.
     }
 
     private void publishDlqAndAwait(String eventId, String raw) throws Exception {
@@ -415,49 +359,7 @@ public class KafkaEventConsumer {
         }
     }
 
-    @SuppressWarnings("unchecked")
-    private static SecurityEvent toEvent(Map<String, Object> event) {
-        Object rawFields = event.getOrDefault("fields", Map.of());
-        if (!(rawFields instanceof Map<?, ?> inputFields)) {
-            throw new ClassCastException("fields must be an object");
-        }
-        Map<String, String> fields = new LinkedHashMap<>();
-        for (var entry : inputFields.entrySet()) {
-            fields.put(String.valueOf(entry.getKey()), String.valueOf(entry.getValue()));
-        }
-        String message = event.get("msg") == null
-                ? String.valueOf(event.getOrDefault("message", ""))
-                : String.valueOf(event.get("msg"));
-        if (event.containsKey("msg") && !fields.containsKey("msg")) fields.put("msg", message);
-        Severity severity = Severity.INFO;
-        try {
-            severity = Severity.valueOf(String.valueOf(event.getOrDefault("severity", "INFO")).toUpperCase());
-        } catch (IllegalArgumentException ignored) {
-        }
-        Instant timestamp = Instant.now();
-        try {
-            timestamp = Instant.parse(String.valueOf(event.getOrDefault("timestamp", timestamp)));
-        } catch (Exception ignored) {
-        }
-        String eventId = String.valueOf(event.getOrDefault("eventId", "")).trim();
-        if (eventId.isBlank() || "null".equalsIgnoreCase(eventId)) eventId = UUID.randomUUID().toString();
-        return new SecurityEvent(eventId, timestamp,
-                String.valueOf(event.getOrDefault("source", "unknown")),
-                String.valueOf(event.getOrDefault("host", "unknown")),
-                message, fields, severity);
-    }
-
     private record RecordCompletion(int partition, long offset, long epoch) {
     }
 
-    private static final class TerminalRecordException extends RuntimeException {
-        private final String eventId;
-        private final String raw;
-
-        private TerminalRecordException(String eventId, String raw, Throwable cause) {
-            super("terminal record: " + cause.getMessage(), cause);
-            this.eventId = eventId;
-            this.raw = raw;
-        }
-    }
 }

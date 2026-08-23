@@ -75,6 +75,10 @@ onMounted(() => {
     <el-alert v-if="error" :title="error" type="error" :closable="false" class="search-error" />
 
     <template v-if="result">
+      <el-alert v-if="result.degraded" type="warning"
+        :title="`搜索已降级到 ${result.source}`"
+        :description="result.degradationReason || '结果可能只覆盖本地缓存。'"
+        :closable="false" show-icon class="search-error" />
       <el-card shadow="never" class="search-result-card">
         <template #header>命中 {{ result.total }} 条事件</template>
         <el-table :data="result.events" size="small" border allow-drag-last-column max-height="420" @header-dragend="onHeaderDragEnd">

@@ -2,6 +2,7 @@ package com.socp.detect.web.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.socp.detect.web.metrics.DetectionPerformanceMetrics;
 import com.socp.platform.client.kafka.KafkaClientSupport;
 import com.socp.platform.tenant.TenantContext;
 import jakarta.annotation.PreDestroy;
@@ -27,8 +28,11 @@ public class RuleChangePublisher {
     private static final Logger log = LoggerFactory.getLogger(RuleChangePublisher.class);
     private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules()
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+    private static final int DEFAULT_MAX_ATTEMPTS = 12;
+    private static final long DEFAULT_RETENTION_MS = Duration.ofDays(30).toMillis();
 
     private final RuleChangeOutboxRepository repository;
+    private final DetectionPerformanceMetrics performanceMetrics;
 
     @Value("${socp.kafka.bootstrap:localhost:9092}")
     private String bootstrap;
@@ -39,11 +43,25 @@ public class RuleChangePublisher {
     @Value("${socp.kafka.enabled:true}")
     private boolean enabled;
 
+    @Value("${socp.kafka.rule-outbox.max-attempts:12}")
+    private int maxAttempts = DEFAULT_MAX_ATTEMPTS;
+
+    @Value("${socp.kafka.rule-outbox.retention-ms:2592000000}")
+    private long retentionMs = DEFAULT_RETENTION_MS;
+
     private volatile KafkaProducer<String, String> producer;
     private Instant nextRecoveryAt = Instant.EPOCH;
 
-    public RuleChangePublisher(RuleChangeOutboxRepository repository) {
+    @org.springframework.beans.factory.annotation.Autowired
+    public RuleChangePublisher(RuleChangeOutboxRepository repository,
+                               DetectionPerformanceMetrics performanceMetrics) {
         this.repository = repository;
+        this.performanceMetrics = performanceMetrics;
+    }
+
+    /** Unit-test/source compatibility constructor. */
+    public RuleChangePublisher(RuleChangeOutboxRepository repository) {
+        this(repository, null);
     }
 
     @Transactional
@@ -70,6 +88,11 @@ public class RuleChangePublisher {
         try {
             Instant now = Instant.now();
             recoverStaleIfDue(now);
+            int exhausted = repository.markExhausted(effectiveMaxAttempts(), "retry limit reached", now);
+            if (exhausted > 0) {
+                log.error("Rule-change outbox rows moved to DEAD after retry limit count={}", exhausted);
+                lifecycle("dead", exhausted);
+            }
             List<RuleChangeOutbox> pending = repository
                     .findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc("PENDING", now);
             for (RuleChangeOutbox row : pending) deliver(row);
@@ -80,7 +103,7 @@ public class RuleChangePublisher {
 
     private void deliver(RuleChangeOutbox row) {
         Instant now = Instant.now();
-        if (repository.claim(row.getId(), now) != 1) return;
+        if (repository.claim(row.getId(), now, effectiveMaxAttempts()) != 1) return;
         try {
             Map<String, Object> event = new LinkedHashMap<>();
             event.put("eventId", row.getId());
@@ -91,28 +114,72 @@ public class RuleChangePublisher {
             String value = MAPPER.writeValueAsString(event);
             KafkaClientSupport.sendAndAwait(kafkaProducer(), topic,
                     row.getTenantId() + ':' + row.getRuleId(), value, Duration.ofSeconds(10));
-            repository.markPublished(row.getId(), Instant.now());
+            if (repository.markPublished(row.getId(), Instant.now()) != 1) {
+                log.warn("Rule-change outbox state changed before broker acknowledgement id={}", row.getId());
+            }
         } catch (Exception failure) {
             scheduleRetry(row, failure);
         }
     }
 
-    private void scheduleRetry(RuleChangeOutbox row, Exception failure) {
+    void scheduleRetry(RuleChangeOutbox row, Exception failure) {
         int attempt = row.getAttempts() + 1;
-        long delay = Math.min(300, 1L << Math.min(8, Math.max(1, attempt)));
         String error = failure.getClass().getSimpleName() + ": " + failure.getMessage();
         if (error.length() > 1024) error = error.substring(0, 1024);
         Instant now = Instant.now();
-        repository.scheduleRetry(row.getId(), now.plusSeconds(delay), error, now);
-        log.warn("Rule-change delivery scheduled for retry tenant={} ruleId={} attempt={}: {}",
-                row.getTenantId(), row.getRuleId(), attempt, error);
+        try {
+            if (attempt >= effectiveMaxAttempts()) {
+                if (repository.markDead(row.getId(), error, now) == 1) {
+                    log.error("Rule-change outbox moved to DEAD tenant={} ruleId={} attempts={} reason={}",
+                            row.getTenantId(), row.getRuleId(), attempt, error);
+                    lifecycle("dead", 1);
+                }
+                return;
+            }
+            long delay = Math.min(300, 1L << Math.min(8, Math.max(1, attempt)));
+            Instant nextAttempt = now.plusSeconds(delay);
+            if (repository.scheduleRetry(row.getId(), nextAttempt, error, now) == 1) {
+                log.warn("Rule-change delivery scheduled for retry tenant={} ruleId={} attempt={} next={}: {}",
+                        row.getTenantId(), row.getRuleId(), attempt, nextAttempt, error);
+                lifecycle("retry", 1);
+            }
+        } catch (RuntimeException stateFailure) {
+            // Preserve the claim for stale recovery if the retry state write is unavailable.
+            log.warn("Rule-change retry state update deferred id={}: {}", row.getId(), stateFailure.getMessage());
+        }
     }
 
     private void recoverStaleIfDue(Instant now) {
         if (now.isBefore(nextRecoveryAt)) return;
         int recovered = repository.recoverStale(now.minus(Duration.ofMinutes(2)), now);
-        if (recovered > 0) log.warn("Recovered stale rule-change outbox rows count={}", recovered);
+        if (recovered > 0) {
+            log.warn("Recovered stale rule-change outbox rows count={}", recovered);
+            lifecycle("recovered", recovered);
+        }
         nextRecoveryAt = now.plusSeconds(30);
+    }
+
+    @Scheduled(fixedDelayString = "${socp.kafka.rule-outbox.cleanup-interval-ms:3600000}",
+            initialDelayString = "${socp.kafka.rule-outbox.cleanup-initial-delay-ms:60000}")
+    void cleanupPublished() {
+        try {
+            long safeRetention = Math.max(Duration.ofMinutes(1).toMillis(), retentionMs);
+            int removed = repository.deletePublishedBefore(Instant.now().minusMillis(safeRetention));
+            if (removed > 0) {
+                log.info("Removed retained rule-change outbox rows count={}", removed);
+                lifecycle("cleaned", removed);
+            }
+        } catch (RuntimeException failure) {
+            log.warn("Rule-change outbox retention cleanup deferred: {}", failure.getMessage());
+        }
+    }
+
+    private int effectiveMaxAttempts() {
+        return Math.max(1, maxAttempts);
+    }
+
+    private void lifecycle(String outcome, int count) {
+        if (performanceMetrics != null) performanceMetrics.outboxLifecycle("rule_change", outcome, count);
     }
 
     private KafkaProducer<String, String> kafkaProducer() {

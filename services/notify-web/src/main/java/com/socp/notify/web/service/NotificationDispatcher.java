@@ -105,8 +105,12 @@ public class NotificationDispatcher {
         result.put("channel", channel.name());
         result.put("type", channel.type());
         if ("EMAIL".equals(channel.type())) {
-            result.put("status", "logged");
-            result.put("detail", "Email delivery recorded; SMTP is not enabled: " + channel.target());
+            // Do not issue an idempotency receipt for a connector that did not
+            // actually transmit anything. Alert delivery will keep the durable
+            // hand-off retryable (and eventually mark it DEAD for operator action).
+            result.put("status", "failed");
+            result.put("httpStatus", 501);
+            result.put("detail", "SMTP delivery is not configured: " + channel.target());
             return result;
         }
         ServiceCall call = http.postExternal(channel.target(), buildPayload(channel, alarm),

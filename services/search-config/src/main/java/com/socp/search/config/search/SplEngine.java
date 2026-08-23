@@ -2,6 +2,7 @@ package com.socp.search.config.search;
 
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
@@ -48,7 +49,28 @@ public class SplEngine {
     private static final Pattern COND = Pattern.compile(
             "(\\w+)\\s*(contains|=|!=|>=|<=|>|<)\\s*(?:\"([^\"]*)\"|(\\S+))");
 
-    public record QueryResult(int total, List<SearchEvent> events, Stat stat) {
+    /**
+     * Search result plus source provenance. The four original fields remain stable
+     * for callers that only need events and aggregations.
+     */
+    public record QueryResult(int total, List<SearchEvent> events, Stat stat,
+                              String source, boolean degraded, Instant freshness,
+                              String degradationReason) {
+        public QueryResult(int total, List<SearchEvent> events, Stat stat) {
+            this(total, events, stat, "unspecified", false, null, null);
+        }
+
+        public QueryResult withSource(String source, boolean degraded, Instant freshness,
+                                      String degradationReason) {
+            return new QueryResult(total, events, stat, source, degraded, freshness, degradationReason);
+        }
+
+        public QueryResult limitEvents(int limit) {
+            if (events.size() <= limit) return this;
+            return new QueryResult(total, events.stream().limit(limit).toList(), stat,
+                    source, degraded, freshness, degradationReason);
+        }
+
         public record Stat(String type, List<Map<String, Object>> rows) {
         }
     }
