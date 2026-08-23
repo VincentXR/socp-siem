@@ -4,25 +4,22 @@ import com.socp.attack.web.domain.Tactic;
 import com.socp.attack.web.domain.Technique;
 import jakarta.annotation.PostConstruct;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * ATT&CK 静态目录（内置子集，覆盖主流战术/技术）——内存 + H2 双写（t_tactic / t_technique）：
- * 首次启动灌种子，之后从库恢复，重启不丢。生产可从官方的 enterprise-attack.json 同步。
+ * ATT&CK catalog backed solely by {@code t_tactic}/{@code t_technique}.
+ * Built-in entries seed an empty database on first startup.
  */
 @Component
 public class AttackStore {
 
     private final TacticRepository tacticRepository;
     private final TechniqueRepository techniqueRepository;
-    private final Map<String, Tactic> tactics = new LinkedHashMap<>();
-    private final Map<String, Technique> techniques = new ConcurrentHashMap<>();
-    private final List<Technique> order = new ArrayList<>();
 
     public AttackStore(TacticRepository tacticRepository, TechniqueRepository techniqueRepository) {
         this.tacticRepository = tacticRepository;
@@ -31,8 +28,7 @@ public class AttackStore {
 
     @PostConstruct
     void seed() {
-        List<TacticEntity> ts = tacticRepository.findAll();
-        if (ts.isEmpty()) {
+        if (tacticRepository.count() > 0) return;
             // Enterprise 矩阵完整 14 个战术，按 kill-chain 顺序
             addTactic("TA0043", "Reconnaissance", 1);
             addTactic("TA0042", "Resource Development", 2);
@@ -86,75 +82,59 @@ public class AttackStore {
             add("T1486", "Data Encrypted for Impact", "TA0040", "勒索加密数据");
             add("T1490", "Inhibit System Recovery", "TA0040", "破坏系统恢复能力");
             add("T1498", "Network Denial of Service", "TA0040", "网络拒绝服务");
-        } else {
-            for (TacticEntity e : ts) {
-                tactics.put(e.getId(), new Tactic(e.getId(), e.getName(), e.getSort()));
-            }
-            for (TechniqueEntity e : techniqueRepository.findAll()) {
-                Technique t = new Technique(e.getId(), e.getName(), e.getTactic(), e.getUrl(), e.getDescription());
-                techniques.put(t.id(), t);
-                order.add(t);
-            }
-        }
     }
 
     private void addTactic(String id, String name, int order) {
-        tactics.put(id, new Tactic(id, name, order));
         tacticRepository.save(new TacticEntity(id, name, order));
     }
 
     private void add(String id, String name, String tactic, String desc) {
         Technique t = new Technique(id, name, tactic,
                 "https://attack.mitre.org/techniques/" + id + "/", desc);
-        techniques.put(id, t);
-        order.add(t);
         techniqueRepository.save(new TechniqueEntity(id, name, tactic, t.url(), desc));
     }
 
     public List<Tactic> tactics() {
-        return new ArrayList<>(tactics.values());
+        return tacticRepository.findAllByOrderBySortAsc().stream()
+                .map(AttackStore::toTactic).toList();
     }
 
     public List<Technique> techniques() {
-        return new ArrayList<>(order);
+        return techniqueRepository.findAllByOrderByIdAsc().stream()
+                .map(AttackStore::toTechnique).toList();
     }
 
     public Technique technique(String id) {
-        return techniques.get(id);
+        return techniqueRepository.findById(id).map(AttackStore::toTechnique).orElse(null);
     }
 
-    /** 更新本地 ATT&CK 技术目录中的可编辑字段，并同步 H2。 */
-    public synchronized Technique update(String id, String name, String tactic, String url, String description) {
-        Technique existing = techniques.get(id);
-        if (existing == null) return null;
+    /** Update editable ATT&CK fields in the authoritative database row. */
+    @Transactional
+    public Technique update(String id, String name, String tactic, String url, String description) {
+        TechniqueEntity entity = techniqueRepository.findById(id).orElse(null);
+        if (entity == null) return null;
+        Technique existing = toTechnique(entity);
         Technique updated = new Technique(id,
                 valueOr(name, existing.name()), valueOr(tactic, existing.tactic()),
                 valueOr(url, existing.url()), valueOr(description, existing.description()));
-        techniques.put(id, updated);
-        for (int index = 0; index < order.size(); index++) {
-            if (order.get(index).id().equals(id)) {
-                order.set(index, updated);
-                break;
-            }
-        }
-        techniqueRepository.findById(id).ifPresent(entity -> {
-            entity.setName(updated.name());
-            entity.setTactic(updated.tactic());
-            entity.setUrl(updated.url());
-            entity.setDescription(updated.description());
-            techniqueRepository.save(entity);
-        });
+        entity.setName(updated.name());
+        entity.setTactic(updated.tactic());
+        entity.setUrl(updated.url());
+        entity.setDescription(updated.description());
+        techniqueRepository.save(entity);
         return updated;
     }
 
     /** 给定当前已启用规则覆盖的技术 ID 集合，计算各战术覆盖率与未覆盖技术。 */
     public Map<String, Object> coverage(java.util.Set<String> covered) {
+        List<Tactic> tactics = tactics();
+        List<Technique> techniques = techniques();
         Map<String, Object> out = new LinkedHashMap<>();
         List<Map<String, Object>> byTactic = new ArrayList<>();
-        int totalTech = order.size();
+        int totalTech = techniques.size();
         int coveredTech = 0;
-        for (Tactic tac : tactics.values()) {
-            List<Technique> inTactic = order.stream()
+        for (Tactic tac : tactics) {
+            List<Technique> inTactic = techniques.stream()
                     .filter(t -> t.tactic().equals(tac.id())).toList();
             long cov = inTactic.stream().filter(t -> covered.contains(t.id())).count();
             coveredTech += cov;
@@ -166,7 +146,7 @@ public class AttackStore {
             row.put("coverage", inTactic.isEmpty() ? 0 : (int) Math.round(100.0 * cov / inTactic.size()));
             byTactic.add(row);
         }
-        List<String> uncovered = order.stream()
+        List<String> uncovered = techniques.stream()
                 .filter(t -> !covered.contains(t.id()))
                 .map(Technique::id).toList();
         out.put("byTactic", byTactic);
@@ -179,5 +159,14 @@ public class AttackStore {
 
     private static String valueOr(String value, String fallback) {
         return value == null || value.isBlank() ? fallback : value.trim();
+    }
+
+    private static Tactic toTactic(TacticEntity entity) {
+        return new Tactic(entity.getId(), entity.getName(), entity.getSort());
+    }
+
+    private static Technique toTechnique(TechniqueEntity entity) {
+        return new Technique(entity.getId(), entity.getName(), entity.getTactic(),
+                entity.getUrl(), entity.getDescription());
     }
 }

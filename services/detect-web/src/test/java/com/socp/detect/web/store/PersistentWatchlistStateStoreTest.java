@@ -5,6 +5,7 @@ import com.socp.rule.engine.WatchlistStateStore;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.Set;
 
@@ -37,5 +38,17 @@ class PersistentWatchlistStateStoreTest {
         assertNotNull(deleted);
         assertTrue(deleted.deleted());
         assertTrue(second.names("tenant-a").contains("blocked_ips"));
+    }
+
+    @Test
+    void boundsCachedWatchlistEntries() {
+        PersistentWatchlistStateStore store = new PersistentWatchlistStateStore(repository, new ObjectMapper());
+        ReflectionTestUtils.setField(store, "refreshMs", 60_000L);
+        ReflectionTestUtils.setField(store, "maxCacheEntries", 1);
+
+        store.find("tenant-a", "first");
+        store.find("tenant-b", "second");
+
+        assertEquals(1, store.cachedEntries());
     }
 }

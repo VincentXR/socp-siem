@@ -6,9 +6,7 @@ import com.socp.ai.store.QaRepository;
 import jakarta.annotation.PostConstruct;
 import org.springframework.stereotype.Service;
 
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import org.springframework.data.domain.PageRequest;
 
 /**
  * AI 助手服务——当前为基于关键词的规则引擎（知识库落 H2 t_qa，重启不丢）。
@@ -18,7 +16,6 @@ import java.util.Map;
 public class AiAssistantService {
 
     private final QaRepository repository;
-    private final Map<String, String> QA = new LinkedHashMap<>();
 
     public AiAssistantService(QaRepository repository) {
         this.repository = repository;
@@ -26,8 +23,7 @@ public class AiAssistantService {
 
     @PostConstruct
     void init() {
-        List<QaEntity> all = repository.findAll();
-        if (all.isEmpty()) {
+        if (repository.count() == 0) {
             seed("暴力破解", "暴力破解检测建议配置阈值规则 AUTH-BRUTE：同一源 IP 在 60s 内失败登录 >= 5 次即告警（MITRE T1110）。关联规则 AUTH-BRUTE-SUCCESS 可检测失败后成功登录。\n建议：1) 检查防火墙/查找表是否已封禁高频失败 IP；2) SSH 是否禁用密码登录改用密钥；3) 对 admin/root 等关键人员账号启用 MFA。");
             seed("端口扫描", "端口扫描检测建议配置阈值规则 FW-SCAN：同一源 IP 在 30s 内被防火墙阻断 >= 10 次即告警（MITRE T1046）。\n建议：确认来源是否为授权安全测试；非授权则加入封禁名单并工单跟进。");
             seed("SQL注入", "SQL 注入检测建议配置模式规则 WEB-ATTACK：正则匹配 'UNION SELECT|OR 1=1|--|;<script>' 等（MITRE T1190）。\n建议：1) 检查 WAF 是否已拦截；2) 应用层是否参数化查询；3) 排查是否有敏感数据通过报错泄露。");
@@ -42,15 +38,10 @@ public class AiAssistantService {
             seed("凭据盗取", "凭据盗取检测建议模式规则 CREDS-DUMP：匹配 'mimikatz|sekurlsa|/etc/shadow' 等（MITRE T1003）。\n建议：强制相关账号改密、排查内存 dump 来源、核查凭据是否被复用。");
             seed("ATT&CK", "MITRE ATT&CK 是攻击战术/技术的通用语言。本平台在 attack-web 提供战术/技术目录与检测覆盖率；规则可在 DETECT 中通过 mitre 字段关联技术（如 T1110 暴力破解、T1190 面向公网应用利用）。覆盖率看板可定位尚未被检测覆盖的技术。");
             seed("应急", "事件响应建议流程：1) 确认与分级（ALERT 告警中心）；2)  containment 隔离失陷主机（SOAR 剧本可自动封禁）；3) 清除持久化；4) 恢复并验证；5) 复盘建案（incident-web 时间线）并补检测规则（DETECT）。");
-        } else {
-            for (QaEntity e : all) {
-                QA.put(e.getKeyword(), e.getAnswer());
-            }
         }
     }
 
     private void seed(String keyword, String answer) {
-        QA.put(keyword, answer);
         repository.save(new QaEntity(keyword, answer));
     }
 
@@ -60,12 +51,10 @@ public class AiAssistantService {
         String answer = "暂无匹配的安全知识。可尝试提问：暴力破解、端口扫描、SQL注入、提权、恶意软件、钓鱼、勒索、DDoS、横向移动、数据外泄、C2、凭据盗取、ATT&CK、应急响应等。";
         String suggestion = null;
 
-        for (var entry : QA.entrySet()) {
-            if (q.contains(entry.getKey())) {
-                answer = entry.getValue();
-                suggestion = "是否需要我帮你在 DETECT 规则引擎中创建对应的检测规则，或在 SOAR 中编排响应剧本？";
-                break;
-            }
+        var match = repository.findMatches(q, PageRequest.of(0, 1)).stream().findFirst();
+        if (match.isPresent()) {
+            answer = match.get().getAnswer();
+            suggestion = "是否需要我帮你在 DETECT 规则引擎中创建对应的检测规则，或在 SOAR 中编排响应剧本？";
         }
 
         // 通用问答兜底

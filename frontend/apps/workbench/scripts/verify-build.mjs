@@ -7,6 +7,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const dist = join(root, 'dist')
 const indexHtml = await readFile(join(dist, 'index.html'), 'utf8')
 const assets = await readdir(join(dist, 'assets'))
+assert.ok(assets.length <= 200, `production output contains ${assets.length} assets; stale build files were not cleaned`)
 const initialScripts = [...indexHtml.matchAll(/(?:src|href)="\/assets\/([^"?]+\.js)"/g)].map(match => match[1])
 const entryName = initialScripts.find(name => name.startsWith('index-'))
 

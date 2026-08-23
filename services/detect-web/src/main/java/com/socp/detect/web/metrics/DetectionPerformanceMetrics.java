@@ -9,6 +9,7 @@ import com.socp.rule.model.SecurityEvent;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.springframework.stereotype.Component;
+import org.springframework.scheduling.annotation.Scheduled;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -143,6 +144,13 @@ public class DetectionPerformanceMetrics implements RuleProcessingObserver {
         if (count <= 0) return;
         registry.counter("socp.detection.outbox.lifecycle", "outbox", outbox,
                 "outcome", outcome).increment(count);
+    }
+
+    @Scheduled(fixedDelayString = "${socp.detect.metrics.timing-cleanup-interval-ms:60000}")
+    void cleanupAbandonedTimings() {
+        long cutoff = System.nanoTime() - Duration.ofMinutes(10).toNanos();
+        events.entrySet().removeIf(entry -> entry.getValue().receivedNanos < cutoff);
+        alerts.entrySet().removeIf(entry -> entry.getValue().claimedNanos < cutoff);
     }
 
     private EventTiming timing(SecurityEvent event) {

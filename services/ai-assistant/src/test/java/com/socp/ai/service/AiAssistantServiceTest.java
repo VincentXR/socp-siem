@@ -7,8 +7,12 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
+import org.springframework.data.domain.Pageable;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 
 class AiAssistantServiceTest {
@@ -16,7 +20,9 @@ class AiAssistantServiceTest {
     @Test
     void loadsPersistedKnowledgeAndReturnsTypedSuggestion() {
         QaRepository repository = mock(QaRepository.class);
-        given(repository.findAll()).willReturn(List.of(new QaEntity("credential", "rotate credentials")));
+        given(repository.count()).willReturn(1L);
+        given(repository.findMatches(eq("credential exposure"), any(Pageable.class)))
+                .willReturn(List.of(new QaEntity("credential", "rotate credentials")));
         AiAssistantService service = new AiAssistantService(repository);
         service.init();
 
@@ -31,7 +37,8 @@ class AiAssistantServiceTest {
     @Test
     void unknownQuestionGetsOperationalFallback() {
         QaRepository repository = mock(QaRepository.class);
-        given(repository.findAll()).willReturn(List.of(new QaEntity("known", "answer")));
+        given(repository.count()).willReturn(1L);
+        given(repository.findMatches(eq("unmapped subject"), any(Pageable.class))).willReturn(List.of());
         AiAssistantService service = new AiAssistantService(repository);
         service.init();
 

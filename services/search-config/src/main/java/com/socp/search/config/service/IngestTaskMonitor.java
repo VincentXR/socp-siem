@@ -1,6 +1,8 @@
 package com.socp.search.config.service;
 
 import com.socp.platform.tenant.TenantContext;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -30,6 +32,12 @@ public class IngestTaskMonitor {
 
     private final Map<String, Stat> stats = new ConcurrentHashMap<>();
 
+    @Value("${socp.ingest.monitor.idle-ttl-ms:86400000}")
+    private long idleTtlMs = 24 * 60 * 60 * 1000L;
+
+    @Value("${socp.ingest.monitor.max-entries:10000}")
+    private int maxEntries = 10_000;
+
     private static final class Stat {
         long accepted;
         long skipped;
@@ -39,6 +47,7 @@ public class IngestTaskMonitor {
         Instant lastAt;
         String lastError;
         Instant lastErrorAt;
+        volatile long lastTouchedMillis = System.currentTimeMillis();
         /** [epochSecond, count]，按秒聚合 */
         final ArrayDeque<long[]> buckets = new ArrayDeque<>();
     }
@@ -49,6 +58,7 @@ public class IngestTaskMonitor {
         Stat s = stats.computeIfAbsent(key, k -> new Stat());
         Instant now = Instant.now();
         synchronized (s) {
+            s.lastTouchedMillis = now.toEpochMilli();
             if (s.firstAt == null) s.firstAt = now;
             s.accepted += accepted;
             s.skipped += skipped;
@@ -71,7 +81,27 @@ public class IngestTaskMonitor {
         synchronized (s) {
             s.lastError = error;
             s.lastErrorAt = Instant.now();
+            s.lastTouchedMillis = s.lastErrorAt.toEpochMilli();
         }
+    }
+
+    @Scheduled(fixedDelayString = "${socp.ingest.monitor.cleanup-interval-ms:3600000}")
+    void cleanupIdleStats() {
+        long now = System.currentTimeMillis();
+        long safeTtl = Math.max(60_000L, idleTtlMs);
+        stats.entrySet().removeIf(entry -> now - entry.getValue().lastTouchedMillis > safeTtl);
+        int excess = stats.size() - Math.max(1, maxEntries);
+        if (excess > 0) {
+            stats.entrySet().stream()
+                    .sorted(Map.Entry.comparingByValue(
+                            java.util.Comparator.comparingLong(value -> value.lastTouchedMillis)))
+                    .limit(excess)
+                    .forEach(entry -> stats.remove(entry.getKey(), entry.getValue()));
+        }
+    }
+
+    int cachedStats() {
+        return stats.size();
     }
 
     /** 单个采集器的运行态快照；从未收到数据则返回全零快照 */

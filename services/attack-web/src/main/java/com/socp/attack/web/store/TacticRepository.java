@@ -5,4 +5,5 @@ import org.springframework.stereotype.Repository;
 
 @Repository
 public interface TacticRepository extends JpaRepository<TacticEntity, String> {
+    java.util.List<TacticEntity> findAllByOrderBySortAsc();
 }

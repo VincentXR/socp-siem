@@ -9,49 +9,51 @@ import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.rule.rules.Rule;
-import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.locks.ReentrantLock;
 
-/** Tenant-scoped secondary alert analysis and durable projection. */
+/** Tenant-scoped secondary alert analysis backed by a durable projection. */
 @Service
 public class AnalyzeService {
 
     private static final Logger log = LoggerFactory.getLogger(AnalyzeService.class);
-    private static final int ANALYZED_MAX = 100_000;
+    private static final int MAX_PAGE_SIZE = 200;
+    private static final int DEFAULT_RULE_COUNT = Rules.defaultRules().size();
 
     private final AnalyzedRepository repository;
-    private final Map<String, List<Rule>> rulesByTenant = new ConcurrentHashMap<>();
-    private final Map<String, AlertBuffer> analyzedByTenant = new ConcurrentHashMap<>();
+    private final Map<String, TenantRules> rulesByTenant = new ConcurrentHashMap<>();
     private final AlertWindowAggregator windowAggregator;
+    private final java.util.concurrent.locks.ReentrantReadWriteLock ruleStateLifecycle =
+            new java.util.concurrent.locks.ReentrantReadWriteLock(true);
+
+    @Value("${socp.detect.model.retention:30d}")
+    private Duration retention = Duration.ofDays(30);
+
+    @Value("${socp.detect.model.rule-state-idle-ttl-ms:1800000}")
+    private long ruleStateIdleTtlMs = 30 * 60 * 1000L;
+
+    @Value("${socp.detect.model.rule-state-max-tenants:1000}")
+    private int maxRuleStateTenants = 1000;
 
     public AnalyzeService(AnalyzedRepository repository, AlertWindowAggregator windowAggregator) {
         this.repository = repository;
         this.windowAggregator = windowAggregator;
     }
 
-    @PostConstruct
-    void load() {
-        try {
-            for (AnalyzedEntity entity : repository.findAll()) {
-                analyzedFor(entity.getTenantId()).add(toAlert(entity));
-            }
-            long loaded = analyzedByTenant.values().stream().mapToLong(AlertBuffer::size).sum();
-            if (loaded > 0) log.info("Restored {} tenant-scoped secondary analysis records", loaded);
-        } catch (RuntimeException failure) {
-            log.warn("Secondary analysis restore failed; starting with an empty cache: {}",
-                    failure.getMessage());
-        }
-    }
-
+    @Transactional
     public Map<String, Object> analyze(Map<String, Object> alarm) {
         String tenant = tenant(alarm);
         String ruleId = String.valueOf(alarm.getOrDefault("ruleId", "UNKNOWN"));
@@ -67,108 +69,96 @@ public class AnalyzeService {
         String source = String.valueOf(alarm.getOrDefault("source", "unknown"));
         SecurityEvent event = new SecurityEvent(Instant.now(), source, entity, message, fields, severity);
 
-        AlertBuffer analyzed = analyzedFor(tenant);
-        int matched = 0;
-        for (Rule rule : rulesFor(tenant)) {
-            rule.accept(event);
-            List<Alert> alerts = rule.drain();
-            for (Alert alert : alerts) {
-                analyzed.add(alert);
-                persist(tenant, alert);
-            }
-            matched += alerts.size();
-        }
+        List<Alert> alerts = evaluateRules(tenant, event);
+        for (Alert alert : alerts) persist(tenant, alert);
+        int matched = alerts.size();
         if (matched > 0) windowAggregator.record(tenant, ruleId, entity, severity.name());
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("inputRuleId", ruleId);
         result.put("entity", entity);
         result.put("analyzedAlerts", matched);
-        result.put("totalAnalyzed", analyzed.size());
+        result.put("totalAnalyzed", repository.countByTenantId(tenant));
         return result;
     }
 
-    public List<Alert> analyzed() {
-        return analyzedFor(currentTenant()).snapshot();
+    @Transactional(readOnly = true)
+    public AnalyzedPage analyzed(int page, int size) {
+        int safePage = Math.max(0, page);
+        int safeSize = Math.max(1, Math.min(MAX_PAGE_SIZE, size));
+        var result = repository.findByTenantId(currentTenant(), PageRequest.of(
+                safePage, safeSize, Sort.by(Sort.Order.desc("ts"), Sort.Order.desc("id"))));
+        return new AnalyzedPage(result.getContent().stream().map(AnalyzeService::toAlert).toList(),
+                result.getTotalElements(), result.getNumber(), result.getSize(), result.getTotalPages());
     }
 
+    @Transactional(readOnly = true)
     public Map<String, Object> stats() {
         String tenant = currentTenant();
-        List<Alert> analyzed = analyzedFor(tenant).snapshot();
+        Map<String, Long> bySeverity = new LinkedHashMap<>();
+        for (Severity severity : Severity.values()) bySeverity.put(severity.name(), 0L);
+        for (Object[] row : repository.countBySeverity(tenant)) {
+            if (row == null || row.length < 2 || row[0] == null || row[1] == null) continue;
+            bySeverity.put(String.valueOf(row[0]), ((Number) row[1]).longValue());
+        }
         Map<String, Object> stats = new LinkedHashMap<>();
-        stats.put("totalAnalyzed", analyzed.size());
-        stats.put("rules", rulesFor(tenant).size());
-        stats.put("bySeverity", Map.of(
-                "CRITICAL", count(analyzed, Severity.CRITICAL),
-                "HIGH", count(analyzed, Severity.HIGH),
-                "MEDIUM", count(analyzed, Severity.MEDIUM),
-                "LOW", count(analyzed, Severity.LOW),
-                "INFO", count(analyzed, Severity.INFO)));
+        stats.put("totalAnalyzed", repository.countByTenantId(tenant));
+        stats.put("rules", DEFAULT_RULE_COUNT);
+        stats.put("bySeverity", bySeverity);
         stats.put("window", windowAggregator.snapshot(tenant));
         return stats;
     }
 
     private void persist(String tenant, Alert alert) {
+        repository.save(new AnalyzedEntity(tenant, alert.id(), alert.ruleId(), alert.ruleName(),
+                alert.severity().name(), truncate(alert.message(), 1000),
+                truncate(alert.entity(), 250), alert.timestamp()));
+    }
+
+    @Scheduled(fixedDelayString = "${socp.detect.model.cleanup-interval-ms:3600000}",
+            initialDelayString = "${socp.detect.model.cleanup-initial-delay-ms:60000}")
+    @Transactional
+    public void cleanupExpired() {
+        Duration safeRetention = retention == null || retention.isNegative() || retention.isZero()
+                ? Duration.ofDays(30) : retention;
+        int removed = repository.deleteBefore(Instant.now().minus(safeRetention));
+        if (removed > 0) log.info("Removed {} expired secondary analysis records", removed);
+    }
+
+    @Scheduled(fixedDelayString = "${socp.detect.model.rule-state-cleanup-interval-ms:60000}")
+    void evictIdleRuleState() {
+        ruleStateLifecycle.writeLock().lock();
         try {
-            repository.save(new AnalyzedEntity(tenant, alert.id(), alert.ruleId(), alert.ruleName(),
-                    alert.severity().name(), truncate(alert.message(), 1000),
-                    truncate(alert.entity(), 250), alert.timestamp()));
-        } catch (RuntimeException failure) {
-            log.warn("Secondary analysis persistence failed alertId={}: {}",
-                    alert.id(), failure.getMessage());
-        }
-    }
-
-    private List<Rule> rulesFor(String tenant) {
-        return rulesByTenant.computeIfAbsent(tenant, ignored -> Rules.defaultRules());
-    }
-
-    private AlertBuffer analyzedFor(String tenant) {
-        String normalized = normalizeTenant(tenant);
-        return analyzedByTenant.computeIfAbsent(normalized, ignored -> new AlertBuffer(ANALYZED_MAX));
-    }
-
-    /** Fixed-size per-tenant ring buffer; appends are O(1) and never copy the backing array. */
-    private static final class AlertBuffer {
-        private final int max;
-        private final java.util.ArrayDeque<Alert> entries = new java.util.ArrayDeque<>();
-        private final ReentrantLock lock = new ReentrantLock();
-
-        private AlertBuffer(int max) {
-            this.max = max;
-        }
-
-        private void add(Alert alert) {
-            lock.lock();
-            try {
-                entries.addLast(alert);
-                while (entries.size() > max) entries.removeFirst();
-            } finally {
-                lock.unlock();
+            long now = System.currentTimeMillis();
+            long safeTtl = Math.max(60_000L, ruleStateIdleTtlMs);
+            rulesByTenant.entrySet().removeIf(entry -> now - entry.getValue().lastAccessMillis > safeTtl);
+            int excess = rulesByTenant.size() - Math.max(1, maxRuleStateTenants);
+            if (excess > 0) {
+                rulesByTenant.entrySet().stream()
+                        .sorted(Map.Entry.comparingByValue(
+                                java.util.Comparator.comparingLong(value -> value.lastAccessMillis)))
+                        .limit(excess)
+                        .forEach(entry -> rulesByTenant.remove(entry.getKey(), entry.getValue()));
             }
-        }
-
-        private int size() {
-            lock.lock();
-            try {
-                return entries.size();
-            } finally {
-                lock.unlock();
-            }
-        }
-
-        private List<Alert> snapshot() {
-            lock.lock();
-            try {
-                return List.copyOf(entries);
-            } finally {
-                lock.unlock();
-            }
+        } finally {
+            ruleStateLifecycle.writeLock().unlock();
         }
     }
 
-    private static long count(List<Alert> alerts, Severity severity) {
-        return alerts.stream().filter(alert -> alert.severity() == severity).count();
+    private List<Alert> evaluateRules(String tenant, SecurityEvent event) {
+        ruleStateLifecycle.readLock().lock();
+        try {
+            TenantRules rules = rulesByTenant.computeIfAbsent(normalizeTenant(tenant),
+                    ignored -> new TenantRules(Rules.defaultRules()));
+            rules.touch();
+            return rules.evaluate(event);
+        } finally {
+            ruleStateLifecycle.readLock().unlock();
+        }
+    }
+
+    int cachedTenantRuleStates() {
+        return rulesByTenant.size();
     }
 
     private static String tenant(Map<String, Object> alarm) {
@@ -204,5 +194,31 @@ public class AnalyzeService {
     private static String truncate(String value, int max) {
         if (value == null) return "";
         return value.length() <= max ? value : value.substring(0, max);
+    }
+
+    private static final class TenantRules {
+        private final List<Rule> rules;
+        private volatile long lastAccessMillis = System.currentTimeMillis();
+
+        private TenantRules(List<Rule> rules) {
+            this.rules = rules;
+        }
+
+        private synchronized List<Alert> evaluate(SecurityEvent event) {
+            List<Alert> emitted = new java.util.ArrayList<>();
+            for (Rule rule : rules) {
+                rule.accept(event);
+                emitted.addAll(rule.drain());
+            }
+            touch();
+            return List.copyOf(emitted);
+        }
+
+        private void touch() {
+            lastAccessMillis = System.currentTimeMillis();
+        }
+    }
+
+    public record AnalyzedPage(List<Alert> items, long total, int page, int size, int totalPages) {
     }
 }

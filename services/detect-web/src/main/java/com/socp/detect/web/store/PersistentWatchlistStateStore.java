@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.rule.engine.WatchlistStateStore;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -31,6 +32,9 @@ public class PersistentWatchlistStateStore implements WatchlistStateStore {
     @Value("${socp.detect.watchlists.refresh-ms:1000}")
     private long refreshMs;
 
+    @Value("${socp.detect.watchlists.cache-max-entries:10000}")
+    private int maxCacheEntries = 10_000;
+
     PersistentWatchlistStateStore(WatchlistRepository repository, ObjectMapper objectMapper) {
         this.repository = repository;
         this.objectMapper = objectMapper;
@@ -43,11 +47,12 @@ public class PersistentWatchlistStateStore implements WatchlistStateStore {
         CachedState cached = cache.get(key);
         long now = System.currentTimeMillis();
         if (cached != null && cached.expiresAt() > now) return cached.state();
+        if (cached != null) cache.remove(key, cached);
 
         State state = repository.findByTenantIdAndListName(tenantId, name)
                 .map(this::toState)
                 .orElse(null);
-        cache.put(key, new CachedState(state, now + Math.max(0L, refreshMs)));
+        cachePut(key, new CachedState(state, now + Math.max(0L, refreshMs)));
         return state;
     }
 
@@ -57,7 +62,7 @@ public class PersistentWatchlistStateStore implements WatchlistStateStore {
         return repository.findByTenantId(tenantId).stream()
                 .map(entity -> {
                     State state = toState(entity);
-                    cache.put(new Key(entity.getTenantId(), entity.getListName()),
+                    cachePut(new Key(entity.getTenantId(), entity.getListName()),
                             new CachedState(state, System.currentTimeMillis() + Math.max(0L, refreshMs)));
                     return entity.getListName();
                 })
@@ -71,7 +76,7 @@ public class PersistentWatchlistStateStore implements WatchlistStateStore {
                 .orElseGet(() -> new WatchlistEntity(tenantId, name));
         entity.saveValues(serialize(values));
         WatchlistEntity saved = repository.save(entity);
-        cache.put(new Key(tenantId, name), new CachedState(toState(saved), expiresAt()));
+        cachePut(new Key(tenantId, name), new CachedState(toState(saved), expiresAt()));
     }
 
     @Override
@@ -81,7 +86,7 @@ public class PersistentWatchlistStateStore implements WatchlistStateStore {
                 .orElseGet(() -> new WatchlistEntity(tenantId, name));
         entity.markDeleted();
         WatchlistEntity saved = repository.save(entity);
-        cache.put(new Key(tenantId, name), new CachedState(toState(saved), expiresAt()));
+        cachePut(new Key(tenantId, name), new CachedState(toState(saved), expiresAt()));
     }
 
     @Override
@@ -113,6 +118,29 @@ public class PersistentWatchlistStateStore implements WatchlistStateStore {
 
     private long expiresAt() {
         return System.currentTimeMillis() + Math.max(0L, refreshMs);
+    }
+
+    private void cachePut(Key key, CachedState state) {
+        cache.put(key, state);
+        if (cache.size() > Math.max(1, maxCacheEntries)) cleanupCache();
+    }
+
+    @Scheduled(fixedDelayString = "${socp.detect.watchlists.cache-cleanup-interval-ms:60000}")
+    void cleanupCache() {
+        long now = System.currentTimeMillis();
+        cache.entrySet().removeIf(entry -> entry.getValue().expiresAt() <= now);
+        int excess = cache.size() - Math.max(1, maxCacheEntries);
+        if (excess > 0) {
+            cache.entrySet().stream()
+                    .sorted(Map.Entry.comparingByValue(
+                            java.util.Comparator.comparingLong(CachedState::expiresAt)))
+                    .limit(excess)
+                    .forEach(entry -> cache.remove(entry.getKey(), entry.getValue()));
+        }
+    }
+
+    int cachedEntries() {
+        return cache.size();
     }
 
     private record Key(String tenantId, String name) {

@@ -7,12 +7,17 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -29,7 +34,28 @@ class EndpointStoreTest {
     /** 空库启动（模拟首次运行灌种子）。 */
     private static EndpointStore freshStore() {
         EndpointRepository repo = mock(EndpointRepository.class);
-        when(repo.findAll()).thenReturn(List.of());
+        var rows = new ConcurrentHashMap<String, EndpointEntity>();
+        when(repo.findByTenantId(anyString())).thenAnswer(invocation -> {
+            String tenant = invocation.getArgument(0);
+            return rows.values().stream().filter(row -> tenant.equals(row.getTenantId())).toList();
+        });
+        when(repo.findByTenantIdAndEndpointId(anyString(), anyString())).thenAnswer(invocation -> {
+            String tenant = invocation.getArgument(0);
+            String endpointId = invocation.getArgument(1);
+            return rows.values().stream()
+                    .filter(row -> tenant.equals(row.getTenantId()) && endpointId.equals(row.getEndpointId()))
+                    .findFirst();
+        });
+        when(repo.save(any(EndpointEntity.class))).thenAnswer(invocation -> {
+            EndpointEntity row = invocation.getArgument(0);
+            rows.put(row.getStorageId(), row);
+            return row;
+        });
+        doAnswer(invocation -> {
+            EndpointEntity row = invocation.getArgument(0);
+            rows.remove(row.getStorageId());
+            return null;
+        }).when(repo).delete(any(EndpointEntity.class));
         EndpointStore store = new EndpointStore(repo);
         store.init();
         return store;

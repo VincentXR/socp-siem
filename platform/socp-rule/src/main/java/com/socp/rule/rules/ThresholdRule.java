@@ -49,7 +49,7 @@ public final class ThresholdRule extends AbstractRule {
     public void accept(SecurityEvent event) {
         if (!matcher.test(event)) return;
         String key = keyOf.apply(event);
-        if (key == null) return;
+        if (key == null || key.isBlank()) return;
 
         ArrayDeque<SecurityEvent> q = buckets.get(key, ArrayDeque::new);
         synchronized (q) {

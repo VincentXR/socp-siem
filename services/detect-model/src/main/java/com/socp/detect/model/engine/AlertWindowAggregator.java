@@ -4,6 +4,7 @@ import com.socp.platform.tenant.TenantContext;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Value;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -26,9 +27,16 @@ public class AlertWindowAggregator {
 
     private final Map<String, TenantWindow> windows = new ConcurrentHashMap<>();
 
+    @Value("${socp.detect.model.window-idle-ttl-ms:1800000}")
+    private long idleTtlMs = 30 * 60 * 1000L;
+
+    @Value("${socp.detect.model.window-max-tenants:1000}")
+    private int maxTenants = 1000;
+
     private static final class TenantWindow {
         private final Deque<WindowBucket> ring = new ArrayDeque<>();
         private WindowBucket current;
+        private volatile long lastAccessMillis = System.currentTimeMillis();
 
         private TenantWindow() {
             current = new WindowBucket(nowBucketKey());
@@ -107,15 +115,36 @@ public class AlertWindowAggregator {
 
     @Scheduled(fixedDelay = BUCKET_MS, initialDelay = BUCKET_MS)
     public void tick() {
-        for (TenantWindow window : windows.values()) {
+        long now = System.currentTimeMillis();
+        long safeTtl = Math.max(BUCKET_MS * BUCKETS, idleTtlMs);
+        for (var entry : windows.entrySet()) {
+            TenantWindow window = entry.getValue();
+            if (now - window.lastAccessMillis > safeTtl) {
+                windows.remove(entry.getKey(), window);
+                continue;
+            }
             synchronized (window) {
                 roll(window);
             }
         }
+        int excess = windows.size() - Math.max(1, maxTenants);
+        if (excess > 0) {
+            windows.entrySet().stream()
+                    .sorted(Map.Entry.comparingByValue(
+                            java.util.Comparator.comparingLong(value -> value.lastAccessMillis)))
+                    .limit(excess)
+                    .forEach(entry -> windows.remove(entry.getKey(), entry.getValue()));
+        }
     }
 
     private TenantWindow window(String tenantId) {
-        return windows.computeIfAbsent(normalizeTenant(tenantId), ignored -> new TenantWindow());
+        TenantWindow window = windows.computeIfAbsent(normalizeTenant(tenantId), ignored -> new TenantWindow());
+        window.lastAccessMillis = System.currentTimeMillis();
+        return window;
+    }
+
+    int cachedTenantWindows() {
+        return windows.size();
     }
 
     private static void roll(TenantWindow window) {

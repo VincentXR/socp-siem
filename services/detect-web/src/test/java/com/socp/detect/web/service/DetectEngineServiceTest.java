@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -149,6 +150,36 @@ class DetectEngineServiceTest {
             releaseSink.countDown();
             service.stop();
         }
+    }
+
+    @Test
+    void boundsTenantEnginesAndRestoresAnEvictedTenant() throws Exception {
+        when(store.list(org.mockito.ArgumentMatchers.anyString())).thenReturn(List.of());
+        DetectEngineService service = new DetectEngineService(
+                store, new RecentAlertSink(10, null, null), forwarder, rulePublisher, stateStore);
+        ReflectionTestUtils.setField(service, "maxTenantEngines", 1);
+        try {
+            service.ingestFromKafkaAndAwait(event("tenant-a", "event-a")).join();
+            Thread.sleep(5);
+            service.ingestFromKafkaAndAwait(event("tenant-b", "event-b")).join();
+            assertEquals(2, service.cachedTenantEngines());
+
+            service.evictIdleEngines();
+            assertEquals(1, service.cachedTenantEngines());
+
+            service.ingestFromKafkaAndAwait(event("tenant-a", "event-a-2")).join();
+            verify(stateStore, org.mockito.Mockito.atLeast(2)).replayRecentForTenant(
+                    org.mockito.ArgumentMatchers.eq("tenant-a"),
+                    org.mockito.ArgumentMatchers.any(Duration.class),
+                    org.mockito.ArgumentMatchers.any());
+        } finally {
+            service.stop();
+        }
+    }
+
+    private static SecurityEvent event(String tenant, String id) {
+        return new SecurityEvent(id, Instant.now(), "auth", "host-1", "event",
+                Map.of("tenant_id", tenant), Severity.INFO);
     }
 
     private static Map<String, Object> patternRule() {

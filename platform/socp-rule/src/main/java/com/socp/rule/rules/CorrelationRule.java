@@ -52,7 +52,7 @@ public final class CorrelationRule extends AbstractRule {
     @Override
     public void accept(SecurityEvent event) {
         String key = keyOf.apply(event);
-        if (key == null) return;
+        if (key == null || key.isBlank()) return;
 
         State st = states.get(key, State::new);
         synchronized (st) {

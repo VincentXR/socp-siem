@@ -2,7 +2,6 @@ package com.socp.detect.model.api;
 
 import com.socp.detect.model.engine.AlertWindowAggregator;
 import com.socp.detect.model.service.AnalyzeService;
-import com.socp.rule.model.Alert;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -38,8 +37,10 @@ public class ModelController {
     }
 
     @GetMapping("/analyzed")
-    public List<Alert> analyzed() {
-        return analyzeService.analyzed();
+    public AnalyzeService.AnalyzedPage analyzed(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "50") int size) {
+        return analyzeService.analyzed(page, size);
     }
 
     @GetMapping("/stats")

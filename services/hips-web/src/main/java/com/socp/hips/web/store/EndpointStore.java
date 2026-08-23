@@ -4,23 +4,21 @@ import com.socp.hips.web.model.Endpoint;
 import com.socp.platform.tenant.TenantContext;
 import jakarta.annotation.PostConstruct;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 
 /**
- * 端点注册表——内存 + H2 双写（t_endpoint）：启动从库恢复，写操作同步落库，重启不丢。
- * 接口不变；生产可换 PG（同 schema）。
+ * Tenant endpoint registry backed solely by {@code t_endpoint}.
+ * The default demo inventory is seeded only when that tenant has no rows.
  */
 @Component
 public class EndpointStore {
 
     private final EndpointRepository repository;
-    private final ConcurrentHashMap<String, Endpoint> map = new ConcurrentHashMap<>();
 
     public EndpointStore(EndpointRepository repository) {
         this.repository = repository;
@@ -28,48 +26,43 @@ public class EndpointStore {
 
     @PostConstruct
     void init() {
-        List<EndpointEntity> all = repository.findAll();
+        List<EndpointEntity> all = repository.findByTenantId("default");
         if (all.isEmpty()) {
             save(Endpoint.register("web01", "10.0.0.5", "Ubuntu 22.04", "falco-0.39"));
             save(Endpoint.register("web02", "10.0.0.6", "Ubuntu 22.04", "falco-0.39"));
             save(Endpoint.register("db-master", "10.0.0.10", "Debian 12", "falco-0.38"));
-        } else {
-            for (EndpointEntity e : all) {
-                map.put(key(e.getTenantId(), e.getEndpointId()), new Endpoint(e.getEndpointId(), e.getHostname(), e.getIp(), e.getOs(),
-                        e.getAgentVersion(), e.getStatus(), e.getLastHeartbeat()));
-            }
         }
     }
 
+    @Transactional(readOnly = true)
     public List<Endpoint> list() {
-        String prefix = tenant() + "|";
-        return map.entrySet().stream().filter(entry -> entry.getKey().startsWith(prefix))
-                .map(Map.Entry::getValue).toList();
+        return repository.findByTenantId(tenant()).stream().map(EndpointStore::fromEntity).toList();
     }
 
+    @Transactional
     public Endpoint save(Endpoint e) {
         String tenant = tenant();
-        map.put(key(tenant, e.id()), e);
         repository.save(toEntity(e, tenant));
         return e;
     }
 
+    @Transactional
     public Endpoint heartbeat(String id) {
         String tenant = tenant();
-        Endpoint e = map.get(key(tenant, id));
-        if (e == null) return null;
-        Endpoint updated = new Endpoint(e.id(), e.hostname(), e.ip(), e.os(), e.agentVersion(),
-                "ONLINE", Instant.now());
-        map.put(key(tenant, id), updated);
-        repository.save(toEntity(updated, tenant));
-        return updated;
+        EndpointEntity entity = repository.findByTenantIdAndEndpointId(tenant, id).orElse(null);
+        if (entity == null) return null;
+        entity.setStatus("ONLINE");
+        entity.setLastHeartbeat(Instant.now());
+        return fromEntity(repository.save(entity));
     }
 
+    @Transactional
     public boolean delete(String id) {
         String tenant = tenant();
-        boolean removed = map.remove(key(tenant, id)) != null;
-        repository.findByTenantIdAndEndpointId(tenant, id).ifPresent(repository::delete);
-        return removed;
+        var entity = repository.findByTenantIdAndEndpointId(tenant, id);
+        if (entity.isEmpty()) return false;
+        repository.delete(entity.get());
+        return true;
     }
 
     private static EndpointEntity toEntity(Endpoint e, String tenant) {
@@ -83,11 +76,12 @@ public class EndpointStore {
         return tenant == null || tenant.isBlank() ? "default" : tenant;
     }
 
-    private static String key(String tenant, String id) {
-        return tenant + "|" + id;
+    private static Endpoint fromEntity(EndpointEntity entity) {
+        return new Endpoint(entity.getEndpointId(), entity.getHostname(), entity.getIp(), entity.getOs(),
+                entity.getAgentVersion(), entity.getStatus(), entity.getLastHeartbeat());
     }
 
     private static String storageId(String tenant, String id) {
-        return UUID.nameUUIDFromBytes(key(tenant, id).getBytes(StandardCharsets.UTF_8)).toString();
+        return UUID.nameUUIDFromBytes((tenant + "|" + id).getBytes(StandardCharsets.UTF_8)).toString();
     }
 }

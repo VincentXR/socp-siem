@@ -16,6 +16,8 @@ import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.rules.Rule;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -43,11 +45,18 @@ public class DetectEngineService {
     private final AlertForwarder forwarder;
     private final Suppressor suppressor = new Suppressor(Duration.ofMinutes(5));
     private final Map<String, RuleEngine> engines = new ConcurrentHashMap<>();
+    private final Map<String, Long> engineLastAccess = new ConcurrentHashMap<>();
     private final RuleChangePublisher rulePublisher;
     private final DetectionStateStore stateStore;
     private final RuleProcessingObserver processingObserver;
     private final AtomicReference<Set<Integer>> assignedPartitions = new AtomicReference<>(Set.of());
     private final ReentrantReadWriteLock engineLifecycle = new ReentrantReadWriteLock(true);
+
+    @Value("${socp.detect.engine.idle-ttl-ms:1800000}")
+    private long engineIdleTtlMs = 30 * 60 * 1000L;
+
+    @Value("${socp.detect.engine.max-tenants:1000}")
+    private int maxTenantEngines = 1000;
 
     @org.springframework.beans.factory.annotation.Autowired
     public DetectEngineService(RuleSpecStore store, RecentAlertSink sink, AlertForwarder forwarder,
@@ -89,6 +98,7 @@ public class DetectEngineService {
         try {
             engines.values().forEach(RuleEngine::close);
             engines.clear();
+            engineLastAccess.clear();
             suppressor.close();
         } finally {
             engineLifecycle.writeLock().unlock();
@@ -118,11 +128,19 @@ public class DetectEngineService {
 
     private RuleEngine engineFor(String tenant) {
         String resolved = tenant == null || tenant.isBlank() ? "default" : tenant;
-        return engines.computeIfAbsent(resolved, key -> {
-            RuleEngine engine = buildEngine(key, List.of());
-            engine.start();
+        engineLifecycle.readLock().lock();
+        try {
+            RuleEngine engine = engines.computeIfAbsent(resolved, key -> {
+                RuleEngine created = buildEngine(key, List.of());
+                restoreState(key, created, assignedPartitions.get());
+                created.start();
+                return created;
+            });
+            engineLastAccess.put(resolved, System.currentTimeMillis());
             return engine;
-        });
+        } finally {
+            engineLifecycle.readLock().unlock();
+        }
     }
 
     /** 规则热更新：原子替换引擎（旧引擎毒丸退出），无需重启进程 */
@@ -196,6 +214,7 @@ public class DetectEngineService {
             restoreState(tenant, replacement, assignedPartitions.get());
             replacement.start();
             engines.put(tenant, replacement);
+            engineLastAccess.put(tenant, System.currentTimeMillis());
         } finally {
             engineLifecycle.writeLock().unlock();
         }
@@ -206,19 +225,63 @@ public class DetectEngineService {
         try {
             engines.values().forEach(RuleEngine::close);
             engines.clear();
+            engineLastAccess.clear();
             java.util.function.Consumer<List<SecurityEvent>> restoreBatch = events -> {
                 Map<String, List<SecurityEvent>> byTenant = events.stream()
                         .collect(java.util.stream.Collectors.groupingBy(SecurityEvent::tenantId));
-                byTenant.forEach((tenant, owned) -> engineFor(tenant).restore(owned));
+                byTenant.forEach((tenant, owned) -> {
+                    RuleEngine engine = engines.get(tenant);
+                    if (engine == null) {
+                        engine = buildEngine(tenant, List.of());
+                        engines.put(tenant, engine);
+                    }
+                    engine.restore(owned);
+                    engineLastAccess.put(tenant, System.currentTimeMillis());
+                });
             };
             if (partitions == null || partitions.isEmpty()) {
                 stateStore.replayRecent(Duration.ofHours(24), restoreBatch);
             } else {
                 stateStore.replayRecentForPartitions(partitions, Duration.ofHours(24), restoreBatch);
             }
+            engines.values().forEach(RuleEngine::start);
         } finally {
             engineLifecycle.writeLock().unlock();
         }
+    }
+
+    @Scheduled(fixedDelayString = "${socp.detect.engine.cleanup-interval-ms:60000}")
+    void evictIdleEngines() {
+        engineLifecycle.writeLock().lock();
+        try {
+            long now = System.currentTimeMillis();
+            long safeTtl = Math.max(60_000L, engineIdleTtlMs);
+            List<String> candidates = new java.util.ArrayList<>();
+            for (String tenant : engines.keySet()) {
+                if (now - engineLastAccess.getOrDefault(tenant, now) > safeTtl) candidates.add(tenant);
+            }
+            int remaining = engines.size() - candidates.size();
+            int excess = remaining - Math.max(1, maxTenantEngines);
+            if (excess > 0) {
+                engines.keySet().stream()
+                        .filter(tenant -> !candidates.contains(tenant))
+                        .sorted(java.util.Comparator.comparingLong(
+                                tenant -> engineLastAccess.getOrDefault(tenant, Long.MIN_VALUE)))
+                        .limit(excess)
+                        .forEach(candidates::add);
+            }
+            for (String tenant : candidates) {
+                RuleEngine removed = engines.remove(tenant);
+                engineLastAccess.remove(tenant);
+                if (removed != null) removed.close();
+            }
+        } finally {
+            engineLifecycle.writeLock().unlock();
+        }
+    }
+
+    int cachedTenantEngines() {
+        return engines.size();
     }
 
     public List<Map<String, Object>> listRules() {
@@ -346,6 +409,7 @@ public class DetectEngineService {
         m.put("stateRecovery", Map.of(
                 "store", stateStore.getClass().getSimpleName(),
                 "replayWindow", stateStore.recoveryWindow()));
+        m.put("cachedTenantEngines", engines.size());
         return m;
     }
 }

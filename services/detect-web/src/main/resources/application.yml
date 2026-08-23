@@ -28,11 +28,17 @@ socp:
   alert:
     url: http://localhost:18080
   detect:
+    engine:
+      idle-ttl-ms: ${SOCP_DETECT_ENGINE_IDLE_TTL_MS:1800000}
+      max-tenants: ${SOCP_DETECT_ENGINE_MAX_TENANTS:1000}
+      cleanup-interval-ms: ${SOCP_DETECT_ENGINE_CLEANUP_INTERVAL_MS:60000}
     watchlists:
       # Shared database state is refreshed on this bounded interval so a
       # mutation made through another Detection instance becomes effective
       # without turning every inlist rule evaluation into a database query.
       refresh-ms: ${SOCP_DETECT_WATCHLIST_REFRESH_MS:1000}
+      cache-max-entries: ${SOCP_DETECT_WATCHLIST_CACHE_MAX_ENTRIES:10000}
+      cache-cleanup-interval-ms: ${SOCP_DETECT_WATCHLIST_CACHE_CLEANUP_INTERVAL_MS:60000}
     state:
       retention: ${SOCP_DETECT_STATE_RETENTION:24h}
       replay-page-size: ${SOCP_DETECT_STATE_REPLAY_PAGE_SIZE:1000}

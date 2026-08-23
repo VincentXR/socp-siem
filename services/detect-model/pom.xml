@@ -61,10 +61,6 @@
             <artifactId>socp-ratelimit</artifactId>
         </dependency>
         <dependency>
-            <groupId>com.socp.platform</groupId>
-            <artifactId>socp-data</artifactId>
-        </dependency>
-        <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
             <scope>runtime</scope>

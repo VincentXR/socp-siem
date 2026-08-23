@@ -5,4 +5,5 @@ import org.springframework.stereotype.Repository;
 
 @Repository
 public interface TechniqueRepository extends JpaRepository<TechniqueEntity, String> {
+    java.util.List<TechniqueEntity> findAllByOrderByIdAsc();
 }

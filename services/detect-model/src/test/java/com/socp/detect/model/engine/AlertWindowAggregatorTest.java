@@ -3,6 +3,7 @@ package com.socp.detect.model.engine;
 import com.socp.platform.tenant.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -25,5 +26,17 @@ class AlertWindowAggregatorTest {
 
         TenantContext.set("tenant-c");
         assertEquals(0L, aggregator.snapshot().get("total"));
+    }
+
+    @Test
+    void boundsTenantWindowCardinality() {
+        AlertWindowAggregator aggregator = new AlertWindowAggregator();
+        ReflectionTestUtils.setField(aggregator, "maxTenants", 1);
+        aggregator.record("tenant-a", "rule-a", "host-a", "HIGH");
+        aggregator.record("tenant-b", "rule-b", "host-b", "LOW");
+
+        aggregator.tick();
+
+        assertEquals(1, aggregator.cachedTenantWindows());
     }
 }

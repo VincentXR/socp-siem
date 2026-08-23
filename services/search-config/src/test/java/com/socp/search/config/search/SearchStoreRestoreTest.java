@@ -3,6 +3,7 @@ package com.socp.search.config.search;
 import com.socp.platform.tenant.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.Instant;
 import java.util.List;
@@ -78,5 +79,23 @@ class SearchStoreRestoreTest {
         assertEquals(20_000, store.size());
         assertEquals("event-100", store.all().getFirst().eventId());
         assertEquals("event-20099", store.all().getLast().eventId());
+    }
+
+    @Test
+    void boundsTenantBufferCardinality() {
+        SearchEventRepository repository = mock(SearchEventRepository.class);
+        when(repository.findTop20000ByTenantIdOrderByTimestampDesc("default")).thenReturn(List.of());
+        when(repository.findTop20000ByTenantIdOrderByTimestampDesc("tenant-a")).thenReturn(List.of());
+        when(repository.findTop20000ByTenantIdOrderByTimestampDesc("tenant-b")).thenReturn(List.of());
+        SearchStore store = new SearchStore(repository, null);
+        ReflectionTestUtils.setField(store, "maxTenantBuffers", 1);
+
+        TenantContext.set("tenant-a");
+        store.all();
+        TenantContext.set("tenant-b");
+        store.all();
+        store.evictIdleTenantBuffers();
+
+        assertEquals(1, store.cachedTenantBuffers());
     }
 }

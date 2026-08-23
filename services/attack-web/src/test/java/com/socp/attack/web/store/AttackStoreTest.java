@@ -5,7 +5,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -24,10 +23,9 @@ class AttackStoreTest {
     private TechniqueRepository techniqueRepository;
 
     @Test
-    void updatesTechniqueInMemoryAndRepository() {
+    void updatesTechniqueInRepositoryAndReadsItBack() {
         TechniqueEntity entity = new TechniqueEntity("T1110", "Brute Force", "TA0006", "old-url", "old description");
-        given(tacticRepository.findAll()).willReturn(List.of(new TacticEntity("TA0006", "Credential Access", 1)));
-        given(techniqueRepository.findAll()).willReturn(List.of(entity));
+        given(tacticRepository.count()).willReturn(1L);
         given(techniqueRepository.findById("T1110")).willReturn(Optional.of(entity));
         AttackStore store = new AttackStore(tacticRepository, techniqueRepository);
         store.seed();

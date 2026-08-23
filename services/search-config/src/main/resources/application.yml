@@ -26,6 +26,11 @@ spring:
 
 # 采集管线转发归一化事件的目标（DETECT 检测引擎）
 socp:
+  search:
+    local-cache:
+      idle-ttl-ms: ${SOCP_SEARCH_CACHE_IDLE_TTL_MS:1800000}
+      max-tenants: ${SOCP_SEARCH_CACHE_MAX_TENANTS:100}
+      cleanup-interval-ms: ${SOCP_SEARCH_CACHE_CLEANUP_INTERVAL_MS:60000}
   security:
     # 生产鉴权（2026-08-09 启用）：HMAC HS256 验签，与网关 /auth/login 签发 secret 一致。
     jwt-secret: ${SOCP_JWT_SECRET}
@@ -40,6 +45,10 @@ socp:
   detect:
     url: http://localhost:18082
   ingest:
+    monitor:
+      idle-ttl-ms: ${SOCP_INGEST_MONITOR_IDLE_TTL_MS:86400000}
+      max-entries: ${SOCP_INGEST_MONITOR_MAX_ENTRIES:10000}
+      cleanup-interval-ms: ${SOCP_INGEST_MONITOR_CLEANUP_INTERVAL_MS:3600000}
     outbox:
       poll-interval-ms: ${SOCP_INGEST_OUTBOX_POLL_MS:500}
       initial-delay-ms: ${SOCP_INGEST_OUTBOX_INITIAL_DELAY_MS:1000}

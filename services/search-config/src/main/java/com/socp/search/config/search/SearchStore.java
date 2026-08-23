@@ -2,6 +2,8 @@ package com.socp.search.config.search;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -26,6 +28,12 @@ public class SearchStore {
     private static final int CAP = 20000;
 
     private final Map<String, TenantBuffer> eventsByTenant = new ConcurrentHashMap<>();
+
+    @Value("${socp.search.local-cache.idle-ttl-ms:1800000}")
+    private long tenantBufferIdleTtlMs = 30 * 60 * 1000L;
+
+    @Value("${socp.search.local-cache.max-tenants:100}")
+    private int maxTenantBuffers = 100;
 
     public SearchStore(SearchEventRepository repo, OsEventWriter osWriter) {
         this.repo = repo;
@@ -177,8 +185,28 @@ public class SearchStore {
 
     private TenantBuffer events(String tenant) {
         TenantBuffer buffer = eventsByTenant.computeIfAbsent(tenant, ignored -> new TenantBuffer(CAP));
+        buffer.touch();
         buffer.initialize(tenant, repo);
         return buffer;
+    }
+
+    @Scheduled(fixedDelayString = "${socp.search.local-cache.cleanup-interval-ms:60000}")
+    void evictIdleTenantBuffers() {
+        long now = System.currentTimeMillis();
+        long safeTtl = Math.max(60_000L, tenantBufferIdleTtlMs);
+        eventsByTenant.entrySet().removeIf(entry -> now - entry.getValue().lastAccessMillis > safeTtl);
+        int excess = eventsByTenant.size() - Math.max(1, maxTenantBuffers);
+        if (excess > 0) {
+            eventsByTenant.entrySet().stream()
+                    .sorted(Map.Entry.comparingByValue(
+                            java.util.Comparator.comparingLong(value -> value.lastAccessMillis)))
+                    .limit(excess)
+                    .forEach(entry -> eventsByTenant.remove(entry.getKey(), entry.getValue()));
+        }
+    }
+
+    int cachedTenantBuffers() {
+        return eventsByTenant.size();
     }
 
     /** Tenant-local bounded insertion-ordered index; writes no longer block unrelated tenants. */
@@ -187,6 +215,7 @@ public class SearchStore {
         private final LinkedHashMap<String, SearchEvent> events = new LinkedHashMap<>();
         private final ReentrantLock lock = new ReentrantLock();
         private volatile boolean initialized;
+        private volatile long lastAccessMillis = System.currentTimeMillis();
 
         private TenantBuffer(int cap) {
             this.cap = cap;
@@ -211,6 +240,7 @@ public class SearchStore {
         }
 
         private void remember(SearchEvent event) {
+            touch();
             lock.lock();
             try {
                 events.remove(event.eventId());
@@ -222,6 +252,7 @@ public class SearchStore {
         }
 
         private List<SearchEvent> snapshot() {
+            touch();
             lock.lock();
             try {
                 return List.copyOf(events.values());
@@ -231,12 +262,17 @@ public class SearchStore {
         }
 
         private int size() {
+            touch();
             lock.lock();
             try {
                 return events.size();
             } finally {
                 lock.unlock();
             }
+        }
+
+        private void touch() {
+            lastAccessMillis = System.currentTimeMillis();
         }
     }
 
