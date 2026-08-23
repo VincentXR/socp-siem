@@ -1,5 +1,6 @@
 package com.socp.alert;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -11,12 +12,15 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.time.format.DateTimeFormatter;
 import java.util.Base64;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /** Writes alarm detail rows to ClickHouse for reporting. */
 @Component
 public class CkReporter {
 
     private static final Logger log = LoggerFactory.getLogger(CkReporter.class);
+    private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final DateTimeFormatter CK_TS = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
 
     @Value("${socp.ck.url:http://localhost:8123}")
@@ -50,10 +54,15 @@ public class CkReporter {
                     ? java.time.LocalDateTime.now().format(CK_TS)
                     : java.time.LocalDateTime.ofInstant(alarm.getOccurredAt(), java.time.ZoneId.systemDefault())
                     .format(CK_TS);
-            String row = "{\"tenant_id\":\"%s\",\"alarm_id\":\"%s\",\"ts\":\"%s\","
-                    + "\"severity\":\"%s\",\"rule_id\":\"%s\",\"rule_name\":\"%s\",\"entity\":\"%s\"}"
-                    .formatted(escape(alarm.getTenantId()), escape(alarm.getId()), ts, alarm.getSeverity(),
-                            escape(alarm.getRuleId()), escape(alarm.getRuleName()), escape(alarm.getEntity()));
+            Map<String, Object> values = new LinkedHashMap<>();
+            values.put("tenant_id", alarm.getTenantId());
+            values.put("alarm_id", alarm.getId());
+            values.put("ts", ts);
+            values.put("severity", alarm.getSeverity() == null ? "" : alarm.getSeverity().name());
+            values.put("rule_id", alarm.getRuleId());
+            values.put("rule_name", alarm.getRuleName());
+            values.put("entity", alarm.getEntity());
+            String row = MAPPER.writeValueAsString(values);
             String sql = "INSERT INTO alert_agg.alarm_detail FORMAT JSONEachRow\n" + row + "\n";
             connection = (HttpURLConnection) new URL(ckUrl).openConnection();
             connection.setRequestMethod("POST");
@@ -72,7 +81,10 @@ public class CkReporter {
                 log.info("ClickHouse alarm detail acknowledged alarmId={} HTTP={}", alarm.getId(), code);
                 return true;
             }
-            log.warn("ClickHouse alarm detail rejected alarmId={} HTTP={}", alarm.getId(), code);
+            String response = connection.getErrorStream() == null ? ""
+                    : new String(connection.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
+            if (response.length() > 512) response = response.substring(0, 512);
+            log.warn("ClickHouse alarm detail rejected alarmId={} HTTP={} body={}", alarm.getId(), code, response);
         } catch (Exception failure) {
             log.warn("ClickHouse alarm detail delivery failed alarmId={}: {}", alarm.getId(), failure.getMessage());
         } finally {
@@ -81,7 +93,4 @@ public class CkReporter {
         return false;
     }
 
-    private static String escape(String value) {
-        return value == null ? "" : value.replace("\\", "\\\\").replace("\"", "\\\"");
-    }
 }
