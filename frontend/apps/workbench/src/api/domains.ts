@@ -1,9 +1,9 @@
 import {
   assetStats, createAsset, deleteAsset, endpointStats, deleteEndpoint, importAssets, listAssets, listEndpoints, updateAsset,
-  caseStats, caseTimeline, createCase, exportCases, listCases, setCaseStatus,
-  createIoc, deleteIoc, importIocs, listIocs, tiMatch, tiStats,
-  type Asset, type CaseInfo, type Endpoint, type Ioc, type TimelineEvent,
-} from '../api'
+} from './assets'
+import { caseStats, caseTimeline, createCase, exportCases, listCases, setCaseStatus } from './incidents'
+import { createIoc, deleteIoc, importIocs, listIocs, tiMatch, tiStats } from './threat'
+import type { Asset, CaseInfo, Endpoint, Ioc, TimelineEvent } from './models'
 
 /** Domain facades keep resource views independent from the legacy API barrel. */
 export const assetApi = { list: listAssets, stats: assetStats, create: createAsset, update: updateAsset, bulkImport: importAssets, remove: deleteAsset }
