@@ -89,7 +89,8 @@ public class TiController {
 
     /** 批量匹配：请求体为候选值数组，返回命中映射。 */
     @PostMapping("/iocs/match")
-    public Map<String, Object> matchBulk(@RequestBody List<String> values) {
+    public Map<String, Object> matchBulk(@Valid @Size(min = 1, max = 1000)
+                                         @RequestBody List<@Size(max = 512) String> values) {
         Map<String, Ioc> hits = store.matchAll(values);
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("checked", values.size());
