@@ -12,6 +12,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Size;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -39,10 +41,9 @@ public class TiController {
     @RequireRole({"admin", "analyst"})
     @AuditOperation(action = "CREATE_IOC", target = "threat")
     @PostMapping("/iocs")
-    public Ioc create(@RequestBody Map<String, Object> body) {
+    public Ioc create(@Valid @RequestBody IocRequest body) {
         Ioc ioc = Ioc.of(
-                str(body, "type"), str(body, "value"), str(body, "severity"),
-                str(body, "source"), str(body, "description"), tags(body));
+                body.type(), body.value(), body.severity(), body.source(), body.description(), body.tags());
         return store.add(ioc);
     }
 
@@ -50,18 +51,18 @@ public class TiController {
     @RequireRole({"admin", "analyst"})
     @AuditOperation(action = "IMPORT_IOC", target = "threat")
     @PostMapping("/iocs/import")
-    public Map<String, Object> importIocs(@RequestBody List<Map<String, Object>> rows) {
+    public Map<String, Object> importIocs(@Valid @Size(max = 1000) @RequestBody List<@Valid IocImportRequest> rows) {
         List<String> errors = new java.util.ArrayList<>();
         int imported = 0;
         for (int index = 0; index < (rows == null ? 0 : rows.size()); index++) {
-            Map<String, Object> row = rows.get(index);
-            if (row == null || str(row, "value").isBlank()) {
+            IocImportRequest row = rows.get(index);
+            if (row == null || row.value() == null || row.value().isBlank()) {
                 errors.add("第 " + (index + 1) + " 行缺少情报值");
                 continue;
             }
             Ioc ioc = Ioc.of(
-                    valueOr(row, "type", "IP"), str(row, "value"), valueOr(row, "severity", "MEDIUM"),
-                    valueOr(row, "source", "import"), str(row, "description"), tags(row));
+                    valueOr(row.type(), "IP"), row.value(), valueOr(row.severity(), "MEDIUM"),
+                    valueOr(row.source(), "import"), valueOr(row.description(), ""), row.tags() == null ? List.of() : row.tags());
             store.add(ioc);
             imported++;
         }
@@ -119,9 +120,8 @@ public class TiController {
         return v == null ? "" : String.valueOf(v);
     }
 
-    private static String valueOr(Map<String, Object> body, String key, String fallback) {
-        String value = str(body, key);
-        return value.isBlank() ? fallback : value;
+    private static String valueOr(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value;
     }
 
     private static List<String> tags(Map<String, Object> body) {

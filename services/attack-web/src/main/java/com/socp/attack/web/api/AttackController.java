@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -57,9 +58,8 @@ public class AttackController {
     @RequireRole({"admin", "analyst"})
     @AuditOperation(action = "UPDATE_ATTACK_TECHNIQUE", target = "attack")
     @PutMapping("/techniques/{id}")
-    public Technique update(@PathVariable String id, @RequestBody Map<String, Object> body) {
-        Technique updated = store.update(id, value(body, "name"), value(body, "tactic"),
-                value(body, "url"), value(body, "description"));
+    public Technique update(@PathVariable String id, @Valid @RequestBody TechniqueUpdateRequest body) {
+        Technique updated = store.update(id, body.name(), body.tactic(), body.url(), body.description());
         if (updated == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "ATT&CK 技术不存在");
         return updated;
     }
@@ -69,9 +69,8 @@ public class AttackController {
      * 返回每个战术的覆盖数/覆盖率、总体覆盖率、未覆盖技术列表。
      */
     @PostMapping("/coverage")
-    public Map<String, Object> coverage(@RequestBody Map<String, Object> body) {
-        @SuppressWarnings("unchecked")
-        List<String> ruleTechs = (List<String>) body.getOrDefault("ruleTechniques", List.of());
+    public Map<String, Object> coverage(@Valid @RequestBody CoverageRequest body) {
+        List<String> ruleTechs = body.ruleTechniques();
         Set<String> covered = Set.copyOf(ruleTechs);
         return store.coverage(covered);
     }
@@ -84,8 +83,4 @@ public class AttackController {
         return out;
     }
 
-    private static String value(Map<String, Object> body, String key) {
-        Object value = body == null ? null : body.get(key);
-        return value == null ? null : String.valueOf(value);
-    }
 }

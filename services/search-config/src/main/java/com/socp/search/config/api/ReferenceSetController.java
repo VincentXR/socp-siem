@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 import java.util.Map;
 import com.socp.platform.auth.RequireRole;
+import jakarta.validation.Valid;
 
 /**
  * 查找表 / 参考数据集 REST API（context-path /search-config）。
@@ -35,20 +36,18 @@ public class ReferenceSetController {
 
     @RequireRole({"admin", "analyst"})
     @PostMapping
-    public ReferenceSet create(@RequestBody Map<String, Object> body) {
-        @SuppressWarnings("unchecked")
-        List<String> entries = (List<String>) body.getOrDefault("entries", List.of());
-        return store.add(ReferenceSet.of(str(body, "name"), str(body, "description"), entries));
+    public ReferenceSet create(@Valid @RequestBody ReferenceSetCreateRequest body) {
+        return store.add(ReferenceSet.of(body.name(), body.description(), body.entries()));
     }
 
     @RequireRole({"admin", "analyst"})
     @PostMapping("/{id}/entries")
-    public Map<String, Object> addEntry(@PathVariable String id, @RequestBody Map<String, Object> body) {
+    public Map<String, Object> addEntry(@PathVariable String id, @Valid @RequestBody ReferenceEntryRequest body) {
         ReferenceSet rs = store.get(id);
         if (rs == null) return Map.of("error", "not_found");
         List<String> entries = new java.util.ArrayList<>(rs.entries());
-        String v = str(body, "value");
-        if (!v.isBlank() && !entries.contains(v)) entries.add(v);
+        String v = body.value();
+        if (!entries.contains(v)) entries.add(v);
         store.add(new ReferenceSet(rs.id(), rs.name(), rs.description(), List.copyOf(entries)));
         return Map.of("ok", true, "size", entries.size());
     }

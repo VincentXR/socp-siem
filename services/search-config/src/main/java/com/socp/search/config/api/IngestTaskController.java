@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import com.socp.platform.auth.RequireRole;
+import jakarta.validation.Valid;
 
 /**
  * 接入任务管理 API：把"接入配置"和"运行指标"合成一个任务视图。
@@ -78,14 +79,14 @@ public class IngestTaskController {
     /** 接入连通性自测：灌一条样例日志走完整解析/富化/转发链路，回显管线结果 */
         @RequireRole({"admin", "analyst"})
 @PostMapping("/ingest/tasks/{id}/test")
-    public ResponseEntity<?> test(@PathVariable String id, @RequestBody(required = false) Map<String, Object> body) {
+    public ResponseEntity<?> test(@PathVariable String id, @Valid @RequestBody(required = false) IngestTestRequest body) {
         Optional<LogSource> s = store.get(id);
         if (s.isEmpty()) {
             return ResponseEntity.status(404).body(Map.of("error", "source_not_found", "id", id));
         }
         LogSource src = s.get();
-        String sample = body == null || body.get("sample") == null
-                ? defaultSample(src) : String.valueOf(body.get("sample"));
+        String sample = body == null || body.sample() == null
+                ? defaultSample(src) : body.sample();
         Map<String, Object> result = pipeline.process(sample, src.collectorTag());
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("id", id);

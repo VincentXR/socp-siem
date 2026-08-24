@@ -23,9 +23,9 @@ class TiControllerTest {
     @Test
     void importReportsImportedAndSkippedIndicators() {
         given(store.add(any(Ioc.class))).willAnswer(invocation -> invocation.getArgument(0));
-        List<Map<String, Object>> rows = List.of(
-                Map.of("type", "IP", "value", "203.0.113.55", "severity", "HIGH"),
-                Map.of("type", "DOMAIN"));
+        List<IocImportRequest> rows = List.of(
+                new IocImportRequest("IP", "203.0.113.55", "HIGH", null, null, null),
+                new IocImportRequest("DOMAIN", null, null, null, null, null));
 
         Map<String, Object> result = new TiController(store).importIocs(rows);
 
