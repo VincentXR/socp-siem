@@ -17,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import com.socp.platform.auth.RequireRole;
+import jakarta.validation.Valid;
 
 /**
  * 通知与集成 REST API（context-path /notify-web）。
@@ -41,12 +42,10 @@ public class NotifyController {
 
     @RequireRole({"admin", "analyst"})
     @PostMapping("/channels")
-    public Channel create(@RequestBody Map<String, Object> body) {
-        @SuppressWarnings("unchecked")
-        List<String> _ignore = null;
+    public Channel create(@Valid @RequestBody ChannelCreateRequest body) {
         Channel ch = Channel.of(
-                str(body, "name"), str(body, "type"), str(body, "target"),
-                bool(body, "enabled", true), str(body, "description"));
+                body.name().trim(), body.type(), body.target().trim(),
+                body.enabledOrDefault(), body.description());
         return channels.add(ch);
     }
 
@@ -79,13 +78,4 @@ public class NotifyController {
         return dispatcher.log();
     }
 
-    private static String str(Map<String, Object> m, String k) {
-        Object v = m.get(k);
-        return v == null ? "" : String.valueOf(v);
-    }
-
-    private static boolean bool(Map<String, Object> m, String k, boolean d) {
-        Object v = m.get(k);
-        return v == null ? d : Boolean.parseBoolean(String.valueOf(v));
-    }
 }

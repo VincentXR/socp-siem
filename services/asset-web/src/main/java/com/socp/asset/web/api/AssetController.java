@@ -12,6 +12,10 @@ import java.util.Map;
 import java.util.stream.Collectors;
 import com.socp.platform.auth.RequireRole;
 import com.socp.platform.audit.AuditOperation;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 
 /**
  * ASSET 资产管理 API：CRUD + 采集上报 + 统计。
@@ -33,7 +37,7 @@ public class AssetController {
 
     @RequireRole({"admin", "analyst"})
     @PostMapping
-    public Asset create(@RequestBody CreateAssetRequest req) {
+    public Asset create(@Valid @RequestBody CreateAssetRequest req) {
         return store.save(Asset.create(req.name(), req.type(), req.ip(), req.os(), req.owner(), req.criticality()));
     }
 
@@ -41,7 +45,7 @@ public class AssetController {
     @RequireRole({"admin", "analyst"})
     @AuditOperation(action = "IMPORT_ASSET", target = "asset")
     @PostMapping("/import")
-    public Map<String, Object> importAssets(@RequestBody List<CreateAssetRequest> requests) {
+    public Map<String, Object> importAssets(@Valid @Size(max = 500) @RequestBody List<@Valid CreateAssetRequest> requests) {
         List<String> errors = new java.util.ArrayList<>();
         int imported = 0;
         for (int index = 0; index < (requests == null ? 0 : requests.size()); index++) {
@@ -59,7 +63,7 @@ public class AssetController {
 
     @RequireRole({"admin", "analyst"})
     @PutMapping("/{id}")
-    public Asset update(@PathVariable String id, @RequestBody CreateAssetRequest req) {
+    public Asset update(@PathVariable String id, @Valid @RequestBody CreateAssetRequest req) {
         Asset existing = store.get(id);
         if (existing == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "资产不存在");
         return store.save(new Asset(id, req.name(), req.type(), req.ip(), req.os(), req.owner(), req.criticality(), existing.createdAt()));
@@ -110,7 +114,12 @@ public class AssetController {
     }
 
     public record CreateAssetRequest(
-            String name, String type, String ip, String os, String owner, String criticality
+            @NotBlank @Size(max = 128) String name,
+            @Size(max = 64) @Pattern(regexp = "[A-Za-z0-9_-]*") String type,
+            @Size(max = 64) String ip,
+            @Size(max = 128) String os,
+            @Size(max = 128) String owner,
+            @Size(max = 32) String criticality
     ) {
     }
 }
