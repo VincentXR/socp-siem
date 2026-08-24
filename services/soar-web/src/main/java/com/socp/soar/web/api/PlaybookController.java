@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RestController;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 import java.util.List;
@@ -71,10 +72,9 @@ public class PlaybookController {
 
     /** 评估并编排执行：接收告警，命中启用的剧本触发条件则执行动作。 */
     @PostMapping("/evaluate")
-    public Map<String, Object> evaluate(@RequestBody Map<String, Object> alarm) {
-        validateMap(alarm, "alarm");
+    public Map<String, Object> evaluate(@Valid @RequestBody AlarmEvaluationRequest alarm) {
         try {
-            return evaluationService.evaluate(alarm);
+            return evaluationService.evaluate(alarm.asMap());
         } catch (AlarmEvaluationService.EvaluationInProgressException inProgress) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, inProgress.getMessage(), inProgress);
         }
@@ -103,6 +103,29 @@ public class PlaybookController {
             List<@NotBlank @Size(max = 512) String> actions,
             boolean enabled
     ) {
+    }
+
+    public record AlarmEvaluationRequest(
+            @NotBlank @Size(max = 128) String id,
+            @Size(max = 128) String ruleId,
+            @Size(max = 256) String ruleName,
+            @Pattern(regexp = "CRITICAL|HIGH|MEDIUM|LOW|INFO") @Size(max = 32) String severity,
+            @Size(max = 256) String entity,
+            @Size(max = 4096) String message,
+            @Size(max = 128) String mitre,
+            @Size(max = 64) String occurredAt) {
+
+        public Map<String, Object> asMap() {
+            Map<String, Object> out = new java.util.LinkedHashMap<>();
+            put(out, "id", id); put(out, "ruleId", ruleId); put(out, "ruleName", ruleName);
+            put(out, "severity", severity); put(out, "entity", entity); put(out, "message", message);
+            put(out, "mitre", mitre); put(out, "occurredAt", occurredAt);
+            return out;
+        }
+
+        private static void put(Map<String, Object> out, String key, String value) {
+            if (value != null && !value.isBlank()) out.put(key, value);
+        }
     }
 
     private static void validateMap(Map<String, Object> body, String name) {

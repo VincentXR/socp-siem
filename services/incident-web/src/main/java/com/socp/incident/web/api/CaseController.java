@@ -4,6 +4,10 @@ import com.socp.incident.web.domain.Case;
 import com.socp.incident.web.service.CaseService;
 import com.socp.platform.audit.AuditOperation;
 import com.socp.platform.auth.RequireRole;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -38,14 +42,14 @@ public class CaseController {
     @RequireRole({"admin", "analyst"})
     @AuditOperation(action = "CREATE_INCIDENT", target = "case")
     @PostMapping("/incidents/from-alarm")
-    public Map<String, Object> fromAlarm(@RequestBody Map<String, Object> alarm) {
-        return service.fromAlarm(alarm);
+    public Map<String, Object> fromAlarm(@Valid @RequestBody AlarmRequest alarm) {
+        return service.fromAlarm(alarm.asMap());
     }
 
     @RequireRole({"admin", "analyst"})
     @AuditOperation(action = "CREATE_INCIDENT", target = "case")
     @PostMapping("/incidents")
-    public Map<String, Object> create(@RequestBody CreateCaseRequest request) {
+    public Map<String, Object> create(@Valid @RequestBody CreateCaseRequest request) {
         if (request == null || request.title() == null || request.title().isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "案件标题不能为空");
         }
@@ -101,6 +105,33 @@ public class CaseController {
         return service.stats();
     }
 
-    public record CreateCaseRequest(String title, String entity, String severity, String assignee) {
+    public record CreateCaseRequest(
+            @NotBlank @Size(max = 256) String title,
+            @Size(max = 256) String entity,
+            @Pattern(regexp = "CRITICAL|HIGH|MEDIUM|LOW|INFO") @Size(max = 32) String severity,
+            @Size(max = 128) String assignee) {
+    }
+
+    public record AlarmRequest(
+            @NotBlank @Size(max = 128) String id,
+            @Size(max = 128) String ruleId,
+            @Size(max = 256) String ruleName,
+            @Pattern(regexp = "CRITICAL|HIGH|MEDIUM|LOW|INFO") @Size(max = 32) String severity,
+            @Size(max = 256) String entity,
+            @Size(max = 4096) String message,
+            @Size(max = 128) String mitre,
+            @Size(max = 64) String occurredAt) {
+
+        public Map<String, Object> asMap() {
+            Map<String, Object> out = new java.util.LinkedHashMap<>();
+            put(out, "id", id); put(out, "ruleId", ruleId); put(out, "ruleName", ruleName);
+            put(out, "severity", severity); put(out, "entity", entity); put(out, "message", message);
+            put(out, "mitre", mitre); put(out, "occurredAt", occurredAt);
+            return out;
+        }
+
+        private static void put(Map<String, Object> out, String key, String value) {
+            if (value != null && !value.isBlank()) out.put(key, value);
+        }
     }
 }
