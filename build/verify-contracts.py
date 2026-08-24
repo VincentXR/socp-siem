@@ -58,8 +58,10 @@ def main() -> int:
         if expected not in gateway:
             errors.append(f"gateway compatibility rewrite missing: {legacy} -> {owner}")
 
-    api = (ROOT / "frontend/apps/workbench/src/api.ts").read_text(encoding="utf-8")
-    health_names = set(re.findall(r"\{ name: '([a-z0-9-]+)', path:", api))
+    health_registry = (
+        ROOT / "frontend/apps/workbench/src/api/health.ts"
+    ).read_text(encoding="utf-8")
+    health_names = set(re.findall(r"\{ name: '([a-z0-9-]+)', path:", health_registry))
     if health_names != set(services):
         errors.append(f"frontend health registry drift: missing={sorted(set(services) - health_names)} extra={sorted(health_names - set(services))}")
 
