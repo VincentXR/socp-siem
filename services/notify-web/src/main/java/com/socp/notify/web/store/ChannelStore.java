@@ -2,6 +2,8 @@ package com.socp.notify.web.store;
 
 import com.socp.notify.web.domain.Channel;
 import jakarta.annotation.PostConstruct;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -18,12 +20,22 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public class ChannelStore {
 
     private final ChannelRepository repository;
+    private final boolean demoDataEnabled;
+
     public ChannelStore(ChannelRepository repository) {
+        this(repository, true);
+    }
+
+    @Autowired
+    public ChannelStore(ChannelRepository repository,
+                        @Value("${socp.demo-data.enabled:true}") boolean demoDataEnabled) {
         this.repository = repository;
+        this.demoDataEnabled = demoDataEnabled;
     }
 
     @PostConstruct
     void seed() {
+        if (!demoDataEnabled) return;
         List<ChannelEntity> all = repository.findByTenantId("default");
         if (all.isEmpty()) {
             add(Channel.of("值班群(Slack)", "SLACK",

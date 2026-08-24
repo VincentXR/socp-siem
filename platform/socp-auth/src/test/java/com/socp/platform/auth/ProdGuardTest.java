@@ -65,6 +65,24 @@ class ProdGuardTest {
     }
 
     @Test
+    void rejectsSeededDemoDataInProduction() {
+        MockEnvironment env = new MockEnvironment()
+                .withProperty("socp.demo-data.enabled", "true")
+                .withProperty("socp.security.jwk-set-uri", "https://id.example.test/realms/socp/protocol/openid-connect/certs")
+                .withProperty("socp.security.audience", "socp-api")
+                .withProperty("socp.security.ingest-token", "production-ingest-token")
+                .withProperty("socp.security.service-secret", "production-service-secret-0123456789")
+                .withProperty("socp.ratelimit.backend", "redis")
+                .withProperty("socp.audit.sink", "kafka")
+                .withProperty("socp.audit.fail-closed", "true")
+                .withProperty("socp.temporal.enabled", "true");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+
+        assertTrue(error.getMessage().contains("socp.demo-data.enabled=true"));
+    }
+
+    @Test
     void allowsProductionStatelessServiceWithoutDatasource() {
         MockEnvironment env = new MockEnvironment()
                 .withProperty("socp.security.jwk-set-uri", "https://id.example.test/keys")

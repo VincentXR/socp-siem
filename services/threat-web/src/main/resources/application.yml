@@ -25,6 +25,8 @@ spring:
     locations: classpath:db/migration
 
 socp:
+  demo-data:
+    enabled: ${SOCP_DEMO_DATA_ENABLED:true}
   security:
     # 生产鉴权（2026-08-09 启用）：HMAC HS256 验签，与网关 /auth/login 签发 secret 一致。
     jwt-secret: ${SOCP_JWT_SECRET:}

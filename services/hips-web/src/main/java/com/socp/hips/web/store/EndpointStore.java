@@ -3,6 +3,8 @@ package com.socp.hips.web.store;
 import com.socp.hips.web.model.Endpoint;
 import com.socp.platform.tenant.TenantContext;
 import jakarta.annotation.PostConstruct;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -19,13 +21,22 @@ import java.util.UUID;
 public class EndpointStore {
 
     private final EndpointRepository repository;
+    private final boolean demoDataEnabled;
 
     public EndpointStore(EndpointRepository repository) {
+        this(repository, true);
+    }
+
+    @Autowired
+    public EndpointStore(EndpointRepository repository,
+                         @Value("${socp.demo-data.enabled:true}") boolean demoDataEnabled) {
         this.repository = repository;
+        this.demoDataEnabled = demoDataEnabled;
     }
 
     @PostConstruct
     void init() {
+        if (!demoDataEnabled) return;
         List<EndpointEntity> all = repository.findByTenantId("default");
         if (all.isEmpty()) {
             save(Endpoint.register("web01", "10.0.0.5", "Ubuntu 22.04", "falco-0.39"));

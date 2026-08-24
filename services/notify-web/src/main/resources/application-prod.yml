@@ -11,6 +11,8 @@ spring:
       mail.smtp.starttls.enable: ${SOCP_SMTP_STARTTLS:true}
 
 socp:
+  demo-data:
+    enabled: false
   notify:
     smtp:
       enabled: ${SOCP_NOTIFY_SMTP_ENABLED:false}

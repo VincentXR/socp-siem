@@ -50,6 +50,14 @@ class AssetStoreTest {
     }
 
     @Test
+    void canDisableDemoAssetSeeding() {
+        db.clear();
+        AssetStore productionStore = new AssetStore(repo, false);
+
+        assertTrue(productionStore.list().isEmpty());
+    }
+
+    @Test
     void saveThenDeleteRoundTrip() {
         int before = store.list().size();
 

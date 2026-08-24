@@ -2,6 +2,8 @@ package com.socp.asset.web.store;
 
 import com.socp.asset.web.model.Asset;
 import com.socp.platform.tenant.TenantContext;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -16,12 +18,18 @@ import java.util.Optional;
 public class AssetStore {
 
     private final AssetRepository repo;
-    private final boolean seeded;
+    private final boolean demoDataEnabled;
 
     public AssetStore(AssetRepository repo) {
+        this(repo, true);
+    }
+
+    @Autowired
+    public AssetStore(AssetRepository repo,
+                      @Value("${socp.demo-data.enabled:true}") boolean demoDataEnabled) {
         this.repo = repo;
-        this.seeded = repo.countByTenantId("default") > 0;
-        if (!seeded) {
+        this.demoDataEnabled = demoDataEnabled;
+        if (demoDataEnabled && repo.countByTenantId("default") == 0) {
             seed();
         }
     }

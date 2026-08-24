@@ -106,6 +106,10 @@ public class ProdGuard {
             }
         }
 
+        if ("true".equalsIgnoreCase(env.getProperty("socp.demo-data.enabled", "false"))) {
+            violations.add("socp.demo-data.enabled=true (production forbids seeded demo data)");
+        }
+
         if ("memory".equalsIgnoreCase(env.getProperty("socp.ratelimit.backend", "memory"))) {
             violations.add("socp.ratelimit.backend=memory (production requires the shared Redis backend)");
         }

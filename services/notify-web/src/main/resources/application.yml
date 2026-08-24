@@ -22,6 +22,8 @@ spring:
 
 
 socp:
+  demo-data:
+    enabled: ${SOCP_DEMO_DATA_ENABLED:true}
   notify:
     smtp:
       enabled: ${SOCP_NOTIFY_SMTP_ENABLED:false}

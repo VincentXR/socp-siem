@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.tenant.TenantContext;
 import com.socp.soar.web.model.Playbook;
 import com.socp.soar.web.model.PlaybookStatus;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -23,10 +25,18 @@ public class PlaybookStore {
     };
 
     private final PlaybookRepository repo;
+    private final boolean demoDataEnabled;
 
     public PlaybookStore(PlaybookRepository repo) {
+        this(repo, true);
+    }
+
+    @Autowired
+    public PlaybookStore(PlaybookRepository repo,
+                         @Value("${socp.demo-data.enabled:true}") boolean demoDataEnabled) {
         this.repo = repo;
-        if (repo.countByTenantId("default") == 0) {
+        this.demoDataEnabled = demoDataEnabled;
+        if (demoDataEnabled && repo.countByTenantId("default") == 0) {
             seed();
         }
     }

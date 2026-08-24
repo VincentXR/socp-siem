@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.threat.web.domain.Ioc;
 import jakarta.annotation.PostConstruct;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -19,14 +21,23 @@ import java.util.Map;
 public class IocStore {
 
     private final IocRepository repo;
+    private final boolean demoDataEnabled;
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public IocStore(IocRepository repo) {
+        this(repo, true);
+    }
+
+    @Autowired
+    public IocStore(IocRepository repo,
+                    @Value("${socp.demo-data.enabled:true}") boolean demoDataEnabled) {
         this.repo = repo;
+        this.demoDataEnabled = demoDataEnabled;
     }
 
     @PostConstruct
     void seed() {
+        if (!demoDataEnabled) return;
         if (repo.countByTenantId("default") > 0) return;
         add(Ioc.of("IP", "45.146.165.37", "CRITICAL", "AlienVault OTX", "已知 C2 回连地址", List.of("c2", "malware")));
         add(Ioc.of("IP", "185.220.101.1", "HIGH", "Tor Exit", "Tor 出口节点", List.of("tor", "anonymizer")));

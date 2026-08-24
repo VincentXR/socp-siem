@@ -1,3 +1,7 @@
 spring:
   config:
     import: classpath:application-pg.yml
+
+socp:
+  demo-data:
+    enabled: false
