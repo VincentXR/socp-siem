@@ -5,9 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.socp.platform.tenant.TenantContext;
+import com.socp.search.config.config.OpenSearchProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import javax.net.ssl.HttpsURLConnection;
@@ -42,36 +43,32 @@ public class OsEventReader {
     private static final Logger log = LoggerFactory.getLogger(OsEventReader.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    @Value("${socp.opensearch.url:https://localhost:9200}")
-    private String url;
+    private final OpenSearchProperties properties;
 
-    @Value("${socp.opensearch.username:admin}")
-    private String username;
+    public OsEventReader() {
+        this(new OpenSearchProperties());
+    }
 
-    @Value("${socp.opensearch.password:Socp!Sec2026xK}")
-    private String password;
-
-    @Value("${socp.opensearch.enabled:true}")
-    private boolean enabled;
-
-    @Value("${socp.opensearch.search-index:socp-events-*}")
-    private String index;
+    @Autowired
+    public OsEventReader(OpenSearchProperties properties) {
+        this.properties = properties;
+    }
 
     /**
      * 搜索：OS 可用返回同构 QueryResult，不可用/失败返回 null（调用方回退本地检索库）。
      */
     public SplEngine.QueryResult search(String q, int size) {
-        if (!enabled) return null;
+        if (!properties.isEnabled()) return null;
         String query = q == null ? "" : q.trim();
         try {
-            String endpoint = url + "/" + index + "/_search";
+            String endpoint = properties.getUrl() + "/" + properties.getSearchIndex() + "/_search";
             HttpURLConnection c = (HttpURLConnection) new URL(endpoint).openConnection();
             c.setRequestMethod("POST");
             c.setDoOutput(true);
             c.setConnectTimeout(3000);
             c.setReadTimeout(5000);
             String auth = Base64.getEncoder().encodeToString(
-                    (username + ":" + password).getBytes(StandardCharsets.UTF_8));
+                    (properties.getUsername() + ":" + properties.getPassword()).getBytes(StandardCharsets.UTF_8));
             c.setRequestProperty("Authorization", "Basic " + auth);
             c.setRequestProperty("Accept", "application/json");
             c.setRequestProperty("Content-Type", "application/json");

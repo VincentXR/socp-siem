@@ -1,6 +1,7 @@
 package com.socp.search.config.search;
 
 import com.sun.net.httpserver.HttpServer;
+import com.socp.search.config.config.OpenSearchProperties;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -24,12 +25,13 @@ class OsEventReaderTest {
         });
         server.start();
 
-        reader = new OsEventReader();
-        ReflectionTestUtils.setField(reader, "url", "http://127.0.0.1:" + server.getAddress().getPort());
-        ReflectionTestUtils.setField(reader, "username", "test");
-        ReflectionTestUtils.setField(reader, "password", "test");
-        ReflectionTestUtils.setField(reader, "enabled", true);
-        ReflectionTestUtils.setField(reader, "index", "events-*");
+        OpenSearchProperties properties = new OpenSearchProperties();
+        properties.setUrl("http://127.0.0.1:" + server.getAddress().getPort());
+        properties.setUsername("test");
+        properties.setPassword("test");
+        properties.setEnabled(true);
+        properties.setSearchIndex("events-*");
+        reader = new OsEventReader(properties);
     }
 
     @AfterEach

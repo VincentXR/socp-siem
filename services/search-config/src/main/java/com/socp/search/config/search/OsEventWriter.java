@@ -3,9 +3,10 @@ package com.socp.search.config.search;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.socp.search.config.config.OpenSearchProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import javax.net.ssl.HttpsURLConnection;
@@ -39,24 +40,23 @@ public class OsEventWriter {
     private static final DateTimeFormatter INDEX_DATE = DateTimeFormatter
             .ofPattern("yyyy.MM.dd").withZone(ZoneOffset.UTC);
 
-    @Value("${socp.opensearch.url:https://localhost:9200}")
-    private String url;
+    private final OpenSearchProperties properties;
 
-    @Value("${socp.opensearch.username:admin}")
-    private String username;
+    public OsEventWriter() {
+        this(new OpenSearchProperties());
+    }
 
-    @Value("${socp.opensearch.password:Socp!Sec2026xK}")
-    private String password;
-
-    @Value("${socp.opensearch.enabled:true}")
-    private boolean enabled;
+    @Autowired
+    public OsEventWriter(OpenSearchProperties properties) {
+        this.properties = properties;
+    }
 
     private volatile SSLSocketFactory sslSocketFactory;
     private volatile boolean templateInitialized = false;
 
     @jakarta.annotation.PostConstruct
     public void init() {
-        if (!enabled) return;
+        if (!properties.isEnabled()) return;
         Thread.startVirtualThread(this::ensureIndexTemplate);
     }
 
@@ -65,7 +65,7 @@ public class OsEventWriter {
      * so that key security fields are properly mapped to keyword/date/text.
      */
     public boolean ensureIndexTemplate() {
-        if (!enabled || templateInitialized) return true;
+        if (!properties.isEnabled() || templateInitialized) return true;
         HttpURLConnection c = null;
         try {
             String templatePayload = """
@@ -93,14 +93,14 @@ public class OsEventWriter {
                       }
                     }
                     """;
-            c = (HttpURLConnection) new URL(url + "/_index_template/socp-events-template").openConnection();
+            c = (HttpURLConnection) new URL(properties.getUrl() + "/_index_template/socp-events-template").openConnection();
             c.setRequestMethod("PUT");
             c.setDoOutput(true);
             c.setConnectTimeout(3000);
             c.setReadTimeout(5000);
             c.setRequestProperty("Content-Type", "application/json");
             String auth = Base64.getEncoder().encodeToString(
-                    (username + ":" + password).getBytes(StandardCharsets.UTF_8));
+                    (properties.getUsername() + ":" + properties.getPassword()).getBytes(StandardCharsets.UTF_8));
             c.setRequestProperty("Authorization", "Basic " + auth);
             if (c instanceof HttpsURLConnection https) {
                 https.setSSLSocketFactory(sslSocketFactory());
@@ -128,7 +128,7 @@ public class OsEventWriter {
 
     /** Asynchronous compatibility path used only when no Kafka indexing path is configured. */
     public void writeEvents(List<SearchEvent> es) {
-        if (!enabled || es == null || es.isEmpty()) return;
+        if (!properties.isEnabled() || es == null || es.isEmpty()) return;
         Thread.startVirtualThread(() -> doWrite(es));
     }
 
@@ -137,7 +137,7 @@ public class OsEventWriter {
      * been durably acknowledged by OpenSearch.
      */
     public boolean writeEventsAndAwait(List<SearchEvent> es) {
-        if (!enabled || es == null || es.isEmpty()) return true;
+        if (!properties.isEnabled() || es == null || es.isEmpty()) return true;
         return doWrite(es);
     }
 
@@ -158,14 +158,14 @@ public class OsEventWriter {
                         .append("}}\n");
                 sb.append(MAPPER.writeValueAsString(e)).append('\n');
             }
-            c = (HttpURLConnection) new URL(url + "/_bulk").openConnection();
+            c = (HttpURLConnection) new URL(properties.getUrl() + "/_bulk").openConnection();
             c.setRequestMethod("POST");
             c.setDoOutput(true);
             c.setConnectTimeout(3000);
             c.setReadTimeout(5000);
             c.setRequestProperty("Content-Type", "application/x-ndjson");
             String auth = Base64.getEncoder().encodeToString(
-                    (username + ":" + password).getBytes(StandardCharsets.UTF_8));
+                    (properties.getUsername() + ":" + properties.getPassword()).getBytes(StandardCharsets.UTF_8));
             c.setRequestProperty("Authorization", "Basic " + auth);
             if (c instanceof HttpsURLConnection https) {
                 https.setSSLSocketFactory(sslSocketFactory());
@@ -180,7 +180,7 @@ public class OsEventWriter {
                 int failed = countBulkErrors(resp);
                 if (failed != 0) {
                     log.warn("OpenSearch bulk 写入 {}/{} 条失败（items error，HTTP {}）-> {} : {}",
-                            failed, es.size(), code, url, firstError(resp));
+                    failed, es.size(), code, properties.getUrl(), firstError(resp));
                     return false;
                 }
                 log.info("OpenSearch bulk durable acknowledgement events={} HTTP={}", es.size(), code);

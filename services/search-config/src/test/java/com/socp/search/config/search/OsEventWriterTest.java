@@ -1,6 +1,7 @@
 package com.socp.search.config.search;
 
 import com.sun.net.httpserver.HttpServer;
+import com.socp.search.config.config.OpenSearchProperties;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -61,12 +62,12 @@ class OsEventWriterTest {
     }
 
     private OsEventWriter writer() {
-        OsEventWriter writer = new OsEventWriter();
-        ReflectionTestUtils.setField(writer, "url", "http://localhost:" + server.getAddress().getPort());
-        ReflectionTestUtils.setField(writer, "username", "test");
-        ReflectionTestUtils.setField(writer, "password", "test");
-        ReflectionTestUtils.setField(writer, "enabled", true);
-        return writer;
+        OpenSearchProperties properties = new OpenSearchProperties();
+        properties.setUrl("http://localhost:" + server.getAddress().getPort());
+        properties.setUsername("test");
+        properties.setPassword("test");
+        properties.setEnabled(true);
+        return new OsEventWriter(properties);
     }
 
     private static SearchEvent event() {

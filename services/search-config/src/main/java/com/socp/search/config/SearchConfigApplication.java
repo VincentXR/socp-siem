@@ -5,6 +5,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.autoconfigure.domain.EntityScan;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 
 /**
  * SearchConfig（search-config）：日志源配置与检索。
@@ -15,6 +16,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @EntityScan(basePackages = {"com.socp.search.config", "com.socp.platform"})
 @EnableJpaRepositories(basePackages = "com.socp.search.config")
 @EnableScheduling
+@ConfigurationPropertiesScan
 public class SearchConfigApplication {
     public static void main(String[] args) {
         SpringApplication.run(SearchConfigApplication.class, args);
