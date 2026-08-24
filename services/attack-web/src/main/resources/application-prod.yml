@@ -1,7 +1,3 @@
 spring:
   config:
     import: classpath:application-pg.yml
-
-socp:
-  ai:
-    maturity: preview

@@ -1,3 +1,7 @@
+spring:
+  config:
+    import: classpath:application-pg.yml
+
 socp:
   soar:
     # Never allow a dry-run connector to be exposed as a successful execution.
