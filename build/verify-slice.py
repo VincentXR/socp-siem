@@ -53,6 +53,11 @@ def tenant_token(tenant):
         token = real_token()
     else:
         now = int(time.time())
+        audiences = [
+            value.strip()
+            for value in os.getenv("SOCP_SECURITY_AUDIENCE", "socp-api").split(",")
+            if value.strip()
+        ]
 
         def encoded(value):
             return base64.urlsafe_b64encode(
@@ -63,6 +68,7 @@ def tenant_token(tenant):
         payload = encoded({
             "sub": "verify-slice",
             "iss": "socp-gateway",
+            "aud": audiences,
             "tenant": tenant,
             "role": "analyst",
             "iat": now,
