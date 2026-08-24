@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/card/style/css.mjs'
 import 'element-plus/es/components/empty/style/css.mjs'
@@ -21,6 +21,7 @@ import SevBadge from '../components/SevBadge.vue'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { relTime } from '../lib/ui'
 import { SEVERITIES, type Alarm } from '../api'
+import { useI18n } from '../composables/useI18n'
 
 const props = defineProps<{
   filteredAlarms: Alarm[]
@@ -34,6 +35,8 @@ const props = defineProps<{
   goCase: () => void
   goSearch: () => void
 }>()
+
+const { t, locale } = useI18n()
 
 const keyword = defineModel<string>('keyword', { default: '' })
 const severity = defineModel<string>('severity', { default: '' })
@@ -63,34 +66,38 @@ function handleSortChange({ prop, order }: { prop?: string | null; order?: 'asce
 
 <template>
   <div class="page-pad view-enter">
-    <PageHeader title="告警查询" description="按规则、实体和严重级别筛选告警，并从右侧抽屉完成处置。" />
+    <PageHeader :title="t('alarms.title')" :description="t('alarms.description')" />
     <div class="alarm-toolbar">
       <div class="alarm-filter-controls">
-        <el-input v-model="keyword" class="alarm-keyword-input" placeholder="关键词：实体 / 消息" clearable style="width:230px" @keyup.enter="props.onSearch" @clear="props.onSearch" />
-        <el-input v-model="rule" class="alarm-rule-input" placeholder="规则 ID" clearable style="width:170px" @keyup.enter="props.onSearch" @clear="props.onSearch" />
-        <el-select v-model="severity" placeholder="全部级别" clearable style="width:140px" @change="props.onSearch"><el-option v-for="item in SEVERITIES" :key="item" :label="item" :value="item" /></el-select>
-        <el-select v-model="status" placeholder="全部状态" clearable style="width:150px" @change="props.onSearch"><el-option v-for="item in DISP_STATUSES" :key="item" :label="item" :value="item" /></el-select>
-        <el-button size="small" @click="props.onSearch">查询</el-button>
+        <el-input v-model="keyword" class="alarm-keyword-input" :placeholder="t('alarms.keywordPlaceholder')" clearable style="width:240px" @keyup.enter="props.onSearch" @clear="props.onSearch" />
+        <el-input v-model="rule" class="alarm-rule-input" :placeholder="t('alarms.ruleFilter')" clearable style="width:170px" @keyup.enter="props.onSearch" @clear="props.onSearch" />
+        <el-select v-model="severity" :placeholder="t('alarms.severityFilter')" clearable style="width:140px" @change="props.onSearch">
+          <el-option v-for="item in SEVERITIES" :key="item" :label="t('severities.' + item) || item" :value="item" />
+        </el-select>
+        <el-select v-model="status" :placeholder="t('alarms.statusFilter')" clearable style="width:150px" @change="props.onSearch">
+          <el-option v-for="item in DISP_STATUSES" :key="item" :label="t('statuses.' + item) || item" :value="item" />
+        </el-select>
+        <el-button size="small" @click="props.onSearch">{{ t('common.search') }}</el-button>
       </div>
       <div class="alarm-toolbar-actions">
-        <span class="toolbar-count">共 {{ props.alarmPageData.total }} 条</span>
-        <el-button size="small" @click="props.exportCsv">导出 CSV</el-button>
-        <el-button size="small" @click="props.exportJson">导出 JSON</el-button>
+        <span class="toolbar-count">{{ t('common.total', { total: props.alarmPageData.total }) }}</span>
+        <el-button size="small" @click="props.exportCsv">{{ t('common.exportCsv') }}</el-button>
+        <el-button size="small" @click="props.exportJson">{{ t('common.exportJson') }}</el-button>
       </div>
     </div>
 
     <el-card shadow="never" class="alarm-table-card">
       <el-table :data="props.filteredAlarms" class="alarm-table" height="calc(100vh - 318px)" size="small" row-key="id" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @sort-change="handleSortChange" @row-click="openAlarmRow">
-        <el-table-column prop="occurredAt" column-key="occurredAt" label="发生时间" :width="columnWidth('occurredAt', 172)" sortable="custom"><template #default="{ row }"><span class="mono">{{ relTime(row.occurredAt) }}</span></template></el-table-column>
-        <el-table-column prop="severity" column-key="severity" label="级别" :width="columnWidth('severity', 100)" sortable="custom"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
-        <el-table-column prop="ruleName" column-key="ruleName" label="规则" :width="columnWidth('ruleName')" min-width="180" sortable="custom" show-overflow-tooltip><template #default="{ row }">{{ row.ruleName || row.ruleId }}</template></el-table-column>
-        <el-table-column prop="entity" column-key="entity" label="实体" :width="columnWidth('entity')" min-width="150" sortable="custom" show-overflow-tooltip />
-        <el-table-column prop="status" column-key="status" label="状态" :width="columnWidth('status', 125)" sortable="custom"><template #default="{ row }"><span class="alarm-status" :class="(row.status || 'OPEN').toLowerCase()">{{ row.status || 'OPEN' }}</span></template></el-table-column>
-        <el-table-column prop="riskScore" column-key="riskScore" label="风险分" :width="columnWidth('riskScore', 90)" sortable="custom"><template #default="{ row }">{{ row.riskScore ?? '—' }}</template></el-table-column>
-        <el-table-column prop="message" column-key="message" label="消息" :width="columnWidth('message')" min-width="260" show-overflow-tooltip />
-        <el-table-column label="操作" width="78" fixed="right" :resizable="false"><template #default="{ row }"><el-button link type="primary" size="small" @click.stop="openAlarmRow(row)">处置</el-button></template></el-table-column>
+        <el-table-column prop="occurredAt" column-key="occurredAt" :label="t('alarms.occurredAt')" :width="columnWidth('occurredAt', 172)" sortable="custom"><template #default="{ row }"><span class="mono">{{ relTime(row.occurredAt) }}</span></template></el-table-column>
+        <el-table-column prop="severity" column-key="severity" :label="t('common.severity')" :width="columnWidth('severity', 100)" sortable="custom"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
+        <el-table-column prop="ruleName" column-key="ruleName" :label="t('alarms.ruleName')" :width="columnWidth('ruleName')" min-width="180" sortable="custom" show-overflow-tooltip><template #default="{ row }">{{ row.ruleName || row.ruleId }}</template></el-table-column>
+        <el-table-column prop="entity" column-key="entity" :label="t('common.entity')" :width="columnWidth('entity')" min-width="150" sortable="custom" show-overflow-tooltip />
+        <el-table-column prop="status" column-key="status" :label="t('common.status')" :width="columnWidth('status', 125)" sortable="custom"><template #default="{ row }"><span class="alarm-status" :class="(row.status || 'OPEN').toLowerCase()">{{ t('statuses.' + (row.status || 'OPEN')) || row.status }}</span></template></el-table-column>
+        <el-table-column prop="riskScore" column-key="riskScore" :label="locale === 'zh-CN' ? '风险分' : 'Risk'" :width="columnWidth('riskScore', 90)" sortable="custom"><template #default="{ row }">{{ row.riskScore ?? '—' }}</template></el-table-column>
+        <el-table-column prop="message" column-key="message" :label="t('common.message')" :width="columnWidth('message')" min-width="260" show-overflow-tooltip />
+        <el-table-column :label="t('common.actions')" width="78" fixed="right" :resizable="false"><template #default="{ row }"><el-button link type="primary" size="small" @click.stop="openAlarmRow(row)">{{ locale === 'zh-CN' ? '处置' : 'Triage' }}</el-button></template></el-table-column>
       </el-table>
-      <EmptyState v-if="!props.filteredAlarms.length" title="暂无告警" description="调整筛选条件后重试，或等待新的告警进入系统。" />
+      <EmptyState v-if="!props.filteredAlarms.length" :title="locale === 'zh-CN' ? '暂无告警' : 'No Alarms Found'" :description="locale === 'zh-CN' ? '调整筛选条件后重试，或等待新的告警进入系统。' : 'Try adjusting filter conditions or wait for new incoming events.'" />
     </el-card>
 
     <div class="alarm-pagination">

@@ -1,9 +1,11 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { ref } from 'vue'
 import { login as apiLogin } from './api'
 import ElMessage from 'element-plus/es/components/message/index.mjs'
+import { useI18n } from './composables/useI18n'
 
 const emit = defineEmits<{ (e: 'done', user: string, role: string): void }>()
+const { t, locale, toggleLocale } = useI18n()
 
 const username = ref('demo')
 const password = ref('demo123')
@@ -20,7 +22,7 @@ async function doLogin() {
     } catch { /* ignore */ }
     emit('done', d.username, d.role)
   } catch (e) {
-    ElMessage.error((e as Error).message || '登录失败')
+    ElMessage.error((e as Error).message || t('login.errorInvalid'))
   } finally {
     busy.value = false
   }
@@ -49,31 +51,37 @@ function oidcLogin() {
       <span class="brand-name">SOCP</span>
     </div>
 
+    <div class="login-lang-switch">
+      <button type="button" class="lang-btn" @click="toggleLocale">
+        🌐 {{ locale === 'zh-CN' ? 'EN' : '中文' }}
+      </button>
+    </div>
+
     <div class="login-card">
       <div class="login-head">
-        <h1>登录安全运营中心</h1>
-        <p>Security Operations Center</p>
+        <h1>{{ t('login.title') }}</h1>
+        <p>{{ t('login.subtitle') }}</p>
       </div>
 
       <form class="login-form" @submit.prevent="doLogin">
         <label class="field">
-          <span class="field-label">账号</span>
+          <span class="field-label">{{ t('login.username') }}</span>
           <input v-model="username" class="input" placeholder="demo / admin" autocomplete="username" />
         </label>
         <label class="field">
-          <span class="field-label">密码</span>
+          <span class="field-label">{{ t('login.password') }}</span>
           <input v-model="password" type="password" class="input" placeholder="demo123 / admin123" autocomplete="current-password" />
         </label>
         <button type="submit" class="submit" :disabled="busy">
           <span v-if="busy" class="spinner" />
-          <span v-else>{{ '登录' }}</span>
+          <span v-else>{{ busy ? t('login.loggingIn') : t('login.loginBtn') }}</span>
         </button>
       </form>
 
       <div class="quick">
-        <span class="quick-label">演示账号</span>
-        <button type="button" class="chip" @click="quickFill('demo', 'demo123')">分析师 demo</button>
-        <button type="button" class="chip" @click="quickFill('admin', 'admin123')">管理员 admin</button>
+        <span class="quick-label">{{ locale === 'zh-CN' ? '演示账号' : 'Demo Accounts' }}</span>
+        <button type="button" class="chip" @click="quickFill('demo', 'demo123')">{{ locale === 'zh-CN' ? '分析师 demo' : 'Analyst demo' }}</button>
+        <button type="button" class="chip" @click="quickFill('admin', 'admin123')">{{ locale === 'zh-CN' ? '管理员 admin' : 'Admin admin' }}</button>
       </div>
 
       <div class="oidc-row">
@@ -82,12 +90,12 @@ function oidcLogin() {
             <rect x="3" y="11" width="18" height="11" rx="2" />
             <path d="M7 11V7a5 5 0 0 1 10 0v4" />
           </svg>
-          <span>Keycloak 统一登录</span>
+          <span>Keycloak {{ locale === 'zh-CN' ? '统一登录' : 'SSO Login' }}</span>
         </button>
       </div>
     </div>
 
-    <div class="login-foot">JWT 会话 30 分钟 · 全链路强制验签 · 多租户隔离</div>
+    <div class="login-foot">JWT {{ locale === 'zh-CN' ? '会话 30 分钟 · 全链路强制验签 · 多租户隔离' : 'Session 30m · Mandatory Verification · Multi-Tenant Isolated' }}</div>
   </div>
 </template>
 
@@ -106,6 +114,23 @@ function oidcLogin() {
 .login-brand {
   display: flex; align-items: center; gap: 10px;
   position: absolute; top: 26px; left: 28px;
+}
+.login-lang-switch {
+  position: absolute; top: 26px; right: 28px;
+}
+.lang-btn {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--ns-border);
+  background: var(--ns-surface);
+  color: var(--ns-text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+.lang-btn:hover {
+  border-color: var(--ns-accent);
+  color: var(--ns-accent);
 }
 .brand-mark {
   width: 34px; height: 34px; border-radius: 8px;

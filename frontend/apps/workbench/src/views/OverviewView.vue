@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/card/style/css.mjs'
 import 'element-plus/es/components/table/style/css.mjs'
@@ -15,6 +15,7 @@ import TrendChart from '../components/TrendChart.vue'
 import { HEALTH_TARGETS } from '../api'
 import type { Alarm } from '../api'
 import { sevColor } from '../lib/ui'
+import { useI18n } from '../composables/useI18n'
 
 const props = defineProps<{
   stat: { total: number; critical: number; high: number; online: number }
@@ -28,10 +29,11 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ (e: 'refresh'): void }>()
 
-const LEVELS = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'] as const
-const STATUS_TEXT: Record<string, string> = { OPEN: '待处置', INVESTIGATING: '研判中', RESOLVED: '已闭环', CLOSED: '已忽略' }
+const { t, locale } = useI18n()
 
-const now = () => new Date().toLocaleTimeString('zh-CN', { hour12: false })
+const LEVELS = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'] as const
+
+const now = () => new Date().toLocaleTimeString(locale.value, { hour12: false })
 const updatedAt = ref(now())
 function onRefresh() {
   updatedAt.value = now()
@@ -45,43 +47,47 @@ const maxLevel = computed(() => Math.max(1, ...LEVELS.map(level => props.sitStat
 const topRisk = computed(() => (props.sitStats?.topRisk ?? []).slice(0, 5))
 const latestAlarms = computed(() => props.filteredAlarms.slice(0, 5))
 const timeOnly = (iso: string) => (iso?.length >= 19 ? iso.slice(11, 19) : '—')
+
+function getStatusLabel(status: string): string {
+  return t('statuses.' + status) || status
+}
 </script>
 
 <template>
   <div class="page-pad view-enter">
-    <PageHeader title="安全概览">
-      <template #description>实时态势 · 最近更新 {{ updatedAt }} · 数据窗口近 7 日</template>
+    <PageHeader :title="t('overview.title')">
+      <template #description>{{ t('overview.description') }} · {{ updatedAt }}</template>
       <template #actions>
-        <span class="ov-date-pill">近 7 日</span>
-        <el-button type="primary" size="small" round @click="onRefresh">刷新</el-button>
+        <span class="ov-date-pill">{{ locale === 'zh-CN' ? '近 7 日' : 'Last 7 Days' }}</span>
+        <el-button type="primary" size="small" round @click="onRefresh">{{ t('common.refresh') }}</el-button>
       </template>
     </PageHeader>
 
     <div class="ov-kpis">
-      <MetricCard label="告警总数" tone="info">
+      <MetricCard :label="t('overview.totalEvents')" tone="info">
         <AnimatedNumber :value="stat.total" />
-        <template #hint>近 7 日累计 <b class="mono">{{ trendSum }}</b> 条</template>
+        <template #hint>{{ locale === 'zh-CN' ? '近 7 日累计' : '7-Day Total' }} <b class="mono">{{ trendSum }}</b></template>
       </MetricCard>
-      <MetricCard label="高危待处置" tone="danger">
+      <MetricCard :label="t('overview.criticalAlarms')" tone="danger">
         <AnimatedNumber :value="highPending" />
         <template #hint>CRITICAL <b class="mono">{{ stat.critical }}</b> · HIGH <b class="mono">{{ stat.high }}</b></template>
       </MetricCard>
-      <MetricCard label="服务在线率" tone="success">
+      <MetricCard :label="t('overview.onlineEndpoints')" tone="success">
         <AnimatedNumber :value="onlinePct" /><span class="metric-suffix">%</span>
-        <template #hint>{{ stat.online }} / {{ HEALTH_TARGETS.length }} 个服务正常</template>
+        <template #hint>{{ stat.online }} / {{ HEALTH_TARGETS.length }} {{ locale === 'zh-CN' ? '个服务正常' : 'services healthy' }}</template>
       </MetricCard>
     </div>
 
     <div class="ov-mid">
       <el-card shadow="never" class="ov-card">
         <template #header>
-          <div class="ov-card-head"><span>近 7 日告警趋势</span><span class="ov-card-sub">按日聚合 · 总量 {{ trendSum }}</span></div>
+          <div class="ov-card-head"><span>{{ t('overview.alarmTrend') }}</span><span class="ov-card-sub">{{ locale === 'zh-CN' ? '按日聚合 · 总量 ' + trendSum : 'Daily Aggregated · Total ' + trendSum }}</span></div>
         </template>
         <TrendChart :data="sitStats?.trend7d" style="height:216px" />
       </el-card>
 
       <el-card shadow="never" class="ov-card">
-        <template #header><span>告警级别分布</span></template>
+        <template #header><span>{{ t('overview.sevDistribution') }}</span></template>
         <div class="ov-level-bar">
           <div
             v-for="level in LEVELS"
@@ -102,7 +108,7 @@ const timeOnly = (iso: string) => (iso?.length >= 19 ? iso.slice(11, 19) : '—'
 
     <div class="ov-low">
       <el-card shadow="never" class="ov-card">
-        <template #header><span>最需处置 Top 5</span></template>
+        <template #header><span>Top 5 {{ locale === 'zh-CN' ? '风险实体' : 'Risk Entities' }}</span></template>
         <div v-if="topRisk.length" class="ov-risk">
           <div v-for="(risk, index) in topRisk" :key="risk.id" class="ov-risk-item">
             <span class="ov-rank mono">{{ index + 1 }}</span>
@@ -113,36 +119,36 @@ const timeOnly = (iso: string) => (iso?.length >= 19 ? iso.slice(11, 19) : '—'
             <span class="ov-risk-score mono" :style="{ background: sevColor(risk.severity) }">{{ risk.riskScore ?? '—' }}</span>
           </div>
         </div>
-        <EmptyState v-else title="暂无高风险告警" description="当前没有需要优先处置的风险项" />
+        <EmptyState v-else :title="locale === 'zh-CN' ? '暂无高风险告警' : 'No High Risk Alarms'" :description="locale === 'zh-CN' ? '当前没有需要优先处置的风险项' : 'No urgent risk items require triage'" />
       </el-card>
 
       <el-card shadow="never" class="ov-card">
-        <template #header><span>最新告警</span></template>
+        <template #header><span>{{ t('overview.recentAlarms') }}</span></template>
         <div v-if="latestAlarms.length" class="ov-alert-table">
           <el-table :data="latestAlarms" size="small">
-            <el-table-column label="时间" width="96">
+            <el-table-column :label="t('common.timestamp')" width="96">
               <template #default="{ row }"><span class="mono">{{ timeOnly(row.occurredAt) }}</span></template>
             </el-table-column>
-            <el-table-column label="级别" width="116">
+            <el-table-column :label="t('common.severity')" width="116">
               <template #default="{ row }"><SevBadge :value="row.severity" /></template>
             </el-table-column>
-            <el-table-column label="规则 · 来源" min-width="180" show-overflow-tooltip>
+            <el-table-column :label="locale === 'zh-CN' ? '规则 · 来源' : 'Rule · Entity'" min-width="180" show-overflow-tooltip>
               <template #default="{ row }">
                 <span class="table-text"><span class="ov-alert-rule">{{ row.ruleName }}</span><span class="ov-alert-entity mono"> · {{ row.entity }}</span></span>
               </template>
             </el-table-column>
-            <el-table-column label="状态" width="92">
-              <template #default="{ row }"><span class="ov-alert-status" :data-s="row.status">{{ STATUS_TEXT[row.status] ?? row.status }}</span></template>
+            <el-table-column :label="t('common.status')" width="92">
+              <template #default="{ row }"><span class="ov-alert-status" :data-s="row.status">{{ getStatusLabel(row.status) }}</span></template>
             </el-table-column>
           </el-table>
         </div>
-        <EmptyState v-else title="暂无最新告警" description="告警进入系统后会显示在这里" />
+        <EmptyState v-else :title="locale === 'zh-CN' ? '暂无最新告警' : 'No Live Alarms'" :description="locale === 'zh-CN' ? '告警进入系统后会显示在这里' : 'Alarms will appear here in real time'" />
       </el-card>
     </div>
 
     <el-card shadow="never" class="ov-card">
       <template #header>
-        <div class="ov-card-head"><span>后端服务健康</span><span class="ov-card-sub">{{ stat.online }} / {{ HEALTH_TARGETS.length }} 在线</span></div>
+        <div class="ov-card-head"><span>{{ locale === 'zh-CN' ? '后端服务健康' : 'Platform Service Health' }}</span><span class="ov-card-sub">{{ stat.online }} / {{ HEALTH_TARGETS.length }} {{ locale === 'zh-CN' ? '在线' : 'healthy' }}</span></div>
       </template>
       <div class="ov-chips">
         <div v-for="health in HEALTH_TARGETS" :key="health.name" class="ov-chip">

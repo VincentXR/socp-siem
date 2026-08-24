@@ -69,8 +69,15 @@ public class AnalyzeService {
         String source = String.valueOf(alarm.getOrDefault("source", "unknown"));
         SecurityEvent event = new SecurityEvent(Instant.now(), source, entity, message, fields, severity);
 
+        // 告警风暴智能抑制：同实体同规则在一分钟内超出 50 次时启动收敛
+        String stormKey = tenant + ":" + ruleId + ":" + entity + ":" + (System.currentTimeMillis() / 60000);
+        long count = stormCounters.compute(stormKey, (k, v) -> v == null ? 1L : v + 1);
+        boolean suppressed = count > 50;
+
         List<Alert> alerts = evaluateRules(tenant, event);
-        for (Alert alert : alerts) persist(tenant, alert);
+        if (!suppressed) {
+            for (Alert alert : alerts) persist(tenant, alert);
+        }
         int matched = alerts.size();
         if (matched > 0) windowAggregator.record(tenant, ruleId, entity, severity.name());
 
@@ -78,9 +85,12 @@ public class AnalyzeService {
         result.put("inputRuleId", ruleId);
         result.put("entity", entity);
         result.put("analyzedAlerts", matched);
+        result.put("stormSuppressed", suppressed);
         result.put("totalAnalyzed", repository.countByTenantId(tenant));
         return result;
     }
+
+    private final Map<String, Long> stormCounters = new ConcurrentHashMap<>();
 
     @Transactional(readOnly = true)
     public AnalyzedPage analyzed(int page, int size) {

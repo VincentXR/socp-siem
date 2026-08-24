@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/card/style/css.mjs'
 import 'element-plus/es/components/dialog/style/css.mjs'
@@ -19,6 +19,9 @@ import { computed, onMounted, ref } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import PagerBar from '../components/PagerBar.vue'
 import { createPlaybook, deletePlaybook, listPlaybookExecutions, listPlaybooks, togglePlaybook, type Playbook, type PlaybookExecution } from '../api'
+import { useI18n } from '../composables/useI18n'
+
+const { t, locale } = useI18n()
 
 const playbooks = ref<Playbook[]>([])
 const executions = ref<PlaybookExecution[]>([])
@@ -49,7 +52,7 @@ async function addPlaybook() {
 }
 
 async function removePlaybook(id: string) {
-  if (!confirm('确认删除这个响应剧本？历史执行记录不会恢复。')) return
+  if (!confirm(locale.value === 'zh-CN' ? '确认删除这个响应剧本？历史执行记录不会恢复。' : 'Confirm deletion of this playbook?')) return
   await deletePlaybook(id)
   await loadPlaybooks()
 }
@@ -60,44 +63,44 @@ onMounted(loadPlaybooks)
 
 <template>
   <div class="page-pad view-enter">
-    <PageHeader title="编排响应" description="管理自动化处置剧本，并查看最近的执行结果。">
+    <PageHeader :title="t('soar.title')" :description="t('soar.description')">
       <template #actions>
-        <el-button type="primary" size="small" @click="dialogVisible = true">新建剧本</el-button>
-        <el-button size="small" :loading="loading" @click="loadPlaybooks">刷新</el-button>
+        <el-button type="primary" size="small" @click="dialogVisible = true">{{ t('soar.createPlaybook') }}</el-button>
+        <el-button size="small" :loading="loading" @click="loadPlaybooks">{{ t('common.refresh') }}</el-button>
       </template>
     </PageHeader>
 
     <el-card shadow="never">
       <el-table :data="playbooks" size="small" border>
-        <el-table-column prop="name" label="剧本" min-width="140" show-overflow-tooltip />
-        <el-table-column prop="trigger" label="触发条件" min-width="200" show-overflow-tooltip />
-        <el-table-column label="动作链" min-width="260"><template #default="{ row }"><el-tag v-for="action in row.actions" :key="action" size="small" class="soar-action-tag">{{ action }}</el-tag></template></el-table-column>
-        <el-table-column label="状态" width="80"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.status }}</el-tag></template></el-table-column>
-        <el-table-column label="操作" width="130"><template #default="{ row }"><el-button link size="small" @click="toggle(row.id)">{{ row.enabled ? '停用' : '启用' }}</el-button><el-button link type="danger" size="small" @click="removePlaybook(row.id)">删除</el-button></template></el-table-column>
+        <el-table-column prop="name" :label="t('common.name')" min-width="140" show-overflow-tooltip />
+        <el-table-column prop="trigger" :label="locale === 'zh-CN' ? '触发条件' : 'Trigger'" min-width="200" show-overflow-tooltip />
+        <el-table-column :label="locale === 'zh-CN' ? '动作链' : 'Action Chain'" min-width="260"><template #default="{ row }"><el-tag v-for="action in row.actions" :key="action" size="small" class="soar-action-tag">{{ action }}</el-tag></template></el-table-column>
+        <el-table-column :label="t('common.status')" width="80"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.enabled') : t('common.disabled') }}</el-tag></template></el-table-column>
+        <el-table-column :label="t('common.actions')" width="130"><template #default="{ row }"><el-button link size="small" @click="toggle(row.id)">{{ row.enabled ? t('common.disable') : t('common.enable') }}</el-button><el-button link type="danger" size="small" @click="removePlaybook(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column>
       </el-table>
     </el-card>
 
     <el-card shadow="never" class="soar-history-card">
-      <template #header>执行历史（最近 {{ executions.length }} 条）</template>
+      <template #header>{{ locale === 'zh-CN' ? `执行历史（最近 ${executions.length} 条）` : `Execution History (Recent ${executions.length})` }}</template>
       <el-table :data="executionsPaged" size="small" border>
-        <el-table-column prop="ts" label="时间" width="200" />
-        <el-table-column prop="playbook" label="剧本" min-width="140" show-overflow-tooltip />
-        <el-table-column prop="trigger" label="触发" min-width="160" show-overflow-tooltip />
-        <el-table-column label="动作结果" min-width="320">
+        <el-table-column prop="ts" :label="t('common.timestamp')" width="200" />
+        <el-table-column prop="playbook" :label="locale === 'zh-CN' ? '剧本' : 'Playbook'" min-width="140" show-overflow-tooltip />
+        <el-table-column prop="trigger" :label="locale === 'zh-CN' ? '触发' : 'Trigger'" min-width="160" show-overflow-tooltip />
+        <el-table-column :label="locale === 'zh-CN' ? '动作结果' : 'Results'" min-width="320">
           <template #default="{ row }"><span v-for="(result, index) in (row.results || [])" :key="index" class="soar-result-tag"><el-tag size="small" :type="String(result.status).startsWith('fail') ? 'danger' : (String(result.status).startsWith('sent') || String(result.status).startsWith('created') ? 'success' : 'info')">{{ result.action }} → {{ result.status }}</el-tag></span></template>
         </el-table-column>
       </el-table>
       <PagerBar v-model:current-page="page" v-model:page-size="size" :total="executions.length" />
     </el-card>
 
-    <el-dialog v-model="dialogVisible" title="新建剧本" width="500px">
-      <el-form label-width="80px">
-        <el-form-item label="名称"><el-input v-model="form.name" /></el-form-item>
-        <el-form-item label="触发"><el-input v-model="form.trigger" /></el-form-item>
-        <el-form-item label="动作"><el-input v-model="form.actions" type="textarea" :rows="3" placeholder="每行一个动作" /></el-form-item>
-        <el-form-item label="启用"><el-switch v-model="form.enabled" /></el-form-item>
+    <el-dialog v-model="dialogVisible" :title="t('soar.createPlaybook')" width="500px">
+      <el-form label-width="90px">
+        <el-form-item :label="t('common.name')"><el-input v-model="form.name" /></el-form-item>
+        <el-form-item :label="locale === 'zh-CN' ? '触发' : 'Trigger'"><el-input v-model="form.trigger" /></el-form-item>
+        <el-form-item :label="locale === 'zh-CN' ? '动作' : 'Actions'"><el-input v-model="form.actions" type="textarea" :rows="3" :placeholder="locale === 'zh-CN' ? '每行一个动作' : 'One action per line'" /></el-form-item>
+        <el-form-item :label="t('common.enable')"><el-switch v-model="form.enabled" /></el-form-item>
       </el-form>
-      <template #footer><el-button @click="dialogVisible = false">取消</el-button><el-button type="primary" @click="addPlaybook">创建</el-button></template>
+      <template #footer><el-button @click="dialogVisible = false">{{ t('common.cancel') }}</el-button><el-button type="primary" @click="addPlaybook">{{ t('common.create') }}</el-button></template>
     </el-dialog>
   </div>
 </template>

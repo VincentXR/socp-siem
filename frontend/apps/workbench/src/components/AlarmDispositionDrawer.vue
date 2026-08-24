@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import 'element-plus/es/components/alert/style/css.mjs'
 import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/card/style/css.mjs'
@@ -24,6 +24,7 @@ import SevBadge from './SevBadge.vue'
 import type { Alarm, AlarmEvidenceResponse, CaseInfo, Disposition, Ioc } from '../api'
 import { addAlarmNote, assignAlarm, getAlarmEvidence, getDisposition, setDispositionStatus } from '../api/alarms'
 import { listCases as loadCases } from '../api/incidents'
+import { useI18n } from '../composables/useI18n'
 
 const props = defineProps<{
   modelValue: boolean
@@ -37,6 +38,8 @@ const drawerVisible = computed({
   get: () => props.modelValue,
   set: (value: boolean) => emit('update:modelValue', value),
 })
+
+const { t, locale } = useI18n()
 
 const DISP_STATUSES = ['OPEN', 'INVESTIGATING', 'RESOLVED', 'CLOSED']
 const disposition = ref<Disposition | null>(null)
@@ -68,7 +71,7 @@ async function loadDetails(alarm: Alarm) {
   if (token !== loadToken) return
   if (disp.status === 'fulfilled') disposition.value = disp.value
   if (ev.status === 'fulfilled') evidence.value = ev.value
-  else evidenceError.value = '关联原始日志加载失败，请稍后重试'
+  else evidenceError.value = locale.value === 'zh-CN' ? '关联原始日志加载失败，请稍后重试' : 'Failed to load associated raw events, please try again later'
   if (cases.status === 'fulfilled') relatedCase.value = cases.value.find(item => item.alarmIds.includes(alarm.id)) ?? null
   else relatedCase.value = null
 }
@@ -110,19 +113,19 @@ function openEvidenceSearch() {
 </script>
 
 <template>
-  <el-drawer v-model="drawerVisible" :title="`告警处置 · ${props.alarm?.ruleName ?? ''}`" size="480px">
+  <el-drawer v-model="drawerVisible" :title="`${t('drawer.title')} · ${props.alarm?.ruleName ?? ''}`" size="480px">
     <template v-if="props.alarm">
       <el-descriptions :column="2" size="small" border style="margin-bottom:14px">
-        <el-descriptions-item label="规则 ID">{{ props.alarm.ruleId }}</el-descriptions-item>
-        <el-descriptions-item label="级别"><SevBadge :value="props.alarm.severity" /></el-descriptions-item>
-        <el-descriptions-item label="实体">{{ props.alarm.entity }}</el-descriptions-item>
-        <el-descriptions-item label="发生时间">{{ props.alarm.occurredAt }}</el-descriptions-item>
-        <el-descriptions-item label="消息" :span="2">{{ props.alarm.message }}</el-descriptions-item>
-        <el-descriptions-item label="ATT&CK" :span="2">
+        <el-descriptions-item :label="t('drawer.ruleId')">{{ props.alarm.ruleId }}</el-descriptions-item>
+        <el-descriptions-item :label="t('common.severity')"><SevBadge :value="props.alarm.severity" /></el-descriptions-item>
+        <el-descriptions-item :label="t('common.entity')">{{ props.alarm.entity }}</el-descriptions-item>
+        <el-descriptions-item :label="t('alarms.occurredAt')">{{ props.alarm.occurredAt }}</el-descriptions-item>
+        <el-descriptions-item :label="t('common.message')" :span="2">{{ props.alarm.message }}</el-descriptions-item>
+        <el-descriptions-item :label="t('drawer.mitre')" :span="2">
           <a v-if="props.alarm.mitre" :href="`https://attack.mitre.org/techniques/${String(props.alarm.mitre).replace('-', '/')}/`" target="_blank" style="color:#409eff;font-weight:600">{{ props.alarm.mitre }}</a>
           <span v-else style="color:#909399">—</span>
         </el-descriptions-item>
-        <el-descriptions-item label="威胁情报命中" :span="2">
+        <el-descriptions-item :label="t('drawer.tiHits')" :span="2">
           <span v-if="tiHits.length">
             <el-tag v-for="(hit, index) in tiHits" :key="index" size="small" type="danger" style="margin-right:6px;margin-bottom:4px">{{ hit.type }} · {{ hit.value }}</el-tag>
           </span>
@@ -130,14 +133,14 @@ function openEvidenceSearch() {
         </el-descriptions-item>
       </el-descriptions>
 
-      <el-divider content-position="left">关联原始日志</el-divider>
+      <el-divider content-position="left">{{ t('drawer.evidence') }}</el-divider>
       <el-alert v-if="evidenceError" :title="evidenceError" type="error" :closable="false" />
       <template v-else-if="evidence && evidence.items.length">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;font-size:12px;color:#909399">
-          <span>已捕获 {{ evidence.total }} 条触发事件</span>
+          <span>{{ t('drawer.evidenceCount', { count: evidence.total }) }}</span>
           <div v-if="evidence.query" style="display:flex;align-items:center;gap:6px">
-            <span class="mono" style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="evidence.query">eventId 下钻可用</span>
-            <el-button link type="primary" size="small" @click="openEvidenceSearch">在日志检索中打开</el-button>
+            <span class="mono" style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="evidence.query">{{ locale === 'zh-CN' ? 'eventId 下钻可用' : 'eventId drill-down' }}</span>
+            <el-button link type="primary" size="small" @click="openEvidenceSearch">{{ t('drawer.openSearch') }}</el-button>
           </div>
         </div>
         <div v-for="item in evidence.items" :key="item.id" style="border:1px solid var(--el-border-color-lighter);border-radius:6px;padding:8px 10px;margin-bottom:8px;background:var(--ns-bg-subtle)">
@@ -149,36 +152,36 @@ function openEvidenceSearch() {
           <div v-if="item.eventId" style="margin-top:5px;color:#909399;font-size:11px">eventId: {{ item.eventId }}</div>
         </div>
       </template>
-      <el-empty v-else description="该告警暂无已捕获的原始事件证据" :image-size="50" />
+      <el-empty v-else :description="t('drawer.noEvidence')" :image-size="50" />
 
-      <el-divider content-position="left">状态流转</el-divider>
+      <el-divider content-position="left">{{ t('drawer.stateFlow') }}</el-divider>
       <div style="display:flex;gap:8px;margin-bottom:8px">
-        <el-select v-model="newStatus" style="flex:1"><el-option v-for="s in DISP_STATUSES" :key="s" :label="s" :value="s" /></el-select>
-        <el-button type="primary" @click="changeStatus">更新</el-button>
+        <el-select v-model="newStatus" style="flex:1"><el-option v-for="s in DISP_STATUSES" :key="s" :label="t('statuses.' + s) || s" :value="s" /></el-select>
+        <el-button type="primary" @click="changeStatus">{{ t('common.update') }}</el-button>
       </div>
       <div style="display:flex;gap:8px;margin-bottom:14px">
-        <el-input v-model="newAssignee" placeholder="分配人，例如 ops-zhang" /><el-button @click="doAssign">分配</el-button>
+        <el-input v-model="newAssignee" :placeholder="t('drawer.assigneePlaceholder')" /><el-button @click="doAssign">{{ t('common.assign') }}</el-button>
       </div>
 
-      <el-divider content-position="left">备注 / 调查记录</el-divider>
+      <el-divider content-position="left">{{ t('drawer.notesTitle') }}</el-divider>
       <div v-if="disposition && disposition.notes.length">
         <div v-for="(note, index) in disposition.notes" :key="index" style="background:var(--ns-bg-subtle);border-radius:6px;padding:8px 12px;margin-bottom:8px">
           <div style="font-size:12px;color:#909399">{{ note.author }} · {{ note.at }}</div><div style="margin-top:2px">{{ note.content }}</div>
         </div>
       </div>
-      <el-empty v-else description="暂无备注" :image-size="50" />
+      <el-empty v-else :description="t('drawer.noNotes')" :image-size="50" />
       <div style="display:flex;gap:8px;margin-top:8px">
-        <el-input v-model="newNote" placeholder="添加调查备注" @keyup.enter="doAddNote" /><el-button type="success" @click="doAddNote">添加</el-button>
+        <el-input v-model="newNote" :placeholder="t('drawer.addNotePlaceholder')" @keyup.enter="doAddNote" /><el-button type="success" @click="doAddNote">{{ t('common.add') }}</el-button>
       </div>
 
-      <el-divider content-position="left">关联案件</el-divider>
+      <el-divider content-position="left">{{ t('drawer.relatedCase') }}</el-divider>
       <el-card v-if="relatedCase" shadow="never" style="margin-bottom:10px">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-          <div><div style="font-weight:600">{{ relatedCase.title }}</div><div style="font-size:12px;color:#909399;margin-top:2px">{{ relatedCase.id }} · {{ relatedCase.status }} · 实体 {{ relatedCase.entity }} · 告警 {{ relatedCase.alarmIds.length }} 条</div></div>
-          <el-button link type="primary" size="small" @click="drawerVisible = false; props.goCase()">前往案件</el-button>
+          <div><div style="font-weight:600">{{ relatedCase.title }}</div><div style="font-size:12px;color:#909399;margin-top:2px">{{ relatedCase.id }} · {{ relatedCase.status }} · {{ relatedCase.entity }} · {{ relatedCase.alarmIds.length }} alarms</div></div>
+          <el-button link type="primary" size="small" @click="drawerVisible = false; props.goCase()">{{ t('drawer.goToCase') }}</el-button>
         </div>
       </el-card>
-      <el-empty v-else description="暂无关联案件（告警创建时会自动建案归并）" :image-size="50" />
+      <el-empty v-else :description="t('drawer.noRelatedCase')" :image-size="50" />
     </template>
   </el-drawer>
 </template>

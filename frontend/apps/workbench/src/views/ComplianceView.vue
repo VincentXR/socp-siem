@@ -13,6 +13,9 @@ import { onMounted, ref } from 'vue'
 import MetricCard from '../components/MetricCard.vue'
 import PageHeader from '../components/PageHeader.vue'
 import { complianceCoverage, complianceFrameworks, listRules } from '../api'
+import { useI18n } from '../composables/useI18n'
+
+const { t, locale } = useI18n()
 
 type Framework = { name: string; controls: Array<{ id: string; name: string; ruleIds: string[] }> }
 type Coverage = {

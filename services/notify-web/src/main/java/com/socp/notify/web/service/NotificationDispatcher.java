@@ -60,21 +60,45 @@ public class NotificationDispatcher {
         String alarmId = text(alarm.get("id"));
         if (alarmId == null) throw new IllegalArgumentException("alarm id is required");
         String tenant = tenant();
+        List<Channel> enabledChannels = channels.enabled();
+
+        // 并发扇出各渠道通知，避免慢 Webhook 阻塞整体通知链路
+        List<java.util.concurrent.CompletableFuture<Map<String, Object>>> futures = enabledChannels.stream()
+                .map(channel -> java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                    String previous = TenantContext.get();
+                    try {
+                        TenantContext.set(tenant);
+                        Map<String, Object> result = deliveredResult(tenant, alarmId, channel);
+                        if (result == null) {
+                            result = send(channel, alarm);
+                            log(channel, result, alarm);
+                            if (!"failed".equals(result.get("status"))) {
+                                remember(tenant, alarmId, channel, result);
+                            }
+                        }
+                        return result;
+                    } finally {
+                        if (previous == null) TenantContext.clear();
+                        else TenantContext.set(previous);
+                    }
+                }))
+                .toList();
+
         List<Map<String, Object>> results = new ArrayList<>();
         int failed = 0;
-        for (Channel channel : channels.enabled()) {
-            Map<String, Object> result = deliveredResult(tenant, alarmId, channel);
-            if (result == null) {
-                result = send(channel, alarm);
-                log(channel, result, alarm);
+        for (var future : futures) {
+            try {
+                Map<String, Object> result = future.join();
                 if ("failed".equals(result.get("status"))) {
                     failed++;
-                } else {
-                    remember(tenant, alarmId, channel, result);
                 }
+                results.add(result);
+            } catch (Exception ex) {
+                failed++;
+                results.add(Map.of("status", "failed", "error", ex.getMessage()));
             }
-            results.add(result);
         }
+
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("alarmId", alarmId);
         response.put("ruleId", alarm.get("ruleId"));

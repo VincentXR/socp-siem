@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/card/style/css.mjs'
 import 'element-plus/es/components/dialog/style/css.mjs'
@@ -16,6 +16,9 @@ import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { onMounted, ref } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import { addRefEntry, createRefSet, deleteRefSet, listRefSets, type ReferenceSet } from '../api'
+import { useI18n } from '../composables/useI18n'
+
+const { t, locale } = useI18n()
 
 const refSets = ref<ReferenceSet[]>([])
 const entryText = ref<Record<string, string>>({})
@@ -33,7 +36,7 @@ async function addRefSet() {
   await loadRefSets()
 }
 async function removeRefSet(id: string) {
-  if (!confirm('确认删除这个参考数据集？其中的条目也会一并删除。')) return
+  if (!confirm(locale.value === 'zh-CN' ? '确认删除这个参考数据集？其中的条目也会一并删除。' : 'Delete reference set? All entries will be removed.')) return
   await deleteRefSet(id)
   await loadRefSets()
 }
@@ -50,24 +53,24 @@ onMounted(loadRefSets)
 
 <template>
   <div class="page-pad view-enter">
-    <PageHeader title="参考数据集" description="维护可被检测规则引用的白名单、黑名单和其他集合。">
-      <template #actions><el-button type="primary" size="small" @click="dialogVisible = true">新建参考数据集</el-button></template>
+    <PageHeader :title="t('refset.title')" :description="t('refset.description')">
+      <template #actions><el-button type="primary" size="small" @click="dialogVisible = true">{{ t('refset.createSet') }}</el-button></template>
     </PageHeader>
 
-    <el-empty v-if="!refSets.length" description="暂无参考数据集" />
+    <el-empty v-if="!refSets.length" :description="locale === 'zh-CN' ? '暂无参考数据集' : 'No reference sets'" />
     <el-card v-for="refSet in refSets" :key="refSet.id" shadow="never" class="refset-card">
-      <div class="refset-head"><div><strong>{{ refSet.name }}</strong><span class="refset-meta">{{ refSet.description || '—' }} · {{ refSet.entries.length }} 条</span></div><el-button link type="danger" size="small" @click="removeRefSet(refSet.id)">删除</el-button></div>
-      <div class="refset-entries"><el-tag v-for="(entry, index) in refSet.entries.slice(0, 40)" :key="index" size="small">{{ entry }}</el-tag><span v-if="refSet.entries.length > 40" class="refset-meta">… 等 {{ refSet.entries.length }} 条</span></div>
-      <div class="refset-add-row"><el-input v-model="entryText[refSet.id]" placeholder="追加条目" @keyup.enter="addEntry(refSet.id)" /><el-button size="small" @click="addEntry(refSet.id)">追加</el-button></div>
+      <div class="refset-head"><div><strong>{{ refSet.name }}</strong><span class="refset-meta">{{ refSet.description || '—' }} · {{ refSet.entries.length }} {{ locale === 'zh-CN' ? '条' : 'items' }}</span></div><el-button link type="danger" size="small" @click="removeRefSet(refSet.id)">{{ t('common.delete') }}</el-button></div>
+      <div class="refset-entries"><el-tag v-for="(entry, index) in refSet.entries.slice(0, 40)" :key="index" size="small">{{ entry }}</el-tag><span v-if="refSet.entries.length > 40" class="refset-meta">… {{ locale === 'zh-CN' ? `等 ${refSet.entries.length} 条` : `total ${refSet.entries.length}` }}</span></div>
+      <div class="refset-add-row"><el-input v-model="entryText[refSet.id]" :placeholder="locale === 'zh-CN' ? '追加条目' : 'Add item'" @keyup.enter="addEntry(refSet.id)" /><el-button size="small" @click="addEntry(refSet.id)">{{ t('common.add') }}</el-button></div>
     </el-card>
 
-    <el-dialog v-model="dialogVisible" title="新建参考数据集" width="560px">
-      <el-form label-width="80px">
-        <el-form-item label="数据集名"><el-input v-model="form.name" placeholder="如 vip_users" /></el-form-item>
-        <el-form-item label="描述"><el-input v-model="form.description" placeholder="描述" /></el-form-item>
-        <el-form-item label="初始条目"><el-input v-model="form.entries" type="textarea" :rows="4" placeholder="初始条目，逗号 / 换行分隔" /></el-form-item>
+    <el-dialog v-model="dialogVisible" :title="t('refset.createSet')" width="560px">
+      <el-form label-width="90px">
+        <el-form-item :label="locale === 'zh-CN' ? '数据集名' : 'Set Name'"><el-input v-model="form.name" :placeholder="locale === 'zh-CN' ? '如 vip_users' : 'e.g. vip_users'" /></el-form-item>
+        <el-form-item :label="t('common.description')"><el-input v-model="form.description" :placeholder="t('common.description')" /></el-form-item>
+        <el-form-item :label="locale === 'zh-CN' ? '初始条目' : 'Initial Entries'"><el-input v-model="form.entries" type="textarea" :rows="4" :placeholder="locale === 'zh-CN' ? '初始条目，逗号 / 换行分隔' : 'Comma or line separated'" /></el-form-item>
       </el-form>
-      <template #footer><el-button @click="dialogVisible = false">取消</el-button><el-button type="success" @click="addRefSet">新建数据集</el-button></template>
+      <template #footer><el-button @click="dialogVisible = false">{{ t('common.cancel') }}</el-button><el-button type="success" @click="addRefSet">{{ t('common.create') }}</el-button></template>
     </el-dialog>
   </div>
 </template>

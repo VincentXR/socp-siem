@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/descriptions/style/css.mjs'
 import 'element-plus/es/components/divider/style/css.mjs'
@@ -32,6 +32,9 @@ import SevBadge from '../components/SevBadge.vue'
 import { useResourceList } from '../composables/useResourceList'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { caseApi, type CaseInfo, type TimelineEvent } from '../api/domains'
+import { useI18n } from '../composables/useI18n'
+
+const { t, locale } = useI18n()
 
 const stats = ref<{ total?: number; open?: number; resolved?: number }>({})
 const detail = ref<CaseInfo | null>(null)
@@ -92,7 +95,7 @@ function openCreateCase() {
 
 async function saveCase() {
   if (!caseForm.value.title.trim()) {
-    ElMessage.warning('请输入案件标题')
+    ElMessage.warning(locale.value === 'zh-CN' ? '请输入案件标题' : 'Please enter case title')
     return
   }
   try {
@@ -101,10 +104,10 @@ async function saveCase() {
       severity: caseForm.value.severity, assignee: caseForm.value.assignee.trim() || undefined,
     })
     createDialogVisible.value = false
-    ElMessage.success('案件已创建')
+    ElMessage.success(locale.value === 'zh-CN' ? '案件已创建' : 'Case created successfully')
     await loadCases()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '创建案件失败')
+    ElMessage.error(error instanceof Error ? error.message : (locale.value === 'zh-CN' ? '创建案件失败' : 'Failed to create case'))
   }
 }
 
@@ -113,64 +116,64 @@ onMounted(loadCases)
 
 <template>
   <div class="page-pad view-enter">
-    <PageHeader title="案件管理" description="将告警聚合为可跟踪案件，维护处置状态和事件时间线。">
+    <PageHeader :title="t('cases.title')" :description="t('cases.description')">
       <template #actions>
-        <el-button type="primary" size="small" @click="openCreateCase">新增案件</el-button>
-        <el-button size="small" @click="caseApi.export()">导出案件 JSON</el-button>
+        <el-button type="primary" size="small" @click="openCreateCase">{{ t('cases.createCase') }}</el-button>
+        <el-button size="small" @click="caseApi.export()">{{ locale === 'zh-CN' ? '导出案件 JSON' : 'Export Cases JSON' }}</el-button>
       </template>
     </PageHeader>
 
     <div class="page-metrics">
-      <MetricCard label="案件总数" tone="info">{{ stats.total ?? 0 }}</MetricCard>
-      <MetricCard label="进行中" tone="warning">{{ stats.open ?? 0 }}</MetricCard>
-      <MetricCard label="已解决" tone="success">{{ stats.resolved ?? 0 }}</MetricCard>
+      <MetricCard :label="locale === 'zh-CN' ? '案件总数' : 'Total Cases'" tone="info">{{ stats.total ?? 0 }}</MetricCard>
+      <MetricCard :label="locale === 'zh-CN' ? '进行中' : 'Active Cases'" tone="warning">{{ stats.open ?? 0 }}</MetricCard>
+      <MetricCard :label="locale === 'zh-CN' ? '已解决' : 'Resolved Cases'" tone="success">{{ stats.resolved ?? 0 }}</MetricCard>
     </div>
 
     <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="casesFiltered.length">
       <template #toolbar>
         <FilterToolbar :count="casesFiltered.length">
-        <el-input v-model="keyword" placeholder="搜索案件 ID / 标题 / 实体" clearable @input="page = 1" />
-        <el-select v-model="statusFilter" placeholder="全部状态" clearable @change="page = 1">
-          <el-option v-for="status in ['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']" :key="status" :label="status" :value="status" />
+        <el-input v-model="keyword" :placeholder="locale === 'zh-CN' ? '搜索案件 ID / 标题 / 实体' : 'Search Case ID / Title / Entity'" clearable @input="page = 1" />
+        <el-select v-model="statusFilter" :placeholder="locale === 'zh-CN' ? '全部状态' : 'All Statuses'" clearable @change="page = 1">
+          <el-option v-for="status in ['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']" :key="status" :label="t('statuses.' + status) || status" :value="status" />
         </el-select>
         </FilterToolbar>
       </template>
       <el-table :data="casesPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @sort-change="casesList.onSortChange">
-        <el-table-column prop="id" column-key="id" label="案件 ID" :width="columnWidth('id', 180)" sortable="custom" show-overflow-tooltip />
-        <el-table-column prop="title" column-key="title" label="标题" :width="columnWidth('title')" min-width="180" sortable="custom" show-overflow-tooltip />
-        <el-table-column prop="entity" column-key="entity" label="实体" :width="columnWidth('entity', 130)" sortable="custom" show-overflow-tooltip />
-        <el-table-column prop="severity" column-key="severity" label="级别" :width="columnWidth('severity', 90)" sortable="custom"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
-        <el-table-column prop="status" column-key="status" label="状态" :width="columnWidth('status', 120)" sortable="custom"><template #default="{ row }"><el-tag :type="row.status === 'OPEN' ? 'danger' : row.status === 'RESOLVED' || row.status === 'CLOSED' ? 'success' : 'warning'" size="small">{{ row.status }}</el-tag></template></el-table-column>
-        <el-table-column prop="alarmCount" column-key="alarmCount" label="关联告警" :width="columnWidth('alarmCount', 90)" sortable="custom"><template #default="{ row }">{{ row.alarmIds.length }}</template></el-table-column>
-        <el-table-column label="操作" width="90" :resizable="false"><template #default="{ row }"><el-button link type="primary" size="small" @click="openCaseRow(row)">详情/时间线</el-button></template></el-table-column>
+        <el-table-column prop="id" column-key="id" :label="t('cases.caseId')" :width="columnWidth('id', 180)" sortable="custom" show-overflow-tooltip />
+        <el-table-column prop="title" column-key="title" :label="t('cases.caseTitle')" :width="columnWidth('title')" min-width="180" sortable="custom" show-overflow-tooltip />
+        <el-table-column prop="entity" column-key="entity" :label="t('common.entity')" :width="columnWidth('entity', 130)" sortable="custom" show-overflow-tooltip />
+        <el-table-column prop="severity" column-key="severity" :label="t('common.severity')" :width="columnWidth('severity', 90)" sortable="custom"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
+        <el-table-column prop="status" column-key="status" :label="t('common.status')" :width="columnWidth('status', 120)" sortable="custom"><template #default="{ row }"><el-tag :type="row.status === 'OPEN' ? 'danger' : row.status === 'RESOLVED' || row.status === 'CLOSED' ? 'success' : 'warning'" size="small">{{ t('statuses.' + row.status) || row.status }}</el-tag></template></el-table-column>
+        <el-table-column prop="alarmCount" column-key="alarmCount" :label="t('cases.associatedAlarms')" :width="columnWidth('alarmCount', 90)" sortable="custom"><template #default="{ row }">{{ row.alarmIds.length }}</template></el-table-column>
+        <el-table-column :label="t('common.actions')" width="100" :resizable="false"><template #default="{ row }"><el-button link type="primary" size="small" @click="openCaseRow(row)">{{ locale === 'zh-CN' ? '详情/时间线' : 'Details' }}</el-button></template></el-table-column>
       </el-table>
     </DataTableCard>
 
-    <el-dialog v-model="createDialogVisible" title="新增案件" width="560px">
-      <el-form label-width="80px">
-        <el-form-item label="标题" required><el-input v-model="caseForm.title" placeholder="如：SSH 暴力破解调查" /></el-form-item>
-        <el-form-item label="关联实体"><el-input v-model="caseForm.entity" placeholder="如：203.0.113.10 或 root" /></el-form-item>
-        <el-form-item label="级别"><el-select v-model="caseForm.severity" style="width: 180px"><el-option v-for="level in ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']" :key="level" :label="level" :value="level" /></el-select></el-form-item>
-        <el-form-item label="负责人"><el-input v-model="caseForm.assignee" placeholder="可选，如 analyst" /></el-form-item>
+    <el-dialog v-model="createDialogVisible" :title="t('cases.createCase')" width="560px">
+      <el-form label-width="90px">
+        <el-form-item :label="t('cases.caseTitle')" required><el-input v-model="caseForm.title" :placeholder="locale === 'zh-CN' ? '如：SSH 暴力破解调查' : 'e.g. SSH Brute Force Investigation'" /></el-form-item>
+        <el-form-item :label="t('common.entity')"><el-input v-model="caseForm.entity" :placeholder="locale === 'zh-CN' ? '如：203.0.113.10 或 root' : 'e.g. 203.0.113.10 or root'" /></el-form-item>
+        <el-form-item :label="t('common.severity')"><el-select v-model="caseForm.severity" style="width: 180px"><el-option v-for="level in ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']" :key="level" :label="t('severities.' + level) || level" :value="level" /></el-select></el-form-item>
+        <el-form-item :label="t('cases.assignee')"><el-input v-model="caseForm.assignee" :placeholder="locale === 'zh-CN' ? '可选，如 analyst' : 'Optional, e.g. analyst'" /></el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="createDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="saveCase">创建案件</el-button>
+        <el-button @click="createDialogVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" @click="saveCase">{{ t('cases.createCase') }}</el-button>
       </template>
     </el-dialog>
 
-    <el-drawer v-model="drawerVisible" :title="`案件 · ${detail?.title ?? ''}`" size="520px">
+    <el-drawer v-model="drawerVisible" :title="`${t('cases.title')} · ${detail?.title ?? ''}`" size="520px">
       <template v-if="detail">
         <el-descriptions :column="2" size="small" border>
-          <el-descriptions-item label="案件 ID">{{ detail.id }}</el-descriptions-item>
-          <el-descriptions-item label="实体">{{ detail.entity }}</el-descriptions-item>
-          <el-descriptions-item label="级别"><SevBadge :value="detail.severity" /></el-descriptions-item>
-          <el-descriptions-item label="状态">{{ detail.status }}</el-descriptions-item>
-          <el-descriptions-item label="关联规则" :span="2">{{ detail.ruleIds.join(', ') || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="关联告警" :span="2">{{ detail.alarmIds.join(', ') || '—' }}</el-descriptions-item>
+          <el-descriptions-item :label="t('cases.caseId')">{{ detail.id }}</el-descriptions-item>
+          <el-descriptions-item :label="t('common.entity')">{{ detail.entity }}</el-descriptions-item>
+          <el-descriptions-item :label="t('common.severity')"><SevBadge :value="detail.severity" /></el-descriptions-item>
+          <el-descriptions-item :label="t('common.status')">{{ t('statuses.' + detail.status) || detail.status }}</el-descriptions-item>
+          <el-descriptions-item :label="locale === 'zh-CN' ? '关联规则' : 'Linked Rules'" :span="2">{{ detail.ruleIds.join(', ') || '—' }}</el-descriptions-item>
+          <el-descriptions-item :label="t('cases.associatedAlarms')" :span="2">{{ detail.alarmIds.join(', ') || '—' }}</el-descriptions-item>
         </el-descriptions>
-        <div class="case-status-row"><el-select v-model="newStatus"><el-option v-for="status in ['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']" :key="status" :label="status" :value="status" /></el-select><el-button type="primary" @click="updateStatus">更新状态</el-button></div>
-        <el-divider content-position="left">事件时间线</el-divider>
+        <div class="case-status-row"><el-select v-model="newStatus"><el-option v-for="status in ['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']" :key="status" :label="t('statuses.' + status) || status" :value="status" /></el-select><el-button type="primary" @click="updateStatus">{{ locale === 'zh-CN' ? '更新状态' : 'Update Status' }}</el-button></div>
+        <el-divider content-position="left">{{ t('cases.timeline') }}</el-divider>
         <el-timeline><el-timeline-item v-for="(event, index) in timeline" :key="index" :timestamp="event.ts" placement="top"><div>{{ event.message }}</div><div class="case-event-meta">{{ event.type }} · {{ event.source }}</div></el-timeline-item></el-timeline>
       </template>
     </el-drawer>

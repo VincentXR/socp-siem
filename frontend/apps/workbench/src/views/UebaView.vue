@@ -43,9 +43,12 @@ import {
   SEVERITIES,
   type RiskEntity, type RiskSummary, type ScoreBreakdown, type Watchlist,
 } from '../api'
+import { useI18n } from '../composables/useI18n'
 
 const props = defineProps<{ theme: 'light' | 'dark' }>()
 const emit = defineEmits<{ 'go-alarms': [entity: string] }>()
+
+const { t, locale } = useI18n()
 
 const riskEntities = ref<RiskEntity[]>([])
 const riskSummary = ref<RiskSummary | null>(null)

@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import 'element-plus/es/components/alert/style/css.mjs'
 import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/card/style/css.mjs'
@@ -16,6 +16,9 @@ import PageHeader from '../components/PageHeader.vue'
 import SevBadge from '../components/SevBadge.vue'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { exportSearch, splSearch, type SearchResult } from '../api'
+import { useI18n } from '../composables/useI18n'
+
+const { t, locale } = useI18n()
 
 const pendingQuery = typeof window === 'undefined' ? null : window.sessionStorage.getItem('socp.search.query')
 const query = ref(pendingQuery || 'source=auth severity=HIGH')
@@ -40,7 +43,7 @@ async function search() {
     result.value = await splSearch(query.value)
   } catch (err) {
     result.value = null
-    error.value = `检索失败：${err instanceof Error ? err.message : String(err)}`
+    error.value = `${locale.value === 'zh-CN' ? '检索失败：' : 'Search failed: '}${err instanceof Error ? err.message : String(err)}`
   } finally {
     loading.value = false
   }
@@ -59,13 +62,13 @@ onMounted(() => {
 
 <template>
   <div class="page-pad view-enter">
-    <PageHeader title="日志检索" description="使用 SPL 查询事件、聚合统计并导出当前结果。" />
+    <PageHeader :title="t('search.title')" :description="t('search.description')" />
     <el-card shadow="never" class="search-toolbar">
       <div class="search-query-row">
-        <el-input v-model="query" placeholder="SPL 查询，如 source=auth severity=HIGH | top src_ip 5" clearable @keyup.enter="search" />
-        <el-button type="primary" :loading="loading" @click="search">执行检索</el-button>
-        <el-button size="small" @click="exportSearch(query, 'json')">导出 JSON</el-button>
-        <el-button size="small" @click="exportSearch(query, 'csv')">导出 CSV</el-button>
+        <el-input v-model="query" :placeholder="t('search.queryPlaceholder')" clearable @keyup.enter="search" />
+        <el-button type="primary" :loading="loading" @click="search">{{ t('search.runQuery') }}</el-button>
+        <el-button size="small" @click="exportSearch(query, 'json')">{{ t('common.exportJson') }}</el-button>
+        <el-button size="small" @click="exportSearch(query, 'csv')">{{ t('common.exportCsv') }}</el-button>
       </div>
       <div class="search-examples">
         <el-tag v-for="example in examples" :key="example" size="small" @click="runExample(example)">{{ example }}</el-tag>
@@ -76,24 +79,24 @@ onMounted(() => {
 
     <template v-if="result">
       <el-alert v-if="result.degraded" type="warning"
-        :title="`搜索已降级到 ${result.source}`"
-        :description="result.degradationReason || '结果可能只覆盖本地缓存。'"
+        :title="locale === 'zh-CN' ? `搜索已降级到 ${result.source}` : `Search degraded to ${result.source}`"
+        :description="result.degradationReason || (locale === 'zh-CN' ? '结果可能只覆盖本地缓存。' : 'Results may only cover local cache.')"
         :closable="false" show-icon class="search-error" />
       <el-card shadow="never" class="search-result-card">
-        <template #header>命中 {{ result.total }} 条事件</template>
+        <template #header>{{ locale === 'zh-CN' ? `命中 ${result.total} 条事件` : `Matched ${result.total} events` }}</template>
         <el-table :data="result.events" size="small" border allow-drag-last-column max-height="420" @header-dragend="onHeaderDragEnd">
-          <el-table-column prop="timestamp" column-key="timestamp" label="时间" :width="columnWidth('timestamp', 150)" sortable><template #default="{ row }">{{ row.timestamp.slice(0, 19).replace('T', ' ') }}</template></el-table-column>
-          <el-table-column prop="source" column-key="source" label="来源" :width="columnWidth('source', 90)" sortable />
-          <el-table-column prop="host" column-key="host" label="主机" :width="columnWidth('host', 90)" sortable />
-          <el-table-column prop="severity" column-key="severity" label="级别" :width="columnWidth('severity', 80)" sortable><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
-          <el-table-column prop="msg" column-key="msg" label="消息" :width="columnWidth('msg')" min-width="240" sortable show-overflow-tooltip />
+          <el-table-column prop="timestamp" column-key="timestamp" :label="t('common.timestamp')" :width="columnWidth('timestamp', 150)" sortable><template #default="{ row }">{{ row.timestamp.slice(0, 19).replace('T', ' ') }}</template></el-table-column>
+          <el-table-column prop="source" column-key="source" :label="t('common.source')" :width="columnWidth('source', 90)" sortable />
+          <el-table-column prop="host" column-key="host" :label="t('common.host')" :width="columnWidth('host', 90)" sortable />
+          <el-table-column prop="severity" column-key="severity" :label="t('common.severity')" :width="columnWidth('severity', 80)" sortable><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
+          <el-table-column prop="msg" column-key="msg" :label="t('common.message')" :width="columnWidth('msg')" min-width="240" sortable show-overflow-tooltip />
         </el-table>
       </el-card>
       <el-card v-if="result.stat" shadow="never">
-        <template #header>{{ result.stat.type === 'timechart' ? '时间分布（按天）' : `统计（${result.stat.type === 'top' ? 'Top' : '分组计数'}）` }}</template>
+        <template #header>{{ result.stat.type === 'timechart' ? (locale === 'zh-CN' ? '时间分布（按天）' : 'Time Distribution (Daily)') : (locale === 'zh-CN' ? `统计（${result.stat.type === 'top' ? 'Top' : '分组计数'}）` : `Stats (${result.stat.type === 'top' ? 'Top' : 'Group Count'})`) }}</template>
         <el-table :data="result.stat.rows" size="small" border>
           <el-table-column prop="key" label="Key" sortable show-overflow-tooltip />
-          <el-table-column prop="count" label="条数" width="220" sortable>
+          <el-table-column prop="count" :label="locale === 'zh-CN' ? '条数' : 'Count'" width="220" sortable>
             <template #default="{ row }">
               <div class="search-stat-row"><span>{{ row.count }}</span><span class="search-stat-track"><i :style="{ width: `${Math.min(100, (row.count / maxStatCount) * 100)}%` }" /></span></div>
             </template>

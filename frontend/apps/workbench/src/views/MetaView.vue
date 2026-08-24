@@ -28,7 +28,9 @@ import {
   listCategories, listDataSourceTypes, listFields, SEVERITIES,
   type DataSourceType, type FieldDef, type LogCategory,
 } from '../api'
+import { useI18n } from '../composables/useI18n'
 
+const { t, locale } = useI18n()
 const metaTab = ref('ds')
 const dataSourceTypes = ref<DataSourceType[]>([])
 const logCategories = ref<LogCategory[]>([])

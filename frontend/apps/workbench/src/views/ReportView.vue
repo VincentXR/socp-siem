@@ -17,8 +17,10 @@ import ElMessage from 'element-plus/es/components/message/index.mjs'
 import { loadEcharts } from '../lib/echarts'
 import { useRequest } from '../composables/useRequest'
 import { archiveReport, dailyReport, downloadArchivedReport, listArchive, trend7d, type ReportSummary, type ReportTrend } from '../api'
+import { useI18n } from '../composables/useI18n'
 
 const props = defineProps<{ theme: 'light' | 'dark' }>()
+const { t, locale } = useI18n()
 
 const report = ref<ReportSummary | null>(null)
 const trend = ref<ReportTrend | null>(null)

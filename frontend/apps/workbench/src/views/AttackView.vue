@@ -20,8 +20,10 @@ import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { computed, onMounted, ref } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import { attackCoverage, listRules, listTactics, listTechniques, type Alarm, type Tactic, type Technique, updateTechnique } from '../api'
+import { useI18n } from '../composables/useI18n'
 
 const props = defineProps<{ alarms: Alarm[] }>()
+const { t, locale } = useI18n()
 type AttackCov = Awaited<ReturnType<typeof attackCoverage>>
 
 const tactics = ref<Tactic[]>([])

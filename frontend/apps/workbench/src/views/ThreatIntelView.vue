@@ -27,6 +27,9 @@ import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { threatIntelApi, type Ioc } from '../api/domains'
 import { SEVERITIES } from '../api'
 import { readImportRows, type ImportRow } from '../lib/resource-import'
+import { useI18n } from '../composables/useI18n'
+
+const { t, locale } = useI18n()
 
 const tiStat = ref<{ total?: number; byType?: Record<string, number> }>({})
 const iocType = ref('')
@@ -61,14 +64,14 @@ function openIocDialog() {
 }
 
 async function loadTi() {
-  resetPage()
+  if (loading.value) return
   loading.value = true
   try {
-    const [iocResult, statResult] = await Promise.allSettled([
-      threatIntelApi.list(iocType.value || undefined),
-      threatIntelApi.stats(),
-    ])
-    if (iocResult.status === 'fulfilled') setItems(iocResult.value)
+    const [listResult, statResult] = await Promise.allSettled([threatIntelApi.list(iocType.value || undefined), threatIntelApi.stats()])
+    if (listResult.status === 'fulfilled') {
+      setItems(listResult.value)
+      resetPage()
+    }
     if (statResult.status === 'fulfilled') tiStat.value = statResult.value
   } finally {
     loading.value = false
@@ -78,25 +81,31 @@ async function loadTi() {
 async function addIoc() {
   if (!newIoc.value.value.trim()) return
   await threatIntelApi.create({
-    type: newIoc.value.type, value: newIoc.value.value.trim(), severity: newIoc.value.severity,
-    source: newIoc.value.source, description: newIoc.value.description || undefined,
-    tags: newIoc.value.tags ? newIoc.value.tags.split(/[,，\s]+/).filter(Boolean) : [],
+    type: newIoc.value.type,
+    value: newIoc.value.value.trim(),
+    severity: newIoc.value.severity,
+    source: newIoc.value.source,
+    description: newIoc.value.description || undefined,
+    tags: newIoc.value.tags ? newIoc.value.tags.split(',').map(s => s.trim()).filter(Boolean) : undefined,
   })
   showIocDialog.value = false
+  ElMessage.success(locale.value === 'zh-CN' ? '威胁情报已添加' : 'Threat indicator added')
   await loadTi()
 }
 
 async function removeIoc(id: string) {
-  if (!confirm('确认删除这条威胁情报？')) return
   await threatIntelApi.remove(id)
+  ElMessage.success(locale.value === 'zh-CN' ? '已删除' : 'Deleted')
   await loadTi()
 }
 
 async function doTiMatch() {
-  const value = iocKeyword.value.trim()
-  if (!value) return
-  try { tiMatchResult.value = await threatIntelApi.match(value) }
-  catch { tiMatchResult.value = { value, matched: false } }
+  const val = iocKeyword.value.trim()
+  if (!val) {
+    tiMatchResult.value = null
+    return
+  }
+  tiMatchResult.value = await threatIntelApi.match(val)
 }
 
 function selectIocImport() {
@@ -109,20 +118,24 @@ async function importIocFile(event: Event) {
   if (!file) return
   try {
     const rows = await readImportRows(file)
-    const payload = rows.map(row => ({
-      type: rowValue(row, 'type', '类型').toUpperCase() || 'IP',
-      value: rowValue(row, 'value', '值', '情报值'),
-      severity: rowValue(row, 'severity', '严重度', '级别').toUpperCase() || 'MEDIUM',
-      source: rowValue(row, 'source', '来源') || 'import',
-      description: rowValue(row, 'description', '描述'),
-      tags: rowValue(row, 'tags', '标签').split(/[,，\s]+/).filter(Boolean),
-    }))
+    const payload = rows.map(row => {
+      const type = rowValue(row, 'type', '类型').toLowerCase() || 'ip'
+      const rawSeverity = rowValue(row, 'severity', '严重度', '级别').toUpperCase()
+      const severity = SEVERITIES.includes(rawSeverity as typeof SEVERITIES[number]) ? rawSeverity : 'HIGH'
+      const rawTags = rowValue(row, 'tags', '标签')
+      return {
+        type, value: rowValue(row, 'value', '值', '情报值', '指标值'),
+        severity, source: rowValue(row, 'source', '来源') || 'import',
+        description: rowValue(row, 'description', '描述'),
+        tags: rawTags ? rawTags.split(/[,，\s]+/).filter(Boolean) : undefined,
+      }
+    })
     const result = await threatIntelApi.bulkImport(payload)
-    if (result.skipped) ElMessage.warning(`已导入 ${result.imported} 条，跳过 ${result.skipped} 条`)
-    else ElMessage.success(`成功导入 ${result.imported} 条威胁情报`)
+    if (result.skipped) ElMessage.warning(locale.value === 'zh-CN' ? `已导入 ${result.imported} 条，跳过 ${result.skipped} 条` : `Imported ${result.imported}, skipped ${result.skipped}`)
+    else ElMessage.success(locale.value === 'zh-CN' ? `成功导入 ${result.imported} 条威胁情报` : `Successfully imported ${result.imported} indicators`)
     await loadTi()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '威胁情报导入失败')
+    ElMessage.error(error instanceof Error ? error.message : (locale.value === 'zh-CN' ? '威胁情报导入失败' : 'Import failed'))
   } finally {
     input.value = ''
   }
@@ -133,12 +146,12 @@ onMounted(loadTi)
 
 <template>
   <div class="page-pad view-enter">
-    <PageHeader title="威胁情报" description="维护 IP、域名、URL、哈希和邮箱情报，并检查事件是否命中情报库。">
-      <template #actions><el-button size="small" :loading="loading" @click="loadTi">刷新</el-button></template>
+    <PageHeader :title="t('threat.title')" :description="t('threat.description')">
+      <template #actions><el-button size="small" :loading="loading" @click="loadTi">{{ t('common.refresh') }}</el-button></template>
     </PageHeader>
     <div class="page-metrics ti-metrics">
       <el-card shadow="never" :body-style="{ padding: '12px 18px' }">
-        <div style="font-size:12px;color:#909399">情报总量</div>
+        <div style="font-size:12px;color:#909399">{{ locale === 'zh-CN' ? '情报总量' : 'Total IOCs' }}</div>
         <div style="font-size:22px;font-weight:700">{{ tiStat.total ?? 0 }}</div>
       </el-card>
       <el-card v-for="(count, kind) in (tiStat.byType || {})" :key="kind" shadow="never" :body-style="{ padding: '12px 18px' }">
@@ -147,36 +160,36 @@ onMounted(loadTi)
       </el-card>
     </div>
     <FilterToolbar class="ti-query-toolbar" :count="iocsFiltered.length">
-      <el-input v-model="iocKeyword" placeholder="搜索情报值 / 来源 / 描述；输入 IP 或域名可查询命中" clearable @input="iocPage = 1" @keyup.enter="doTiMatch" />
-      <el-button type="primary" @click="doTiMatch">查询命中</el-button>
-      <el-select v-model="iocType" placeholder="全部类型" clearable @change="loadTi">
+      <el-input v-model="iocKeyword" :placeholder="locale === 'zh-CN' ? '搜索情报值 / 来源 / 描述；输入 IP 或域名可查询命中' : 'Search value / source / description; Enter IP to match'" clearable @input="iocPage = 1" @keyup.enter="doTiMatch" />
+      <el-button type="primary" @click="doTiMatch">{{ locale === 'zh-CN' ? '查询命中' : 'Check Match' }}</el-button>
+      <el-select v-model="iocType" :placeholder="locale === 'zh-CN' ? '全部类型' : 'All Types'" clearable @change="loadTi">
         <el-option v-for="t in ['ip', 'domain', 'url', 'sha256', 'email']" :key="t" :label="t" :value="t" />
       </el-select>
     </FilterToolbar>
-    <el-alert v-if="tiMatchResult" :title="tiMatchResult.matched ? `命中情报库：${tiMatchResult.ioc?.value}（${tiMatchResult.ioc?.severity}）` : '未命中情报库'" :type="tiMatchResult.matched ? 'error' : 'info'" :closable="false" style="margin-bottom:14px" />
+    <el-alert v-if="tiMatchResult" :title="tiMatchResult.matched ? (locale === 'zh-CN' ? `命中情报库：${tiMatchResult.ioc?.value}（${tiMatchResult.ioc?.severity}）` : `Matched Threat Intel: ${tiMatchResult.ioc?.value} (${tiMatchResult.ioc?.severity})`) : (locale === 'zh-CN' ? '未命中情报库' : 'No Threat Intel Matched')" :type="tiMatchResult.matched ? 'error' : 'info'" :closable="false" style="margin-bottom:14px" />
     <div class="add-bar">
-      <el-button type="primary" @click="openIocDialog">+ 新增情报</el-button>
-      <el-button @click="selectIocImport">批量导入</el-button>
+      <el-button type="primary" @click="openIocDialog">+ {{ t('threat.addIoc') }}</el-button>
+      <el-button @click="selectIocImport">{{ locale === 'zh-CN' ? '批量导入' : 'Batch Import' }}</el-button>
       <input ref="iocImportInput" type="file" accept=".csv,.json,application/json,text/csv" hidden @change="importIocFile" />
-      <span class="hint">IP / 域名 / URL / 文件哈希 / 邮箱，命中后被规则与富化引用</span>
+      <span class="hint">{{ locale === 'zh-CN' ? 'IP / 域名 / URL / 文件哈希 / 邮箱，命中后被规则与富化引用' : 'IP / Domain / URL / File Hash / Email, matched automatically during detection' }}</span>
     </div>
-    <el-dialog v-model="showIocDialog" title="新增威胁情报" width="560px">
-      <el-form label-width="80px">
-        <el-form-item label="情报值"><el-input v-model="newIoc.value" placeholder="如 1.2.3.4" /></el-form-item>
-        <el-form-item label="类型"><el-select v-model="newIoc.type" style="width:160px"><el-option v-for="t in ['ip', 'domain', 'url', 'sha256', 'email']" :key="t" :label="t" :value="t" /></el-select></el-form-item>
-        <el-form-item label="严重度"><el-select v-model="newIoc.severity" style="width:160px"><el-option v-for="s in SEVERITIES" :key="s" :label="s" :value="s" /></el-select></el-form-item>
-        <el-form-item label="描述"><el-input v-model="newIoc.description" placeholder="描述" /></el-form-item>
+    <el-dialog v-model="showIocDialog" :title="t('threat.addIoc')" width="560px">
+      <el-form label-width="90px">
+        <el-form-item :label="t('threat.iocValue')"><el-input v-model="newIoc.value" :placeholder="locale === 'zh-CN' ? '如 1.2.3.4' : 'e.g. 1.2.3.4'" /></el-form-item>
+        <el-form-item :label="t('common.type')"><el-select v-model="newIoc.type" style="width:160px"><el-option v-for="t in ['ip', 'domain', 'url', 'sha256', 'email']" :key="t" :label="t" :value="t" /></el-select></el-form-item>
+        <el-form-item :label="t('common.severity')"><el-select v-model="newIoc.severity" style="width:160px"><el-option v-for="s in SEVERITIES" :key="s" :label="t('severities.' + s) || s" :value="s" /></el-select></el-form-item>
+        <el-form-item :label="t('common.description')"><el-input v-model="newIoc.description" :placeholder="t('common.description')" /></el-form-item>
       </el-form>
-      <template #footer><el-button @click="showIocDialog = false">取消</el-button><el-button type="success" @click="addIoc">新增情报</el-button></template>
+      <template #footer><el-button @click="showIocDialog = false">{{ t('common.cancel') }}</el-button><el-button type="success" @click="addIoc">{{ t('common.submit') }}</el-button></template>
     </el-dialog>
     <DataTableCard v-model:current-page="iocPage" v-model:page-size="iocSize" :total="iocsFiltered.length">
       <el-table :data="iocsPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @sort-change="iocList.onSortChange">
-        <el-table-column prop="type" column-key="type" label="类型" :width="columnWidth('type', 90)" sortable="custom" />
-        <el-table-column prop="value" column-key="value" label="值" :width="columnWidth('value')" min-width="160" sortable="custom" show-overflow-tooltip />
-        <el-table-column prop="severity" column-key="severity" label="严重度" :width="columnWidth('severity', 90)" sortable="custom"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
-        <el-table-column prop="source" column-key="source" label="来源" :width="columnWidth('source', 100)" sortable="custom" show-overflow-tooltip />
-        <el-table-column prop="description" column-key="description" label="描述" :width="columnWidth('description')" min-width="160" sortable="custom" show-overflow-tooltip />
-        <el-table-column label="操作" width="80" :resizable="false"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeIoc(row.id)">删除</el-button></template></el-table-column>
+        <el-table-column prop="type" column-key="type" :label="t('common.type')" :width="columnWidth('type', 90)" sortable="custom" />
+        <el-table-column prop="value" column-key="value" :label="t('threat.iocValue')" :width="columnWidth('value')" min-width="160" sortable="custom" show-overflow-tooltip />
+        <el-table-column prop="severity" column-key="severity" :label="t('common.severity')" :width="columnWidth('severity', 90)" sortable="custom"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
+        <el-table-column prop="source" column-key="source" :label="t('common.source')" :width="columnWidth('source', 100)" sortable="custom" show-overflow-tooltip />
+        <el-table-column prop="description" column-key="description" :label="t('common.description')" :width="columnWidth('description')" min-width="160" sortable="custom" show-overflow-tooltip />
+        <el-table-column :label="t('common.actions')" width="80" :resizable="false"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeIoc(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column>
       </el-table>
     </DataTableCard>
   </div>

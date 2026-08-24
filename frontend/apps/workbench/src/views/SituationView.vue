@@ -24,9 +24,12 @@ import {
   type ApiRequestOptions,
   type AlarmStats, type GasAlert, type GasStats, type IngestSummary,
 } from '../api'
+import { useI18n } from '../composables/useI18n'
 
 const props = defineProps<{ theme: 'light' | 'dark' }>()
 const emit = defineEmits<{ 'session-expired': [] }>()
+
+const { t, locale } = useI18n()
 
 const liveFeed = ref<Array<GasAlert & { _new?: boolean }>>([])
 const liveOn = ref(true)

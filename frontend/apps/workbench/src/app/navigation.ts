@@ -1,4 +1,4 @@
-export interface MenuItem {
+﻿export interface MenuItem {
   key: string
   label: string
   icon: string
@@ -66,9 +66,60 @@ export const MENU_GROUPS: MenuGroup[] = [
 // and ingestion. Viewer remains intentionally read-only.
 const MENU_VIEWER_HIDDEN = new Set(['ingest', 'meta', 'detect', 'soar', 'notify', 'refset'])
 
-export function getVisibleMenuGroups(role = 'viewer'): MenuGroup[] {
+export function getVisibleMenuGroups(role = 'viewer', t?: (key: string) => string): MenuGroup[] {
   const hidden = role === 'viewer' || !role ? MENU_VIEWER_HIDDEN : new Set<string>()
-  return MENU_GROUPS
+  const groups: MenuGroup[] = [
+    {
+      group: t ? t('menuGroup.overview') : '总览',
+      items: [
+        { key: 'overview', label: t ? t('menu.overview') : '概览', icon: 'dashboard' },
+        { key: 'situation', label: t ? t('menu.situation') : '实时态势', icon: 'radar' },
+      ],
+    },
+    {
+      group: t ? t('menuGroup.alarmsAndEvents') : '告警与事件',
+      items: [
+        { key: 'alarms', label: t ? t('menu.alarms') : '告警查询', icon: 'alarm' },
+        { key: 'case', label: t ? t('menu.case') : '案件管理', icon: 'case' },
+        { key: 'search', label: t ? t('menu.search') : '日志检索', icon: 'search' },
+        { key: 'notify', label: t ? t('menu.notify') : '通知集成', icon: 'notify' },
+      ],
+    },
+    {
+      group: t ? t('menuGroup.detectAndResponse') : '检测与响应',
+      items: [
+        { key: 'detect', label: t ? t('menu.detect') : '检测规则', icon: 'detect' },
+        { key: 'ueba', label: t ? t('menu.ueba') : 'UEBA 风险', icon: 'ueba' },
+        { key: 'soar', label: t ? t('menu.soar') : '编排响应', icon: 'soar' },
+        { key: 'attack', label: t ? t('menu.attack') : 'ATT&CK', icon: 'attack' },
+      ],
+    },
+    {
+      group: t ? t('menuGroup.assetsAndIntel') : '资产与情报',
+      items: [
+        { key: 'assets', label: t ? t('menu.assets') : '资产管理', icon: 'assets' },
+        { key: 'endpoints', label: t ? t('menu.endpoints') : '端点防护', icon: 'endpoints' },
+        { key: 'threat-intel', label: t ? t('menu.threat') : '威胁情报', icon: 'threat' },
+        { key: 'refset', label: t ? t('menu.refset') : '参考数据集', icon: 'refset' },
+      ],
+    },
+    {
+      group: t ? t('menuGroup.ingestAndConfig') : '接入与配置',
+      items: [
+        { key: 'ingest', label: t ? t('menu.ingest') : '日志接入', icon: 'ingest' },
+        { key: 'meta', label: t ? t('menu.meta') : '元数据', icon: 'meta' },
+        { key: 'compliance', label: t ? t('menu.compliance') : '合规', icon: 'compliance' },
+      ],
+    },
+    {
+      group: t ? t('menuGroup.analyticsAndAi') : '分析与助手',
+      items: [
+        { key: 'report', label: t ? t('menu.report') : '报表统计', icon: 'report' },
+        { key: 'ai', label: t ? t('menu.ai') : 'AI 助手', icon: 'ai' },
+      ],
+    },
+  ]
+  return groups
     .map(group => ({
       ...group,
       items: group.items.filter(item => !hidden.has(item.key)),
@@ -92,7 +143,7 @@ export const MENU_ICONS: Record<string, string> = {
   endpoints: '<path d="M12 2 4 6v6c0 5 3.4 8.6 8 10 4.6-1.4 8-5 8-10V6l-8-4Z"/><path d="M9 12l2 2 4-4"/>',
   ai: '<rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 4v3M9 2v3M15 2v3M9.5 13h5M9.5 16h3"/>',
   threat: '<path d="M12 2c-3.5 2-6 5-6 9v5l6 4 6-4v-5c0-4-2.5-7-6-9Z"/><path d="M8 13c1.5-1 3-1.5 4-3 1 1.5 2.5 2 4 3"/>',
-  attack: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none"/>',
+  attack: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="1.2" fill="currentColor" stroke="none"/>',
   notify: '<path d="M12 3a7 7 0 0 0-7 7c0 3-1 5-2.5 6.5h19C20 15 19 13 19 10a7 7 0 0 0-7-7Z"/><path d="M10 20h4"/>',
   case: '<path d="M4 8h16v12H4z"/><path d="M8 8V5h8v3M4 12h16M10 15h4"/>',
   refset: '<path d="M5 3h14a1 1 0 0 1 1 1v15l-3-2-3 2-3-2-3 2-3-2V4a1 1 0 0 1 1-1Z"/>',

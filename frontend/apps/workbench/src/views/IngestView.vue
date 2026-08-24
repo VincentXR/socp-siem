@@ -33,7 +33,9 @@ import {
   SOURCE_TYPES, PARSE_FORMATS,
   type IngestTask, type IngestSummary, type IngestTestResult, type LogCategory, type LogSource, type LogSourceInput, type ParseRule, type SinkTarget,
 } from '../api'
+import { useI18n } from '../composables/useI18n'
 
+const { t, locale } = useI18n()
 const ingestTab = ref('tasks')
 const sources = ref<LogSource[]>([])
 const outputs = ref<SinkTarget[]>([])

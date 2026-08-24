@@ -76,9 +76,17 @@ public class EndpointStore {
         return tenant == null || tenant.isBlank() ? "default" : tenant;
     }
 
+    private static final java.time.Duration HEARTBEAT_EXPIRATION = java.time.Duration.ofMinutes(5);
+
     private static Endpoint fromEntity(EndpointEntity entity) {
+        String status = entity.getStatus();
+        Instant last = entity.getLastHeartbeat();
+        // 动态心跳衰减判定：若超期未收到探针心跳，动态判定为 OFFLINE
+        if (last != null && last.isBefore(Instant.now().minus(HEARTBEAT_EXPIRATION))) {
+            status = "OFFLINE";
+        }
         return new Endpoint(entity.getEndpointId(), entity.getHostname(), entity.getIp(), entity.getOs(),
-                entity.getAgentVersion(), entity.getStatus(), entity.getLastHeartbeat());
+                entity.getAgentVersion(), status, entity.getLastHeartbeat());
     }
 
     private static String storageId(String tenant, String id) {
