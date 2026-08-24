@@ -7,6 +7,9 @@ import com.socp.detect.web.store.DetectionContentCatalog;
 import com.socp.platform.auth.RequireRole;
 import com.socp.platform.tenant.TenantContext;
 import com.socp.rule.model.Alert;
+import jakarta.validation.Valid;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.Validator;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -34,10 +37,12 @@ public class RuleController {
 
     private final DetectEngineService engine;
     private final AlertStreamHub streamHub;
+    private final Validator validator;
 
-    public RuleController(DetectEngineService engine, AlertStreamHub streamHub) {
+    public RuleController(DetectEngineService engine, AlertStreamHub streamHub, Validator validator) {
         this.engine = engine;
         this.streamHub = streamHub;
+        this.validator = validator;
     }
 
     @GetMapping("/rules")
@@ -91,7 +96,7 @@ public class RuleController {
 
     /** Local HTTP ingress for verification; production events normally arrive through Kafka. */
     @PostMapping("/ingest")
-    public ResponseEntity<DetectionIngestResponse> ingest(@RequestBody DetectionIngestRequest request) {
+    public ResponseEntity<DetectionIngestResponse> ingest(@Valid @RequestBody DetectionIngestRequest request) {
         boolean accepted = engine.ingest(request.toSecurityEvent(TenantContext.get()));
         Object queueLoad = engine.stats().get("queueLoad");
         if (!accepted) {
@@ -106,15 +111,30 @@ public class RuleController {
             MediaType.APPLICATION_JSON_VALUE, "application/x-ndjson", MediaType.TEXT_PLAIN_VALUE
     })
     public DetectionBulkIngestResponse ingestBulk(@RequestBody String body) {
+        if (body != null && body.length() > 16 * 1024 * 1024) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.PAYLOAD_TOO_LARGE, "bulk body exceeds 16 MiB");
+        }
         int accepted = 0;
         int rejected = 0;
         if (body != null) {
-            for (String line : body.split("\\n", -1)) {
+            String[] lines = body.split("\\n", -1);
+            if (lines.length > 1000) {
+                throw new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.PAYLOAD_TOO_LARGE, "bulk body exceeds 1000 events");
+            }
+            for (String line : lines) {
                 String payload = line.trim();
                 if (payload.isEmpty()) continue;
+                if (payload.length() > 256 * 1024) {
+                    rejected++;
+                    continue;
+                }
                 try {
                     DetectionIngestRequest request = MAPPER.readValue(payload, DetectionIngestRequest.class);
-                    if (engine.ingest(request.toSecurityEvent(TenantContext.get()))) accepted++;
+                    if (!validator.validate(request).isEmpty()) {
+                        rejected++;
+                    } else if (engine.ingest(request.toSecurityEvent(TenantContext.get()))) accepted++;
                     else rejected++;
                 } catch (Exception malformed) {
                     rejected++;

@@ -2,6 +2,8 @@ package com.socp.detect.web.api;
 
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -10,14 +12,14 @@ import java.util.UUID;
 
 /** Typed HTTP contract for the local Detection ingest endpoint. */
 public record DetectionIngestRequest(
-        String eventId,
-        String timestamp,
-        String source,
-        String host,
-        String severity,
-        String msg,
-        String raw,
-        Map<String, String> fields) {
+        @Size(max = 128) String eventId,
+        @Size(max = 64) String timestamp,
+        @Size(max = 128) String source,
+        @Size(max = 256) String host,
+        @Pattern(regexp = "(?i)CRITICAL|HIGH|MEDIUM|LOW|INFO") @Size(max = 32) String severity,
+        @Size(max = 4096) String msg,
+        @Size(max = 65536) String raw,
+        @Size(max = 128) Map<@Size(max = 128) String, @Size(max = 4096) String> fields) {
 
     SecurityEvent toSecurityEvent(String tenantId) {
         Map<String, String> normalizedFields = new LinkedHashMap<>();
