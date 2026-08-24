@@ -7,19 +7,22 @@
     "dev": "vite",
     "build": "node scripts/clean-dist.mjs && vue-tsc -b && vite build",
     "preview": "vite preview",
-    "test": "node --experimental-strip-types --test scripts/api-response.test.ts scripts/navigation.test.ts scripts/routes.test.ts scripts/resource-list.test.ts scripts/resource-import.test.ts",
+    "test": "node --experimental-strip-types --test scripts/api-response.test.ts scripts/navigation.test.ts scripts/routes.test.ts scripts/resource-list.test.ts scripts/resource-import.test.ts && vitest run --config vitest.config.ts",
     "verify": "pnpm build && node scripts/verify-build.mjs"
   },
   "dependencies": {
-    "vue": "3.5.41",
     "@tanstack/vue-query": "5.59.0",
+    "echarts": "6.1.0",
     "element-plus": "2.14.3",
-    "echarts": "6.1.0"
+    "vue": "3.5.41"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "6.0.8",
+    "@vue/test-utils": "2.4.6",
+    "jsdom": "26.1.0",
     "typescript": "5.9.3",
     "vite": "6.4.3",
+    "vitest": "3.2.4",
     "vue-tsc": "3.3.9"
   }
 }
