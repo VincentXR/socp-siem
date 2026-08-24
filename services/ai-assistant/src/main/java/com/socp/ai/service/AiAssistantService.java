@@ -2,6 +2,7 @@ package com.socp.ai.service;
 
 import com.socp.ai.llm.LlmChatClient;
 import com.socp.ai.model.AiResult;
+import com.socp.ai.model.AiResponseSource;
 import com.socp.ai.store.QaEntity;
 import com.socp.ai.store.QaRepository;
 import jakarta.annotation.PostConstruct;
@@ -63,7 +64,8 @@ public class AiAssistantService {
             Optional<String> llmAnswer = llmClient.chat(q);
             if (llmAnswer.isPresent()) {
                 String suggestion = "已通过 AI 专家大模型进行智能研判。可结合 SEARCH 日志检索或在 DETECT 中创建检测规则。";
-                return new AiResult(q, llmAnswer.get(), suggestion, System.currentTimeMillis() - start);
+                return new AiResult(q, llmAnswer.get(), suggestion,
+                        System.currentTimeMillis() - start, AiResponseSource.LLM);
             }
         }
 
@@ -83,6 +85,9 @@ public class AiAssistantService {
             suggestion = "可尝试在 SEARCH 中搜索相关日志关键字，或在 DETECT 中新建检测规则。";
         }
 
-        return new AiResult(q, answer, suggestion, System.currentTimeMillis() - start);
+        AiResponseSource source = match.isPresent()
+                ? AiResponseSource.KNOWLEDGE_BASE
+                : AiResponseSource.FALLBACK;
+        return new AiResult(q, answer, suggestion, System.currentTimeMillis() - start, source);
     }
 }

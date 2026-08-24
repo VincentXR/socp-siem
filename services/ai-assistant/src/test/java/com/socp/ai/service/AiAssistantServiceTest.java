@@ -1,6 +1,7 @@
 package com.socp.ai.service;
 
 import com.socp.ai.model.AiResult;
+import com.socp.ai.model.AiResponseSource;
 import com.socp.ai.store.QaEntity;
 import com.socp.ai.store.QaRepository;
 import org.junit.jupiter.api.Test;
@@ -32,6 +33,7 @@ class AiAssistantServiceTest {
         assertThat(result.answer()).isEqualTo("rotate credentials");
         assertThat(result.suggestion()).isNotBlank();
         assertThat(result.elapsedMs()).isNotNegative();
+        assertThat(result.source()).isEqualTo(AiResponseSource.KNOWLEDGE_BASE);
     }
 
     @Test
@@ -45,6 +47,7 @@ class AiAssistantServiceTest {
         AiResult result = service.ask("unmapped subject");
 
         assertThat(result.answer()).contains("unmapped subject");
+        assertThat(result.source()).isEqualTo(AiResponseSource.FALLBACK);
         assertThat(result.suggestion()).isNotBlank();
     }
 
@@ -61,6 +64,7 @@ class AiAssistantServiceTest {
         assertThat(result.question()).isEqualTo("如何检测 SQL 注入？");
         assertThat(result.answer()).isEqualTo("LLM 智能研判：使用正则匹配 union select");
         assertThat(result.suggestion()).contains("AI 专家大模型");
+        assertThat(result.source()).isEqualTo(AiResponseSource.LLM);
     }
 
     @Test
@@ -77,5 +81,6 @@ class AiAssistantServiceTest {
 
         assertThat(result.question()).isEqualTo("暴力破解");
         assertThat(result.answer()).isEqualTo("配置 AUTH-BRUTE 规则");
+        assertThat(result.source()).isEqualTo(AiResponseSource.KNOWLEDGE_BASE);
     }
 }

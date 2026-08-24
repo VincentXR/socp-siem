@@ -87,7 +87,10 @@ function clear() {
         <div v-if="result.suggestion" class="ai-result-suggestion mt-3 p-2.5 rounded bg-blue-50/70 dark:bg-blue-950/40 text-blue-800 dark:text-blue-200 text-xs leading-normal">
           <span class="font-semibold">{{ t('ai.suggestionTitle') }}</span>{{ result.suggestion }}
         </div>
-        <div class="ai-result-meta mt-3 text-xs text-gray-400">{{ t('ai.elapsed', { ms: result.elapsedMs }) }}</div>
+        <div class="ai-result-meta mt-3 flex items-center gap-2 text-xs text-gray-400">
+          <el-tag size="small" effect="plain">{{ result.source }}</el-tag>
+          <span>{{ t('ai.elapsed', { ms: result.elapsedMs }) }}</span>
+        </div>
       </div>
       <div v-else class="ai-hint text-gray-400 text-xs py-4 text-center">{{ t('ai.hint') }}</div>
     </el-card>

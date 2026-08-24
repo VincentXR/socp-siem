@@ -66,6 +66,7 @@ export interface TenantInfo {
 }
 export interface AiResult {
   question: string; answer: string; suggestion: string | null; elapsedMs: number
+  source: 'LLM' | 'KNOWLEDGE_BASE' | 'FALLBACK'
 }
 
 export const SEVERITIES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'] as const

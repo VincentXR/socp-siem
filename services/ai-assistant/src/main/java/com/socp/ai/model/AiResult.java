@@ -7,6 +7,7 @@ public record AiResult(
         String question,
         String answer,
         String suggestion,
-        long elapsedMs
+        long elapsedMs,
+        AiResponseSource source
 ) {
 }
