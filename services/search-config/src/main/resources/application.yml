@@ -45,6 +45,10 @@ socp:
     # 渲染 Vector 配置时注入的采集 token（Authorization: Bearer），与 Vector sink 约定一致；
     # dev-bypass=false 时 ingest 校验此 token，缺失/不匹配返回 401。
     token: ${SOCP_VECTOR_TOKEN:dev-vector-token}
+  kafka:
+    bootstrap: ${SOCP_KAFKA_BOOTSTRAP:localhost:9092}
+    topic: ${SOCP_KAFKA_TOPIC:socp-events}
+    enabled: ${SOCP_KAFKA_ENABLED:true}
   detect:
     url: http://localhost:18082
   ingest:

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.socp.platform.client.kafka.KafkaClientSupport;
+import com.socp.search.config.config.KafkaProperties;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -15,6 +16,7 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.WakeupException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -45,15 +47,6 @@ public class OsIndexerConsumer {
             .registerModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
 
-    @Value("${socp.kafka.bootstrap:localhost:9092}")
-    private String bootstrap;
-
-    @Value("${socp.kafka.topic:socp-events}")
-    private String topic;
-
-    @Value("${socp.kafka.enabled:true}")
-    private boolean enabled;
-
     @Value("${socp.os-indexer.enabled:true}")
     private boolean indexerEnabled;
 
@@ -61,28 +54,36 @@ public class OsIndexerConsumer {
     private long retryBackoffMs;
 
     private final OsEventWriter osWriter;
+    private final KafkaProperties kafkaProperties;
     private volatile boolean running;
     private volatile KafkaConsumer<String, String> activeConsumer;
     private volatile KafkaProducer<String, String> dlqProducer;
     private Thread worker;
 
     public OsIndexerConsumer(OsEventWriter osWriter) {
+        this(osWriter, new KafkaProperties());
+    }
+
+    @Autowired
+    public OsIndexerConsumer(OsEventWriter osWriter, KafkaProperties kafkaProperties) {
         this.osWriter = osWriter;
+        this.kafkaProperties = kafkaProperties;
     }
 
     @PostConstruct
     public void start() {
-        if (!enabled || !indexerEnabled) return;
+        if (!kafkaProperties.isEnabled() || !indexerEnabled) return;
         running = true;
         worker = Thread.ofPlatform().name("os-indexer").daemon(true).start(this::runLoop);
-        log.info("OpenSearch indexer started bootstrap={} topic={}", bootstrap, topic);
+        log.info("OpenSearch indexer started bootstrap={} topic={}",
+                kafkaProperties.getBootstrap(), kafkaProperties.getTopic());
     }
 
     private void runLoop() {
         while (running) {
             try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(consumerProperties())) {
                 activeConsumer = consumer;
-                consumer.subscribe(List.of(topic));
+                consumer.subscribe(List.of(kafkaProperties.getTopic()));
                 consume(consumer);
             } catch (WakeupException wakeup) {
                 if (running) log.warn("OpenSearch indexer consumer was unexpectedly woken");
@@ -175,7 +176,8 @@ public class OsIndexerConsumer {
 
     private boolean sendToDlqAndAwait(String eventId, String raw) {
         try {
-            KafkaClientSupport.sendAndAwait(dlq(), topic + "-dlq", eventId, raw, Duration.ofSeconds(30));
+            KafkaClientSupport.sendAndAwait(dlq(), kafkaProperties.getTopic() + "-dlq",
+                    eventId, raw, Duration.ofSeconds(30));
             return true;
         } catch (RuntimeException failure) {
             log.warn("DLQ durable write failed eventId={}: {}", eventId, failure.getMessage());
@@ -188,14 +190,14 @@ public class OsIndexerConsumer {
         if (current != null) return current;
         synchronized (this) {
             if (dlqProducer == null) {
-                dlqProducer = new KafkaProducer<>(KafkaClientSupport.reliableProducer(bootstrap));
+                dlqProducer = new KafkaProducer<>(KafkaClientSupport.reliableProducer(kafkaProperties.getBootstrap()));
             }
             return dlqProducer;
         }
     }
 
     private java.util.Properties consumerProperties() {
-        return KafkaClientSupport.reliableConsumer(bootstrap,
+        return KafkaClientSupport.reliableConsumer(kafkaProperties.getBootstrap(),
                 "socp-os-indexer", "earliest", 500);
     }
 

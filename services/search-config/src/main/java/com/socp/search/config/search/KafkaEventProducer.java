@@ -1,5 +1,6 @@
 package com.socp.search.config.search;
 
+import com.socp.search.config.config.KafkaProperties;
 import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
@@ -7,7 +8,7 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.Properties;
@@ -22,16 +23,18 @@ import java.util.concurrent.TimeUnit;
 public class KafkaEventProducer {
 
     private static final Logger log = LoggerFactory.getLogger(KafkaEventProducer.class);
-    @Value("${socp.kafka.bootstrap:localhost:9092}")
-    private String bootstrap;
-
-    @Value("${socp.kafka.topic:socp-events}")
-    private String topic;
-
-    @Value("${socp.kafka.enabled:true}")
-    private boolean enabled;
+    private final KafkaProperties properties;
 
     private volatile KafkaProducer<String, String> producer;
+
+    public KafkaEventProducer() {
+        this(new KafkaProperties());
+    }
+
+    @Autowired
+    public KafkaEventProducer(KafkaProperties properties) {
+        this.properties = properties;
+    }
 
     private KafkaProducer<String, String> producer() {
         KafkaProducer<String, String> p = producer;
@@ -39,7 +42,7 @@ public class KafkaEventProducer {
             synchronized (this) {
                 if (producer == null) {
                     Properties props = new Properties();
-                    props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrap);
+                    props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, properties.getBootstrap());
                     props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
                     props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
                     // 可靠性（2026-08-10）：acks=all + 幂等 + 重试，杜绝"发出去但丢了"的静默降级
@@ -63,9 +66,9 @@ public class KafkaEventProducer {
      * The caller must not mark the outbox row published before this returns true.
      */
     public boolean sendAndAwait(String routingKey, String payload, String traceparent) {
-        if (!enabled) return false;
+        if (!properties.isEnabled()) return false;
         try {
-            ProducerRecord<String, String> record = new ProducerRecord<>(topic, routingKey, payload);
+            ProducerRecord<String, String> record = new ProducerRecord<>(properties.getTopic(), routingKey, payload);
             if (traceparent != null && !traceparent.isBlank()) {
                 record.headers().add("traceparent",
                         traceparent.getBytes(java.nio.charset.StandardCharsets.UTF_8));
@@ -80,7 +83,7 @@ public class KafkaEventProducer {
     }
 
     boolean isEnabled() {
-        return enabled;
+        return properties.isEnabled();
     }
 
     @PreDestroy
