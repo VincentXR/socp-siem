@@ -3,6 +3,7 @@ package com.socp.soc.audit;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.client.kafka.KafkaClientSupport;
 import com.socp.platform.tenant.TenantContext;
+import com.socp.soc.config.KafkaAuditProperties;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -10,7 +11,7 @@ import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 
@@ -29,35 +30,34 @@ public class AuditConsumer {
     private static final Logger log = LoggerFactory.getLogger(AuditConsumer.class);
     private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
 
-    @Value("${socp.kafka.bootstrap:localhost:9092}")
-    private String bootstrap;
-
-    @Value("${socp.kafka.audit-topic:socp-audit}")
-    private String topic;
-
-    @Value("${socp.kafka.audit-enabled:true}")
-    private boolean enabled;
-
     private final AuditRepository repository;
+    private final KafkaAuditProperties properties;
     private volatile KafkaProducer<String, String> dlqProducer;
     private volatile Thread worker;
 
     public AuditConsumer(AuditRepository repository) {
+        this(repository, new KafkaAuditProperties());
+    }
+
+    @Autowired
+    public AuditConsumer(AuditRepository repository, KafkaAuditProperties properties) {
         this.repository = repository;
+        this.properties = properties;
     }
 
     @PostConstruct
     public void start() {
-        if (!enabled) return;
+        if (!properties.isAuditEnabled()) return;
         worker = Thread.ofPlatform().name("audit-consumer").daemon(true).start(this::run);
-        log.info("Audit consumer started bootstrap={} topic={}", bootstrap, topic);
+        log.info("Audit consumer started bootstrap={} topic={}",
+                properties.getBootstrap(), properties.getAuditTopic());
     }
 
     private void run() {
-        var props = KafkaClientSupport.reliableConsumer(bootstrap,
+        var props = KafkaClientSupport.reliableConsumer(properties.getBootstrap(),
                 "socp-audit-sink", "earliest", 200);
         try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props)) {
-            consumer.subscribe(List.of(topic));
+            consumer.subscribe(List.of(properties.getAuditTopic()));
             while (!Thread.currentThread().isInterrupted()) {
                 ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(500));
                 if (records.isEmpty()) continue;
@@ -138,7 +138,8 @@ public class AuditConsumer {
 
     private boolean toDlqAndAwait(String key, String raw) {
         try {
-            KafkaClientSupport.sendAndAwait(dlq(), topic + "-dlq", key, raw, Duration.ofSeconds(10));
+            KafkaClientSupport.sendAndAwait(dlq(), properties.getAuditTopic() + "-dlq",
+                    key, raw, Duration.ofSeconds(10));
             return true;
         } catch (RuntimeException failure) {
             log.warn("Audit DLQ acknowledgement failed key={}: {}", key, failure.getMessage());
@@ -151,7 +152,7 @@ public class AuditConsumer {
         if (current != null) return current;
         synchronized (this) {
             if (dlqProducer == null) {
-                dlqProducer = new KafkaProducer<>(KafkaClientSupport.reliableProducer(bootstrap));
+                dlqProducer = new KafkaProducer<>(KafkaClientSupport.reliableProducer(properties.getBootstrap()));
             }
             return dlqProducer;
         }
