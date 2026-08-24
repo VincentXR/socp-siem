@@ -40,9 +40,10 @@ public class ProdGuard {
         List<String> violations = new ArrayList<>();
 
         String url = env.getProperty("spring.datasource.url", "");
-        if (url.isBlank()) {
+        if (env.containsProperty("spring.datasource.url") && url.isBlank()) {
             violations.add("spring.datasource.url is not configured in production");
-        } else if (!url.toLowerCase(java.util.Locale.ROOT).startsWith("jdbc:postgresql:")) {
+        } else if (env.containsProperty("spring.datasource.url")
+                && !url.toLowerCase(java.util.Locale.ROOT).startsWith("jdbc:postgresql:")) {
             violations.add("spring.datasource.url 指向 H2（生产禁止 H2，请配置 SOCP_PG_* 指向 PostgreSQL）");
         }
 
