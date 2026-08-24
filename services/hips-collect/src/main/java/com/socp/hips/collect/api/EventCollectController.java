@@ -1,6 +1,7 @@
 package com.socp.hips.collect.api;
 
 import com.socp.hips.collect.collector.EndpointSimulator;
+import com.socp.hips.collect.store.HipsEventStore;
 import com.socp.platform.client.ServiceCall;
 import com.socp.platform.client.SocpHttpClient;
 import com.socp.platform.client.SocpService;
@@ -10,12 +11,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.*;
 import jakarta.validation.Valid;
 
-import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * HIPS 采集入口——接收 Falco/端点 Agent 上报的运行时检测事件。
@@ -31,23 +29,20 @@ public class EventCollectController {
 
     private static final Logger log = LoggerFactory.getLogger(EventCollectController.class);
 
-    private final List<Map<String, Object>> events = new CopyOnWriteArrayList<>();
     private final EndpointSimulator simulator;
     private final SocpHttpClient http;
+    private final HipsEventStore eventStore;
 
-    public EventCollectController(EndpointSimulator simulator, SocpHttpClient http) {
+    public EventCollectController(EndpointSimulator simulator, SocpHttpClient http, HipsEventStore eventStore) {
         this.simulator = simulator;
         this.http = http;
+        this.eventStore = eventStore;
     }
 
     @PostMapping("/events")
     public Map<String, Object> report(@Valid @RequestBody EventCollectRequest request) {
         Map<String, Object> event = request.asMap();
-        Map<String, Object> record = new LinkedHashMap<>(event);
-        record.put("id", UUID.randomUUID().toString());
-        record.put("receivedAt", Instant.now().toString());
-        record.put("tenantId", tenant());
-        events.add(record);
+        Map<String, Object> record = eventStore.append(tenant(), event);
 
         // 真转发：Falco 事件进 SEARCH 主链（FalcoParser 识别 rule/output/fields）
         ServiceCall call = http.post(SocpService.SEARCH, "/api/v1/ingest", toJson(record),
@@ -58,14 +53,14 @@ public class EventCollectController {
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("accepted", true);
-        result.put("total", tenantEvents().size());
+        result.put("total", eventStore.list(tenant()).size());
         result.put("forwarded", call.ok());
         return result;
     }
 
     @GetMapping("/events")
     public List<Map<String, Object>> list() {
-        return tenantEvents();
+        return eventStore.list(tenant());
     }
 
     /** 定时模拟器生成的端点事件（已上报 hips-web）。 */
@@ -87,11 +82,6 @@ public class EventCollectController {
             else sb.append('"').append(String.valueOf(v).replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
         }
         return sb.append("}").toString();
-    }
-
-    private List<Map<String, Object>> tenantEvents() {
-        String tenant = tenant();
-        return events.stream().filter(item -> tenant.equals(item.get("tenantId"))).toList();
     }
 
     private static String tenant() {

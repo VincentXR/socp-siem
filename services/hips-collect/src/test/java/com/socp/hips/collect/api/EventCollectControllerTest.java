@@ -2,6 +2,7 @@ package com.socp.hips.collect.api;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.hips.collect.collector.EndpointSimulator;
+import com.socp.hips.collect.store.HipsEventStore;
 import com.socp.platform.client.ServiceCall;
 import com.socp.platform.client.SocpHttpClient;
 import com.socp.platform.client.SocpService;
@@ -17,6 +18,7 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.List;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -44,6 +46,9 @@ class EventCollectControllerTest {
     @MockitoBean
     private SocpHttpClient http;
 
+    @MockitoBean
+    private HipsEventStore eventStore;
+
     @Autowired
     private MockMvc mvc;
 
@@ -55,6 +60,17 @@ class EventCollectControllerTest {
         when(http.post(any(), anyString(), anyString(), anyString(), anyInt()))
                 .thenReturn(new ServiceCall(SocpService.SEARCH, "/api/v1/ingest", true,
                         200, "", null, 1, false, 1));
+
+        Map<String, Object> persisted = new LinkedHashMap<>();
+        persisted.put("rule", "Terminal shell in container");
+        persisted.put("priority", "Warning");
+        persisted.put("hostname", "web01");
+        persisted.put("output", "A shell was spawned in a container");
+        persisted.put("id", "event-1");
+        persisted.put("receivedAt", "2026-08-25T00:00:00Z");
+        persisted.put("tenantId", "default");
+        when(eventStore.append(anyString(), any())).thenReturn(persisted);
+        when(eventStore.list(anyString())).thenReturn(List.of(persisted));
 
         Map<String, Object> falcoEvent = new LinkedHashMap<>();
         falcoEvent.put("rule", "Terminal shell in container");

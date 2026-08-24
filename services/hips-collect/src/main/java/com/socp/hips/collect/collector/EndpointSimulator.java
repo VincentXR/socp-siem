@@ -1,5 +1,6 @@
 package com.socp.hips.collect.collector;
 
+import com.socp.hips.collect.store.HipsEventStore;
 import com.socp.platform.client.HipsClient;
 import com.socp.platform.client.ServiceCall;
 import com.socp.platform.tenant.TenantContext;
@@ -14,7 +15,6 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * HIPS 端点采集模拟器：模拟 Falco/Agent 上报运行时检测事件。
@@ -29,10 +29,10 @@ public class EndpointSimulator {
 
     private static final Logger log = LoggerFactory.getLogger(EndpointSimulator.class);
 
-    private final List<Map<String, Object>> events = new CopyOnWriteArrayList<>();
     private int round = 0;
 
     private final HipsClient hipsClient;
+    private final HipsEventStore eventStore;
 
     @Value("${socp.hips-collect.simulation-enabled:true}")
     private boolean simulationEnabled;
@@ -40,8 +40,9 @@ public class EndpointSimulator {
     @Value("${spring.profiles.active:}")
     private String activeProfiles;
 
-    public EndpointSimulator(HipsClient hipsClient) {
+    public EndpointSimulator(HipsClient hipsClient, HipsEventStore eventStore) {
         this.hipsClient = hipsClient;
+        this.eventStore = eventStore;
     }
 
     /** 每 45 秒模拟一轮端点事件（进程启动/文件写入/网络连接）。 */
@@ -64,13 +65,13 @@ public class EndpointSimulator {
         ev.put("message", "Suspicious " + ev.get("type") + " on " + hosts[round % hosts.length]);
         ev.put("ts", Instant.now().toString());
         ev.put("tenantId", "default");
-        events.add(ev);
+        Map<String, Object> record = eventStore.append("default", ev);
 
-        ServiceCall call = hipsClient.reportEvent(toJson(ev));
+        ServiceCall call = hipsClient.reportEvent(toJson(record));
         if (!call.ok()) {
             log.warn("端点事件上报失败 原因={}", call.failureReason());
         }
-        log.info("端点模拟 #{} 完成，累计 {} 条事件", round, events.size());
+        log.info("endpoint simulator round={} persisted", round);
     }
 
     public List<Map<String, Object>> events() {
@@ -78,7 +79,7 @@ public class EndpointSimulator {
         String tenant = TenantContext.get();
         if (tenant == null || tenant.isBlank()) tenant = "default";
         String selected = tenant;
-        return events.stream().filter(item -> selected.equals(item.get("tenantId"))).toList();
+        return eventStore.list(selected);
     }
 
     private boolean simulationAllowed() {
