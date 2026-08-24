@@ -47,8 +47,8 @@ public class EndpointController {
 
     /** 接收 hips-collect 上报的运行时检测事件（Falco 模拟），暂存 + 刷新对应端点心跳。 */
     @PostMapping("/events")
-    public Map<String, Object> ingestEvent(@RequestBody Map<String, Object> event) {
-        Map<String, Object> record = events.add(event);
+    public Map<String, Object> ingestEvent(@Valid @RequestBody EndpointEventRequest request) {
+        Map<String, Object> record = events.add(request.asMap());
         return Map.of("accepted", true, "eventId", record.get("eventId"), "total", events.list().size());
     }
 

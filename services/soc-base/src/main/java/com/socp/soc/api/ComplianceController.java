@@ -5,6 +5,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import jakarta.validation.Valid;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -83,9 +84,8 @@ public class ComplianceController {
      * 返回每个框架哪些控制项已被现有规则覆盖。
      */
     @PostMapping("/coverage")
-    public Map<String, Object> coverage(@RequestBody Map<String, Object> body) {
-        @SuppressWarnings("unchecked")
-        List<String> ruleIds = (List<String>) body.getOrDefault("ruleIds", List.of());
+    public Map<String, Object> coverage(@Valid @RequestBody CoverageRequest request) {
+        List<String> ruleIds = request.ruleIds();
         Set<String> have = Set.copyOf(ruleIds);
         Map<String, Object> out = new LinkedHashMap<>();
         List<Map<String, Object>> result = new ArrayList<>();

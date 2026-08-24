@@ -71,13 +71,13 @@ public class AssetController {
 
     /** 采集服务（asset-collect）上报新资产——按 name 去重，已存在则更新。 */
     @PostMapping("/collect")
-    public Map<String, Object> collect(@RequestBody Map<String, Object> asset) {
-        String name = String.valueOf(asset.getOrDefault("name", "unknown"));
-        String type = String.valueOf(asset.getOrDefault("type", "SERVER"));
-        String ip = String.valueOf(asset.getOrDefault("ip", ""));
-        String os = String.valueOf(asset.getOrDefault("os", ""));
-        String owner = String.valueOf(asset.getOrDefault("owner", "collect"));
-        String criticality = String.valueOf(asset.getOrDefault("criticality", "HIGH"));
+    public Map<String, Object> collect(@Valid @RequestBody AssetCollectionRequest request) {
+        String name = valueOr(request.name(), "unknown");
+        String type = valueOr(request.type(), "SERVER");
+        String ip = valueOr(request.ip(), "");
+        String os = valueOr(request.os(), "");
+        String owner = valueOr(request.owner(), "collect");
+        String criticality = valueOr(request.criticality(), "HIGH");
         Asset saved = store.upsertByIp(Asset.create(name, type, ip, os, owner, criticality));
         return Map.of("accepted", true, "assetId", saved.id(), "total", store.list().size());
     }
