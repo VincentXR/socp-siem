@@ -36,6 +36,11 @@ socp:
     maturity: preview
     # Local/integration dry-runs remain visibly SIMULATED; application-prod.yml disables them.
     simulation-enabled: ${SOCP_SOAR_SIMULATION_ENABLED:true}
+    action-connectors:
+      firewall-block-url: ${SOCP_SOAR_FIREWALL_BLOCK_URL:}
+      network-isolation-url: ${SOCP_SOAR_NETWORK_ISOLATION_URL:}
+      snapshot-url: ${SOCP_SOAR_SNAPSHOT_URL:}
+      timeout-ms: ${SOCP_SOAR_CONNECTOR_TIMEOUT_MS:5000}
 
 management:
   endpoints:

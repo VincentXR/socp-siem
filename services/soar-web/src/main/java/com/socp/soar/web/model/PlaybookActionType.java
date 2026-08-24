@@ -13,6 +13,10 @@ public enum PlaybookActionType {
     WEBHOOK(false),
     NOTIFY(false),
     CASE(false),
+    FIREWALL_BLOCK(false),
+    NETWORK_ISOLATE(false),
+    SNAPSHOT(false),
+    ASSET_LOOKUP(false),
     TAG(true),
     SIMULATED(true),
     UNKNOWN(false);
@@ -49,6 +53,24 @@ public enum PlaybookActionType {
         }
         if (normalized.contains("case") || normalized.contains("建案") || normalized.contains("事件单")) {
             return CASE;
+        }
+        if (normalized.contains("firewall-block") || normalized.contains("firewall_block")
+                || (normalized.contains("firewall") && normalized.contains("block"))
+                || normalized.contains("防火墙封禁")) {
+            return FIREWALL_BLOCK;
+        }
+        if (normalized.contains("network-isolate") || normalized.contains("network_isolate")
+                || normalized.contains("isolate") || normalized.contains("containment")
+                || normalized.contains("网络隔离")) {
+            return NETWORK_ISOLATE;
+        }
+        if (normalized.contains("snapshot") || normalized.contains("forensic")
+                || normalized.contains("快照取证")) {
+            return SNAPSHOT;
+        }
+        if ((normalized.contains("asset") && normalized.contains("lookup"))
+                || normalized.contains("asset-lookup") || normalized.contains("asset_lookup")) {
+            return ASSET_LOOKUP;
         }
         if (normalized.contains("tag") || normalized.contains("标签") || normalized.contains("标记")) {
             return TAG;

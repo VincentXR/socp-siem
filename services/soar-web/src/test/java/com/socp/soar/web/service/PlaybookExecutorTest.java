@@ -155,8 +155,8 @@ class PlaybookExecutorTest {
         Map<String, Object> result = executor.executeAction("firewall-block", Map.of(), false);
 
         assertEquals("failed", result.get("status"));
-        assertEquals("unknown", result.get("actionType"));
-        assertEquals("UNSUPPORTED_ACTION", result.get("errorCode"));
+        assertEquals("firewall_block", result.get("actionType"));
+        assertEquals("CONNECTOR_NOT_CONFIGURED", result.get("errorCode"));
     }
 
     @Test

@@ -6,6 +6,7 @@ import com.socp.platform.client.IncidentClient;
 import com.socp.platform.client.NotifyClient;
 import com.socp.platform.client.ServiceCall;
 import com.socp.platform.client.SocpHttpClient;
+import com.socp.soar.web.config.SoarActionConnectorProperties;
 import com.socp.soar.web.model.PlaybookActionStatus;
 import com.socp.soar.web.model.PlaybookActionType;
 import org.springframework.stereotype.Component;
@@ -31,9 +32,24 @@ public class PlaybookActionHandlerRegistry {
     public PlaybookActionHandlerRegistry(NotifyClient notifyClient,
                                          IncidentClient incidentClient,
                                          SocpHttpClient http) {
+        this(notifyClient, incidentClient, http, new SoarActionConnectorProperties());
+    }
+
+    public PlaybookActionHandlerRegistry(NotifyClient notifyClient,
+                                         IncidentClient incidentClient,
+                                         SocpHttpClient http,
+                                         SoarActionConnectorProperties properties) {
         register(new WebhookHandler(http));
         register(new NotifyHandler(notifyClient));
         register(new CaseHandler(incidentClient));
+        register(new ConnectorHandler(PlaybookActionType.FIREWALL_BLOCK,
+                properties.getFirewallBlockUrl(), properties.getTimeoutMs(), http));
+        register(new ConnectorHandler(PlaybookActionType.NETWORK_ISOLATE,
+                properties.getNetworkIsolationUrl(), properties.getTimeoutMs(), http));
+        register(new ConnectorHandler(PlaybookActionType.SNAPSHOT,
+                properties.getSnapshotUrl(), properties.getTimeoutMs(), http));
+        register(new ConnectorHandler(PlaybookActionType.ASSET_LOOKUP,
+                "", properties.getTimeoutMs(), http));
         register(new SimulatedHandler(PlaybookActionType.TAG));
         register(new SimulatedHandler(PlaybookActionType.SIMULATED));
     }
@@ -47,6 +63,77 @@ public class PlaybookActionHandlerRegistry {
 
     public PlaybookActionHandler find(PlaybookActionType type) {
         return handlers.get(type);
+    }
+
+    private static final class ConnectorHandler implements PlaybookActionHandler {
+        private final PlaybookActionType type;
+        private final String endpoint;
+        private final int timeoutMs;
+        private final SocpHttpClient http;
+
+        private ConnectorHandler(PlaybookActionType type, String endpoint, int timeoutMs,
+                                  SocpHttpClient http) {
+            this.type = type;
+            this.endpoint = endpoint == null ? "" : endpoint.trim();
+            this.timeoutMs = timeoutMs;
+            this.http = http;
+        }
+
+        @Override
+        public PlaybookActionType type() {
+            return type;
+        }
+
+        @Override
+        public Map<String, Object> handle(PlaybookActionContext context) {
+            if (endpoint.isBlank()) {
+                return failed("CONNECTOR_NOT_CONFIGURED", "no endpoint is configured for " + type.wireName());
+            }
+            String endpointError = validateEndpoint(endpoint);
+            if (endpointError != null) return failed("INVALID_CONNECTOR_ENDPOINT", endpointError);
+
+            ServiceCall call = http.postExternal(endpoint, context.payloadJson(), SocpHttpClient.JSON,
+                    Math.max(100, timeoutMs));
+            Map<String, Object> result = verifiedCall(type.wireName(), call, false);
+            if (PlaybookActionStatus.SUCCESS.wireValue().equals(result.get("status"))) {
+                Map<String, Object> receipt = jsonObject(call.body());
+                if (!accepted(receipt)) {
+                    result.put("status", PlaybookActionStatus.FAILED.wireValue());
+                    result.put("mode", "EXECUTED");
+                    result.put("verified", false);
+                    result.put("errorCode", "MISSING_CONNECTOR_RECEIPT");
+                    result.put("error", "connector must return accepted=true, verified=true, or an accepted status");
+                } else {
+                    result.put("verification", "http-2xx-and-connector-ack");
+                    if (receipt.get("operationId") != null) result.put("operationId", receipt.get("operationId"));
+                }
+            }
+            return result;
+        }
+
+        private static Map<String, Object> failed(String code, String error) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("status", PlaybookActionStatus.FAILED.wireValue());
+            result.put("mode", "NOT_EXECUTED");
+            result.put("verified", false);
+            result.put("errorCode", code);
+            result.put("error", error);
+            return result;
+        }
+
+        private static String validateEndpoint(String raw) {
+            try {
+                java.net.URI uri = java.net.URI.create(raw);
+                String scheme = uri.getScheme();
+                if (scheme == null || (!scheme.equalsIgnoreCase("http") && !scheme.equalsIgnoreCase("https"))) {
+                    return "connector endpoint must use HTTP or HTTPS";
+                }
+                if (uri.getHost() == null || uri.getHost().isBlank()) return "connector endpoint host is empty";
+                return null;
+            } catch (Exception ex) {
+                return "invalid connector endpoint: " + ex.getMessage();
+            }
+        }
     }
 
     private static final class WebhookHandler implements PlaybookActionHandler {
@@ -242,5 +329,17 @@ public class PlaybookActionHandlerRegistry {
         } catch (Exception ignored) {
             return Map.of();
         }
+    }
+
+    private static boolean accepted(Map<String, Object> receipt) {
+        if (Boolean.TRUE.equals(receipt.get("accepted")) || Boolean.TRUE.equals(receipt.get("verified"))) {
+            return true;
+        }
+        Object status = receipt.get("status");
+        if (status == null) return false;
+        return switch (String.valueOf(status).toLowerCase(java.util.Locale.ROOT)) {
+            case "accepted", "ok", "success", "executed", "already_applied", "already-applied" -> true;
+            default -> false;
+        };
     }
 }
