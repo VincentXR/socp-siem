@@ -10,6 +10,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 import com.socp.platform.auth.RequireRole;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 
 /**
  * HIPS 端点管理 API：注册 / 列表 / 心跳 / 事件接收 / 统计。
@@ -33,7 +36,7 @@ public class EndpointController {
 
     @RequireRole({"admin", "analyst"})
     @PostMapping
-    public Endpoint register(@RequestBody RegisterRequest req) {
+    public Endpoint register(@Valid @RequestBody RegisterRequest req) {
         return store.save(Endpoint.register(req.hostname(), req.ip(), req.os(), req.agentVersion()));
     }
 
@@ -79,7 +82,11 @@ public class EndpointController {
         return Map.of("removed", store.delete(id));
     }
 
-    public record RegisterRequest(String hostname, String ip, String os, String agentVersion) {
+    public record RegisterRequest(
+            @NotBlank @Size(max = 128) String hostname,
+            @NotBlank @Size(max = 64) String ip,
+            @Size(max = 128) String os,
+            @Size(max = 64) String agentVersion) {
     }
 
 }

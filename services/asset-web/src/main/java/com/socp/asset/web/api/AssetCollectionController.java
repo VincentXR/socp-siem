@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import jakarta.validation.Valid;
 
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -46,15 +47,22 @@ public class AssetCollectionController {
     }
 
     @PostMapping("/collect")
-    public Map<String, Object> collect(@RequestBody Map<String, Object> input) {
-        Map<String, Object> event = canonicalEvent(input);
+    public Map<String, Object> collect(@Valid @RequestBody AssetCollectionRequest input) {
+        Map<String, Object> source = new LinkedHashMap<>();
+        source.put("name", input.name());
+        source.put("type", input.type());
+        source.put("ip", input.ip());
+        source.put("os", input.os());
+        source.put("owner", input.owner());
+        source.put("criticality", input.criticality());
+        Map<String, Object> event = canonicalEvent(source);
         Asset saved = store.upsertByIp(Asset.create(
-                text(input, "name", "unknown"),
-                text(input, "type", "SERVER"),
-                text(input, "ip", ""),
-                text(input, "os", ""),
-                text(input, "owner", "collect"),
-                text(input, "criticality", "HIGH")));
+                valueOr(input.name(), "unknown"),
+                valueOr(input.type(), "SERVER"),
+                valueOr(input.ip(), ""),
+                valueOr(input.os(), ""),
+                valueOr(input.owner(), "collect"),
+                valueOr(input.criticality(), "HIGH")));
 
         ServiceCall forward = http.post(SocpService.SEARCH, "/api/v1/ingest", serialize(event),
                 SocpHttpClient.NDJSON, 5000);
@@ -92,9 +100,8 @@ public class AssetCollectionController {
         }
     }
 
-    private static String text(Map<String, Object> input, String name, String fallback) {
-        Object value = input.get(name);
-        return value == null || value.toString().isBlank() ? fallback : value.toString();
+    private static String valueOr(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value;
     }
 
     private static String tenant() {

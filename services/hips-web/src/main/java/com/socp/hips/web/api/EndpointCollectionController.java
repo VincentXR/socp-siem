@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import jakarta.validation.Valid;
 
 import java.util.List;
 import java.util.Map;
@@ -35,8 +36,8 @@ public class EndpointCollectionController {
     }
 
     @PostMapping("/events")
-    public Map<String, Object> report(@RequestBody Map<String, Object> input) {
-        Map<String, Object> event = events.add(input);
+    public Map<String, Object> report(@Valid @RequestBody EndpointEventRequest input) {
+        Map<String, Object> event = events.add(input.asMap());
         ServiceCall forward = http.post(SocpService.SEARCH, "/api/v1/ingest", serialize(event),
                 SocpHttpClient.NDJSON, 5000);
         if (!forward.ok()) {
