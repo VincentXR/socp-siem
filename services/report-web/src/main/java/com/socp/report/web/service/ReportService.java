@@ -7,9 +7,10 @@ import com.socp.platform.error.ApiException;
 import com.socp.platform.tenant.TenantContext;
 import com.socp.report.web.model.ReportSummary;
 import com.socp.report.web.model.ReportTrend;
+import com.socp.report.web.config.ClickHouseProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.io.InputStream;
@@ -38,19 +39,17 @@ public class ReportService {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final AlertClient alertClient;
+    private final ClickHouseProperties clickHouse;
 
     public ReportService(AlertClient alertClient) {
-        this.alertClient = alertClient;
+        this(alertClient, new ClickHouseProperties());
     }
 
-    @Value("${socp.ck.url:http://localhost:8123}")
-    private String ckUrl;
-
-    @Value("${socp.ck.user:default}")
-    private String ckUser;
-
-    @Value("${socp.ck.password:socp}")
-    private String ckPassword;
+    @Autowired
+    public ReportService(AlertClient alertClient, ClickHouseProperties clickHouse) {
+        this.alertClient = alertClient;
+        this.clickHouse = clickHouse;
+    }
 
     @SuppressWarnings("unchecked")
     private StatsFetch fetchStats(String window) {
@@ -87,11 +86,12 @@ public class ReportService {
 
     /** Executes a ClickHouse query and preserves the reason for a possible fallback. */
     private CkFetch ckQuery(String sql) {
+        if (!clickHouse.isEnabled()) return CkFetch.unavailable("ClickHouse reporting is disabled");
         try {
             String auth = Base64.getEncoder().encodeToString(
-                    (ckUser + ":" + ckPassword).getBytes(StandardCharsets.UTF_8));
+                    (clickHouse.getUser() + ":" + clickHouse.getPassword()).getBytes(StandardCharsets.UTF_8));
             var request = java.net.http.HttpRequest.newBuilder()
-                    .uri(java.net.URI.create(ckUrl))
+                    .uri(java.net.URI.create(clickHouse.getUrl()))
                     .timeout(java.time.Duration.ofSeconds(5))
                     .header("Content-Type", "text/plain; charset=utf-8")
                     .header("Authorization", "Basic " + auth)

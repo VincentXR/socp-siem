@@ -18,6 +18,11 @@ socp:
     dev-bypass: ${SOCP_DEV_BYPASS:false}
   alert:
     url: http://localhost:18080
+  ck:
+    url: ${SOCP_CK_URL:http://localhost:8123}
+    user: ${SOCP_CK_USER:default}
+    password: ${SOCP_CK_PASSWORD:socp}
+    enabled: ${SOCP_CK_ENABLED:true}
   minio:
     url: ${SOCP_MINIO_URL:http://localhost:9000}
     access-key: ${SOCP_MINIO_ACCESS:socp}

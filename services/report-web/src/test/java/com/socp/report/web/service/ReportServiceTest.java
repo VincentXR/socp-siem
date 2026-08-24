@@ -5,8 +5,8 @@ import com.socp.platform.client.ServiceCall;
 import com.socp.platform.client.SocpService;
 import com.socp.platform.error.ApiException;
 import com.socp.report.web.model.ReportSummary;
+import com.socp.report.web.config.ClickHouseProperties;
 import org.junit.jupiter.api.Test;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.Map;
 
@@ -51,10 +51,10 @@ class ReportServiceTest {
     }
 
     private static ReportService serviceWithUnavailableClickHouse(AlertClient alerts) {
-        ReportService service = new ReportService(alerts);
-        ReflectionTestUtils.setField(service, "ckUrl", "http://127.0.0.1:1");
-        ReflectionTestUtils.setField(service, "ckUser", "default");
-        ReflectionTestUtils.setField(service, "ckPassword", "test");
-        return service;
+        ClickHouseProperties properties = new ClickHouseProperties();
+        properties.setUrl("http://127.0.0.1:1");
+        properties.setUser("default");
+        properties.setPassword("test");
+        return new ReportService(alerts, properties);
     }
 }
