@@ -1,8 +1,10 @@
 package com.socp.alert;
 
+import com.socp.alert.config.ClickHouseProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.autoconfigure.domain.EntityScan;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 
 /**
@@ -12,6 +14,7 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 @SpringBootApplication(scanBasePackages = {"com.socp.alert", "com.socp.platform"})
 @EntityScan(basePackages = {"com.socp.alert", "com.socp.platform"})
 @EnableJpaRepositories(basePackages = "com.socp.alert")
+@EnableConfigurationProperties(ClickHouseProperties.class)
 @org.springframework.scheduling.annotation.EnableScheduling
 public class AlertWebApplication {
     public static void main(String[] args) {

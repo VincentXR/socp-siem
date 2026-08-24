@@ -1,9 +1,10 @@
 package com.socp.alert;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.socp.alert.config.ClickHouseProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.io.OutputStream;
@@ -23,27 +24,26 @@ public class CkReporter {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final DateTimeFormatter CK_TS = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
 
-    @Value("${socp.ck.url:http://localhost:8123}")
-    private String ckUrl;
+    private final ClickHouseProperties properties;
 
-    @Value("${socp.ck.user:default}")
-    private String user;
+    public CkReporter() {
+        this(new ClickHouseProperties());
+    }
 
-    @Value("${socp.ck.password:socp}")
-    private String password;
-
-    @Value("${socp.ck.enabled:true}")
-    private boolean enabled;
+    @Autowired
+    public CkReporter(ClickHouseProperties properties) {
+        this.properties = properties;
+    }
 
     /** Compatibility API for non-durable callers. */
     public void reportAlarm(Alarm alarm) {
-        if (!enabled || alarm == null) return;
+        if (!properties.isEnabled() || alarm == null) return;
         Thread.startVirtualThread(() -> doReport(alarm));
     }
 
     /** Blocking acknowledgement used by the durable delivery worker. */
     public boolean reportAlarmAndAwait(Alarm alarm) {
-        if (!enabled) return true;
+        if (!properties.isEnabled()) return true;
         return alarm != null && doReport(alarm);
     }
 
@@ -64,14 +64,14 @@ public class CkReporter {
             values.put("entity", alarm.getEntity());
             String row = MAPPER.writeValueAsString(values);
             String sql = "INSERT INTO alert_agg.alarm_detail FORMAT JSONEachRow\n" + row + "\n";
-            connection = (HttpURLConnection) new URL(ckUrl).openConnection();
+            connection = (HttpURLConnection) new URL(properties.getUrl()).openConnection();
             connection.setRequestMethod("POST");
             connection.setDoOutput(true);
             connection.setConnectTimeout(3000);
             connection.setReadTimeout(5000);
             connection.setRequestProperty("Content-Type", "text/plain; charset=utf-8");
             String auth = Base64.getEncoder().encodeToString(
-                    (user + ":" + password).getBytes(StandardCharsets.UTF_8));
+                    (properties.getUser() + ":" + properties.getPassword()).getBytes(StandardCharsets.UTF_8));
             connection.setRequestProperty("Authorization", "Basic " + auth);
             try (OutputStream output = connection.getOutputStream()) {
                 output.write(sql.getBytes(StandardCharsets.UTF_8));

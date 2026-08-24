@@ -43,6 +43,11 @@ socp:
   audit:
     sink: memory          # 本地切片：内存；Docker 环境：kafka
     topic: socp-audit
+  ck:
+    url: ${SOCP_CK_URL:http://localhost:8123}
+    user: ${SOCP_CK_USER:default}
+    password: ${SOCP_CK_PASSWORD:socp}
+    enabled: ${SOCP_CK_ENABLED:true}
   threat:
     url: http://localhost:18094
   notify:
