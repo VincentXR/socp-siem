@@ -59,21 +59,22 @@ public class RuleController {
     /** Validate a rule without persisting or hot-reloading it. */
     @RequireRole({"admin", "analyst"})
     @PostMapping("/rules/validate")
-    public Map<String, Object> validateRule(@RequestBody Map<String, Object> spec) {
-        Map<String, Object> enriched = DetectionContentCatalog.enrich(spec);
+    public Map<String, Object> validateRule(@Valid @RequestBody RuleSpecRequest request) {
+        Map<String, Object> enriched = DetectionContentCatalog.enrich(request.asMap());
         List<String> errors = DetectionContentCatalog.validateSpec(enriched);
         return Map.of("valid", errors.isEmpty(), "errors", errors, "spec", enriched);
     }
 
     @RequireRole({"admin", "analyst"})
     @PostMapping("/rules")
-    public Map<String, Object> addRule(@RequestBody Map<String, Object> spec) {
-        return engine.addRule(spec);
+    public Map<String, Object> addRule(@Valid @RequestBody RuleSpecRequest request) {
+        return engine.addRule(request.asMap());
     }
 
     @RequireRole({"admin", "analyst"})
     @PutMapping("/rules/{id}")
-    public Map<String, Object> updateRule(@PathVariable String id, @RequestBody Map<String, Object> spec) {
+    public Map<String, Object> updateRule(@PathVariable String id, @Valid @RequestBody RuleSpecRequest request) {
+        Map<String, Object> spec = request.asMap();
         spec.put("id", id);
         return engine.updateRule(spec);
     }

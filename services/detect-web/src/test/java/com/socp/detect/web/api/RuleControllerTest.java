@@ -54,6 +54,7 @@ class RuleControllerTest {
                         .content(json.writeValueAsString(new LinkedHashMap<>(Map.of(
                                 "name", "SSH brute force",
                                 "type", "threshold",
+                                "severity", "HIGH",
                                 "threshold", 5)))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value("AUTH-BRUTE"))
