@@ -25,7 +25,10 @@ spring:
 socp:
   security:
     # 生产鉴权（2026-08-09 启用）：HMAC HS256 验签，与网关 /auth/login 签发 secret 一致。
-    jwt-secret: ${SOCP_JWT_SECRET}
+    jwt-secret: ${SOCP_JWT_SECRET:}
+    issuer-uri: ${SOCP_SECURITY_ISSUER_URI:}
+    jwk-set-uri: ${SOCP_SECURITY_JWK_SET_URI:}
+    audience: ${SOCP_SECURITY_AUDIENCE:socp-api}
     dev-bypass: ${SOCP_DEV_BYPASS:false}
   kafka:
     # 审计消费链路：订阅各服务 @AuditOperation → socp-audit 主题，落 t_audit 表。

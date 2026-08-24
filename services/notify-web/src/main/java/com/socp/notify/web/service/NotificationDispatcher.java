@@ -6,11 +6,14 @@ import com.socp.notify.web.domain.Channel;
 import com.socp.notify.web.store.ChannelStore;
 import com.socp.notify.web.store.NotificationDeliveryEntity;
 import com.socp.notify.web.store.NotificationDeliveryRepository;
+import com.socp.notify.web.store.NotificationDispatchLogEntity;
+import com.socp.notify.web.store.NotificationDispatchLogRepository;
 import com.socp.platform.client.ServiceCall;
 import com.socp.platform.client.SocpHttpClient;
 import com.socp.platform.tenant.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
@@ -34,13 +37,23 @@ public class NotificationDispatcher {
     private final ChannelStore channels;
     private final SocpHttpClient http;
     private final NotificationDeliveryRepository deliveries;
+    private final NotificationDispatchLogRepository dispatchLogs;
+    /** Test-only fallback; production always injects the JPA repository. */
     private final List<Map<String, Object>> dispatchLog = new CopyOnWriteArrayList<>();
 
     public NotificationDispatcher(ChannelStore channels, SocpHttpClient http,
                                   NotificationDeliveryRepository deliveries) {
+        this(channels, http, deliveries, null);
+    }
+
+    @Autowired
+    public NotificationDispatcher(ChannelStore channels, SocpHttpClient http,
+                                  NotificationDeliveryRepository deliveries,
+                                  NotificationDispatchLogRepository dispatchLogs) {
         this.channels = channels;
         this.http = http;
         this.deliveries = deliveries;
+        this.dispatchLogs = dispatchLogs;
     }
 
     public Map<String, Object> dispatch(Map<String, Object> alarm) {
@@ -166,16 +179,55 @@ public class NotificationDispatcher {
         entry.put("ruleId", alarm.get("ruleId"));
         entry.put("status", result.get("status"));
         entry.put("tenantId", tenant());
-        if (dispatchLog.size() > 200) dispatchLog.removeFirst();
-        dispatchLog.add(entry);
+        if (dispatchLogs == null) {
+            if (dispatchLog.size() > 200) dispatchLog.removeFirst();
+            dispatchLog.add(entry);
+            return;
+        }
+        try {
+            NotificationDispatchLogEntity row = new NotificationDispatchLogEntity();
+            row.setId(UUID.randomUUID().toString());
+            row.setTenantId(tenant());
+            row.setAlarmId(String.valueOf(alarm.get("id")));
+            row.setChannelName(channel.name());
+            row.setChannelType(channel.type());
+            row.setStatus(String.valueOf(result.getOrDefault("status", "unknown")));
+            row.setResultJson(MAPPER.writeValueAsString(entry));
+            row.setCreatedAt(Instant.now());
+            dispatchLogs.save(row);
+        } catch (Exception persistenceFailure) {
+            log.warn("notification dispatch log persistence failed alarmId={}: {}",
+                    alarm.get("id"), persistenceFailure.getMessage());
+        }
     }
 
     public List<Map<String, Object>> log() {
         String tenant = tenant();
+        if (dispatchLogs != null) {
+            return dispatchLogs.findTop200ByTenantIdOrderByCreatedAtDesc(tenant).stream()
+                    .map(NotificationDispatcher::fromLogEntity)
+                    .toList();
+        }
         return dispatchLog.stream()
                 .filter(entry -> tenant.equals(entry.get("tenantId")))
                 .map(Map::copyOf)
                 .toList();
+    }
+
+    private static Map<String, Object> fromLogEntity(NotificationDispatchLogEntity row) {
+        try {
+            Map<String, Object> out = new LinkedHashMap<>(MAPPER.readValue(row.getResultJson(), MAP_TYPE));
+            out.put("channel", row.getChannelName());
+            out.put("type", row.getChannelType());
+            out.put("alarmId", row.getAlarmId());
+            out.put("status", row.getStatus());
+            out.put("tenantId", row.getTenantId());
+            out.put("ts", row.getCreatedAt().toString());
+            return out;
+        } catch (Exception corruptLog) {
+            return Map.of("alarmId", row.getAlarmId(), "status", row.getStatus(),
+                    "error", "invalid persisted dispatch log");
+        }
     }
 
     private static String deliveryId(String tenant, String alarmId, String channelId) {

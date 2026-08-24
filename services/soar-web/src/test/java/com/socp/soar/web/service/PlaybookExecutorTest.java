@@ -2,7 +2,9 @@ package com.socp.soar.web.service;
 
 import com.socp.platform.client.IncidentClient;
 import com.socp.platform.client.NotifyClient;
+import com.socp.platform.client.ServiceCall;
 import com.socp.platform.client.SocpHttpClient;
+import com.socp.platform.client.SocpService;
 import com.socp.soar.web.model.Playbook;
 import com.socp.soar.web.store.PlaybookStore;
 import org.junit.jupiter.api.Test;
@@ -10,6 +12,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
 import java.util.Map;
@@ -17,12 +20,13 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 
 /**
  * SOAR 剧本执行器测试：触发条件评估 + 动作编排 + 重试/补偿 + 定时解析。
  *
- * <p>触发类测试用普通动作走本地"success"分支，避免单测发真实 webhook。
+ * <p>真实通知动作使用 mock ServiceCall；未接入动作必须显式失败或模拟，不能再走默认 success 分支。
  */
 @ExtendWith(MockitoExtension.class)
 class PlaybookExecutorTest {
@@ -49,10 +53,16 @@ class PlaybookExecutorTest {
         return Playbook.create("t", trigger, actions, true);
     }
 
+    private static ServiceCall successfulNotify() {
+        return new ServiceCall(SocpService.NOTIFY, "http://notify", true,
+                200, "{\"dispatched\":1,\"failed\":0}", null, 1, false, 1);
+    }
+
     @Test
     void severityTriggerFiresWhenAlarmIsAtOrAboveThreshold() {
         given(store.list()).willReturn(List.of(
-                enabled("告警 severity >= HIGH 且实体为 IP", List.of("查询资产归属", "下发防火墙封禁"))));
+                enabled("告警 severity >= HIGH 且实体为 IP", List.of("通知值班群", "notify security"))));
+        given(notifyClient.notifyAlert(any())).willReturn(successfulNotify());
         Map<String, Object> out = executor.evaluate(Map.of("id", "AL-1", "ruleId", "X",
                 "severity", "CRITICAL", "entity", "1.2.3.4"));
         assertEquals("AL-1", out.get("alarmId"));
@@ -93,8 +103,9 @@ class PlaybookExecutorTest {
 
     @Test
     void manualTriggerExecutesAllActions() {
-        Playbook pb = Playbook.create("手动剧本", "X", List.of("查询资产归属", "标记主机失陷"), true);
+        Playbook pb = Playbook.create("手动剧本", "X", List.of("通知值班群", "notify asset"), true);
         given(store.get(pb.id())).willReturn(pb);
+        given(notifyClient.notifyAlert(any())).willReturn(successfulNotify());
         Map<String, Object> r = executor.runById(pb.id(), Map.of("entity", "1.2.3.4"));
         List<?> results = (List<?>) r.get("results");
         assertEquals(2, results.size());
@@ -105,8 +116,9 @@ class PlaybookExecutorTest {
     void failedActionTriggersCompensation() {
         Playbook pb = Playbook.create("补偿剧本", "AUTH-BRUTE",
                 List.of("http://127.0.0.1:1/not-exist", // 端口 1 拒绝连接 → 必然失败
-                        "补偿:记录失败并回滚"), true);
+                        "补偿:notify rollback"), true);
         given(store.get(pb.id())).willReturn(pb);
+        given(notifyClient.notifyAlert(any())).willReturn(successfulNotify());
         Map<String, Object> r = executor.runById(pb.id(), Map.of("entity", "5.6.7.8"));
         List<?> results = (List<?>) r.get("results");
         assertEquals("failed", ((Map<?, ?>) results.get(0)).get("status"));
@@ -118,13 +130,82 @@ class PlaybookExecutorTest {
         Playbook pb = Playbook.create("跳过剧本", "WATCH-BLOCKED-IP",
                 List.of("http://127.0.0.1:1/boom", // 失败
                         "通知值班群",       // 主动作：应跳过
-                        "补偿:快照取证"), true);
+                        "补偿:notify evidence"), true);
         given(store.get(pb.id())).willReturn(pb);
+        given(notifyClient.notifyAlert(any())).willReturn(successfulNotify());
         Map<String, Object> r = executor.runById(pb.id(), Map.of());
         List<?> results = (List<?>) r.get("results");
         assertEquals("failed", ((Map<?, ?>) results.get(0)).get("status"));
         assertEquals("skipped", ((Map<?, ?>) results.get(1)).get("status"), "失败后主动作跳过");
         assertEquals("success", ((Map<?, ?>) results.get(2)).get("status"), "补偿执行");
+    }
+
+    @Test
+    void unknownActionFailsWithExplicitErrorInsteadOfDefaultSuccess() {
+        Map<String, Object> result = executor.executeAction("完全未知的动作", Map.of(), false);
+
+        assertEquals("failed", result.get("status"));
+        assertEquals("unknown", result.get("actionType"));
+        assertEquals("UNSUPPORTED_ACTION", result.get("errorCode"));
+        assertEquals("NOT_EXECUTED", result.get("mode"));
+    }
+
+    @Test
+    void legacyFirewallActionIsNotSilentlySimulated() {
+        Map<String, Object> result = executor.executeAction("firewall-block", Map.of(), false);
+
+        assertEquals("failed", result.get("status"));
+        assertEquals("unknown", result.get("actionType"));
+        assertEquals("UNSUPPORTED_ACTION", result.get("errorCode"));
+    }
+
+    @Test
+    void explicitSimulationHasDistinctStatusAndStableIdempotencyKey() {
+        ReflectionTestUtils.setField(executor, "simulationEnabled", true);
+        Map<String, Object> alarm = Map.of("id", "AL-SIM-1", "playbookId", "PB-1");
+
+        Map<String, Object> first = executor.executeAction("simulate:firewall-block", alarm, false, 2);
+        Map<String, Object> second = executor.executeAction("simulate:firewall-block", alarm, false, 2);
+
+        assertEquals("simulated", first.get("status"));
+        assertEquals("SIMULATED", first.get("mode"));
+        assertEquals(first.get("idempotencyKey"), second.get("idempotencyKey"));
+        assertTrue(String.valueOf(first.get("idempotencyKey")).startsWith("soar-"));
+    }
+
+    @Test
+    void notificationWithoutSuccessfulDeliveryReceiptFails() {
+        given(notifyClient.notifyAlert(any())).willReturn(new ServiceCall(
+                SocpService.NOTIFY, "http://notify", true, 200, "{\"dispatched\":1,\"failed\":1}",
+                null, 1, false, 1));
+
+        Map<String, Object> result = executor.executeAction("notify security", Map.of("id", "AL-NOTIFY-1"), false);
+
+        assertEquals("failed", result.get("status"));
+        assertEquals("DOWNSTREAM_DELIVERY_FAILED", result.get("errorCode"));
+        assertEquals("EXECUTED", result.get("mode"));
+    }
+
+    @Test
+    void simulatedActionIsNotReportedAsExecutedWhenSimulationIsDisabled() {
+        Map<String, Object> result = executor.executeAction("tag compromised-host", Map.of(), false);
+
+        assertEquals("failed", result.get("status"));
+        assertEquals("tag", result.get("actionType"));
+        assertEquals("SIMULATION_DISABLED", result.get("errorCode"));
+        assertEquals("NOT_EXECUTED", result.get("mode"));
+    }
+
+    @Test
+    void productionProfileRejectsSimulationEvenWhenDevelopmentFlagIsEnabled() {
+        ReflectionTestUtils.setField(executor, "simulationEnabled", true);
+        ReflectionTestUtils.setField(executor, "activeProfiles", "prod");
+
+        Map<String, Object> result = executor.executeAction("simulate:firewall-block", Map.of(), false);
+
+        assertEquals("failed", result.get("status"));
+        assertEquals("SIMULATION_DISABLED", result.get("errorCode"));
+        assertEquals("NOT_EXECUTED", result.get("mode"));
     }
 
     @Test

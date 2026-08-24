@@ -23,6 +23,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
+import java.util.List;
 import java.util.Map;
 
 /** Issues short-lived SOCP sessions and keeps bearer tokens out of browser JavaScript. */
@@ -38,6 +39,7 @@ public class AuthController {
     @Value("${socp.auth.login-secret}") private String secret;
     @Value("${socp.auth.cookie-secure:false}") private boolean cookieSecure;
     @Value("${socp.security.service-secret:}") private String serviceSecret;
+    @Value("${socp.security.audience:socp-api}") private String audience;
 
     private Map<String, String> users = Map.of();
     private Map<String, String> roles = Map.of();
@@ -120,6 +122,7 @@ public class AuthController {
             JWTClaimsSet claims = new JWTClaimsSet.Builder()
                     .subject(username)
                     .issuer("socp-gateway")
+                    .audience(audiences())
                     .claim("tenant", tenant == null || tenant.isBlank() ? "default" : tenant)
                     .claim("role", supportedRole(role))
                     .issueTime(Date.from(now))
@@ -131,6 +134,13 @@ public class AuthController {
         } catch (Exception failure) {
             throw new IllegalStateException("Unable to issue SOCP session", failure);
         }
+    }
+
+    private List<String> audiences() {
+        return java.util.Arrays.stream(audience == null ? new String[0] : audience.split(","))
+                .map(String::trim)
+                .filter(value -> !value.isBlank())
+                .toList();
     }
 
     public ResponseCookie sessionCookie(String token) {

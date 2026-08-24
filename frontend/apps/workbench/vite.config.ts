@@ -9,16 +9,19 @@ export default defineConfig({
     emptyOutDir: false,
     // 代码分割（2026-08-10）：echarts / element-plus / vue 框架 / 其余依赖 独立 chunk，
     // 大依赖单独长缓存，首屏只加载用到的 chunk
+    chunkSizeWarningLimit: 1000,
     rollupOptions: {
       // 显式相对 input：vite 6.4.3 在 Windows 盘符绝对路径 cwd 下，
       // build-html 会把 index.html 解析成绝对 fileName 报错（不影响 dev，只影响 build）
       input: 'index.html',
       output: {
         manualChunks(id) {
-          if (id.includes('node_modules/echarts') || id.includes('node_modules/zrender')) return 'echarts'
-          if (id.includes('node_modules/element-plus') || id.includes('node_modules/@element-plus')) return 'element-plus'
-          if (id.includes('node_modules/vue') || id.includes('node_modules/@vue')) return 'vue-vendor'
-          if (id.includes('node_modules')) return 'vendor'
+          const normalized = id.replace(/\\/g, '/')
+          if (normalized.includes('/node_modules/zrender/')) return 'echarts-renderer'
+          if (normalized.includes('/node_modules/echarts/')) return 'echarts'
+          if (normalized.includes('node_modules/element-plus') || normalized.includes('node_modules/@element-plus')) return 'element-plus'
+          if (normalized.includes('node_modules/vue') || normalized.includes('node_modules/@vue') || normalized.includes('node_modules/@vueuse')) return 'vue-vendor'
+          if (normalized.includes('node_modules')) return 'vendor'
         },
       },
     },

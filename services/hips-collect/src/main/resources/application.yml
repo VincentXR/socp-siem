@@ -10,12 +10,18 @@ spring:
 socp:
   security:
     # 生产鉴权（2026-08-09 启用）：HMAC HS256 验签，与网关 /auth/login 签发 secret 一致。
-    jwt-secret: ${SOCP_JWT_SECRET}
+    jwt-secret: ${SOCP_JWT_SECRET:}
+    issuer-uri: ${SOCP_SECURITY_ISSUER_URI:}
+    jwk-set-uri: ${SOCP_SECURITY_JWK_SET_URI:}
+    audience: ${SOCP_SECURITY_AUDIENCE:socp-api}
     dev-bypass: ${SOCP_DEV_BYPASS:false}
     # 机机采集凭据：Falco/Agent 用静态 token 访问 /events（与 search-config ingest-token 同值）
     ingest-token: ${SOCP_INGEST_TOKEN:dev-vector-token}
   hips:
     url: ${SOCP_HIPS_URL:http://localhost:18087}
+  maturity: demo
+  hips-collect:
+    simulation-enabled: ${SOCP_HIPS_COLLECT_SIMULATION_ENABLED:true}
 
 management:
   endpoints:

@@ -21,5 +21,13 @@ class NotifyMigrationTest {
             result.next();
             assertEquals(1, result.getInt(1));
         }
+
+        try (var connection = DriverManager.getConnection(url, "sa", "");
+             var statement = connection.prepareStatement(
+                     "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'T_NOTIFICATION_DISPATCH_LOG'");
+             var result = statement.executeQuery()) {
+            result.next();
+            assertEquals(1, result.getInt(1));
+        }
     }
 }

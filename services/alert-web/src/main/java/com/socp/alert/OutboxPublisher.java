@@ -57,9 +57,25 @@ public class OutboxPublisher {
         this.retentionMs = Math.max(Duration.ofMinutes(1).toMillis(), retentionMs);
     }
 
+    private final java.util.concurrent.atomic.AtomicBoolean activeTrigger = new java.util.concurrent.atomic.AtomicBoolean(false);
+
     /** Unit-test/source compatibility constructor. */
     OutboxPublisher(OutboxRepository outboxRepo, AlertKafkaPublisher kafkaPublisher) {
         this(outboxRepo, kafkaPublisher, null, 1, DEFAULT_MAX_ATTEMPTS, DEFAULT_RETENTION_MS);
+    }
+
+    /** Triggers an immediate asynchronous outbox publish cycle on transaction commit. */
+    public void triggerAsync() {
+        if (!kafkaPublisher.isAvailable()) return;
+        if (activeTrigger.compareAndSet(false, true)) {
+            deliveryExecutor.execute(() -> {
+                try {
+                    publish();
+                } finally {
+                    activeTrigger.set(false);
+                }
+            });
+        }
     }
 
     @Scheduled(fixedDelayString = "${socp.alert.outbox.poll-interval-ms:1000}",

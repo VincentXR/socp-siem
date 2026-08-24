@@ -100,6 +100,21 @@ public class DetectionAlertOutboxPublisher {
         this.retentionMs = DEFAULT_RETENTION_MS;
     }
 
+    private final java.util.concurrent.atomic.AtomicBoolean activeTrigger = new java.util.concurrent.atomic.AtomicBoolean(false);
+
+    /** Triggers an immediate asynchronous outbox publish cycle on alert enqueue. */
+    public void triggerAsync() {
+        if (activeTrigger.compareAndSet(false, true)) {
+            deliveryExecutor.execute(() -> {
+                try {
+                    publishDue();
+                } finally {
+                    activeTrigger.set(false);
+                }
+            });
+        }
+    }
+
     @Scheduled(fixedDelayString = "${socp.detect.alert-outbox.poll-interval-ms:1000}",
             initialDelayString = "${socp.detect.alert-outbox.initial-delay-ms:1000}")
     public void publishDue() {

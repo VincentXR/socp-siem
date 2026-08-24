@@ -5,6 +5,7 @@ import com.socp.platform.client.ServiceCall;
 import com.socp.platform.tenant.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -33,6 +34,12 @@ public class AssetScanner {
 
     private final AssetClient assetClient;
 
+    @Value("${socp.asset-collect.simulation-enabled:true}")
+    private boolean simulationEnabled;
+
+    @Value("${spring.profiles.active:}")
+    private String activeProfiles;
+
     public AssetScanner(AssetClient assetClient) {
         this.assetClient = assetClient;
     }
@@ -40,6 +47,10 @@ public class AssetScanner {
     /** 每 60 秒模拟一轮扫描：发现 1-2 台新资产并上报。 */
     @Scheduled(fixedDelay = 60_000, initialDelay = 20_000)
     public void scan() {
+        if (!simulationAllowed()) {
+            log.info("asset-collect simulator is disabled; waiting for an Agent/CMDB source");
+            return;
+        }
         round++;
         String[] hosts = {"app-node-" + round, "cache-node-" + round, "lb-" + round};
         for (String name : hosts) {
@@ -64,10 +75,18 @@ public class AssetScanner {
     }
 
     public List<Map<String, Object>> discovered() {
+        if (!simulationAllowed()) return List.of();
         String tenant = TenantContext.get();
         if (tenant == null || tenant.isBlank()) tenant = "default";
         String selected = tenant;
         return discovered.stream().filter(item -> selected.equals(item.get("tenantId"))).toList();
+    }
+
+    private boolean simulationAllowed() {
+        if (!simulationEnabled) return false;
+        String profiles = activeProfiles == null ? "" : activeProfiles.toLowerCase(java.util.Locale.ROOT);
+        return !java.util.Arrays.stream(profiles.split("[,\\s]+"))
+                .anyMatch(profile -> profile.equals("prod") || profile.equals("production"));
     }
 
     private static String pick(String... xs) {

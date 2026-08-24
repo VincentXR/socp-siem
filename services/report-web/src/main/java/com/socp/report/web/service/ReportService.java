@@ -80,42 +80,42 @@ public class ReportService {
         }
     }
 
+    private final java.net.http.HttpClient httpClient = java.net.http.HttpClient.newBuilder()
+            .version(java.net.http.HttpClient.Version.HTTP_1_1)
+            .connectTimeout(java.time.Duration.ofSeconds(3))
+            .build();
+
     /** Executes a ClickHouse query and preserves the reason for a possible fallback. */
     private CkFetch ckQuery(String sql) {
-        HttpURLConnection connection = null;
         try {
-            connection = (HttpURLConnection) new URL(ckUrl).openConnection();
-            connection.setRequestMethod("POST");
-            connection.setDoOutput(true);
-            connection.setConnectTimeout(3000);
-            connection.setReadTimeout(5000);
-            connection.setRequestProperty("Content-Type", "text/plain; charset=utf-8");
             String auth = Base64.getEncoder().encodeToString(
                     (ckUser + ":" + ckPassword).getBytes(StandardCharsets.UTF_8));
-            connection.setRequestProperty("Authorization", "Basic " + auth);
-            try (OutputStream output = connection.getOutputStream()) {
-                output.write(sql.getBytes(StandardCharsets.UTF_8));
-            }
-            int code = connection.getResponseCode();
+            var request = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(ckUrl))
+                    .timeout(java.time.Duration.ofSeconds(5))
+                    .header("Content-Type", "text/plain; charset=utf-8")
+                    .header("Authorization", "Basic " + auth)
+                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString(sql, StandardCharsets.UTF_8))
+                    .build();
+
+            var response = httpClient.send(request, java.net.http.HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            int code = response.statusCode();
             if (code < 200 || code >= 300) {
                 log.debug("ClickHouse query returned HTTP {}", code);
                 return CkFetch.unavailable("ClickHouse returned HTTP " + code);
             }
-            String body;
-            try (InputStream input = connection.getInputStream()) {
-                body = new String(input.readAllBytes(), StandardCharsets.UTF_8);
-            }
+            String body = response.body();
             List<String> lines = new ArrayList<>();
-            for (String line : body.split("\\n")) {
-                if (!line.isBlank()) lines.add(line.trim());
+            if (body != null) {
+                for (String line : body.split("\\n")) {
+                    if (!line.isBlank()) lines.add(line.trim());
+                }
             }
             return CkFetch.available(lines);
         } catch (Exception failure) {
             log.debug("ClickHouse query unavailable: {}: {}",
                     failure.getClass().getSimpleName(), failure.getMessage());
             return CkFetch.unavailable("ClickHouse is unavailable");
-        } finally {
-            if (connection != null) connection.disconnect();
         }
     }
 

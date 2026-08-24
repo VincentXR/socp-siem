@@ -53,6 +53,11 @@ public final class ThresholdRule extends AbstractRule {
 
         ArrayDeque<SecurityEvent> q = buckets.get(key, ArrayDeque::new);
         synchronized (q) {
+            // 防御性内存保护：如果队列严重超出阈值上限，清理最旧事件防止内存膨胀
+            int maxCap = Math.max(threshold * 2, 200);
+            while (q.size() >= maxCap) {
+                q.pollFirst();
+            }
             q.add(event);
             // 清理窗口外的旧事件
             Instant cutoff = event.timestamp().minus(window);

@@ -47,4 +47,35 @@ class AiAssistantServiceTest {
         assertThat(result.answer()).contains("unmapped subject");
         assertThat(result.suggestion()).isNotBlank();
     }
+
+    @Test
+    void prefersLlmResponseWhenEnabled() {
+        QaRepository repository = mock(QaRepository.class);
+        com.socp.ai.llm.LlmChatClient llmClient = mock(com.socp.ai.llm.LlmChatClient.class);
+        given(llmClient.isEnabled()).willReturn(true);
+        given(llmClient.chat("如何检测 SQL 注入？")).willReturn(java.util.Optional.of("LLM 智能研判：使用正则匹配 union select"));
+
+        AiAssistantService service = new AiAssistantService(repository, llmClient);
+        AiResult result = service.ask("如何检测 SQL 注入？");
+
+        assertThat(result.question()).isEqualTo("如何检测 SQL 注入？");
+        assertThat(result.answer()).isEqualTo("LLM 智能研判：使用正则匹配 union select");
+        assertThat(result.suggestion()).contains("AI 专家大模型");
+    }
+
+    @Test
+    void fallsBackToKnowledgeBaseWhenLlmReturnsEmpty() {
+        QaRepository repository = mock(QaRepository.class);
+        com.socp.ai.llm.LlmChatClient llmClient = mock(com.socp.ai.llm.LlmChatClient.class);
+        given(llmClient.isEnabled()).willReturn(true);
+        given(llmClient.chat("暴力破解")).willReturn(java.util.Optional.empty());
+        given(repository.findMatches(eq("暴力破解"), any(Pageable.class)))
+                .willReturn(List.of(new QaEntity("暴力破解", "配置 AUTH-BRUTE 规则")));
+
+        AiAssistantService service = new AiAssistantService(repository, llmClient);
+        AiResult result = service.ask("暴力破解");
+
+        assertThat(result.question()).isEqualTo("暴力破解");
+        assertThat(result.answer()).isEqualTo("配置 AUTH-BRUTE 规则");
+    }
 }

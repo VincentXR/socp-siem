@@ -23,13 +23,22 @@ public class IngestionCommitService {
     private final SearchEventRepository eventRepository;
     private final IngestionOutboxRepository outboxRepository;
     private final SearchStore searchStore;
+    private final IngestionOutboxPublisher outboxPublisher;
+
+    public IngestionCommitService(SearchEventRepository eventRepository,
+                                  IngestionOutboxRepository outboxRepository,
+                                  SearchStore searchStore,
+                                  IngestionOutboxPublisher outboxPublisher) {
+        this.eventRepository = eventRepository;
+        this.outboxRepository = outboxRepository;
+        this.searchStore = searchStore;
+        this.outboxPublisher = outboxPublisher;
+    }
 
     public IngestionCommitService(SearchEventRepository eventRepository,
                                   IngestionOutboxRepository outboxRepository,
                                   SearchStore searchStore) {
-        this.eventRepository = eventRepository;
-        this.outboxRepository = outboxRepository;
-        this.searchStore = searchStore;
+        this(eventRepository, outboxRepository, searchStore, null);
     }
 
     @Transactional
@@ -42,16 +51,21 @@ public class IngestionCommitService {
                 DetectionRoutingKey.forSearchEvent(event.source(), event.host(), event.fields()),
                 serialize(event), traceparent)).toList());
 
-        Runnable remember = () -> searchStore.rememberBatch(events);
+        Runnable afterCommitHook = () -> {
+            searchStore.rememberBatch(events);
+            if (outboxPublisher != null) {
+                outboxPublisher.triggerAsync();
+            }
+        };
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCommit() {
-                    remember.run();
+                    afterCommitHook.run();
                 }
             });
         } else {
-            remember.run();
+            afterCommitHook.run();
         }
     }
 

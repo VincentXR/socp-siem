@@ -33,7 +33,10 @@ socp:
       cleanup-interval-ms: ${SOCP_SEARCH_CACHE_CLEANUP_INTERVAL_MS:60000}
   security:
     # 生产鉴权（2026-08-09 启用）：HMAC HS256 验签，与网关 /auth/login 签发 secret 一致。
-    jwt-secret: ${SOCP_JWT_SECRET}
+    jwt-secret: ${SOCP_JWT_SECRET:}
+    issuer-uri: ${SOCP_SECURITY_ISSUER_URI:}
+    jwk-set-uri: ${SOCP_SECURITY_JWK_SET_URI:}
+    audience: ${SOCP_SECURITY_AUDIENCE:socp-api}
     dev-bypass: ${SOCP_DEV_BYPASS:false}
     # 机机采集凭据：Vector 渲染配置里 Authorization 头的值（socp.vector.token）匹配即放行，
     # 否则采集器在 dev-bypass=false 下会被 401 挡在链路外。

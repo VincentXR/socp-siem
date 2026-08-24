@@ -29,6 +29,10 @@ development fallbacks from silently being used with the production profile.
 - The local setup is convenient but is not a production deployment target.
 - H2-backed services need the `pg` profile before production-like validation.
 - `prod` fails fast when a development fallback or demo credential is detected.
+- Production JWT verification accepts exactly one source: HMAC secret or
+  JWKS/issuer. JWKS deployments must also configure `socp.security.audience`
+  (comma-separated values are supported) so tokens issued to unrelated clients
+  are rejected.
 - Compose services remain single-node; Kubernetes HA, rolling upgrades,
   backup/restore, and disaster recovery are outside this repository's local
   verification target.

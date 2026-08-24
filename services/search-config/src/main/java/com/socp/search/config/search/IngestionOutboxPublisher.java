@@ -50,8 +50,24 @@ public class IngestionOutboxPublisher {
         this.retentionMs = Math.max(Duration.ofMinutes(1).toMillis(), retentionMs);
     }
 
+    private final java.util.concurrent.atomic.AtomicBoolean activeTrigger = new java.util.concurrent.atomic.AtomicBoolean(false);
+
     IngestionOutboxPublisher(IngestionOutboxRepository repository, KafkaEventProducer producer) {
         this(repository, producer, null, 1, DEFAULT_MAX_ATTEMPTS, DEFAULT_RETENTION_MS);
+    }
+
+    /** Triggers an immediate asynchronous ingestion outbox publication cycle on transaction commit. */
+    public void triggerAsync() {
+        if (!producer.isEnabled()) return;
+        if (activeTrigger.compareAndSet(false, true)) {
+            executor.execute(() -> {
+                try {
+                    publish();
+                } finally {
+                    activeTrigger.set(false);
+                }
+            });
+        }
     }
 
     @Scheduled(fixedDelayString = "${socp.ingest.outbox.poll-interval-ms:500}",

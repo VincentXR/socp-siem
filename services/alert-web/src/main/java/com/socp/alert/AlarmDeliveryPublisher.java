@@ -61,10 +61,25 @@ public class AlarmDeliveryPublisher {
         this.retentionMs = Math.max(Duration.ofMinutes(1).toMillis(), retentionMs);
     }
 
+    private final java.util.concurrent.atomic.AtomicBoolean activeTrigger = new java.util.concurrent.atomic.AtomicBoolean(false);
+
     AlarmDeliveryPublisher(AlarmDeliveryRepository repository, CkReporter ckReporter,
                            NotifyClient notifyClient, IncidentClient incidentClient, SoarClient soarClient) {
         this(repository, ckReporter, notifyClient, incidentClient, soarClient,
                 null, 1, DEFAULT_MAX_ATTEMPTS, DEFAULT_RETENTION_MS);
+    }
+
+    /** Triggers an immediate asynchronous downstream delivery cycle on transaction commit. */
+    public void triggerAsync() {
+        if (activeTrigger.compareAndSet(false, true)) {
+            executor.execute(() -> {
+                try {
+                    publish();
+                } finally {
+                    activeTrigger.set(false);
+                }
+            });
+        }
     }
 
     @Scheduled(fixedDelayString = "${socp.alert.delivery.poll-interval-ms:1000}",

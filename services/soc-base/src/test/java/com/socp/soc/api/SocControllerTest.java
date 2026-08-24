@@ -1,6 +1,7 @@
 package com.socp.soc.api;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.socp.platform.auth.RequireRole;
 import com.socp.soc.model.TenantInfo;
 import com.socp.soc.store.TenantStore;
 import org.junit.jupiter.api.Test;
@@ -17,8 +18,10 @@ import java.util.List;
 import java.util.Map;
 
 import static org.hamcrest.Matchers.greaterThan;
+import static org.hamcrest.Matchers.containsString;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -57,7 +60,9 @@ class SocControllerTest {
                 TenantInfo.create("默认租户", "default"),
                 TenantInfo.create("安全运营团队", "soc-team")));
 
-        mvc.perform(get("/api/v1/tenants").header(HttpHeaders.AUTHORIZATION, BEARER))
+        mvc.perform(get("/api/v1/tenants")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "admin"))
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.length()").value(2))
@@ -72,7 +77,7 @@ class SocControllerTest {
 
                 mvc.perform(post("/api/v1/tenants")
                         .header(HttpHeaders.AUTHORIZATION, BEARER)
-                        .header("X-Role", "analyst")
+                        .header("X-Role", "admin")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(Map.of("name", "红队", "code", "red-team"))))
                 .andExpect(status().isOk())
@@ -83,10 +88,74 @@ class SocControllerTest {
     }
 
     @Test
+    void createTenantRejectsInvalidRequestBody() throws Exception {
+        mvc.perform(post("/api/v1/tenants")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "admin")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("name", " ", "code", "not valid"))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.message", containsString("code")));
+    }
+
+    @Test
+    void analystCannotAccessPlatformTenantAdministration() throws Exception {
+        mvc.perform(post("/api/v1/tenants")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("name", "红队", "code", "red-team"))))
+                .andExpect(status().isForbidden());
+
+        mvc.perform(post("/api/v1/tenants")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "viewer")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("name", "红队", "code", "red-team"))))
+                .andExpect(status().isForbidden());
+        verifyNoInteractions(store);
+    }
+
+    @Test
+    void authenticatedRolesCanReadTenantDirectoryAndOverview() throws Exception {
+        given(store.list()).willReturn(List.of(TenantInfo.create("默认租户", "default")));
+        for (String role : List.of("admin", "analyst", "viewer")) {
+            mvc.perform(get("/api/v1/tenants")
+                            .header(HttpHeaders.AUTHORIZATION, BEARER)
+                            .header("X-Role", role))
+                    .andExpect(status().isOk());
+            mvc.perform(get("/api/v1/overview")
+                            .header(HttpHeaders.AUTHORIZATION, BEARER)
+                            .header("X-Role", role))
+                    .andExpect(status().isOk());
+        }
+    }
+
+    @Test
+    void tenantReadEndpointsAllowRecognizedRolesAndCreateIsAdminOnly() {
+        assertRoles("listTenants", "admin", "analyst", "viewer");
+        assertRoles("createTenant", "admin");
+        assertRoles("overview", "admin", "analyst", "viewer");
+    }
+
+    private void assertRoles(String methodName, String... expectedRoles) {
+        var method = java.util.Arrays.stream(SocController.class.getDeclaredMethods())
+                .filter(candidate -> candidate.getName().equals(methodName))
+                .findFirst()
+                .orElseThrow();
+        var role = method.getAnnotation(RequireRole.class);
+        org.junit.jupiter.api.Assertions.assertNotNull(role);
+        org.junit.jupiter.api.Assertions.assertArrayEquals(expectedRoles, role.value());
+    }
+
+    @Test
     void overviewCountsTenantsAndListsServices() throws Exception {
         given(store.list()).willReturn(List.of(TenantInfo.create("默认租户", "default")));
 
-        mvc.perform(get("/api/v1/overview").header(HttpHeaders.AUTHORIZATION, BEARER))
+        mvc.perform(get("/api/v1/overview")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "admin"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.tenants").value(1))
                 .andExpect(jsonPath("$.platform").value("SOCP v1.0"))

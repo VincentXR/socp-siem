@@ -1,0 +1,4 @@
+socp:
+  soar:
+    # Never allow a dry-run connector to be exposed as a successful execution.
+    simulation-enabled: false

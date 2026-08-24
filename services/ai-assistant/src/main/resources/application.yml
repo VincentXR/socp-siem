@@ -24,8 +24,19 @@ spring:
 socp:
   security:
     # 生产鉴权（2026-08-09 启用）：HMAC HS256 验签，与网关 /auth/login 签发 secret 一致。
-    jwt-secret: ${SOCP_JWT_SECRET}
+    jwt-secret: ${SOCP_JWT_SECRET:}
+    issuer-uri: ${SOCP_SECURITY_ISSUER_URI:}
+    jwk-set-uri: ${SOCP_SECURITY_JWK_SET_URI:}
+    audience: ${SOCP_SECURITY_AUDIENCE:socp-api}
     dev-bypass: ${SOCP_DEV_BYPASS:false}
+  ai:
+    maturity: preview
+    llm:
+      enabled: ${SOCP_AI_LLM_ENABLED:false}
+      base-url: ${SOCP_AI_LLM_BASE_URL:http://localhost:11434}
+      api-key: ${SOCP_AI_LLM_API_KEY:}
+      model: ${SOCP_AI_LLM_MODEL:qwen2.5:7b}
+      timeout-ms: ${SOCP_AI_LLM_TIMEOUT_MS:10000}
 
 management:
   endpoints:

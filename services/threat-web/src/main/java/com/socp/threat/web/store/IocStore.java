@@ -38,8 +38,11 @@ public class IocStore {
         add(Ioc.of("EMAIL", "attacker@evil.com", "MEDIUM", "内部研判", "攻击者邮箱", List.of("phishing")));
     }
 
+    private final Map<String, Ioc> cache = new java.util.concurrent.ConcurrentHashMap<>();
+
     public synchronized Ioc add(Ioc ioc) {
         repo.save(toEntity(ioc));
+        cache.put(cacheKey(tenant(), ioc.value()), ioc);
         return ioc;
     }
 
@@ -57,26 +60,66 @@ public class IocStore {
     public boolean delete(String id) {
         var entity = repo.findByIdAndTenantId(id, tenant());
         if (entity.isEmpty()) return false;
-        repo.delete(entity.get());
+        IocEntity e = entity.get();
+        repo.delete(e);
+        cache.remove(cacheKey(tenant(), e.getValue()));
         return true;
     }
 
-    /** 精确匹配单个值（大小写不敏感），命中返回 IOC，否则 null。 */
+    /** 精确匹配单个值（大小写不敏感），优先读缓存，未命中则查库并回填缓存。 */
     public Ioc match(String value) {
         if (value == null || value.isBlank()) return null;
-        return repo.findByTenantIdAndValue(tenant(), value.trim().toLowerCase())
+        String normalized = value.trim().toLowerCase();
+        String key = cacheKey(tenant(), normalized);
+        Ioc cached = cache.get(key);
+        if (cached != null) return cached;
+
+        Ioc found = repo.findByTenantIdAndValue(tenant(), normalized)
                 .map(IocStore::fromEntity).orElse(null);
+        if (found != null) {
+            cache.put(key, found);
+        }
+        return found;
     }
 
-    /** 批量匹配：给定若干候选值，返回 value -> IOC 的命中映射。 */
+    /** 批量匹配：通过缓存 + 批量 In-List 单次查询优化，避免循环单条 DB 往返。 */
     public Map<String, Ioc> matchAll(List<String> values) {
+        if (values == null || values.isEmpty()) return Map.of();
+        String tenant = tenant();
         Map<String, Ioc> out = new LinkedHashMap<>();
+        List<String> missing = new ArrayList<>();
+
         for (String val : values) {
-            if (val == null) continue;
-            Ioc hit = match(val);
-            if (hit != null) out.put(val, hit);
+            if (val == null || val.isBlank()) continue;
+            String normalized = val.trim().toLowerCase();
+            Ioc cached = cache.get(cacheKey(tenant, normalized));
+            if (cached != null) {
+                out.put(val, cached);
+            } else {
+                missing.add(normalized);
+            }
         }
+
+        if (!missing.isEmpty()) {
+            List<String> distinctMissing = missing.stream().distinct().toList();
+            List<IocEntity> foundEntities = repo.findByTenantIdAndValueIn(tenant, distinctMissing);
+            for (IocEntity entity : foundEntities) {
+                Ioc ioc = fromEntity(entity);
+                String normalizedVal = entity.getValue().toLowerCase();
+                cache.put(cacheKey(tenant, normalizedVal), ioc);
+                for (String originalVal : values) {
+                    if (originalVal != null && originalVal.trim().equalsIgnoreCase(normalizedVal)) {
+                        out.put(originalVal, ioc);
+                    }
+                }
+            }
+        }
+
         return out;
+    }
+
+    private static String cacheKey(String tenant, String value) {
+        return tenant + ":" + (value == null ? "" : value.trim().toLowerCase());
     }
 
     public long count() {

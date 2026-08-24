@@ -251,8 +251,16 @@ public class KafkaEventConsumer {
     private void processWithRetry(org.apache.kafka.clients.consumer.ConsumerRecord<String, String> record,
                                   long epoch) {
         long delay = 250;
+        String traceparent = extractHeader(record, "traceparent");
+        String tenant = extractHeader(record, "X-Tenant-Id");
+        String traceId = extractTraceId(traceparent);
+
         while (running.get() && !Thread.currentThread().isInterrupted()) {
             try {
+                if (traceId != null) org.slf4j.MDC.put("traceId", traceId);
+                if (traceparent != null) org.slf4j.MDC.put("traceparent", traceparent);
+                if (tenant != null && !tenant.isBlank()) com.socp.platform.tenant.TenantContext.set(tenant);
+
                 processOne(record.partition(), record.offset(), record.key(), record.value());
                 completions.offer(new RecordCompletion(record.partition(), record.offset(), epoch));
                 return;
@@ -276,6 +284,10 @@ public class KafkaEventConsumer {
                     log.warn("Detection state rebuild deferred partition={}: {}",
                             record.partition(), rebuildFailure.getMessage());
                 }
+            } finally {
+                if (traceId != null) org.slf4j.MDC.remove("traceId");
+                if (traceparent != null) org.slf4j.MDC.remove("traceparent");
+                if (tenant != null) com.socp.platform.tenant.TenantContext.clear();
             }
             try {
                 Thread.sleep(delay);
@@ -285,6 +297,19 @@ public class KafkaEventConsumer {
             }
             delay = Math.min(RETRY_MAX.toMillis(), delay * 2);
         }
+    }
+
+    private static String extractHeader(org.apache.kafka.clients.consumer.ConsumerRecord<String, String> record, String name) {
+        if (record == null || record.headers() == null) return null;
+        org.apache.kafka.common.header.Header header = record.headers().lastHeader(name);
+        if (header == null || header.value() == null) return null;
+        return new String(header.value(), java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    private static String extractTraceId(String traceparent) {
+        if (traceparent == null || traceparent.isBlank()) return null;
+        String[] parts = traceparent.trim().split("-");
+        return parts.length >= 2 ? parts[1] : traceparent;
     }
 
     private void processPendingWithRetry(PendingDetectionEvent row) {

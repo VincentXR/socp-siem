@@ -5,6 +5,7 @@ import com.socp.platform.client.ServiceCall;
 import com.socp.platform.tenant.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -33,6 +34,12 @@ public class EndpointSimulator {
 
     private final HipsClient hipsClient;
 
+    @Value("${socp.hips-collect.simulation-enabled:true}")
+    private boolean simulationEnabled;
+
+    @Value("${spring.profiles.active:}")
+    private String activeProfiles;
+
     public EndpointSimulator(HipsClient hipsClient) {
         this.hipsClient = hipsClient;
     }
@@ -40,6 +47,10 @@ public class EndpointSimulator {
     /** 每 45 秒模拟一轮端点事件（进程启动/文件写入/网络连接）。 */
     @Scheduled(fixedDelay = 45_000, initialDelay = 25_000)
     public void simulate() {
+        if (!simulationAllowed()) {
+            log.info("hips-collect simulator is disabled; waiting for Falco/Agent events");
+            return;
+        }
         round++;
         String[] hosts = {"web01", "web02", "db-master"};
         String[] types = {"PROCESS_START", "FILE_WRITE", "NET_CONNECT", "PRIVILEGE_ESCALATION"};
@@ -63,10 +74,18 @@ public class EndpointSimulator {
     }
 
     public List<Map<String, Object>> events() {
+        if (!simulationAllowed()) return List.of();
         String tenant = TenantContext.get();
         if (tenant == null || tenant.isBlank()) tenant = "default";
         String selected = tenant;
         return events.stream().filter(item -> selected.equals(item.get("tenantId"))).toList();
+    }
+
+    private boolean simulationAllowed() {
+        if (!simulationEnabled) return false;
+        String profiles = activeProfiles == null ? "" : activeProfiles.toLowerCase(java.util.Locale.ROOT);
+        return !java.util.Arrays.stream(profiles.split("[,\\s]+"))
+                .anyMatch(profile -> profile.equals("prod") || profile.equals("production"));
     }
 
     private static String toJson(Map<String, Object> m) {

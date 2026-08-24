@@ -1,12 +1,13 @@
 package com.socp.soc.api;
 
+import com.socp.platform.auth.RequireRole;
 import com.socp.soc.model.TenantInfo;
 import com.socp.soc.store.TenantStore;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.Map;
-import com.socp.platform.auth.RequireRole;
 
 /**
  * SOC 基础 API：租户管理 + 平台概览。
@@ -21,17 +22,21 @@ public class SocController {
         this.store = store;
     }
 
+    /** Tenant directory is readable platform metadata; tenant mutation remains admin-only. */
+    @RequireRole({"admin", "analyst", "viewer"})
     @GetMapping("/tenants")
     public List<TenantInfo> listTenants() {
         return store.list();
     }
 
-    @RequireRole({"admin", "analyst"})
+    @RequireRole("admin")
     @PostMapping("/tenants")
-    public TenantInfo createTenant(@RequestBody Map<String, String> body) {
-        return store.save(TenantInfo.create(body.get("name"), body.get("code")));
+    public TenantInfo createTenant(@Valid @RequestBody TenantCreateRequest request) {
+        return store.save(TenantInfo.create(request.name().trim(), request.code()));
     }
 
+    /** The counts and service inventory are readable platform metadata. */
+    @RequireRole({"admin", "analyst", "viewer"})
     @GetMapping("/overview")
     public Map<String, Object> overview() {
         return Map.of(

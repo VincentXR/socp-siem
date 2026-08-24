@@ -14,5 +14,6 @@ import java.util.Map;
 public interface PlaybookActivity {
 
     @ActivityMethod
-    Map<String, Object> executeAction(String action, Map<String, Object> alarm, boolean activeFailed);
+    Map<String, Object> executeAction(String action, Map<String, Object> alarm,
+                                      boolean activeFailed, int actionIndex);
 }

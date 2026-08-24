@@ -20,13 +20,17 @@ public class AlarmService {
     private final AlarmEnrichmentService enrichmentService;
     private final AlarmQueryService queryService;
     private final AlarmStatisticsService statisticsService;
+    private final OutboxPublisher outboxPublisher;
+    private final AlarmDeliveryPublisher deliveryPublisher;
 
     public AlarmService(AlarmRepository repository, OutboxRepository outboxRepository,
                         AlarmEvidenceRepository evidenceRepository,
                         AlarmDeliveryRegistrar deliveryRegistrar,
                         AlarmEnrichmentService enrichmentService,
                         AlarmQueryService queryService,
-                        AlarmStatisticsService statisticsService) {
+                        AlarmStatisticsService statisticsService,
+                        OutboxPublisher outboxPublisher,
+                        AlarmDeliveryPublisher deliveryPublisher) {
         this.repository = repository;
         this.outboxRepository = outboxRepository;
         this.evidenceRepository = evidenceRepository;
@@ -34,6 +38,18 @@ public class AlarmService {
         this.enrichmentService = enrichmentService;
         this.queryService = queryService;
         this.statisticsService = statisticsService;
+        this.outboxPublisher = outboxPublisher;
+        this.deliveryPublisher = deliveryPublisher;
+    }
+
+    public AlarmService(AlarmRepository repository, OutboxRepository outboxRepository,
+                        AlarmEvidenceRepository evidenceRepository,
+                        AlarmDeliveryRegistrar deliveryRegistrar,
+                        AlarmEnrichmentService enrichmentService,
+                        AlarmQueryService queryService,
+                        AlarmStatisticsService statisticsService) {
+        this(repository, outboxRepository, evidenceRepository, deliveryRegistrar,
+                enrichmentService, queryService, statisticsService, null, null);
     }
 
     public Alarm create(Alarm alarm) {
@@ -65,7 +81,26 @@ public class AlarmService {
         deliveryRegistrar.register(tenant, saved.getId(), deliveryPayload);
         outboxRepository.save(pendingEvent(saved.getId(), deliveryPayload));
         enrichmentService.scheduleAfterCommit(saved);
+        scheduleOutboxTrigger();
         return saved;
+    }
+
+    private void scheduleOutboxTrigger() {
+        Runnable trigger = () -> {
+            if (outboxPublisher != null) outboxPublisher.triggerAsync();
+            if (deliveryPublisher != null) deliveryPublisher.triggerAsync();
+        };
+        if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                    new org.springframework.transaction.support.TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() {
+                            trigger.run();
+                        }
+                    });
+        } else {
+            trigger.run();
+        }
     }
 
     @Transactional(readOnly = true)

@@ -5,6 +5,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.server.ResponseStatusException;
@@ -40,6 +41,18 @@ public class GlobalExceptionHandler {
         int code = e.getStatusCode().value();
         String message = e.getReason() == null ? e.getMessage() : e.getReason();
         return ResponseEntity.status(e.getStatusCode()).body(ApiResult.fail(code, message));
+    }
+
+    /** Return a client error for failed request DTO validation instead of leaking it as a 500. */
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ApiResult<Void>> handleValidation(MethodArgumentNotValidException e) {
+        String message = e.getBindingResult().getFieldErrors().stream()
+                .map(error -> error.getField() + ": " + error.getDefaultMessage())
+                .distinct()
+                .sorted()
+                .reduce((left, right) -> left + "; " + right)
+                .orElse("request validation failed");
+        return ResponseEntity.badRequest().body(ApiResult.fail(400, message));
     }
 
     /** 只有落在标准 HTTP 错误区间的 code 才映射为真实状态码，业务码一律 200。 */

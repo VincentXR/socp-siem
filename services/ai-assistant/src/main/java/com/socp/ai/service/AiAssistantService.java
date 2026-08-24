@@ -1,24 +1,33 @@
 package com.socp.ai.service;
 
+import com.socp.ai.llm.LlmChatClient;
 import com.socp.ai.model.AiResult;
 import com.socp.ai.store.QaEntity;
 import com.socp.ai.store.QaRepository;
 import jakarta.annotation.PostConstruct;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 
-import org.springframework.data.domain.PageRequest;
+import java.util.Optional;
 
 /**
- * AI 助手服务——当前为基于关键词的规则引擎（知识库落 H2 t_qa，重启不丢）。
- * LangChain4j 接线后改为 LM 调用（本地 Ollama 或远程 LLM）。
+ * AI 助手服务：支持 LLM（本地 Ollama / 远程大模型）与本地高质量安全知识库双模混合引擎。
  */
 @Service
 public class AiAssistantService {
 
     private final QaRepository repository;
+    private final LlmChatClient llmClient;
+
+    @Autowired
+    public AiAssistantService(QaRepository repository, LlmChatClient llmClient) {
+        this.repository = repository;
+        this.llmClient = llmClient;
+    }
 
     public AiAssistantService(QaRepository repository) {
-        this.repository = repository;
+        this(repository, null);
     }
 
     @PostConstruct
@@ -48,6 +57,17 @@ public class AiAssistantService {
     public AiResult ask(String question) {
         long start = System.currentTimeMillis();
         String q = question == null ? "" : question.trim();
+
+        // 1. 若配置并启用了大模型，优先请求 LLM
+        if (llmClient != null && llmClient.isEnabled()) {
+            Optional<String> llmAnswer = llmClient.chat(q);
+            if (llmAnswer.isPresent()) {
+                String suggestion = "已通过 AI 专家大模型进行智能研判。可结合 SEARCH 日志检索或在 DETECT 中创建检测规则。";
+                return new AiResult(q, llmAnswer.get(), suggestion, System.currentTimeMillis() - start);
+            }
+        }
+
+        // 2. 本地安全知识库精准匹配
         String answer = "暂无匹配的安全知识。可尝试提问：暴力破解、端口扫描、SQL注入、提权、恶意软件、钓鱼、勒索、DDoS、横向移动、数据外泄、C2、凭据盗取、ATT&CK、应急响应等。";
         String suggestion = null;
 
@@ -57,8 +77,8 @@ public class AiAssistantService {
             suggestion = "是否需要我帮你在 DETECT 规则引擎中创建对应的检测规则，或在 SOAR 中编排响应剧本？";
         }
 
-        // 通用问答兜底
-        if (answer.startsWith("暂无") && q.length() > 0) {
+        // 3. 通用问答知识兜底
+        if (answer.startsWith("暂无") && !q.isEmpty()) {
             answer = "关于「" + q + "」：当前知识库暂无直接匹配。安全运营建议：1) 检查 DETECT 规则引擎是否已覆盖该场景；2) 查看 ALERT 告警中心是否有相关告警；3) 查看 SEARCH 日志检索是否有异常痕迹；4) 用 ATT&CK 框架对齐攻击阶段。";
             suggestion = "可尝试在 SEARCH 中搜索相关日志关键字，或在 DETECT 中新建检测规则。";
         }

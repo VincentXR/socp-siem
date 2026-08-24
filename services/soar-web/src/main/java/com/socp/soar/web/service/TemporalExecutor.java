@@ -77,6 +77,7 @@ public class TemporalExecutor {
         Map<String, Object> tenantAlarm = new LinkedHashMap<>(alarm);
         String tenant = TenantContext.get();
         tenantAlarm.putIfAbsent("tenantId", tenant == null || tenant.isBlank() ? "default" : tenant);
+        tenantAlarm.putIfAbsent("playbookId", pb.id());
         PlaybookExecRequest req = new PlaybookExecRequest(
                 pb.id(), pb.name(), pb.trigger(), pb.actions(),
                 java.util.Collections.unmodifiableMap(tenantAlarm));

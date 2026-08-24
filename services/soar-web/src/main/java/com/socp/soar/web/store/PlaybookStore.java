@@ -38,13 +38,13 @@ public class PlaybookStore {
 
     private void seed() {
         save(Playbook.create("高危告警自动封禁", "告警 severity >= HIGH 且实体为 IP",
-                List.of("查询资产归属", "下发防火墙封禁", "通知值班群", "写入事件单"), true));
+                List.of("simulate:查询资产归属", "simulate:下发防火墙封禁", "通知值班群", "写入事件单"), true));
         save(Playbook.create("暴力破解隔离主机", "AUTH-BRUTE-SUCCESS 关联告警",
-                List.of("标记主机失陷", "网络隔离 (VLAN 迁移)", "快照取证"), true));
+                List.of("simulate:标记主机失陷", "simulate:网络隔离 (VLAN 迁移)", "simulate:快照取证"), true));
         save(Playbook.create("每日安全巡检", "定时 每天 03:00",
-                List.of("汇总告警", "生成日报", "邮件推送"), false));
+                List.of("simulate:汇总告警", "simulate:生成日报", "simulate:邮件推送"), false));
         save(Playbook.create("Webhook 联动演示", "告警 severity >= HIGH",
-                List.of("记录研判上下文",
+                List.of("simulate:记录研判上下文",
                         "http://localhost:18097/incident-web/api/v1/incidents/from-alarm"),
                 true));
     }

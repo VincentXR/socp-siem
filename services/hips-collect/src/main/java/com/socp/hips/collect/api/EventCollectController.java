@@ -8,6 +8,7 @@ import com.socp.platform.tenant.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.*;
+import jakarta.validation.Valid;
 
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -40,7 +41,8 @@ public class EventCollectController {
     }
 
     @PostMapping("/events")
-    public Map<String, Object> report(@RequestBody Map<String, Object> event) {
+    public Map<String, Object> report(@Valid @RequestBody EventCollectRequest request) {
+        Map<String, Object> event = request.asMap();
         Map<String, Object> record = new LinkedHashMap<>(event);
         record.put("id", UUID.randomUUID().toString());
         record.put("receivedAt", Instant.now().toString());

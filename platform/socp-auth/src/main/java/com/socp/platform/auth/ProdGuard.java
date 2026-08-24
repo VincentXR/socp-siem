@@ -7,6 +7,7 @@ import org.springframework.context.annotation.Profile;
 import org.springframework.core.env.Environment;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -44,9 +45,26 @@ public class ProdGuard {
         }
 
         String secret = env.getProperty("socp.security.jwt-secret", "");
-        if (secret.isBlank()) {
-            violations.add("socp.security.jwt-secret 未配置");
-        } else if (DEMO_JWT_SECRET.equals(secret)) {
+        String issuerUri = env.getProperty("socp.security.issuer-uri", "");
+        String jwkSetUri = env.getProperty("socp.security.jwk-set-uri", "");
+        boolean hasSecret = !secret.isBlank();
+        boolean hasJwks = !issuerUri.isBlank() || !jwkSetUri.isBlank();
+        if (!hasSecret && !hasJwks) {
+            violations.add("socp.security must configure exactly one JWT verification source: issuer-uri/jwk-set-uri or jwt-secret");
+        } else if (hasSecret && hasJwks) {
+            violations.add("socp.security must not configure both issuer-uri/jwk-set-uri and jwt-secret");
+        }
+        String audience = env.getProperty("socp.security.audience", "");
+        boolean hasAudience = Arrays.stream(audience.split(","))
+                .map(String::trim)
+                .anyMatch(value -> !value.isBlank());
+        if (hasSecret && secret.getBytes(java.nio.charset.StandardCharsets.UTF_8).length < 32) {
+            violations.add("socp.security.jwt-secret must be at least 32 bytes for HS256");
+        }
+        if ((hasSecret || hasJwks) && !hasAudience) {
+            violations.add("socp.security.audience must be configured for every production JWT verifier");
+        }
+        if (DEMO_JWT_SECRET.equals(secret)) {
             violations.add("socp.security.jwt-secret 使用了默认演示密钥（run-all.sh 的 demo 值）");
         }
 
@@ -68,6 +86,15 @@ public class ProdGuard {
 
         if (!"true".equalsIgnoreCase(env.getProperty("socp.temporal.enabled", "true"))) {
             violations.add("socp.temporal.enabled=false（生产禁止 SOAR 回退进程内执行器）");
+        }
+
+        for (String simulationProperty : List.of(
+                "socp.soar.simulation-enabled",
+                "socp.asset-collect.simulation-enabled",
+                "socp.hips-collect.simulation-enabled")) {
+            if ("true".equalsIgnoreCase(env.getProperty(simulationProperty, "false"))) {
+                violations.add(simulationProperty + "=true (production forbids simulated actions and collectors)");
+            }
         }
 
         if ("memory".equalsIgnoreCase(env.getProperty("socp.ratelimit.backend", "memory"))) {

@@ -9,6 +9,10 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotEmpty;
+import jakarta.validation.constraints.Size;
 
 import java.util.List;
 import java.util.Map;
@@ -43,7 +47,7 @@ public class PlaybookController {
 
     @RequireRole({"admin", "analyst"})
     @PostMapping
-    public Playbook create(@RequestBody CreatePlaybookRequest req) {
+    public Playbook create(@Valid @RequestBody CreatePlaybookRequest req) {
         Playbook pb = Playbook.create(req.name(), req.trigger(), req.actions(), req.enabled());
         return store.save(pb);
     }
@@ -68,6 +72,7 @@ public class PlaybookController {
     /** 评估并编排执行：接收告警，命中启用的剧本触发条件则执行动作。 */
     @PostMapping("/evaluate")
     public Map<String, Object> evaluate(@RequestBody Map<String, Object> alarm) {
+        validateMap(alarm, "alarm");
         try {
             return evaluationService.evaluate(alarm);
         } catch (AlarmEvaluationService.EvaluationInProgressException inProgress) {
@@ -79,6 +84,7 @@ public class PlaybookController {
     @RequireRole({"admin", "analyst"})
     @PostMapping("/{id}/execute")
     public Map<String, Object> execute(@PathVariable String id, @RequestBody(required = false) Map<String, Object> context) {
+        validateMap(context, "context");
         return executor.runById(id, context == null ? Map.of() : context);
     }
 
@@ -89,10 +95,26 @@ public class PlaybookController {
     }
 
     public record CreatePlaybookRequest(
+            @NotBlank @Size(max = 128)
             String name,
+            @NotBlank @Size(max = 256)
             String trigger,
-            List<String> actions,
+            @NotEmpty @Size(max = 32)
+            List<@NotBlank @Size(max = 512) String> actions,
             boolean enabled
     ) {
+    }
+
+    private static void validateMap(Map<String, Object> body, String name) {
+        if (body == null) return;
+        if (body.size() > 128) {
+            throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE,
+                    name + " contains too many fields");
+        }
+        int approxBytes = body.toString().length();
+        if (approxBytes > 256 * 1024) {
+            throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE,
+                    name + " exceeds the 256 KiB limit");
+        }
     }
 }

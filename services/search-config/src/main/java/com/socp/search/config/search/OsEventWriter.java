@@ -52,6 +52,79 @@ public class OsEventWriter {
     private boolean enabled;
 
     private volatile SSLSocketFactory sslSocketFactory;
+    private volatile boolean templateInitialized = false;
+
+    @jakarta.annotation.PostConstruct
+    public void init() {
+        if (!enabled) return;
+        Thread.startVirtualThread(this::ensureIndexTemplate);
+    }
+
+    /**
+     * Initializes the explicit Index Template in OpenSearch for socp-events-*
+     * so that key security fields are properly mapped to keyword/date/text.
+     */
+    public boolean ensureIndexTemplate() {
+        if (!enabled || templateInitialized) return true;
+        HttpURLConnection c = null;
+        try {
+            String templatePayload = """
+                    {
+                      "index_patterns": ["socp-events-*"],
+                      "template": {
+                        "settings": {
+                          "number_of_shards": 1,
+                          "number_of_replicas": 0
+                        },
+                        "mappings": {
+                          "properties": {
+                            "eventId": { "type": "keyword" },
+                            "timestamp": { "type": "date" },
+                            "@timestamp": { "type": "date" },
+                            "source": { "type": "keyword" },
+                            "host": { "type": "keyword" },
+                            "severity": { "type": "keyword" },
+                            "category": { "type": "keyword" },
+                            "msg": { "type": "text" },
+                            "fields": { "type": "object", "dynamic": true },
+                            "tags": { "type": "object", "dynamic": true }
+                          }
+                        }
+                      }
+                    }
+                    """;
+            c = (HttpURLConnection) new URL(url + "/_index_template/socp-events-template").openConnection();
+            c.setRequestMethod("PUT");
+            c.setDoOutput(true);
+            c.setConnectTimeout(3000);
+            c.setReadTimeout(5000);
+            c.setRequestProperty("Content-Type", "application/json");
+            String auth = Base64.getEncoder().encodeToString(
+                    (username + ":" + password).getBytes(StandardCharsets.UTF_8));
+            c.setRequestProperty("Authorization", "Basic " + auth);
+            if (c instanceof HttpsURLConnection https) {
+                https.setSSLSocketFactory(sslSocketFactory());
+                https.setHostnameVerifier((hostname, session) -> true);
+            }
+            try (OutputStream os = c.getOutputStream()) {
+                os.write(templatePayload.getBytes(StandardCharsets.UTF_8));
+            }
+            int code = c.getResponseCode();
+            if (code >= 200 && code < 300) {
+                log.info("OpenSearch index template initialized successfully: socp-events-template (HTTP {})", code);
+                templateInitialized = true;
+                return true;
+            } else {
+                log.debug("OpenSearch index template check/init returned HTTP {}", code);
+                return false;
+            }
+        } catch (Exception ex) {
+            log.debug("OpenSearch index template initialization deferred: {}", ex.getMessage());
+            return false;
+        } finally {
+            if (c != null) c.disconnect();
+        }
+    }
 
     /** Asynchronous compatibility path used only when no Kafka indexing path is configured. */
     public void writeEvents(List<SearchEvent> es) {

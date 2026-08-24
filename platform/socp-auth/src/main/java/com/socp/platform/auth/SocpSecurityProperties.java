@@ -2,6 +2,12 @@ package com.socp.platform.auth;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashSet;
+import java.util.Set;
+import java.util.stream.Collectors;
+
 /**
  * 鉴权配置（application.yml 前缀 socp.security）。
  *
@@ -47,12 +53,31 @@ public class SocpSecurityProperties {
     /** 是否校验 iss 与 issuer-uri 完全一致 */
     private boolean validateIssuer = true;
 
+    /**
+     * JWT audience 允许值。支持逗号分隔的多个 audience；为空时不启用 audience 校验，
+     * 以兼容开发回退模式和已有的内部 HMAC token。
+     */
+    private String audience;
+
     public boolean hasJwks() {
         return notBlank(jwkSetUri) || notBlank(issuerUri);
     }
 
     public boolean hasSecret() {
         return notBlank(jwtSecret);
+    }
+
+    /**
+     * 返回配置的 audience 集合。配置非空时 JwtValidator 要求令牌至少包含其中一个值。
+     */
+    public Set<String> resolveAudiences() {
+        if (!notBlank(audience)) {
+            return Collections.emptySet();
+        }
+        return Arrays.stream(audience.split(","))
+                .map(String::trim)
+                .filter(SocpSecurityProperties::notBlank)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
     /** 实际生效的 JWKS 地址：显式 jwk-set-uri 优先，否则按 Keycloak 约定从 issuer-uri 推导 */
@@ -160,5 +185,13 @@ public class SocpSecurityProperties {
 
     public void setValidateIssuer(boolean validateIssuer) {
         this.validateIssuer = validateIssuer;
+    }
+
+    public String getAudience() {
+        return audience;
+    }
+
+    public void setAudience(String audience) {
+        this.audience = audience;
     }
 }

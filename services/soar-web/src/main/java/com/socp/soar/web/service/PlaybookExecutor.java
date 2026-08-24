@@ -2,9 +2,10 @@ package com.socp.soar.web.service;
 
 import com.socp.platform.client.IncidentClient;
 import com.socp.platform.client.NotifyClient;
-import com.socp.platform.client.ServiceCall;
 import com.socp.platform.client.SocpHttpClient;
 import com.socp.soar.web.model.Playbook;
+import com.socp.soar.web.model.PlaybookActionStatus;
+import com.socp.soar.web.model.PlaybookActionType;
 import com.socp.soar.web.store.PlaybookStore;
 import com.socp.soar.web.store.ExecutionEntity;
 import com.socp.soar.web.store.ExecutionRepository;
@@ -13,9 +14,12 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -29,16 +33,13 @@ import java.util.concurrent.CopyOnWriteArrayList;
  *  - HTTP/URL 类 → 真实 webhook POST；
  *  - NOTIFY（通知） → 调 notify-web 告警通知；
  *  - CASE（建案）   → 调 incident-web 由告警自动建案；
- *  - TAG 标签      → 记录到执行结果（演示框架）；
- *  - 其他          → 以日志形式"执行"。
+ *  - TAG/演示动作  → 仅在显式开启 dry-run 时返回 simulated；
+ *  - 未知动作      → 明确 failed，不允许隐式成功。
  */
 @Service
 public class PlaybookExecutor {
 
     private static final Logger log = LoggerFactory.getLogger(PlaybookExecutor.class);
-
-    /** 外部 webhook 超时：用户配置的地址不受控，给足 3s 但绝不无限等。 */
-    private static final int WEBHOOK_TIMEOUT_MS = 3000;
 
     private final PlaybookStore store;
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -49,16 +50,39 @@ public class PlaybookExecutor {
     private final SocpHttpClient http;
     private final TemporalExecutor temporalExecutor;
     private final ExecutionRepository executionRepository;
+    private final PlaybookActionHandlerRegistry handlerRegistry;
+
+    /**
+     * Dry-run actions are enabled for the local/integration demo, but they retain the
+     * distinct SIMULATED terminal state. The prod profile forces this property off.
+     */
+    @Value("${socp.soar.simulation-enabled:false}")
+    private boolean simulationEnabled;
+
+    @Value("${spring.profiles.active:}")
+    private String activeProfiles;
 
     public PlaybookExecutor(PlaybookStore store, NotifyClient notifyClient,
                             IncidentClient incidentClient, SocpHttpClient http,
                             TemporalExecutor temporalExecutor, ExecutionRepository executionRepository) {
+        this(store, notifyClient, incidentClient, http, temporalExecutor, executionRepository,
+                new PlaybookActionHandlerRegistry(notifyClient, incidentClient, http));
+    }
+
+    @Autowired
+    public PlaybookExecutor(PlaybookStore store, NotifyClient notifyClient,
+                            IncidentClient incidentClient, SocpHttpClient http,
+                            TemporalExecutor temporalExecutor, ExecutionRepository executionRepository,
+                            PlaybookActionHandlerRegistry handlerRegistry) {
         this.store = store;
         this.notifyClient = notifyClient;
         this.incidentClient = incidentClient;
         this.http = http;
         this.temporalExecutor = temporalExecutor;
         this.executionRepository = executionRepository;
+        this.handlerRegistry = handlerRegistry == null
+                ? new PlaybookActionHandlerRegistry(notifyClient, incidentClient, http)
+                : handlerRegistry;
     }
 
     /** 按 ID 手动触发执行（忽略启用状态与触发条件）。 */
@@ -107,15 +131,18 @@ public class PlaybookExecutor {
         int retryCount = 0;
         String firstError = null;
         boolean compensating = false;
+        Map<String, Object> actionAlarm = new LinkedHashMap<>(alarm);
+        actionAlarm.putIfAbsent("playbookId", pb.id());
+        int actionIndex = 0;
         for (String action : pb.actions()) {
-            Map<String, Object> r = executeAction(action, alarm, previousFailed);
+            Map<String, Object> r = executeAction(action, actionAlarm, previousFailed, actionIndex++);
             results.add(r);
             // 补偿动作（前缀"补偿:"）只在主动作失败后执行；主动作失败会阻断后续主动作
-            if (action.startsWith("补偿:") || action.startsWith("compensate:")) {
+            if (PlaybookActionType.compensation(action)) {
                 previousFailed = false; // 补偿已执行，视为完成该阶段
                 compensating = true;
             } else {
-                boolean ok = "success".equals(r.get("status"));
+                boolean ok = PlaybookActionStatus.isSuccessful(String.valueOf(r.get("status")));
                 if (!ok) {
                     previousFailed = true; // 失败：后续只执行补偿动作
                     Object at = r.get("attempts");
@@ -129,8 +156,12 @@ public class PlaybookExecutor {
             }
         }
         // 执行级状态机：SUCCESS / COMPENSATING（部分失败已补偿）/ FAILED（未补偿或补偿也失败）
-        boolean anyFailed = results.stream().anyMatch(r -> "failed".equals(r.get("status")));
-        String execStatus = !anyFailed ? "SUCCESS" : (compensating ? "COMPENSATING" : "FAILED");
+        boolean anyFailed = results.stream().anyMatch(r -> PlaybookActionStatus.isFailed(String.valueOf(r.get("status"))));
+        boolean anySimulated = results.stream()
+                .anyMatch(r -> PlaybookActionStatus.SIMULATED.wireValue().equals(r.get("status")));
+        String execStatus = anyFailed
+                ? (compensating ? "COMPENSATING" : "FAILED")
+                : (anySimulated ? "SIMULATED" : "SUCCESS");
         Map<String, Object> exec = new LinkedHashMap<>();
         exec.put("executionId", "EXEC-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase());
         exec.put("playbookId", pb.id());
@@ -179,6 +210,12 @@ public class PlaybookExecutor {
     /** 执行单个动作（含失败重试）；activeFailed 为 true 时跳过主动作、只允许补偿动作。
      *  public 供 Temporal Activity 复用，保证两种执行模式动作语义一致。 */
     public Map<String, Object> executeAction(String action, Map<String, Object> alarm, boolean activeFailed) {
+        return executeAction(action, alarm, activeFailed, 0);
+    }
+
+    /** Execute one action with a stable key shared by all retries of this action. */
+    public Map<String, Object> executeAction(String action, Map<String, Object> alarm,
+                                              boolean activeFailed, int actionIndex) {
         String previous = TenantContext.get();
         Object carried = alarm == null ? null : alarm.get("tenantId");
         if (carried == null && alarm != null) carried = alarm.get("tenant_id");
@@ -186,7 +223,8 @@ public class PlaybookExecutor {
         if (!TenantContext.isValid(tenant)) throw new IllegalArgumentException("invalid playbook tenant");
         try {
             TenantContext.set(tenant);
-            return executeActionScoped(action, alarm, activeFailed);
+            return executeActionScoped(action, alarm, activeFailed,
+                    idempotencyKey(tenant, alarm, action, actionIndex));
         } finally {
             if (previous == null) TenantContext.clear();
             else TenantContext.set(previous);
@@ -194,26 +232,33 @@ public class PlaybookExecutor {
     }
 
     private Map<String, Object> executeActionScoped(String action, Map<String, Object> alarm,
-                                                    boolean activeFailed) {
+                                                    boolean activeFailed, String idempotencyKey) {
         Map<String, Object> r = new LinkedHashMap<>();
+        String actionText = action == null ? "" : action.trim();
+        PlaybookActionType actionType = PlaybookActionType.resolve(actionText);
         r.put("action", action);
-        String a = action.toLowerCase();
-        boolean isCompensate = a.startsWith("补偿:") || a.startsWith("compensate:");
+        r.put("actionType", actionType.wireName());
+        r.put("idempotencyKey", idempotencyKey);
+        boolean isCompensate = PlaybookActionType.compensation(actionText);
         if (activeFailed && !isCompensate) {
-            r.put("status", "skipped");
+            r.put("status", PlaybookActionStatus.SKIPPED.wireValue());
+            r.put("mode", "NOT_EXECUTED");
             r.put("reason", "前置动作失败，本动作被跳过（仅执行补偿）");
             return r;
         }
         // 尝试执行（含重试）
-        Map<String, Object> attempt = attempt(action, a, alarm);
-        if (!"success".equals(attempt.get("status"))) {
+        Map<String, Object> attempt = attempt(actionText, alarm, actionType, idempotencyKey);
+        boolean retryableAction = actionType == PlaybookActionType.WEBHOOK
+                || actionType == PlaybookActionType.NOTIFY
+                || actionType == PlaybookActionType.CASE;
+        if (retryableAction && PlaybookActionStatus.isFailed(String.valueOf(attempt.get("status")))) {
             int retries = 0;
             while (retries < MAX_ATTEMPTS - 1) {
                 retries++;
-                attempt = attempt(action, a, alarm);
-                if ("success".equals(attempt.get("status"))) break;
+                attempt = attempt(actionText, alarm, actionType, idempotencyKey);
+                if (PlaybookActionStatus.isSuccessful(String.valueOf(attempt.get("status")))) break;
             }
-            if (!"success".equals(attempt.get("status"))) {
+            if (PlaybookActionStatus.isFailed(String.valueOf(attempt.get("status")))) {
                 attempt.put("retried", retries);
             }
         }
@@ -221,28 +266,41 @@ public class PlaybookExecutor {
         return r;
     }
 
-    private Map<String, Object> attempt(String action, String a, Map<String, Object> alarm) {
+    private Map<String, Object> attempt(String action, Map<String, Object> alarm,
+                                        PlaybookActionType actionType, String idempotencyKey) {
         Map<String, Object> r = new LinkedHashMap<>();
+        r.put("actionType", actionType.wireName());
+        r.put("idempotencyKey", idempotencyKey);
         try {
-            if (a.contains("http://") || a.contains("https://")) {
-                fill(r, "webhook", http.postExternal(action, toJson(alarm), SocpHttpClient.JSON, WEBHOOK_TIMEOUT_MS));
-            } else if (a.contains("notify") || a.contains("通知")) {
-                fill(r, "notify-web", notifyClient.notifyAlert(toJson(alarm)));
-            } else if (a.contains("case") || a.contains("建案")) {
-                fill(r, "incident-web", incidentClient.createFromAlarm(toJson(alarm)));
-            } else if (a.contains("tag")) {
-                r.put("status", "success");
-                r.put("tag", action.contains(" ") ? action.substring(action.indexOf(' ') + 1).trim() : action);
-            } else {
-                r.put("status", "success");
+            PlaybookActionHandler handler = handlerRegistry.find(actionType);
+            if (handler == null) {
+                r.put("status", PlaybookActionStatus.FAILED.wireValue());
+                r.put("mode", "NOT_EXECUTED");
+                r.put("errorCode", "UNSUPPORTED_ACTION");
+                r.put("error", "unsupported playbook action: " + action);
+                return r;
             }
+            r.putAll(handler.handle(new PlaybookActionContext(
+                    action, alarm, idempotencyKey, simulationAllowed())));
         } catch (RuntimeException e) {
             log.warn("剧本动作执行异常 action={} alarmId={} error={}: {}",
-                    action, alarm.get("id"), e.getClass().getSimpleName(), e.getMessage());
-            r.put("status", "failed");
+                    action, alarm == null ? null : alarm.get("id"), e.getClass().getSimpleName(), e.getMessage());
+            r.put("status", PlaybookActionStatus.FAILED.wireValue());
+            r.put("mode", "NOT_EXECUTED");
             r.put("error", e.getClass().getSimpleName() + ": " + e.getMessage());
         }
         return r;
+    }
+
+    private boolean simulationAllowed() {
+        if (!simulationEnabled) return false;
+        String profiles = activeProfiles == null ? "" : activeProfiles.toLowerCase(java.util.Locale.ROOT);
+        for (String profile : profiles.split("[,\\s]+")) {
+            if (profile.equals("prod") || profile.equals("production")) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -251,22 +309,6 @@ public class PlaybookExecutor {
      * <p>失败原因会同时写进执行记录（前端可见）和日志（{@code socp-client} 已记 WARN），
      * 不再出现「剧本显示 failed，但没人知道为什么」。
      */
-    private static void fill(Map<String, Object> r, String target, ServiceCall call) {
-        if (call == null) {
-            r.put("status", "failed");
-            r.put("target", target);
-            r.put("error", "service returned no result");
-            return;
-        }
-        r.put("status", call.ok() ? "success" : "failed");
-        r.put("httpStatus", call.status());
-        r.put("target", target);
-        r.put("costMs", call.durationMs());
-        if (!call.ok()) {
-            r.put("error", call.failureReason());
-        }
-    }
-
     private boolean matches(String trigger, String ruleId, String severity, int sevLevel) {
         if (trigger == null) return false;
         String t = trigger.toLowerCase();
@@ -346,11 +388,12 @@ public class PlaybookExecutor {
         return v == null ? "" : String.valueOf(v);
     }
 
-    private static String toJson(Map<String, Object> m) {
-        try {
-            return MAPPER.writeValueAsString(m);
-        } catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
-            throw new IllegalArgumentException("cannot serialize playbook action context", failure);
-        }
+    private static String idempotencyKey(String tenant, Map<String, Object> alarm,
+                                         String action, int actionIndex) {
+        String alarmId = alarm == null ? "" : String.valueOf(alarm.getOrDefault("id", ""));
+        String playbookId = alarm == null ? "" : String.valueOf(alarm.getOrDefault("playbookId", ""));
+        String material = tenant + "\u0000" + playbookId + "\u0000" + alarmId
+                + "\u0000" + actionIndex + "\u0000" + (action == null ? "" : action.trim());
+        return "soar-" + UUID.nameUUIDFromBytes(material.getBytes(StandardCharsets.UTF_8));
     }
 }

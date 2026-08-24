@@ -10,6 +10,8 @@ public interface IocRepository extends JpaRepository<IocEntity, String> {
 
     Optional<IocEntity> findByTenantIdAndValue(String tenantId, String value);
 
+    List<IocEntity> findByTenantIdAndValueIn(String tenantId, java.util.Collection<String> values);
+
     Optional<IocEntity> findByIdAndTenantId(String id, String tenantId);
 
     List<IocEntity> findByTenantId(String tenantId);

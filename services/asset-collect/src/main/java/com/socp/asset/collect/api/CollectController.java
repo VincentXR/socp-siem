@@ -8,6 +8,7 @@ import com.socp.platform.tenant.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.*;
+import jakarta.validation.Valid;
 
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -40,7 +41,8 @@ public class CollectController {
     }
 
     @PostMapping("/collect")
-    public Map<String, Object> collect(@RequestBody Map<String, Object> asset) {
+    public Map<String, Object> collect(@Valid @RequestBody AssetCollectRequest request) {
+        Map<String, Object> asset = request.asMap();
         Map<String, Object> record = new LinkedHashMap<>(asset);
         record.put("id", UUID.randomUUID().toString());
         record.put("collectedAt", Instant.now().toString());

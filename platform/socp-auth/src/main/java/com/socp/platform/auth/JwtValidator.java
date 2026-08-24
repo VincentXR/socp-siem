@@ -70,10 +70,24 @@ public class JwtValidator {
         return devBypass;
     }
 
+    private static final java.util.Set<String> REVOKED_JTIS = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /** Actively revoke a JWT by its JTI (e.g. upon logout or security incident). */
+    public static void revoke(String jti) {
+        if (jti != null && !jti.isBlank()) {
+            REVOKED_JTIS.add(jti.trim());
+        }
+    }
+
+    /** Clear revoked JTI cache (e.g. for testing). */
+    public static void clearRevoked() {
+        REVOKED_JTIS.clear();
+    }
+
     /**
      * 校验令牌并返回 claims。
      *
-     * @throws JwtValidationException 签名无效 / 已过期 / issuer 不匹配 / 格式非法
+     * @throws JwtValidationException 签名无效 / 已过期 / issuer 不匹配 / 格式非法 / 已被吊销
      * @throws IllegalStateException  dev-bypass 模式下调用（调用方应先判 {@link #isDevBypass()}）
      */
     public JWTClaimsSet validate(String token) {
@@ -84,7 +98,12 @@ public class JwtValidator {
             throw new JwtValidationException("空令牌");
         }
         try {
-            return processor.process(token.trim(), null);
+            JWTClaimsSet claims = processor.process(token.trim(), null);
+            String jti = claims.getJWTID();
+            if (jti != null && REVOKED_JTIS.contains(jti)) {
+                throw new JwtValidationException("令牌已被吊销 (revoked)");
+            }
+            return claims;
         } catch (JwtValidationException e) {
             throw e;
         } catch (Exception e) {
@@ -93,15 +112,12 @@ public class JwtValidator {
         }
     }
 
-    /**
-     * 从 claims 取租户，缺失返回 null。
-     * 依次尝试自定义 claim（默认 tenant）、tenant_id、tid，最后回退到 Keycloak 的 azp（客户端 ID）。
-     */
+    /** Extract an explicit tenant claim; client identity is never treated as a tenant. */
     public String extractTenant(JWTClaimsSet claims) {
         if (claims == null) {
             return null;
         }
-        for (String name : new String[]{props.getTenantClaim(), "tenant_id", "tid", "azp"}) {
+        for (String name : new String[]{props.getTenantClaim(), "tenant_id", "tid"}) {
             if (name == null || name.isBlank()) {
                 continue;
             }
@@ -147,8 +163,16 @@ public class JwtValidator {
             exactMatch = new JWTClaimsSet.Builder().issuer(props.getIssuerUri().trim()).build();
         }
         // DefaultJWTClaimsVerifier 自带 exp/nbf 校验；requiredClaims 强制令牌必须带 exp，杜绝永不过期的令牌
+        Set<String> acceptedAudiences = props.resolveAudiences();
+        if (acceptedAudiences.isEmpty()) {
+            throw new IllegalStateException("socp.security.audience is required when JWT verification is enabled");
+        }
         DefaultJWTClaimsVerifier<SecurityContext> verifier =
-                new DefaultJWTClaimsVerifier<>(exactMatch, Set.of("exp"));
+                new DefaultJWTClaimsVerifier<>(
+                        acceptedAudiences,
+                        exactMatch,
+                        Set.of("exp"),
+                        null);
         verifier.setMaxClockSkew(props.getClockSkewSeconds());
         processor.setJWTClaimsSetVerifier(verifier);
 

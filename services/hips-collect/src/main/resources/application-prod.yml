@@ -1,0 +1,4 @@
+socp:
+  maturity: preview
+  hips-collect:
+    simulation-enabled: false

@@ -3,8 +3,7 @@ package com.socp.ai.api;
 import com.socp.ai.model.AiResult;
 import com.socp.ai.service.AiAssistantService;
 import org.springframework.web.bind.annotation.*;
-
-import java.util.Map;
+import jakarta.validation.Valid;
 
 /**
  * AI 助手 API：自然语言安全问答。
@@ -20,7 +19,7 @@ public class AiController {
     }
 
     @PostMapping("/ask")
-    public AiResult ask(@RequestBody Map<String, String> body) {
-        return service.ask(body.get("question"));
+    public AiResult ask(@Valid @RequestBody AiAskRequest request) {
+        return service.ask(request.question());
     }
 }

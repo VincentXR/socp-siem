@@ -1,0 +1,4 @@
+socp:
+  maturity: preview
+  asset-collect:
+    simulation-enabled: false

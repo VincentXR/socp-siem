@@ -51,6 +51,10 @@ public record Case(
         List<TimelineEvent> tl = new java.util.ArrayList<>(timeline);
         tl.add(ev);
         tl.sort(java.util.Comparator.comparing(TimelineEvent::ts));
+        // Keep the most recent timeline events bounded to prevent JSON bloat during alert storms
+        if (tl.size() > 500) {
+            tl = new java.util.ArrayList<>(tl.subList(tl.size() - 500, tl.size()));
+        }
         return new Case(id, caseNo, title, entity, severity, status, rules, alarms, List.copyOf(tl),
                 assignee, createdAt, Instant.now());
     }
