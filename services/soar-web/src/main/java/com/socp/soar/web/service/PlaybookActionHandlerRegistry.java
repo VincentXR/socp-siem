@@ -9,6 +9,7 @@ import com.socp.platform.client.SocpHttpClient;
 import com.socp.soar.web.config.SoarActionConnectorProperties;
 import com.socp.soar.web.model.PlaybookActionStatus;
 import com.socp.soar.web.model.PlaybookActionType;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.EnumMap;
@@ -35,6 +36,7 @@ public class PlaybookActionHandlerRegistry {
         this(notifyClient, incidentClient, http, new SoarActionConnectorProperties());
     }
 
+    @Autowired
     public PlaybookActionHandlerRegistry(NotifyClient notifyClient,
                                          IncidentClient incidentClient,
                                          SocpHttpClient http,

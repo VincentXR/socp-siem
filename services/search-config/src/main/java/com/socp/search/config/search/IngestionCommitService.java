@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.socp.platform.obs.TraceIdFilter;
 import com.socp.rule.partition.DetectionRoutingKey;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -25,6 +26,7 @@ public class IngestionCommitService {
     private final SearchStore searchStore;
     private final IngestionOutboxPublisher outboxPublisher;
 
+    @Autowired
     public IngestionCommitService(SearchEventRepository eventRepository,
                                   IngestionOutboxRepository outboxRepository,
                                   SearchStore searchStore,
