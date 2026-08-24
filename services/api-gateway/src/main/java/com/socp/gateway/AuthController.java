@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import jakarta.validation.Valid;
 import reactor.core.publisher.Mono;
 
 import java.nio.charset.StandardCharsets;
@@ -60,9 +61,9 @@ public class AuthController {
     }
 
     @PostMapping(value = "/login", consumes = MediaType.APPLICATION_JSON_VALUE)
-    public Mono<ResponseEntity<?>> login(@RequestBody Map<String, String> body) {
-        String username = body == null ? null : body.get("username");
-        String password = body == null ? null : body.get("password");
+    public Mono<ResponseEntity<?>> login(@Valid @RequestBody LoginRequest body) {
+        String username = body == null ? null : body.username();
+        String password = body == null ? null : body.password();
         if (username == null || password == null || !password.equals(users.get(username))) {
             return Mono.just(ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(Map.of("code", 401, "message", "Invalid username or password")));
@@ -81,9 +82,9 @@ public class AuthController {
 
     /** Token endpoint for internal services; unlike browser login it returns the bearer token. */
     @PostMapping(value = "/service-token", consumes = MediaType.APPLICATION_JSON_VALUE)
-    public Mono<ResponseEntity<?>> serviceToken(@RequestBody Map<String, String> body) {
-        String service = body == null ? null : body.get("service");
-        String suppliedSecret = body == null ? null : body.get("secret");
+    public Mono<ResponseEntity<?>> serviceToken(@Valid @RequestBody ServiceTokenRequest body) {
+        String service = body == null ? null : body.service();
+        String suppliedSecret = body == null ? null : body.secret();
         if (service == null || !service.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
                 || serviceSecret == null || serviceSecret.isBlank()
                 || suppliedSecret == null

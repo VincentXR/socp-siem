@@ -16,8 +16,7 @@ class AuthControllerTest {
     void internalServiceGetsBearerTokenOnlyWithSharedCredential() {
         AuthController controller = controller();
 
-        var response = controller.serviceToken(Map.of(
-                "service", "alert-web", "secret", "service-secret-0123456789")).block();
+        var response = controller.serviceToken(new ServiceTokenRequest("alert-web", "service-secret-0123456789")).block();
 
         assertNotNull(response);
         assertEquals(HttpStatus.OK, response.getStatusCode());
@@ -28,8 +27,7 @@ class AuthControllerTest {
     void invalidServiceCredentialIsRejected() {
         AuthController controller = controller();
 
-        var response = controller.serviceToken(Map.of(
-                "service", "alert-web", "secret", "wrong")).block();
+        var response = controller.serviceToken(new ServiceTokenRequest("alert-web", "wrong")).block();
 
         assertNotNull(response);
         assertEquals(HttpStatus.UNAUTHORIZED, response.getStatusCode());
@@ -42,7 +40,7 @@ class AuthControllerTest {
         ReflectionTestUtils.setField(controller, "rolesJson", "{\"demo\":\"analyst\"}");
         controller.init();
 
-        var response = controller.login(Map.of("username", "demo", "password", "demo123")).block();
+        var response = controller.login(new LoginRequest("demo", "demo123")).block();
 
         assertNotNull(response);
         assertEquals(HttpStatus.OK, response.getStatusCode());

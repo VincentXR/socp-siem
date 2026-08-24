@@ -1,6 +1,10 @@
 package com.socp.alert;
 
+import com.socp.alert.api.AlarmAssignmentRequest;
+import com.socp.alert.api.AlarmNoteRequest;
+import com.socp.alert.api.AlarmStatusRequest;
 import com.socp.platform.error.ApiException;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -31,24 +35,25 @@ public class AlarmDispositionController {
 
     @RequireRole({"admin", "analyst"})
     @PutMapping("/status")
-    public AlarmDispositionService.Disposition setStatus(@PathVariable String id, @RequestBody Map<String, String> body) {
+    public AlarmDispositionService.Disposition setStatus(@PathVariable String id, @Valid @RequestBody AlarmStatusRequest body) {
         alarmService.get(id);
-        return disp.setStatus(id, body.getOrDefault("status", ""));
+        return disp.setStatus(id, body.status());
     }
 
     @RequireRole({"admin", "analyst"})
     @PostMapping("/assign")
-    public AlarmDispositionService.Disposition assign(@PathVariable String id, @RequestBody Map<String, String> body) {
+    public AlarmDispositionService.Disposition assign(@PathVariable String id, @Valid @RequestBody AlarmAssignmentRequest body) {
         alarmService.get(id);
-        String assignee = body.get("assignee");
+        String assignee = body.assignee();
         if (assignee == null || assignee.isBlank()) throw ApiException.badRequest("assignee 必填");
         return disp.assign(id, assignee);
     }
 
     @RequireRole({"admin", "analyst"})
     @PostMapping("/notes")
-    public AlarmDispositionService.Disposition addNote(@PathVariable String id, @RequestBody Map<String, String> body) {
+    public AlarmDispositionService.Disposition addNote(@PathVariable String id, @Valid @RequestBody AlarmNoteRequest body) {
         alarmService.get(id);
-        return disp.addNote(id, body.getOrDefault("author", "operator"), body.getOrDefault("content", ""));
+        String author = body.author() == null || body.author().isBlank() ? "operator" : body.author();
+        return disp.addNote(id, author, body.content());
     }
 }
