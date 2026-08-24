@@ -1,5 +1,6 @@
 package com.socp.alert;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,6 +24,7 @@ public class AlarmService {
     private final OutboxPublisher outboxPublisher;
     private final AlarmDeliveryPublisher deliveryPublisher;
 
+    @Autowired
     public AlarmService(AlarmRepository repository, OutboxRepository outboxRepository,
                         AlarmEvidenceRepository evidenceRepository,
                         AlarmDeliveryRegistrar deliveryRegistrar,
