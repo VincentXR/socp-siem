@@ -38,22 +38,25 @@ public class NotificationDispatcher {
     private final SocpHttpClient http;
     private final NotificationDeliveryRepository deliveries;
     private final NotificationDispatchLogRepository dispatchLogs;
+    private final SmtpNotificationSender smtpSender;
     /** Test-only fallback; production always injects the JPA repository. */
     private final List<Map<String, Object>> dispatchLog = new CopyOnWriteArrayList<>();
 
     public NotificationDispatcher(ChannelStore channels, SocpHttpClient http,
                                   NotificationDeliveryRepository deliveries) {
-        this(channels, http, deliveries, null);
+        this(channels, http, deliveries, null, null);
     }
 
     @Autowired
     public NotificationDispatcher(ChannelStore channels, SocpHttpClient http,
                                   NotificationDeliveryRepository deliveries,
-                                  NotificationDispatchLogRepository dispatchLogs) {
+                                  NotificationDispatchLogRepository dispatchLogs,
+                                  SmtpNotificationSender smtpSender) {
         this.channels = channels;
         this.http = http;
         this.deliveries = deliveries;
         this.dispatchLogs = dispatchLogs;
+        this.smtpSender = smtpSender;
     }
 
     public Map<String, Object> dispatch(Map<String, Object> alarm) {
@@ -142,12 +145,18 @@ public class NotificationDispatcher {
         result.put("channel", channel.name());
         result.put("type", channel.type());
         if ("EMAIL".equals(channel.type())) {
-            // Do not issue an idempotency receipt for a connector that did not
-            // actually transmit anything. Alert delivery will keep the durable
-            // hand-off retryable (and eventually mark it DEAD for operator action).
-            result.put("status", "failed");
-            result.put("httpStatus", 501);
-            result.put("detail", "SMTP delivery is not configured: " + channel.target());
+            if (smtpSender == null) {
+                result.put("status", "failed");
+                result.put("errorCode", "SMTP_CONNECTOR_UNAVAILABLE");
+                result.put("detail", "SMTP notification connector is not available");
+                return result;
+            }
+            SmtpNotificationSender.DeliveryResult delivery = smtpSender.send(
+                    channel.target(), "SOCP security alarm: " + alarm.getOrDefault("id", "unknown"),
+                    imText(alarm));
+            result.put("status", delivery.sent() ? "sent" : "failed");
+            result.put("detail", delivery.detail());
+            if (!delivery.sent()) result.put("errorCode", delivery.errorCode());
             return result;
         }
         ServiceCall call = http.postExternal(channel.target(), buildPayload(channel, alarm),

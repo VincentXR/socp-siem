@@ -100,6 +100,12 @@ public class ProdGuard {
             }
         }
 
+        for (String maturityProperty : List.of("socp.maturity", "socp.ai.maturity", "socp.soar.maturity")) {
+            if ("demo".equalsIgnoreCase(env.getProperty(maturityProperty, "").trim())) {
+                violations.add(maturityProperty + "=demo (production forbids demo maturity services)");
+            }
+        }
+
         if ("memory".equalsIgnoreCase(env.getProperty("socp.ratelimit.backend", "memory"))) {
             violations.add("socp.ratelimit.backend=memory (production requires the shared Redis backend)");
         }

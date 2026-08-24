@@ -1,3 +1,17 @@
 spring:
   config:
     import: classpath:application-pg.yml
+  mail:
+    host: ${SOCP_SMTP_HOST:}
+    port: ${SOCP_SMTP_PORT:587}
+    username: ${SOCP_SMTP_USERNAME:}
+    password: ${SOCP_SMTP_PASSWORD:}
+    properties:
+      mail.smtp.auth: ${SOCP_SMTP_AUTH:true}
+      mail.smtp.starttls.enable: ${SOCP_SMTP_STARTTLS:true}
+
+socp:
+  notify:
+    smtp:
+      enabled: ${SOCP_NOTIFY_SMTP_ENABLED:false}
+      from: ${SOCP_NOTIFY_SMTP_FROM:}
