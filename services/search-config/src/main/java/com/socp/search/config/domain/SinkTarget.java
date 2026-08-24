@@ -1,5 +1,9 @@
 package com.socp.search.config.domain;
 
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
+
 import java.time.Instant;
 import java.util.UUID;
 
@@ -9,12 +13,16 @@ import java.util.UUID;
  */
 public record SinkTarget(
         String id,
+        @NotBlank @Size(max = 128)
         String name,
+        @NotBlank @Size(max = 32)
         String type,
         /** 完整 URL，如 http://localhost:18081/search-config/api/v1/ingest 或 http://os:9200/_bulk */
+        @NotBlank @Size(max = 2048)
+        @Pattern(regexp = "(?i)^(https?|kafka|opensearch)://.*$")
         String uri,
         /** 可选认证头，如 Bearer xxx */
-        String authToken,
+        @Size(max = 4096) String authToken,
         boolean enabled,
         Instant createdAt
 ) {

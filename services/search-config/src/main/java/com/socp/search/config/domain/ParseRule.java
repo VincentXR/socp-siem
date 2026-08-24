@@ -1,5 +1,11 @@
 package com.socp.search.config.domain;
 
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
+
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -16,20 +22,27 @@ import java.util.UUID;
  */
 public record ParseRule(
         String id,
+        @NotBlank @Size(max = 128)
         String name,
+        @Size(max = 64)
         String sourceId,
+        @NotBlank @Size(max = 32)
         String format,
         /** REGEX 时为正则（命名分组）；其他格式可为空 */
-        String pattern,
+        @Size(max = 65536) String pattern,
         /** 分组/字段映射：{group, field}；空则用分组名当字段名 */
-        List<FieldMapping> mapping,
+        @Valid @Size(max = 1000) List<@Valid FieldMapping> mapping,
         /** 命中后强制设置的字段：{field, value} */
-        List<FieldMapping> setFields,
+        @Valid @Size(max = 1000) List<@Valid FieldMapping> setFields,
         boolean enabled,
+        @Min(0) @Max(100000)
         int order,
         Instant createdAt
 ) {
-    public record FieldMapping(String group, String field, String value) {
+    public record FieldMapping(
+            @NotBlank @Size(max = 128) String group,
+            @NotBlank @Size(max = 128) String field,
+            @Size(max = 4096) String value) {
     }
 
     public static ParseRule create(String name, String sourceId, String format,

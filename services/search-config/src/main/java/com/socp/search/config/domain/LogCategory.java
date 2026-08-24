@@ -1,5 +1,8 @@
 package com.socp.search.config.domain;
 
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
+
 import java.time.Instant;
 import java.util.UUID;
 
@@ -10,11 +13,14 @@ import java.util.UUID;
  */
 public record LogCategory(
         String id,
+        @NotBlank @Size(max = 64)
         String code,
+        @NotBlank @Size(max = 128)
         String name,
+        @Size(max = 2000)
         String description,
         /** 该类别的默认告警级别基线 */
-        String defaultSeverity,
+        @NotBlank @Size(max = 32) String defaultSeverity,
         boolean enabled,
         Instant createdAt
 ) {

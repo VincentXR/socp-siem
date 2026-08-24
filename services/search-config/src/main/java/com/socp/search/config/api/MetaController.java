@@ -6,6 +6,7 @@ import com.socp.search.config.domain.LogCategory;
 import com.socp.search.config.store.DataSourceTypeStore;
 import com.socp.search.config.store.FieldDefStore;
 import com.socp.search.config.store.LogCategoryStore;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -39,7 +40,7 @@ public class MetaController {
 
     @RequireRole({"admin", "analyst"})
     @PostMapping("/data-source-types")
-    public DataSourceType createDataSourceType(@RequestBody DataSourceType t) {
+    public DataSourceType createDataSourceType(@Valid @RequestBody DataSourceType t) {
         return dsStore.save(t);
     }
 
@@ -58,7 +59,7 @@ public class MetaController {
 
     @RequireRole({"admin", "analyst"})
     @PostMapping("/categories")
-    public LogCategory createCategory(@RequestBody LogCategory c) {
+    public LogCategory createCategory(@Valid @RequestBody LogCategory c) {
         return catStore.save(c);
     }
 
@@ -77,7 +78,7 @@ public class MetaController {
 
     @RequireRole({"admin", "analyst"})
     @PostMapping("/fields")
-    public FieldDef createField(@RequestBody FieldDef f) {
+    public FieldDef createField(@Valid @RequestBody FieldDef f) {
         return fieldStore.save(f);
     }
 

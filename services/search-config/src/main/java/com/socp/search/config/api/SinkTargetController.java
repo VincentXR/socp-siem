@@ -2,6 +2,7 @@ package com.socp.search.config.api;
 
 import com.socp.search.config.domain.SinkTarget;
 import com.socp.search.config.store.SinkTargetStore;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -28,7 +29,7 @@ public class SinkTargetController {
 
     @RequireRole({"admin", "analyst"})
     @PostMapping
-    public SinkTarget create(@RequestBody SinkTarget target) {
+    public SinkTarget create(@Valid @RequestBody SinkTarget target) {
         return store.save(target);
     }
 

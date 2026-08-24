@@ -1,5 +1,9 @@
 package com.socp.search.config.domain;
 
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
+
 import java.time.Instant;
 import java.util.UUID;
 
@@ -13,14 +17,19 @@ import java.util.UUID;
  */
 public record FieldDef(
         String id,
+        @NotBlank @Size(max = 128)
+        @Pattern(regexp = "[A-Za-z_][A-Za-z0-9_.-]*")
         String fieldName,
+        @NotBlank @Size(max = 128)
         String fieldLabel,
+        @NotBlank @Size(max = 32)
         String fieldType,
+        @NotBlank @Size(max = 32)
         String source,
         boolean searchable,
         boolean aggregatable,
         boolean stored,
-        String description,
+        @Size(max = 2000) String description,
         Instant createdAt
 ) {
     public static FieldDef create(String fieldName, String fieldLabel, String fieldType,

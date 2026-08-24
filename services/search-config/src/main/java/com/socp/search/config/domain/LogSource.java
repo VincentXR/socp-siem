@@ -1,5 +1,12 @@
 package com.socp.search.config.domain;
 
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
+
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -12,43 +19,46 @@ import java.util.UUID;
  */
 public record LogSource(
         String id,
+        @NotBlank @Size(max = 128)
         String name,
+        @NotNull
         SourceType type,
+        @NotNull
         ParseFormat format,
         /** FILE 源的路径或 glob，如 /var/log/**\/*.log */
-        String path,
+        @Size(max = 2048) String path,
         /** SOCKET/SYSLOG 的监听地址 host:port */
-        String address,
+        @Size(max = 512) String address,
         /** KAFKA 主题名 */
-        String topic,
+        @Size(max = 512) String topic,
         /** 自定义环境标签，原样透传进事件字段，便于按环境过滤 */
-        String env,
+        @Size(max = 2000) String env,
         boolean enabled,
         /** FILE 源：beginning=全量回放 / end=只收新日志 */
-        String readFrom,
+        @Size(max = 32) String readFrom,
         /** FILE 源：多行日志合并配置（Java 堆栈等），形如 {"start":"^\\S","condition":"^\\s","timeout_ms":1000} */
-        String multiline,
+        @Size(max = 65536) String multiline,
         /** 输出目标 ID（SinkTarget），空则用默认 SEARCH ingest */
-        String sinkTargetId,
+        @Size(max = 128) String sinkTargetId,
         /** 关联的解析规则 ID 列表（ParseRule），空则用 format 自动探测 */
-        List<String> parseRuleIds,
-        String description,
+        @Size(max = 100) List<@Size(max = 128) String> parseRuleIds,
+        @Size(max = 2000) String description,
         /** SYSLOG/SOCKET 的传输协议：udp / tcp / tls */
-        String protocol,
+        @Size(max = 16) String protocol,
         /** 字符集（默认 utf-8，GBK 等中文 Windows 日志常用） */
-        String charset,
+        @Size(max = 64) String charset,
         /** 事件时间字段（解析后用于时间索引，缺省 event_time） */
-        String timeField,
+        @Size(max = 128) String timeField,
         /** 时区（如 Asia/Shanghai / UTC） */
-        String timezone,
+        @Size(max = 64) String timezone,
         /** 语义标签（如 app=nginx, team=infra） */
-        List<String> tags,
+        @Size(max = 100) List<@Size(max = 128) String> tags,
         /** FILE 轮询间隔（秒） */
-        Integer frequency,
+        @Min(1) @Max(86400) Integer frequency,
         /** 日志类别 ID（元数据管理 LogCategory） */
-        String categoryId,
+        @Size(max = 128) String categoryId,
         /** KAFKA 消费组 */
-        String groupId,
+        @Size(max = 128) String groupId,
         Instant createdAt
 ) {
     public static LogSource create(String name, SourceType type, ParseFormat format,

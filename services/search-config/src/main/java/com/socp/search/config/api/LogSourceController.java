@@ -8,6 +8,7 @@ import com.socp.search.config.render.VectorConfigRenderer;
 import com.socp.search.config.store.LogSourceStore;
 import com.socp.search.config.store.SinkTargetStore;
 import jakarta.annotation.PostConstruct;
+import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
@@ -82,7 +83,7 @@ public class LogSourceController {
 
     @RequireRole({"admin", "analyst"})
     @PostMapping("/sources")
-    public LogSource create(@RequestBody LogSource req) {
+    public LogSource create(@Valid @RequestBody LogSource req) {
         LogSource src = LogSource.createFull(
                 req.name(), req.type(), req.format(),
                 req.path(), req.address(), req.topic(), req.env(), req.enabled(),
@@ -102,7 +103,7 @@ public class LogSourceController {
 
     @RequireRole({"admin", "analyst"})
     @PutMapping("/sources/{id}")
-    public Map<String, Object> update(@PathVariable String id, @RequestBody LogSource req) {
+    public Map<String, Object> update(@PathVariable String id, @Valid @RequestBody LogSource req) {
         Optional<LogSource> exist = store.get(id);
         if (exist.isEmpty()) return Map.of("error", "not_found", "id", id);
         LogSource updated = new LogSource(id, req.name(), req.type(), req.format(),

@@ -1,5 +1,8 @@
 package com.socp.search.config.domain;
 
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
+
 import java.time.Instant;
 import java.util.UUID;
 
@@ -9,8 +12,11 @@ import java.util.UUID;
  */
 public record DataSourceType(
         String id,
+        @NotBlank @Size(max = 64)
         String code,
+        @NotBlank @Size(max = 128)
         String name,
+        @Size(max = 2000)
         String description,
         boolean enabled,
         Instant createdAt

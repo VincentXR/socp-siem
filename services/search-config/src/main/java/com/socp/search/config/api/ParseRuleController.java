@@ -3,6 +3,9 @@ package com.socp.search.config.api;
 import com.socp.search.config.domain.ParseRule;
 import com.socp.search.config.service.ParsePreviewService;
 import com.socp.search.config.store.ParseRuleStore;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -31,7 +34,7 @@ public class ParseRuleController {
 
     @RequireRole({"admin", "analyst"})
     @PostMapping
-    public ParseRule create(@RequestBody ParseRule rule) {
+    public ParseRule create(@Valid @RequestBody ParseRule rule) {
         return store.save(rule);
     }
 
@@ -44,10 +47,14 @@ public class ParseRuleController {
     /** 预览：用规则 + 示例行验证字段抽取 */
     @RequireRole({"admin", "analyst"})
     @PostMapping("/preview")
-    public Map<String, Object> preview(@RequestBody PreviewRequest req) {
+    public Map<String, Object> preview(@Valid @RequestBody PreviewRequest req) {
         return preview.preview(req.ruleId(), req.format(), req.pattern(), req.line());
     }
 
-    public record PreviewRequest(String ruleId, String format, String pattern, String line) {
+    public record PreviewRequest(
+            @NotBlank @Size(max = 128) String ruleId,
+            @NotBlank @Size(max = 32) String format,
+            @Size(max = 65536) String pattern,
+            @Size(max = 65536) String line) {
     }
 }
