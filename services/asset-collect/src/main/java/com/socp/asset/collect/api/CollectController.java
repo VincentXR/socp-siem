@@ -1,6 +1,7 @@
 package com.socp.asset.collect.api;
 
 import com.socp.asset.collect.collector.AssetScanner;
+import com.socp.asset.collect.store.AssetCollectionStore;
 import com.socp.platform.client.ServiceCall;
 import com.socp.platform.client.SocpHttpClient;
 import com.socp.platform.client.SocpService;
@@ -10,12 +11,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.*;
 import jakarta.validation.Valid;
 
-import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * ASSET 采集入口——接收外部资产/情报上报（SCP/CMDB 同步）。
@@ -31,43 +29,43 @@ public class CollectController {
 
     private static final Logger log = LoggerFactory.getLogger(CollectController.class);
 
-    private final List<Map<String, Object>> collected = new CopyOnWriteArrayList<>();
     private final AssetScanner scanner;
     private final SocpHttpClient http;
+    private final AssetCollectionStore store;
 
-    public CollectController(AssetScanner scanner, SocpHttpClient http) {
+    public CollectController(AssetScanner scanner, SocpHttpClient http, AssetCollectionStore store) {
         this.scanner = scanner;
         this.http = http;
+        this.store = store;
     }
 
     @PostMapping("/collect")
     public Map<String, Object> collect(@Valid @RequestBody AssetCollectRequest request) {
         Map<String, Object> asset = request.asMap();
         Map<String, Object> record = new LinkedHashMap<>(asset);
-        record.put("id", UUID.randomUUID().toString());
-        record.put("collectedAt", Instant.now().toString());
         record.put("event.category", "asset");
         record.put("event.action", "discover");
-        record.put("tenantId", tenant());
-        collected.add(record);
+        Map<String, Object> persisted = store.append(tenant(), record);
 
         // 真转发：归一化采集事件进 SEARCH 主链（NDJSON 单行契约）
-        ServiceCall call = http.post(SocpService.SEARCH, "/api/v1/ingest", toJson(record),
+        ServiceCall call = http.post(SocpService.SEARCH, "/api/v1/ingest", toJson(persisted),
                 SocpHttpClient.NDJSON, 5000);
         if (!call.ok()) {
-            log.warn("采集事件转发 SEARCH 失败 id={} 原因={}", record.get("id"), call.failureReason());
+            log.warn("采集事件转发 SEARCH 失败 id={} 原因={}", persisted.get("id"), call.failureReason());
         }
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("accepted", true);
-        result.put("total", tenantCollected().size());
+        result.put("status", call.ok() ? "FORWARDED" : "PERSISTED_FORWARD_PENDING");
+        result.put("id", persisted.get("id"));
+        result.put("total", store.count(tenant()));
         result.put("forwarded", call.ok());
         return result;
     }
 
     @GetMapping("/collected")
     public List<Map<String, Object>> list() {
-        return tenantCollected();
+        return store.list(tenant());
     }
 
     /** 定时扫描模拟器发现的资产（已上报 asset-web）。 */
@@ -89,11 +87,6 @@ public class CollectController {
             else sb.append('"').append(String.valueOf(v).replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
         }
         return sb.append("}").toString();
-    }
-
-    private List<Map<String, Object>> tenantCollected() {
-        String tenant = tenant();
-        return collected.stream().filter(item -> tenant.equals(item.get("tenantId"))).toList();
     }
 
     private static String tenant() {

@@ -1,3 +1,16 @@
+spring:
+  datasource:
+    url: ${SOCP_ASSET_COLLECT_DB_URL:}
+    driver-class-name: org.postgresql.Driver
+    username: ${SOCP_ASSET_COLLECT_DB_USERNAME:}
+    password: ${SOCP_ASSET_COLLECT_DB_PASSWORD:}
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+  flyway:
+    enabled: true
+
 socp:
   maturity: preview
   asset-collect:
