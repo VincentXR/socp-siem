@@ -40,8 +40,8 @@ public class MetaController {
 
     @RequireRole({"admin", "analyst"})
     @PostMapping("/data-source-types")
-    public DataSourceType createDataSourceType(@Valid @RequestBody DataSourceType t) {
-        return dsStore.save(t);
+    public DataSourceType createDataSourceType(@Valid @RequestBody DataSourceTypeRequest t) {
+        return dsStore.save(t.toDomain());
     }
 
     @RequireRole({"admin", "analyst"})
@@ -59,8 +59,8 @@ public class MetaController {
 
     @RequireRole({"admin", "analyst"})
     @PostMapping("/categories")
-    public LogCategory createCategory(@Valid @RequestBody LogCategory c) {
-        return catStore.save(c);
+    public LogCategory createCategory(@Valid @RequestBody LogCategoryRequest c) {
+        return catStore.save(c.toDomain());
     }
 
     @RequireRole({"admin", "analyst"})
@@ -78,8 +78,8 @@ public class MetaController {
 
     @RequireRole({"admin", "analyst"})
     @PostMapping("/fields")
-    public FieldDef createField(@Valid @RequestBody FieldDef f) {
-        return fieldStore.save(f);
+    public FieldDef createField(@Valid @RequestBody FieldDefRequest f) {
+        return fieldStore.save(f.toDomain());
     }
 
     @RequireRole({"admin", "analyst"})

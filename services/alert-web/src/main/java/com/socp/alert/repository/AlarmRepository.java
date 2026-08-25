@@ -44,7 +44,7 @@ public interface AlarmRepository extends JpaRepository<Alarm, String>, AlarmRepo
     long countForStatistics(@Param("tenant") String tenant, @Param("since") Instant since);
 
     @Query("""
-           select new com.socp.alert.AlarmSeverityCount(a.severity, count(a))
+           select new com.socp.alert.domain.AlarmSeverityCount(a.severity, count(a))
            from Alarm a
            where a.tenantId = :tenant
              and (:since is null or a.occurredAt >= :since)
@@ -54,7 +54,7 @@ public interface AlarmRepository extends JpaRepository<Alarm, String>, AlarmRepo
             @Param("tenant") String tenant, @Param("since") Instant since);
 
     @Query("""
-           select new com.socp.alert.AlarmRuleCount(a.ruleId, count(a))
+           select new com.socp.alert.domain.AlarmRuleCount(a.ruleId, count(a))
            from Alarm a
            where a.tenantId = :tenant
              and (:since is null or a.occurredAt >= :since)
@@ -65,7 +65,7 @@ public interface AlarmRepository extends JpaRepository<Alarm, String>, AlarmRepo
             @Param("tenant") String tenant, @Param("since") Instant since, Pageable pageable);
 
     @Query("""
-           select new com.socp.alert.AlarmRiskLevelCount(
+           select new com.socp.alert.domain.AlarmRiskLevelCount(
              case
                when a.riskScore >= 85 then 'CRITICAL'
                when a.riskScore >= 65 then 'HIGH'

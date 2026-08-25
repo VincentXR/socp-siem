@@ -34,8 +34,8 @@ public class ParseRuleController {
 
     @RequireRole({"admin", "analyst"})
     @PostMapping
-    public ParseRule create(@Valid @RequestBody ParseRule rule) {
-        return store.save(rule);
+    public ParseRule create(@Valid @RequestBody ParseRuleRequest rule) {
+        return store.save(rule.toDomain());
     }
 
     @RequireRole({"admin", "analyst"})

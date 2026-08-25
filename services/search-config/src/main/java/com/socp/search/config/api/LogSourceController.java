@@ -4,6 +4,7 @@ import com.socp.search.config.domain.LogSource;
 import com.socp.search.config.domain.ParseFormat;
 import com.socp.search.config.domain.SinkTarget;
 import com.socp.search.config.domain.SourceType;
+import com.socp.search.config.config.IngestLimitsProperties;
 import com.socp.search.config.render.VectorConfigRenderer;
 import com.socp.search.config.store.LogSourceStore;
 import com.socp.search.config.store.SinkTargetStore;
@@ -39,15 +40,18 @@ public class LogSourceController {
     private final SinkTargetStore sinkStore;
     private final VectorConfigRenderer renderer;
     private final com.socp.search.config.service.IngestPipeline pipeline;
+    private final IngestLimitsProperties ingestLimits;
     private final String vectorToken;
 
     public LogSourceController(LogSourceStore store, SinkTargetStore sinkStore,
                                com.socp.search.config.service.IngestPipeline pipeline,
+                               IngestLimitsProperties ingestLimits,
                                @Value("${socp.vector.token:dev-vector-token}") String vectorToken) {
         this.store = store;
         this.sinkStore = sinkStore;
         this.renderer = new VectorConfigRenderer(null);
         this.pipeline = pipeline;
+        this.ingestLimits = ingestLimits;
         this.vectorToken = vectorToken;
     }
 
@@ -83,15 +87,8 @@ public class LogSourceController {
 
     @RequireRole({"admin", "analyst"})
     @PostMapping("/sources")
-    public LogSource create(@Valid @RequestBody LogSource req) {
-        LogSource src = LogSource.createFull(
-                req.name(), req.type(), req.format(),
-                req.path(), req.address(), req.topic(), req.env(), req.enabled(),
-                req.readFrom(), req.multiline(), req.sinkTargetId(),
-                req.parseRuleIds(), req.description(),
-                req.protocol(), req.charset(), req.timeField(), req.timezone(),
-                req.tags(), req.frequency(), req.categoryId(), req.groupId());
-        return store.save(src);
+    public LogSource create(@Valid @RequestBody LogSourceRequest req) {
+        return store.save(req.toNewDomain());
     }
 
     @GetMapping("/sources/{id}")
@@ -103,16 +100,10 @@ public class LogSourceController {
 
     @RequireRole({"admin", "analyst"})
     @PutMapping("/sources/{id}")
-    public Map<String, Object> update(@PathVariable String id, @Valid @RequestBody LogSource req) {
+    public Map<String, Object> update(@PathVariable String id, @Valid @RequestBody LogSourceRequest req) {
         Optional<LogSource> exist = store.get(id);
         if (exist.isEmpty()) return Map.of("error", "not_found", "id", id);
-        LogSource updated = new LogSource(id, req.name(), req.type(), req.format(),
-                req.path(), req.address(), req.topic(), req.env(), req.enabled(),
-                req.readFrom(), req.multiline(), req.sinkTargetId(),
-                req.parseRuleIds(), req.description(),
-                req.protocol(), req.charset(), req.timeField(), req.timezone(),
-                req.tags(), req.frequency(), req.categoryId(), req.groupId(),
-                exist.get().createdAt());
+        LogSource updated = req.toDomain(id, exist.get().createdAt());
         store.save(updated);
         return Map.of("source", updated);
     }
@@ -152,6 +143,30 @@ public class LogSourceController {
             @org.springframework.web.bind.annotation.RequestHeader(value = "X-SOCP-Collector", required = false)
             String collector) {
         // 采集器可用请求头显式声明身份；未声明则按每行的 collector 字段归属运行指标
+        validateIngestBody(body);
         return pipeline.process(body, collector);
+    }
+
+    private void validateIngestBody(String body) {
+        if (body == null) return;
+        int bodyBytes = body.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        if (bodyBytes > ingestLimits.getMaxBodyBytes()) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.PAYLOAD_TOO_LARGE,
+                    "ingest body exceeds " + ingestLimits.getMaxBodyBytes() + " bytes");
+        }
+        long events = body.lines().filter(line -> !line.isBlank()).count();
+        if (events > ingestLimits.getMaxEvents()) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.PAYLOAD_TOO_LARGE,
+                    "ingest body exceeds " + ingestLimits.getMaxEvents() + " events");
+        }
+        boolean oversizedEvent = body.lines().anyMatch(line ->
+                line.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > ingestLimits.getMaxEventBytes());
+        if (oversizedEvent) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.PAYLOAD_TOO_LARGE,
+                    "ingest event exceeds " + ingestLimits.getMaxEventBytes() + " bytes");
+        }
     }
 }

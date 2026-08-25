@@ -29,8 +29,8 @@ public class SinkTargetController {
 
     @RequireRole({"admin", "analyst"})
     @PostMapping
-    public SinkTarget create(@Valid @RequestBody SinkTarget target) {
-        return store.save(target);
+    public SinkTarget create(@Valid @RequestBody SinkTargetRequest target) {
+        return store.save(target.toDomain());
     }
 
     @RequireRole({"admin", "analyst"})

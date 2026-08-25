@@ -52,6 +52,10 @@ socp:
   detect:
     url: http://localhost:18082
   ingest:
+    limits:
+      max-body-bytes: ${SOCP_INGEST_MAX_BODY_BYTES:16777216}
+      max-events: ${SOCP_INGEST_MAX_EVENTS:1000}
+      max-event-bytes: ${SOCP_INGEST_MAX_EVENT_BYTES:262144}
     monitor:
       idle-ttl-ms: ${SOCP_INGEST_MONITOR_IDLE_TTL_MS:86400000}
       max-entries: ${SOCP_INGEST_MONITOR_MAX_ENTRIES:10000}
