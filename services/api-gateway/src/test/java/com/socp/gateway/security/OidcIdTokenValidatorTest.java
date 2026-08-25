@@ -1,4 +1,4 @@
-package com.socp.gateway;
+package com.socp.gateway.security;
 
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;

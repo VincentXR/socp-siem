@@ -1,4 +1,4 @@
-package com.socp.gateway;
+package com.socp.gateway.api;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;

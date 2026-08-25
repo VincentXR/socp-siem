@@ -1,4 +1,4 @@
-package com.socp.gateway;
+package com.socp.gateway.oidc;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;

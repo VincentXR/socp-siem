@@ -1,6 +1,9 @@
-package com.socp.gateway;
+package com.socp.gateway.api;
 
 import com.nimbusds.jwt.JWTClaimsSet;
+import com.socp.gateway.oidc.InMemoryOidcStateStore;
+import com.socp.gateway.oidc.OidcStateStore;
+import com.socp.gateway.security.OidcIdTokenValidator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;

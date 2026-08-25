@@ -1,4 +1,4 @@
-package com.socp.gateway;
+package com.socp.gateway.oidc;
 
 import org.junit.jupiter.api.Test;
 

@@ -1,4 +1,4 @@
-package com.socp.gateway;
+package com.socp.gateway.api;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;

@@ -1,5 +1,6 @@
-package com.socp.gateway;
+package com.socp.gateway.filter;
 
+import com.socp.gateway.api.AuthController;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.socp.platform.auth.JwtValidator;
 import com.socp.platform.tenant.ServiceRequestSignature;

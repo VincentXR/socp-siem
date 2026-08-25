@@ -1,11 +1,11 @@
-package com.socp.gateway;
+package com.socp.gateway.oidc;
 
 import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 
 /** One-time PKCE state storage shared by OIDC login and callback handlers. */
-interface OidcStateStore {
+public interface OidcStateStore {
 
     Mono<Void> save(String state, Entry entry, Duration ttl);
 

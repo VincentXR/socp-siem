@@ -1,4 +1,4 @@
-package com.socp.gateway;
+package com.socp.gateway.oidc;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Profile;
@@ -14,16 +14,16 @@ import java.util.function.LongSupplier;
 @Component
 @Profile("!prod")
 @ConditionalOnProperty(name = "socp.oidc.state.backend", havingValue = "memory")
-class InMemoryOidcStateStore implements OidcStateStore {
+public class InMemoryOidcStateStore implements OidcStateStore {
 
     private final Map<String, StoredEntry> states = new ConcurrentHashMap<>();
     private final LongSupplier clock;
 
-    InMemoryOidcStateStore() {
+    public InMemoryOidcStateStore() {
         this(System::currentTimeMillis);
     }
 
-    InMemoryOidcStateStore(LongSupplier clock) {
+    public InMemoryOidcStateStore(LongSupplier clock) {
         this.clock = clock;
     }
 
