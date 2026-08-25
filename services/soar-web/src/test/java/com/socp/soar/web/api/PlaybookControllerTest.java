@@ -112,4 +112,17 @@ class PlaybookControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$").doesNotExist());
     }
+
+    @Test
+    void executeAcceptsExtensibleContextThroughBoundedRequestDto() throws Exception {
+        given(executor.runById(any(String.class), anyMap())).willReturn(Map.of("status", "executed"));
+
+        mvc.perform(post("/api/v1/playbooks/{id}/execute", "pb-1")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("alarmId", "AL-1", "source", "manual"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("executed"));
+    }
 }

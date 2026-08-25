@@ -83,9 +83,11 @@ public class PlaybookController {
     /** 手动触发指定剧本执行（忽略触发条件，直接跑 actions）。 */
     @RequireRole({"admin", "analyst"})
     @PostMapping("/{id}/execute")
-    public Map<String, Object> execute(@PathVariable String id, @RequestBody(required = false) Map<String, Object> context) {
+    public Map<String, Object> execute(@PathVariable String id,
+                                       @RequestBody(required = false) PlaybookExecutionRequest request) {
+        Map<String, Object> context = request == null ? Map.of() : request.context();
         validateMap(context, "context");
-        return executor.runById(id, context == null ? Map.of() : context);
+        return executor.runById(id, context);
     }
 
     /** 执行历史（最近 200 条）。 */
