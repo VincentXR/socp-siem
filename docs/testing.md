@@ -46,8 +46,9 @@ navigation, resource-list, and resource-import contracts.
   tenant-scoped access for assets, cases, ATT&CK techniques, and IOCs.
 
 The suite is risk-driven and enforces an aggregate Java line-coverage floor of
-45%; every module containing production Java must emit a coverage report. The
-floor is intentionally a baseline, not a target: behavior or
+50%, a 25% floor for every production module, and a 30% floor for critical
+event-path and authorization modules. Every module containing production Java
+must emit a coverage report. The floor is intentionally a baseline, not a target: behavior or
 failure-semantic changes still need tests at their owning boundary. Run
 `mvn test -Pcoverage` followed by `python build/verify-coverage.py` to inspect
 the per-module and aggregate result. `mvn verify -Pquality -DskipTests` enforces
