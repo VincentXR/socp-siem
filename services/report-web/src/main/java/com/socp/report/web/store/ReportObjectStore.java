@@ -11,6 +11,7 @@ import io.minio.Result;
 import io.minio.http.Method;
 import io.minio.messages.Item;
 import com.socp.report.web.config.ReportObjectStorageProperties;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -39,6 +40,7 @@ public class ReportObjectStore {
     private final String bucket;
     private final boolean enabled;
 
+    @Autowired
     public ReportObjectStore(ReportObjectStorageProperties properties) {
         this(properties.getUrl(), properties.getAccessKey(), properties.getSecretKey(),
                 properties.getBucket(), properties.isEnabled());
