@@ -157,7 +157,9 @@ jobs:
       - name: Start minimal slice (alert-web + gateway)
         run: |
           mkdir -p .cache
-          bash build/run-slice.sh start || true
+          # CI deliberately exercises the PostgreSQL-backed slice. Local
+          # development defaults to the cheaper H2 `local` profile.
+          SOCP_RUNTIME_PROFILES=pg bash build/run-slice.sh start || true
           python3 - <<'EOF'
           import time
           import urllib.request
@@ -177,6 +179,14 @@ jobs:
           else:
               raise SystemExit("slice not up")
           EOF
+
+      - name: Print slice logs on startup failure
+        if: failure()
+        run: |
+          for log in .cache/*.log; do
+            echo "===== $log ====="
+            tail -n 160 "$log" || true
+          done
 
       - name: Run slice E2E (auth/tenant/audit/ratelimit/trace)
         run: python3 build/verify-slice.py

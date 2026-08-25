@@ -3,6 +3,9 @@
 This map records runtime responsibilities, ports, persistence, and verification
 ownership. It is intentionally higher-level than a class-by-class index.
 
+See the [service maturity matrix](maturity-matrix.md) for the explicit demo,
+preview, and production-readiness contract of each service.
+
 ## Repository layout
 
 | Path | Responsibility |

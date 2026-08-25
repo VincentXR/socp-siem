@@ -1,4 +1,4 @@
-package com.socp.asset.collect;
+package com.socp.asset.collect.api;
 
 import com.socp.platform.error.ApiResult;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -7,7 +7,7 @@ import org.springframework.beans.factory.annotation.Value;
 
 import java.util.Map;
 
-/** 骨架健康/占位端点；业务接口按 P 提示词在其后扩展。 */
+/** Runtime health endpoint for the standalone collector launcher. */
 @RestController
 public class HealthController {
     @Value("${socp.maturity:demo}")

@@ -1,4 +1,4 @@
-package com.socp.hips.collect;
+package com.socp.asset.collect.api;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -28,7 +28,7 @@ class HealthControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
                 .andExpect(jsonPath("$.message").value("ok"))
-                .andExpect(jsonPath("$.data.service").value("hips-collect"))
+                .andExpect(jsonPath("$.data.service").value("asset-collect"))
                 .andExpect(jsonPath("$.data.status").value("UP"));
     }
 }

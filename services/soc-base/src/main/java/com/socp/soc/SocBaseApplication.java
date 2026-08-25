@@ -5,7 +5,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 
-/** SocBase（soc-base）。骨架：待按 P 提示词填充业务（见架构报告）。 */
+/** Tenant, compliance, audit, and platform metadata service. */
 @SpringBootApplication(scanBasePackages = {"com.socp.soc", "com.socp.platform"})
 @EnableConfigurationProperties(KafkaAuditProperties.class)
 public class SocBaseApplication {

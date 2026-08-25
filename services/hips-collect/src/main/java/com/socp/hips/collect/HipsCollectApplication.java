@@ -5,7 +5,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import com.socp.hips.collect.config.HipsCollectProperties;
 
-/** HipsCollect（hips-collect）。骨架：待按 P 提示词填充业务（见架构报告）。 */
+/** Standalone compatibility launcher for durable endpoint collection. */
 @SpringBootApplication(scanBasePackages = {"com.socp.hips.collect", "com.socp.platform"})
 @EnableConfigurationProperties(HipsCollectProperties.class)
 public class HipsCollectApplication {

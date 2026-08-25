@@ -1,4 +1,4 @@
-package com.socp.ai;
+package com.socp.ai.api;
 
 import com.socp.ai.config.AiRuntimeProperties;
 import com.socp.platform.error.ApiResult;
@@ -7,7 +7,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Map;
 
-/** 骨架健康/占位端点；业务接口按 P 提示词在其后扩展。 */
+/** Runtime health endpoint for the preview assistant service. */
 @RestController
 public class HealthController {
     private final AiRuntimeProperties properties;

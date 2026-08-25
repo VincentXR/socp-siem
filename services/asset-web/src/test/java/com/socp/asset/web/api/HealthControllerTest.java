@@ -1,4 +1,4 @@
-package com.socp.asset.collect;
+package com.socp.asset.web.api;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -12,7 +12,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * 统一响应体契约：{code:0, message:"ok", data:{...}}（com.socp.platform.error.ApiResult）。
+ * 平台统一响应体（com.socp.platform.error.ApiResult）契约测试：
+ * 成功出口必须是 {code:0, message:"ok", data:{...}}，前端/网关按此统一拦截。
  */
 @WebMvcTest(HealthController.class)
 @AutoConfigureMockMvc(addFilters = false)
@@ -28,7 +29,8 @@ class HealthControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
                 .andExpect(jsonPath("$.message").value("ok"))
-                .andExpect(jsonPath("$.data.service").value("asset-collect"))
-                .andExpect(jsonPath("$.data.status").value("UP"));
+                .andExpect(jsonPath("$.data.service").value("asset-web"))
+                .andExpect(jsonPath("$.data.status").value("UP"))
+                .andExpect(jsonPath("$.timestamp").isNotEmpty());
     }
 }

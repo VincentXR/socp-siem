@@ -5,7 +5,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 
-/** AiAssistant（ai-assistant）。骨架：待按 P 提示词填充业务（见架构报告）。 */
+/** Preview security knowledge and optional LLM assistant service. */
 @SpringBootApplication(scanBasePackages = {"com.socp.ai", "com.socp.platform"})
 @EnableConfigurationProperties(AiRuntimeProperties.class)
 public class AiAssistantApplication {

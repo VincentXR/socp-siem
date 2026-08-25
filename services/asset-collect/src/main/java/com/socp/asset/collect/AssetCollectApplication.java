@@ -5,7 +5,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import com.socp.asset.collect.config.AssetCollectProperties;
 
-/** AssetCollect（asset-collect）。骨架：待按 P 提示词填充业务（见架构报告）。 */
+/** Standalone compatibility launcher for durable asset collection. */
 @SpringBootApplication(scanBasePackages = {"com.socp.asset.collect", "com.socp.platform"})
 @EnableConfigurationProperties(AssetCollectProperties.class)
 public class AssetCollectApplication {
