@@ -69,13 +69,22 @@ docker compose -f infra/docker-compose.yml --profile extra up -d
 
 ## Runtime configuration
 
-The startup scripts use `dev,pg` by default so the local stack uses the same
-PostgreSQL-backed storage as Docker middleware. Set
-`SOCP_RUNTIME_PROFILES=dev` when Docker/PostgreSQL is unavailable and the
-lightweight H2 fallback is intentional. Services with `application-pg.yml`
-support the `pg` profile for PostgreSQL-backed local or integration runs. Use `prod` with explicit environment configuration to
-activate `ProdGuard`; it rejects H2, demo credentials, authentication bypass,
-the default ingest token, and disabled Temporal.
+The startup scripts use the explicit `local` profile by default. `local` uses
+H2/file-backed storage for the lightweight workstation path. Use
+`SOCP_RUNTIME_PROFILES=integration` when PostgreSQL-backed behavior is needed;
+the services with an `application-integration.yml` overlay import their
+`application-pg.yml` settings. Use `SOCP_RUNTIME_PROFILES=prod` only with
+explicit production environment configuration; `ProdGuard` rejects H2, demo
+credentials, authentication bypass, the default ingest token, and disabled
+Temporal.
+
+The three modes are intentionally exclusive at the launcher level:
+
+- `local`: disposable or file-backed H2, development middleware defaults;
+- `integration`: PostgreSQL overlays and shared middleware for cross-service
+  verification;
+- `prod`: PostgreSQL/JWKS or explicitly approved security settings, no demo
+  data or simulator fallback.
 
 Important variables include `SOCP_JWT_SECRET`, `SOCP_RUNTIME_PROFILES`,
 `SOCP_RATELIMIT_BACKEND`, `SOCP_RULE_STATE_MAX_KEYS`, PostgreSQL connection

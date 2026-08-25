@@ -35,9 +35,9 @@ FRONTEND_PORT="$SOCP_PORT_FRONTEND_WORKBENCH"
 JVM_OPTS="${SOCP_JVM_OPTS:--Xms32m -Xmx256m}"
 START_BATCH_SIZE="${SOCP_START_BATCH_SIZE:-3}"
 START_HEALTH_TIMEOUT="${SOCP_START_HEALTH_TIMEOUT:-45}"
-# Comma-separated Spring profiles. The default matches the Docker-backed local
-# stack; use SOCP_RUNTIME_PROFILES=dev for a lightweight H2-only fallback.
-RUNTIME_PROFILES="${SOCP_RUNTIME_PROFILES:-dev,pg}"
+# Named runtime modes: local (H2/file-backed where supported), integration
+# (PostgreSQL overlays), or prod (fail-fast production guard).
+RUNTIME_PROFILES="${SOCP_RUNTIME_PROFILES:-local}"
 
 # core：Golden Demo 和日常后端开发所需的最小事件闭环。
 CORE_SERVICES="alert-web search-config detect-web incident-web soar-web notify-web report-web api-gateway"
