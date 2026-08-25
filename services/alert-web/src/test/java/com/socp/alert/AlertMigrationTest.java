@@ -1,5 +1,10 @@
 package com.socp.alert;
 
+import com.socp.alert.api.*;
+import com.socp.alert.domain.*;
+import com.socp.alert.repository.*;
+import com.socp.alert.service.*;
+
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
 

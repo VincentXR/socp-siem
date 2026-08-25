@@ -10,9 +10,9 @@ import io.minio.RemoveObjectArgs;
 import io.minio.Result;
 import io.minio.http.Method;
 import io.minio.messages.Item;
+import com.socp.report.web.config.ReportObjectStorageProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.io.ByteArrayInputStream;
@@ -39,12 +39,12 @@ public class ReportObjectStore {
     private final String bucket;
     private final boolean enabled;
 
-    public ReportObjectStore(
-            @Value("${socp.minio.url:http://localhost:9000}") String url,
-            @Value("${socp.minio.access-key:socp}") String accessKey,
-            @Value("${socp.minio.secret-key:Socp@2026}") String secretKey,
-            @Value("${socp.minio.bucket:socp-reports}") String bucket,
-            @Value("${socp.minio.enabled:true}") boolean enabled) {
+    public ReportObjectStore(ReportObjectStorageProperties properties) {
+        this(properties.getUrl(), properties.getAccessKey(), properties.getSecretKey(),
+                properties.getBucket(), properties.isEnabled());
+    }
+
+    public ReportObjectStore(String url, String accessKey, String secretKey, String bucket, boolean enabled) {
         this.bucket = bucket;
         this.enabled = enabled;
         if (!enabled) {

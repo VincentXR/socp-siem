@@ -40,14 +40,14 @@ def main() -> int:
     parser.add_argument(
         "--minimum",
         type=float,
-        default=float(os.environ.get("SOCP_MIN_LINE_COVERAGE", "0.45")),
-        help="minimum aggregate line ratio (default: 0.45)",
+        default=float(os.environ.get("SOCP_MIN_LINE_COVERAGE", "0.50")),
+        help="minimum aggregate line ratio (default: 0.50)",
     )
     parser.add_argument(
         "--module-minimum",
         type=float,
-        default=float(os.environ.get("SOCP_MIN_MODULE_LINE_COVERAGE", "0.15")),
-        help="minimum line ratio required from every production module (default: 0.15)",
+        default=float(os.environ.get("SOCP_MIN_MODULE_LINE_COVERAGE", "0.25")),
+        help="minimum line ratio required from every production module (default: 0.25)",
     )
     parser.add_argument(
         "--critical-module-minimum",

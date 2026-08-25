@@ -1,0 +1,112 @@
+package com.socp.alert.repository;
+
+import com.socp.alert.api.*;
+import com.socp.alert.domain.*;
+import com.socp.alert.repository.*;
+import com.socp.alert.service.*;
+
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+
+import java.time.Instant;
+import java.util.List;
+import java.util.Optional;
+
+/** Tenant-scoped persistence plus database aggregation projections for alarms. */
+public interface AlarmRepository extends JpaRepository<Alarm, String>, AlarmRepositoryCustom {
+
+    List<Alarm> findByTenantId(String tenantId);
+
+    Optional<Alarm> findByTenantIdAndId(String tenantId, String id);
+
+    Optional<Alarm> findByTenantIdAndSourceAlertId(String tenantId, String sourceAlertId);
+
+    List<Alarm> findByTenantIdAndSeverity(String tenantId, Severity severity);
+
+    @Query("""
+           select a from Alarm a
+           where a.tenantId = :tenant
+             and (a.entity like %:q% or a.ruleName like %:q% or a.message like %:q%)
+           """)
+    List<Alarm> search(String tenant, String q);
+
+    /** Recent per-entity count used by risk enrichment. */
+    @Query("select count(a) from Alarm a where a.tenantId = :tenant and a.entity = :entity and a.occurredAt >= :since")
+    long countRecentByEntity(String tenant, String entity, Instant since);
+
+    @Query("""
+           select count(a) from Alarm a
+           where a.tenantId = :tenant
+             and (:since is null or a.occurredAt >= :since)
+           """)
+    long countForStatistics(@Param("tenant") String tenant, @Param("since") Instant since);
+
+    @Query("""
+           select new com.socp.alert.AlarmSeverityCount(a.severity, count(a))
+           from Alarm a
+           where a.tenantId = :tenant
+             and (:since is null or a.occurredAt >= :since)
+           group by a.severity
+           """)
+    List<AlarmSeverityCount> countBySeverityForStatistics(
+            @Param("tenant") String tenant, @Param("since") Instant since);
+
+    @Query("""
+           select new com.socp.alert.AlarmRuleCount(a.ruleId, count(a))
+           from Alarm a
+           where a.tenantId = :tenant
+             and (:since is null or a.occurredAt >= :since)
+           group by a.ruleId
+           order by count(a) desc, a.ruleId asc
+           """)
+    List<AlarmRuleCount> topRulesForStatistics(
+            @Param("tenant") String tenant, @Param("since") Instant since, Pageable pageable);
+
+    @Query("""
+           select new com.socp.alert.AlarmRiskLevelCount(
+             case
+               when a.riskScore >= 85 then 'CRITICAL'
+               when a.riskScore >= 65 then 'HIGH'
+               when a.riskScore >= 40 then 'MEDIUM'
+               when a.riskScore >= 20 then 'LOW'
+               else 'INFO'
+             end,
+             count(a))
+           from Alarm a
+           where a.tenantId = :tenant
+             and a.riskScore is not null
+             and (:since is null or a.occurredAt >= :since)
+           group by case
+               when a.riskScore >= 85 then 'CRITICAL'
+               when a.riskScore >= 65 then 'HIGH'
+               when a.riskScore >= 40 then 'MEDIUM'
+               when a.riskScore >= 20 then 'LOW'
+               else 'INFO'
+             end
+           """)
+    List<AlarmRiskLevelCount> countByRiskLevelForStatistics(
+            @Param("tenant") String tenant, @Param("since") Instant since);
+
+    @Query("""
+           select avg(a.riskScore) from Alarm a
+           where a.tenantId = :tenant
+             and a.riskScore is not null
+             and (:since is null or a.occurredAt >= :since)
+           """)
+    Double averageRiskForStatistics(@Param("tenant") String tenant, @Param("since") Instant since);
+
+    @Query("""
+           select a from Alarm a
+           where a.tenantId = :tenant
+             and a.riskScore is not null
+             and (:since is null or a.occurredAt >= :since)
+           order by a.riskScore desc, a.id asc
+           """)
+    List<Alarm> topRiskForStatistics(
+            @Param("tenant") String tenant, @Param("since") Instant since, Pageable pageable);
+
+    long countByTenantIdAndOccurredAtGreaterThanEqualAndOccurredAtLessThan(
+            String tenantId, Instant startInclusive, Instant endExclusive);
+}

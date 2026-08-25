@@ -18,6 +18,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import com.socp.platform.auth.RequireRole;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Size;
 
 /**
  * UEBA / 威胁评分 / 观察名单 API。
@@ -94,14 +96,18 @@ public class UebaController {
     /** 全量替换一个名单（规则条件 op=inlist 立即生效，无需重载规则） */
     @RequireRole({"admin", "analyst"})
     @PutMapping("/watchlists/{name}")
-    public Map<String, Object> putWatchlist(@PathVariable String name, @RequestBody List<String> values) {
+    public Map<String, Object> putWatchlist(@PathVariable String name,
+                                            @Valid @RequestBody @Size(max = 10000)
+                                            List<@Size(max = 256) String> values) {
         return watchlists.put(name, values);
     }
 
     /** 追加若干值到名单 */
     @RequireRole({"admin", "analyst"})
     @PostMapping("/watchlists/{name}")
-    public Map<String, Object> appendWatchlist(@PathVariable String name, @RequestBody List<String> values) {
+    public Map<String, Object> appendWatchlist(@PathVariable String name,
+                                               @Valid @RequestBody @Size(max = 10000)
+                                               List<@Size(max = 256) String> values) {
         return watchlists.append(name, values);
     }
 

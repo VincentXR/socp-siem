@@ -13,7 +13,6 @@ import com.socp.platform.client.SocpHttpClient;
 import com.socp.platform.tenant.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
@@ -23,7 +22,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 /** Dispatches an alarm to enabled channels with per-alarm/channel idempotency. */
 @Service
@@ -39,15 +37,6 @@ public class NotificationDispatcher {
     private final NotificationDeliveryRepository deliveries;
     private final NotificationDispatchLogRepository dispatchLogs;
     private final SmtpNotificationSender smtpSender;
-    /** Test-only fallback; production always injects the JPA repository. */
-    private final List<Map<String, Object>> dispatchLog = new CopyOnWriteArrayList<>();
-
-    public NotificationDispatcher(ChannelStore channels, SocpHttpClient http,
-                                  NotificationDeliveryRepository deliveries) {
-        this(channels, http, deliveries, null, null);
-    }
-
-    @Autowired
     public NotificationDispatcher(ChannelStore channels, SocpHttpClient http,
                                   NotificationDeliveryRepository deliveries,
                                   NotificationDispatchLogRepository dispatchLogs,
@@ -212,11 +201,6 @@ public class NotificationDispatcher {
         entry.put("ruleId", alarm.get("ruleId"));
         entry.put("status", result.get("status"));
         entry.put("tenantId", tenant());
-        if (dispatchLogs == null) {
-            if (dispatchLog.size() > 200) dispatchLog.removeFirst();
-            dispatchLog.add(entry);
-            return;
-        }
         try {
             NotificationDispatchLogEntity row = new NotificationDispatchLogEntity();
             row.setId(UUID.randomUUID().toString());
@@ -236,14 +220,8 @@ public class NotificationDispatcher {
 
     public List<Map<String, Object>> log() {
         String tenant = tenant();
-        if (dispatchLogs != null) {
-            return dispatchLogs.findTop200ByTenantIdOrderByCreatedAtDesc(tenant).stream()
-                    .map(NotificationDispatcher::fromLogEntity)
-                    .toList();
-        }
-        return dispatchLog.stream()
-                .filter(entry -> tenant.equals(entry.get("tenantId")))
-                .map(Map::copyOf)
+        return dispatchLogs.findTop200ByTenantIdOrderByCreatedAtDesc(tenant).stream()
+                .map(NotificationDispatcher::fromLogEntity)
                 .toList();
     }
 

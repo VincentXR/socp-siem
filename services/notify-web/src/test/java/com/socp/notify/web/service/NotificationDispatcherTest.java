@@ -4,6 +4,7 @@ import com.socp.notify.web.domain.Channel;
 import com.socp.notify.web.store.ChannelStore;
 import com.socp.notify.web.store.NotificationDeliveryEntity;
 import com.socp.notify.web.store.NotificationDeliveryRepository;
+import com.socp.notify.web.store.NotificationDispatchLogRepository;
 import com.socp.platform.client.ServiceCall;
 import com.socp.platform.client.SocpHttpClient;
 import com.socp.platform.client.SocpService;
@@ -34,6 +35,7 @@ class NotificationDispatcherTest {
     @Mock private ChannelStore channels;
     @Mock private SocpHttpClient http;
     @Mock private NotificationDeliveryRepository deliveries;
+    @Mock private NotificationDispatchLogRepository dispatchLogs;
 
     @AfterEach
     void clearTenant() {
@@ -48,7 +50,7 @@ class NotificationDispatcherTest {
         given(deliveries.findByIdAndTenantId(any(), eq("tenant-a"))).willReturn(Optional.empty());
         given(http.postExternal(eq("http://ops"), any(), eq(SocpHttpClient.JSON), eq(3000)))
                 .willReturn(ok());
-        NotificationDispatcher dispatcher = new NotificationDispatcher(channels, http, deliveries);
+        NotificationDispatcher dispatcher = dispatcher();
 
         Map<String, Object> result = dispatcher.dispatch(Map.of("id", "AL-1", "severity", "HIGH"));
 
@@ -68,7 +70,7 @@ class NotificationDispatcherTest {
         receipt.setDeliveredAt(Instant.now());
         given(channels.enabled()).willReturn(List.of(channel));
         given(deliveries.findByIdAndTenantId(any(), eq("tenant-a"))).willReturn(Optional.of(receipt));
-        NotificationDispatcher dispatcher = new NotificationDispatcher(channels, http, deliveries);
+        NotificationDispatcher dispatcher = dispatcher();
 
         Map<String, Object> result = dispatcher.dispatch(Map.of("id", "AL-1"));
 
@@ -86,7 +88,7 @@ class NotificationDispatcherTest {
         given(http.postExternal(eq("http://ops"), any(), eq(SocpHttpClient.JSON), eq(3000)))
                 .willReturn(new ServiceCall(SocpService.NOTIFY, "http://ops", false,
                         503, "", "unavailable", 1, true, 1));
-        NotificationDispatcher dispatcher = new NotificationDispatcher(channels, http, deliveries);
+        NotificationDispatcher dispatcher = dispatcher();
 
         Map<String, Object> result = dispatcher.dispatch(Map.of("id", "AL-1"));
 
@@ -100,7 +102,7 @@ class NotificationDispatcherTest {
         Channel channel = new Channel("CH-EMAIL", "Mail", "EMAIL", "soc@example.com", true, "");
         given(channels.enabled()).willReturn(List.of(channel));
         given(deliveries.findByIdAndTenantId(any(), eq("tenant-a"))).willReturn(Optional.empty());
-        NotificationDispatcher dispatcher = new NotificationDispatcher(channels, http, deliveries);
+        NotificationDispatcher dispatcher = dispatcher();
 
         Map<String, Object> result = dispatcher.dispatch(Map.of("id", "AL-1"));
 
@@ -114,5 +116,9 @@ class NotificationDispatcherTest {
     private static ServiceCall ok() {
         return new ServiceCall(SocpService.NOTIFY, "http://ops", true,
                 200, "ok", null, 1, false, 1);
+    }
+
+    private NotificationDispatcher dispatcher() {
+        return new NotificationDispatcher(channels, http, deliveries, dispatchLogs, null);
     }
 }

@@ -67,8 +67,8 @@ public class NotifyController {
 
     /** 告警外发入口：接收 alert-web 推送的告警，分发到启用渠道。 */
     @PostMapping("/notify/alert")
-    public ResponseEntity<Map<String, Object>> notify(@RequestBody Map<String, Object> alarm) {
-        Map<String, Object> result = dispatcher.dispatch(alarm);
+    public ResponseEntity<Map<String, Object>> notify(@Valid @RequestBody NotifyAlarmRequest request) {
+        Map<String, Object> result = dispatcher.dispatch(request.asMap());
         int failed = result.get("failed") instanceof Number number ? number.intValue() : 0;
         return ResponseEntity.status(failed == 0 ? HttpStatus.OK : HttpStatus.BAD_GATEWAY).body(result);
     }

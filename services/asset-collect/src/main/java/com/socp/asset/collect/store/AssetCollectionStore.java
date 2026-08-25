@@ -57,6 +57,13 @@ public class AssetCollectionStore {
     }
 
     @Transactional(readOnly = true)
+    public List<Map<String, Object>> listBySource(String tenantId, String source) {
+        return list(tenantId).stream()
+                .filter(record -> source == null || source.equals(record.get("source")))
+                .toList();
+    }
+
+    @Transactional(readOnly = true)
     public long count(String tenantId) {
         String tenant = tenantId == null || tenantId.isBlank() ? "default" : tenantId;
         return repository.countByTenantId(tenant);

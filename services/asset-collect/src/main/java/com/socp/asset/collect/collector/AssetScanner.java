@@ -1,11 +1,13 @@
 package com.socp.asset.collect.collector;
 
+import com.socp.asset.collect.config.AssetCollectProperties;
+import com.socp.asset.collect.store.AssetCollectionStore;
 import com.socp.platform.client.AssetClient;
 import com.socp.platform.client.ServiceCall;
 import com.socp.platform.tenant.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.env.Environment;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -14,37 +16,28 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CopyOnWriteArrayList;
 
-/**
- * 资产采集模拟器：定时"发现"资产并上报 asset-web 落库。
- *
- * <p>生产环境由 Agent/CMDB/网络扫描器（Nmap、Tenable 等）上报；此处模拟
- * 周期性扫描发现主机/网络设备，通过 asset-web 的采集端点入库，打通
- * "采集 → 资产库" 链路。
- */
+/** Development asset simulator with a durable collection buffer. */
 @Component
 @EnableScheduling
 public class AssetScanner {
 
     private static final Logger log = LoggerFactory.getLogger(AssetScanner.class);
 
-    private final List<Map<String, Object>> discovered = new CopyOnWriteArrayList<>();
-    private int round = 0;
-
+    private int round;
     private final AssetClient assetClient;
+    private final AssetCollectionStore collectionStore;
+    private final AssetCollectProperties properties;
+    private final Environment environment;
 
-    @Value("${socp.asset-collect.simulation-enabled:true}")
-    private boolean simulationEnabled;
-
-    @Value("${spring.profiles.active:}")
-    private String activeProfiles;
-
-    public AssetScanner(AssetClient assetClient) {
+    public AssetScanner(AssetClient assetClient, AssetCollectionStore collectionStore,
+                        AssetCollectProperties properties, Environment environment) {
         this.assetClient = assetClient;
+        this.collectionStore = collectionStore;
+        this.properties = properties;
+        this.environment = environment;
     }
 
-    /** 每 60 秒模拟一轮扫描：发现 1-2 台新资产并上报。 */
     @Scheduled(fixedDelay = 60_000, initialDelay = 20_000)
     public void scan() {
         if (!simulationAllowed()) {
@@ -63,48 +56,48 @@ public class AssetScanner {
             asset.put("criticality", round % 3 == 0 ? "CRITICAL" : "HIGH");
             asset.put("scannedAt", Instant.now().toString());
             asset.put("tenantId", "default");
-            discovered.add(asset);
+            asset.put("source", "simulator");
 
-            // 上报 asset-web 落库（best-effort，但失败必须可观测）
-            ServiceCall call = assetClient.collect(toJson(asset));
+            Map<String, Object> persisted = collectionStore.append("default", asset);
+            ServiceCall call = assetClient.collect(toJson(persisted));
             if (!call.ok()) {
-                log.warn("资产上报失败 name={} 原因={}", name, call.failureReason());
+                log.warn("asset forwarding failed name={} reason={}", name, call.failureReason());
             }
         }
-        log.info("扫描轮次 #{} 完成，累计发现 {} 台", round, discovered.size());
+        log.info("asset scan round {} completed and persisted", round);
     }
 
     public List<Map<String, Object>> discovered() {
         if (!simulationAllowed()) return List.of();
         String tenant = TenantContext.get();
         if (tenant == null || tenant.isBlank()) tenant = "default";
-        String selected = tenant;
-        return discovered.stream().filter(item -> selected.equals(item.get("tenantId"))).toList();
+        return collectionStore.listBySource(tenant, "simulator");
     }
 
     private boolean simulationAllowed() {
-        if (!simulationEnabled) return false;
-        String profiles = activeProfiles == null ? "" : activeProfiles.toLowerCase(java.util.Locale.ROOT);
-        return !java.util.Arrays.stream(profiles.split("[,\\s]+"))
-                .anyMatch(profile -> profile.equals("prod") || profile.equals("production"));
+        if (!properties.isSimulationEnabled()) return false;
+        return java.util.Arrays.stream(environment.getActiveProfiles())
+                .map(profile -> profile.toLowerCase(java.util.Locale.ROOT))
+                .noneMatch(profile -> profile.equals("prod") || profile.equals("production"));
     }
 
-    private static String pick(String... xs) {
-        return xs[(int) (Math.random() * xs.length)];
+    private static String pick(String... values) {
+        return values[(int) (Math.random() * values.length)];
     }
 
-    private static String toJson(Map<String, Object> m) {
-        StringBuilder sb = new StringBuilder("{");
+    private static String toJson(Map<String, Object> map) {
+        StringBuilder json = new StringBuilder("{");
         boolean first = true;
-        for (var e : m.entrySet()) {
-            if (!first) sb.append(",");
+        for (var entry : map.entrySet()) {
+            if (!first) json.append(",");
             first = false;
-            sb.append('"').append(e.getKey()).append("\":");
-            Object v = e.getValue();
-            if (v == null) sb.append("null");
-            else if (v instanceof Number || v instanceof Boolean) sb.append(v);
-            else sb.append('"').append(String.valueOf(v).replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
+            json.append('"').append(entry.getKey()).append("\":");
+            Object value = entry.getValue();
+            if (value == null) json.append("null");
+            else if (value instanceof Number || value instanceof Boolean) json.append(value);
+            else json.append('"').append(String.valueOf(value)
+                    .replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
         }
-        return sb.append("}").toString();
+        return json.append("}").toString();
     }
 }
