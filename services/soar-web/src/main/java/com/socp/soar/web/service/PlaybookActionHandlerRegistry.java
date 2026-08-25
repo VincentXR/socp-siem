@@ -97,7 +97,7 @@ public class PlaybookActionHandlerRegistry {
             ServiceCall call = http.postExternal(endpoint, context.payloadJson(), SocpHttpClient.JSON,
                     Math.max(100, timeoutMs));
             Map<String, Object> result = verifiedCall(type.wireName(), call, false);
-            if (PlaybookActionStatus.SUCCESS.wireValue().equals(result.get("status"))) {
+            if (PlaybookActionStatus.EXECUTED.wireValue().equals(result.get("status"))) {
                 Map<String, Object> receipt = jsonObject(call.body());
                 if (!accepted(receipt)) {
                     result.put("status", PlaybookActionStatus.FAILED.wireValue());
@@ -206,7 +206,7 @@ public class PlaybookActionHandlerRegistry {
         public Map<String, Object> handle(PlaybookActionContext context) {
             ServiceCall call = client.notifyAlert(context.payloadJson());
             Map<String, Object> result = verifiedCall("notify-web", call, false);
-            if (PlaybookActionStatus.SUCCESS.wireValue().equals(result.get("status"))) {
+            if (PlaybookActionStatus.EXECUTED.wireValue().equals(result.get("status"))) {
                 Map<String, Object> response = jsonObject(call.body());
                 Object failed = response.get("failed");
                 if (!(failed instanceof Number number)) {
@@ -246,7 +246,7 @@ public class PlaybookActionHandlerRegistry {
         public Map<String, Object> handle(PlaybookActionContext context) {
             ServiceCall call = client.createFromAlarm(context.payloadJson());
             Map<String, Object> result = verifiedCall("incident-web", call, false);
-            if (PlaybookActionStatus.SUCCESS.wireValue().equals(result.get("status"))) {
+            if (PlaybookActionStatus.EXECUTED.wireValue().equals(result.get("status"))) {
                 Map<String, Object> response = jsonObject(call.body());
                 Object caseId = response.get("caseId");
                 if (!(caseId instanceof String id) || id.isBlank()) {
@@ -309,7 +309,7 @@ public class PlaybookActionHandlerRegistry {
         }
         boolean ok = call.ok() && (!requireBody || (call.body() != null && !call.body().isBlank()));
         result.put("status", ok
-                ? PlaybookActionStatus.SUCCESS.wireValue()
+                ? PlaybookActionStatus.EXECUTED.wireValue()
                 : PlaybookActionStatus.FAILED.wireValue());
         result.put("mode", call.ok() ? "EXECUTED" : "NOT_EXECUTED");
         result.put("verified", ok);

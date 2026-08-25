@@ -67,6 +67,10 @@ public class ProdGuard {
         if ((hasSecret || hasJwks) && !hasAudience) {
             violations.add("socp.security.audience must be configured for every production JWT verifier");
         }
+        if (hasSecret && !hasJwks
+                && !Boolean.parseBoolean(env.getProperty("socp.security.allow-prod-hmac", "false"))) {
+            violations.add("production JWT verification must use JWKS/issuer; HMAC requires explicit socp.security.allow-prod-hmac=true");
+        }
         if (DEMO_JWT_SECRET.equals(secret)) {
             violations.add("socp.security.jwt-secret 使用了默认演示密钥（run-all.sh 的 demo 值）");
         }

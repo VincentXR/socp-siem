@@ -2,6 +2,9 @@ package com.socp.soar.web.model;
 
 /** Wire-compatible action result states used by both local and Temporal execution. */
 public enum PlaybookActionStatus {
+    /** Canonical terminal state for a connector action that really ran and was verified. */
+    EXECUTED("executed"),
+    /** Legacy read-compatibility value; new results must use EXECUTED. */
     SUCCESS("success"),
     FAILED("failed"),
     SKIPPED("skipped"),
@@ -18,7 +21,9 @@ public enum PlaybookActionStatus {
     }
 
     public static boolean isSuccessful(String value) {
-        return SUCCESS.wireValue.equals(value) || SIMULATED.wireValue.equals(value);
+        return EXECUTED.wireValue.equals(value)
+                || SUCCESS.wireValue.equals(value)
+                || SIMULATED.wireValue.equals(value);
     }
 
     public static boolean isFailed(String value) {

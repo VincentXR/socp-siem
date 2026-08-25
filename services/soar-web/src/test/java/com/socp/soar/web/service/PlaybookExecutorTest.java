@@ -70,7 +70,7 @@ class PlaybookExecutorTest {
         List<?> pbs = (List<?>) out.get("playbooks");
         List<?> results = (List<?>) ((Map<?, ?>) pbs.get(0)).get("results");
         assertEquals(2, results.size(), "两个动作都应被编排执行");
-        assertTrue(results.stream().allMatch(r -> "success".equals(((Map<?, ?>) r).get("status"))));
+        assertTrue(results.stream().allMatch(r -> "executed".equals(((Map<?, ?>) r).get("status"))));
     }
 
     @Test
@@ -109,7 +109,7 @@ class PlaybookExecutorTest {
         Map<String, Object> r = executor.runById(pb.id(), Map.of("entity", "1.2.3.4"));
         List<?> results = (List<?>) r.get("results");
         assertEquals(2, results.size());
-        assertEquals("success", ((Map<?, ?>) results.get(0)).get("status"));
+        assertEquals("executed", ((Map<?, ?>) results.get(0)).get("status"));
     }
 
     @Test
@@ -122,7 +122,7 @@ class PlaybookExecutorTest {
         Map<String, Object> r = executor.runById(pb.id(), Map.of("entity", "5.6.7.8"));
         List<?> results = (List<?>) r.get("results");
         assertEquals("failed", ((Map<?, ?>) results.get(0)).get("status"));
-        assertEquals("success", ((Map<?, ?>) results.get(1)).get("status"), "补偿动作应执行成功");
+        assertEquals("executed", ((Map<?, ?>) results.get(1)).get("status"), "补偿动作应执行");
     }
 
     @Test
@@ -137,7 +137,7 @@ class PlaybookExecutorTest {
         List<?> results = (List<?>) r.get("results");
         assertEquals("failed", ((Map<?, ?>) results.get(0)).get("status"));
         assertEquals("skipped", ((Map<?, ?>) results.get(1)).get("status"), "失败后主动作跳过");
-        assertEquals("success", ((Map<?, ?>) results.get(2)).get("status"), "补偿执行");
+        assertEquals("executed", ((Map<?, ?>) results.get(2)).get("status"), "补偿执行");
     }
 
     @Test

@@ -52,7 +52,7 @@ class PlaybookActionHandlerRegistryTest {
         Map<String, Object> result = registry.find(PlaybookActionType.FIREWALL_BLOCK).handle(
                 new PlaybookActionContext("firewall-block", Map.of("id", "AL-1"), "soar-key-1", false));
 
-        assertEquals("success", result.get("status"));
+        assertEquals("executed", result.get("status"));
         assertEquals("EXECUTED", result.get("mode"));
         assertEquals("fw-123", result.get("operationId"));
         verify(http).postExternal(eq("https://firewall.example.test/block"), any(),

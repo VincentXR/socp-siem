@@ -36,7 +36,9 @@ development fallback from silently being used with integration or production.
 - Production JWT verification accepts exactly one source: HMAC secret or
   JWKS/issuer. JWKS deployments must also configure `socp.security.audience`
   (comma-separated values are supported) so tokens issued to unrelated clients
-  are rejected.
+  are rejected. Production defaults to JWKS/issuer; HMAC is an explicit
+  emergency compatibility exception controlled by
+  `socp.security.allow-prod-hmac=true`.
 - Compose services remain single-node; Kubernetes HA, rolling upgrades,
   backup/restore, and disaster recovery are outside this repository's local
   verification target.

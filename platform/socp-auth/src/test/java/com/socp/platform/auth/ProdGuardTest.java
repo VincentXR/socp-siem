@@ -102,6 +102,7 @@ class ProdGuardTest {
         MockEnvironment env = new MockEnvironment()
                 .withProperty("spring.datasource.url", "jdbc:postgresql://db.example.test/socp")
                 .withProperty("socp.security.jwt-secret", "production-secret-that-is-not-the-demo-value-012345")
+                .withProperty("socp.security.allow-prod-hmac", "true")
                 .withProperty("socp.security.audience", "socp-api")
                 .withProperty("socp.security.dev-bypass", "false")
                 .withProperty("socp.security.ingest-token", "production-ingest-token")
@@ -112,6 +113,24 @@ class ProdGuardTest {
                 .withProperty("socp.temporal.enabled", "true");
 
         assertDoesNotThrow(() -> new ProdGuard(env));
+    }
+
+    @Test
+    void rejectsProductionHmacUnlessExplicitlyAllowed() {
+        MockEnvironment env = new MockEnvironment()
+                .withProperty("spring.datasource.url", "jdbc:postgresql://db.example.test/socp")
+                .withProperty("socp.security.jwt-secret", "production-secret-that-is-not-the-demo-value-012345")
+                .withProperty("socp.security.audience", "socp-api")
+                .withProperty("socp.security.ingest-token", "production-ingest-token")
+                .withProperty("socp.security.service-secret", "production-service-secret-0123456789")
+                .withProperty("socp.ratelimit.backend", "redis")
+                .withProperty("socp.audit.sink", "kafka")
+                .withProperty("socp.audit.fail-closed", "true")
+                .withProperty("socp.temporal.enabled", "true");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+
+        assertTrue(error.getMessage().contains("allow-prod-hmac"));
     }
 
     @Test
