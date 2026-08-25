@@ -1,8 +1,8 @@
 package com.socp.detect.web.engine;
 
 import com.socp.detect.web.service.DetectEngineService;
-import com.socp.detect.web.store.DetectionEventClaim;
-import com.socp.detect.web.store.DetectionStateStore;
+import com.socp.detect.web.persistence.store.DetectionEventClaim;
+import com.socp.detect.web.persistence.store.DetectionStateStore;
 import com.socp.rule.model.SecurityEvent;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;

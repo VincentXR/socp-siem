@@ -1,9 +1,9 @@
 package com.socp.detect.web.engine;
 
-import com.socp.detect.web.store.DetectionAlertOutboxService;
-import com.socp.detect.web.store.RuleSpecStore;
-import com.socp.detect.web.ueba.EntityRiskStore;
-import com.socp.platform.tenant.TenantContext;
+import com.socp.detect.web.persistence.store.DetectionAlertOutboxService;
+import com.socp.detect.web.persistence.store.RuleSpecStore;
+import com.socp.detect.web.service.EntityRiskStore;
+import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;

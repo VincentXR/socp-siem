@@ -1,16 +1,17 @@
 package com.socp.alert.service;
 
-import com.socp.alert.api.*;
+import com.socp.alert.api.controller.*;
+import com.socp.alert.api.request.*;
 import com.socp.alert.config.AlertDeliveryProperties;
 import com.socp.alert.domain.*;
 import com.socp.alert.repository.*;
 import com.socp.alert.service.*;
 
-import com.socp.platform.client.IncidentClient;
-import com.socp.platform.client.NotifyClient;
-import com.socp.platform.client.ServiceCall;
-import com.socp.platform.client.SoarClient;
-import com.socp.platform.tenant.TenantContext;
+import com.socp.platform.client.service.IncidentClient;
+import com.socp.platform.client.service.NotifyClient;
+import com.socp.platform.client.http.ServiceCall;
+import com.socp.platform.client.service.SoarClient;
+import com.socp.platform.tenant.context.TenantContext;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

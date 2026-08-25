@@ -1,11 +1,11 @@
 package com.socp.gateway.filter;
 
 import com.nimbusds.jwt.JWTClaimsSet;
-import com.socp.gateway.api.AuthController;
-import com.socp.platform.auth.JwtValidationException;
-import com.socp.platform.auth.JwtValidator;
-import com.socp.platform.tenant.TenantContext;
-import com.socp.platform.tenant.ServiceRequestSignature;
+import com.socp.gateway.api.controller.AuthController;
+import com.socp.platform.auth.security.JwtValidationException;
+import com.socp.platform.auth.security.JwtValidator;
+import com.socp.platform.tenant.context.TenantContext;
+import com.socp.platform.tenant.security.ServiceRequestSignature;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;

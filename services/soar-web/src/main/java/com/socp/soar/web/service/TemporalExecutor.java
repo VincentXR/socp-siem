@@ -1,9 +1,9 @@
 package com.socp.soar.web.service;
 
-import com.socp.platform.tenant.TenantContext;
+import com.socp.platform.tenant.context.TenantContext;
 import com.socp.soar.web.config.TemporalProperties;
-import com.socp.soar.web.model.Playbook;
-import com.socp.soar.web.temporal.PlaybookExecRequest;
+import com.socp.soar.web.domain.Playbook;
+import com.socp.soar.web.temporal.request.PlaybookExecRequest;
 import com.socp.soar.web.temporal.PlaybookWorkflow;
 import io.temporal.client.WorkflowClient;
 import io.temporal.client.WorkflowOptions;

@@ -1,0 +1,145 @@
+package com.socp.asset.web.api.controller;
+
+import com.socp.asset.web.api.request.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.socp.asset.web.domain.Asset;
+import com.socp.asset.web.persistence.store.AssetStore;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.web.servlet.MockMvc;
+
+import java.util.List;
+import java.util.Map;
+
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.verify;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+/**
+ * 资产 CRUD Web 层切片测试（AssetStore 被 mock）。
+ */
+@WebMvcTest(AssetController.class)
+@AutoConfigureMockMvc(addFilters = false)
+@TestPropertySource(properties = {"socp.security.dev-bypass=true"})
+class AssetControllerTest {
+
+    private static final String BEARER = "Bearer test-token";
+
+    @Autowired
+    private MockMvc mvc;
+
+    @Autowired
+    private ObjectMapper json;
+
+    @MockitoBean
+    private AssetStore store;
+
+    @Test
+    void listReturnsAssets() throws Exception {
+        given(store.list()).willReturn(List.of(
+                Asset.create("web01", "SERVER", "10.0.0.5", "Ubuntu 22.04", "infra", "HIGH")));
+
+        mvc.perform(get("/api/v1/assets")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].name").value("web01"))
+                .andExpect(jsonPath("$[0].ip").value("10.0.0.5"))
+                .andExpect(jsonPath("$[0].criticality").value("HIGH"));
+    }
+
+    @Test
+    void createMapsRequestBodyToAsset() throws Exception {
+        given(store.save(any(Asset.class))).willAnswer(inv -> inv.getArgument(0));
+
+        Map<String, String> body = Map.of(
+                "name", "kafka-2", "type", "MESSAGE", "ip", "10.0.0.21",
+                "os", "Kafka 4.0", "owner", "infra", "criticality", "HIGH");
+
+        mvc.perform(post("/api/v1/assets")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(body)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.name").value("kafka-2"))
+                .andExpect(jsonPath("$.type").value("MESSAGE"))
+                .andExpect(jsonPath("$.owner").value("infra"))
+                .andExpect(jsonPath("$.id").isNotEmpty());
+
+        verify(store).save(any(Asset.class));
+    }
+
+    @Test
+    void importReportsImportedAndSkippedRows() throws Exception {
+        given(store.save(any(Asset.class))).willAnswer(inv -> inv.getArgument(0));
+        List<Map<String, String>> rows = List.of(
+                Map.of("name", "web-imported", "type", "SERVER", "ip", "10.0.0.40"),
+                Map.of("name", "missing-ip"));
+
+        mvc.perform(post("/api/v1/assets/import")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(rows)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.imported").value(1))
+                .andExpect(jsonPath("$.skipped").value(1))
+                .andExpect(jsonPath("$.errors[0]").value(org.hamcrest.Matchers.containsString("缺少名称或 IP")));
+
+        verify(store).save(any(Asset.class));
+    }
+
+    @Test
+    void deleteReportsWhetherAssetExisted() throws Exception {
+        given(store.delete("known")).willReturn(true);
+        given(store.delete("ghost")).willReturn(false);
+
+        mvc.perform(delete("/api/v1/assets/{id}", "known")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.removed").value(true));
+
+        mvc.perform(delete("/api/v1/assets/{id}", "ghost")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.removed").value(false));
+    }
+
+    @Test
+    void updateKeepsAssetIdAndCreatedAt() throws Exception {
+        Asset existing = Asset.create("old-name", "SERVER", "10.0.0.30", "Ubuntu 22.04", "infra", "HIGH");
+        given(store.get("asset-1")).willReturn(new Asset("asset-1", existing.name(), existing.type(), existing.ip(), existing.os(), existing.owner(), existing.criticality(), existing.createdAt()));
+        given(store.save(any(Asset.class))).willAnswer(inv -> inv.getArgument(0));
+
+        Map<String, String> body = Map.of(
+                "name", "web-prod-01", "type", "SERVER", "ip", "10.0.0.31",
+                "os", "Ubuntu 24.04", "owner", "sec", "criticality", "CRITICAL");
+
+        mvc.perform(put("/api/v1/assets/{id}", "asset-1")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(body)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value("asset-1"))
+                .andExpect(jsonPath("$.name").value("web-prod-01"))
+                .andExpect(jsonPath("$.criticality").value("CRITICAL"));
+
+        verify(store).save(any(Asset.class));
+    }
+}

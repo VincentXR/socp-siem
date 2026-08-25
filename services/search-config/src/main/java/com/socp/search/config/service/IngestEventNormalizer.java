@@ -1,12 +1,12 @@
 package com.socp.search.config.service;
 
-import com.socp.platform.tenant.TenantContext;
+import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.partition.DetectionRoutingKey;
 import com.socp.search.config.parser.CanonicalEvent;
 import com.socp.search.config.parser.ParserRegistry;
-import com.socp.search.config.search.SearchEvent;
-import com.socp.search.config.store.ParseRuleStore;
-import com.socp.search.config.store.ReferenceSetStore;
+import com.socp.search.config.domain.SearchEvent;
+import com.socp.search.config.persistence.store.ParseRuleStore;
+import com.socp.search.config.persistence.store.ReferenceSetStore;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;

@@ -1,6 +1,6 @@
 package com.socp.detect.model.engine;
 
-import com.socp.platform.tenant.TenantContext;
+import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;

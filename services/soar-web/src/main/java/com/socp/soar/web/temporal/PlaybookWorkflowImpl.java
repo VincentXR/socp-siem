@@ -1,7 +1,9 @@
 package com.socp.soar.web.temporal;
 
-import com.socp.soar.web.model.PlaybookActionStatus;
-import com.socp.soar.web.model.PlaybookActionType;
+import com.socp.soar.web.temporal.request.PlaybookExecRequest;
+
+import com.socp.soar.web.domain.PlaybookActionStatus;
+import com.socp.soar.web.domain.PlaybookActionType;
 import io.temporal.activity.ActivityOptions;
 import io.temporal.workflow.Workflow;
 

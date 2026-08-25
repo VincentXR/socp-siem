@@ -1,9 +1,9 @@
 package com.socp.asset.collect.collector;
 
 import com.socp.asset.collect.config.AssetCollectProperties;
-import com.socp.asset.collect.store.AssetCollectionStore;
-import com.socp.platform.client.AssetClient;
-import com.socp.platform.client.ServiceCall;
+import com.socp.asset.collect.persistence.store.AssetCollectionStore;
+import com.socp.platform.client.service.AssetClient;
+import com.socp.platform.client.http.ServiceCall;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.env.Environment;
 

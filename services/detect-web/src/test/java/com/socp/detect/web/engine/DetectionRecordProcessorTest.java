@@ -1,7 +1,7 @@
 package com.socp.detect.web.engine;
 
 import com.socp.detect.web.service.DetectEngineService;
-import com.socp.detect.web.store.InMemoryDetectionStateStore;
+import com.socp.detect.web.persistence.store.InMemoryDetectionStateStore;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;

@@ -1,6 +1,6 @@
 package com.socp.soar.web.service;
 
-import com.socp.soar.web.model.PlaybookActionType;
+import com.socp.soar.web.domain.PlaybookActionType;
 
 import java.util.Map;
 

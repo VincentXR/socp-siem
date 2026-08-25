@@ -1,6 +1,6 @@
 package com.socp.detect.model.engine;
 
-import com.socp.platform.tenant.TenantContext;
+import com.socp.platform.tenant.context.TenantContext;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;

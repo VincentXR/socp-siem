@@ -1,16 +1,16 @@
 package com.socp.soar.web.service;
 
-import com.socp.platform.client.IncidentClient;
-import com.socp.platform.client.NotifyClient;
-import com.socp.platform.client.SocpHttpClient;
-import com.socp.soar.web.model.Playbook;
-import com.socp.soar.web.model.PlaybookActionStatus;
-import com.socp.soar.web.model.PlaybookActionType;
+import com.socp.platform.client.service.IncidentClient;
+import com.socp.platform.client.service.NotifyClient;
+import com.socp.platform.client.http.SocpHttpClient;
+import com.socp.soar.web.domain.Playbook;
+import com.socp.soar.web.domain.PlaybookActionStatus;
+import com.socp.soar.web.domain.PlaybookActionType;
 import com.socp.soar.web.config.SoarRuntimeProperties;
-import com.socp.soar.web.store.PlaybookStore;
-import com.socp.soar.web.store.ExecutionEntity;
-import com.socp.soar.web.store.ExecutionRepository;
-import com.socp.platform.tenant.TenantContext;
+import com.socp.soar.web.persistence.store.PlaybookStore;
+import com.socp.soar.web.persistence.entity.ExecutionEntity;
+import com.socp.soar.web.persistence.repository.ExecutionRepository;
+import com.socp.platform.tenant.context.TenantContext;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;

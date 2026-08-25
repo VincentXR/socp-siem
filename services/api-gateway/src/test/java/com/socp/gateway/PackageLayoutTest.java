@@ -33,7 +33,9 @@ class PackageLayoutTest {
                         .filter(line -> line.startsWith("package "))
                         .findFirst()
                         .orElseThrow();
-                assertThat(packageName).isEqualTo("package com.socp.gateway." + layer + ";");
+                String packagePath = relative.subpath(0, relative.getNameCount() - 1).toString()
+                        .replace('\\', '.').replace('/', '.');
+                assertThat(packageName).isEqualTo("package com.socp.gateway." + packagePath + ";");
             }
         }
     }

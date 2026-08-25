@@ -2,8 +2,8 @@ package com.socp.detect.web.service;
 
 import com.socp.detect.web.engine.AlertForwarder;
 import com.socp.detect.web.engine.RecentAlertSink;
-import com.socp.detect.web.store.DetectionStateStore;
-import com.socp.detect.web.store.RuleSpecStore;
+import com.socp.detect.web.persistence.store.DetectionStateStore;
+import com.socp.detect.web.persistence.store.RuleSpecStore;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import org.junit.jupiter.api.Test;
@@ -111,7 +111,7 @@ class DetectEngineServiceTest {
     void rebuildDrainsAcceptedWorkBeforeReadingTheJournalSnapshot() throws Exception {
         when(store.list("default")).thenReturn(List.of());
         when(stateStore.claim(org.mockito.ArgumentMatchers.any(SecurityEvent.class)))
-                .thenReturn(com.socp.detect.web.store.DetectionEventClaim.NEW);
+                .thenReturn(com.socp.detect.web.persistence.store.DetectionEventClaim.NEW);
         CountDownLatch sinkEntered = new CountDownLatch(1);
         CountDownLatch releaseSink = new CountDownLatch(1);
         org.mockito.Mockito.doAnswer(invocation -> {

@@ -1,7 +1,7 @@
 package com.socp.detect.model.kafka;
 
 import com.socp.detect.model.service.AnalyzeService;
-import com.socp.platform.tenant.TenantContext;
+import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 

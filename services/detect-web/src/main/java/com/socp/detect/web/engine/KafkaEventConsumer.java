@@ -3,9 +3,9 @@ package com.socp.detect.web.engine;
 import com.socp.platform.client.kafka.KafkaClientSupport;
 import com.socp.detect.web.service.DetectEngineService;
 import com.socp.detect.web.metrics.DetectionPerformanceMetrics;
-import com.socp.detect.web.store.DetectionStateStore;
-import com.socp.detect.web.store.InMemoryDetectionStateStore;
-import com.socp.detect.web.store.PendingDetectionEvent;
+import com.socp.detect.web.persistence.store.DetectionStateStore;
+import com.socp.detect.web.persistence.store.InMemoryDetectionStateStore;
+import com.socp.detect.web.persistence.store.PendingDetectionEvent;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -259,7 +259,7 @@ public class KafkaEventConsumer {
             try {
                 if (traceId != null) org.slf4j.MDC.put("traceId", traceId);
                 if (traceparent != null) org.slf4j.MDC.put("traceparent", traceparent);
-                if (tenant != null && !tenant.isBlank()) com.socp.platform.tenant.TenantContext.set(tenant);
+                if (tenant != null && !tenant.isBlank()) com.socp.platform.tenant.context.TenantContext.set(tenant);
 
                 processOne(record.partition(), record.offset(), record.key(), record.value());
                 completions.offer(new RecordCompletion(record.partition(), record.offset(), epoch));
@@ -287,7 +287,7 @@ public class KafkaEventConsumer {
             } finally {
                 if (traceId != null) org.slf4j.MDC.remove("traceId");
                 if (traceparent != null) org.slf4j.MDC.remove("traceparent");
-                if (tenant != null) com.socp.platform.tenant.TenantContext.clear();
+                if (tenant != null) com.socp.platform.tenant.context.TenantContext.clear();
             }
             try {
                 Thread.sleep(delay);

@@ -1,9 +1,9 @@
 package com.socp.gateway.filter;
 
-import com.socp.gateway.api.AuthController;
+import com.socp.gateway.api.controller.AuthController;
 import com.nimbusds.jwt.JWTClaimsSet;
-import com.socp.platform.auth.JwtValidator;
-import com.socp.platform.tenant.ServiceRequestSignature;
+import com.socp.platform.auth.security.JwtValidator;
+import com.socp.platform.tenant.security.ServiceRequestSignature;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;

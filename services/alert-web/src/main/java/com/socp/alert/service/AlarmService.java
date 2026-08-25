@@ -1,7 +1,9 @@
 package com.socp.alert.service;
 
-import com.socp.alert.api.*;
+import com.socp.alert.api.controller.*;
+import com.socp.alert.api.request.*;
 import com.socp.alert.domain.*;
+import com.socp.alert.api.response.AlarmEvidenceResponse;
 import com.socp.alert.repository.*;
 import com.socp.alert.service.*;
 
@@ -113,7 +115,7 @@ public class AlarmService {
     @Transactional(readOnly = true)
     public AlarmEvidenceResponse evidence(String alarmId) {
         Alarm alarm = repository.findByTenantIdAndId(AlarmQueryService.tenant(), alarmId)
-                .orElseThrow(() -> com.socp.platform.error.ApiException.notFound(
+                .orElseThrow(() -> com.socp.platform.error.exception.ApiException.notFound(
                         "Alarm does not exist: " + alarmId));
         List<AlarmEvidenceView> items = evidenceRepository
                 .findByTenantIdAndAlarmIdOrderByEvidenceOrderAscIdAsc(

@@ -8,6 +8,7 @@ bash build/mvnw.sh test -Pcoverage -Dsurefire.failIfNoSpecifiedTests=false
 python3 build/verify-coverage.py
 python3 build/verify-migrations.py
 python3 build/verify-contracts.py
+python3 build/verify-package-layout.py
 python3 build/validate-detection-content.py
 bash build/mvnw.sh verify -Pquality -DskipTests
 

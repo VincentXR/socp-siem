@@ -1,6 +1,6 @@
 package com.socp.search.config.service;
 
-import com.socp.platform.tenant.TenantContext;
+import com.socp.platform.tenant.context.TenantContext;
 import com.socp.search.config.config.IngestRuntimeProperties;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;

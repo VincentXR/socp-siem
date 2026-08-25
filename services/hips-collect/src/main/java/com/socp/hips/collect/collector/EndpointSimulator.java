@@ -1,10 +1,10 @@
 package com.socp.hips.collect.collector;
 
 import com.socp.hips.collect.config.HipsCollectProperties;
-import com.socp.hips.collect.store.HipsEventStore;
-import com.socp.platform.client.HipsClient;
-import com.socp.platform.client.ServiceCall;
-import com.socp.platform.tenant.TenantContext;
+import com.socp.hips.collect.persistence.store.HipsEventStore;
+import com.socp.platform.client.service.HipsClient;
+import com.socp.platform.client.http.ServiceCall;
+import com.socp.platform.tenant.context.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.env.Environment;

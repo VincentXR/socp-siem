@@ -5,10 +5,10 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.socp.incident.web.domain.Case;
 import com.socp.incident.web.domain.TimelineEvent;
-import com.socp.incident.web.store.CaseStore;
-import com.socp.incident.web.store.AlarmCaseLinkEntity;
-import com.socp.incident.web.store.AlarmCaseLinkRepository;
-import com.socp.platform.tenant.TenantContext;
+import com.socp.incident.web.persistence.store.CaseStore;
+import com.socp.incident.web.persistence.entity.AlarmCaseLinkEntity;
+import com.socp.incident.web.persistence.repository.AlarmCaseLinkRepository;
+import com.socp.platform.tenant.context.TenantContext;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 

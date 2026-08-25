@@ -1,9 +1,9 @@
 package com.socp.ai.service;
 
-import com.socp.ai.model.AiResult;
-import com.socp.ai.model.AiResponseSource;
-import com.socp.ai.store.QaEntity;
-import com.socp.ai.store.QaRepository;
+import com.socp.ai.domain.AiResult;
+import com.socp.ai.domain.AiResponseSource;
+import com.socp.ai.persistence.entity.QaEntity;
+import com.socp.ai.persistence.repository.QaRepository;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -54,7 +54,7 @@ class AiAssistantServiceTest {
     @Test
     void prefersLlmResponseWhenEnabled() {
         QaRepository repository = mock(QaRepository.class);
-        com.socp.ai.llm.LlmChatClient llmClient = mock(com.socp.ai.llm.LlmChatClient.class);
+        com.socp.ai.infrastructure.llm.LlmChatClient llmClient = mock(com.socp.ai.infrastructure.llm.LlmChatClient.class);
         given(llmClient.isEnabled()).willReturn(true);
         given(llmClient.chat("如何检测 SQL 注入？")).willReturn(java.util.Optional.of("LLM 智能研判：使用正则匹配 union select"));
 
@@ -70,7 +70,7 @@ class AiAssistantServiceTest {
     @Test
     void fallsBackToKnowledgeBaseWhenLlmReturnsEmpty() {
         QaRepository repository = mock(QaRepository.class);
-        com.socp.ai.llm.LlmChatClient llmClient = mock(com.socp.ai.llm.LlmChatClient.class);
+        com.socp.ai.infrastructure.llm.LlmChatClient llmClient = mock(com.socp.ai.infrastructure.llm.LlmChatClient.class);
         given(llmClient.isEnabled()).willReturn(true);
         given(llmClient.chat("暴力破解")).willReturn(java.util.Optional.empty());
         given(repository.findMatches(eq("暴力破解"), any(Pageable.class)))

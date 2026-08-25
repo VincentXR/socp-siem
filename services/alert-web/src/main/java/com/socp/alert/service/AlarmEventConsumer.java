@@ -1,6 +1,7 @@
 package com.socp.alert.service;
 
-import com.socp.alert.api.*;
+import com.socp.alert.api.controller.*;
+import com.socp.alert.api.request.*;
 import com.socp.alert.config.AlertKafkaProperties;
 import com.socp.alert.domain.*;
 import com.socp.alert.repository.*;
@@ -8,7 +9,7 @@ import com.socp.alert.service.*;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.socp.platform.client.kafka.KafkaClientSupport;
-import com.socp.platform.tenant.TenantContext;
+import com.socp.platform.tenant.context.TenantContext;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
@@ -106,7 +107,7 @@ public class AlarmEventConsumer {
 
     private void restoreTrace(org.apache.kafka.common.header.Header traceparent) {
         if (traceparent == null) return;
-        String traceId = com.socp.platform.obs.TraceIdFilter.parseTraceId(
+        String traceId = com.socp.platform.obs.web.TraceIdFilter.parseTraceId(
                 new String(traceparent.value(), StandardCharsets.UTF_8));
         if (traceId != null) MDC.put("traceId", traceId);
     }

@@ -1,12 +1,13 @@
 package com.socp.alert.service;
 
-import com.socp.alert.api.*;
+import com.socp.alert.api.controller.*;
+import com.socp.alert.api.request.*;
 import com.socp.alert.domain.*;
 import com.socp.alert.repository.*;
 import com.socp.alert.service.*;
 
-import com.socp.platform.error.ApiException;
-import com.socp.platform.tenant.TenantContext;
+import com.socp.platform.error.exception.ApiException;
+import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;

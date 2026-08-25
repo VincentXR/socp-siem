@@ -70,7 +70,7 @@ public class AlarmKafkaProducer {
             String value = MAPPER.writeValueAsString(alarm);
             ProducerRecord<String, String> record = new ProducerRecord<>(topic,
                     alertId == null ? "unknown" : alertId, value);
-            String traceparent = com.socp.platform.obs.TraceIdFilter.buildTraceparent();
+            String traceparent = com.socp.platform.obs.web.TraceIdFilter.buildTraceparent();
             if (traceparent != null) {
                 record.headers().add("traceparent", traceparent.getBytes(StandardCharsets.UTF_8));
             }

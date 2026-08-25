@@ -1,8 +1,8 @@
 package com.socp.search.config.service;
 
-import com.socp.platform.client.DetectClient;
-import com.socp.search.config.search.IngestionCommitService;
-import com.socp.search.config.search.SearchEvent;
+import com.socp.platform.client.service.DetectClient;
+import com.socp.search.config.domain.SearchEvent;
+import com.socp.search.config.service.IngestionCommitService;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 

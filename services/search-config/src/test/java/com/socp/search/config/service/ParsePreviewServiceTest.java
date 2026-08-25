@@ -1,6 +1,6 @@
 package com.socp.search.config.service;
 
-import com.socp.search.config.store.ParseRuleStore;
+import com.socp.search.config.persistence.store.ParseRuleStore;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;

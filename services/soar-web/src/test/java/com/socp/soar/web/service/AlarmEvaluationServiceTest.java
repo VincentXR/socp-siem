@@ -1,8 +1,8 @@
 package com.socp.soar.web.service;
 
-import com.socp.platform.tenant.TenantContext;
-import com.socp.soar.web.store.AlarmEvaluationEntity;
-import com.socp.soar.web.store.AlarmEvaluationRepository;
+import com.socp.platform.tenant.context.TenantContext;
+import com.socp.soar.web.persistence.entity.AlarmEvaluationEntity;
+import com.socp.soar.web.persistence.repository.AlarmEvaluationRepository;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;

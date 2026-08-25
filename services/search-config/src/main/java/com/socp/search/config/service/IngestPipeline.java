@@ -2,9 +2,9 @@ package com.socp.search.config.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.socp.platform.client.DetectClient;
-import com.socp.platform.client.ServiceCall;
-import com.socp.search.config.search.IngestionCommitService;
+import com.socp.platform.client.service.DetectClient;
+import com.socp.platform.client.http.ServiceCall;
+import com.socp.search.config.service.IngestionCommitService;
 import com.socp.search.config.config.IngestRuntimeProperties;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;

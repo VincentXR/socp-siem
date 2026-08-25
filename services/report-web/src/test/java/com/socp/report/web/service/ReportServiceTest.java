@@ -1,10 +1,10 @@
 package com.socp.report.web.service;
 
-import com.socp.platform.client.AlertClient;
-import com.socp.platform.client.ServiceCall;
-import com.socp.platform.client.SocpService;
-import com.socp.platform.error.ApiException;
-import com.socp.report.web.model.ReportSummary;
+import com.socp.platform.client.service.AlertClient;
+import com.socp.platform.client.http.ServiceCall;
+import com.socp.platform.client.service.SocpService;
+import com.socp.platform.error.exception.ApiException;
+import com.socp.report.web.domain.ReportSummary;
 import com.socp.report.web.config.ClickHouseProperties;
 import org.junit.jupiter.api.Test;
 

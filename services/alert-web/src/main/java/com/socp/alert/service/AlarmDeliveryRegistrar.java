@@ -1,11 +1,12 @@
 package com.socp.alert.service;
 
-import com.socp.alert.api.*;
+import com.socp.alert.api.controller.*;
+import com.socp.alert.api.request.*;
 import com.socp.alert.domain.*;
 import com.socp.alert.repository.*;
 import com.socp.alert.service.*;
 
-import com.socp.platform.tenant.TenantContext;
+import com.socp.platform.tenant.context.TenantContext;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;

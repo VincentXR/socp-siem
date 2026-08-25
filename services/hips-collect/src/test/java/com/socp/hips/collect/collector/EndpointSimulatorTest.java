@@ -1,9 +1,9 @@
 package com.socp.hips.collect.collector;
 
 import com.socp.hips.collect.config.HipsCollectProperties;
-import com.socp.hips.collect.store.HipsEventStore;
-import com.socp.platform.client.HipsClient;
-import com.socp.platform.client.ServiceCall;
+import com.socp.hips.collect.persistence.store.HipsEventStore;
+import com.socp.platform.client.service.HipsClient;
+import com.socp.platform.client.http.ServiceCall;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.env.Environment;
 

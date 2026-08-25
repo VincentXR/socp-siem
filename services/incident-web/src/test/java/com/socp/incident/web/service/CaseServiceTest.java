@@ -1,8 +1,8 @@
 package com.socp.incident.web.service;
 
 import com.socp.incident.web.domain.Case;
-import com.socp.incident.web.store.CaseStore;
-import com.socp.incident.web.store.AlarmCaseLinkRepository;
+import com.socp.incident.web.persistence.store.CaseStore;
+import com.socp.incident.web.persistence.repository.AlarmCaseLinkRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;

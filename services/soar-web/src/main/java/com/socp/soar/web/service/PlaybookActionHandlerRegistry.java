@@ -2,13 +2,13 @@ package com.socp.soar.web.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.socp.platform.client.IncidentClient;
-import com.socp.platform.client.NotifyClient;
-import com.socp.platform.client.ServiceCall;
-import com.socp.platform.client.SocpHttpClient;
+import com.socp.platform.client.service.IncidentClient;
+import com.socp.platform.client.service.NotifyClient;
+import com.socp.platform.client.http.ServiceCall;
+import com.socp.platform.client.http.SocpHttpClient;
 import com.socp.soar.web.config.SoarActionConnectorProperties;
-import com.socp.soar.web.model.PlaybookActionStatus;
-import com.socp.soar.web.model.PlaybookActionType;
+import com.socp.soar.web.domain.PlaybookActionStatus;
+import com.socp.soar.web.domain.PlaybookActionType;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 

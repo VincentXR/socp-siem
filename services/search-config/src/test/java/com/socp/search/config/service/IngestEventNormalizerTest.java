@@ -1,10 +1,10 @@
 package com.socp.search.config.service;
 
-import com.socp.platform.tenant.TenantContext;
+import com.socp.platform.tenant.context.TenantContext;
 import com.socp.search.config.parser.CanonicalEvent;
 import com.socp.search.config.parser.ParserRegistry;
-import com.socp.search.config.store.ParseRuleStore;
-import com.socp.search.config.store.ReferenceSetStore;
+import com.socp.search.config.persistence.store.ParseRuleStore;
+import com.socp.search.config.persistence.store.ReferenceSetStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 

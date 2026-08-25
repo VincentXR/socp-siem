@@ -1,0 +1,14 @@
+package com.socp.attack.web.persistence.repository;
+
+
+
+import com.socp.attack.web.persistence.store.*;
+import com.socp.attack.web.persistence.repository.*;
+import com.socp.attack.web.persistence.entity.*;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+@Repository
+public interface TacticRepository extends JpaRepository<TacticEntity, String> {
+    java.util.List<TacticEntity> findAllByOrderBySortAsc();
+}

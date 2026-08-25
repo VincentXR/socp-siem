@@ -1,6 +1,7 @@
 package com.socp.alert.service;
 
-import com.socp.alert.api.*;
+import com.socp.alert.api.controller.*;
+import com.socp.alert.api.request.*;
 import com.socp.alert.config.AlertEnrichmentProperties;
 import com.socp.alert.domain.*;
 import com.socp.alert.repository.*;
@@ -9,9 +10,9 @@ import com.socp.alert.service.*;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.socp.platform.client.ServiceCall;
-import com.socp.platform.client.ThreatClient;
-import com.socp.platform.tenant.TenantContext;
+import com.socp.platform.client.http.ServiceCall;
+import com.socp.platform.client.service.ThreatClient;
+import com.socp.platform.tenant.context.TenantContext;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

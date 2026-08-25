@@ -1,9 +1,9 @@
 package com.socp.detect.model.service;
 
 import com.socp.detect.model.engine.AlertWindowAggregator;
-import com.socp.detect.model.store.AnalyzedEntity;
-import com.socp.detect.model.store.AnalyzedRepository;
-import com.socp.platform.tenant.TenantContext;
+import com.socp.detect.model.persistence.entity.AnalyzedEntity;
+import com.socp.detect.model.persistence.repository.AnalyzedRepository;
+import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.config.Rules;
 import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;

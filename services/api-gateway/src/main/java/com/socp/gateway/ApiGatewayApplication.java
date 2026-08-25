@@ -1,6 +1,6 @@
 package com.socp.gateway;
 
-import com.socp.platform.auth.SocpJwtConfig;
+import com.socp.platform.auth.config.SocpJwtConfig;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Import;

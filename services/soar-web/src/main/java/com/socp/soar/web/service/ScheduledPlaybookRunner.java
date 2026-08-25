@@ -1,7 +1,7 @@
 package com.socp.soar.web.service;
 
-import com.socp.soar.web.model.Playbook;
-import com.socp.soar.web.store.PlaybookStore;
+import com.socp.soar.web.domain.Playbook;
+import com.socp.soar.web.persistence.store.PlaybookStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.EnableScheduling;

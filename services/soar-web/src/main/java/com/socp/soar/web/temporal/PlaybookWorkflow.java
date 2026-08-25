@@ -1,5 +1,7 @@
 package com.socp.soar.web.temporal;
 
+import com.socp.soar.web.temporal.request.PlaybookExecRequest;
+
 import io.temporal.workflow.WorkflowInterface;
 import io.temporal.workflow.WorkflowMethod;
 

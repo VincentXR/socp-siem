@@ -1,11 +1,12 @@
 package com.socp.alert.service;
 
-import com.socp.alert.api.*;
+import com.socp.alert.api.controller.*;
+import com.socp.alert.api.request.*;
 import com.socp.alert.domain.*;
 import com.socp.alert.repository.*;
 import com.socp.alert.service.*;
 
-import com.socp.platform.tenant.TenantContext;
+import com.socp.platform.tenant.context.TenantContext;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Component;
@@ -35,7 +36,7 @@ public class AlarmQueryService {
 
     Alarm get(String id) {
         return repository.findByTenantIdAndId(tenant(), id)
-                .orElseThrow(() -> com.socp.platform.error.ApiException.notFound("Alarm does not exist: " + id));
+                .orElseThrow(() -> com.socp.platform.error.exception.ApiException.notFound("Alarm does not exist: " + id));
     }
 
     private static AlarmQuery criteria(Severity severity, String rule, String status, String text,

@@ -1,10 +1,10 @@
 package com.socp.detect.web.engine;
 
-import com.socp.detect.web.store.DetectionAlertOutboxEntity;
-import com.socp.detect.web.store.DetectionAlertOutboxRepository;
-import com.socp.platform.client.AlertClient;
-import com.socp.platform.client.ServiceCall;
-import com.socp.platform.client.SocpService;
+import com.socp.detect.web.persistence.entity.DetectionAlertOutboxEntity;
+import com.socp.detect.web.persistence.repository.DetectionAlertOutboxRepository;
+import com.socp.platform.client.service.AlertClient;
+import com.socp.platform.client.http.ServiceCall;
+import com.socp.platform.client.service.SocpService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;

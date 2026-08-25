@@ -2,12 +2,12 @@ package com.socp.detect.web.engine;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.socp.detect.web.store.DetectionAlertOutboxEntity;
-import com.socp.detect.web.store.DetectionAlertOutboxRepository;
+import com.socp.detect.web.persistence.entity.DetectionAlertOutboxEntity;
+import com.socp.detect.web.persistence.repository.DetectionAlertOutboxRepository;
 import com.socp.detect.web.metrics.DetectionPerformanceMetrics;
-import com.socp.platform.client.AlertClient;
-import com.socp.platform.client.ServiceCall;
-import com.socp.platform.tenant.TenantContext;
+import com.socp.platform.client.service.AlertClient;
+import com.socp.platform.client.http.ServiceCall;
+import com.socp.platform.tenant.context.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;

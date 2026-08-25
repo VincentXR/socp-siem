@@ -2,7 +2,7 @@ package com.socp.search.config.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.search.config.domain.ParseRule;
-import com.socp.search.config.store.ParseRuleStore;
+import com.socp.search.config.persistence.store.ParseRuleStore;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;

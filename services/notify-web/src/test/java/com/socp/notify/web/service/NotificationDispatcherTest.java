@@ -1,14 +1,14 @@
 package com.socp.notify.web.service;
 
 import com.socp.notify.web.domain.Channel;
-import com.socp.notify.web.store.ChannelStore;
-import com.socp.notify.web.store.NotificationDeliveryEntity;
-import com.socp.notify.web.store.NotificationDeliveryRepository;
-import com.socp.notify.web.store.NotificationDispatchLogRepository;
-import com.socp.platform.client.ServiceCall;
-import com.socp.platform.client.SocpHttpClient;
-import com.socp.platform.client.SocpService;
-import com.socp.platform.tenant.TenantContext;
+import com.socp.notify.web.persistence.store.ChannelStore;
+import com.socp.notify.web.persistence.entity.NotificationDeliveryEntity;
+import com.socp.notify.web.persistence.repository.NotificationDeliveryRepository;
+import com.socp.notify.web.persistence.repository.NotificationDispatchLogRepository;
+import com.socp.platform.client.http.ServiceCall;
+import com.socp.platform.client.http.SocpHttpClient;
+import com.socp.platform.client.service.SocpService;
+import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;

@@ -2,8 +2,8 @@ package com.socp.detect.web.metrics;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.socp.detect.web.store.DetectionAlertOutboxEntity;
-import com.socp.platform.client.ServiceCall;
+import com.socp.detect.web.persistence.entity.DetectionAlertOutboxEntity;
+import com.socp.platform.client.http.ServiceCall;
 import com.socp.rule.engine.RuleProcessingObserver;
 import com.socp.rule.model.SecurityEvent;
 import io.micrometer.core.instrument.MeterRegistry;

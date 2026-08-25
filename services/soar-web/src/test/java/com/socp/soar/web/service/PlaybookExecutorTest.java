@@ -1,12 +1,12 @@
 package com.socp.soar.web.service;
 
-import com.socp.platform.client.IncidentClient;
-import com.socp.platform.client.NotifyClient;
-import com.socp.platform.client.ServiceCall;
-import com.socp.platform.client.SocpHttpClient;
-import com.socp.platform.client.SocpService;
-import com.socp.soar.web.model.Playbook;
-import com.socp.soar.web.store.PlaybookStore;
+import com.socp.platform.client.service.IncidentClient;
+import com.socp.platform.client.service.NotifyClient;
+import com.socp.platform.client.http.ServiceCall;
+import com.socp.platform.client.http.SocpHttpClient;
+import com.socp.platform.client.service.SocpService;
+import com.socp.soar.web.domain.Playbook;
+import com.socp.soar.web.persistence.store.PlaybookStore;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;

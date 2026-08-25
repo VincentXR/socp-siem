@@ -1,10 +1,10 @@
 package com.socp.ai.service;
 
-import com.socp.ai.llm.LlmChatClient;
-import com.socp.ai.model.AiResult;
-import com.socp.ai.model.AiResponseSource;
-import com.socp.ai.store.QaEntity;
-import com.socp.ai.store.QaRepository;
+import com.socp.ai.domain.AiResult;
+import com.socp.ai.domain.AiResponseSource;
+import com.socp.ai.infrastructure.llm.LlmChatClient;
+import com.socp.ai.persistence.entity.QaEntity;
+import com.socp.ai.persistence.repository.QaRepository;
 import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.PageRequest;

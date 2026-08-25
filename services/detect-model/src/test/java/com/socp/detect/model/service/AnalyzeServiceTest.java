@@ -1,9 +1,9 @@
 package com.socp.detect.model.service;
 
 import com.socp.detect.model.engine.AlertWindowAggregator;
-import com.socp.detect.model.store.AnalyzedEntity;
-import com.socp.detect.model.store.AnalyzedRepository;
-import com.socp.platform.tenant.TenantContext;
+import com.socp.detect.model.persistence.entity.AnalyzedEntity;
+import com.socp.detect.model.persistence.repository.AnalyzedRepository;
+import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.domain.PageImpl;

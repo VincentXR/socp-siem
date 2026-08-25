@@ -4,7 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.detect.model.service.AnalyzeService;
 import com.socp.platform.client.kafka.KafkaClientSupport;
-import com.socp.platform.tenant.TenantContext;
+import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.model.Severity;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;

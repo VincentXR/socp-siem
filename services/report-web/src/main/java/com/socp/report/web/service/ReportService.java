@@ -1,12 +1,12 @@
 package com.socp.report.web.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.socp.platform.client.AlertClient;
-import com.socp.platform.client.ServiceCall;
-import com.socp.platform.error.ApiException;
-import com.socp.platform.tenant.TenantContext;
-import com.socp.report.web.model.ReportSummary;
-import com.socp.report.web.model.ReportTrend;
+import com.socp.platform.client.service.AlertClient;
+import com.socp.platform.client.http.ServiceCall;
+import com.socp.platform.error.exception.ApiException;
+import com.socp.platform.tenant.context.TenantContext;
+import com.socp.report.web.domain.ReportSummary;
+import com.socp.report.web.domain.ReportTrend;
 import com.socp.report.web.config.ClickHouseProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

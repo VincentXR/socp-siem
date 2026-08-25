@@ -16,7 +16,7 @@ class PackageLayoutTest {
     @Test
     void productionClassesUseAFeatureLayerPackage() throws IOException {
         Path root = Path.of("src/main/java/com/socp/alert");
-        List<String> allowed = List.of("api", "config", "domain", "repository", "service");
+        List<String> allowed = List.of("api", "config", "domain", "persistence", "repository", "service");
 
         try (Stream<Path> files = Files.walk(root)) {
             List<Path> javaFiles = files.filter(path -> path.toString().endsWith(".java")).toList();
@@ -33,7 +33,9 @@ class PackageLayoutTest {
                         .filter(line -> line.startsWith("package "))
                         .findFirst()
                         .orElseThrow();
-                assertThat(packageName).isEqualTo("package com.socp.alert." + layer + ";");
+                String packagePath = relative.subpath(0, relative.getNameCount() - 1).toString()
+                        .replace('\\', '.').replace('/', '.');
+                assertThat(packageName).isEqualTo("package com.socp.alert." + packagePath + ";");
             }
         }
     }

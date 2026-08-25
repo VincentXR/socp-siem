@@ -1,6 +1,7 @@
 package com.socp.detect.web.service;
 
-import com.socp.platform.tenant.TenantContext;
+import com.socp.detect.web.persistence.repository.RuleChangeOutboxRepository;
+import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;

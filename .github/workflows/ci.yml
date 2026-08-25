@@ -51,6 +51,7 @@ jobs:
         run: |
           python3 build/verify-migrations.py
           python3 build/verify-contracts.py
+          python3 build/verify-package-layout.py
 
       - name: Run build policy and SpotBugs
         run: bash build/mvnw.sh verify -Pquality -DskipTests

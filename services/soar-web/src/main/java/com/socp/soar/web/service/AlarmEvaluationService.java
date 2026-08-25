@@ -2,9 +2,9 @@ package com.socp.soar.web.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.socp.platform.tenant.TenantContext;
-import com.socp.soar.web.store.AlarmEvaluationEntity;
-import com.socp.soar.web.store.AlarmEvaluationRepository;
+import com.socp.platform.tenant.context.TenantContext;
+import com.socp.soar.web.persistence.entity.AlarmEvaluationEntity;
+import com.socp.soar.web.persistence.repository.AlarmEvaluationRepository;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
