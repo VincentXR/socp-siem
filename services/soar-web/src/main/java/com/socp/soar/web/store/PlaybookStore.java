@@ -3,10 +3,10 @@ package com.socp.soar.web.store;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.tenant.TenantContext;
+import com.socp.soar.web.config.SoarRuntimeProperties;
 import com.socp.soar.web.model.Playbook;
 import com.socp.soar.web.model.PlaybookStatus;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -28,17 +28,22 @@ public class PlaybookStore {
     private final boolean demoDataEnabled;
 
     public PlaybookStore(PlaybookRepository repo) {
-        this(repo, true);
+        this(repo, defaultProperties());
     }
 
     @Autowired
-    public PlaybookStore(PlaybookRepository repo,
-                         @Value("${socp.demo-data.enabled:true}") boolean demoDataEnabled) {
+    public PlaybookStore(PlaybookRepository repo, SoarRuntimeProperties properties) {
         this.repo = repo;
-        this.demoDataEnabled = demoDataEnabled;
+        this.demoDataEnabled = properties.isDemoDataEnabled();
         if (demoDataEnabled && repo.countByTenantId("default") == 0) {
             seed();
         }
+    }
+
+    private static SoarRuntimeProperties defaultProperties() {
+        SoarRuntimeProperties properties = new SoarRuntimeProperties();
+        properties.setDemoDataEnabled(true);
+        return properties;
     }
 
     private String tenant() {

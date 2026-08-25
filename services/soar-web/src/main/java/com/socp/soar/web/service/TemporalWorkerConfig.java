@@ -2,6 +2,7 @@ package com.socp.soar.web.service;
 
 import com.socp.soar.web.temporal.PlaybookActivity;
 import com.socp.soar.web.temporal.PlaybookWorkflowImpl;
+import com.socp.soar.web.config.TemporalProperties;
 import io.temporal.client.WorkflowClient;
 import io.temporal.client.WorkflowClientOptions;
 import io.temporal.serviceclient.WorkflowServiceStubs;
@@ -10,7 +11,6 @@ import io.temporal.worker.Worker;
 import io.temporal.worker.WorkerFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -28,20 +28,19 @@ public class TemporalWorkerConfig {
 
     @Bean
     public WorkflowClient workflowClient(
-            @Value("${socp.temporal.target:localhost:7233}") String target,
-            @Value("${socp.temporal.namespace:default}") String namespace) {
+            TemporalProperties properties) {
         WorkflowServiceStubs stubs = WorkflowServiceStubs.newServiceStubs(
-                WorkflowServiceStubsOptions.newBuilder().setTarget(target).build());
+                WorkflowServiceStubsOptions.newBuilder().setTarget(properties.getTarget()).build());
         WorkflowClientOptions options = WorkflowClientOptions.newBuilder()
-                .setNamespace(namespace)
+                .setNamespace(properties.getNamespace())
                 .build();
         return WorkflowClient.newInstance(stubs, options);
     }
 
     @Bean(destroyMethod = "shutdown")
     public WorkerFactory workerFactory(WorkflowClient client, PlaybookActivity activity,
-                                       @Value("${socp.temporal.enabled:true}") boolean enabled) {
-        if (!enabled) {
+                                       TemporalProperties properties) {
+        if (!properties.isEnabled()) {
             log.info("socp.temporal.enabled=false，跳过 Temporal Worker");
             return WorkerFactory.newInstance(client);
         }

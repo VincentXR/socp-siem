@@ -1,6 +1,7 @@
 package com.socp.soar.web.service;
 
 import com.socp.platform.tenant.TenantContext;
+import com.socp.soar.web.config.TemporalProperties;
 import com.socp.soar.web.model.Playbook;
 import com.socp.soar.web.temporal.PlaybookExecRequest;
 import com.socp.soar.web.temporal.PlaybookWorkflow;
@@ -34,8 +35,13 @@ public class TemporalExecutor {
     private volatile long cachedAt;
 
     public TemporalExecutor(WorkflowClient workflowClient,
-                            @org.springframework.beans.factory.annotation.Value("${socp.temporal.enabled:true}") boolean enabled,
-                            @org.springframework.beans.factory.annotation.Value("${socp.temporal.target:localhost:7233}") String target) {
+                            TemporalProperties properties) {
+        this.workflowClient = workflowClient;
+        this.enabled = properties.isEnabled();
+        this.target = properties.getTarget();
+    }
+
+    public TemporalExecutor(WorkflowClient workflowClient, boolean enabled, String target) {
         this.workflowClient = workflowClient;
         this.enabled = enabled;
         this.target = target;
