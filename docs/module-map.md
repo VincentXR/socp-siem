@@ -36,20 +36,23 @@ tests and artifact checks are under `frontend/apps/workbench/scripts`.
 | `attack-web` | 18095 | ATT&CK catalog and detection coverage | H2 |
 | `notify-web` | 18096 | Notification channels and delivery records | H2 |
 | `asset-web` | 18085 | Asset inventory, imports, and asset collection ingress | H2 |
-| `asset-collect` | 18091 | Optional standalone compatibility launcher for asset collection | Stateless |
+| `asset-collect` | 18091 | Optional standalone compatibility launcher for asset collection | Durable H2 locally; PostgreSQL in production |
 | `hips-web` | 18087 | Endpoint registration, heartbeat state, and event ingress | H2 |
-| `hips-collect` | 18093 | Optional standalone compatibility launcher for endpoint collection | Stateless |
+| `hips-collect` | 18093 | Optional standalone compatibility launcher for endpoint collection | Durable H2 locally; PostgreSQL in production |
 | `ai-assistant` | 18088 | Keyword-backed security knowledge assistant | H2 |
 
-The nine services with `application-pg.yml` can switch from file-backed H2 to
-PostgreSQL with the `pg` profile. Flyway migrations are owned by the service
-that owns the corresponding schema. The production profile rejects H2.
+The services with `application-integration.yml` import their
+`application-pg.yml` overlay when the `integration` profile is active. Flyway
+migrations are owned by the service that owns the corresponding schema. The
+production profile rejects H2.
 
 The default `full` deployment runs 15 JVMs. Asset and endpoint collection
 ingress are hosted by `asset-web` and `hips-web`; the gateway rewrites the
 legacy `/asset-collect/**` and `/hips-collect/**` paths so agents do not need to
 change URLs. The two collector modules remain buildable and can be launched
 explicitly for compatibility, but are not part of the default process set.
+Their simulator flags are disabled by the production overlays; production
+collection must come from Agent/Falco/CMDB inputs.
 
 ## Platform modules
 

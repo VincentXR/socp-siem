@@ -6,6 +6,7 @@ import com.socp.platform.client.SocpHttpClient;
 import com.socp.soar.web.model.Playbook;
 import com.socp.soar.web.model.PlaybookActionStatus;
 import com.socp.soar.web.model.PlaybookActionType;
+import com.socp.soar.web.config.SoarRuntimeProperties;
 import com.socp.soar.web.store.PlaybookStore;
 import com.socp.soar.web.store.ExecutionEntity;
 import com.socp.soar.web.store.ExecutionRepository;
@@ -15,7 +16,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -56,24 +57,33 @@ public class PlaybookExecutor {
      * Dry-run actions are enabled for the local/integration demo, but they retain the
      * distinct SIMULATED terminal state. The prod profile forces this property off.
      */
-    @Value("${socp.soar.simulation-enabled:false}")
     private boolean simulationEnabled;
-
-    @Value("${spring.profiles.active:}")
     private String activeProfiles;
 
     public PlaybookExecutor(PlaybookStore store, NotifyClient notifyClient,
                             IncidentClient incidentClient, SocpHttpClient http,
                             TemporalExecutor temporalExecutor, ExecutionRepository executionRepository) {
         this(store, notifyClient, incidentClient, http, temporalExecutor, executionRepository,
-                new PlaybookActionHandlerRegistry(notifyClient, incidentClient, http));
+                new PlaybookActionHandlerRegistry(notifyClient, incidentClient, http),
+                false, "");
     }
 
     @Autowired
     public PlaybookExecutor(PlaybookStore store, NotifyClient notifyClient,
                             IncidentClient incidentClient, SocpHttpClient http,
                             TemporalExecutor temporalExecutor, ExecutionRepository executionRepository,
-                            PlaybookActionHandlerRegistry handlerRegistry) {
+                            PlaybookActionHandlerRegistry handlerRegistry,
+                            SoarRuntimeProperties properties, Environment environment) {
+        this(store, notifyClient, incidentClient, http, temporalExecutor, executionRepository,
+                handlerRegistry, properties == null ? false : properties.isSimulationEnabled(),
+                environment == null ? "" : String.join(",", environment.getActiveProfiles()));
+    }
+
+    private PlaybookExecutor(PlaybookStore store, NotifyClient notifyClient,
+                             IncidentClient incidentClient, SocpHttpClient http,
+                             TemporalExecutor temporalExecutor, ExecutionRepository executionRepository,
+                             PlaybookActionHandlerRegistry handlerRegistry,
+                             boolean simulationEnabled, String activeProfiles) {
         this.store = store;
         this.notifyClient = notifyClient;
         this.incidentClient = incidentClient;
@@ -83,6 +93,8 @@ public class PlaybookExecutor {
         this.handlerRegistry = handlerRegistry == null
                 ? new PlaybookActionHandlerRegistry(notifyClient, incidentClient, http)
                 : handlerRegistry;
+        this.simulationEnabled = simulationEnabled;
+        this.activeProfiles = activeProfiles;
     }
 
     /** 按 ID 手动触发执行（忽略启用状态与触发条件）。 */
