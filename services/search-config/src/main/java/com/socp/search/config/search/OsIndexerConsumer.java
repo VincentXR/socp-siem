@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.socp.platform.client.kafka.KafkaClientSupport;
 import com.socp.search.config.config.KafkaProperties;
+import com.socp.search.config.config.OpenSearchIndexerProperties;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -17,7 +18,7 @@ import org.apache.kafka.common.errors.WakeupException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
@@ -47,11 +48,8 @@ public class OsIndexerConsumer {
             .registerModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
 
-    @Value("${socp.os-indexer.enabled:true}")
-    private boolean indexerEnabled;
-
-    @Value("${socp.os-indexer.retry-backoff-ms:1000}")
-    private long retryBackoffMs;
+    private final boolean indexerEnabled;
+    private final long retryBackoffMs;
 
     private final OsEventWriter osWriter;
     private final KafkaProperties kafkaProperties;
@@ -61,13 +59,16 @@ public class OsIndexerConsumer {
     private Thread worker;
 
     public OsIndexerConsumer(OsEventWriter osWriter) {
-        this(osWriter, new KafkaProperties());
+        this(osWriter, new KafkaProperties(), new OpenSearchIndexerProperties());
     }
 
     @Autowired
-    public OsIndexerConsumer(OsEventWriter osWriter, KafkaProperties kafkaProperties) {
+    public OsIndexerConsumer(OsEventWriter osWriter, KafkaProperties kafkaProperties,
+                             OpenSearchIndexerProperties properties) {
         this.osWriter = osWriter;
         this.kafkaProperties = kafkaProperties;
+        this.indexerEnabled = properties.isEnabled();
+        this.retryBackoffMs = properties.getRetryBackoffMs();
     }
 
     @PostConstruct

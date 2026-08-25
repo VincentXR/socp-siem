@@ -5,11 +5,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.client.DetectClient;
 import com.socp.platform.client.ServiceCall;
 import com.socp.search.config.search.IngestionCommitService;
+import com.socp.search.config.config.IngestRuntimeProperties;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -35,16 +36,17 @@ public class IngestPipeline {
     private final Counter forwardedCounter;
     private final AtomicReference<Double> eps = new AtomicReference<>(0.0);
 
-    @Value("${socp.ingest.forward-http:false}")
-    private boolean forwardHttp;
+    private final boolean forwardHttp;
 
+    @Autowired
     public IngestPipeline(IngestEventNormalizer normalizer, IngestionCommitService commitService,
                           IngestTaskMonitor monitor, DetectClient detectClient,
-                          MeterRegistry meterRegistry) {
+                          MeterRegistry meterRegistry, IngestRuntimeProperties properties) {
         this.normalizer = normalizer;
         this.commitService = commitService;
         this.monitor = monitor;
         this.detectClient = detectClient;
+        this.forwardHttp = properties.isForwardHttp();
         this.acceptedCounter = Counter.builder("socp_ingest_events_total")
                 .tag("outcome", "accepted").register(meterRegistry);
         this.skippedCounter = Counter.builder("socp_ingest_events_total")
@@ -53,6 +55,13 @@ public class IngestPipeline {
                 .tag("outcome", "forwarded").register(meterRegistry);
         io.micrometer.core.instrument.Gauge.builder("socp_ingest_eps", eps, AtomicReference::get)
                 .register(meterRegistry);
+    }
+
+    public IngestPipeline(IngestEventNormalizer normalizer, IngestionCommitService commitService,
+                          IngestTaskMonitor monitor, DetectClient detectClient,
+                          MeterRegistry meterRegistry) {
+        this(normalizer, commitService, monitor, detectClient, meterRegistry,
+                new IngestRuntimeProperties());
     }
 
     public Map<String, Object> process(String body) {

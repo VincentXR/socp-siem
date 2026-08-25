@@ -5,12 +5,13 @@ import com.socp.search.config.domain.ParseFormat;
 import com.socp.search.config.domain.SinkTarget;
 import com.socp.search.config.domain.SourceType;
 import com.socp.search.config.config.IngestLimitsProperties;
+import com.socp.search.config.config.VectorProperties;
 import com.socp.search.config.render.VectorConfigRenderer;
 import com.socp.search.config.store.LogSourceStore;
 import com.socp.search.config.store.SinkTargetStore;
 import jakarta.annotation.PostConstruct;
 import jakarta.validation.Valid;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 
@@ -45,14 +46,21 @@ public class LogSourceController {
 
     public LogSourceController(LogSourceStore store, SinkTargetStore sinkStore,
                                com.socp.search.config.service.IngestPipeline pipeline,
+                               IngestLimitsProperties ingestLimits) {
+        this(store, sinkStore, pipeline, ingestLimits, new VectorProperties());
+    }
+
+    @Autowired
+    public LogSourceController(LogSourceStore store, SinkTargetStore sinkStore,
+                               com.socp.search.config.service.IngestPipeline pipeline,
                                IngestLimitsProperties ingestLimits,
-                               @Value("${socp.vector.token:dev-vector-token}") String vectorToken) {
+                               VectorProperties vectorProperties) {
         this.store = store;
         this.sinkStore = sinkStore;
         this.renderer = new VectorConfigRenderer(null);
         this.pipeline = pipeline;
         this.ingestLimits = ingestLimits;
-        this.vectorToken = vectorToken;
+        this.vectorToken = vectorProperties.getToken();
     }
 
     @PostConstruct

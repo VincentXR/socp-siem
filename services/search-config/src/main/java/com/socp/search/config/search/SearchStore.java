@@ -2,7 +2,8 @@ package com.socp.search.config.search;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.beans.factory.annotation.Value;
+import com.socp.search.config.config.SearchCacheProperties;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -29,15 +30,20 @@ public class SearchStore {
 
     private final Map<String, TenantBuffer> eventsByTenant = new ConcurrentHashMap<>();
 
-    @Value("${socp.search.local-cache.idle-ttl-ms:1800000}")
-    private long tenantBufferIdleTtlMs = 30 * 60 * 1000L;
-
-    @Value("${socp.search.local-cache.max-tenants:100}")
-    private int maxTenantBuffers = 100;
+    private final long tenantBufferIdleTtlMs;
+    private final int maxTenantBuffers;
 
     public SearchStore(SearchEventRepository repo, OsEventWriter osWriter) {
+        this(repo, osWriter, new SearchCacheProperties());
+    }
+
+    @Autowired
+    public SearchStore(SearchEventRepository repo, OsEventWriter osWriter,
+                       SearchCacheProperties properties) {
         this.repo = repo;
         this.osWriter = osWriter;
+        this.tenantBufferIdleTtlMs = properties.getIdleTtlMs();
+        this.maxTenantBuffers = properties.getMaxTenants();
         long persisted = repo.countByTenantId("default");
         if (persisted == 0) {
             seed();

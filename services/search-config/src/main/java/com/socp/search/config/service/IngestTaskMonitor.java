@@ -1,7 +1,8 @@
 package com.socp.search.config.service;
 
 import com.socp.platform.tenant.TenantContext;
-import org.springframework.beans.factory.annotation.Value;
+import com.socp.search.config.config.IngestRuntimeProperties;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -32,11 +33,18 @@ public class IngestTaskMonitor {
 
     private final Map<String, Stat> stats = new ConcurrentHashMap<>();
 
-    @Value("${socp.ingest.monitor.idle-ttl-ms:86400000}")
-    private long idleTtlMs = 24 * 60 * 60 * 1000L;
+    private final long idleTtlMs;
+    private final int maxEntries;
 
-    @Value("${socp.ingest.monitor.max-entries:10000}")
-    private int maxEntries = 10_000;
+    public IngestTaskMonitor() {
+        this(new IngestRuntimeProperties());
+    }
+
+    @Autowired
+    public IngestTaskMonitor(IngestRuntimeProperties properties) {
+        this.idleTtlMs = properties.getMonitor().getIdleTtlMs();
+        this.maxEntries = properties.getMonitor().getMaxEntries();
+    }
 
     private static final class Stat {
         long accepted;

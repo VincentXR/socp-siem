@@ -1,6 +1,7 @@
 package com.socp.search.config.search;
 
 import jakarta.annotation.PreDestroy;
+import com.socp.search.config.config.IngestRuntimeProperties;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,9 +38,17 @@ public class IngestionOutboxPublisher {
     public IngestionOutboxPublisher(IngestionOutboxRepository repository,
                                     KafkaEventProducer producer,
                                     MeterRegistry meterRegistry,
-                                    @Value("${socp.ingest.outbox.delivery-concurrency:8}") int concurrency,
-                                    @Value("${socp.ingest.outbox.max-attempts:12}") int maxAttempts,
-                                    @Value("${socp.ingest.outbox.retention-ms:2592000000}") long retentionMs) {
+                                    IngestRuntimeProperties properties) {
+        this(repository, producer, meterRegistry,
+                properties.getOutbox().getDeliveryConcurrency(),
+                properties.getOutbox().getMaxAttempts(),
+                properties.getOutbox().getRetentionMs());
+    }
+
+    public IngestionOutboxPublisher(IngestionOutboxRepository repository,
+                                    KafkaEventProducer producer,
+                                    MeterRegistry meterRegistry,
+                                    int concurrency, int maxAttempts, long retentionMs) {
         this.repository = repository;
         this.producer = producer;
         this.meterRegistry = meterRegistry;
