@@ -6,6 +6,8 @@ import com.socp.asset.web.persistence.store.*;
 import com.socp.asset.web.persistence.repository.*;
 import com.socp.asset.web.persistence.entity.*;
 import com.socp.asset.web.domain.Asset;
+import com.socp.platform.tenant.context.TenantContext;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -33,6 +35,7 @@ class AssetStoreTest {
 
     @BeforeEach
     void setup() {
+        TenantContext.set("default");
         repo = mock(AssetRepository.class);
         when(repo.count()).thenReturn(0L); // 触发种子
         doAnswer(inv -> { db.add(inv.getArgument(0)); return null; }).when(repo).save(any());
@@ -44,6 +47,11 @@ class AssetStoreTest {
         when(repo.findByIpAndTenantId(any(), any())).thenAnswer(inv ->
                 db.stream().filter(e -> e.getIp() != null && e.getIp().equals(inv.getArgument(0))).toList());
         store = new AssetStore(repo);
+    }
+
+    @AfterEach
+    void cleanup() {
+        TenantContext.clear();
     }
 
     @Test
