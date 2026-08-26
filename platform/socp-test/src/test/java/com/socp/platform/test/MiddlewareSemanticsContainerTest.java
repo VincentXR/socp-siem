@@ -175,8 +175,9 @@ class MiddlewareSemanticsContainerTest {
         else builder.header("Content-Type", "application/json")
                 .method(method, HttpRequest.BodyPublishers.ofString(body == null ? "" : body));
         HttpResponse<String> response = HTTP.send(builder.build(), HttpResponse.BodyHandlers.ofString());
-        assertThat(response.statusCode()).as("OpenSearch response for %s", url)
-                .isIn(statuses);
+        assertThat(java.util.Arrays.stream(statuses).boxed().toList())
+                .as("OpenSearch response for %s", url)
+                .contains(response.statusCode());
         return response.body();
     }
 }
