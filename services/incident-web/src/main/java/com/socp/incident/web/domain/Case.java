@@ -27,7 +27,16 @@ public record Case(
         List<TimelineEvent> timeline,
         String assignee,
         Instant createdAt,
-        Instant updatedAt) {
+        Instant updatedAt,
+        long rowVersion) {
+
+    /** Source-compatible constructor for callers that do not carry persistence version metadata. */
+    public Case(String id, String caseNo, String title, String entity, String severity, String status,
+                List<String> ruleIds, List<String> alarmIds, List<TimelineEvent> timeline,
+                String assignee, Instant createdAt, Instant updatedAt) {
+        this(id, caseNo, title, entity, severity, status, ruleIds, alarmIds, timeline,
+                assignee, createdAt, updatedAt, 0L);
+    }
 
     private static final DateTimeFormatter CASE_NO_DATE = DateTimeFormatter.ofPattern("yyyyMMdd");
 
@@ -42,7 +51,7 @@ public record Case(
         String caseNo = "INC-" + LocalDate.now().format(CASE_NO_DATE) + "-" + suffix;
         Instant now = Instant.now();
         return new Case(uuid, caseNo, title, entity, severity, "OPEN",
-                List.of(), List.of(), List.of(), assignee, now, now);
+                List.of(), List.of(), List.of(), assignee, now, now, 0L);
     }
 
     public Case withAdded(String ruleId, String alarmId, TimelineEvent ev) {
@@ -56,12 +65,12 @@ public record Case(
             tl = new java.util.ArrayList<>(tl.subList(tl.size() - 500, tl.size()));
         }
         return new Case(id, caseNo, title, entity, severity, status, rules, alarms, List.copyOf(tl),
-                assignee, createdAt, Instant.now());
+                assignee, createdAt, Instant.now(), rowVersion);
     }
 
     public Case withStatus(String status, String assignee) {
         return new Case(id, caseNo, title, entity, severity, status,
-                ruleIds, alarmIds, timeline, assignee, createdAt, Instant.now());
+                ruleIds, alarmIds, timeline, assignee, createdAt, Instant.now(), rowVersion);
     }
 
     private static List<String> appendDistinct(List<String> src, String v) {

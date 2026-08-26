@@ -10,6 +10,7 @@ public class InvestigationProperties {
     private int maxEvidence = 200;
     private int maxRelatedEvents = 100;
     private int timeoutMs = 15000;
+    private long claimLeaseMs = 30000;
 
     public int getMaxToolCalls() { return maxToolCalls; }
     public void setMaxToolCalls(int maxToolCalls) { this.maxToolCalls = Math.max(1, Math.min(16, maxToolCalls)); }
@@ -19,4 +20,6 @@ public class InvestigationProperties {
     public void setMaxRelatedEvents(int maxRelatedEvents) { this.maxRelatedEvents = Math.max(1, Math.min(500, maxRelatedEvents)); }
     public int getTimeoutMs() { return timeoutMs; }
     public void setTimeoutMs(int timeoutMs) { this.timeoutMs = Math.max(1000, Math.min(120000, timeoutMs)); }
+    public long getClaimLeaseMs() { return claimLeaseMs; }
+    public void setClaimLeaseMs(long claimLeaseMs) { this.claimLeaseMs = Math.max(5000, Math.min(300000, claimLeaseMs)); }
 }

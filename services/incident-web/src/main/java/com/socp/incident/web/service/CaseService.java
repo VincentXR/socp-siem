@@ -8,6 +8,7 @@ import com.socp.incident.web.domain.TimelineEvent;
 import com.socp.incident.web.persistence.store.CaseStore;
 import com.socp.incident.web.persistence.entity.AlarmCaseLinkEntity;
 import com.socp.incident.web.persistence.repository.AlarmCaseLinkRepository;
+import com.socp.incident.web.persistence.entity.CaseTimelineEntity;
 import com.socp.platform.tenant.context.TenantContext;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -60,7 +61,7 @@ public class CaseService {
         Instant ts = parseTs(tsStr);
 
         if (!alarmId.isBlank()) {
-            var existingLink = alarmLinks.findByTenantIdAndAlarmId(tenant(), alarmId);
+            var existingLink = alarmLinks.findByTenantIdAndAlarmId(TenantContext.require(), alarmId);
             if (existingLink.isPresent()) {
                 Case linked = store.get(existingLink.get().getCaseId());
                 if (linked != null) return response(linked, false, true);
@@ -120,8 +121,7 @@ public class CaseService {
     }
 
     private static String tenant() {
-        String tenant = TenantContext.get();
-        return tenant == null || tenant.isBlank() ? "default" : tenant;
+        return TenantContext.require();
     }
 
     public List<Case> list() {
@@ -149,14 +149,33 @@ public class CaseService {
     }
 
     public Map<String, Object> addNote(String id, String author, String content) {
+        return addNote(id, author, content, null);
+    }
+
+    /** Appends by a stable key when supplied; Investigation Agent supplies investigationId. */
+    public Map<String, Object> addNote(String id, String author, String content, String idempotencyKey) {
         Case c = store.get(id);
         if (c == null) return Map.of("error", "not_found");
-        TimelineEvent ev = new TimelineEvent(Instant.now(), "NOTE", author + ": " + content, "analyst", null);
-        Case updated = new Case(c.id(), c.caseNo(), c.title(), c.entity(), c.severity(), c.status(),
-                c.ruleIds(), c.alarmIds(),
-                append(c.timeline(), ev), c.assignee(), c.createdAt(), Instant.now());
-        store.save(updated);
-        return Map.of("case", updated);
+        String eventKey = idempotencyKey == null || idempotencyKey.isBlank()
+                ? "note:" + UUID.randomUUID() : "note:" + idempotencyKey.trim();
+        TimelineEvent event = new TimelineEvent(Instant.now(), "NOTE", author + ": " + content,
+                "analyst", null, eventKey);
+        boolean appended = store.appendTimeline(id, event);
+        Case updated = store.get(id);
+        if (updated == null) return Map.of("error", "not_found");
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("case", updated);
+        if (!appended) result.put("duplicate", true);
+        return result;
+    }
+
+    public Map<String, Object> timeline(String id, int page, int size) {
+        var result = store.timeline(id, page, size);
+        List<TimelineEvent> items = result.getContent().stream()
+                .map(CaseService::timelineEvent)
+                .toList();
+        return Map.of("caseId", id, "page", result.getNumber(), "size", result.getSize(),
+                "total", result.getTotalElements(), "timeline", items);
     }
 
     public Map<String, Object> stats() {
@@ -174,6 +193,11 @@ public class CaseService {
         out.add(e);
         out.sort(java.util.Comparator.comparing(TimelineEvent::ts));
         return List.copyOf(out);
+    }
+
+    private static TimelineEvent timelineEvent(CaseTimelineEntity entity) {
+        return new TimelineEvent(entity.getTs(), entity.getType(), entity.getMessage(), entity.getSource(),
+                entity.getAlarmId(), entity.getEventKey());
     }
 
     private static String str(Map<String, Object> m, String k) {

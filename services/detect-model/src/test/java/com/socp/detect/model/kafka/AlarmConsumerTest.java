@@ -48,4 +48,15 @@ class AlarmConsumerTest {
 
         verify(service, never()).analyze(anyMap());
     }
+
+    @Test
+    void rejectsMissingTenantBeforeCallingAnalysis() {
+        AnalyzeService service = mock(AnalyzeService.class);
+        AlarmConsumer consumer = new AlarmConsumer(service);
+
+        assertThrows(AlarmConsumer.InvalidAlarmEventException.class,
+                () -> consumer.processRecord("alarm-1", "{\"severity\":\"HIGH\"}"));
+
+        verify(service, never()).analyze(anyMap());
+    }
 }

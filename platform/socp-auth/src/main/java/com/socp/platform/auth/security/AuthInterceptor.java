@@ -14,6 +14,8 @@ import org.springframework.web.method.HandlerMethod;
 import org.springframework.web.servlet.HandlerInterceptor;
 
 import java.time.Instant;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.concurrent.ConcurrentHashMap;
 
 /** Authenticates user JWTs, fixed ingest credentials, and signed internal service requests. */
@@ -42,13 +44,25 @@ public class AuthInterceptor implements HandlerInterceptor {
         String token = authorization.substring(BEARER.length()).trim();
         if (token.isEmpty()) throw ApiException.unauthorized("Empty Bearer token");
 
+        String metricsToken = properties.getMetricsToken();
+        if (metricsToken != null && !metricsToken.isBlank() && constantTimeEquals(metricsToken, token)) {
+            if (!isAllowedMetricsRequest(request)) {
+                throw ApiException.forbidden("Metrics credential is limited to actuator metrics");
+            }
+            TenantContext.set("default");
+            return true;
+        }
+
         String tenant = null;
         String role;
         boolean ingestCredential = false;
         String ingestToken = properties.getIngestToken();
-        if (ingestToken != null && !ingestToken.isBlank() && ingestToken.equals(token)) {
+        if (ingestToken != null && !ingestToken.isBlank() && constantTimeEquals(ingestToken, token)) {
+            if (!isAllowedIngestRequest(request)) {
+                throw ApiException.forbidden("Static ingest credential is limited to the ingest endpoint");
+            }
             tenant = "default";
-            role = "analyst";
+            role = "ingest";
             ingestCredential = true;
         } else if (jwtValidator.isDevBypass()) {
             role = request.getHeader("X-Role");
@@ -107,6 +121,24 @@ public class AuthInterceptor implements HandlerInterceptor {
         log.warn("RBAC rejected path={} role={} required={}",
                 path, effectiveRole, String.join(",", requirement.value()));
         throw ApiException.forbidden(requirement.message());
+    }
+
+    private boolean isAllowedIngestRequest(HttpServletRequest request) {
+        if (!"POST".equalsIgnoreCase(request.getMethod())) return false;
+        String path = request.getRequestURI();
+        return properties.getIngestPaths().stream().anyMatch(path::equals);
+    }
+
+    private static boolean isAllowedMetricsRequest(HttpServletRequest request) {
+        if (!"GET".equalsIgnoreCase(request.getMethod())) return false;
+        String path = request.getRequestURI();
+        return path != null && (path.matches(".*/actuator/prometheus/?")
+                || path.matches(".*/actuator/metrics(?:/[^/]+)?/?"));
+    }
+
+    private static boolean constantTimeEquals(String expected, String actual) {
+        return MessageDigest.isEqual(expected.getBytes(StandardCharsets.UTF_8),
+                actual.getBytes(StandardCharsets.UTF_8));
     }
 
     private String verifyServiceIdentity(HttpServletRequest request) {

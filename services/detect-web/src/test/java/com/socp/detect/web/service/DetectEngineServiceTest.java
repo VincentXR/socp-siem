@@ -60,7 +60,8 @@ class DetectEngineServiceTest {
             service.addRule(rule);
 
             SecurityEvent event = new SecurityEvent(
-                    Instant.now(), "auth", "host-1", "Failed password", Map.of(), Severity.HIGH);
+                    Instant.now(), "auth", "host-1", "Failed password",
+                    Map.of("tenant_id", "default"), Severity.HIGH);
             assertTrue(service.ingest(event));
 
             long deadline = System.nanoTime() + Duration.ofSeconds(2).toNanos();
@@ -128,7 +129,8 @@ class DetectEngineServiceTest {
         service.start();
         try {
             assertTrue(service.ingest(new SecurityEvent(
-                    Instant.now(), "system", "host-1", "heartbeat", Map.of(), Severity.INFO)));
+                    Instant.now(), "system", "host-1", "heartbeat",
+                    Map.of("tenant_id", "default"), Severity.INFO)));
             assertTrue(sinkEntered.await(2, TimeUnit.SECONDS));
 
             CompletableFuture<Void> rebuild = CompletableFuture.runAsync(

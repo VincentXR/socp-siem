@@ -5,8 +5,11 @@ import com.socp.platform.client.service.NotifyClient;
 import com.socp.platform.client.http.ServiceCall;
 import com.socp.platform.client.http.SocpHttpClient;
 import com.socp.platform.client.service.SocpService;
+import com.socp.platform.tenant.context.TenantContext;
 import com.socp.soar.web.domain.Playbook;
 import com.socp.soar.web.persistence.store.PlaybookStore;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -30,6 +33,16 @@ import static org.mockito.BDDMockito.given;
  */
 @ExtendWith(MockitoExtension.class)
 class PlaybookExecutorTest {
+
+    @BeforeEach
+    void setTenant() {
+        TenantContext.set("default");
+    }
+
+    @AfterEach
+    void clearTenant() {
+        TenantContext.clear();
+    }
 
     @Mock
     private PlaybookStore store;

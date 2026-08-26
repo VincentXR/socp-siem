@@ -42,6 +42,16 @@ public record SecurityEvent(
         return "default";
     }
 
+    /** Tenant identity for durable boundaries; unlike {@link #tenantId()}, never supplies a compatibility default. */
+    public String requireTenantId() {
+        String tenant = fields == null ? null : fields.get("tenant_id");
+        if (tenant == null || tenant.isBlank()) tenant = fields == null ? null : fields.get("tenantId");
+        if (tenant == null || !tenant.matches("[A-Za-z0-9][A-Za-z0-9_-]{0,63}")) {
+            throw new IllegalStateException("event tenant is required");
+        }
+        return tenant;
+    }
+
     /** Globally unique identity for durable claims and in-memory state. */
     public String scopedId() {
         return tenantId() + "|" + id;

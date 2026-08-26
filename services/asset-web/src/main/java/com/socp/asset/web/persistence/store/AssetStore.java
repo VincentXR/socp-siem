@@ -35,13 +35,18 @@ public class AssetStore {
         this.repo = repo;
         this.demoDataEnabled = demoDataEnabled;
         if (demoDataEnabled && repo.countByTenantId("default") == 0) {
-            seed();
+            String previous = TenantContext.get();
+            try {
+                TenantContext.set("default");
+                seed();
+            } finally {
+                if (previous == null) TenantContext.clear(); else TenantContext.set(previous);
+            }
         }
     }
 
     private String tenant() {
-        String t = TenantContext.get();
-        return t == null ? "default" : t;
+        return TenantContext.require();
     }
 
     private void seed() {

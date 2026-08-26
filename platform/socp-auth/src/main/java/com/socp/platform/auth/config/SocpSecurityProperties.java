@@ -4,6 +4,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -39,6 +40,11 @@ public class SocpSecurityProperties {
     /** 机机采集凭据（Vector/Agent 静态 token）：Authorization 与之匹配时跳过 JWT 验签直接放行。
      *  仅用于采集端点（ingest/collect），比正式 JWT 简单且不依赖网关签发。默认关闭。 */
     private String ingestToken;
+
+    private List<String> ingestPaths = List.of("/search-config/api/v1/ingest");
+
+    /** Optional bearer credential dedicated to read-only actuator metrics. */
+    private String metricsToken;
 
     /** Shared HMAC key for signed tenant delegation between internal services. */
     private String serviceSecret;
@@ -152,6 +158,25 @@ public class SocpSecurityProperties {
 
     public void setIngestToken(String ingestToken) {
         this.ingestToken = ingestToken;
+    }
+
+    public List<String> getIngestPaths() {
+        return List.copyOf(ingestPaths);
+    }
+
+    public void setIngestPaths(List<String> ingestPaths) {
+        this.ingestPaths = ingestPaths == null ? List.of() : ingestPaths.stream()
+                .map(String::trim)
+                .filter(value -> !value.isBlank())
+                .toList();
+    }
+
+    public String getMetricsToken() {
+        return metricsToken;
+    }
+
+    public void setMetricsToken(String metricsToken) {
+        this.metricsToken = metricsToken;
     }
 
     public String getServiceSecret() {

@@ -102,7 +102,8 @@ class AlertForwarderTest {
         Instant ingested = Instant.parse("2026-08-19T12:00:00Z");
         SecurityEvent event = new SecurityEvent(
                 "event-bench-1", Instant.parse("2026-08-19T12:00:01Z"), "auth", "host-1",
-                "sudo: probe", Map.of("socp_bench_ingest_time", ingested.toString()), Severity.HIGH);
+                "sudo: probe", Map.of("tenant_id", "default",
+                        "socp_bench_ingest_time", ingested.toString()), Severity.HIGH);
         Alert alert = new Alert("AUTH-PRIVESC", "Privilege escalation", Severity.HIGH,
                 "probe", "host-1", List.of(event));
 

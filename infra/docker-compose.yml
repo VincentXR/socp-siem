@@ -324,6 +324,9 @@ services:
     <<: *socp-runtime
     image: prom/prometheus@sha256:508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69
     container_name: socp-prometheus
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--config.expand-env=true"]
+    environment:
+      SOCP_SECURITY_METRICS_TOKEN: ${SOCP_SECURITY_METRICS_TOKEN:-socp-demo-metrics-token}
     ports:
       - "9090:9090"
     volumes:

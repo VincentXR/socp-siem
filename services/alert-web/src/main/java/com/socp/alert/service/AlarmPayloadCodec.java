@@ -56,7 +56,12 @@ final class AlarmPayloadCodec {
     static Alarm toAlarm(Map<String, Object> values) {
         Alarm alarm = new Alarm();
         alarm.setId(text(values.get("id")));
-        alarm.setTenantId(text(values.getOrDefault("tenantId", values.getOrDefault("tenant_id", "default"))));
+        String tenant = text(values.get("tenantId"));
+        if (tenant == null) tenant = text(values.get("tenant_id"));
+        if (tenant == null || !com.socp.platform.tenant.context.TenantContext.isValid(tenant)) {
+            throw new IllegalArgumentException("alarm tenant is required");
+        }
+        alarm.setTenantId(tenant);
         alarm.setRuleId(text(values.get("ruleId")));
         alarm.setRuleName(text(values.get("ruleName")));
         try {

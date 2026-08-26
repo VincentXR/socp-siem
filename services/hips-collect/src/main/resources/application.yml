@@ -27,8 +27,11 @@ socp:
     jwk-set-uri: ${SOCP_SECURITY_JWK_SET_URI:}
     audience: ${SOCP_SECURITY_AUDIENCE:socp-api}
     dev-bypass: ${SOCP_DEV_BYPASS:false}
+    metrics-token: ${SOCP_SECURITY_METRICS_TOKEN:socp-demo-metrics-token}
     # 机机采集凭据：Falco/Agent 用静态 token 访问 /events（与 search-config ingest-token 同值）
     ingest-token: ${SOCP_INGEST_TOKEN:dev-vector-token}
+    ingest-paths:
+      - /hips-collect/api/v1/events
   hips:
     url: ${SOCP_HIPS_URL:http://localhost:18087}
   maturity: demo

@@ -29,6 +29,7 @@ socp:
     jwk-set-uri: ${SOCP_SECURITY_JWK_SET_URI:}
     audience: ${SOCP_SECURITY_AUDIENCE:socp-api}
     dev-bypass: ${SOCP_DEV_BYPASS:false}
+    metrics-token: ${SOCP_SECURITY_METRICS_TOKEN:socp-demo-metrics-token}
   kafka:
     # 告警二次分析链路：消费 detect-web 转发的 socp-alarm-original 主题。
     # 生产环境可用 SOCP_KAFKA_BOOTSTRAP 覆盖（如 CI 的 broker 地址）。

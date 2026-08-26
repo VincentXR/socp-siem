@@ -46,7 +46,7 @@ class KafkaEventConsumerTest {
         given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class)))
                 .willReturn(CompletableFuture.completedFuture(null));
         KafkaEventConsumer consumer = new KafkaEventConsumer(engine, stateStore);
-        String event = "{\"eventId\":\"consumer-test-100\",\"source\":\"auth\",\"host\":\"web-1\",\"msg\":\"login failed\"}";
+        String event = "{\"eventId\":\"consumer-test-100\",\"tenantId\":\"default\",\"source\":\"auth\",\"host\":\"web-1\",\"msg\":\"login failed\"}";
 
         consumer.processRecord("key-1", event);
         consumer.processRecord("key-2", event);
@@ -78,7 +78,7 @@ class KafkaEventConsumerTest {
                 new AbstractMap.SimpleEntry<>(eventId, raw)));
         given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class)))
                 .willReturn(CompletableFuture.failedFuture(new IllegalStateException("database unavailable")));
-        String event = "{\"eventId\":\"consumer-test-101\",\"source\":\"auth\","
+        String event = "{\"eventId\":\"consumer-test-101\",\"tenantId\":\"default\",\"source\":\"auth\","
                 + "\"host\":\"web-1\",\"msg\":\"login failed\"}";
 
         consumer.processRecord("key-1", event);
@@ -96,7 +96,7 @@ class KafkaEventConsumerTest {
         KafkaEventConsumer consumer = new KafkaEventConsumer(engine, stateStore);
 
         consumer.processRecord(2, 42L, "default|src_ip|198.51.100.9",
-                "{\"eventId\":\"partition-test-1\",\"source\":\"auth\","
+                "{\"eventId\":\"partition-test-1\",\"tenantId\":\"default\",\"source\":\"auth\","
                         + "\"host\":\"web-1\",\"msg\":\"login failed\","
                         + "\"fields\":{\"src_ip\":\"198.51.100.9\"}}");
 

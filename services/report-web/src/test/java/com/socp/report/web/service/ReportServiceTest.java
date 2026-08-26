@@ -6,6 +6,9 @@ import com.socp.platform.client.service.SocpService;
 import com.socp.platform.error.exception.ApiException;
 import com.socp.report.web.domain.ReportSummary;
 import com.socp.report.web.config.ClickHouseProperties;
+import com.socp.platform.tenant.context.TenantContext;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
@@ -15,6 +18,16 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
 
 class ReportServiceTest {
+
+    @BeforeEach
+    void setTenant() {
+        TenantContext.set("default");
+    }
+
+    @AfterEach
+    void clearTenant() {
+        TenantContext.clear();
+    }
 
     @Test
     void fallsBackToTypedAlertStatisticsWhenClickHouseIsUnavailable() {

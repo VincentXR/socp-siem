@@ -10,6 +10,7 @@ import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+import com.socp.platform.tenant.context.TenantContext;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -41,6 +42,7 @@ public class ChannelStore {
     @PostConstruct
     void seed() {
         if (!demoDataEnabled) return;
+        TenantContext.set("default");
         List<ChannelEntity> all = repository.findByTenantId("default");
         if (all.isEmpty()) {
             add(Channel.of("值班群(Slack)", "SLACK",
@@ -49,6 +51,7 @@ public class ChannelStore {
                     "http://localhost:18097/incident-web/api/v1/incidents/from-alarm", true, "推送至案件系统建案"));
             add(Channel.of("安全邮件", "EMAIL", "soc@example.com", false, "邮件摘要（演示未启 SMTP）"));
         }
+        TenantContext.clear();
     }
 
     public synchronized Channel add(Channel ch) {
@@ -84,7 +87,6 @@ public class ChannelStore {
     }
 
     private static String tenant() {
-        String tenant = com.socp.platform.tenant.context.TenantContext.get();
-        return tenant == null || tenant.isBlank() ? "default" : tenant;
+        return TenantContext.require();
     }
 }

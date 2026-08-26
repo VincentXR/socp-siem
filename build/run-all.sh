@@ -37,7 +37,7 @@ START_BATCH_SIZE="${SOCP_START_BATCH_SIZE:-3}"
 START_HEALTH_TIMEOUT="${SOCP_START_HEALTH_TIMEOUT:-45}"
 # Named runtime modes: local (H2/file-backed where supported), integration
 # (PostgreSQL overlays), or prod (fail-fast production guard).
-RUNTIME_PROFILES="${SOCP_RUNTIME_PROFILES:-local}"
+RUNTIME_PROFILES="${SOCP_RUNTIME_PROFILES:-dev,pg}"
 
 # core：Golden Demo 和日常后端开发所需的最小事件闭环。
 CORE_SERVICES="alert-web search-config detect-web incident-web soar-web notify-web report-web api-gateway"
@@ -50,6 +50,7 @@ UI_SERVICES="alert-web search-config detect-web detect-model soar-web report-web
 export SOCP_JWT_SECRET="${SOCP_JWT_SECRET:-socp-demo-jwt-secret-0123456789abcdef0123456789abcdef}"
 export SOCP_LOGIN_SECRET="${SOCP_LOGIN_SECRET:-$SOCP_JWT_SECRET}"
 export SOCP_SECURITY_SERVICE_SECRET="${SOCP_SECURITY_SERVICE_SECRET:-socp-demo-service-secret-change-me}"
+export SOCP_SECURITY_METRICS_TOKEN="${SOCP_SECURITY_METRICS_TOKEN:-socp-demo-metrics-token}"
 export SOCP_AUDIT_SINK="${SOCP_AUDIT_SINK:-kafka}"
 export SOCP_AUDIT_FAIL_CLOSED="${SOCP_AUDIT_FAIL_CLOSED:-true}"
 export SOCP_RATELIMIT_BACKEND="${SOCP_RATELIMIT_BACKEND:-memory}"

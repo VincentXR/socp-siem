@@ -50,9 +50,21 @@ public class SearchStore {
         this.maxTenantBuffers = properties.getMaxTenants();
         long persisted = repo.countByTenantId("default");
         if (persisted == 0) {
-            seed();
+            String previous = TenantContext.get();
+            try {
+                TenantContext.set("default");
+                seed();
+            } finally {
+                if (previous == null) TenantContext.clear(); else TenantContext.set(previous);
+            }
         } else {
-            events("default");
+            String previous = TenantContext.get();
+            try {
+                TenantContext.set("default");
+                events("default");
+            } finally {
+                if (previous == null) TenantContext.clear(); else TenantContext.set(previous);
+            }
         }
     }
 
@@ -293,7 +305,6 @@ public class SearchStore {
     }
 
     private static String currentTenant() {
-        String tenant = TenantContext.get();
-        return tenant == null || tenant.isBlank() ? "default" : tenant;
+        return TenantContext.require();
     }
 }

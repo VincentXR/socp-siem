@@ -98,7 +98,9 @@ public class AlarmEventConsumer {
     void registerEvent(String raw) throws JsonProcessingException {
         Map<String, Object> payload = AlarmPayloadCodec.read(raw);
         String alarmId = text(payload.get("id"));
-        String tenant = text(payload.getOrDefault("tenantId", payload.getOrDefault("tenant_id", "default")));
+        String tenant = text(payload.get("tenantId"));
+        if (tenant == null) tenant = text(payload.get("tenant_id"));
+        if (tenant == null) throw new IllegalArgumentException("missing alarm tenant");
         if (!TenantContext.isValid(tenant)) throw new IllegalArgumentException("invalid alarm tenant");
         if (alarmId == null) throw new IllegalArgumentException("missing alarm id");
         TenantContext.set(tenant);

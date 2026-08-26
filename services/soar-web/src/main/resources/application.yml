@@ -29,6 +29,7 @@ socp:
     jwk-set-uri: ${SOCP_SECURITY_JWK_SET_URI:}
     audience: ${SOCP_SECURITY_AUDIENCE:socp-api}
     dev-bypass: ${SOCP_DEV_BYPASS:false}
+    metrics-token: ${SOCP_SECURITY_METRICS_TOKEN:socp-demo-metrics-token}
   temporal:
     # 双模式（2026-08-12）：Temporal 可达走 Workflow，不可达回退进程内执行器。
     enabled: ${SOCP_TEMPORAL_ENABLED:true}

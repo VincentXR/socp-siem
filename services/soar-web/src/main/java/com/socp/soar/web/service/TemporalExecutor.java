@@ -82,7 +82,13 @@ public class TemporalExecutor {
     public Map<String, Object> run(Playbook pb, Map<String, Object> alarm) {
         Map<String, Object> tenantAlarm = new LinkedHashMap<>(alarm);
         String tenant = TenantContext.get();
-        tenantAlarm.putIfAbsent("tenantId", tenant == null || tenant.isBlank() ? "default" : tenant);
+        if (tenant == null || tenant.isBlank()) {
+            Object carried = tenantAlarm.get("tenantId");
+            if (carried == null) carried = tenantAlarm.get("tenant_id");
+            tenant = carried == null ? TenantContext.require() : String.valueOf(carried).trim();
+        }
+        if (!TenantContext.isValid(tenant)) throw new IllegalArgumentException("invalid playbook tenant");
+        tenantAlarm.put("tenantId", tenant);
         tenantAlarm.putIfAbsent("playbookId", pb.id());
         PlaybookExecRequest req = new PlaybookExecRequest(
                 pb.id(), pb.name(), pb.trigger(), pb.actions(),

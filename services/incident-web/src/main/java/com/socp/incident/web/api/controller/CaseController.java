@@ -75,9 +75,10 @@ public class CaseController {
     }
 
     @GetMapping("/incidents/{id}/timeline")
-    public Map<String, Object> timeline(@PathVariable String id) {
-        Case c = service.get(id);
-        return Map.of("caseId", id, "timeline", c == null ? List.of() : c.timeline());
+    public Map<String, Object> timeline(@PathVariable String id,
+                                        @RequestParam(defaultValue = "0") int page,
+                                        @RequestParam(defaultValue = "100") int size) {
+        return service.timeline(id, page, size);
     }
 
     @RequireRole({"admin", "analyst"})
@@ -93,8 +94,9 @@ public class CaseController {
     @PostMapping("/incidents/{id}/notes")
     public Map<String, Object> note(@PathVariable String id,
                                      @RequestParam String author,
-                                     @RequestParam String content) {
-        return service.addNote(id, author, content);
+                                     @RequestParam String content,
+                                     @RequestParam(required = false) String idempotencyKey) {
+        return service.addNote(id, author, content, idempotencyKey);
     }
 
     @GetMapping("/stats")

@@ -125,7 +125,7 @@ public class AlarmConsumer {
             if (alarmId == null) throw new IllegalArgumentException("alarm id is required");
             String tenant = text(alarm.get("tenantId"));
             if (tenant == null) tenant = text(alarm.get("tenant_id"));
-            if (tenant == null) tenant = "default";
+            if (tenant == null) throw new IllegalArgumentException("alarm tenant is required");
             if (!TenantContext.isValid(tenant)) throw new IllegalArgumentException("invalid alarm tenant");
             String severity = text(alarm.get("severity"));
             if (severity != null) Severity.valueOf(severity.toUpperCase(java.util.Locale.ROOT));

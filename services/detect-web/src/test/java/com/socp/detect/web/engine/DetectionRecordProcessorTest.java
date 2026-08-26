@@ -18,7 +18,7 @@ class DetectionRecordProcessorTest {
 
         DetectionRecordProcessor.NormalizedDetectionRecord record = processor.parse(
                 "ignored", """
-                        {"eventId":"evt-1","timestamp":"2026-08-23T00:00:00Z",
+                        {"eventId":"evt-1","tenantId":"default","timestamp":"2026-08-23T00:00:00Z",
                          "source":"auth","host":"web-1","severity":"high","msg":"login failed",
                          "fields":{"src_ip":"198.51.100.10","attempts":3}}
                         """);
@@ -39,5 +39,14 @@ class DetectionRecordProcessorTest {
                 () -> processor.parse("key", "{\"eventId\":\"evt-bad\",\"fields\":[]}"));
 
         assertEquals("evt-bad", error.eventId());
+    }
+
+    @Test
+    void rejectsMissingTenantAsTerminalPayload() {
+        DetectionRecordProcessor processor = new DetectionRecordProcessor(
+                mock(DetectEngineService.class), new InMemoryDetectionStateStore(), null);
+
+        assertThrows(DetectionRecordProcessor.MalformedDetectionRecordException.class,
+                () -> processor.parse("key", "{\"eventId\":\"evt-no-tenant\",\"fields\":{}}"));
     }
 }

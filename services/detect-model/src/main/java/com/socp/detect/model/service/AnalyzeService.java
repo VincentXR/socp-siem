@@ -158,7 +158,7 @@ public class AnalyzeService {
     private List<Alert> evaluateRules(String tenant, SecurityEvent event) {
         ruleStateLifecycle.readLock().lock();
         try {
-            TenantRules rules = rulesByTenant.computeIfAbsent(normalizeTenant(tenant),
+            TenantRules rules = rulesByTenant.computeIfAbsent(requireTenant(tenant),
                     ignored -> new TenantRules(Rules.defaultRules()));
             rules.touch();
             return rules.evaluate(event);
@@ -173,18 +173,25 @@ public class AnalyzeService {
 
     private static String tenant(Map<String, Object> alarm) {
         String context = TenantContext.get();
-        if (context != null && !context.isBlank()) return context;
+        if (context != null && !context.isBlank()) {
+            if (!TenantContext.isValid(context)) throw new IllegalStateException("invalid tenant context");
+            return context;
+        }
         Object carried = alarm.get("tenantId");
         if (carried == null) carried = alarm.get("tenant_id");
-        return normalizeTenant(carried == null ? null : String.valueOf(carried));
+        if (carried == null || String.valueOf(carried).isBlank()) return TenantContext.require();
+        String tenant = String.valueOf(carried).trim();
+        if (!TenantContext.isValid(tenant)) throw new IllegalArgumentException("invalid alarm tenant");
+        return tenant;
     }
 
     private static String currentTenant() {
-        return normalizeTenant(TenantContext.get());
+        return TenantContext.require();
     }
 
-    private static String normalizeTenant(String tenant) {
-        return tenant == null || tenant.isBlank() ? "default" : tenant;
+    private static String requireTenant(String tenant) {
+        if (!TenantContext.isValid(tenant)) throw new IllegalArgumentException("invalid tenant");
+        return tenant;
     }
 
     private static Alert toAlert(AnalyzedEntity entity) {

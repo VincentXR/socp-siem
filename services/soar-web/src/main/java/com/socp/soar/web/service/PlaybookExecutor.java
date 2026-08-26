@@ -231,7 +231,8 @@ public class PlaybookExecutor {
         String previous = TenantContext.get();
         Object carried = alarm == null ? null : alarm.get("tenantId");
         if (carried == null && alarm != null) carried = alarm.get("tenant_id");
-        String tenant = carried == null ? (previous == null ? "default" : previous) : String.valueOf(carried);
+        String tenant = carried == null ? (previous == null ? TenantContext.require() : previous)
+                : String.valueOf(carried);
         if (!TenantContext.isValid(tenant)) throw new IllegalArgumentException("invalid playbook tenant");
         try {
             TenantContext.set(tenant);
@@ -367,8 +368,7 @@ public class PlaybookExecutor {
     }
 
     private String tenant() {
-        String t = TenantContext.get();
-        return t == null ? "default" : t;
+        return TenantContext.require();
     }
 
     private static Map<String, Object> fromEntity(ExecutionEntity row) {

@@ -63,7 +63,7 @@ public class DetectionEventJournal implements DetectionStateStore {
         if (event == null || event.id() == null || event.id().isBlank()) {
             throw new IllegalArgumentException("event id is required");
         }
-        String tenant = event.tenantId();
+        String tenant = event.requireTenantId();
         var existing = repository.findByTenantIdAndSourceEventId(tenant, event.id());
         if (existing.isPresent()) return claimOf(existing.get());
 
@@ -100,7 +100,7 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Override
     @Transactional
     public void markCompleted(String eventId) {
-        markCompleted("default", eventId);
+        markCompleted(com.socp.platform.tenant.context.TenantContext.require(), eventId);
     }
 
     @Override
@@ -120,7 +120,7 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Override
     @Transactional
     public void markDeadLettered(String eventId, String reason) {
-        markDeadLettered("default", eventId, reason);
+        markDeadLettered(com.socp.platform.tenant.context.TenantContext.require(), eventId, reason);
     }
 
     @Override
@@ -141,7 +141,11 @@ public class DetectionEventJournal implements DetectionStateStore {
     public void recordDeadLettered(String eventId, String raw, Integer partition, Long offset,
                                    String reason) {
         if (eventId == null || eventId.isBlank() || "null".equalsIgnoreCase(eventId)) return;
-        String tenant = "default";
+        String tenant = com.socp.platform.tenant.context.TenantContext.get();
+        if (tenant == null || tenant.isBlank()) {
+            log.warn("Skipping terminal Detection journal row without a tenant eventId={}", eventId);
+            return;
+        }
         var existing = repository.findByTenantIdAndSourceEventId(tenant, eventId);
         if (existing.isPresent()) {
             markDeadLettered(tenant, eventId, reason);
@@ -159,7 +163,7 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Override
     @Transactional
     public void remove(String eventId) {
-        remove("default", eventId);
+        remove(com.socp.platform.tenant.context.TenantContext.require(), eventId);
     }
 
     @Override

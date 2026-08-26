@@ -150,8 +150,11 @@ public class OsEventWriter {
                 String index = "socp-events-" + INDEX_DATE.format(e.timestamp());
                 // Tenant-scoped stable ID turns redelivery into an idempotent
                 // overwrite without allowing equal source IDs to collide.
-                String documentId = e.fields().getOrDefault("tenant_id", "default")
-                        + "|" + e.eventId();
+                String tenant = e.fields() == null ? null : e.fields().get("tenant_id");
+                if (tenant == null || !com.socp.platform.tenant.context.TenantContext.isValid(tenant)) {
+                    throw new IllegalArgumentException("OpenSearch event tenant_id is required");
+                }
+                String documentId = tenant + "|" + e.eventId();
                 sb.append("{\"index\":{\"_index\":")
                         .append(MAPPER.writeValueAsString(index))
                         .append(",\"_id\":")

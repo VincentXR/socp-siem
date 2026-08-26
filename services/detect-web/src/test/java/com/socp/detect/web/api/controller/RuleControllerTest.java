@@ -6,6 +6,9 @@ import com.socp.detect.web.api.request.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.detect.web.engine.AlertStreamHub;
 import com.socp.detect.web.service.DetectEngineService;
+import com.socp.platform.tenant.context.TenantContext;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -45,6 +48,16 @@ class RuleControllerTest {
 
     @MockitoBean
     private AlertStreamHub streamHub;
+
+    @BeforeEach
+    void setTenant() {
+        TenantContext.set("default");
+    }
+
+    @AfterEach
+    void clearTenant() {
+        TenantContext.clear();
+    }
 
     @Test
     void updateInjectsPathIdBeforeDelegating() throws Exception {

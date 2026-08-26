@@ -34,8 +34,7 @@ public abstract class BaseEntity {
     @PrePersist
     void onCreate() {
         if (tenantId == null) {
-            tenantId = com.socp.platform.tenant.context.TenantContext.get();
-            if (tenantId == null || tenantId.isBlank()) tenantId = "default";
+            tenantId = com.socp.platform.tenant.context.TenantContext.require();
         }
         createdAt = Instant.now();
         updatedAt = createdAt;

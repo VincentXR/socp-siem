@@ -8,6 +8,7 @@ import com.socp.hips.web.persistence.entity.*;
 import com.socp.hips.web.domain.Endpoint;
 import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -30,6 +31,11 @@ import static org.mockito.Mockito.when;
  * HIPS 端点注册表单测：注册 / 心跳刷新 / 注销（repository 用 mock，走内存语义）。
  */
 class EndpointStoreTest {
+
+    @BeforeEach
+    void setTenant() {
+        TenantContext.set("default");
+    }
 
     @AfterEach
     void clearTenant() {
@@ -63,6 +69,7 @@ class EndpointStoreTest {
         }).when(repo).delete(any(EndpointEntity.class));
         EndpointStore store = new EndpointStore(repo);
         store.init();
+        TenantContext.set("default");
         return store;
     }
 

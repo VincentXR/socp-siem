@@ -62,18 +62,21 @@ public class SocpHttpClient {
     private final SocpClientProperties props;
     private final ObjectProvider<MeterRegistry> registry;
     private final ServiceRequestSigner requestSigner;
+    private final ExternalEndpointPolicy externalEndpointPolicy;
     private final HttpClient http;
 
     public SocpHttpClient(ServiceEndpoints endpoints,
                           ServiceTokenProvider tokens,
                           SocpClientProperties props,
                           ObjectProvider<MeterRegistry> registry,
-                          ServiceRequestSigner requestSigner) {
+                          ServiceRequestSigner requestSigner,
+                          ExternalEndpointPolicy externalEndpointPolicy) {
         this.endpoints = endpoints;
         this.tokens = tokens;
         this.props = props;
         this.registry = registry;
         this.requestSigner = requestSigner;
+        this.externalEndpointPolicy = externalEndpointPolicy;
         this.http = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofMillis(props.getConnectTimeoutMs()))
                 .version(HttpClient.Version.HTTP_1_1)
@@ -115,6 +118,13 @@ public class SocpHttpClient {
      * {@code external}；其余（超时 / 状态码检查 / 日志 / 指标）与内部调用完全一致。
      */
     public ServiceCall postExternal(String absoluteUrl, String body, String contentType, int timeoutMs) {
+        String policyError = externalEndpointPolicy.validate(absoluteUrl);
+        if (policyError != null) {
+            ServiceCall denied = new ServiceCall(null, absoluteUrl, false, -1, "",
+                    "External endpoint blocked: " + policyError, 0, false, 0);
+            record(denied);
+            return denied;
+        }
         return execute("POST", null, absoluteUrl, body, contentType == null ? JSON : contentType, timeoutMs);
     }
 
@@ -143,7 +153,7 @@ public class SocpHttpClient {
                 status = resp.statusCode();
                 respBody = resp.body() == null ? "" : resp.body();
                 error = null;
-                if (status == 401 || status == 403) {
+                if (target != null && (status == 401 || status == 403)) {
                     // token 可能过期/失效，作废缓存让下一次调用重新登录
                     tokens.invalidate();
                 }
@@ -180,12 +190,12 @@ public class SocpHttpClient {
     private HttpRequest build(String method, SocpService target, String url,
                               String body, String contentType, int timeoutMs) {
         URI uri = URI.create(url);
-        String tenant = tenant();
         HttpRequest.Builder b = HttpRequest.newBuilder(uri)
-                .timeout(Duration.ofMillis(timeoutMs > 0 ? timeoutMs : props.getRequestTimeoutMs()))
-                .header("Authorization", "Bearer " + tokens.token())
-                .header("X-Tenant-Id", tenant);
+                .timeout(Duration.ofMillis(timeoutMs > 0 ? timeoutMs : props.getRequestTimeoutMs()));
         if (target != null) {
+            String tenant = tenant();
+            b.header("Authorization", "Bearer " + tokens.token())
+                    .header("X-Tenant-Id", tenant);
             requestSigner.sign(b, method, uri, tenant);
         }
         String traceparent = TraceIdFilter.buildTraceparent();
@@ -206,8 +216,12 @@ public class SocpHttpClient {
      * 与网关的机机约定一致。
      */
     private static String tenant() {
-        String t = TenantContext.get();
-        return t == null || t.isBlank() ? "default" : t;
+        return TenantContext.require();
+    }
+
+    private static String tenantForLog() {
+        String tenant = TenantContext.get();
+        return tenant == null || tenant.isBlank() ? "-" : tenant;
     }
 
     private void record(ServiceCall call) {
@@ -237,7 +251,7 @@ public class SocpHttpClient {
                 call.status() < 0 ? "-" : call.status(),
                 call.attempts(),
                 call.durationMs(),
-                tenant(),
+                tenantForLog(),
                 MDC.get("traceId"),
                 call.retryable(),
                 call.error() == null ? "-" : call.error(),

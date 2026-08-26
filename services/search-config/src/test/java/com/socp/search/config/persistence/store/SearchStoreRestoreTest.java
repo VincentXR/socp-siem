@@ -7,6 +7,7 @@ import com.socp.search.config.persistence.repository.SearchEventRepository;
 
 import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -21,6 +22,11 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class SearchStoreRestoreTest {
+
+    @BeforeEach
+    void setTenant() {
+        TenantContext.set("default");
+    }
 
     @AfterEach
     void clearTenant() {

@@ -101,7 +101,7 @@ public class RuleController {
     /** Local HTTP ingress for verification; production events normally arrive through Kafka. */
     @PostMapping("/ingest")
     public ResponseEntity<DetectionIngestResponse> ingest(@Valid @RequestBody DetectionIngestRequest request) {
-        boolean accepted = engine.ingest(request.toSecurityEvent(TenantContext.get()));
+        boolean accepted = engine.ingest(request.toSecurityEvent(TenantContext.require()));
         Object queueLoad = engine.stats().get("queueLoad");
         if (!accepted) {
             return ResponseEntity.status(503).header("Retry-After", "2")
@@ -138,7 +138,7 @@ public class RuleController {
                     DetectionIngestRequest request = MAPPER.readValue(payload, DetectionIngestRequest.class);
                     if (!validator.validate(request).isEmpty()) {
                         rejected++;
-                    } else if (engine.ingest(request.toSecurityEvent(TenantContext.get()))) accepted++;
+                    } else if (engine.ingest(request.toSecurityEvent(TenantContext.require()))) accepted++;
                     else rejected++;
                 } catch (Exception malformed) {
                     rejected++;

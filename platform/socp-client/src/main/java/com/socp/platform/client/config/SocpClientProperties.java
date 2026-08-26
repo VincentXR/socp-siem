@@ -6,6 +6,9 @@ package com.socp.platform.client.config;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * 服务间调用的统一策略开关（{@code socp.client.*}）。全部有默认值，不配也能跑。
  */
@@ -42,6 +45,10 @@ public class SocpClientProperties {
 
     /** token 缓存时长（毫秒），默认 25 分钟（网关签发 30 分钟）。 */
     private long tokenTtlMs = 25 * 60 * 1000L;
+
+    private List<String> externalAllowedHosts = new ArrayList<>();
+    private boolean externalHttpsOnly = true;
+    private boolean externalAllowPrivateNetworks;
 
     public int getConnectTimeoutMs() {
         return connectTimeoutMs;
@@ -105,5 +112,30 @@ public class SocpClientProperties {
 
     public void setTokenTtlMs(long tokenTtlMs) {
         this.tokenTtlMs = tokenTtlMs;
+    }
+
+    public List<String> getExternalAllowedHosts() {
+        return List.copyOf(externalAllowedHosts);
+    }
+
+    public void setExternalAllowedHosts(List<String> externalAllowedHosts) {
+        this.externalAllowedHosts = externalAllowedHosts == null ? new ArrayList<>()
+                : new ArrayList<>(externalAllowedHosts);
+    }
+
+    public boolean isExternalHttpsOnly() {
+        return externalHttpsOnly;
+    }
+
+    public void setExternalHttpsOnly(boolean externalHttpsOnly) {
+        this.externalHttpsOnly = externalHttpsOnly;
+    }
+
+    public boolean isExternalAllowPrivateNetworks() {
+        return externalAllowPrivateNetworks;
+    }
+
+    public void setExternalAllowPrivateNetworks(boolean externalAllowPrivateNetworks) {
+        this.externalAllowPrivateNetworks = externalAllowPrivateNetworks;
     }
 }

@@ -138,7 +138,8 @@ public class AlertWindowAggregator {
     }
 
     private TenantWindow window(String tenantId) {
-        TenantWindow window = windows.computeIfAbsent(normalizeTenant(tenantId), ignored -> new TenantWindow());
+        if (!TenantContext.isValid(tenantId)) throw new IllegalArgumentException("invalid tenant");
+        TenantWindow window = windows.computeIfAbsent(tenantId, ignored -> new TenantWindow());
         window.lastAccessMillis = System.currentTimeMillis();
         return window;
     }
@@ -189,10 +190,7 @@ public class AlertWindowAggregator {
     }
 
     private static String currentTenant() {
-        return normalizeTenant(TenantContext.get());
+        return TenantContext.require();
     }
 
-    private static String normalizeTenant(String tenant) {
-        return tenant == null || tenant.isBlank() ? "default" : tenant;
-    }
 }

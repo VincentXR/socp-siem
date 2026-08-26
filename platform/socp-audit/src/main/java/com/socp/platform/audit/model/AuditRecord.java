@@ -17,8 +17,7 @@ public record AuditRecord(
     }
 
     public static AuditRecord of(String action, String target, String result) {
-        String tenant = com.socp.platform.tenant.context.TenantContext.get();
-        if (tenant == null || tenant.isBlank()) tenant = "default";
+        String tenant = com.socp.platform.tenant.context.TenantContext.require();
         return new AuditRecord(
                 java.util.UUID.randomUUID().toString(),
                 tenant,

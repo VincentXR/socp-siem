@@ -106,6 +106,11 @@ final class DetectionRecordProcessor {
             if (rawFields != null && rawFields.isObject()) {
                 rawFields.fields().forEachRemaining(entry -> fields.put(entry.getKey(), entry.getValue().asText()));
             }
+            String tenant = text(payload, "tenantId", text(payload, "tenant_id", fields.get("tenant_id")));
+            if (tenant == null || tenant.isBlank() || !com.socp.platform.tenant.context.TenantContext.isValid(tenant)) {
+                throw new IllegalArgumentException("event tenant is required and must be valid");
+            }
+            fields.put("tenant_id", tenant);
             String message = text(payload, "msg", text(payload, "message", ""));
             if (payload.has("msg") && !fields.containsKey("msg")) fields.put("msg", message);
             SecurityEvent event = new SecurityEvent(normalizeEventId(eventId), parseTimestamp(payload),

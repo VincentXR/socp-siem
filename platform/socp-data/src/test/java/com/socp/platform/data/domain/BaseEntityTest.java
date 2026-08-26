@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Instant;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class BaseEntityTest {
 
@@ -35,6 +36,15 @@ class BaseEntityTest {
         entity.setTenantId("tenant-b");
         entity.onCreate();
         assertThat(entity.getTenantId()).isEqualTo("tenant-b");
+    }
+
+    @Test
+    void missingTenantFailsClosed() {
+        TenantContext.clear();
+        TestEntity entity = new TestEntity();
+
+        assertThatThrownBy(entity::onCreate)
+                .isInstanceOf(IllegalStateException.class);
     }
 
     private static final class TestEntity extends BaseEntity {

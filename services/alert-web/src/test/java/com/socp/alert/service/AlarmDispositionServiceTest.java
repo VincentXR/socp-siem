@@ -7,6 +7,9 @@ import com.socp.alert.persistence.entity.DispositionEntity;
 import com.socp.alert.repository.*;
 import com.socp.alert.service.*;
 
+import com.socp.platform.tenant.context.TenantContext;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
@@ -19,6 +22,16 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class AlarmDispositionServiceTest {
+
+    @BeforeEach
+    void setTenant() {
+        TenantContext.set("default");
+    }
+
+    @AfterEach
+    void clearTenant() {
+        TenantContext.clear();
+    }
 
     @Test
     void readsTheRepositoryOnEveryRequest() {

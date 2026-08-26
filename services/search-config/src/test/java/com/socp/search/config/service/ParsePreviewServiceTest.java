@@ -1,6 +1,9 @@
 package com.socp.search.config.service;
 
 import com.socp.search.config.persistence.store.ParseRuleStore;
+import com.socp.platform.tenant.context.TenantContext;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
@@ -12,6 +15,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 解析预览单测：REGEX 命名分组 + KV + JSON 展平。
  */
 class ParsePreviewServiceTest {
+
+    @BeforeEach
+    void setTenant() {
+        TenantContext.set("default");
+    }
+
+    @AfterEach
+    void clearTenant() {
+        TenantContext.clear();
+    }
 
     private final ParsePreviewService service = new ParsePreviewService(new ParseRuleStore());
 

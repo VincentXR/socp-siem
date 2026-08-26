@@ -40,6 +40,7 @@ socp:
     jwk-set-uri: ${SOCP_SECURITY_JWK_SET_URI:}
     audience: ${SOCP_SECURITY_AUDIENCE:socp-api}
     dev-bypass: ${SOCP_DEV_BYPASS:false}
+    metrics-token: ${SOCP_SECURITY_METRICS_TOKEN:socp-demo-metrics-token}
   audit:
     sink: memory          # 本地切片：内存；Docker 环境：kafka
     topic: socp-audit
@@ -84,4 +85,4 @@ management:
         include: health,info,metrics,prometheus
   endpoint:
     health:
-      show-details: always
+      show-details: never

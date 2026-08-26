@@ -28,6 +28,10 @@ scrape_configs:
   # ── 网关：无 context-path，指标走根路径。当前唯一真正暴露 prometheus 端点的服务 ──
   - job_name: 'socp-gateway'
     metrics_path: /actuator/prometheus
+    http_config:
+      authorization:
+        type: Bearer
+        credentials: ${SOCP_SECURITY_METRICS_TOKEN}
     static_configs:
       - targets: ['host.docker.internal:18092']
         labels:
@@ -39,6 +43,10 @@ scrape_configs:
   # 端口分配以 build/run-all.sh 的 BACKENDS 数组为唯一事实来源。
   # 这些服务均暴露 prometheus 端点；服务名标签用于动态拼接 context-path。
   - job_name: 'socp-services'
+    http_config:
+      authorization:
+        type: Bearer
+        credentials: ${SOCP_SECURITY_METRICS_TOKEN}
     static_configs:
       - targets: ['host.docker.internal:18080']
         labels: { service: alert-web }        # 告警 CRUD（H2）

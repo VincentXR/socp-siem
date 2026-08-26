@@ -76,7 +76,7 @@ public class LogSourceEntity {
     @PrePersist
     void onCreate() {
         if (tenantId == null) {
-            tenantId = TenantContext.get();
+            tenantId = TenantContext.require();
         }
     }
 

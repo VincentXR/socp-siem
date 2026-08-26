@@ -6,6 +6,7 @@ import com.socp.detect.web.persistence.store.*;
 import com.socp.detect.web.persistence.repository.*;
 import com.socp.detect.web.persistence.entity.*;
 import com.socp.detect.web.engine.DetectionAlertOutboxPublisher;
+import com.socp.platform.tenant.context.TenantContext;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
@@ -40,15 +41,15 @@ public class DetectionAlertOutboxService {
      */
     @Transactional
     public void enqueue(String alertId, String tenantId, String payload) {
-        if (alertId == null || alertId.isBlank() || payload == null || payload.isBlank()) {
-            throw new IllegalArgumentException("alertId and payload are required");
+        if (alertId == null || alertId.isBlank() || payload == null || payload.isBlank()
+                || !TenantContext.isValid(tenantId)) {
+            throw new IllegalArgumentException("alertId, tenantId and payload are required");
         }
         if (repository.existsById(alertId)) return;
         Instant now = Instant.now();
         try {
             repository.saveAndFlush(new DetectionAlertOutboxEntity(
-                    alertId, tenantId == null || tenantId.isBlank() ? "default" : tenantId,
-                    payload, now));
+                    alertId, tenantId, payload, now));
             scheduleOutboxTrigger();
         } catch (DataIntegrityViolationException duplicate) {
             // The primary key is the final arbiter when two workers replay the

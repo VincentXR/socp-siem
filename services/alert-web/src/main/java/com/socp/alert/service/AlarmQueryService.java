@@ -65,7 +65,6 @@ public class AlarmQueryService {
     }
 
     static String tenant() {
-        String tenant = TenantContext.get();
-        return tenant == null || tenant.isBlank() ? "default" : tenant;
+        return TenantContext.require();
     }
 }

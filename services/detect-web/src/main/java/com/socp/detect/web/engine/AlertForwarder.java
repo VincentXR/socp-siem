@@ -79,7 +79,7 @@ public class AlertForwarder {
         if (alerts == null) alerts = List.of();
         for (Alert alert : alerts) forwardOne(alert);
         if (stateStore != null && eventId != null && !eventId.isBlank()) {
-            stateStore.markCompleted(eventId);
+            stateStore.markCompleted(TenantContext.require(), eventId);
         }
     }
 
@@ -153,7 +153,7 @@ public class AlertForwarder {
         }
         String current = TenantContext.get();
         if (current != null && !current.isBlank()) return current;
-        return "default";
+        return TenantContext.require();
     }
 
     private static String toJson(Map<String, Object> payload) {

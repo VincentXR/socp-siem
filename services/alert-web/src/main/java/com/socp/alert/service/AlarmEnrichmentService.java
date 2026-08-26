@@ -120,7 +120,7 @@ public class AlarmEnrichmentService {
             executor().execute(() -> {
                 String previous = TenantContext.get();
                 try {
-                    TenantContext.set(alarm.getTenantId() == null ? "default" : alarm.getTenantId());
+                    TenantContext.set(alarm.getTenantId());
                     enrich(alarm);
                 } catch (RuntimeException failure) {
                     log.warn("Threat enrichment failed alarmId={} entity={} reason={}",

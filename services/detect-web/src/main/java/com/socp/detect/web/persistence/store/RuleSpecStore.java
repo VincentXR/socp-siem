@@ -223,8 +223,7 @@ public class RuleSpecStore {
     }
 
     public String tenant() {
-        String t = TenantContext.get();
-        return t == null ? "default" : t;
+        return TenantContext.require();
     }
 
     public boolean isEmpty() {

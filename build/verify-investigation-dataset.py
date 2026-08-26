@@ -29,6 +29,8 @@ def main() -> int:
         expected = case["expected"]
         assert "alert:" in expected["requiredCitationPrefixes"]
         assert "evidence:" in expected["requiredCitationPrefixes"]
+        assert all(isinstance(value, str) and value for value in expected["requiredCitationPrefixes"])
+        assert all(isinstance(value, str) and value for value in expected["requiredTimelineTypes"])
         assert expected["requiresHumanApproval"] is True
     print(f"[PASS] {payload['version']} seed={payload['seed']} cases={len(cases)}")
     return 0

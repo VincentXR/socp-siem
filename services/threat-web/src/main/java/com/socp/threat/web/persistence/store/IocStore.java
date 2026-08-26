@@ -43,7 +43,12 @@ public class IocStore {
     @PostConstruct
     void seed() {
         if (!demoDataEnabled) return;
-        if (repo.countByTenantId("default") > 0) return;
+        com.socp.platform.tenant.context.TenantContext.set("default");
+        try {
+        if (repo.countByTenantId("default") > 0) {
+            com.socp.platform.tenant.context.TenantContext.clear();
+            return;
+        }
         add(Ioc.of("IP", "45.146.165.37", "CRITICAL", "AlienVault OTX", "已知 C2 回连地址", List.of("c2", "malware")));
         add(Ioc.of("IP", "185.220.101.1", "HIGH", "Tor Exit", "Tor 出口节点", List.of("tor", "anonymizer")));
         add(Ioc.of("IP", "10.0.0.66", "HIGH", "内部研判", "内网失陷主机（模拟）", List.of("compromised")));
@@ -52,6 +57,9 @@ public class IocStore {
         add(Ioc.of("URL", "http://45.146.165.37/payload.bin", "CRITICAL", "AlienVault OTX", "恶意载荷下载", List.of("malware", "c2")));
         add(Ioc.of("SHA256", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "HIGH", "VirusTotal", "可疑样本哈希", List.of("malware")));
         add(Ioc.of("EMAIL", "attacker@evil.com", "MEDIUM", "内部研判", "攻击者邮箱", List.of("phishing")));
+        } finally {
+            com.socp.platform.tenant.context.TenantContext.clear();
+        }
     }
 
     private final Map<String, Ioc> cache = new java.util.concurrent.ConcurrentHashMap<>();
@@ -64,8 +72,7 @@ public class IocStore {
 
     public List<Ioc> list(String type) {
         // 租户隔离：只返回当前租户 IOC（无上下文按 default）
-        String tenant = com.socp.platform.tenant.context.TenantContext.get();
-        if (tenant == null) tenant = "default";
+        String tenant = com.socp.platform.tenant.context.TenantContext.require();
         final String t = tenant;
         List<Ioc> all = new ArrayList<>();
         for (IocEntity e : repo.findByTenantId(t)) all.add(fromEntity(e));
@@ -150,8 +157,7 @@ public class IocStore {
     }
 
     private static String tenant() {
-        String tenant = com.socp.platform.tenant.context.TenantContext.get();
-        return tenant == null || tenant.isBlank() ? "default" : tenant;
+        return com.socp.platform.tenant.context.TenantContext.require();
     }
 
     // ---- 互转 ----

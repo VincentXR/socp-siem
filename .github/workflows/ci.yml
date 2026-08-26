@@ -64,6 +64,7 @@ jobs:
         run: |
           python3 build/validate-detection-content.py
           python3 build/verify-investigation-dataset.py
+          python3 build/eval-investigation.py
 
       - name: Install frontend deps (pnpm frozen lockfile)
         run: pnpm install --frozen-lockfile
@@ -165,7 +166,8 @@ jobs:
         run: |
           mkdir -p .cache
           # CI deliberately exercises the PostgreSQL-backed slice. Local
-          # development defaults to the cheaper H2 `local` profile.
+          # Development uses PostgreSQL so slice checks exercise claim and
+          # transaction semantics close to the deployed path.
           SOCP_RUNTIME_PROFILES=pg bash build/run-slice.sh start || true
           python3 - <<'EOF'
           import time

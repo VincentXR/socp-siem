@@ -98,8 +98,7 @@ final class TenantCatalog<T> {
     }
 
     private static String tenant() {
-        String tenant = TenantContext.get();
-        return tenant == null || tenant.isBlank() ? "default" : tenant;
+        return TenantContext.require();
     }
 
     private String serialize(T value) {

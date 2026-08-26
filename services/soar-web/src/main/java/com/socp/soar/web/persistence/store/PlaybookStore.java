@@ -41,7 +41,13 @@ public class PlaybookStore {
         this.repo = repo;
         this.demoDataEnabled = properties.isDemoDataEnabled();
         if (demoDataEnabled && repo.countByTenantId("default") == 0) {
-            seed();
+            String previous = TenantContext.get();
+            try {
+                TenantContext.set("default");
+                seed();
+            } finally {
+                if (previous == null) TenantContext.clear(); else TenantContext.set(previous);
+            }
         }
     }
 
@@ -52,8 +58,7 @@ public class PlaybookStore {
     }
 
     private String tenant() {
-        String t = TenantContext.get();
-        return t == null ? "default" : t;
+        return TenantContext.require();
     }
 
     private void seed() {

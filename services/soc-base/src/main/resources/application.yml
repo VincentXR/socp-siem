@@ -30,6 +30,7 @@ socp:
     jwk-set-uri: ${SOCP_SECURITY_JWK_SET_URI:}
     audience: ${SOCP_SECURITY_AUDIENCE:socp-api}
     dev-bypass: ${SOCP_DEV_BYPASS:false}
+    metrics-token: ${SOCP_SECURITY_METRICS_TOKEN:socp-demo-metrics-token}
   kafka:
     # 审计消费链路：订阅各服务 @AuditOperation → socp-audit 主题，落 t_audit 表。
     # 生产环境可用 SOCP_KAFKA_BOOTSTRAP 覆盖。

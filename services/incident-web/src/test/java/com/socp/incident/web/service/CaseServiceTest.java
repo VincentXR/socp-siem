@@ -4,6 +4,8 @@ import com.socp.incident.web.domain.Case;
 import com.socp.incident.web.persistence.store.CaseStore;
 import com.socp.incident.web.persistence.repository.AlarmCaseLinkRepository;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -16,9 +18,20 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import com.socp.platform.tenant.context.TenantContext;
 
 @ExtendWith(MockitoExtension.class)
 class CaseServiceTest {
+
+    @BeforeEach
+    void setTenant() {
+        TenantContext.set("default");
+    }
+
+    @AfterEach
+    void clearTenant() {
+        TenantContext.clear();
+    }
 
     @Mock
     private CaseStore store;

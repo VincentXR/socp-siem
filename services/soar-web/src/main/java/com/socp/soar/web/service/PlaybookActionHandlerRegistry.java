@@ -91,9 +91,6 @@ public class PlaybookActionHandlerRegistry {
             if (endpoint.isBlank()) {
                 return failed("CONNECTOR_NOT_CONFIGURED", "no endpoint is configured for " + type.wireName());
             }
-            String endpointError = validateEndpoint(endpoint);
-            if (endpointError != null) return failed("INVALID_CONNECTOR_ENDPOINT", endpointError);
-
             ServiceCall call = http.postExternal(endpoint, context.payloadJson(), SocpHttpClient.JSON,
                     Math.max(100, timeoutMs));
             Map<String, Object> result = verifiedCall(type.wireName(), call, false);
@@ -123,19 +120,6 @@ public class PlaybookActionHandlerRegistry {
             return result;
         }
 
-        private static String validateEndpoint(String raw) {
-            try {
-                java.net.URI uri = java.net.URI.create(raw);
-                String scheme = uri.getScheme();
-                if (scheme == null || (!scheme.equalsIgnoreCase("http") && !scheme.equalsIgnoreCase("https"))) {
-                    return "connector endpoint must use HTTP or HTTPS";
-                }
-                if (uri.getHost() == null || uri.getHost().isBlank()) return "connector endpoint host is empty";
-                return null;
-            } catch (Exception ex) {
-                return "invalid connector endpoint: " + ex.getMessage();
-            }
-        }
     }
 
     private static final class WebhookHandler implements PlaybookActionHandler {
@@ -153,40 +137,9 @@ public class PlaybookActionHandlerRegistry {
         @Override
         public Map<String, Object> handle(PlaybookActionContext context) {
             String url = context.action();
-            String ssrfError = validateSsrf(url);
-            if (ssrfError != null) {
-                Map<String, Object> result = new LinkedHashMap<>();
-                result.put("status", PlaybookActionStatus.FAILED.wireValue());
-                result.put("mode", "BLOCKED");
-                result.put("verified", false);
-                result.put("errorCode", "SSRF_BLOCKED");
-                result.put("error", ssrfError);
-                return result;
-            }
             ServiceCall call = http.postExternal(url, context.payloadJson(),
                     SocpHttpClient.JSON, WEBHOOK_TIMEOUT_MS);
             return verifiedCall("webhook", call, false);
-        }
-
-        private static String validateSsrf(String rawUrl) {
-            if (rawUrl == null || rawUrl.isBlank()) return "webhook URL is empty";
-            try {
-                java.net.URI uri = java.net.URI.create(rawUrl.trim());
-                String scheme = uri.getScheme();
-                if (scheme == null || (!scheme.equalsIgnoreCase("http") && !scheme.equalsIgnoreCase("https"))) {
-                    return "invalid webhook scheme: " + scheme + " (only HTTP/HTTPS allowed)";
-                }
-                String host = uri.getHost();
-                if (host == null || host.isBlank()) {
-                    return "invalid webhook host";
-                }
-                if ("169.254.169.254".equals(host) || "255.255.255.255".equals(host) || "0.0.0.0".equals(host)) {
-                    return "access to cloud metadata or link-local IP is blocked: " + host;
-                }
-                return null;
-            } catch (Exception ex) {
-                return "invalid webhook URL format: " + ex.getMessage();
-            }
         }
     }
 

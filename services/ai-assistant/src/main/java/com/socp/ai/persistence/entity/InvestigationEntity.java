@@ -42,6 +42,12 @@ public class InvestigationEntity {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
+    @Column(name = "claim_owner", length = 128)
+    private String claimOwner;
+
+    @Column(name = "claim_until")
+    private Instant claimUntil;
+
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
     public String getTenantId() { return tenantId; }
@@ -60,4 +66,8 @@ public class InvestigationEntity {
     public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
+    public String getClaimOwner() { return claimOwner; }
+    public void setClaimOwner(String claimOwner) { this.claimOwner = claimOwner; }
+    public Instant getClaimUntil() { return claimUntil; }
+    public void setClaimUntil(Instant claimUntil) { this.claimUntil = claimUntil; }
 }

@@ -20,6 +20,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.BDDMockito.given;
@@ -46,6 +47,8 @@ class InvestigationAgentServiceTest {
         InvestigationProperties properties = properties();
 
         given(repository.findByTenantIdAndAlertId("tenant-a", "AL-1")).willReturn(Optional.empty());
+        given(repository.claim(anyString(), anyString(), anyString(), any(), any())).willReturn(1);
+        given(repository.complete(anyString(), anyString(), anyString(), anyString(), anyString(), any())).willReturn(1);
         given(alerts.getAlarm("AL-1")).willReturn(ok("{\"data\":{\"id\":\"AL-1\",\"ruleId\":\"AUTH-PRIVESC\",\"entity\":\"host-1\",\"severity\":\"HIGH\",\"message\":\"sudo\",\"occurredAt\":\"2026-08-20T10:00:00Z\"}}", SocpService.ALERT));
         given(alerts.evidence("AL-1")).willReturn(ok("{\"data\":{\"items\":[{\"eventId\":\"EV-1\",\"timestamp\":\"2026-08-20T09:59:00Z\",\"raw\":\"sudo -l\",\"src_ip\":\"10.1.2.3\"}]}}", SocpService.ALERT));
         given(search.search(anyString())).willReturn(ok("{\"events\":[{\"eventId\":\"EV-1\",\"timestamp\":\"2026-08-20T09:59:00Z\",\"msg\":\"sudo -l\"}]}", SocpService.SEARCH));
@@ -80,7 +83,8 @@ class InvestigationAgentServiceTest {
         entity.setStatus("COMPLETED");
         entity.setResultJson("{\"alertId\":\"AL-1\",\"alert\":{\"id\":\"AL-1\"},\"analysis\":\"bounded\",\"recommendedSpl\":\"host=h\",\"citations\":[]}");
         given(repository.findByIdAndTenantId("INV-1", "tenant-a")).willReturn(Optional.of(entity));
-        given(incidents.addNote(anyString(), anyString(), anyString())).willReturn(ok("{}", SocpService.INCIDENT));
+        given(repository.markAppended(anyString(), anyString(), anyString(), any(), anyString(), any())).willReturn(1);
+        given(incidents.addNote(anyString(), anyString(), anyString(), anyString())).willReturn(ok("{}", SocpService.INCIDENT));
         AuditSink audit = mock(AuditSink.class);
         InvestigationAgentService service = new InvestigationAgentService(
                 repository, mock(AlertClient.class), mock(SearchClient.class), incidents,
@@ -91,7 +95,29 @@ class InvestigationAgentServiceTest {
 
         assertThat(first.get("summaryAppended")).isEqualTo(true);
         assertThat(second.get("duplicate")).isEqualTo(true);
-        verify(incidents).addNote(anyString(), anyString(), anyString());
+        verify(incidents).addNote(anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void aLiveInvestigationCannotBeClaimedByASecondInstance() {
+        TenantContext.set("tenant-a");
+        InvestigationRepository repository = mock(InvestigationRepository.class);
+        InvestigationEntity running = new InvestigationEntity();
+        running.setId("INV-1");
+        running.setTenantId("tenant-a");
+        running.setAlertId("AL-1");
+        running.setStatus("RUNNING");
+        running.setResultJson("{}");
+        given(repository.findByTenantIdAndAlertId("tenant-a", "AL-1")).willReturn(Optional.of(running));
+        given(repository.claim(anyString(), anyString(), anyString(), any(), any())).willReturn(0);
+
+        InvestigationAgentService service = new InvestigationAgentService(
+                repository, mock(AlertClient.class), mock(SearchClient.class), mock(IncidentClient.class),
+                mock(ThreatClient.class), mock(LlmChatClient.class), mock(AuditSink.class), properties());
+
+        assertThatThrownBy(() -> service.investigate("AL-1"))
+                .isInstanceOf(com.socp.platform.error.exception.ApiException.class)
+                .extracting("code").isEqualTo(409);
     }
 
     private static InvestigationProperties properties() {

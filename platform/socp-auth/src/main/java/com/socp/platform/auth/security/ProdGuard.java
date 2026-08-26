@@ -34,6 +34,7 @@ public class ProdGuard {
     private static final String DEMO_JWT_SECRET = "socp-demo-jwt-secret-0123456789abcdef0123456789abcdef";
     private static final String DEMO_INGEST_TOKEN = "dev-vector-token";
     private static final String DEMO_SERVICE_SECRET = "socp-demo-service-secret-change-me";
+    private static final String DEMO_METRICS_TOKEN = "socp-demo-metrics-token";
 
     public ProdGuard(Environment env) {
         List<String> violations = new ArrayList<>();
@@ -88,6 +89,13 @@ public class ProdGuard {
             violations.add("socp.security.service-secret is not configured");
         } else if (DEMO_SERVICE_SECRET.equals(serviceSecret)) {
             violations.add("socp.security.service-secret uses the development default");
+        }
+
+        String metricsToken = env.getProperty("socp.security.metrics-token", "");
+        if (metricsToken.isBlank()) {
+            violations.add("socp.security.metrics-token is not configured");
+        } else if (DEMO_METRICS_TOKEN.equals(metricsToken)) {
+            violations.add("socp.security.metrics-token uses the development default");
         }
 
         if (!"true".equalsIgnoreCase(env.getProperty("socp.temporal.enabled", "true"))) {

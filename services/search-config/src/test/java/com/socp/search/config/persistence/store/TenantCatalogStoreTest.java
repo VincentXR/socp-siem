@@ -8,12 +8,18 @@ import com.socp.search.config.persistence.entity.*;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.search.config.domain.SinkTarget;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class TenantCatalogStoreTest {
+
+    @BeforeEach
+    void setTenant() {
+        TenantContext.set("default");
+    }
 
     @AfterEach
     void clearTenant() {

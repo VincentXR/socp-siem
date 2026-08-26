@@ -32,6 +32,7 @@ public final class InMemoryDetectionStateStore implements DetectionStateStore {
         if (event == null || event.id() == null || event.id().isBlank()) {
             throw new IllegalArgumentException("event id is required");
         }
+        event.requireTenantId();
         Entry existing = events.get(event.scopedId());
         if (existing != null) return existing.status() == DetectionEventStatus.PENDING
                 ? DetectionEventClaim.PENDING
@@ -56,7 +57,7 @@ public final class InMemoryDetectionStateStore implements DetectionStateStore {
 
     @Override
     public void markCompleted(String eventId) {
-        markCompleted("default", eventId);
+        markCompleted(com.socp.platform.tenant.context.TenantContext.require(), eventId);
     }
 
     @Override
@@ -67,7 +68,7 @@ public final class InMemoryDetectionStateStore implements DetectionStateStore {
 
     @Override
     public void markDeadLettered(String eventId, String reason) {
-        markDeadLettered("default", eventId, reason);
+        markDeadLettered(com.socp.platform.tenant.context.TenantContext.require(), eventId, reason);
     }
 
     @Override
@@ -80,16 +81,18 @@ public final class InMemoryDetectionStateStore implements DetectionStateStore {
     public void recordDeadLettered(String eventId, String raw, Integer partition, Long offset,
                                    String reason) {
         if (eventId == null || eventId.isBlank() || "null".equalsIgnoreCase(eventId)) return;
-        events.putIfAbsent("default|" + eventId, new Entry(
+        String tenant = com.socp.platform.tenant.context.TenantContext.get();
+        if (tenant == null || tenant.isBlank()) return;
+        events.putIfAbsent(tenant + "|" + eventId, new Entry(
                 new SecurityEvent(eventId, Instant.now(), "unknown", "unknown", raw,
-                        Map.of(), com.socp.rule.model.Severity.INFO),
+                        Map.of("tenant_id", tenant), com.socp.rule.model.Severity.INFO),
                 partition, offset, null, DetectionEventStatus.DEAD_LETTERED));
         markDeadLettered(eventId, reason);
     }
 
     @Override
     public void remove(String eventId) {
-        remove("default", eventId);
+        remove(com.socp.platform.tenant.context.TenantContext.require(), eventId);
     }
 
     @Override

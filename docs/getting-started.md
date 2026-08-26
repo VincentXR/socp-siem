@@ -69,26 +69,27 @@ docker compose -f infra/docker-compose.yml --profile extra up -d
 
 ## Runtime configuration
 
-The startup scripts use the explicit `local` profile by default. `local` uses
-H2/file-backed storage for the lightweight workstation path. Use
-`SOCP_RUNTIME_PROFILES=integration` when PostgreSQL-backed behavior is needed;
-the services with an `application-integration.yml` overlay import their
-`application-pg.yml` settings. Use `SOCP_RUNTIME_PROFILES=prod` only with
+The startup scripts use the explicit `dev,pg` profiles by default. This keeps
+the core relational services on PostgreSQL so local verification exercises
+real transaction and uniqueness semantics. Use `SOCP_RUNTIME_PROFILES=dev` for
+the intentional all-H2 fallback. Use `SOCP_RUNTIME_PROFILES=prod` only with
 explicit production environment configuration; `ProdGuard` rejects H2, demo
 credentials, authentication bypass, the default ingest token, and disabled
 Temporal.
 
 The three modes are intentionally exclusive at the launcher level:
 
-- `local`: disposable or file-backed H2, development middleware defaults;
-- `integration`: PostgreSQL overlays and shared middleware for cross-service
-  verification;
+- `dev,pg`: PostgreSQL-backed core services plus development defaults;
+- `dev`: disposable or file-backed H2, development middleware defaults;
 - `prod`: PostgreSQL/JWKS or explicitly approved security settings, no demo
   data or simulator fallback.
 
 Important variables include `SOCP_JWT_SECRET`, `SOCP_RUNTIME_PROFILES`,
 `SOCP_RATELIMIT_BACKEND`, `SOCP_RULE_STATE_MAX_KEYS`, PostgreSQL connection
-settings, OIDC settings, and the Vector ingest token. `build/ports.env`
+settings, OIDC settings, the Vector ingest token, and
+`SOCP_SECURITY_METRICS_TOKEN`. External Notify/SOAR connectors also require
+`SOCP_CLIENT_EXTERNAL_ALLOWED_HOSTS`; HTTPS and public DNS resolution are
+enforced by default. `build/ports.env`
 documents the service URL overrides used by scripts and gateway configuration.
 
 ## Verification

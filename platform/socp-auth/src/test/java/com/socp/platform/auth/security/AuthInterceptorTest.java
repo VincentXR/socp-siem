@@ -105,6 +105,8 @@ class AuthInterceptorTest {
     void staticIngestCredentialCannotSelectAnotherTenant() throws Exception {
         properties.setIngestToken("fixed-ingest-token");
         MockHttpServletRequest request = request("fixed-ingest-token", "analyst", "tenant-b");
+        request.setMethod("POST");
+        request.setRequestURI("/search-config/api/v1/ingest");
 
         ApiException rejected = assertThrows(ApiException.class,
                 () -> interceptor.preHandle(request, new MockHttpServletResponse(), protectedHandler()));
@@ -112,16 +114,55 @@ class AuthInterceptorTest {
         assertEquals(401, rejected.getCode());
     }
 
+    @Test
+    void staticIngestCredentialIsLimitedToTheIngestEndpoint() throws Exception {
+        properties.setIngestToken("fixed-ingest-token");
+        MockHttpServletRequest request = request("fixed-ingest-token", null, null);
+        request.setMethod("POST");
+        request.setRequestURI("/search-config/api/v1/ingest");
+
+        assertTrue(interceptor.preHandle(request, new MockHttpServletResponse(), ingestHandler()));
+        assertEquals("default", TenantContext.get());
+    }
+
+    @Test
+    void metricsCredentialIsLimitedToReadOnlyMetrics() throws Exception {
+        properties.setMetricsToken("metrics-token");
+        MockHttpServletRequest request = request("metrics-token", null, null);
+        request.setMethod("GET");
+        request.setRequestURI("/alert-web/actuator/prometheus");
+
+        assertTrue(interceptor.preHandle(request, new MockHttpServletResponse(), metricsHandler()));
+        assertEquals("default", TenantContext.get());
+
+        MockHttpServletRequest rejectedRequest = request("metrics-token", null, null);
+        rejectedRequest.setMethod("POST");
+        rejectedRequest.setRequestURI("/alert-web/api/v1/alarms");
+        ApiException rejected = assertThrows(ApiException.class,
+                () -> interceptor.preHandle(rejectedRequest, new MockHttpServletResponse(), metricsHandler()));
+        assertEquals(403, rejected.getCode());
+    }
+
     private static MockHttpServletRequest request(String token, String role, String tenant) {
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.addHeader("Authorization", "Bearer " + token);
-        request.addHeader("X-Role", role);
+        if (role != null) request.addHeader("X-Role", role);
         if (tenant != null) request.addHeader("X-Tenant-Id", tenant);
         return request;
     }
 
     private static HandlerMethod protectedHandler() throws NoSuchMethodException {
         Method method = ProtectedHandler.class.getMethod("write");
+        return new HandlerMethod(new ProtectedHandler(), method);
+    }
+
+    private static HandlerMethod ingestHandler() throws NoSuchMethodException {
+        Method method = ProtectedHandler.class.getMethod("ingest");
+        return new HandlerMethod(new ProtectedHandler(), method);
+    }
+
+    private static HandlerMethod metricsHandler() throws NoSuchMethodException {
+        Method method = ProtectedHandler.class.getMethod("metrics");
         return new HandlerMethod(new ProtectedHandler(), method);
     }
 
@@ -138,6 +179,12 @@ class AuthInterceptorTest {
     static class ProtectedHandler {
         @RequireRole({"admin", "analyst"})
         public void write() {
+        }
+
+        public void ingest() {
+        }
+
+        public void metrics() {
         }
     }
 }

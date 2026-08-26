@@ -29,8 +29,16 @@ public class IncidentClient {
 
     /** Append an analyst-approved investigation summary to a case timeline. */
     public ServiceCall addNote(String caseId, String author, String content) {
+        return addNote(caseId, author, content, null);
+    }
+
+    /** Append a note with a stable key so a remote success can be safely replayed. */
+    public ServiceCall addNote(String caseId, String author, String content, String idempotencyKey) {
         String id = encode(caseId);
         String query = "?author=" + encode(author) + "&content=" + encode(content);
+        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+            query += "&idempotencyKey=" + encode(idempotencyKey);
+        }
         return http.postJson(SocpService.INCIDENT, "/api/v1/incidents/" + id + "/notes" + query, "{}");
     }
 

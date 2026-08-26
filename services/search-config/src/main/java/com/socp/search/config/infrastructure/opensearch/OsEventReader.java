@@ -105,8 +105,7 @@ public class OsEventReader {
         sort.addObject().putObject("timestamp").put("order", "desc");
 
         ObjectNode bool = root.putObject("query").putObject("bool");
-        String tenant = TenantContext.get();
-        if (tenant == null || tenant.isBlank()) tenant = "default";
+        String tenant = TenantContext.require();
         bool.putArray("filter").addObject().putObject("term")
                 .put("fields.tenant_id.keyword", tenant);
         if (query == null || query.isBlank()) {

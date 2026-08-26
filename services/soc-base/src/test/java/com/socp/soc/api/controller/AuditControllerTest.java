@@ -4,6 +4,9 @@ import com.socp.soc.api.request.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.audit.model.AuditRecord;
 import com.socp.platform.audit.spi.AuditSink;
+import com.socp.platform.tenant.context.TenantContext;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import com.socp.soc.persistence.repository.AuditRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -28,6 +31,16 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc(addFilters = false)
 @TestPropertySource(properties = {"socp.security.dev-bypass=true"})
 class AuditControllerTest {
+
+    @BeforeEach
+    void setTenant() {
+        TenantContext.set("default");
+    }
+
+    @AfterEach
+    void clearTenant() {
+        TenantContext.clear();
+    }
 
     @Autowired
     private MockMvc mvc;

@@ -98,6 +98,7 @@ socp:
     jwk-set-uri: ${SOCP_SECURITY_JWK_SET_URI:}
     audience: ${SOCP_SECURITY_AUDIENCE:socp-api}
     dev-bypass: ${SOCP_DEV_BYPASS:false}
+    metrics-token: ${SOCP_SECURITY_METRICS_TOKEN:socp-demo-metrics-token}
     service-secret: ${SOCP_SECURITY_SERVICE_SECRET:}
   auth:
     # 本地账号表由 application-dev.yml 提供（仅 dev profile）；生产请接 Keycloak/OIDC 或外部身份源。
@@ -127,4 +128,4 @@ management:
         include: health,info,gateway,prometheus
   endpoint:
     health:
-      show-details: always
+      show-details: never

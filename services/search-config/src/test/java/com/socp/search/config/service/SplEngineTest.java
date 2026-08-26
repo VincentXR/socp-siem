@@ -7,6 +7,9 @@ import com.socp.search.config.persistence.store.SearchStore;
 
 import com.socp.search.config.persistence.store.ParseRuleStore;
 import com.socp.search.config.service.ParsePreviewService;
+import com.socp.platform.tenant.context.TenantContext;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.domain.Example;
 import org.springframework.data.domain.Page;
@@ -27,6 +30,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * SPL 引擎单测：条件过滤 + 管道统计。
  */
 class SplEngineTest {
+
+    @BeforeEach
+    void setTenant() {
+        TenantContext.set("default");
+    }
+
+    @AfterEach
+    void clearTenant() {
+        TenantContext.clear();
+    }
 
     private final SplEngine engine = new SplEngine();
     /** 空仓储：findAll 返回空触发种子数据，save 不落库——仅测 SPL 逻辑；OpenSearch/Kafka 写器置 null 跳过 */

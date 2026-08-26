@@ -38,6 +38,7 @@ socp:
     jwk-set-uri: ${SOCP_SECURITY_JWK_SET_URI:}
     audience: ${SOCP_SECURITY_AUDIENCE:socp-api}
     dev-bypass: ${SOCP_DEV_BYPASS:false}
+    metrics-token: ${SOCP_SECURITY_METRICS_TOKEN:socp-demo-metrics-token}
     # 机机采集凭据：Vector 渲染配置里 Authorization 头的值（socp.vector.token）匹配即放行，
     # 否则采集器在 dev-bypass=false 下会被 401 挡在链路外。
     ingest-token: ${SOCP_INGEST_TOKEN:dev-vector-token}

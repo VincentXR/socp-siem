@@ -2,8 +2,11 @@ package com.socp.platform.audit.aspect;
 import com.socp.platform.audit.api.AuditOperation;
 import com.socp.platform.audit.model.AuditRecord;
 import com.socp.platform.audit.spi.AuditSink;
+import com.socp.platform.tenant.context.TenantContext;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.reflect.MethodSignature;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
@@ -14,6 +17,16 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.*;
 
 class AuditAspectTest {
+
+    @BeforeEach
+    void setTenant() {
+        TenantContext.set("default");
+    }
+
+    @AfterEach
+    void clearTenant() {
+        TenantContext.clear();
+    }
 
     @Test
     void publishesSuccessUsingAnnotationDefaultsAndReturnsOperationResult() throws Throwable {

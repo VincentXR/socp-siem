@@ -11,6 +11,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 
 import java.time.Instant;
 
@@ -41,15 +42,18 @@ public class CaseEntity {
     private String entity;
     private String severity;
     private String status;
-    @Column(name = "rule_ids", length = 4000)
+    @Column(name = "rule_ids", columnDefinition = "TEXT")
     private String ruleIdsJson;
-    @Column(name = "alarm_ids", length = 4000)
+    @Column(name = "alarm_ids", columnDefinition = "TEXT")
     private String alarmIdsJson;
-    @Column(name = "timeline", length = 16000)
+    @Column(name = "timeline", columnDefinition = "TEXT")
     private String timelineJson;
     private String assignee;
     private Instant createdAt;
     private Instant updatedAt;
+    @Version
+    @Column(name = "row_version", nullable = false)
+    private long rowVersion;
 
     public CaseEntity() {
     }
@@ -57,7 +61,7 @@ public class CaseEntity {
     @PrePersist
     void onCreate() {
         if (tenantId == null) {
-            tenantId = TenantContext.get();
+            tenantId = TenantContext.require();
         }
     }
 
@@ -163,5 +167,13 @@ public class CaseEntity {
 
     public void setUpdatedAt(Instant updatedAt) {
         this.updatedAt = updatedAt;
+    }
+
+    public long getRowVersion() {
+        return rowVersion;
+    }
+
+    public void setRowVersion(long rowVersion) {
+        this.rowVersion = rowVersion;
     }
 }
