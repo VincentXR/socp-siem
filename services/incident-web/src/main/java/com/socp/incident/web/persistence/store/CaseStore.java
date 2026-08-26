@@ -11,6 +11,7 @@ import com.socp.incident.web.persistence.entity.CaseTimelineEntity;
 import com.socp.incident.web.persistence.repository.CaseRepository;
 import com.socp.incident.web.persistence.repository.CaseTimelineRepository;
 import com.socp.platform.tenant.context.TenantContext;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -40,6 +41,7 @@ public class CaseStore {
         this(repo, null);
     }
 
+    @Autowired
     public CaseStore(CaseRepository repo, CaseTimelineRepository timelineRepo) {
         this.repo = repo;
         this.timelineRepo = timelineRepo;
