@@ -166,8 +166,8 @@ jobs:
         run: |
           mkdir -p .cache
           # CI deliberately exercises the PostgreSQL-backed slice. Local
-          # Development uses PostgreSQL so slice checks exercise claim and
-          # transaction semantics close to the deployed path.
+          # development uses the same profile so slice checks exercise claim
+          # and transaction semantics close to the deployed path.
           SOCP_RUNTIME_PROFILES=pg bash build/run-slice.sh start || true
           python3 - <<'EOF'
           import time

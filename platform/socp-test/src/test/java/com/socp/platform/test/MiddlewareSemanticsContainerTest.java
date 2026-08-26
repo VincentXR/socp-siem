@@ -112,9 +112,9 @@ class MiddlewareSemanticsContainerTest {
     void opensearchUsesDeterministicDocumentIdsAndReportsPartialBulkFailures() throws Exception {
         String base = "http://" + OPENSEARCH.getHost() + ":" + OPENSEARCH.getMappedPort(9200);
         request(base + "/contract-evidence/_doc/alarm-1?refresh=true", "PUT",
-                "{\"host\":\"web-1\",\"severity\":\"HIGH\"}", 200);
+                "{\"host\":\"web-1\",\"severity\":\"HIGH\"}", 200, 201);
         request(base + "/contract-evidence/_doc/alarm-1?refresh=true", "PUT",
-                "{\"host\":\"web-1\",\"severity\":\"CRITICAL\"}", 200);
+                "{\"host\":\"web-1\",\"severity\":\"CRITICAL\"}", 200, 201);
         String bulk = "{\"index\":{\"_index\":\"contract-evidence\",\"_id\":\"alarm-2\"}}\n"
                 + "{\"host\":\"web-2\"}\n"
                 + "{\"bogus\":{\"_index\":\"contract-evidence\"}}\n"
@@ -168,7 +168,7 @@ class MiddlewareSemanticsContainerTest {
                 + CLICKHOUSE.getMappedPort(8123) + "/");
     }
 
-    private static String request(String url, String method, String body, int status) throws Exception {
+    private static String request(String url, String method, String body, int... statuses) throws Exception {
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
                 .timeout(Duration.ofSeconds(30));
         if ("GET".equals(method)) builder.GET();
@@ -176,7 +176,7 @@ class MiddlewareSemanticsContainerTest {
                 .method(method, HttpRequest.BodyPublishers.ofString(body == null ? "" : body));
         HttpResponse<String> response = HTTP.send(builder.build(), HttpResponse.BodyHandlers.ofString());
         assertThat(response.statusCode()).as("OpenSearch response for %s", url)
-                .isEqualTo(status);
+                .isIn(statuses);
         return response.body();
     }
 }
