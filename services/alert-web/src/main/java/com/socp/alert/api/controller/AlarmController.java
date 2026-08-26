@@ -142,6 +142,12 @@ public class AlarmController {
         return ApiResult.ok(service.evidence(id));
     }
 
+    /** Durable downstream receipt state for audit/chaos evidence. */
+    @GetMapping("/{id}/deliveries")
+    public ApiResult<List<Map<String, Object>>> deliveries(@PathVariable String id) {
+        return ApiResult.ok(service.deliveryStatus(id));
+    }
+
     /** 告警聚合统计：默认全量；window=7d 时返回近 7 个自然日数据。 */
     @GetMapping("/stats")
     public ApiResult<Map<String, Object>> stats(@RequestParam(defaultValue = "all") String window) {

@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 2 * * *"
 
 env:
   # GitHub-hosted runners should use Maven Central directly. The repository
@@ -16,6 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SOCP_JWT_SECRET: ci-test-jwt-secret-0123456789abcdef0123456789abcdef
+      SOCP_TESTCONTAINERS: "true"
     steps:
       - uses: actions/checkout@v4
 
@@ -57,7 +61,9 @@ jobs:
         run: bash build/mvnw.sh verify -Pquality -DskipTests
 
       - name: Validate versioned detection content
-        run: python3 build/validate-detection-content.py
+        run: |
+          python3 build/validate-detection-content.py
+          python3 build/verify-investigation-dataset.py
 
       - name: Install frontend deps (pnpm frozen lockfile)
         run: pnpm install --frozen-lockfile
@@ -210,6 +216,10 @@ jobs:
       SOCP_SECURITY_SERVICE_SECRET: ci-test-service-secret-0123456789abcdef
       SOCP_AUTH_USERS: '{"admin":"admin123","demo":"demo123","viewer":"viewer123"}'
       SOCP_AUTH_ROLES: '{"admin":"admin","demo":"analyst","viewer":"viewer"}'
+      SOCP_RUNTIME_PROFILES: pg
+      SOCP_OPENSEARCH_URL: http://localhost:9200
+      SOCP_OPENSEARCH_USERNAME: admin
+      SOCP_OPENSEARCH_PASSWORD: admin
       # CI middleware uses local HTTP OpenSearch and the configured ClickHouse credentials.
       PIPELINE_OS: http://localhost:9200
       PIPELINE_OS_AUTH: "admin:"
@@ -361,6 +371,44 @@ jobs:
 
       - name: Run true-pipeline E2E (Kafka -> Detect -> stores)
         run: python3 build/verify-pipeline.py
+
+      - name: Run PR chaos evidence (duplicate + Detection outbox replay)
+        if: github.event_name == 'pull_request'
+        run: |
+          mkdir -p .cache/chaos
+          set +e
+          python3 build/chaos-pipeline.py --scenario duplicate_delivery \
+            --run-id "pr-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --output .cache/chaos/duplicate-delivery.json
+          duplicate_status=$?
+          python3 build/chaos-pipeline.py --scenario detection_outbox_replay \
+            --run-id "pr-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --output .cache/chaos/detection-outbox-replay.json
+          replay_status=$?
+          if [ "$duplicate_status" -ne 0 ] || [ "$replay_status" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Run nightly chaos evidence (restart + dependency outages)
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p .cache/chaos
+          set +e
+          python3 build/chaos-pipeline.py --scenario alert_web_restart \
+            --run-id "nightly-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --output .cache/chaos/alert-web-restart.json
+          restart_status=$?
+          python3 build/chaos-pipeline.py --scenario postgres_outage \
+            --run-id "nightly-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --output .cache/chaos/postgres-outage.json
+          postgres_status=$?
+          python3 build/chaos-pipeline.py --scenario opensearch_outage \
+            --run-id "nightly-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --output .cache/chaos/opensearch-outage.json
+          opensearch_status=$?
+          if [ "$restart_status" -ne 0 ] || [ "$postgres_status" -ne 0 ] || [ "$opensearch_status" -ne 0 ]; then
+            exit 1
+          fi
 
       - name: Print pipeline logs on failure
         if: failure()

@@ -23,6 +23,8 @@ public interface AlarmDeliveryRepository extends JpaRepository<AlarmDelivery, St
 
     Optional<AlarmDelivery> findByIdAndTenantId(String id, String tenantId);
 
+    List<AlarmDelivery> findByTenantIdAndAlarmIdOrderByDestinationAsc(String tenantId, String alarmId);
+
     @Modifying
     @Transactional
     @Query("update AlarmDelivery d set d.status = 'PROCESSING', d.claimedAt = :now, "

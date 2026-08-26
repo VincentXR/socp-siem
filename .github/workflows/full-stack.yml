@@ -70,6 +70,24 @@ jobs:
       - name: Run true event-pipeline verification
         run: python3 build/verify-pipeline.py
 
+      - name: Start fixed three-instance Detection cluster
+        env:
+          SOCP_DETECT_PROFILE: pg
+          SOCP_KAFKA_GROUP_ID: socp-detect
+        run: bash build/detection-cluster.sh start
+
+      - name: Run weekly multi-instance chaos evidence
+        env:
+          SOCP_DETECT_PROFILE: pg
+          SOCP_KAFKA_GROUP_ID: socp-detect
+          SOCP_REQUIRE_DOWNSTREAM_DRAIN: "true"
+          DETECTION_INSTANCE_URLS: http://127.0.0.1:18082,http://127.0.0.1:28082,http://127.0.0.1:38082
+        run: |
+          mkdir -p .cache/chaos
+          python3 build/chaos-pipeline.py --scenario multi_instance --count 30 \
+            --rebalance-cycles 3 --run-id "weekly-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --output .cache/chaos/multi-instance.json
+
       - name: Run Golden Demo
         run: python3 build/demos/golden-demo.py --transport ingest
 
@@ -100,5 +118,6 @@ jobs:
       - name: Stop services
         if: always()
         run: |
+          bash build/detection-cluster.sh stop || true
           bash build/run-all.sh stop || true
           docker compose -f infra/docker-compose.yml --profile extra down || true

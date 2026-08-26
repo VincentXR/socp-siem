@@ -46,13 +46,14 @@ navigation, resource-list, and resource-import contracts.
   tenant-scoped access for assets, cases, ATT&CK techniques, and IOCs.
 
 The suite is risk-driven and enforces an aggregate Java line-coverage floor of
-50%, a 25% floor for every production module, and a 30% floor for critical
-event-path and authorization modules. Every module containing production Java
-must emit a coverage report. The floor is intentionally a baseline, not a target: behavior or
-failure-semantic changes still need tests at their owning boundary. Run
-`mvn test -Pcoverage` followed by `python build/verify-coverage.py` to inspect
-the per-module and aggregate result. `mvn verify -Pquality -DskipTests` enforces
-JDK/Maven policy and high-confidence SpotBugs findings.
+50%, a 25% floor for every production module, and explicit floors of 45% for
+`detect-web`, `alert-web`, and `search-config`, plus 40% for `incident-web`,
+`soar-web`, and `socp-client`. Every module containing production Java must
+emit a coverage report. The floor is intentionally a baseline, not a target:
+behavior or failure-semantic changes still need tests at their owning boundary.
+Run `mvn test -Pcoverage` followed by `python build/verify-coverage.py` to
+inspect the per-module and aggregate result. `mvn verify -Pquality -DskipTests`
+enforces JDK/Maven policy and high-confidence SpotBugs findings.
 
 `build/verify-migrations.py` rejects duplicate/misnamed migrations, version
 gaps, unmarked destructive statements, missing Flyway wiring, and tenant JPA
@@ -72,11 +73,20 @@ python build/demos/golden-demo.py --transport ingest
 python build/demos/detection-recovery.py
 python build/chaos-pipeline.py --scenario alert_web_restart
 python build/chaos-pipeline.py --scenario duplicate_delivery
+python build/chaos-pipeline.py --scenario detection_outbox_replay
 python build/failure-tests.py
 python build/validate-detection-content.py
+python build/verify-investigation-dataset.py
 python build/benchmark-pipeline.py --mode e2e --profile realistic --count 100 --batch-size 25 \
   --output .cache/benchmark/e2e-100.json
 ```
+
+The opt-in Testcontainers contract suite is in `platform/socp-test`. It proves
+the PostgreSQL uniqueness boundary, Kafka commit/replay semantics, ClickHouse
+logical uniqueness under duplicate inserts, and OpenSearch deterministic IDs
+plus partial bulk failure. Set `SOCP_TESTCONTAINERS=true` when Docker is
+available; CI enables it, while local runs without Docker skip only these
+integration tests.
 
 The pipeline check confirms canonical event acceptance, Kafka delivery,
 Detection, PostgreSQL alert persistence, OpenSearch indexing, ClickHouse
@@ -108,21 +118,26 @@ metadata. The Java contract test executes the vectors; the Python validator
 provides a fast CI check. The state journal replay window defaults to 24 hours
 and is configurable with `SOCP_DETECT_STATE_RETENTION`.
 
-For multi-instance validation, use a shared PostgreSQL database, a common
-`SOCP_KAFKA_GROUP_ID`, and `DETECTION_INSTANCE_URLS` with
-`python build/chaos-pipeline.py --scenario multi_instance`. See the [validation
-matrix](validation-matrix.md) for pass criteria and explicit limits.
+For multi-instance validation, use `bash build/detection-cluster.sh start`; it
+starts exactly three Detection instances against the shared PostgreSQL/Kafka
+group. Then run `python build/chaos-pipeline.py --scenario multi_instance`.
+See the [validation matrix](validation-matrix.md) for pass criteria and
+explicit limits.
 
 ## CI ownership
 
-`.github/workflows/ci.yml` runs on pushes and pull requests to `main`. It builds
-the Java reactor, runs the Java suite, verifies the workbench, and runs a
-minimal service slice plus the Kafka pipeline E2E job.
+`.github/workflows/ci.yml` runs on pushes and pull requests to `main`, nightly,
+and manually. It builds the Java reactor, enables the Testcontainers contract
+suite, verifies the workbench, and runs a minimal service slice plus the Kafka
+pipeline E2E job. PRs additionally require duplicate-delivery and Detection
+Outbox replay evidence; non-PR runs add Alert Web, PostgreSQL, and OpenSearch
+failure scenarios.
 
 `.github/workflows/full-stack.yml` runs manually and on the weekly schedule.
-It starts the extended Compose profile, runs full API and pipeline checks,
+It starts the extended Compose profile and fixed three-instance Detection
+cluster, runs full API and pipeline checks, the multi-instance/rebalance oracle,
 attack scenarios, and dependency failure injection, then uploads diagnostic
-logs.
+logs plus structured JSON evidence.
 
 `.github/workflows/dependency-audit.yml` runs weekly or manually. It applies
 OWASP Dependency-Check to the Java reactor and `pnpm audit` to the workbench;

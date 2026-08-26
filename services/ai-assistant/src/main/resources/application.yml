@@ -31,6 +31,11 @@ socp:
     dev-bypass: ${SOCP_DEV_BYPASS:false}
   ai:
     maturity: preview
+    investigation:
+      max-tool-calls: ${SOCP_AI_INVESTIGATION_MAX_TOOL_CALLS:6}
+      max-evidence: ${SOCP_AI_INVESTIGATION_MAX_EVIDENCE:200}
+      max-related-events: ${SOCP_AI_INVESTIGATION_MAX_RELATED_EVENTS:100}
+      timeout-ms: ${SOCP_AI_INVESTIGATION_TIMEOUT_MS:15000}
     llm:
       enabled: ${SOCP_AI_LLM_ENABLED:false}
       base-url: ${SOCP_AI_LLM_BASE_URL:http://localhost:11434}

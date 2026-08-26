@@ -21,4 +21,21 @@ public class IncidentClient {
     public ServiceCall createFromAlarm(String alarmJson) {
         return http.postJson(SocpService.INCIDENT, "/api/v1/incidents/from-alarm", alarmJson);
     }
+
+    /** List the current tenant's cases for investigation correlation. */
+    public ServiceCall list() {
+        return http.get(SocpService.INCIDENT, "/api/v1/incidents");
+    }
+
+    /** Append an analyst-approved investigation summary to a case timeline. */
+    public ServiceCall addNote(String caseId, String author, String content) {
+        String id = encode(caseId);
+        String query = "?author=" + encode(author) + "&content=" + encode(content);
+        return http.postJson(SocpService.INCIDENT, "/api/v1/incidents/" + id + "/notes" + query, "{}");
+    }
+
+    private static String encode(String value) {
+        return java.net.URLEncoder.encode(value == null ? "" : value,
+                java.nio.charset.StandardCharsets.UTF_8).replace("+", "%20");
+    }
 }

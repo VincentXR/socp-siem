@@ -15,6 +15,7 @@ correctness and recovery behavior, not a production capacity or HA claim.
 | Cross-cutting slice | `python build/verify-slice.py` | Authentication, tenancy, audit, rate limiting, and trace propagation | PR/release candidate |
 | Event pipeline | `python build/verify-pipeline.py` | Canonical event -> Kafka -> Detection -> Alert persistence -> OpenSearch/ClickHouse/report | Middleware change/scheduled |
 | Detection content | `python build/validate-detection-content.py` | Manifest schema, metadata, positive/negative vectors, ATT&CK references | Rule/content change |
+| Investigation dataset | `python build/verify-investigation-dataset.py` | Versioned alert/evidence cases, citation expectations, and human-approval guard | Every change |
 | Golden scenario | `python build/demos/golden-demo.py --transport ingest` | SSH brute force -> successful login -> privilege escalation -> multi-stage correlation -> entity risk -> Incident/Notify/SOAR | Manual/full-stack |
 | Detection restart | `python build/demos/detection-recovery.py` | Kafka backlog grows while Detection is down and catches up after restart | Manual/weekly |
 | Alert Web outage | `python build/chaos-pipeline.py --scenario alert_web_restart` | Detection Alert Outbox survives Alert Web outage and creates one alert after recovery | Manual/weekly |
@@ -22,7 +23,7 @@ correctness and recovery behavior, not a production capacity or HA claim.
 | Duplicate delivery | `python build/chaos-pipeline.py --scenario duplicate_delivery` | Same event produces one logical alert by source ID | Manual/weekly |
 | PostgreSQL outage | `python build/chaos-pipeline.py --scenario postgres_outage` | Kafka lag grows while durable completion is unavailable, then drains with no pending journal rows | Manual/weekly |
 | OpenSearch outage | `python build/chaos-pipeline.py --scenario opensearch_outage` | Detection remains available while search is degraded and indexing works after recovery | Manual/weekly |
-| Multi-instance | `DETECTION_INSTANCE_URLS=... python build/chaos-pipeline.py --scenario multi_instance` | Disjoint ownership, rebalance, deterministic alert-set equality, and `pendingEvents == 0` | Release candidate |
+| Multi-instance | `bash build/detection-cluster.sh start && python build/chaos-pipeline.py --scenario multi_instance` | Three-instance disjoint ownership, rebalance, exact alert set, duplicate count, Kafka lag, delivery receipts, ClickHouse logical uniqueness, and `pendingEvents == 0` | Weekly/release candidate |
 | E2E benchmark | `python build/benchmark-pipeline.py --mode e2e --profile realistic --count 10000 --batch-size 500` | Run-scoped alerts, T0-T8 stages, transaction ratios, offsets, lag, and before/after stats | Performance regression |
 | Steady state | `python build/benchmark-pipeline.py --mode e2e --profile realistic --offered-eps 100 --duration 120` | Offered/actual EPS, lag samples, peak/growth, final drain | Performance regression |
 | Bulk baseline | `python build/benchmark-pipeline.py --count 100` | Detection HTTP accepted/rejected counters and latency percentiles | Manual |
@@ -42,6 +43,11 @@ correctness and recovery behavior, not a production capacity or HA claim.
 - Alert Web duplicate creates resolve by `(tenant_id, source_alert_id)`.
 - Alert Outbox rows remain pending when Kafka is unavailable and are marked
   published only after a broker acknowledgement.
+- Every Alert downstream destination has one durable receipt per
+  `(tenant_id, alarm_id, destination)`; `PENDING`/`PROCESSING` and `DEAD` are
+  visible and recoverable rather than silently treated as success.
+- ClickHouse physical retries are permitted at the transport boundary, but
+  every report query uses logical `(tenant_id, alarm_id)` uniqueness.
 - Stopping Detection increases Kafka lag rather than silently losing the
   backlog; after restart, the consumer catches up.
 - Multi-instance assignments are disjoint and stateful rules whose grouping
@@ -68,9 +74,10 @@ addresses, tokens, passwords, or machine-specific screenshots.
 
 ## CI ownership
 
-Push and pull-request CI runs the Java suite, frontend contracts/build, the
-minimal service slice, and the Kafka pipeline. The full-stack workflow is
-manual/weekly and runs full API, pipeline, Golden Demo, Detection recovery,
-attack scenarios, and dependency failure checks with logs uploaded as
-artifacts. Multi-instance and benchmark runs remain explicit operational
-checks because they require additional processes and a live middleware stack.
+Push and pull-request CI runs the Java suite, opt-in Testcontainers contracts,
+frontend contracts/build, the minimal service slice, and the Kafka pipeline.
+PRs run duplicate-delivery and Detection Outbox replay Chaos; nightly runs
+restart and dependency-outage Chaos. The full-stack workflow is manual/weekly,
+starts the fixed three-instance cluster, and runs full API, pipeline, Golden
+Demo, Detection recovery, multi-instance/rebalance, attack scenarios, and
+dependency failure checks with logs and JSON evidence uploaded as artifacts.

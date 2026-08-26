@@ -153,6 +153,16 @@ public class AlarmService {
         return queryService.get(id);
     }
 
+    /** Exposes the durable downstream receipt state without exposing payloads. */
+    @Transactional(readOnly = true)
+    public List<Map<String, Object>> deliveryStatus(String alarmId) {
+        String tenant = AlarmQueryService.tenant();
+        repository.findByTenantIdAndId(tenant, alarmId)
+                .orElseThrow(() -> com.socp.platform.error.exception.ApiException.notFound(
+                        "Alarm does not exist: " + alarmId));
+        return deliveryRegistrar.status(tenant, alarmId);
+    }
+
     public Map<String, Object> stats() {
         return statisticsService.stats(null);
     }

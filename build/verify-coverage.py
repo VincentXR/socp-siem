@@ -26,6 +26,18 @@ DEFAULT_CRITICAL_MODULES = (
     "services/search-config",
 )
 
+# First phase floors for the modules that own the event path and user-visible
+# investigation state. They are intentionally explicit so adding a new
+# critical module cannot silently inherit the aggregate floor.
+DEFAULT_MODULE_FLOORS = {
+    "services/detect-web": 0.45,
+    "services/alert-web": 0.45,
+    "services/search-config": 0.45,
+    "services/incident-web": 0.40,
+    "services/soar-web": 0.40,
+    "platform/socp-client": 0.40,
+}
+
 
 def line_counter(report: Path) -> tuple[int, int]:
     root = ET.parse(report).getroot()
@@ -99,7 +111,13 @@ def main() -> int:
         total_covered += covered
         module = report.parents[3].relative_to(ROOT).as_posix()
         ratio = covered / (missed + covered)
-        required = args.critical_module_minimum if module in critical_modules else args.module_minimum
+        required = DEFAULT_MODULE_FLOORS.get(
+            module,
+            args.critical_module_minimum if module in critical_modules else args.module_minimum,
+        )
+        env_name = "SOCP_MIN_" + module.replace("/", "_").replace("-", "_").upper() + "_LINE_COVERAGE"
+        if os.environ.get(env_name):
+            required = float(os.environ[env_name])
         print(f"  {module:<32} {ratio:>7.2%}  ({covered}/{missed + covered}; required {required:.2%})")
         if ratio < required:
             module_failures.append(f"{module}={ratio:.2%} < {required:.2%}")

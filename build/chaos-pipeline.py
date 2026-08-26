@@ -12,7 +12,7 @@ Examples (Linux/macOS/WSL):
   python build/chaos-pipeline.py --scenario all --output .cache/chaos.json
   python build/chaos-pipeline.py --scenario duplicate_delivery
   python build/chaos-pipeline.py --scenario alert_web_restart
-  DETECTION_INSTANCE_URLS=http://127.0.0.1:18082,http://127.0.0.1:28082 \
+  DETECTION_INSTANCE_URLS=http://127.0.0.1:18082,http://127.0.0.1:28082,http://127.0.0.1:38082 \
     python build/chaos-pipeline.py --scenario multi_instance
 """
 from __future__ import annotations
@@ -45,6 +45,9 @@ USER = os.environ.get("DEMO_USER", "demo")
 PASSWORD = os.environ.get("DEMO_PASS", "demo123")
 VECTOR_TOKEN = os.environ.get("SOCP_VECTOR_TOKEN", "dev-vector-token")
 RUNNER = os.environ.get("SOCP_BASH", "bash")
+DEFAULT_DATASET = BUILD / "datasets" / "chaos-v1.json"
+DATASET_SPEC = {}
+RUN_NAMESPACE = ""
 
 def request(url, method="GET", body=None, headers=None, timeout=20):
     data = None if body is None else (body if isinstance(body, bytes) else body.encode())
@@ -66,6 +69,41 @@ def request(url, method="GET", body=None, headers=None, timeout=20):
         return error.code, parsed
     except Exception as error:
         return 0, {"error": str(error)}
+
+
+def load_dataset(path):
+    with Path(path).open(encoding="utf-8") as handle:
+        dataset = json.load(handle)
+    if not dataset.get("version") or not isinstance(dataset.get("seed"), int):
+        raise RuntimeError(f"invalid chaos dataset metadata: {path}")
+    return dataset
+
+
+def run_token(scenario):
+    material = f"{DATASET_SPEC.get('seed')}:{RUN_NAMESPACE}:{scenario}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:12]
+
+
+def start_auto_detection_cluster():
+    raw_ports = os.environ.get(
+        "SOCP_DETECT_CLUSTER_PORTS",
+        f"{port_of('detect-web')},28082,38082")
+    ports = [int(item.strip()) for item in raw_ports.split(",") if item.strip()]
+    if len(ports) != 3:
+        raise RuntimeError("SOCP_DETECT_CLUSTER_PORTS must contain exactly three ports")
+    script = BUILD / "detection-cluster.sh"
+    command = [RUNNER, str(script), "start"]
+    result = subprocess.run(command, cwd=REPO, capture_output=True, text=True, timeout=180, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(f"automatic three-instance Detection start failed: {result.stderr[-1000:]}")
+    os.environ["DETECTION_INSTANCE_URLS"] = ",".join(f"http://127.0.0.1:{port}" for port in ports)
+    return ports
+
+
+def stop_auto_detection_cluster():
+    script = BUILD / "detection-cluster.sh"
+    subprocess.run([RUNNER, str(script), "stop"], cwd=REPO,
+                   capture_output=True, text=True, timeout=60, check=False)
 
 
 def unwrap(body):
@@ -165,15 +203,48 @@ def control(action, service):
         raise RuntimeError(f"{action} {service} failed: {result.stderr[-500:]}")
 
 
+CONTAINER_IMAGES = {
+    "socp-postgres": os.environ.get("SOCP_POSTGRES_IMAGE", "postgres:18"),
+    "socp-opensearch": os.environ.get(
+        "SOCP_OPENSEARCH_IMAGE", "opensearchproject/opensearch:2.11.1"),
+}
+
+
+def resolve_container(container):
+    """Resolve compose names and GitHub service-container IDs alike."""
+    env_name = "SOCP_" + container.removeprefix("socp-").replace("-", "_").upper() + "_CONTAINER"
+    configured = os.environ.get(env_name)
+    if configured:
+        return configured
+    inspected = subprocess.run(
+        ["docker", "inspect", container], cwd=REPO,
+        capture_output=True, text=True, timeout=15, check=False)
+    if inspected.returncode == 0:
+        return container
+    image = CONTAINER_IMAGES.get(container)
+    if image:
+        discovered = subprocess.run(
+            ["docker", "ps", "-aq", "--filter", f"ancestor={image}",
+             "--format", "{{{{.Names}}}}"], cwd=REPO,
+            capture_output=True, text=True, timeout=15, check=False)
+        name = next((line.strip() for line in discovered.stdout.splitlines()
+                     if line.strip()), None)
+        if name:
+            return name
+    return container
+
+
 def docker_container(action, container):
+    target = resolve_container(container)
     result = subprocess.run(
-        ["docker", action, container], cwd=REPO,
+        ["docker", action, target], cwd=REPO,
         capture_output=True, text=True, timeout=90, check=False)
     if result.returncode != 0:
-        raise RuntimeError(f"docker {action} {container} failed: {result.stderr[-500:]}")
+        raise RuntimeError(f"docker {action} {target} failed: {result.stderr[-500:]}")
 
 
 def container_running(container):
+    container = resolve_container(container)
     result = subprocess.run(
         ["docker", "inspect", "-f", "{{.State.Running}}", container],
         cwd=REPO, capture_output=True, text=True, timeout=15, check=False)
@@ -181,6 +252,7 @@ def container_running(container):
 
 
 def container_healthy(container):
+    container = resolve_container(container)
     result = subprocess.run(
         ["docker", "inspect", "-f",
          "{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}",
@@ -190,13 +262,45 @@ def container_healthy(container):
 
 
 def psql_scalar(database, sql):
+    container = resolve_container("socp-postgres")
     result = subprocess.run(
-        ["docker", "exec", "socp-postgres", "psql", "-U", "socp", "-d", database,
+        ["docker", "exec", container, "psql", "-U", "socp", "-d", database,
          "-tAc", sql],
         cwd=REPO, capture_output=True, text=True, timeout=30, check=False)
     if result.returncode != 0:
         raise RuntimeError(f"PostgreSQL query failed: {result.stderr[-500:]}")
     return result.stdout.strip()
+
+
+def clickhouse_scalar(sql):
+    base = os.environ.get("PIPELINE_CK", os.environ.get("SOCP_CK_URL", "http://localhost:8123"))
+    auth = os.environ.get("PIPELINE_CK_AUTH", "default:socp")
+    headers = {}
+    if ":" in auth:
+        user, password = auth.split(":", 1)
+        token = (user + ":" + password).encode("utf-8")
+        headers["Authorization"] = "Basic " + __import__("base64").b64encode(token).decode()
+    status, body = request(base.rstrip("/") + "/?query=" + urllib.parse.quote(sql),
+                           headers=headers, timeout=10)
+    if status != 200:
+        return None
+    if isinstance(body, dict):
+        return body.get("raw")
+    return str(body).strip()
+
+
+def delivery_evidence(source_alert_ids):
+    """Return durable fan-out counts for a set of source alert IDs."""
+    if not source_alert_ids:
+        return {"rows": 0, "duplicates": 0, "pendingOrProcessing": 0}
+    quoted = ",".join("'" + value.replace("'", "''") + "'" for value in source_alert_ids)
+    join = "alarm_delivery d join t_alarm a on a.tenant_id=d.tenant_id and a.id=d.alarm_id"
+    where = f"a.source_alert_id in ({quoted})"
+    rows = int(psql_scalar("alert", f"select count(*) from {join} where {where}") or 0)
+    distinct = int(psql_scalar("alert", f"select count(distinct d.tenant_id || ':' || d.alarm_id || ':' || d.destination) from {join} where {where}") or 0)
+    pending = int(psql_scalar("alert", f"select count(*) from {join} where {where} and d.status in ('PENDING','PROCESSING')") or 0)
+    return {"rows": rows, "duplicates": max(0, rows - distinct),
+            "pendingOrProcessing": pending, "distinctRows": distinct}
 
 
 def kafka_snapshot():
@@ -307,7 +411,7 @@ def scenario_detection_restart(token, count):
         stopped = wait_for(lambda: not service_up("detect-web", token), timeout=30)
         if not stopped:
             raise RuntimeError("detect-web did not stop")
-        run_id = uuid.uuid4().hex[:10]
+        run_id = run_token("detect-restart")
         events = [{
             "eventId": f"chaos-restart-{run_id}-{i}",
             "source": "auth",
@@ -358,7 +462,7 @@ def scenario_detection_restart(token, count):
 
 
 def scenario_duplicate_delivery(token):
-    run_id = uuid.uuid4().hex[:10]
+    run_id = run_token("duplicate-delivery")
     event_id = f"chaos-duplicate-{run_id}"
     event = {
         "eventId": event_id,
@@ -394,7 +498,7 @@ def scenario_alert_web_restart(token):
     """Verify Detection's durable outbox survives an Alert Web outage."""
     if not service_up("detect-web", token):
         raise RuntimeError("detect-web must be healthy before alert_web_restart")
-    run_id = uuid.uuid4().hex[:10]
+    run_id = run_token("alert-web-restart")
     host = f"chaos-alert-web-{run_id}"
     event = {
         "eventId": f"chaos-alert-web-{run_id}",
@@ -442,7 +546,7 @@ def scenario_postgres_outage(token):
     baseline = kafka_snapshot()
     if not baseline or baseline["lag"] != 0:
         raise RuntimeError(f"postgres_outage requires a drained baseline, got {baseline}")
-    run_id = uuid.uuid4().hex[:10]
+    run_id = run_token("postgres-outage")
     host = f"chaos-pg-{run_id}"
     event = {
         "eventId": f"chaos-pg-{run_id}",
@@ -503,7 +607,7 @@ def scenario_postgres_outage(token):
 
 def scenario_opensearch_outage(token):
     """Prove Detection is independent from OpenSearch and indexing recovers."""
-    run_id = uuid.uuid4().hex[:10]
+    run_id = run_token("opensearch-outage")
     alert_host = f"chaos-os-alert-{run_id}"
     recovery_host = f"chaos-os-recovery-{run_id}"
     stopped = False
@@ -568,7 +672,7 @@ def scenario_opensearch_outage(token):
 
 def scenario_detection_outbox_replay(token):
     """Simulate publish success followed by a crash before the durable ACK."""
-    run_id = uuid.uuid4().hex[:10]
+    run_id = run_token("detection-outbox-replay")
     host = f"chaos-outbox-{run_id}"
     ingest_result = ingest(token, [{
         "eventId": f"chaos-outbox-{run_id}",
@@ -622,14 +726,14 @@ def detection_urls():
 def scenario_multi_instance(token, count, rebalance_cycles=1):
     """Prove stable entity routing, assignment ownership, rebalance, and recovery.
 
-    The first URL is the instance controlled by run-all.sh. Additional URLs
-    must be started manually with the same Kafka group and PostgreSQL profile,
-    for example with SOCP_KAFKA_GROUP_ID=socp-detect and distinct ports.
+    The first URL is the instance controlled by run-all.sh or the fixed
+    detection-cluster launcher. All three URLs use the same Kafka group and
+    PostgreSQL profile.
     """
     raw_urls = os.environ.get("DETECTION_INSTANCE_URLS", "")
     urls = [item.strip().rstrip("/") for item in raw_urls.split(",") if item.strip()]
-    if len(urls) < 2:
-        raise RuntimeError("multi_instance requires DETECTION_INSTANCE_URLS with at least two URLs")
+    if len(urls) < 3:
+        raise RuntimeError("multi_instance requires exactly three Detection instance URLs")
 
     baseline = kafka_snapshot()
     if not baseline or baseline["partitions"] < len(urls):
@@ -656,9 +760,15 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
     if initial is None:
         raise RuntimeError("Detection instances did not obtain disjoint full partition ownership")
 
-    run_id = uuid.uuid4().hex[:10]
-    group_count = max(1, count // 5)
-    run_octets = (int(run_id[:2], 16), int(run_id[2:4], 16))
+    run_id = run_token("multi-instance")
+    dataset = DATASET_SPEC.get("multiInstance", {})
+    events_per_alert = int(dataset.get("eventsPerAlert", 5))
+    divisor = max(1, int(dataset.get("groupsPerBatchDivisor", events_per_alert)))
+    group_count = max(1, count // divisor)
+    digest = hashlib.sha256(
+        f"{DATASET_SPEC['seed']}:{RUN_NAMESPACE}:multi-instance".encode("utf-8")
+    ).digest()
+    run_octets = (digest[0], digest[1])
 
     def threshold_batch(prefix, ip_start):
         events = []
@@ -668,17 +778,18 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
             # suppression/window state from hiding the current oracle alerts.
             # ip_start only separates the pre/post-rebalance batches.
             last_octet = 1 + ((ip_start + group) % 253)
-            src_ip = f"10.{run_octets[0]}.{run_octets[1]}.{last_octet}"
-            ids = [f"chaos-multi-{prefix}-{run_id}-{group}-{i}" for i in range(5)]
+            src_ip = f"{dataset.get('sourceIpPrefix', '10.240')}.{run_octets[1]}.{last_octet}"
+            ids = [f"chaos-multi-{prefix}-{run_id}-{group}-{i}"
+                   for i in range(events_per_alert)]
             events.extend({
                 "eventId": event_id,
                 "source": "firewall",
-                "host": f"multi-host-{run_id}-{prefix}-{group}-{i}",
+                "host": f"{dataset.get('entityPrefix', 'multi-host')}-{run_id}-{prefix}-{group}-{i}",
                 "severity": "HIGH",
                 "message": "RDP connection to 3389",
                 "src_ip": src_ip,
             } for i, event_id in enumerate(ids))
-            expected.append(expected_alert_id("LATERAL-RDP", src_ip, ids))
+            expected.append(expected_alert_id(dataset.get("ruleId", "LATERAL-RDP"), src_ip, ids))
         return events, expected
 
     events, expected_initial = threshold_batch("initial", 220)
@@ -763,6 +874,23 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
         pending_values = [item.get("pendingEvents") for item in instance_stats if isinstance(item, dict)]
         expected_ids = set(expected_all)
         actual_ids = {item.get("sourceAlertId") for item in matching_all}
+        duplicate_count = max(0, len(matching_all) - len(actual_ids))
+        final_kafka = wait_for(
+            lambda: (snapshot if (snapshot := kafka_snapshot())["lag"] == 0 else None),
+            timeout=180, interval=3) or kafka_snapshot()
+        delivery = None
+        if os.environ.get("SOCP_REQUIRE_DOWNSTREAM_DRAIN", "false").lower() == "true":
+            delivery = wait_for(
+                lambda: (snapshot if (snapshot := delivery_evidence(expected_ids))["rows"] >= len(expected_ids) * 4
+                         and snapshot["pendingOrProcessing"] == 0 else None),
+                timeout=240, interval=3) or delivery_evidence(expected_ids)
+        else:
+            try:
+                delivery = delivery_evidence(expected_ids)
+            except RuntimeError as unavailable:
+                delivery = {"unavailable": str(unavailable)}
+        ck_logical = clickhouse_scalar(
+            "SELECT uniqExact(tuple(tenant_id, alarm_id)) FROM alert_agg.alarm_detail")
         return {
             "initialAssignments": initial,
             "rebalanceCycles": cycle_results,
@@ -773,10 +901,18 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
             "actualAlertIds": sorted(actual_ids),
             "missingAlertIds": sorted(expected_ids - actual_ids),
             "unexpectedAlertIds": sorted(actual_ids - expected_ids),
+            "duplicateAlertCount": duplicate_count,
             "pendingEventsAfterRecovery": pending_values,
+            "kafkaAfterRecovery": final_kafka,
+            "deliveryEvidence": delivery,
+            "clickHouseLogicalAlarmCount": ck_logical,
             "pass": (observed_post is not None and actual_ids == expected_ids
+                       and duplicate_count == 0 and final_kafka.get("lag") == 0
                        and all(value == 0 for value in pending_values)
-                      and len(cycle_results) == rebalance_cycles
+                       and (not isinstance(delivery, dict) or "unavailable" in delivery
+                            or (delivery.get("duplicates") == 0
+                                and delivery.get("pendingOrProcessing") == 0))
+                       and len(cycle_results) == rebalance_cycles
                       and all(item["rebalanceComplete"] for item in cycle_results)),
         }
     finally:
@@ -785,6 +921,7 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
 
 
 def main():
+    global DATASET_SPEC, RUN_NAMESPACE
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--scenario",
@@ -796,6 +933,11 @@ def main():
                         help="events used by the Detection restart scenario")
     parser.add_argument("--rebalance-cycles", type=int, default=1,
                         help="stop/restart cycles used by multi_instance (default: 1)")
+    parser.add_argument("--dataset", default=str(DEFAULT_DATASET),
+                        help="versioned JSON dataset specification")
+    parser.add_argument("--run-id", help="stable namespace for this evidence run")
+    parser.add_argument("--no-auto-cluster", action="store_true",
+                        help="do not start the fixed three-instance Detection cluster")
     parser.add_argument("--output", help="optional JSON result path")
     args = parser.parse_args()
     if args.count < 5:
@@ -803,26 +945,59 @@ def main():
     if args.rebalance_cycles < 1:
         parser.error("--rebalance-cycles must be at least 1")
 
-    token = login()
+    try:
+        DATASET_SPEC = load_dataset(args.dataset)
+    except (OSError, ValueError, RuntimeError) as failure:
+        parser.error(str(failure))
+    RUN_NAMESPACE = args.run_id or uuid.uuid4().hex[:12]
     results = {}
-    if args.scenario in ("all", "detect_restart"):
-        results["detect_restart"] = scenario_detection_restart(token, args.count)
-    if args.scenario in ("all", "duplicate_delivery"):
-        results["duplicate_delivery"] = scenario_duplicate_delivery(token)
-    if args.scenario in ("all", "alert_web_restart"):
-        results["alert_web_restart"] = scenario_alert_web_restart(token)
-    if args.scenario in ("all", "postgres_outage"):
-        results["postgres_outage"] = scenario_postgres_outage(token)
-    if args.scenario in ("all", "opensearch_outage"):
-        results["opensearch_outage"] = scenario_opensearch_outage(token)
-    if args.scenario in ("all", "detection_outbox_replay"):
-        results["detection_outbox_replay"] = scenario_detection_outbox_replay(token)
-    if args.scenario == "multi_instance" or (
-            args.scenario == "all" and os.environ.get("DETECTION_INSTANCE_URLS")):
-        results["multi_instance"] = scenario_multi_instance(
-            token, args.count, args.rebalance_cycles)
-    report = {"recordedAt": time.time(), "topic": TOPIC, "group": GROUP, "results": results,
-              "pass": all(result.get("pass") for result in results.values())}
+    auto_cluster = False
+    started_at = time.time()
+    needs_multi = args.scenario == "multi_instance" or (
+        args.scenario == "all" and os.environ.get("DETECTION_INSTANCE_URLS"))
+    try:
+        if needs_multi and not args.no_auto_cluster and not os.environ.get("DETECTION_INSTANCE_URLS"):
+            start_auto_detection_cluster()
+            auto_cluster = True
+        token = login()
+
+        def run(name, operation):
+            try:
+                results[name] = operation()
+            except Exception as failure:
+                results[name] = {"pass": False, "error": str(failure),
+                                 "errorType": failure.__class__.__name__}
+
+        if args.scenario in ("all", "detect_restart"):
+            run("detect_restart", lambda: scenario_detection_restart(token, args.count))
+        if args.scenario in ("all", "duplicate_delivery"):
+            run("duplicate_delivery", lambda: scenario_duplicate_delivery(token))
+        if args.scenario in ("all", "alert_web_restart"):
+            run("alert_web_restart", lambda: scenario_alert_web_restart(token))
+        if args.scenario in ("all", "postgres_outage"):
+            run("postgres_outage", lambda: scenario_postgres_outage(token))
+        if args.scenario in ("all", "opensearch_outage"):
+            run("opensearch_outage", lambda: scenario_opensearch_outage(token))
+        if args.scenario in ("all", "detection_outbox_replay"):
+            run("detection_outbox_replay", lambda: scenario_detection_outbox_replay(token))
+        if needs_multi:
+            run("multi_instance", lambda: scenario_multi_instance(
+                token, args.count, args.rebalance_cycles))
+    except Exception as failure:
+        results.setdefault("runner", {"pass": False, "error": str(failure),
+                                       "errorType": failure.__class__.__name__})
+    finally:
+        if auto_cluster:
+            stop_auto_detection_cluster()
+
+    report = {"recordedAt": time.time(), "startedAt": started_at,
+              "commitSha": os.environ.get("GITHUB_SHA", "unknown"),
+              "dataset": {"path": str(Path(args.dataset)),
+                          "version": DATASET_SPEC.get("version"),
+                          "seed": DATASET_SPEC.get("seed")},
+              "runNamespace": RUN_NAMESPACE, "topic": TOPIC, "group": GROUP,
+              "results": results,
+              "pass": bool(results) and all(result.get("pass") for result in results.values())}
     print(json.dumps(report, ensure_ascii=False, indent=2))
     if args.output:
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)

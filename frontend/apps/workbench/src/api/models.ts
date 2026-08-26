@@ -69,6 +69,26 @@ export interface AiResult {
   source: 'LLM' | 'KNOWLEDGE_BASE' | 'FALLBACK'
 }
 
+export interface InvestigationCitation {
+  id: string; source: string; type: string; label?: string; value?: string
+}
+export interface InvestigationTimelineItem {
+  timestamp: string; type: string; message: string; citation: string
+}
+export interface InvestigationHypothesis {
+  hypothesis: string; supporting: string[]; contradicting: string[]; confidence: number
+}
+export interface InvestigationResult {
+  investigationId: string; alertId: string; status: string
+  analysis: string; recommendedSpl: string
+  timeline: InvestigationTimelineItem[]
+  hypotheses: InvestigationHypothesis[]
+  citations: InvestigationCitation[]
+  nextActions: Array<{ type: string; status: string; description: string; query?: string; executable?: boolean }>
+  degradedSources: string[]
+  summaryAppended?: boolean; incidentId?: string | null; duplicate?: boolean
+}
+
 export const SEVERITIES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'] as const
 export const SOURCE_TYPES = ['FILE', 'SOCKET', 'SYSLOG', 'KAFKA', 'WINDOWS_EVENT', 'AGENT', 'HTTP_API', 'DATABASE', 'CLOUD'] as const
 export const PARSE_FORMATS = ['AUTO', 'SYSLOG', 'JSON', 'KV', 'CEF', 'LEEF'] as const

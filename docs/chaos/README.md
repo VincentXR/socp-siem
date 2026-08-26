@@ -1,8 +1,9 @@
 # Failure matrix
 
 `build/chaos-pipeline.py` checks concrete failure invariants against a running
-local or CI stack. It uses unique event IDs and reports JSON only when
-`--output` is supplied. It never turns an unavailable dependency into a pass.
+local or CI stack. It uses a versioned dataset plus a per-run namespace and
+always emits a structured report (and writes it when `--output` is supplied).
+It never turns an unavailable dependency into a pass.
 
 ## Scenarios
 
@@ -14,7 +15,7 @@ python build/chaos-pipeline.py --scenario detection_outbox_replay
 python build/chaos-pipeline.py --scenario postgres_outage
 python build/chaos-pipeline.py --scenario opensearch_outage
 python build/chaos-pipeline.py --scenario all --count 20 \
-  --output .cache/chaos/$(date +%Y%m%d-%H%M%S).json
+  --run-id nightly-20260826 --output .cache/chaos/nightly-20260826.json
 ```
 
 - `detect_restart`: stops Detection, injects events, verifies Kafka backlog,
@@ -37,28 +38,32 @@ python build/chaos-pipeline.py --scenario all --count 20 \
 
 ## Multi-instance setup
 
-Start two or more `detect-web` processes with:
+The multi-instance oracle uses exactly three `detect-web` processes. The
+repository supplies the reproducible launcher; it does not require manually
+starting extra JVMs:
 
 - the `pg` profile and the same Detection PostgreSQL database;
 - distinct server ports;
 - the same `SOCP_KAFKA_GROUP_ID` (default `socp-detect`);
 - a Kafka topic with at least as many partitions as instances.
 
-Set the health/API base URLs as a comma-separated environment variable. The
-first URL must be the instance that `build/run-all.sh stop-service/start-service
-detect-web` controls:
+Start the fixed cluster after building the backend and starting middleware:
 
 ```bash
-SOCP_DETECT_PROFILE=pg \
+bash build/detection-cluster.sh start
 DETECTION_INSTANCE_URLS=http://127.0.0.1:18082,http://127.0.0.1:28082,http://127.0.0.1:38082 \
-  python build/chaos-pipeline.py --scenario multi_instance --count 30 --rebalance-cycles 3 \
-  --output .cache/chaos/multi-instance.json
+  python build/chaos-pipeline.py --scenario multi_instance --count 30 \
+  --rebalance-cycles 3 --run-id local-multi-instance \
+  --output .cache/chaos/local-multi-instance.json
+bash build/detection-cluster.sh stop
 ```
 
 The script requires every partition to be assigned exactly once before the
-probe starts. It then stops the first instance, verifies the remaining process
-owns all partitions, restarts the first instance, and verifies the assignment
-returns to a disjoint multi-instance layout.
+probe starts. It then stops the first instance, verifies the remaining two
+instances own all partitions, restarts the first instance, and verifies the
+assignment returns to a disjoint three-instance layout. The report records the
+dataset version/seed, commit, Kafka lag, journal state, delivery receipts, and
+logical ClickHouse uniqueness evidence.
 
 ## Pass meaning
 

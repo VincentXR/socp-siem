@@ -24,6 +24,10 @@
         </dependency>
         <dependency>
             <groupId>com.socp.platform</groupId>
+            <artifactId>socp-client</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
             <artifactId>socp-audit</artifactId>
         </dependency>
         <dependency>

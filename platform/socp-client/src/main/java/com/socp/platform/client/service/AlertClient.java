@@ -32,4 +32,19 @@ public class AlertClient {
         if (window == null || window.isBlank()) return stats();
         return http.get(SocpService.ALERT, "/api/alarms/stats?window=" + window.trim());
     }
+
+    /** Fetch one tenant-scoped alarm fact for investigation tooling. */
+    public ServiceCall getAlarm(String alarmId) {
+        return http.get(SocpService.ALERT, "/api/alarms/" + encode(alarmId));
+    }
+
+    /** Fetch the immutable source-event snapshot captured with an alarm. */
+    public ServiceCall evidence(String alarmId) {
+        return http.get(SocpService.ALERT, "/api/alarms/" + encode(alarmId) + "/evidence");
+    }
+
+    private static String encode(String value) {
+        return java.net.URLEncoder.encode(value == null ? "" : value,
+                java.nio.charset.StandardCharsets.UTF_8).replace("+", "%20");
+    }
 }

@@ -39,16 +39,22 @@ CREATE TABLE IF NOT EXISTS alert_agg.alarm_detail
     severity LowCardinality(String),
     rule_id String,
     rule_name String,
-    entity String
+    entity String,
+    -- Deterministic version makes retries converge during ReplacingMergeTree merges.
+    -- The application deliberately keeps the same version for the same alarm.
+    row_version UInt64 DEFAULT 1
 )
-ENGINE = MergeTree()
+ENGINE = ReplacingMergeTree(row_version)
 PARTITION BY toYYYYMM(ts)
-ORDER BY (tenant_id, ts, alarm_id);
+ORDER BY (tenant_id, alarm_id);
 
 -- Existing installations created before alarm delivery became at-least-once
 -- need the stable alarm key as well. Reports use it to collapse redeliveries.
 ALTER TABLE alert_agg.alarm_detail
     ADD COLUMN IF NOT EXISTS alarm_id String AFTER tenant_id;
+
+ALTER TABLE alert_agg.alarm_detail
+    ADD COLUMN IF NOT EXISTS row_version UInt64 DEFAULT 1;
 
 -- DETECT 聚合：5 分钟窗口匹配结果
 CREATE TABLE IF NOT EXISTS detect_agg.window_match

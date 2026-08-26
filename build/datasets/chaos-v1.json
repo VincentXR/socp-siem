@@ -1,0 +1,12 @@
+{
+  "version": "chaos-dataset-v1",
+  "seed": 20260826,
+  "description": "Deterministic lateral-movement batches; each execution adds a run namespace.",
+  "multiInstance": {
+    "ruleId": "LATERAL-RDP",
+    "entityPrefix": "chaos-dataset-host",
+    "sourceIpPrefix": "10.240",
+    "eventsPerAlert": 5,
+    "groupsPerBatchDivisor": 5
+  }
+}

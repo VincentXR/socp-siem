@@ -100,9 +100,10 @@ Web outage probe:
 python build/chaos-pipeline.py --scenario alert_web_restart
 ```
 
-For multi-instance state ownership, start three Detection processes against the
-same PostgreSQL database and Kafka group, then run the `multi_instance`
-scenario described in [chaos/README.md](chaos/README.md).
+For multi-instance state ownership, run `bash build/detection-cluster.sh start`
+to start exactly three Detection processes against the same PostgreSQL database
+and Kafka group, then run the `multi_instance` scenario described in
+[chaos/README.md](chaos/README.md).
 
 ## Expected evidence
 

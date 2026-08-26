@@ -17,6 +17,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.Map;
+import java.util.LinkedHashMap;
 
 @Service
 public class AlarmDeliveryRegistrar {
@@ -43,6 +45,26 @@ public class AlarmDeliveryRegistrar {
                 .filter(delivery -> !existing.contains(delivery.getId()))
                 .toList();
         if (!missing.isEmpty()) repository.saveAll(missing);
+    }
+
+    /** Diagnostic view used by operators and release evidence; payload is never returned. */
+    @Transactional(readOnly = true)
+    public List<Map<String, Object>> status(String tenantId, String alarmId) {
+        return repository.findByTenantIdAndAlarmIdOrderByDestinationAsc(tenantId, alarmId).stream()
+                .map(delivery -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("deliveryId", delivery.getId());
+                    row.put("tenantId", delivery.getTenantId());
+                    row.put("alarmId", delivery.getAlarmId());
+                    row.put("destination", delivery.getDestination());
+                    row.put("status", delivery.getStatus());
+                    row.put("attempts", delivery.getAttempts());
+                    row.put("nextAttemptAt", delivery.getNextAttemptAt());
+                    row.put("claimedAt", delivery.getClaimedAt());
+                    row.put("deliveredAt", delivery.getDeliveredAt());
+                    if (delivery.getLastError() != null) row.put("lastError", delivery.getLastError());
+                    return row;
+                }).toList();
     }
 
     private static AlarmDelivery pending(String tenantId, String alarmId,

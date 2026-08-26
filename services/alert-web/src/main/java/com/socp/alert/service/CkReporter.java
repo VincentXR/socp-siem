@@ -16,6 +16,7 @@ import org.springframework.stereotype.Component;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.format.DateTimeFormatter;
 import java.util.Base64;
@@ -68,9 +69,18 @@ public class CkReporter {
             values.put("rule_id", alarm.getRuleId());
             values.put("rule_name", alarm.getRuleName());
             values.put("entity", alarm.getEntity());
+            values.put("row_version", 1L);
             String row = MAPPER.writeValueAsString(values);
             String sql = "INSERT INTO alert_agg.alarm_detail FORMAT JSONEachRow\n" + row + "\n";
-            connection = (HttpURLConnection) new URL(properties.getUrl()).openConnection();
+            // ClickHouse is intentionally at-least-once at the transport boundary.
+            // The stable token lets replicated installations suppress an identical
+            // retry; ReplacingMergeTree + logical uniqExact queries cover legacy
+            // MergeTree installations where server-side insert dedup is unavailable.
+            String token = URLEncoder.encode(alarm.getTenantId() + "\u0000" + alarm.getId(),
+                    StandardCharsets.UTF_8);
+            String separator = properties.getUrl().contains("?") ? "&" : "?";
+            String endpoint = properties.getUrl() + separator + "insert_deduplication_token=" + token;
+            connection = (HttpURLConnection) new URL(endpoint).openConnection();
             connection.setRequestMethod("POST");
             connection.setDoOutput(true);
             connection.setConnectTimeout(3000);
