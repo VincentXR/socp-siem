@@ -117,8 +117,7 @@ class MiddlewareSemanticsContainerTest {
                 "{\"host\":\"web-1\",\"severity\":\"CRITICAL\"}", 200, 201);
         String bulk = "{\"index\":{\"_index\":\"contract-evidence\",\"_id\":\"alarm-2\"}}\n"
                 + "{\"host\":\"web-2\"}\n"
-                + "{\"delete\":{\"_index\":\"contract-evidence\",\"_id\":\"missing\"}}\n"
-                + "{}\n";
+                + "{\"delete\":{\"_index\":\"contract-evidence\",\"_id\":\"missing\"}}\n";
         String bulkResponse = request(base + "/_bulk?refresh=true", "POST", bulk, 200);
         assertThat(bulkResponse).contains("\"errors\":true");
         String count = request(base + "/contract-evidence/_count", "GET", null, 200);
