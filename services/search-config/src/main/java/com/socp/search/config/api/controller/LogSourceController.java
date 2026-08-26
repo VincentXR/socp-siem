@@ -25,6 +25,7 @@ import com.socp.search.config.config.VectorProperties;
 import com.socp.search.config.render.VectorConfigRenderer;
 import com.socp.search.config.persistence.store.LogSourceStore;
 import com.socp.search.config.persistence.store.SinkTargetStore;
+import com.socp.platform.tenant.context.TenantContext;
 import jakarta.annotation.PostConstruct;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -81,6 +82,10 @@ public class LogSourceController {
 
     @PostConstruct
     void seed() {
+        // Bootstrap data is deliberately scoped to the default tenant. Request paths remain fail-closed.
+        String previousTenant = TenantContext.get();
+        TenantContext.set("default");
+        try {
         // 起一个 demo 文件源，方便首次联调（等同 com.siem 的 demo/sample.log 旁路）
         if (store.list().isEmpty()) {
             store.save(LogSource.create("demo-auth-log", SourceType.FILE, ParseFormat.AUTO,
@@ -101,6 +106,13 @@ public class LogSourceController {
             sinkStore.save(SinkTarget.create("search-ingest", "SEARCH",
                     "http://localhost:18081/search-config/api/v1/ingest",
                     "Bearer " + vectorToken, true));
+        }
+        } finally {
+            if (previousTenant == null) {
+                TenantContext.clear();
+            } else {
+                TenantContext.set(previousTenant);
+            }
         }
     }
 
