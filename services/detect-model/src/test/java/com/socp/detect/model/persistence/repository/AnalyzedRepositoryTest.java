@@ -3,9 +3,11 @@ package com.socp.detect.model.persistence.repository;
 
 import com.socp.detect.model.persistence.repository.*;
 import com.socp.detect.model.persistence.entity.*;
+import com.socp.detect.model.persistence.store.AnalysisReceiptStore;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 
@@ -16,10 +18,14 @@ import java.util.stream.Collectors;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 @DataJpaTest
+@Import(AnalysisReceiptStore.class)
 class AnalyzedRepositoryTest {
 
     @Autowired
     private AnalyzedRepository repository;
+
+    @Autowired
+    private AnalysisReceiptStore analysisReceipts;
 
     @Test
     void pagesAggregatesAndDeletesTheDurableProjection() {
@@ -44,5 +50,14 @@ class AnalyzedRepositoryTest {
         assertEquals(1, repository.deleteBefore(now.minusSeconds(3600)));
         assertEquals(1, repository.countByTenantId("tenant-a"));
         assertEquals(1, repository.countByTenantId("tenant-b"));
+    }
+
+    @Test
+    void analysisReceiptClaimsAReplayOnlyOnce() {
+        assertEquals(true, analysisReceipts.claim("tenant-a", "alarm-1", "v1"));
+        assertEquals(false, analysisReceipts.claim("tenant-a", "alarm-1", "v1"));
+
+        analysisReceipts.complete("tenant-a", "alarm-1", "v1", 2);
+        assertEquals(false, analysisReceipts.claim("tenant-a", "alarm-1", "v1"));
     }
 }

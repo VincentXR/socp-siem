@@ -3,6 +3,7 @@ package com.socp.detect.model.service;
 import com.socp.detect.model.engine.AlertWindowAggregator;
 import com.socp.detect.model.persistence.entity.AnalyzedEntity;
 import com.socp.detect.model.persistence.repository.AnalyzedRepository;
+import com.socp.detect.model.persistence.store.AnalysisReceiptStore;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.config.Rules;
 import com.socp.rule.model.Alert;
@@ -23,6 +24,7 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /** Tenant-scoped secondary alert analysis backed by a durable projection. */
@@ -36,6 +38,7 @@ public class AnalyzeService {
     private final AnalyzedRepository repository;
     private final Map<String, TenantRules> rulesByTenant = new ConcurrentHashMap<>();
     private final AlertWindowAggregator windowAggregator;
+    private final AnalysisReceiptStore receiptStore;
     private final java.util.concurrent.locks.ReentrantReadWriteLock ruleStateLifecycle =
             new java.util.concurrent.locks.ReentrantReadWriteLock(true);
 
@@ -48,9 +51,19 @@ public class AnalyzeService {
     @Value("${socp.detect.model.rule-state-max-tenants:1000}")
     private int maxRuleStateTenants = 1000;
 
+    @Value("${socp.detect.model.analyzer-version:v1}")
+    private String analyzerVersion = "v1";
+
     public AnalyzeService(AnalyzedRepository repository, AlertWindowAggregator windowAggregator) {
+        this(repository, windowAggregator, new AnalysisReceiptStore());
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public AnalyzeService(AnalyzedRepository repository, AlertWindowAggregator windowAggregator,
+                          AnalysisReceiptStore receiptStore) {
         this.repository = repository;
         this.windowAggregator = windowAggregator;
+        this.receiptStore = receiptStore;
     }
 
     @Transactional
@@ -61,13 +74,28 @@ public class AnalyzeService {
         String message = String.valueOf(alarm.getOrDefault("message", ""));
         Severity severity = Severity.valueOf(
                 String.valueOf(alarm.getOrDefault("severity", "INFO")).toUpperCase());
+        String sourceAlarmId = text(alarm.get("sourceAlarmId"));
+        if (sourceAlarmId == null) sourceAlarmId = text(alarm.get("source_alarm_id"));
+        sourceAlarmId = boundedKey(sourceAlarmId, 128, "sourceAlarmId");
+        String version = text(alarm.get("analyzerVersion"));
+        if (version == null) version = text(alarm.get("analyzer_version"));
+        if (version == null) version = analyzerVersion == null || analyzerVersion.isBlank() ? "v1" : analyzerVersion;
+        version = boundedKey(version, 128, "analyzerVersion");
+
+        if (sourceAlarmId != null && !receiptStore.claim(tenant, sourceAlarmId, version)) {
+            return duplicateResult(ruleId, entity, tenant, sourceAlarmId, version);
+        }
 
         Map<String, String> fields = new LinkedHashMap<>();
         fields.put("msg", message);
         fields.put("src_ip", entity);
         fields.put("tenant_id", tenant);
         String source = String.valueOf(alarm.getOrDefault("source", "unknown"));
-        SecurityEvent event = new SecurityEvent(Instant.now(), source, entity, message, fields, severity);
+        String eventId = sourceAlarmId == null
+                ? UUID.randomUUID().toString()
+                : UUID.nameUUIDFromBytes((tenant + "|" + sourceAlarmId + "|" + version)
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+        SecurityEvent event = new SecurityEvent(eventId, eventTimestamp(alarm), source, entity, message, fields, severity);
 
         // 告警风暴智能抑制：同实体同规则在一分钟内超出 50 次时启动收敛
         String stormKey = tenant + ":" + ruleId + ":" + entity + ":" + (System.currentTimeMillis() / 60000);
@@ -80,12 +108,32 @@ public class AnalyzeService {
         }
         int matched = alerts.size();
         if (matched > 0) windowAggregator.record(tenant, ruleId, entity, severity.name());
+        if (sourceAlarmId != null) receiptStore.complete(tenant, sourceAlarmId, version, matched);
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("inputRuleId", ruleId);
         result.put("entity", entity);
         result.put("analyzedAlerts", matched);
         result.put("stormSuppressed", suppressed);
+        if (sourceAlarmId != null) {
+            result.put("sourceAlarmId", sourceAlarmId);
+            result.put("analyzerVersion", version);
+            result.put("duplicate", false);
+        }
+        result.put("totalAnalyzed", repository.countByTenantId(tenant));
+        return result;
+    }
+
+    private Map<String, Object> duplicateResult(String ruleId, String entity, String tenant,
+                                                 String sourceAlarmId, String version) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("inputRuleId", ruleId);
+        result.put("entity", entity);
+        result.put("analyzedAlerts", 0);
+        result.put("stormSuppressed", false);
+        result.put("sourceAlarmId", sourceAlarmId);
+        result.put("analyzerVersion", version);
+        result.put("duplicate", true);
         result.put("totalAnalyzed", repository.countByTenantId(tenant));
         return result;
     }
@@ -211,6 +259,32 @@ public class AnalyzeService {
     private static String truncate(String value, int max) {
         if (value == null) return "";
         return value.length() <= max ? value : value.substring(0, max);
+    }
+
+    private static String text(Object value) {
+        if (value == null) return null;
+        String result = String.valueOf(value).trim();
+        return result.isBlank() || "null".equalsIgnoreCase(result) ? null : result;
+    }
+
+    private static String boundedKey(String value, int max, String field) {
+        if (value != null && value.length() > max) {
+            throw new IllegalArgumentException(field + " exceeds " + max + " characters");
+        }
+        return value;
+    }
+
+    private static Instant eventTimestamp(Map<String, Object> alarm) {
+        String raw = text(alarm.get("timestamp"));
+        if (raw != null) {
+            try {
+                return Instant.parse(raw);
+            } catch (RuntimeException ignored) {
+                // Invalid optional timestamp is treated as ingestion time; the
+                // request contract still validates all required fields.
+            }
+        }
+        return Instant.now();
     }
 
     private static final class TenantRules {

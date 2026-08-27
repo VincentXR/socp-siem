@@ -13,6 +13,7 @@ class ProdGuardTest {
         MockEnvironment env = new MockEnvironment()
                 .withProperty("spring.datasource.url", "jdbc:h2:file:./data")
                 .withProperty("socp.security.jwt-secret", "socp-demo-jwt-secret-0123456789abcdef0123456789abcdef")
+                .withProperty("socp.auth.login-secret", "socp-demo-jwt-secret-0123456789abcdef0123456789abcdef")
                 .withProperty("socp.security.dev-bypass", "true")
                 .withProperty("socp.security.ingest-token", "dev-vector-token")
                 .withProperty("socp.soar.simulation-enabled", "true")
@@ -23,6 +24,7 @@ class ProdGuardTest {
         assertTrue(error.getMessage().contains("prod 启动校验失败"));
         assertTrue(error.getMessage().contains("H2"));
         assertTrue(error.getMessage().contains("dev-bypass"));
+        assertTrue(error.getMessage().contains("socp.auth.login-secret"));
         assertTrue(error.getMessage().contains("simulation-enabled"));
         assertTrue(error.getMessage().contains("socp.temporal.enabled"));
     }
@@ -37,6 +39,7 @@ class ProdGuardTest {
                 .withProperty("socp.security.service-secret", "production-service-secret-0123456789")
                 .withProperty("socp.security.metrics-token", "production-metrics-secret-0123456789")
                 .withProperty("socp.ratelimit.backend", "redis")
+                .withProperty("socp.ratelimit.fail-closed", "true")
                 .withProperty("socp.audit.sink", "kafka")
                 .withProperty("socp.audit.fail-closed", "true")
                 .withProperty("socp.temporal.enabled", "true");
@@ -56,6 +59,7 @@ class ProdGuardTest {
                 .withProperty("socp.security.service-secret", "production-service-secret-0123456789")
                 .withProperty("socp.security.metrics-token", "production-metrics-secret-0123456789")
                 .withProperty("socp.ratelimit.backend", "redis")
+                .withProperty("socp.ratelimit.fail-closed", "true")
                 .withProperty("socp.audit.sink", "kafka")
                 .withProperty("socp.audit.fail-closed", "true")
                 .withProperty("socp.temporal.enabled", "true");
@@ -75,6 +79,7 @@ class ProdGuardTest {
                 .withProperty("socp.security.service-secret", "production-service-secret-0123456789")
                 .withProperty("socp.security.metrics-token", "production-metrics-secret-0123456789")
                 .withProperty("socp.ratelimit.backend", "redis")
+                .withProperty("socp.ratelimit.fail-closed", "true")
                 .withProperty("socp.audit.sink", "kafka")
                 .withProperty("socp.audit.fail-closed", "true")
                 .withProperty("socp.temporal.enabled", "true");
@@ -93,6 +98,7 @@ class ProdGuardTest {
                 .withProperty("socp.security.service-secret", "production-service-secret-0123456789")
                 .withProperty("socp.security.metrics-token", "production-metrics-secret-0123456789")
                 .withProperty("socp.ratelimit.backend", "redis")
+                .withProperty("socp.ratelimit.fail-closed", "true")
                 .withProperty("socp.audit.sink", "kafka")
                 .withProperty("socp.audit.fail-closed", "true")
                 .withProperty("socp.temporal.enabled", "true");
@@ -112,6 +118,7 @@ class ProdGuardTest {
                 .withProperty("socp.security.service-secret", "production-service-secret-0123456789")
                 .withProperty("socp.security.metrics-token", "production-metrics-secret-0123456789")
                 .withProperty("socp.ratelimit.backend", "redis")
+                .withProperty("socp.ratelimit.fail-closed", "true")
                 .withProperty("socp.audit.sink", "kafka")
                 .withProperty("socp.audit.fail-closed", "true")
                 .withProperty("socp.temporal.enabled", "true");
@@ -129,6 +136,7 @@ class ProdGuardTest {
                 .withProperty("socp.security.service-secret", "production-service-secret-0123456789")
                 .withProperty("socp.security.metrics-token", "production-metrics-secret-0123456789")
                 .withProperty("socp.ratelimit.backend", "redis")
+                .withProperty("socp.ratelimit.fail-closed", "true")
                 .withProperty("socp.audit.sink", "kafka")
                 .withProperty("socp.audit.fail-closed", "true")
                 .withProperty("socp.temporal.enabled", "true");
@@ -149,6 +157,7 @@ class ProdGuardTest {
                 .withProperty("socp.security.service-secret", "production-service-secret-0123456789")
                 .withProperty("socp.security.metrics-token", "production-metrics-secret-0123456789")
                 .withProperty("socp.ratelimit.backend", "redis")
+                .withProperty("socp.ratelimit.fail-closed", "true")
                 .withProperty("socp.audit.sink", "kafka")
                 .withProperty("socp.audit.fail-closed", "true")
                 .withProperty("socp.temporal.enabled", "true");
@@ -172,5 +181,73 @@ class ProdGuardTest {
         IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
 
         assertTrue(error.getMessage().contains("socp.security.audience"));
+    }
+
+    @Test
+    void searchConfigRequiresPerCollectorIdentity() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("spring.application.name", "search-config")
+                .withProperty("socp.security.allow-global-ingest-token", "true");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+
+        assertTrue(error.getMessage().contains("registered collector credentials"));
+        assertTrue(error.getMessage().contains("allow-global-ingest-token"));
+    }
+
+    @Test
+    void rejectsKnownDefaultCollectorSecret() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("spring.application.name", "search-config")
+                .withProperty("socp.security.collector-credentials",
+                        "vector-default|tenant-a|dev-vector-token")
+                .withProperty("socp.security.allow-global-ingest-token", "false");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+
+        assertTrue(error.getMessage().contains("collector-credentials"));
+    }
+
+    @Test
+    void acceptsSearchConfigWhenVectorCredentialIsRegistered() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("spring.application.name", "search-config")
+                .withProperty("socp.security.collector-credentials",
+                        "vector-prod|tenant-a|a-long-production-collector-secret")
+                .withProperty("socp.security.allow-global-ingest-token", "false")
+                .withProperty("socp.vector.token", "a-long-production-collector-secret");
+
+        assertDoesNotThrow(() -> new ProdGuard(env));
+    }
+
+    @Test
+    void rejectsTrustAllOpenSearchAndKnownDefaults() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("socp.opensearch.enabled", "true")
+                .withProperty("socp.opensearch.url", "http://search.example.test:9200")
+                .withProperty("socp.opensearch.username", "admin")
+                .withProperty("socp.opensearch.password", "Socp!Sec2026xK")
+                .withProperty("socp.opensearch.tls.insecure-skip-verify", "true");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+
+        assertTrue(error.getMessage().contains("trust-all TLS"));
+        assertTrue(error.getMessage().contains("must use HTTPS"));
+        assertTrue(error.getMessage().contains("known development default"));
+    }
+
+    private static MockEnvironment validProductionEnvironment() {
+        return new MockEnvironment()
+                .withProperty("spring.datasource.url", "jdbc:postgresql://db.example.test/socp")
+                .withProperty("socp.security.jwk-set-uri", "https://id.example.test/keys")
+                .withProperty("socp.security.audience", "socp-api")
+                .withProperty("socp.security.ingest-token", "production-ingest-token")
+                .withProperty("socp.security.service-secret", "production-service-secret-0123456789")
+                .withProperty("socp.security.metrics-token", "production-metrics-secret-0123456789")
+                .withProperty("socp.ratelimit.backend", "redis")
+                .withProperty("socp.ratelimit.fail-closed", "true")
+                .withProperty("socp.audit.sink", "kafka")
+                .withProperty("socp.audit.fail-closed", "true")
+                .withProperty("socp.temporal.enabled", "true");
     }
 }

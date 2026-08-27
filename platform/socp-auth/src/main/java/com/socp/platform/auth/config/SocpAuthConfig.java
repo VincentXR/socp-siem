@@ -1,5 +1,6 @@
 package com.socp.platform.auth.config;
 import com.socp.platform.auth.security.AuthInterceptor;
+import com.socp.platform.auth.security.CollectorCredentialRegistry;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
@@ -12,7 +13,7 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
  * 注意：AuthInterceptor 需要注入 JwtValidator，不能再 new 出来，必须用容器里的 Bean。
  */
 @Configuration
-@Import(SocpJwtConfig.class)
+@Import({SocpJwtConfig.class, CollectorCredentialRegistry.class})
 public class SocpAuthConfig implements WebMvcConfigurer {
 
     private final AuthInterceptor authInterceptor;

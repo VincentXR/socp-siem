@@ -218,7 +218,12 @@ jobs:
       SOCP_SECURITY_SERVICE_SECRET: ci-test-service-secret-0123456789abcdef
       SOCP_AUTH_USERS: '{"admin":"admin123","demo":"demo123","viewer":"viewer123"}'
       SOCP_AUTH_ROLES: '{"admin":"admin","demo":"analyst","viewer":"viewer"}'
+      SOCP_COLLECTOR_CREDENTIALS: "ci-chaos|default|ci-chaos-collector-secret"
+      SOCP_ALLOW_GLOBAL_INGEST_TOKEN: "false"
       SOCP_RUNTIME_PROFILES: pg
+      PIPELINE_INGEST_URL: http://127.0.0.1:18081/search-config/api/v1/ingest
+      PIPELINE_COLLECTOR_ID: ci-chaos
+      PIPELINE_COLLECTOR_TOKEN: ci-chaos-collector-secret
       SOCP_OPENSEARCH_URL: http://localhost:9200
       SOCP_OPENSEARCH_USERNAME: admin
       SOCP_OPENSEARCH_PASSWORD: admin
@@ -391,24 +396,24 @@ jobs:
             exit 1
           fi
 
-      - name: Run nightly chaos evidence (restart + dependency outages)
-        if: github.event_name != 'pull_request'
+      # GitHub service containers do not share the Compose container names or
+      # process layout expected by dependency-outage chaos.  Keep the nightly
+      # job deterministic here; the Compose-backed weekly workflow owns
+      # process/database/OpenSearch outage experiments.
+      - name: Run nightly chaos evidence (deterministic replay invariants)
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
           mkdir -p .cache/chaos
           set +e
-          python3 build/chaos-pipeline.py --scenario alert_web_restart \
+          python3 build/chaos-pipeline.py --scenario duplicate_delivery \
             --run-id "nightly-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --output .cache/chaos/alert-web-restart.json
-          restart_status=$?
-          python3 build/chaos-pipeline.py --scenario postgres_outage \
+            --output .cache/chaos/duplicate-delivery.json
+          duplicate_status=$?
+          python3 build/chaos-pipeline.py --scenario detection_outbox_replay \
             --run-id "nightly-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --output .cache/chaos/postgres-outage.json
-          postgres_status=$?
-          python3 build/chaos-pipeline.py --scenario opensearch_outage \
-            --run-id "nightly-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --output .cache/chaos/opensearch-outage.json
-          opensearch_status=$?
-          if [ "$restart_status" -ne 0 ] || [ "$postgres_status" -ne 0 ] || [ "$opensearch_status" -ne 0 ]; then
+            --output .cache/chaos/detection-outbox-replay.json
+          replay_status=$?
+          if [ "$duplicate_status" -ne 0 ] || [ "$replay_status" -ne 0 ]; then
             exit 1
           fi
 

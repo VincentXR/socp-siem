@@ -39,6 +39,9 @@ socp:
     audience: ${SOCP_SECURITY_AUDIENCE:socp-api}
     dev-bypass: ${SOCP_DEV_BYPASS:false}
     metrics-token: ${SOCP_SECURITY_METRICS_TOKEN:socp-demo-metrics-token}
+    # Per-collector credentials: id|tenant|secret;id2|tenant|secret.
+    collector-credentials: ${SOCP_COLLECTOR_CREDENTIALS:}
+    allow-global-ingest-token: ${SOCP_ALLOW_GLOBAL_INGEST_TOKEN:true}
     # 机机采集凭据：Vector 渲染配置里 Authorization 头的值（socp.vector.token）匹配即放行，
     # 否则采集器在 dev-bypass=false 下会被 401 挡在链路外。
     ingest-token: ${SOCP_INGEST_TOKEN:dev-vector-token}
@@ -71,6 +74,15 @@ socp:
       cleanup-initial-delay-ms: ${SOCP_INGEST_OUTBOX_CLEANUP_INITIAL_DELAY_MS:60000}
   os-indexer:
     retry-backoff-ms: ${SOCP_OS_INDEXER_RETRY_BACKOFF_MS:1000}
+  opensearch:
+    enabled: ${SOCP_OPENSEARCH_ENABLED:true}
+    url: ${SOCP_OPENSEARCH_URL:https://localhost:9200}
+    username: ${SOCP_OPENSEARCH_USERNAME:admin}
+    password: ${SOCP_OPENSEARCH_PASSWORD:Socp!Sec2026xK}
+    tls:
+      insecure-skip-verify: ${SOCP_OPENSEARCH_INSECURE_SKIP_VERIFY:true}
+      trust-store: ${SOCP_OPENSEARCH_TRUST_STORE:}
+      trust-store-password: ${SOCP_OPENSEARCH_TRUST_STORE_PASSWORD:}
 
 # 避开 8080（旧 SIEM 控制台占用）；与 alert-web(18080)/api-gateway(18092) 同处 18080~18092 段
 management:

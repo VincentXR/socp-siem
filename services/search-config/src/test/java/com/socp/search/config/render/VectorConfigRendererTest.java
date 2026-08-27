@@ -3,6 +3,7 @@ package com.socp.search.config.render;
 import com.socp.search.config.domain.LogSource;
 import com.socp.search.config.domain.ParseFormat;
 import com.socp.search.config.domain.SourceType;
+import com.socp.search.config.domain.SinkTarget;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -15,6 +16,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 集群无关，直接跑。
  */
 class VectorConfigRendererTest {
+
+    @Test
+    void builtInIngestSinkUsesConfiguredCollectorCredential() {
+        LogSource src = LogSource.create("auth-log", SourceType.FILE, ParseFormat.AUTO,
+                "/var/log/auth.log", null, null, "prod", true);
+        SinkTarget builtInIngest = SinkTarget.create("SEARCH", "GLS_INGEST",
+                "http://search:18081/search-config/api/v1/ingest", null, true);
+
+        String toml = new VectorConfigRenderer(null, "collector-secret")
+                .render(List.of(src), List.of(builtInIngest));
+
+        assertTrue(toml.contains("request.headers.Authorization = \"Bearer collector-secret\""));
+    }
 
     @Test
     void rendersFileSourceWithGlsIngestSink() {

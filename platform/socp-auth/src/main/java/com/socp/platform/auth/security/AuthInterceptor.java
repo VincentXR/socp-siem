@@ -27,12 +27,20 @@ public class AuthInterceptor implements HandlerInterceptor {
 
     private final JwtValidator jwtValidator;
     private final SocpSecurityProperties properties;
+    private final CollectorCredentialRegistry collectorCredentials;
     private final ConcurrentHashMap<String, Long> serviceNonces = new ConcurrentHashMap<>();
     private volatile long nextNonceCleanupAt;
 
     public AuthInterceptor(JwtValidator jwtValidator, SocpSecurityProperties properties) {
+        this(jwtValidator, properties, new CollectorCredentialRegistry(properties));
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public AuthInterceptor(JwtValidator jwtValidator, SocpSecurityProperties properties,
+                           CollectorCredentialRegistry collectorCredentials) {
         this.jwtValidator = jwtValidator;
         this.properties = properties;
+        this.collectorCredentials = collectorCredentials;
     }
 
     @Override
@@ -56,14 +64,36 @@ public class AuthInterceptor implements HandlerInterceptor {
         String tenant = null;
         String role;
         boolean ingestCredential = false;
+        CollectorCredentialRegistry.Identity collectorIdentity =
+                collectorCredentials.authenticate(token).orElse(null);
         String ingestToken = properties.getIngestToken();
-        if (ingestToken != null && !ingestToken.isBlank() && constantTimeEquals(ingestToken, token)) {
+        if (collectorIdentity != null) {
+            if (!isAllowedIngestRequest(request)) {
+                throw ApiException.forbidden("Collector credential is limited to the ingest endpoint");
+            }
+            String claimedCollector = request.getHeader("X-SOCP-Collector");
+            if (claimedCollector != null && !claimedCollector.isBlank()
+                    && !collectorIdentity.collectorId().equals(claimedCollector.trim())) {
+                throw ApiException.unauthorized("Collector identity header does not match the credential");
+            }
+            tenant = collectorIdentity.tenantId();
+            role = "ingest";
+            ingestCredential = true;
+            request.setAttribute(CollectorCredentialRegistry.COLLECTOR_ID_ATTRIBUTE,
+                    collectorIdentity.collectorId());
+        } else if (ingestToken != null && !ingestToken.isBlank() && constantTimeEquals(ingestToken, token)) {
+            if (!properties.isAllowGlobalIngestToken()) {
+                throw ApiException.unauthorized("Global ingest credentials are disabled");
+            }
             if (!isAllowedIngestRequest(request)) {
                 throw ApiException.forbidden("Static ingest credential is limited to the ingest endpoint");
             }
             tenant = "default";
             role = "ingest";
             ingestCredential = true;
+            // The legacy token has no per-source identity. Do not trust a
+            // caller-controlled collector header; production uses the
+            // registry branch above for tenant/source binding.
         } else if (jwtValidator.isDevBypass()) {
             role = request.getHeader("X-Role");
         } else {
@@ -86,13 +116,19 @@ public class AuthInterceptor implements HandlerInterceptor {
         if (delegatedTenant != null) {
             tenant = delegatedTenant;
             role = "analyst";
+            request.setAttribute(RequireService.SERVICE_ID_ATTRIBUTE,
+                    request.getHeader(ServiceRequestSignature.SERVICE_HEADER));
         } else if (ingestCredential) {
             String requestedTenant = request.getHeader("X-Tenant-Id");
-            if (requestedTenant != null && !requestedTenant.isBlank() && !"default".equals(requestedTenant)) {
-                throw ApiException.unauthorized("Static ingest credential is bound to the default tenant");
+            if (requestedTenant != null && !requestedTenant.isBlank()) {
+                String boundTenant = collectorIdentity == null ? "default" : collectorIdentity.tenantId();
+                if (!boundTenant.equals(requestedTenant)) {
+                    throw ApiException.unauthorized("Ingest credential is bound to a different tenant");
+                }
             }
         }
 
+        requireIdentity(handler, delegatedTenant != null, ingestCredential);
         requireRole(handler, role, request.getRequestURI());
 
         if (tenant != null && !tenant.isBlank()) {
@@ -123,10 +159,28 @@ public class AuthInterceptor implements HandlerInterceptor {
         throw ApiException.forbidden(requirement.message());
     }
 
+    private void requireIdentity(Object handler, boolean serviceIdentity, boolean collectorIdentity) {
+        if (!(handler instanceof HandlerMethod method)) return;
+        RequireService service = method.getMethodAnnotation(RequireService.class);
+        if (service == null) service = method.getBeanType().getAnnotation(RequireService.class);
+        if (service != null && !serviceIdentity) {
+            throw ApiException.forbidden(service.message());
+        }
+        RequireIngestIdentity ingest = method.getMethodAnnotation(RequireIngestIdentity.class);
+        if (ingest == null) ingest = method.getBeanType().getAnnotation(RequireIngestIdentity.class);
+        if (ingest != null && !serviceIdentity && !collectorIdentity) {
+            throw ApiException.forbidden(ingest.message());
+        }
+    }
+
     private boolean isAllowedIngestRequest(HttpServletRequest request) {
         if (!"POST".equalsIgnoreCase(request.getMethod())) return false;
         String path = request.getRequestURI();
-        return properties.getIngestPaths().stream().anyMatch(path::equals);
+        String contextPath = request.getContextPath();
+        String relativePath = contextPath == null || contextPath.isBlank() || !path.startsWith(contextPath)
+                ? path : path.substring(contextPath.length());
+        return properties.getIngestPaths().stream()
+                .anyMatch(configured -> configured.equals(path) || configured.equals(relativePath));
     }
 
     private static boolean isAllowedMetricsRequest(HttpServletRequest request) {

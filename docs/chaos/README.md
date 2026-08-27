@@ -15,7 +15,7 @@ python build/chaos-pipeline.py --scenario detection_outbox_replay
 python build/chaos-pipeline.py --scenario postgres_outage
 python build/chaos-pipeline.py --scenario opensearch_outage
 python build/chaos-pipeline.py --scenario all --count 20 \
-  --run-id nightly-20260826 --output .cache/chaos/nightly-20260826.json
+  --run-id local-all-20260826 --output .cache/chaos/local-all-20260826.json
 ```
 
 - `detect_restart`: stops Detection, injects events, verifies Kafka backlog,
@@ -73,6 +73,12 @@ Detection journal rows after recovery, and no unaccounted partition ownership.
 The multi-instance oracle compares expected deterministic alert IDs with the
 actual set after the rebalance. The matrix does not claim exactly-once
 delivery, strict cross-partition ordering, or production HA.
+
+CI cadence is intentionally split by environment. Pull requests and the
+nightly scheduled job run the deterministic duplicate-delivery and outbox
+replay scenarios. The Compose-backed process/database/OpenSearch outage
+matrix and the multi-instance rebalance oracle run in the weekly full-stack
+workflow, where the named containers and three-instance topology exist.
 
 Additional scenarios should record a before/after snapshot and an observable
 invariant. A restart alone is not a chaos test unless loss, duplication, lag,

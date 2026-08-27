@@ -47,6 +47,7 @@ public class AssetCollectionController {
         this.objectMapper = objectMapper;
     }
 
+    @com.socp.platform.auth.security.RequireRole({"admin", "analyst"})
     @PostMapping("/collect")
     public Map<String, Object> collect(@Valid @RequestBody AssetCollectionRequest input) {
         Map<String, Object> source = new LinkedHashMap<>();

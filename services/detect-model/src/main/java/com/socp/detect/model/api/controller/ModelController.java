@@ -5,6 +5,7 @@ import com.socp.detect.model.engine.AlertWindowAggregator;
 import com.socp.detect.model.service.AnalyzeService;
 import org.springframework.web.bind.annotation.*;
 import jakarta.validation.Valid;
+import com.socp.platform.auth.security.RequireRole;
 
 import java.util.List;
 import java.util.Map;
@@ -33,6 +34,7 @@ public class ModelController {
     }
 
     /** 接收原始告警做二次分析（HTTP 调试入口；生产主链走 Kafka，同一路径）。 */
+    @RequireRole({"admin", "analyst"})
     @PostMapping("/analyze")
     public Map<String, Object> analyze(@Valid @RequestBody AnalyzeRequest request) {
         return analyzeService.analyze(request.asMap());

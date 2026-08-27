@@ -20,11 +20,21 @@ import java.util.stream.Collectors;
 public class VectorConfigRenderer {
 
     private final String defaultUri;
+    private final String defaultAuthToken;
 
     public VectorConfigRenderer(String defaultUri) {
+        this(defaultUri, null);
+    }
+
+    /**
+     * @param defaultAuthToken credential used by the built-in SEARCH ingest
+     *                         sink when no per-sink token was persisted
+     */
+    public VectorConfigRenderer(String defaultUri, String defaultAuthToken) {
         this.defaultUri = defaultUri == null || defaultUri.isBlank()
                 ? "http://localhost:18081/search-config/api/v1/ingest"
                 : defaultUri;
+        this.defaultAuthToken = defaultAuthToken;
     }
 
     /** 兼容旧调用：无输出配置时用默认 SEARCH ingest */
@@ -48,7 +58,11 @@ public class VectorConfigRenderer {
                 .findFirst()
                 .orElse(null);
         String sinkUri = selected == null ? defaultUri : selected.uri();
-        String authToken = selected == null ? null : selected.authToken();
+        String authToken = selected == null ? defaultAuthToken : selected.authToken();
+        if ((authToken == null || authToken.isBlank()) && selected != null
+                && "GLS_INGEST".equalsIgnoreCase(selected.type())) {
+            authToken = defaultAuthToken;
+        }
 
         List<String> transformNames = new java.util.ArrayList<>();
         for (LogSource src : active) {

@@ -13,6 +13,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.argThat;
 
 class AlarmConsumerTest {
 
@@ -33,7 +34,21 @@ class AlarmConsumerTest {
         consumer.processRecord("alarm-1",
                 "{\"tenantId\":\"tenant-a\",\"severity\":\"HIGH\"}");
 
-        verify(service).analyze(anyMap());
+        verify(service).analyze(argThat(payload -> "alarm-1".equals(payload.get("sourceAlarmId"))));
+        assertNull(TenantContext.get());
+    }
+
+    @Test
+    void preservesExplicitSourceAlarmIdentityOverEnvelopeAndKafkaKey() {
+        AnalyzeService service = mock(AnalyzeService.class);
+        when(service.analyze(anyMap())).thenReturn(java.util.Map.of());
+        AlarmConsumer consumer = new AlarmConsumer(service);
+
+        consumer.processRecord("kafka-key",
+                "{\"tenantId\":\"tenant-a\",\"id\":\"envelope-id\","
+                        + "\"sourceAlarmId\":\"source-id\",\"severity\":\"HIGH\"}");
+
+        verify(service).analyze(argThat(payload -> "source-id".equals(payload.get("sourceAlarmId"))));
         assertNull(TenantContext.get());
     }
 

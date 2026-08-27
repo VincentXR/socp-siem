@@ -79,6 +79,7 @@ class CollectControllerTest {
 
         mvc.perform(post("/api/v1/collect")
                         .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isOk())
@@ -88,6 +89,7 @@ class CollectControllerTest {
 
         mvc.perform(post("/api/v1/collect")
                         .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(Map.of("name", "cmdb-host-2"))))
                 .andExpect(status().isOk())

@@ -29,13 +29,15 @@ navigation, resource-list, and resource-import contracts.
 ## Test ownership
 
 - `socp-auth` and `api-gateway`: JWT configuration, production guard, missing
-  credentials, viewer write denial, tenant propagation, and trace headers.
+  credentials, collector identity/tenant binding, service-only endpoint
+  denial, viewer write denial, tenant propagation, and trace headers.
 - `socp-rule` and `detect-web`: rule evaluation, suppression, hot reload,
   routing keys, partition restore, event de-duplication, queue backpressure,
   malformed events, Detection Alert Outbox retry, and rule API contracts.
-- `search-config`: canonical event plus Ingestion Outbox creation, optimistic
-  publication claims, broker acknowledgement, stable OpenSearch document IDs,
-  partial bulk failure, and index-before-offset completion semantics.
+- `search-config`: canonical event plus Ingestion Outbox creation, authenticated
+  collector identity, optimistic publication claims, broker acknowledgement,
+  stable OpenSearch document IDs, partial bulk failure, and
+  index-before-offset completion semantics.
 - `alert-web`: create validation, source-alert idempotency, paged query
   contracts, transactional Alert Outbox creation, broker-ack publishing,
   optimistic claim/stale recovery, post-commit enrichment scheduling, pending
@@ -124,20 +126,26 @@ group. Then run `python build/chaos-pipeline.py --scenario multi_instance`.
 See the [validation matrix](validation-matrix.md) for pass criteria and
 explicit limits.
 
+Chaos event injection is a data-plane operation. Set
+`PIPELINE_COLLECTOR_ID`, `PIPELINE_COLLECTOR_TOKEN`, and
+`PIPELINE_INGEST_URL` to use a registered collector; do not reuse a user JWT
+for `/search-config/api/v1/ingest`.
+
 ## CI ownership
 
 `.github/workflows/ci.yml` runs on pushes and pull requests to `main`, nightly,
 and manually. It builds the Java reactor, enables the Testcontainers contract
 suite, verifies the workbench, and runs a minimal service slice plus the Kafka
-pipeline E2E job. PRs additionally require duplicate-delivery and Detection
-Outbox replay evidence; non-PR runs add Alert Web, PostgreSQL, and OpenSearch
-failure scenarios.
+pipeline E2E job. Nightly/manual runs add deterministic duplicate-delivery and
+Detection Outbox replay evidence. Compose-dependent process/database/
+OpenSearch outage checks are intentionally kept in the weekly full-stack job,
+where the named services and volumes exist.
 
 `.github/workflows/full-stack.yml` runs manually and on the weekly schedule.
 It starts the extended Compose profile and fixed three-instance Detection
-cluster, runs full API and pipeline checks, the multi-instance/rebalance oracle,
-attack scenarios, and dependency failure injection, then uploads diagnostic
-logs plus structured JSON evidence.
+cluster, runs full API and pipeline checks, the dependency-outage matrix, the
+multi-instance/rebalance oracle, attack scenarios, and recovery demos, then
+uploads diagnostic logs plus structured JSON evidence.
 
 `.github/workflows/dependency-audit.yml` runs weekly or manually. It applies
 OWASP Dependency-Check to the Java reactor and `pnpm audit` to the workbench;

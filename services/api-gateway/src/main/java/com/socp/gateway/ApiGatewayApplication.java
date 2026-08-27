@@ -1,6 +1,7 @@
 package com.socp.gateway;
 
 import com.socp.platform.auth.config.SocpJwtConfig;
+import com.socp.platform.auth.security.ProdGuard;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Import;
@@ -14,7 +15,7 @@ import org.springframework.context.annotation.Import;
  * 扫到它们会因为缺少 spring-webmvc 直接启动失败。JwtValidator 是零 Web 依赖的，可以安全复用。
  */
 @SpringBootApplication
-@Import(SocpJwtConfig.class)
+@Import({SocpJwtConfig.class, ProdGuard.class})
 public class ApiGatewayApplication {
     public static void main(String[] args) {
         SpringApplication.run(ApiGatewayApplication.class, args);

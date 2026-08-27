@@ -20,7 +20,10 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.security.KeyStore;
 import java.security.cert.X509Certificate;
+import javax.net.ssl.TrustManagerFactory;
+import java.io.FileInputStream;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.Base64;
@@ -104,8 +107,7 @@ public class OsEventWriter {
                     (properties.getUsername() + ":" + properties.getPassword()).getBytes(StandardCharsets.UTF_8));
             c.setRequestProperty("Authorization", "Basic " + auth);
             if (c instanceof HttpsURLConnection https) {
-                https.setSSLSocketFactory(sslSocketFactory());
-                https.setHostnameVerifier((hostname, session) -> true);
+                configureHttps(https);
             }
             try (OutputStream os = c.getOutputStream()) {
                 os.write(templatePayload.getBytes(StandardCharsets.UTF_8));
@@ -172,8 +174,7 @@ public class OsEventWriter {
                     (properties.getUsername() + ":" + properties.getPassword()).getBytes(StandardCharsets.UTF_8));
             c.setRequestProperty("Authorization", "Basic " + auth);
             if (c instanceof HttpsURLConnection https) {
-                https.setSSLSocketFactory(sslSocketFactory());
-                https.setHostnameVerifier((hostname, session) -> true);
+                configureHttps(https);
             }
             try (OutputStream os = c.getOutputStream()) {
                 os.write(sb.toString().getBytes(StandardCharsets.UTF_8));
@@ -242,11 +243,45 @@ public class OsEventWriter {
         SSLSocketFactory current = sslSocketFactory;
         if (current != null) return current;
         synchronized (this) {
-            if (sslSocketFactory == null) sslSocketFactory = createTrustAllSsl();
+            if (sslSocketFactory == null) {
+                if (properties.getTls().isInsecureSkipVerify()) {
+                    sslSocketFactory = createTrustAllSsl();
+                } else if (properties.getTls().getTrustStore() == null
+                        || properties.getTls().getTrustStore().isBlank()) {
+                    sslSocketFactory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+                } else {
+                    sslSocketFactory = createConfiguredSsl(properties.getTls());
+                }
+            }
             return sslSocketFactory;
         }
     }
 
+    private void configureHttps(HttpsURLConnection https) throws Exception {
+        https.setSSLSocketFactory(sslSocketFactory());
+        if (properties.getTls().isInsecureSkipVerify()) {
+            // Deliberate local/integration escape hatch. ProdGuard rejects it.
+            https.setHostnameVerifier((hostname, session) -> true);
+        } else {
+            https.setHostnameVerifier(HttpsURLConnection.getDefaultHostnameVerifier());
+        }
+    }
+
+    private static SSLSocketFactory createConfiguredSsl(OpenSearchProperties.Tls tls) throws Exception {
+        KeyStore store = KeyStore.getInstance(KeyStore.getDefaultType());
+        char[] password = tls.getTrustStorePassword() == null
+                ? new char[0] : tls.getTrustStorePassword().toCharArray();
+        try (FileInputStream input = new FileInputStream(tls.getTrustStore())) {
+            store.load(input, password);
+        }
+        TrustManagerFactory factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        factory.init(store);
+        SSLContext context = SSLContext.getInstance("TLS");
+        context.init(null, factory.getTrustManagers(), new SecureRandom());
+        return context.getSocketFactory();
+    }
+
+    /** Explicit local/integration escape hatch; production validation rejects it. */
     private static SSLSocketFactory createTrustAllSsl() throws Exception {
         TrustManager[] tm = {new X509TrustManager() {
             @Override public void checkClientTrusted(X509Certificate[] chain, String authType) { }

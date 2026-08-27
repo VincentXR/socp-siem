@@ -108,6 +108,10 @@ socp:
     cookie-secure: ${SOCP_AUTH_COOKIE_SECURE:false}
     allowed-origins: ${SOCP_AUTH_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:18092}
 
+  ratelimit:
+    backend: ${SOCP_RATELIMIT_BACKEND:memory}
+    fail-closed: ${SOCP_RATELIMIT_FAIL_CLOSED:false}
+
   # Keycloak OIDC 登录（PKCE 授权码，2026-08-12）：Keycloak 只作身份源，
   # 网关回调后统一签发 HS256 session token，业务服务保持 HMAC 验签零改动。
   oidc:

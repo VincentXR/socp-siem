@@ -54,8 +54,9 @@ class AssetCollectionControllerTest {
                 .willReturn(new ServiceCall(SocpService.SEARCH, "http://search", true, 202,
                         "accepted", null, 1, false, 1));
 
-        mvc.perform(post("/api/v1/collect")
+                mvc.perform(post("/api/v1/collect")
                         .header("Authorization", "Bearer test-token")
+                        .header("X-Role", "analyst")
                         .header("X-Tenant-Id", "tenant-a")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(Map.of(

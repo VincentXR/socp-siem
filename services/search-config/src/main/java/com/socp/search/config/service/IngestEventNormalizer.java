@@ -43,6 +43,12 @@ public class IngestEventNormalizer {
         String rawLog = canonical.getOrDefault(CanonicalEvent.EVENT_MESSAGE, line);
         applyFallbackParseRule(rawLog, fields, ecs);
         bridge(fields, canonical);
+        // A collector identity obtained from the authenticated request is
+        // authoritative. Never let an untrusted body field relabel the
+        // source or its per-collector accounting.
+        if (collectorHint != null && !collectorHint.isBlank()) {
+            fields.put("collector", collectorHint);
+        }
         enrich(fields);
 
         String source = pick(fields, "source", "type", "app", "vendor");
@@ -163,9 +169,10 @@ public class IngestEventNormalizer {
     }
 
     private static String collector(Map<String, Object> fields, String fallback) {
+        if (fallback != null && !fallback.isBlank()) return fallback;
         Object collector = fields.get("collector");
         return collector == null || String.valueOf(collector).isBlank()
-                ? fallback : String.valueOf(collector);
+                ? "unknown" : String.valueOf(collector);
     }
 
     private static String tenant() {

@@ -206,7 +206,7 @@ def control(action, service):
 CONTAINER_IMAGES = {
     "socp-postgres": os.environ.get("SOCP_POSTGRES_IMAGE", "postgres:18"),
     "socp-opensearch": os.environ.get(
-        "SOCP_OPENSEARCH_IMAGE", "opensearchproject/opensearch:2.11.1"),
+        "SOCP_OPENSEARCH_IMAGE", "opensearchproject/opensearch:2.19.6"),
 }
 
 
@@ -348,6 +348,26 @@ def kafka_snapshot():
         consumer.close()
 
 
+def drained_kafka_snapshot(timeout=60, interval=1):
+    """Return a zero-lag baseline, waiting for the previous workload to drain.
+
+    Restart and dependency-outage scenarios inject a new workload and compare
+    offsets against the baseline.  Sampling only once made an otherwise valid
+    run fail when the preceding verification was still committing its final
+    records.  Keep the diagnostic consumer out of the production group and
+    wait only for the observable lag invariant.
+    """
+    initial = kafka_snapshot()
+    if initial is None or initial["lag"] == 0:
+        return initial
+
+    def probe():
+        snapshot = kafka_snapshot()
+        return snapshot if snapshot and snapshot["lag"] == 0 else None
+
+    return wait_for(probe, timeout=timeout, interval=interval)
+
+
 def alert_total(token):
     status, body = request(
         GATEWAY_URL + "/alert-web/api/alarms?page=1&size=1",
@@ -387,20 +407,40 @@ def expected_alert_id(rule_id, entity, event_ids):
 
 def ingest(token, events):
     payload = "\n".join(json.dumps(event) for event in events) + "\n"
-    headers = {
-        **auth_headers(token),
-        "X-SOCP-Collector": "chaos-pipeline",
-        "Content-Type": "application/x-ndjson",
-    }
+    collector_token = os.environ.get("PIPELINE_COLLECTOR_TOKEN", "").strip()
+    collector_id = os.environ.get("PIPELINE_COLLECTOR_ID", "chaos-pipeline").strip()
+    if collector_token:
+        # Collector credentials are data-plane identities and are sent to the
+        # search service directly.  The north-bound gateway intentionally
+        # accepts user JWTs only, while the service boundary validates the
+        # collector/tenant binding.
+        ingest_url = os.environ.get(
+            "PIPELINE_INGEST_URL",
+            f"http://127.0.0.1:{port_of('search-config')}/search-config/api/v1/ingest")
+        headers = {
+            "Authorization": "Bearer " + collector_token,
+            "X-SOCP-Collector": collector_id,
+            "Content-Type": "application/x-ndjson",
+        }
+    else:
+        legacy_token = os.environ.get("SOCP_INGEST_TOKEN", VECTOR_TOKEN).strip()
+        ingest_url = os.environ.get(
+            "PIPELINE_INGEST_URL",
+            f"http://127.0.0.1:{port_of('search-config')}/search-config/api/v1/ingest")
+        headers = {
+            "Authorization": "Bearer " + legacy_token,
+            "X-SOCP-Collector": collector_id,
+            "Content-Type": "application/x-ndjson",
+        }
     status, body = request(
-        GATEWAY_URL + "/search-config/api/v1/ingest", "POST", payload, headers, timeout=30)
+        ingest_url, "POST", payload, headers, timeout=30)
     if status != 200:
         raise RuntimeError(f"ingest failed HTTP {status}: {body}")
     return body
 
 
 def scenario_detection_restart(token, count):
-    baseline = kafka_snapshot()
+    baseline = drained_kafka_snapshot()
     if baseline is None:
         raise RuntimeError("Kafka snapshot unavailable; check kafka-python and the broker")
     if baseline["lag"] != 0:
@@ -543,7 +583,7 @@ def scenario_alert_web_restart(token):
 
 def scenario_postgres_outage(token):
     """Prove PostgreSQL failure retains Kafka backlog and recovers exactly once."""
-    baseline = kafka_snapshot()
+    baseline = drained_kafka_snapshot()
     if not baseline or baseline["lag"] != 0:
         raise RuntimeError(f"postgres_outage requires a drained baseline, got {baseline}")
     run_id = run_token("postgres-outage")

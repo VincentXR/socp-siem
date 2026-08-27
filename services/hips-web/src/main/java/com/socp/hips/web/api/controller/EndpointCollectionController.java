@@ -36,6 +36,7 @@ public class EndpointCollectionController {
         this.objectMapper = objectMapper;
     }
 
+    @com.socp.platform.auth.security.RequireIngestIdentity
     @PostMapping("/events")
     public Map<String, Object> report(@Valid @RequestBody EndpointEventRequest input) {
         Map<String, Object> event = events.add(input.asMap());

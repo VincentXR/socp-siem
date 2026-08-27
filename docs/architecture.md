@@ -96,12 +96,35 @@ the intentional all-H2 fallback.
   idempotent; the system does not claim distributed exactly-once processing.
 - Temporal is optional for development. SOAR can use the local executor when
   Temporal is unavailable; the `prod` guard rejects that fallback.
+- Secondary analysis claims `(tenant_id, source_alarm_id, analyzer_version)` in
+  `t_analysis_receipt` in the same transaction as its result. Kafka redelivery
+  is therefore a state-preserving no-op after a committed analysis, while a
+  rolled-back attempt remains retryable.
 
 ## Security and observability
 
 `socp-auth` validates HMAC or JWKS JWTs, extracts the tenant claim, and applies
-method-level `@RequireRole` checks. Tenant isolation is logical: services use
-`tenant_id` and shared context/query filters rather than separate databases.
+method-level `@RequireRole` checks. Side-effecting internal endpoints can also
+require a signed `ServiceRequestSignature`; the endpoint then rejects a user
+JWT even when the caller has an otherwise valid role. Tenant isolation is
+logical: services use `tenant_id` and shared context/query filters rather than
+separate databases.
+
+The canonical `search-config /api/v1/ingest` boundary requires an authenticated
+collector identity or a signed internal service request. Collector credentials
+are configured as `collector-id|tenant-id|secret` entries in
+`SOCP_COLLECTOR_CREDENTIALS`; the bound tenant is taken from the credential, not
+from the request body or `X-Tenant-Id`. A legacy single ingest token remains a
+development-only compatibility path and is disabled by setting
+`SOCP_ALLOW_GLOBAL_INGEST_TOKEN=false`. Body fields such as `collector` are
+treated as metadata only and cannot relabel an authenticated source.
+
+OpenSearch uses the JVM trust store by default. A deployment may provide an
+explicit `socp.opensearch.tls.trust-store`; the local
+`socp.opensearch.tls.insecure-skip-verify` escape hatch is rejected by
+`ProdGuard`. Production startup also fails on known development credentials,
+authentication bypass, untrusted HTTP endpoints, shared in-memory rate limits,
+or a non-fail-closed Redis rate-limit backend.
 
 OpenTelemetry propagates trace context across HTTP requests and Kafka headers.
 Audit records, trace IDs, health endpoints, Kafka lag, JVM metrics, and
@@ -117,7 +140,9 @@ outbox retry logs provide operational evidence for the event path.
 - Stateful rule windows are bounded by `SOCP_RULE_STATE_MAX_KEYS` and
   `SOCP_RULE_STATE_IDLE_TTL_MS`; eviction counts are exposed in rule stats.
 - `prod` enables `ProdGuard`, which rejects H2, demo credentials,
-  authentication bypass, the default ingest token, and disabled Temporal.
+  authentication bypass, default ingest/Vector/OpenSearch credentials,
+  trust-all or HTTP OpenSearch, a global collector token on `search-config`,
+  and disabled Temporal. Redis-backed rate limiting must be fail-closed.
 - Docker Compose is a single-node development/verification environment and is
   not a production HA deployment.
 - `SOCP_KAFKA_GROUP_ID` overrides the Detection consumer group when launching

@@ -109,6 +109,7 @@ public class AlarmConsumer {
         ParsedAlarm parsed = parse(key, raw);
         TenantContext.set(parsed.tenant());
         try {
+            parsed.payload().putIfAbsent("sourceAlarmId", parsed.sourceAlarmId());
             analyzeService.analyze(parsed.payload());
         } finally {
             TenantContext.clear();
@@ -120,16 +121,23 @@ public class AlarmConsumer {
         try {
             if (raw == null || raw.isBlank()) throw new IllegalArgumentException("empty alarm payload");
             Map<String, Object> alarm = MAPPER.readValue(raw, Map.class);
-            String alarmId = text(alarm.get("id"));
+            // Prefer the producer's stable source identity when present.  The
+            // envelope id and Kafka key remain compatibility fallbacks for
+            // older alarm producers that do not carry sourceAlarmId.
+            String alarmId = text(alarm.get("sourceAlarmId"));
+            if (alarmId == null) alarmId = text(alarm.get("source_alarm_id"));
+            if (alarmId == null) alarmId = text(alarm.get("id"));
             if (alarmId == null) alarmId = text(key);
             if (alarmId == null) throw new IllegalArgumentException("alarm id is required");
+            if (alarmId.length() > 128) throw new IllegalArgumentException("alarm id exceeds 128 characters");
             String tenant = text(alarm.get("tenantId"));
             if (tenant == null) tenant = text(alarm.get("tenant_id"));
             if (tenant == null) throw new IllegalArgumentException("alarm tenant is required");
             if (!TenantContext.isValid(tenant)) throw new IllegalArgumentException("invalid alarm tenant");
             String severity = text(alarm.get("severity"));
             if (severity != null) Severity.valueOf(severity.toUpperCase(java.util.Locale.ROOT));
-            return new ParsedAlarm(tenant, alarm);
+            alarm.putIfAbsent("sourceAlarmId", alarmId);
+            return new ParsedAlarm(tenant, alarmId, alarm);
         } catch (JsonProcessingException | IllegalArgumentException invalid) {
             throw new InvalidAlarmEventException(invalid.getMessage(), invalid);
         }
@@ -182,7 +190,7 @@ public class AlarmConsumer {
         return result.isEmpty() || "null".equalsIgnoreCase(result) ? null : result;
     }
 
-    private record ParsedAlarm(String tenant, Map<String, Object> payload) {
+    private record ParsedAlarm(String tenant, String sourceAlarmId, Map<String, Object> payload) {
     }
 
     static final class InvalidAlarmEventException extends RuntimeException {

@@ -38,6 +38,7 @@ socp:
     enabled: ${SOCP_KAFKA_ENABLED:true}
   detect:
     model:
+      analyzer-version: ${SOCP_DETECT_ANALYZER_VERSION:v1}
       retention: ${SOCP_DETECT_MODEL_RETENTION:30d}
       cleanup-interval-ms: ${SOCP_DETECT_MODEL_CLEANUP_INTERVAL_MS:3600000}
       cleanup-initial-delay-ms: ${SOCP_DETECT_MODEL_CLEANUP_INITIAL_DELAY_MS:60000}

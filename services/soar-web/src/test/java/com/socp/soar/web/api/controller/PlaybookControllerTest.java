@@ -26,13 +26,20 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import com.socp.soar.web.service.AlarmEvaluationService;
+import com.socp.platform.tenant.security.ServiceRequestSignature;
+
+import java.time.Instant;
+import java.util.UUID;
 
 /**
  * SOAR 剧本 API 切片测试（PlaybookStore / PlaybookExecutor 被 mock）。
  */
 @WebMvcTest(PlaybookController.class)
 @AutoConfigureMockMvc(addFilters = false)
-@TestPropertySource(properties = {"socp.security.dev-bypass=true"})
+@TestPropertySource(properties = {
+        "socp.security.dev-bypass=true",
+        "socp.security.service-secret=test-service-secret"
+})
 class PlaybookControllerTest {
 
     private static final String BEARER = "Bearer test-token";
@@ -92,8 +99,20 @@ class PlaybookControllerTest {
         given(evaluationService.evaluate(anyMap())).willReturn(Map.of(
                 "alarmId", "AL-1", "triggered", 1, "playbooks", List.of(Map.of("playbook", "高危告警自动封禁"))));
 
-        mvc.perform(post("/api/v1/playbooks/evaluate")
+        String path = "/api/v1/playbooks/evaluate";
+        String tenant = "default";
+        String timestamp = String.valueOf(Instant.now().getEpochSecond());
+        String nonce = UUID.randomUUID().toString();
+        String signature = ServiceRequestSignature.sign("test-service-secret", "alert-web", "POST",
+                path, tenant, timestamp, nonce);
+
+        mvc.perform(post(path)
                         .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Tenant-Id", tenant)
+                        .header(ServiceRequestSignature.SERVICE_HEADER, "alert-web")
+                        .header(ServiceRequestSignature.TIMESTAMP_HEADER, timestamp)
+                        .header(ServiceRequestSignature.NONCE_HEADER, nonce)
+                        .header(ServiceRequestSignature.SIGNATURE_HEADER, signature)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(Map.of(
                                 "id", "AL-1", "ruleId", "AUTH-BRUTE", "severity", "HIGH"))))

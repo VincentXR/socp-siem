@@ -18,6 +18,12 @@ jobs:
       SOCP_LOGIN_SECRET: ci-full-stack-jwt-secret-0123456789abcdef0123456789abcdef
       SOCP_RUNTIME_PROFILES: dev,pg
       SOCP_RATELIMIT_BACKEND: redis
+      SOCP_RATELIMIT_FAIL_CLOSED: "true"
+      SOCP_COLLECTOR_CREDENTIALS: "ci-chaos|default|ci-chaos-collector-secret"
+      SOCP_ALLOW_GLOBAL_INGEST_TOKEN: "false"
+      PIPELINE_INGEST_URL: http://127.0.0.1:18081/search-config/api/v1/ingest
+      PIPELINE_COLLECTOR_ID: ci-chaos
+      PIPELINE_COLLECTOR_TOKEN: ci-chaos-collector-secret
       PIPELINE_OS: https://localhost:9200
       PIPELINE_OS_AUTH: "admin:Socp!Sec2026xK"
       PIPELINE_CK: http://localhost:8123
@@ -69,6 +75,13 @@ jobs:
 
       - name: Run true event-pipeline verification
         run: python3 build/verify-pipeline.py
+
+      - name: Run Compose-backed dependency chaos evidence
+        run: |
+          mkdir -p .cache/chaos
+          python3 build/chaos-pipeline.py --scenario all \
+            --run-id "weekly-dependency-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --output .cache/chaos/dependency-matrix.json
 
       - name: Start fixed three-instance Detection cluster
         env:

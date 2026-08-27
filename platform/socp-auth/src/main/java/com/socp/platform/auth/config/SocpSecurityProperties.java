@@ -43,6 +43,17 @@ public class SocpSecurityProperties {
 
     private List<String> ingestPaths = List.of("/search-config/api/v1/ingest");
 
+    /**
+     * Registered collector credentials in the form
+     * {@code collector-id|tenant-id|secret;...}.  Keep this value injected
+     * through a secret manager/environment variable; it is intentionally not
+     * printed by the application.
+     */
+    private String collectorCredentials;
+
+    /** Whether the legacy one-token ingest path is allowed outside production. */
+    private boolean allowGlobalIngestToken = true;
+
     /** Optional bearer credential dedicated to read-only actuator metrics. */
     private String metricsToken;
 
@@ -169,6 +180,22 @@ public class SocpSecurityProperties {
                 .map(String::trim)
                 .filter(value -> !value.isBlank())
                 .toList();
+    }
+
+    public String getCollectorCredentials() {
+        return collectorCredentials;
+    }
+
+    public void setCollectorCredentials(String collectorCredentials) {
+        this.collectorCredentials = collectorCredentials;
+    }
+
+    public boolean isAllowGlobalIngestToken() {
+        return allowGlobalIngestToken;
+    }
+
+    public void setAllowGlobalIngestToken(boolean allowGlobalIngestToken) {
+        this.allowGlobalIngestToken = allowGlobalIngestToken;
     }
 
     public String getMetricsToken() {

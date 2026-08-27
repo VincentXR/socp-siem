@@ -84,6 +84,23 @@ public class ProdGuard {
             violations.add("socp.security.ingest-token 使用了默认演示值 dev-vector-token");
         }
 
+        String application = env.getProperty("spring.application.name", "");
+        if ("search-config".equals(application) || "hips-web".equals(application)) {
+            String collectors = env.getProperty("socp.security.collector-credentials", "");
+            if (collectors.isBlank()) {
+                violations.add(application + " production requires registered collector credentials");
+            } else {
+                validateCollectorCredentials(collectors, violations);
+                if ("search-config".equals(application)
+                        && !collectorSecretsContain(collectors, env.getProperty("socp.vector.token", ""))) {
+                    violations.add("socp.vector.token must match a registered collector secret");
+                }
+            }
+            if (Boolean.parseBoolean(env.getProperty("socp.security.allow-global-ingest-token", "true"))) {
+                violations.add("socp.security.allow-global-ingest-token=true (production requires per-collector identity)");
+            }
+        }
+
         String serviceSecret = env.getProperty("socp.security.service-secret", "");
         if (serviceSecret.isBlank()) {
             violations.add("socp.security.service-secret is not configured");
@@ -123,6 +140,8 @@ public class ProdGuard {
 
         if ("memory".equalsIgnoreCase(env.getProperty("socp.ratelimit.backend", "memory"))) {
             violations.add("socp.ratelimit.backend=memory (production requires the shared Redis backend)");
+        } else if (!"true".equalsIgnoreCase(env.getProperty("socp.ratelimit.fail-closed", "false"))) {
+            violations.add("socp.ratelimit.fail-closed must be true in production");
         }
 
         if (!"kafka".equalsIgnoreCase(env.getProperty("socp.audit.sink", "memory"))) {
@@ -133,14 +152,73 @@ public class ProdGuard {
             violations.add("socp.audit.fail-closed must be true in production");
         }
 
-        if ("api-gateway".equals(env.getProperty("spring.application.name"))
+        if ("api-gateway".equals(application)
                 && !"true".equalsIgnoreCase(env.getProperty("socp.auth.cookie-secure", "false"))) {
             violations.add("socp.auth.cookie-secure=false (production session cookies require HTTPS)");
+        }
+
+        validateConfiguredCredential(env, violations, "spring.datasource.password", List.of("", "socp"));
+        validateConfiguredCredential(env, violations, "socp.ck.password", List.of("", "socp"));
+        validateConfiguredCredential(env, violations, "socp.minio.secret-key", List.of("", "Socp@2026"));
+        validateConfiguredCredential(env, violations, "socp.auth.login-secret",
+                List.of("", DEMO_JWT_SECRET));
+        validateConfiguredCredential(env, violations, "socp.vector.token", List.of("", DEMO_INGEST_TOKEN));
+        validateConfiguredCredential(env, violations, "socp.opensearch.password", List.of("", "Socp!Sec2026xK", "admin"));
+        validateConfiguredCredential(env, violations, "socp.opensearch.username", List.of("", "admin"));
+
+        if (isEnabled(env, "socp.opensearch.enabled")
+                && "true".equalsIgnoreCase(env.getProperty("socp.opensearch.tls.insecure-skip-verify", "false"))) {
+            violations.add("socp.opensearch.tls.insecure-skip-verify=true (production forbids trust-all TLS)");
+        }
+        String openSearchUrl = env.getProperty("socp.opensearch.url", "");
+        if (isEnabled(env, "socp.opensearch.enabled") && !openSearchUrl.isBlank()
+                && !openSearchUrl.toLowerCase(java.util.Locale.ROOT).startsWith("https://")) {
+            violations.add("socp.opensearch.url must use HTTPS in production");
         }
 
         if (!violations.isEmpty()) {
             throw new IllegalStateException("【prod 启动校验失败】" + String.join("；", violations));
         }
         log.info("ProdGuard 通过：prod 模式启动校验无违规项");
+    }
+
+    private static void validateConfiguredCredential(Environment env, List<String> violations,
+                                                     String key, List<String> knownDefaults) {
+        if (!env.containsProperty(key)) return;
+        String value = env.getProperty(key, "");
+        String normalized = value.trim();
+        if (normalized.isBlank() || knownDefaults.stream().anyMatch(normalized::equals)) {
+            violations.add(key + " is blank or uses a known development default");
+        }
+    }
+
+    private static void validateCollectorCredentials(String encoded, List<String> violations) {
+        for (String entry : encoded.split(";")) {
+            String[] parts = entry.trim().split("\\|", 3);
+            if (parts.length != 3) continue; // CollectorCredentialRegistry reports the shape error.
+            String secret = parts[2].trim();
+            if (secret.isBlank() || List.of(DEMO_INGEST_TOKEN, DEMO_SERVICE_SECRET,
+                    DEMO_JWT_SECRET, "admin", "password", "socp").stream()
+                    .anyMatch(secret::equals)) {
+                violations.add("socp.security.collector-credentials contains a known development default");
+            }
+        }
+    }
+
+    private static boolean collectorSecretsContain(String encoded, String candidate) {
+        if (candidate == null || candidate.isBlank()) return false;
+        byte[] expected = candidate.trim().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        for (String entry : encoded.split(";")) {
+            String[] parts = entry.trim().split("\\|", 3);
+            if (parts.length == 3 && java.security.MessageDigest.isEqual(expected,
+                    parts[2].trim().getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isEnabled(Environment env, String key) {
+        return "true".equalsIgnoreCase(env.getProperty(key, "false"));
     }
 }

@@ -68,6 +68,7 @@ public class PlaybookController {
     }
 
     /** 评估并编排执行：接收告警，命中启用的剧本触发条件则执行动作。 */
+    @com.socp.platform.auth.security.RequireService
     @PostMapping("/evaluate")
     public Map<String, Object> evaluate(@Valid @RequestBody AlarmEvaluationRequest alarm) {
         try {

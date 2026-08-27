@@ -99,6 +99,7 @@ public class RuleController {
     }
 
     /** Local HTTP ingress for verification; production events normally arrive through Kafka. */
+    @RequireRole({"admin", "analyst"})
     @PostMapping("/ingest")
     public ResponseEntity<DetectionIngestResponse> ingest(@Valid @RequestBody DetectionIngestRequest request) {
         boolean accepted = engine.ingest(request.toSecurityEvent(TenantContext.require()));
@@ -111,6 +112,7 @@ public class RuleController {
     }
 
     /** NDJSON batch ingress used by SEARCH forwarding. */
+    @RequireRole({"admin", "analyst"})
     @PostMapping(value = "/ingest/bulk", consumes = {
             MediaType.APPLICATION_JSON_VALUE, "application/x-ndjson", MediaType.TEXT_PLAIN_VALUE
     })

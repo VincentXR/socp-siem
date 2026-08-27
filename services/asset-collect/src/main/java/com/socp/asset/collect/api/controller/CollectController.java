@@ -40,6 +40,7 @@ public class CollectController {
         this.store = store;
     }
 
+    @com.socp.platform.auth.security.RequireRole({"admin", "analyst"})
     @PostMapping("/collect")
     public Map<String, Object> collect(@Valid @RequestBody AssetCollectRequest request) {
         Map<String, Object> asset = request.asMap();

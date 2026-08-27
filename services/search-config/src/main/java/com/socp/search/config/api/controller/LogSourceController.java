@@ -26,8 +26,11 @@ import com.socp.search.config.render.VectorConfigRenderer;
 import com.socp.search.config.persistence.store.LogSourceStore;
 import com.socp.search.config.persistence.store.SinkTargetStore;
 import com.socp.platform.tenant.context.TenantContext;
+import com.socp.platform.auth.security.RequireIngestIdentity;
+import com.socp.platform.ratelimit.api.RateLimit;
 import jakarta.annotation.PostConstruct;
 import jakarta.validation.Valid;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
@@ -74,10 +77,10 @@ public class LogSourceController {
                                VectorProperties vectorProperties) {
         this.store = store;
         this.sinkStore = sinkStore;
-        this.renderer = new VectorConfigRenderer(null);
         this.pipeline = pipeline;
         this.ingestLimits = ingestLimits;
         this.vectorToken = vectorProperties.getToken();
+        this.renderer = new VectorConfigRenderer(null, this.vectorToken);
     }
 
     @PostConstruct
@@ -169,6 +172,8 @@ public class LogSourceController {
      * 并 best-effort 转发归一化事件给 DETECT 规则引擎检测。
      * 匹配 Vector 契约：json codec + newline_delimited 投递时 Content-Type 为 application/x-ndjson。
      */
+    @RequireIngestIdentity
+    @RateLimit(permits = 120, seconds = 1)
     @PostMapping(value = "/ingest", consumes = {
             MediaType.APPLICATION_JSON_VALUE,
             "application/x-ndjson",
@@ -176,11 +181,20 @@ public class LogSourceController {
     })
     public Map<String, Object> ingest(
             @RequestBody String body,
-            @org.springframework.web.bind.annotation.RequestHeader(value = "X-SOCP-Collector", required = false)
-            String collector) {
+            HttpServletRequest request) {
         // 采集器可用请求头显式声明身份；未声明则按每行的 collector 字段归属运行指标
         validateIngestBody(body);
-        return pipeline.process(body, collector);
+        String trustedCollector = (String) request.getAttribute(
+                com.socp.platform.auth.security.CollectorCredentialRegistry.COLLECTOR_ID_ATTRIBUTE);
+        if (trustedCollector == null) {
+            String service = (String) request.getAttribute(
+                    com.socp.platform.auth.security.RequireService.SERVICE_ID_ATTRIBUTE);
+            if (service != null && !service.isBlank()) trustedCollector = "service:" + service;
+        }
+        // The annotation guarantees one of these identities for real HTTP
+        // requests.  The header is retained only as a local-development
+        // compatibility hint and is never used as the trusted identity.
+        return pipeline.process(body, trustedCollector);
     }
 
     private void validateIngestBody(String body) {

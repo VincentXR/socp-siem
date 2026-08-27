@@ -23,7 +23,10 @@ import java.net.URL;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.security.KeyStore;
 import java.security.cert.X509Certificate;
+import javax.net.ssl.TrustManagerFactory;
+import java.io.FileInputStream;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -75,8 +78,7 @@ public class OsEventReader {
             c.setRequestProperty("Accept", "application/json");
             c.setRequestProperty("Content-Type", "application/json");
             if (c instanceof HttpsURLConnection https) {
-                https.setSSLSocketFactory(trustAllSsl());
-                https.setHostnameVerifier((hostname, session) -> true);
+                configureHttps(https);
             }
             byte[] request = tenantQuery(query, size);
             try (OutputStream output = c.getOutputStream()) {
@@ -160,6 +162,35 @@ public class OsEventReader {
         return m;
     }
 
+    private void configureHttps(HttpsURLConnection https) throws Exception {
+        https.setSSLSocketFactory(sslSocketFactory());
+        if (properties.getTls().isInsecureSkipVerify()) {
+            https.setHostnameVerifier((hostname, session) -> true);
+        } else {
+            https.setHostnameVerifier(HttpsURLConnection.getDefaultHostnameVerifier());
+        }
+    }
+
+    private SSLSocketFactory sslSocketFactory() throws Exception {
+        OpenSearchProperties.Tls tls = properties.getTls();
+        if (tls.isInsecureSkipVerify()) return trustAllSsl();
+        if (tls.getTrustStore() == null || tls.getTrustStore().isBlank()) {
+            return (SSLSocketFactory) SSLSocketFactory.getDefault();
+        }
+        KeyStore store = KeyStore.getInstance(KeyStore.getDefaultType());
+        char[] password = tls.getTrustStorePassword() == null
+                ? new char[0] : tls.getTrustStorePassword().toCharArray();
+        try (FileInputStream input = new FileInputStream(tls.getTrustStore())) {
+            store.load(input, password);
+        }
+        TrustManagerFactory factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        factory.init(store);
+        SSLContext context = SSLContext.getInstance("TLS");
+        context.init(null, factory.getTrustManagers(), new SecureRandom());
+        return context.getSocketFactory();
+    }
+
+    /** Explicit local/integration escape hatch; production validation rejects it. */
     private static SSLSocketFactory trustAllSsl() throws Exception {
         TrustManager[] tm = {new X509TrustManager() {
             @Override public void checkClientTrusted(X509Certificate[] chain, String authType) { }

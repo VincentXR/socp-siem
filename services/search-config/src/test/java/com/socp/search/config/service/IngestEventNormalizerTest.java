@@ -42,4 +42,23 @@ class IngestEventNormalizerTest {
         assertEquals("auth", result.event().source());
         assertEquals("collector-1", result.collector());
     }
+
+    @Test
+    void authenticatedCollectorCannotBeRelabelledByPayload() {
+        ParserRegistry parsers = mock(ParserRegistry.class);
+        ReferenceSetStore references = mock(ReferenceSetStore.class);
+        when(parsers.parse(anyString(), anyString())).thenReturn(Map.of(
+                CanonicalEvent.EVENT_MESSAGE, "failed password",
+                CanonicalEvent.EVENT_CATEGORY, "authentication",
+                "collector", "spoofed-collector"));
+        when(references.matchedSets(anyString())).thenReturn(java.util.List.of());
+        IngestEventNormalizer normalizer = new IngestEventNormalizer(
+                mock(ParsePreviewService.class), mock(ParseRuleStore.class), references, parsers);
+        TenantContext.set("tenant-a");
+
+        var result = normalizer.normalize("raw event", "registered-collector");
+
+        assertEquals("registered-collector", result.collector());
+        assertEquals("registered-collector", result.event().fields().get("collector"));
+    }
 }

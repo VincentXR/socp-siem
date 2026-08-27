@@ -28,7 +28,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @WebMvcTest(EndpointCollectionController.class)
 @AutoConfigureMockMvc(addFilters = false)
-@TestPropertySource(properties = "socp.security.dev-bypass=true")
+@TestPropertySource(properties = {
+        "socp.security.dev-bypass=true",
+        "socp.security.collector-credentials=hips-test|tenant-a|test-token",
+        "socp.security.allow-global-ingest-token=false",
+        "socp.security.ingest-paths[0]=/api/v1/events"
+})
 class EndpointCollectionControllerTest {
 
     @Autowired
@@ -56,6 +61,7 @@ class EndpointCollectionControllerTest {
 
         mvc.perform(post("/api/v1/events")
                         .header("Authorization", "Bearer test-token")
+                        .header("X-SOCP-Collector", "hips-test")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(Map.of("hostname", "web-01"))))
                 .andExpect(status().isOk())

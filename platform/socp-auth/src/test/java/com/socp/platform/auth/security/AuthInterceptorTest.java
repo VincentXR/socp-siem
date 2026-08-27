@@ -126,6 +126,60 @@ class AuthInterceptorTest {
     }
 
     @Test
+    void registeredCollectorCredentialBindsIdentityAndTenant() throws Exception {
+        properties.setCollectorCredentials("collector-a|tenant-a|collector-secret");
+        MockHttpServletRequest request = request("collector-secret", null, "tenant-a");
+        request.setMethod("POST");
+        request.setRequestURI("/search-config/api/v1/ingest");
+        request.addHeader("X-SOCP-Collector", "collector-a");
+
+        assertTrue(interceptor.preHandle(request, new MockHttpServletResponse(), ingestHandler()));
+        assertEquals("tenant-a", TenantContext.get());
+        assertEquals("collector-a", request.getAttribute(CollectorCredentialRegistry.COLLECTOR_ID_ATTRIBUTE));
+    }
+
+    @Test
+    void registeredCollectorCredentialCannotClaimAnotherCollectorOrTenant() throws Exception {
+        properties.setCollectorCredentials("collector-a|tenant-a|collector-secret");
+        MockHttpServletRequest request = request("collector-secret", null, "tenant-b");
+        request.setMethod("POST");
+        request.setRequestURI("/search-config/api/v1/ingest");
+        request.addHeader("X-SOCP-Collector", "collector-b");
+
+        ApiException rejected = assertThrows(ApiException.class,
+                () -> interceptor.preHandle(request, new MockHttpServletResponse(), ingestHandler()));
+        assertEquals(401, rejected.getCode());
+    }
+
+    @Test
+    void serviceOnlyEndpointRejectsAnalystJwtWithoutServiceProof() throws Exception {
+        properties.setDevBypass(true);
+        org.mockito.BDDMockito.given(validator.isDevBypass()).willReturn(true);
+        MockHttpServletRequest request = request("analyst-token", "analyst", "tenant-a");
+
+        ApiException rejected = assertThrows(ApiException.class,
+                () -> interceptor.preHandle(request, new MockHttpServletResponse(), serviceHandler()));
+        assertEquals(403, rejected.getCode());
+    }
+
+    @Test
+    void serviceOnlyEndpointAcceptsSignedServiceProof() throws Exception {
+        properties.setServiceSecret("a-long-shared-secret");
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .subject("svc-alert").claim("role", "analyst").claim("tenant", "default").build();
+        org.mockito.BDDMockito.given(validator.isDevBypass()).willReturn(false);
+        org.mockito.BDDMockito.given(validator.validate("service-token")).willReturn(claims);
+        org.mockito.BDDMockito.given(validator.extractTenant(claims)).willReturn("default");
+        MockHttpServletRequest request = request("service-token", "analyst", "tenant-a");
+        request.setMethod("POST");
+        request.setRequestURI("/notify-web/api/v1/notify/alert");
+        signService(request, "alert-web", "tenant-a", "service-only-nonce");
+
+        assertTrue(interceptor.preHandle(request, new MockHttpServletResponse(), serviceHandler()));
+        assertEquals("alert-web", request.getAttribute(RequireService.SERVICE_ID_ATTRIBUTE));
+    }
+
+    @Test
     void metricsCredentialIsLimitedToReadOnlyMetrics() throws Exception {
         properties.setMetricsToken("metrics-token");
         MockHttpServletRequest request = request("metrics-token", null, null);
@@ -166,6 +220,11 @@ class AuthInterceptorTest {
         return new HandlerMethod(new ProtectedHandler(), method);
     }
 
+    private static HandlerMethod serviceHandler() throws NoSuchMethodException {
+        Method method = ProtectedHandler.class.getMethod("serviceOnly");
+        return new HandlerMethod(new ProtectedHandler(), method);
+    }
+
     private void signService(MockHttpServletRequest request, String service, String tenant, String nonce) {
         String timestamp = String.valueOf(java.time.Instant.now().getEpochSecond());
         String signature = ServiceRequestSignature.sign(properties.getServiceSecret(), service,
@@ -185,6 +244,10 @@ class AuthInterceptorTest {
         }
 
         public void metrics() {
+        }
+
+        @RequireService
+        public void serviceOnly() {
         }
     }
 }

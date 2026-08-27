@@ -21,6 +21,7 @@ correctness and recovery behavior, not a production capacity or HA claim.
 | Alert Web outage | `python build/chaos-pipeline.py --scenario alert_web_restart` | Detection Alert Outbox survives Alert Web outage and creates one alert after recovery | Manual/weekly |
 | Detection Outbox replay | `python build/chaos-pipeline.py --scenario detection_outbox_replay` | Rewound publisher state returns to `PUBLISHED` and Alert Web retains one logical alert | Manual/weekly |
 | Duplicate delivery | `python build/chaos-pipeline.py --scenario duplicate_delivery` | Same event produces one logical alert by source ID | Manual/weekly |
+| Collector identity | `SOCP_COLLECTOR_CREDENTIALS` + direct ingest probe | A registered collector is bound to one tenant; a user JWT or mismatched collector/tenant is rejected | PR/security change |
 | PostgreSQL outage | `python build/chaos-pipeline.py --scenario postgres_outage` | Kafka lag grows while durable completion is unavailable, then drains with no pending journal rows | Manual/weekly |
 | OpenSearch outage | `python build/chaos-pipeline.py --scenario opensearch_outage` | Detection remains available while search is degraded and indexing works after recovery | Manual/weekly |
 | Multi-instance | `bash build/detection-cluster.sh start && python build/chaos-pipeline.py --scenario multi_instance` | Three-instance disjoint ownership, rebalance, exact alert set, duplicate count, Kafka lag, delivery receipts, ClickHouse logical uniqueness, and `pendingEvents == 0` | Weekly/release candidate |
@@ -41,6 +42,8 @@ correctness and recovery behavior, not a production capacity or HA claim.
 - Detection Alert Outbox rows remain pending when Alert Web is unavailable and
   retry after Alert Web recovers.
 - Alert Web duplicate creates resolve by `(tenant_id, source_alert_id)`.
+- Secondary analysis claims `(tenant_id, source_alarm_id, analyzer_version)` and
+  committed redelivery is a no-op; a rolled-back claim remains retryable.
 - Alert Outbox rows remain pending when Kafka is unavailable and are marked
   published only after a broker acknowledgement.
 - Every Alert downstream destination has one durable receipt per
@@ -54,8 +57,9 @@ correctness and recovery behavior, not a production capacity or HA claim.
   field equals the routing field produce one logical result after rebalance.
 - OpenSearch degradation does not claim search success; recovery restores the
   search path.
-- Viewer writes are rejected, analyst operations remain available, and tenant
-  headers/claims do not cross query boundaries.
+- Viewer writes and service-only side effects are rejected at the owning service
+  boundary, analyst operations remain available, and tenant headers/claims do
+  not cross query boundaries.
 - Invalid client input returns the intended 4xx status and sanitized envelope.
 
 ## Scale baseline
@@ -76,8 +80,9 @@ addresses, tokens, passwords, or machine-specific screenshots.
 
 Push and pull-request CI runs the Java suite, opt-in Testcontainers contracts,
 frontend contracts/build, the minimal service slice, and the Kafka pipeline.
-PRs run duplicate-delivery and Detection Outbox replay Chaos; nightly runs
-restart and dependency-outage Chaos. The full-stack workflow is manual/weekly,
-starts the fixed three-instance cluster, and runs full API, pipeline, Golden
-Demo, Detection recovery, multi-instance/rebalance, attack scenarios, and
-dependency failure checks with logs and JSON evidence uploaded as artifacts.
+PRs run duplicate-delivery and Detection Outbox replay Chaos; nightly/manual CI
+repeats those deterministic invariants. The full-stack workflow is
+manual/weekly, starts the fixed three-instance cluster, and runs full API,
+pipeline, process/database/OpenSearch outage, Golden Demo, Detection recovery,
+multi-instance/rebalance, attack scenarios, and dependency failure checks with
+logs and JSON evidence uploaded as artifacts.

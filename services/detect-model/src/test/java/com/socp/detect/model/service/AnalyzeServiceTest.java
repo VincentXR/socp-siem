@@ -3,6 +3,7 @@ package com.socp.detect.model.service;
 import com.socp.detect.model.engine.AlertWindowAggregator;
 import com.socp.detect.model.persistence.entity.AnalyzedEntity;
 import com.socp.detect.model.persistence.repository.AnalyzedRepository;
+import com.socp.detect.model.persistence.store.AnalysisReceiptStore;
 import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -21,6 +22,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.never;
 
 class AnalyzeServiceTest {
 
@@ -89,5 +91,23 @@ class AnalyzeServiceTest {
         verify(repository).deleteBefore(cutoff.capture());
         assertTrue(cutoff.getValue().isAfter(before));
         assertTrue(cutoff.getValue().isBefore(after));
+    }
+
+    @Test
+    void redeliveredSourceAlarmIsAStatePreservingNoOp() {
+        AnalyzedRepository repository = mock(AnalyzedRepository.class);
+        AnalysisReceiptStore receipts = mock(AnalysisReceiptStore.class);
+        when(receipts.claim("tenant-a", "alarm-1", "v1")).thenReturn(false);
+        when(repository.countByTenantId("tenant-a")).thenReturn(4L);
+        AnalyzeService service = new AnalyzeService(repository, new AlertWindowAggregator(), receipts);
+
+        var result = service.analyze(java.util.Map.of(
+                "tenantId", "tenant-a", "sourceAlarmId", "alarm-1", "ruleId", "AUTH-PRIVESC",
+                "severity", "HIGH", "entity", "host-1", "message", "duplicate"));
+
+        assertEquals(true, result.get("duplicate"));
+        assertEquals(0, result.get("analyzedAlerts"));
+        verify(receipts).claim("tenant-a", "alarm-1", "v1");
+        verify(repository, never()).save(any(AnalyzedEntity.class));
     }
 }

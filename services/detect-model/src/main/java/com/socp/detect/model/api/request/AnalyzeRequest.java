@@ -9,6 +9,9 @@ import java.util.Map;
 public record AnalyzeRequest(
         @Size(max = 128) String tenantId,
         @Size(max = 128) String tenant_id,
+        @Size(max = 128) String sourceAlarmId,
+        @Size(max = 128) String source_alarm_id,
+        @Size(max = 128) String analyzerVersion,
         @Size(max = 128) String ruleId,
         @Size(max = 256) String entity,
         @Size(max = 4096) String message,
@@ -19,6 +22,9 @@ public record AnalyzeRequest(
         Map<String, Object> out = new LinkedHashMap<>();
         put(out, "tenantId", tenantId);
         put(out, "tenant_id", tenant_id);
+        put(out, "sourceAlarmId", sourceAlarmId);
+        put(out, "source_alarm_id", source_alarm_id);
+        put(out, "analyzerVersion", analyzerVersion);
         put(out, "ruleId", ruleId);
         put(out, "entity", entity);
         put(out, "message", message);

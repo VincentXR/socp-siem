@@ -40,6 +40,7 @@ public class EventCollectController {
         this.eventStore = eventStore;
     }
 
+    @com.socp.platform.auth.security.RequireRole({"admin", "analyst"})
     @PostMapping("/events")
     public Map<String, Object> report(@Valid @RequestBody EventCollectRequest request) {
         Map<String, Object> event = request.asMap();

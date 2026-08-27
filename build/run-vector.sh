@@ -30,8 +30,15 @@ case "${1:-start}" in
     # Vector 配置模板的 ${VAR} 环境变量替换不可靠（实测不展开），改用 sed 注入 token 生成运行配置
     GEN="$ROOT/.cache/vector.generated.toml"
     mkdir -p "$ROOT/.cache"
-    sed "s/__VECTOR_TOKEN__/$TOKEN/g" "$CONFIG" > "$GEN"
-    echo "启动 $NAME （token=${TOKEN}）"
+    # Escape sed replacement characters so generated credentials may contain
+    # '/', '&', or '\\' without corrupting the TOML or the replacement command.
+    ESCAPED_TOKEN="${TOKEN//\\/\\\\}"
+    ESCAPED_TOKEN="${ESCAPED_TOKEN//&/\\&}"
+    ESCAPED_TOKEN="${ESCAPED_TOKEN//\//\\/}"
+    sed "s/__VECTOR_TOKEN__/$ESCAPED_TOKEN/g" "$CONFIG" > "$GEN"
+    # Never print the collector credential; CI logs and local shell history are
+    # routinely retained outside the process that starts Vector.
+    echo "启动 $NAME （collector credential configured）"
     # MSYS_NO_PATHCONV=1：禁止 Git Bash 把容器内 POSIX 路径（/etc/...）转换成 Windows 路径。
     # 用默认 bridge 网络 + host.docker.internal 访问宿主服务（--network host 在 Windows Docker Desktop
     # 下容器内 localhost 并不指向宿主）；syslog 端口 5514 显式映射供外部投递。

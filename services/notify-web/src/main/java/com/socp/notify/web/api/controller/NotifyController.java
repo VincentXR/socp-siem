@@ -67,6 +67,7 @@ public class NotifyController {
     }
 
     /** 告警外发入口：接收 alert-web 推送的告警，分发到启用渠道。 */
+    @com.socp.platform.auth.security.RequireService
     @PostMapping("/notify/alert")
     public ResponseEntity<Map<String, Object>> notify(@Valid @RequestBody NotifyAlarmRequest request) {
         Map<String, Object> result = dispatcher.dispatch(request.asMap());

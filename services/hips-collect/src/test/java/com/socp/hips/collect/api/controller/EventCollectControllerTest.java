@@ -81,6 +81,7 @@ class EventCollectControllerTest {
 
         mvc.perform(post("/api/v1/events")
                         .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(falcoEvent)))
                 .andExpect(status().isOk())
