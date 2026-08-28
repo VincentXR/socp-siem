@@ -1,6 +1,8 @@
 package com.socp.rule.model;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 
@@ -25,11 +27,31 @@ public record Alert(
     }
 
     /**
+     * Builds an alert whose identity treats evidence as a set rather than an
+     * arrival-ordered sequence. Threshold/window rules use this form because
+     * a replay after Kafka rebalance may rebuild the same window in a different
+     * order while still representing the same logical alert.
+     */
+    public static Alert withUnorderedEvidence(String ruleId, String ruleName,
+                                              Severity severity, String message,
+                                              String entity, List<SecurityEvent> evidence) {
+        List<SecurityEvent> safeEvidence = evidence == null ? List.of() : List.copyOf(evidence);
+        return new Alert(stableId(ruleId, entity, safeEvidence, true),
+                alertTimestamp(safeEvidence), ruleId, ruleName, severity, message,
+                entity, safeEvidence);
+    }
+
+    /**
      * Stable across a replay of the same evidence window. This lets alert-web
      * use the source alert id as its idempotency key when a consumer crashes
      * after detection but before the alert transaction completes.
      */
     private static String stableId(String ruleId, String entity, List<SecurityEvent> evidence) {
+        return stableId(ruleId, entity, evidence, false);
+    }
+
+    private static String stableId(String ruleId, String entity,
+                                   List<SecurityEvent> evidence, boolean unorderedEvidence) {
         String tenant = "default";
         if (evidence != null) {
             for (SecurityEvent event : evidence) {
@@ -43,8 +65,15 @@ public record Alert(
                 .append('|').append(String.valueOf(ruleId))
                 .append('|').append(String.valueOf(entity));
         if (evidence != null) {
+            List<String> eventIds = new ArrayList<>();
             for (SecurityEvent event : evidence) {
-                if (event != null) fingerprint.append('|').append(event.id());
+                if (event != null) eventIds.add(event.id());
+            }
+            if (unorderedEvidence) {
+                eventIds.sort(Comparator.nullsFirst(Comparator.naturalOrder()));
+            }
+            for (String eventId : eventIds) {
+                fingerprint.append('|').append(eventId);
             }
         }
         return UUID.nameUUIDFromBytes(fingerprint.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();

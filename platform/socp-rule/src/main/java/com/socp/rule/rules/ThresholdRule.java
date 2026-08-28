@@ -70,7 +70,7 @@ public final class ThresholdRule extends AbstractRule {
                         .replace("{key}", key)
                         .replace("{count}", String.valueOf(q.size()))
                         .replace("{window}", window.toSeconds() + "s");
-                emit(new Alert(id, name, severity, msg, key, evidence));
+                emit(Alert.withUnorderedEvidence(id, name, severity, msg, key, evidence));
                 q.clear(); // 清空，避免短时间内重复刷屏告警
             }
         }

@@ -6,6 +6,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.sql.Connection;
+import java.sql.Timestamp;
 import java.util.Locale;
 
 /**
@@ -63,7 +64,7 @@ public class AnalysisReceiptStore {
                 UPDATE t_analysis_receipt
                    SET status = 'COMPLETED', completed_at = ?, result_count = ?
                  WHERE tenant_id = ? AND source_alarm_id = ? AND analyzer_version = ?
-                """, Instant.now(), resultCount, tenantId, sourceAlarmId, analyzerVersion);
+                """, Timestamp.from(Instant.now()), resultCount, tenantId, sourceAlarmId, analyzerVersion);
         if (updated != 1) {
             throw new IllegalStateException("analysis receipt was not claimed before completion");
         }

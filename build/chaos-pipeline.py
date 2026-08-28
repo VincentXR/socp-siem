@@ -514,8 +514,8 @@ def java_name_uuid(value):
 
 
 def expected_alert_id(rule_id, entity, event_ids, tenant="default"):
-    """Match Alert.stableId: tenant, rule, entity, then evidence IDs."""
-    return java_name_uuid("|".join([tenant, rule_id, entity, *event_ids]))
+    """Match threshold Alert.stableId: tenant, rule, entity, then sorted evidence IDs."""
+    return java_name_uuid("|".join([tenant, rule_id, entity, *sorted(event_ids)]))
 
 
 def ingest(token, events):
