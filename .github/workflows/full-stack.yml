@@ -25,6 +25,11 @@ jobs:
       # Fifteen Spring Boot processes plus Kafka/OpenSearch/ClickHouse run on one
       # hosted runner. Keep the evidence job inside a predictable memory budget.
       SOCP_JVM_OPTS: "-Xms16m -Xmx192m -XX:MaxMetaspaceSize=128m -XX:+UseSerialGC"
+      # The PostgreSQL container defaults to 100 connections. Hikari otherwise
+      # reserves up to ten per JVM and exhausts the shared database during the
+      # 15-service startup burst.
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "4"
+      SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: "1"
       SOCP_COLLECTOR_CREDENTIALS: "ci-chaos|default|ci-chaos-collector-secret"
       SOCP_ALLOW_GLOBAL_INGEST_TOKEN: "false"
       PIPELINE_INGEST_URL: http://127.0.0.1:18081/search-config/api/v1/ingest

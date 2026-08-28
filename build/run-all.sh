@@ -35,6 +35,12 @@ FRONTEND_PORT="$SOCP_PORT_FRONTEND_WORKBENCH"
 JVM_OPTS="${SOCP_JVM_OPTS:--Xms32m -Xmx256m}"
 START_BATCH_SIZE="${SOCP_START_BATCH_SIZE:-3}"
 START_HEALTH_TIMEOUT="${SOCP_START_HEALTH_TIMEOUT:-45}"
+# A full local deployment starts more PostgreSQL-backed services than the
+# Hikari default (10 connections per process) can safely fit under the stock
+# PostgreSQL max_connections setting. Keep the launcher budget bounded while
+# allowing operators to override both values for larger environments.
+export SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE="${SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE:-4}"
+export SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE="${SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE:-1}"
 # Named runtime modes: local (H2/file-backed where supported), integration
 # (PostgreSQL overlays), or prod (fail-fast production guard).
 RUNTIME_PROFILES="${SOCP_RUNTIME_PROFILES:-dev,pg}"
