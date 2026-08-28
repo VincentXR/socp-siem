@@ -89,12 +89,6 @@ jobs:
       - name: Start all backend services
         run: bash build/run-all.sh backend full
 
-      - name: Run full API verification
-        run: python3 build/verify-full.py
-
-      - name: Run true event-pipeline verification
-        run: python3 build/verify-pipeline.py
-
       - name: Start persistent webhook verification fixture
         run: |
           mkdir -p .cache
@@ -109,6 +103,12 @@ jobs:
           done
           cat .cache/webhook-sink.log
           exit 1
+
+      - name: Run full API verification
+        run: python3 build/verify-full.py
+
+      - name: Run true event-pipeline verification
+        run: python3 build/verify-pipeline.py
 
       - name: Run Compose-backed dependency chaos evidence
         run: |
