@@ -77,17 +77,25 @@ def ingest(body):
     req.add_header("X-SOCP-Collector", COLLECTOR_ID)
     req.add_header("Content-Type", "application/json")
     req.data = json.dumps(body).encode()
-    try:
-        with urllib.request.urlopen(req, timeout=8) as response:
-            raw = response.read().decode()
-            return response.status, json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as error:
+    for attempt in range(6):
         try:
-            return error.code, json.loads(error.read().decode())
-        except Exception:
-            return error.code, {}
-    except Exception as error:
-        return -1, {"error": str(error)}
+            with urllib.request.urlopen(req, timeout=8) as response:
+                raw = response.read().decode()
+                return response.status, json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as error:
+            try:
+                parsed = json.loads(error.read().decode())
+            except Exception:
+                parsed = {}
+            if error.code != 429 or attempt >= 5:
+                return error.code, parsed
+            # Vector and the verification probes share the endpoint quota;
+            # wait for the fixed one-second window before retrying the same
+            # authenticated request.
+            time.sleep(1.1 + attempt * 0.4)
+        except Exception as error:
+            return -1, {"error": str(error)}
+    return -1, {"error": "ingest retry loop exhausted"}
 
 
 def raw(url, method="GET", body=None, token=True, timeout=8):

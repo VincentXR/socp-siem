@@ -545,11 +545,24 @@ def ingest(token, events):
             "X-SOCP-Collector": collector_id,
             "Content-Type": "application/x-ndjson",
         }
-    status, body = request(
-        ingest_url, "POST", payload, headers, timeout=30)
-    if status != 200:
-        raise RuntimeError(f"ingest failed HTTP {status}: {body}")
-    return body
+    # The ingest boundary is shared with the long-running Vector fixture and
+    # is deliberately rate-limited.  A chaos run must not turn a transient
+    # one-second quota collision into a false resilience failure, so honor the
+    # fixed-window limit with bounded backoff while preserving the same request
+    # and authentication on every attempt.
+    last_status = None
+    last_body = None
+    for attempt in range(6):
+        status, body = request(
+            ingest_url, "POST", payload, headers, timeout=30)
+        if status != 429:
+            if status != 200:
+                raise RuntimeError(f"ingest failed HTTP {status}: {body}")
+            return body
+        last_status, last_body = status, body
+        if attempt < 5:
+            time.sleep(1.1 + attempt * 0.4)
+    raise RuntimeError(f"ingest failed HTTP {last_status}: {last_body}")
 
 
 def scenario_detection_restart(token, count):
