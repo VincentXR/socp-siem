@@ -26,7 +26,7 @@ BUILD = Path(__file__).resolve().parents[1]
 REPO = BUILD.parent
 sys.path.insert(0, str(BUILD))
 
-from ports import GATEWAY_URL, health_url  # noqa: E402
+from ports import GATEWAY_URL, base_url, health_url  # noqa: E402
 from auth_client import login_token  # noqa: E402
 
 
@@ -37,6 +37,17 @@ BOOTSTRAP = os.environ.get("PIPELINE_KAFKA", "127.0.0.1:9092")
 USER = os.environ.get("DEMO_USER", "demo")
 PASSWORD = os.environ.get("DEMO_PASS", "demo123")
 VECTOR_TOKEN = os.environ.get("SOCP_VECTOR_TOKEN", "dev-vector-token")
+COLLECTOR_ID = os.environ.get("RECOVERY_DEMO_COLLECTOR_ID", "").strip()
+COLLECTOR_TOKEN = os.environ.get("RECOVERY_DEMO_COLLECTOR_TOKEN", "").strip()
+if not COLLECTOR_TOKEN:
+    COLLECTOR_TOKEN = os.environ.get("PIPELINE_COLLECTOR_TOKEN", "").strip()
+    if COLLECTOR_TOKEN and not COLLECTOR_ID:
+        COLLECTOR_ID = os.environ.get("PIPELINE_COLLECTOR_ID", "").strip()
+COLLECTOR_ID = COLLECTOR_ID or "recovery-demo"
+INGEST_TOKEN = COLLECTOR_TOKEN or os.environ.get("SOCP_INGEST_TOKEN", VECTOR_TOKEN).strip()
+INGEST_URL = os.environ.get("PIPELINE_INGEST_URL") or (
+    base_url("search-config") + "/search-config/api/v1/ingest"
+)
 TIMEOUT = float(os.environ.get("RECOVERY_TIMEOUT", "120"))
 RUNNER = os.environ.get("SOCP_BASH", "bash")
 
@@ -117,7 +128,7 @@ def kafka_snapshot():
     )
     admin = KafkaAdminClient(bootstrap_servers=BOOTSTRAP, client_id="socp-recovery-offset-inspector")
     try:
-        partitions = consumer.partitions_for(TOPIC)
+        partitions = consumer.partitions_for_topic(TOPIC)
         if not partitions:
             raise RuntimeError(f"Kafka topic {TOPIC} has no partitions")
         topic_partitions = [
@@ -148,7 +159,7 @@ def event_lines(run_id, count):
     lines = []
     for index in range(count):
         lines.append(json.dumps({
-            "collector": "recovery-demo",
+            "collector": COLLECTOR_ID,
             "host": host,
             "source": "auth",
             "severity": "WARN",
@@ -164,12 +175,12 @@ def event_lines(run_id, count):
 
 def ingest(lines):
     request_headers = {
-        "Authorization": "Bearer " + VECTOR_TOKEN,
-        "X-SOCP-Collector": "recovery-demo",
+        "Authorization": "Bearer " + INGEST_TOKEN,
+        "X-SOCP-Collector": COLLECTOR_ID,
         "Content-Type": "application/x-ndjson",
     }
     status, body = request(
-        GATEWAY_URL + "/search-config/api/v1/ingest",
+        INGEST_URL,
         "POST",
         lines.encode(),
         request_headers,
