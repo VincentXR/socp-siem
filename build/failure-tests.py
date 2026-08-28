@@ -28,6 +28,23 @@ from auth_client import login_token  # noqa: E402
 GATEWAY = os.environ.get("FAILURE_GATEWAY", "http://localhost:18092")
 OS_URL = os.environ.get("FAILURE_OS_URL", "https://localhost:9200").rstrip("/")
 OS_AUTH = os.environ.get("FAILURE_OS_AUTH", "admin:Socp!Sec2026xK")
+# Ingest is a data-plane trust boundary.  It must be exercised with the
+# registered collector credential against search-config directly; the north
+# bound gateway intentionally authenticates user JWTs and will reject a
+# collector-only request with 403.
+COLLECTOR_ID = os.environ.get("FAILURE_COLLECTOR_ID", "").strip()
+COLLECTOR_TOKEN = os.environ.get("FAILURE_COLLECTOR_TOKEN", "").strip()
+if not COLLECTOR_TOKEN:
+    COLLECTOR_TOKEN = os.environ.get("PIPELINE_COLLECTOR_TOKEN", "").strip()
+    if COLLECTOR_TOKEN and not COLLECTOR_ID:
+        COLLECTOR_ID = os.environ.get("PIPELINE_COLLECTOR_ID", "").strip()
+COLLECTOR_ID = COLLECTOR_ID or "failure-tests"
+INGEST_TOKEN = COLLECTOR_TOKEN or os.environ.get(
+    "SOCP_INGEST_TOKEN", os.environ.get("SOCP_VECTOR_TOKEN", "dev-vector-token")
+).strip()
+INGEST_URL = os.environ.get("FAILURE_INGEST_URL") or os.environ.get(
+    "PIPELINE_INGEST_URL", "http://localhost:18081/search-config/api/v1/ingest"
+)
 TOKEN = None
 PASS = 0
 FAIL = 0
@@ -51,6 +68,26 @@ def api(path, method="GET", body=None, token=True):
             return e.code, {}
     except Exception as e:
         return -1, {"error": str(e)}
+
+
+def ingest(body):
+    """Post one event through the authenticated collector data-plane boundary."""
+    req = urllib.request.Request(INGEST_URL, method="POST")
+    req.add_header("Authorization", "Bearer " + INGEST_TOKEN)
+    req.add_header("X-SOCP-Collector", COLLECTOR_ID)
+    req.add_header("Content-Type", "application/json")
+    req.data = json.dumps(body).encode()
+    try:
+        with urllib.request.urlopen(req, timeout=8) as response:
+            raw = response.read().decode()
+            return response.status, json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as error:
+        try:
+            return error.code, json.loads(error.read().decode())
+        except Exception:
+            return error.code, {}
+    except Exception as error:
+        return -1, {"error": str(error)}
 
 
 def raw(url, method="GET", body=None, token=True, timeout=8):
@@ -177,9 +214,11 @@ def main():
     docker("stop", "socp-kafka")
     time.sleep(8)  # 等 isAvailable 缓存（5s）过期并重新探测到不可达
     uniq = str(int(time.time() * 1000))[-6:]
-    st, d = api("/search-config/api/v1/ingest", "POST",
-                {"collector": "failtest", "host": f"fk-{uniq}", "message": "sudo: failtest escalation",
-                 "src_ip": f"10.99.{uniq[:2]}.{uniq[2:4]}"})
+    st, d = ingest(
+        {"collector": COLLECTOR_ID, "host": f"fk-{uniq}",
+         "message": "sudo: failtest escalation",
+         "src_ip": f"10.99.{uniq[:2]}.{uniq[2:4]}"}
+    )
     check("Kafka 断开时 ingest 仍 accepted", st == 200 and d.get("accepted") == 1, f"st={st} accepted={d.get('accepted')}")
     time.sleep(6)
     after = os_count()
@@ -187,9 +226,11 @@ def main():
     # 恢复 Kafka
     docker("start", "socp-kafka")
     time.sleep(8)
-    st, d = api("/search-config/api/v1/ingest", "POST",
-                {"collector": "failtest", "host": f"fk2-{uniq}", "message": "sudo: failtest2",
-                 "src_ip": f"10.99.{uniq[:2]}.{uniq[2:4]}"})
+    st, d = ingest(
+        {"collector": COLLECTOR_ID, "host": f"fk2-{uniq}",
+         "message": "sudo: failtest2",
+         "src_ip": f"10.99.{uniq[:2]}.{uniq[2:4]}"}
+    )
     check("Kafka 恢复后 ingest 正常", st == 200 and d.get("accepted") == 1, f"st={st}")
 
     # ---------- 场景 2：停 OpenSearch ----------
