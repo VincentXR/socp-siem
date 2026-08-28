@@ -4,7 +4,7 @@
 SOCP 故障注入测试（P4，2026-08-12）：验证核心中间件故障下服务不崩、行为符合降级设计、恢复后自愈。
 
 场景（每个都「注入 → 断言 → 恢复 → 断言」）：
-  1. 断 Kafka   → search-config ingest 降级直写 OpenSearch（事件仍进 OS）→ 恢复后 Kafka 主链自愈
+  1. 断 Kafka   → search-config ingest 仍由本地事务接收并写入 durable outbox → Kafka 恢复后重放到 OpenSearch
   2. 停 OpenSearch → search-config 检索回退 H2（API 仍返回）→ 恢复
   3. 停 Temporal → soar-web 剧本执行回退进程内（不崩，返回执行结果）→ 恢复
   4. 停 PostgreSQL → alert-web 查询失败但不崩（进程存活、健康转 DOWN）→ 恢复后查询正常
@@ -217,7 +217,7 @@ def main():
         sys.exit(1)
 
     # ---------- 场景 1：断 Kafka ----------
-    print("\n== 1. Kafka 故障：ingest 降级直写 OpenSearch ==")
+    print("\n== 1. Kafka 故障：ingest 写入 durable outbox，恢复后重放 OpenSearch ==")
     before = os_count()
     docker("stop", "socp-kafka")
     time.sleep(8)  # 等 isAvailable 缓存（5s）过期并重新探测到不可达
@@ -228,9 +228,10 @@ def main():
          "src_ip": f"10.99.{uniq[:2]}.{uniq[2:4]}"}
     )
     check("Kafka 断开时 ingest 仍 accepted", st == 200 and d.get("accepted") == 1, f"st={st} accepted={d.get('accepted')}")
-    time.sleep(6)
-    after = os_count()
-    check("事件降级直写 OpenSearch（OS count 增长）", after > before, f"{before} -> {after}")
+    # Kafka is the publication dependency, not the synchronous ingest commit
+    # boundary.  The accepted request is already durable in the local event
+    # table and ingestion outbox; OpenSearch should only grow once Kafka is
+    # available and the replayable indexer has drained the outbox.
     # 恢复 Kafka
     docker("start", "socp-kafka")
     time.sleep(8)
@@ -240,6 +241,13 @@ def main():
          "src_ip": f"10.99.{uniq[:2]}.{uniq[2:4]}"}
     )
     check("Kafka 恢复后 ingest 正常", st == 200 and d.get("accepted") == 1, f"st={st}")
+    after = os_count()
+    deadline = time.time() + 60
+    while after <= before and time.time() < deadline:
+        time.sleep(3)
+        after = os_count()
+    check("Kafka 恢复后 durable outbox 重放到 OpenSearch", after > before,
+          f"{before} -> {after}")
 
     # ---------- 场景 2：停 OpenSearch ----------
     print("\n== 2. OpenSearch 故障：服务不崩 ==")
