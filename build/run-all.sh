@@ -31,6 +31,8 @@ FRONTEND_APP="workbench"
 FRONTEND_PORT="$SOCP_PORT_FRONTEND_WORKBENCH"
 
 # JVM 内存：开发默认使用较小堆；完整启动时可用 SOCP_JVM_OPTS 覆盖。
+# 单个服务可用 SOCP_<SERVICE>_JVM_OPTS 覆盖（例如
+# SOCP_SEARCH_CONFIG_JVM_OPTS），避免为一个重型服务抬高所有 JVM 的预算。
 # 15 个默认进程同时启动时，降低 Xms/Xmx 能明显减少内存峰值和 GC 竞争。
 JVM_OPTS="${SOCP_JVM_OPTS:--Xms32m -Xmx256m}"
 START_BATCH_SIZE="${SOCP_START_BATCH_SIZE:-3}"
@@ -191,7 +193,7 @@ wait_for_batch() {
 }
 
 start_service() {
-  local java="$1" name="$2" port jar existing started_pid
+  local java="$1" name="$2" port jar existing started_pid service_key service_opts
   port="$(socp_port "$name")"
   jar="$(jar_of "$name")"
   if [ ! -f "$jar" ]; then
@@ -203,11 +205,13 @@ start_service() {
     echo "  [已运行] $name :$port PID=$existing"
     return 0
   fi
-  nohup "$java" $JVM_OPTS -jar "$jar" --server.port="$port" \
+  service_key="SOCP_$(printf '%s' "$name" | tr 'a-z-' 'A-Z_')_JVM_OPTS"
+  service_opts="${!service_key:-$JVM_OPTS}"
+  nohup "$java" $service_opts -jar "$jar" --server.port="$port" \
     --spring.profiles.active="$RUNTIME_PROFILES" > "$LOGDIR/$name.log" 2>&1 < /dev/null &
   started_pid=$!
   printf '%s\n' "$started_pid" > "$LOGDIR/$name.pid"
-  echo "  [启动] $name -> :$port PID=$started_pid  (日志 .cache/$name.log)"
+  echo "  [启动] $name -> :$port PID=$started_pid  (JVM $service_opts；日志 .cache/$name.log)"
 }
 
 start_backend() {

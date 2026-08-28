@@ -11,7 +11,7 @@ source "$SCRIPT_DIR/ports.env"
 PORTS_RAW="${SOCP_DETECT_CLUSTER_PORTS:-${SOCP_PORT_DETECT_WEB},28082,38082}"
 GROUP_ID="${SOCP_KAFKA_GROUP_ID:-socp-detect}"
 PROFILE="${SOCP_DETECT_PROFILE:-pg}"
-JVM_OPTS="${SOCP_JVM_OPTS:--Xms32m -Xmx256m}"
+JVM_OPTS="${SOCP_DETECT_WEB_JVM_OPTS:-${SOCP_JVM_OPTS:--Xms32m -Xmx256m}}"
 LOGDIR="$ROOT/.cache/detection-cluster"
 JAR="$ROOT/services/detect-web/target/detect-web-1.0.0-SNAPSHOT.jar"
 

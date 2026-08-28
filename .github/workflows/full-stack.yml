@@ -28,6 +28,10 @@ jobs:
       # Fifteen Spring Boot processes plus Kafka/OpenSearch/ClickHouse run on one
       # hosted runner. Keep the evidence job inside a predictable memory budget.
       SOCP_JVM_OPTS: "-Xms16m -Xmx192m -XX:MaxMetaspaceSize=128m -XX:+UseSerialGC"
+      # search-config also owns the Kafka-to-OpenSearch indexing worker. Kafka
+      # client reinitialization after a broker outage needs more class metadata
+      # headroom than the CRUD-oriented services, without increasing all JVMs.
+      SOCP_SEARCH_CONFIG_JVM_OPTS: "-Xms16m -Xmx192m -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC"
       # The PostgreSQL container defaults to 100 connections. Hikari otherwise
       # reserves up to ten per JVM and exhausts the shared database during the
       # 15-service startup burst.

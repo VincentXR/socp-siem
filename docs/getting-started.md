@@ -34,6 +34,11 @@ the scripts, for example:
 SOCP_PORT_ALERT_WEB=28080 bash build/run-all.sh backend
 ```
 
+Use `SOCP_JVM_OPTS` to set the default JVM budget for every backend. A service
+can override it with `SOCP_<SERVICE>_JVM_OPTS`, where hyphens become
+underscores, for example `SOCP_SEARCH_CONFIG_JVM_OPTS`. The fixed Detection
+cluster follows the same rule through `SOCP_DETECT_WEB_JVM_OPTS`.
+
 ## Start the local stack
 
 ```bash
