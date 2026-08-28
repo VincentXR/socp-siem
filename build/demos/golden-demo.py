@@ -31,7 +31,19 @@ from auth_client import login_token  # noqa: E402
 USER = os.environ.get("DEMO_USER", "demo")
 PASSWORD = os.environ.get("DEMO_PASS", "demo123")
 VECTOR_TOKEN = os.environ.get("SOCP_VECTOR_TOKEN", "dev-vector-token")
-COLLECTOR = "golden-demo"
+# CI disables the legacy global ingest token and registers a data-plane
+# collector instead.  Prefer an explicit Golden Demo credential, then reuse
+# the shared pipeline credential so the demo exercises the same trust boundary
+# as the verification and chaos probes.  Keep the legacy fallback for local
+# development stacks that still enable the Vector token.
+COLLECTOR = os.environ.get("GOLDEN_DEMO_COLLECTOR_ID", "").strip()
+COLLECTOR_TOKEN = os.environ.get("GOLDEN_DEMO_COLLECTOR_TOKEN", "").strip()
+if not COLLECTOR_TOKEN:
+    COLLECTOR_TOKEN = os.environ.get("PIPELINE_COLLECTOR_TOKEN", "").strip()
+    if COLLECTOR_TOKEN and not COLLECTOR:
+        COLLECTOR = os.environ.get("PIPELINE_COLLECTOR_ID", "").strip()
+COLLECTOR = COLLECTOR or "golden-demo"
+INGEST_TOKEN = COLLECTOR_TOKEN or os.environ.get("SOCP_INGEST_TOKEN", VECTOR_TOKEN).strip()
 DEMO_CHANNEL = "SOCP Golden Demo (logged)"
 TIMEOUT = float(os.environ.get("GOLDEN_DEMO_TIMEOUT", "90"))
 
@@ -152,7 +164,7 @@ def ingest_lines(lines):
         data=("\n".join(lines) + "\n").encode(),
         method="POST",
         headers={
-            "Authorization": "Bearer " + VECTOR_TOKEN,
+            "Authorization": "Bearer " + INGEST_TOKEN,
             "X-SOCP-Collector": COLLECTOR,
             "Content-Type": "application/x-ndjson",
         },
