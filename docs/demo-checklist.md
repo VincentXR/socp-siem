@@ -61,7 +61,7 @@ boundary:
 python build/demos/golden-demo.py --transport ingest
 ```
 
-The local EMAIL channel records dispatches and does not send external mail.
+The local LOG channel records dispatches and does not invoke an external connector.
 
 ## Failure Demo: detection recovery
 

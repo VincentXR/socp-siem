@@ -91,7 +91,7 @@ onMounted(loadNotify)
     <el-dialog v-model="dialogVisible" :title="t('notify.createChannel')" width="560px">
       <el-form label-width="90px">
         <el-form-item :label="t('common.name')"><el-input v-model="form.name" :placeholder="locale === 'zh-CN' ? '如 安全群' : 'e.g. Security Ops Group'" /></el-form-item>
-        <el-form-item :label="t('common.type')"><el-select v-model="form.type" style="width:160px"><el-option v-for="type in ['SLACK', 'WEBHOOK', 'EMAIL']" :key="type" :label="type" :value="type" /></el-select></el-form-item>
+        <el-form-item :label="t('common.type')"><el-select v-model="form.type" style="width:160px"><el-option v-for="type in ['SLACK', 'WEBHOOK', 'EMAIL', 'LOG']" :key="type" :label="type" :value="type" /></el-select></el-form-item>
         <el-form-item :label="locale === 'zh-CN' ? '目标' : 'Target'"><el-input v-model="form.target" :placeholder="locale === 'zh-CN' ? 'Webhook URL / 邮箱' : 'Webhook URL / Email'" /></el-form-item>
         <el-form-item :label="t('common.description')"><el-input v-model="form.description" :placeholder="t('common.description')" /></el-form-item>
         <el-form-item :label="t('common.enable')"><el-switch v-model="form.enabled" /></el-form-item>

@@ -127,6 +127,11 @@ public class NotificationDispatcher {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("channel", channel.name());
         result.put("type", channel.type());
+        if ("LOG".equals(channel.type())) {
+            result.put("status", "logged");
+            result.put("detail", "Notification recorded locally; no external connector invoked");
+            return result;
+        }
         if ("EMAIL".equals(channel.type())) {
             if (smtpSender == null) {
                 result.put("status", "failed");

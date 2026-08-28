@@ -62,6 +62,23 @@ class NotificationDispatcherTest {
     }
 
     @Test
+    void logChannelRecordsDeliveryWithoutInvokingExternalConnector() {
+        TenantContext.set("tenant-a");
+        Channel channel = new Channel("CH-LOG", "Local evidence", "LOG", "golden-demo", true, "");
+        given(channels.enabled()).willReturn(List.of(channel));
+        given(deliveries.findByIdAndTenantId(any(), eq("tenant-a"))).willReturn(Optional.empty());
+        NotificationDispatcher dispatcher = dispatcher();
+
+        Map<String, Object> result = dispatcher.dispatch(Map.of("id", "AL-1"));
+
+        assertEquals(0, result.get("failed"));
+        List<?> channelResults = (List<?>) result.get("results");
+        assertEquals("logged", ((Map<?, ?>) channelResults.getFirst()).get("status"));
+        verify(http, never()).postExternal(any(), any(), any(), any(Integer.class));
+        verify(deliveries).save(any());
+    }
+
+    @Test
     void replayUsesReceiptAndDoesNotSendChannelAgain() {
         TenantContext.set("tenant-a");
         Channel channel = new Channel("CH-1", "Ops", "WEBHOOK", "http://ops", true, "");

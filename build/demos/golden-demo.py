@@ -263,10 +263,10 @@ def ensure_channel(token):
         token=token,
         body={
             "name": name,
-            "type": "EMAIL",
-            "target": "golden-demo@example.invalid",
+            "type": "LOG",
+            "target": "golden-demo",
             "enabled": True,
-            "description": "Local demo channel; records dispatch without sending mail.",
+            "description": "Local demo channel; records dispatch without an external connector.",
         },
     )
     if status not in (200, 201):
@@ -458,7 +458,7 @@ def main():
                 for item in logs
                 if item.get("alarmId") == compromise.get("id")
                 and item.get("channel") == DEMO_CHANNEL
-                and item.get("type") == "EMAIL"
+                and item.get("type") == "LOG"
                 and item.get("status") == "logged"
             ),
             None,
