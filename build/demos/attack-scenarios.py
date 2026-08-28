@@ -21,7 +21,10 @@ import time
 import urllib.request
 import urllib.error
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Shared demo helpers live in ``build/`` while this scenario is under
+# ``build/demos/``.  Resolve the parent explicitly so the script works both
+# from the repository root and when invoked by CI.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from auth_client import login_token  # noqa: E402
 
 GW = os.environ.get("DEMO_GATEWAY", "http://127.0.0.1:18092")
