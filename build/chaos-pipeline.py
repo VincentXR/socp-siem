@@ -303,6 +303,53 @@ def delivery_evidence(source_alert_ids):
             "pendingOrProcessing": pending, "distinctRows": distinct}
 
 
+def publish_detection_event(event):
+    """Publish a canonical event without depending on the PostgreSQL-backed ingress.
+
+    Dependency-outage scenarios must inject work on the upstream durable
+    boundary they are trying to test.  Going through Search Config while the
+    shared PostgreSQL service is down only proves that ingress rejects the
+    request; it never creates Kafka backlog for Detection to recover.
+    """
+    try:
+        from kafka import KafkaProducer
+    except ImportError as error:
+        raise RuntimeError("kafka-python is required for direct chaos publication") from error
+
+    tenant = str(event.get("tenantId") or "default")
+    source = str(event.get("source") or "unknown")
+    host = str(event.get("host") or "unknown")
+    fields = {"tenant_id": tenant, "host": host,
+              "detection_routing_field": "host",
+              "detection_routing_value": host}
+    fields.update({key: str(value) for key, value in event.items()
+                   if key not in {"eventId", "tenantId", "source", "host",
+                                  "severity", "message", "msg", "timestamp"}
+                   and value is not None})
+    payload = {
+        "eventId": str(event["eventId"]),
+        "tenantId": tenant,
+        "source": source,
+        "host": host,
+        "severity": str(event.get("severity") or "INFO").upper(),
+        "msg": str(event.get("msg") or event.get("message") or ""),
+        "timestamp": str(event.get("timestamp") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
+        "fields": fields,
+    }
+    routing_key = f"{tenant}|host|{host}"
+    producer = KafkaProducer(bootstrap_servers=BOOTSTRAP, acks="all", retries=3)
+    try:
+        metadata = producer.send(
+            TOPIC, key=routing_key.encode("utf-8"),
+            value=json.dumps(payload, separators=(",", ":")).encode("utf-8")).get(timeout=30)
+        producer.flush(timeout=30)
+        return {"published": 1, "topic": metadata.topic,
+                "partition": metadata.partition, "offset": metadata.offset,
+                "routingKey": routing_key}
+    finally:
+        producer.close(timeout=10)
+
+
 def kafka_cli_snapshot():
     """Read offsets with the broker image's own CLI when Compose is available.
 
@@ -663,7 +710,10 @@ def scenario_postgres_outage(token):
         docker_container("stop", "socp-postgres")
         stopped = True
         wait_for(lambda: not container_running("socp-postgres"), timeout=30, interval=1)
-        accepted = ingest(token, [event])
+        # PostgreSQL is shared by ingress and Detection in this deployment.
+        # Publish on Kafka directly so this scenario actually exercises
+        # Detection's durable backlog and database recovery boundary.
+        accepted = publish_detection_event(event)
 
         def queued_snapshot():
             snapshot = kafka_snapshot()
