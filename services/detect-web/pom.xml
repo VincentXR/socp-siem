@@ -30,6 +30,10 @@
         </dependency>
         <dependency>
             <groupId>com.socp.platform</groupId>
+            <artifactId>socp-data</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
             <artifactId>socp-audit</artifactId>
         </dependency>
         <!-- 规则引擎共享库（com.siem 迁移） -->

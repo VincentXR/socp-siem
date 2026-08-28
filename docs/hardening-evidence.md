@@ -31,6 +31,12 @@ boundaries use `@RequireService`, and collector/event boundaries use
 `@RequireIngestIdentity`. Negative tests cover a viewer attempting a protected
 write and a user JWT attempting a service-only side effect.
 
+An internal service JWT cannot be used as a broad analyst credential. It is
+accepted only when the request also carries an HMAC proof whose service name
+matches the token subject. Nonces are claimed with Redis `SET NX` in the
+shared-backend profile, so a replay sent to another service instance is still
+rejected. Redis failure is fail-closed for this identity proof.
+
 ## Analysis idempotency
 
 Secondary analysis claims the tuple
@@ -59,5 +65,6 @@ state. A failed scenario is evidence of a broken invariant, not a reason to
 claim exactly-once behavior.
 
 Coverage remains a floor and is not a substitute for these invariants. The
-next quality step is changed-line coverage plus tests for every critical
-invariant; generic DTO coverage should not be used to inflate the number.
+repository keeps aggregate/module floors and also checks executable Java lines
+changed by a pull request. Tests for critical invariants take precedence over
+generic DTO coverage.

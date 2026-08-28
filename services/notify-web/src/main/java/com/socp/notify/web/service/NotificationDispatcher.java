@@ -56,24 +56,18 @@ public class NotificationDispatcher {
 
         // 并发扇出各渠道通知，避免慢 Webhook 阻塞整体通知链路
         List<java.util.concurrent.CompletableFuture<Map<String, Object>>> futures = enabledChannels.stream()
-                .map(channel -> java.util.concurrent.CompletableFuture.supplyAsync(() -> {
-                    String previous = TenantContext.get();
-                    try {
-                        TenantContext.set(tenant);
-                        Map<String, Object> result = deliveredResult(tenant, alarmId, channel);
-                        if (result == null) {
-                            result = send(channel, alarm);
-                            log(channel, result, alarm);
-                            if (!"failed".equals(result.get("status"))) {
-                                remember(tenant, alarmId, channel, result);
-                            }
+                .map(channel -> java.util.concurrent.CompletableFuture.supplyAsync(
+                        TenantContext.wrap(tenant, () -> {
+                    Map<String, Object> result = deliveredResult(tenant, alarmId, channel);
+                    if (result == null) {
+                        result = send(channel, alarm);
+                        log(channel, result, alarm);
+                        if (!"failed".equals(result.get("status"))) {
+                            remember(tenant, alarmId, channel, result);
                         }
-                        return result;
-                    } finally {
-                        if (previous == null) TenantContext.clear();
-                        else TenantContext.set(previous);
                     }
-                }))
+                    return result;
+                })))
                 .toList();
 
         List<Map<String, Object>> results = new ArrayList<>();

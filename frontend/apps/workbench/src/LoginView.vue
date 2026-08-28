@@ -7,8 +7,9 @@ import { useI18n } from './composables/useI18n'
 const emit = defineEmits<{ (e: 'done', user: string, role: string): void }>()
 const { t, locale, toggleLocale } = useI18n()
 
-const username = ref('demo')
-const password = ref('demo123')
+const demoMode = import.meta.env.DEV || import.meta.env.VITE_DEMO_MODE === 'true'
+const username = ref(demoMode ? 'demo' : '')
+const password = ref(demoMode ? 'demo123' : '')
 const busy = ref(false)
 
 async function doLogin() {
@@ -66,11 +67,11 @@ function oidcLogin() {
       <form class="login-form" @submit.prevent="doLogin">
         <label class="field">
           <span class="field-label">{{ t('login.username') }}</span>
-          <input v-model="username" class="input" placeholder="demo / admin" autocomplete="username" />
+          <input v-model="username" class="input" :placeholder="demoMode ? 'demo / admin' : ''" autocomplete="username" />
         </label>
         <label class="field">
           <span class="field-label">{{ t('login.password') }}</span>
-          <input v-model="password" type="password" class="input" placeholder="demo123 / admin123" autocomplete="current-password" />
+          <input v-model="password" type="password" class="input" :placeholder="demoMode ? 'demo123 / admin123' : ''" autocomplete="current-password" />
         </label>
         <button type="submit" class="submit" :disabled="busy">
           <span v-if="busy" class="spinner" />
@@ -78,7 +79,7 @@ function oidcLogin() {
         </button>
       </form>
 
-      <div class="quick">
+      <div v-if="demoMode" class="quick">
         <span class="quick-label">{{ locale === 'zh-CN' ? '演示账号' : 'Demo Accounts' }}</span>
         <button type="button" class="chip" @click="quickFill('demo', 'demo123')">{{ locale === 'zh-CN' ? '分析师 demo' : 'Analyst demo' }}</button>
         <button type="button" class="chip" @click="quickFill('admin', 'admin123')">{{ locale === 'zh-CN' ? '管理员 admin' : 'Admin admin' }}</button>

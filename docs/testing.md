@@ -19,12 +19,15 @@ bash build/mvnw.sh -pl services/api-gateway,services/alert-web,services/detect-w
 # Workbench contracts, type check, production build
 cd frontend/apps/workbench
 pnpm test
+pnpm test:e2e
 pnpm verify
 ```
 
 `pnpm verify` runs the workbench type check and Vite build, then verifies the
 expected production artifact structure. `pnpm test` covers frontend API,
-navigation, resource-list, and resource-import contracts.
+navigation, resource-list, and resource-import contracts. `pnpm test:e2e`
+uses Playwright to cover cookie-backed login, viewer navigation denial, deep
+links, and browser history.
 
 ## Test ownership
 
@@ -79,6 +82,7 @@ python build/chaos-pipeline.py --scenario detection_outbox_replay
 python build/failure-tests.py
 python build/validate-detection-content.py
 python build/verify-investigation-dataset.py
+python build/eval-investigation.py --results services/ai-assistant/target/investigation-eval-results.json
 python build/benchmark-pipeline.py --mode e2e --profile realistic --count 100 --batch-size 25 \
   --output .cache/benchmark/e2e-100.json
 ```

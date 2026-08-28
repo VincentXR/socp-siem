@@ -8,15 +8,18 @@
     "build": "node scripts/clean-dist.mjs && vue-tsc -b && vite build",
     "preview": "vite preview",
     "test": "node --experimental-strip-types --test scripts/api-response.test.ts scripts/navigation.test.ts scripts/routes.test.ts scripts/resource-list.test.ts scripts/resource-import.test.ts && vitest run --config vitest.config.ts",
+    "test:e2e": "playwright test",
     "verify": "pnpm build && node scripts/verify-build.mjs"
   },
   "dependencies": {
     "@tanstack/vue-query": "5.59.0",
     "echarts": "6.1.0",
     "element-plus": "2.14.3",
-    "vue": "3.5.41"
+    "vue": "3.5.41",
+    "vue-router": "^4.6.4"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@vitejs/plugin-vue": "6.0.8",
     "@vue/test-utils": "2.4.6",
     "jsdom": "26.1.0",

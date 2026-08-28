@@ -45,6 +45,7 @@ public class OsEventWriter {
             .ofPattern("yyyy.MM.dd").withZone(ZoneOffset.UTC);
 
     private final OpenSearchProperties properties;
+    private final OpenSearchHttpTransport transport;
 
     public OsEventWriter() {
         this(new OpenSearchProperties());
@@ -52,10 +53,15 @@ public class OsEventWriter {
 
     @Autowired
     public OsEventWriter(OpenSearchProperties properties) {
-        this.properties = properties;
+        this(properties, new OpenSearchHttpTransport(properties));
     }
 
-    private volatile SSLSocketFactory sslSocketFactory;
+    @Autowired
+    public OsEventWriter(OpenSearchProperties properties, OpenSearchHttpTransport transport) {
+        this.properties = properties;
+        this.transport = transport;
+    }
+
     private volatile boolean templateInitialized = false;
 
     @jakarta.annotation.PostConstruct
@@ -97,22 +103,9 @@ public class OsEventWriter {
                       }
                     }
                     """;
-            c = (HttpURLConnection) new URL(properties.getUrl() + "/_index_template/socp-events-template").openConnection();
-            c.setRequestMethod("PUT");
-            c.setDoOutput(true);
-            c.setConnectTimeout(3000);
-            c.setReadTimeout(5000);
-            c.setRequestProperty("Content-Type", "application/json");
-            String auth = Base64.getEncoder().encodeToString(
-                    (properties.getUsername() + ":" + properties.getPassword()).getBytes(StandardCharsets.UTF_8));
-            c.setRequestProperty("Authorization", "Basic " + auth);
-            if (c instanceof HttpsURLConnection https) {
-                configureHttps(https);
-            }
-            try (OutputStream os = c.getOutputStream()) {
-                os.write(templatePayload.getBytes(StandardCharsets.UTF_8));
-            }
-            int code = c.getResponseCode();
+            var response = transport.exchange("PUT", "/_index_template/socp-events-template",
+                    "application/json", templatePayload.getBytes(StandardCharsets.UTF_8));
+            int code = response.status();
             if (code >= 200 && code < 300) {
                 log.info("OpenSearch index template initialized successfully: socp-events-template (HTTP {})", code);
                 templateInitialized = true;
@@ -164,24 +157,11 @@ public class OsEventWriter {
                         .append("}}\n");
                 sb.append(MAPPER.writeValueAsString(e)).append('\n');
             }
-            c = (HttpURLConnection) new URL(properties.getUrl() + "/_bulk").openConnection();
-            c.setRequestMethod("POST");
-            c.setDoOutput(true);
-            c.setConnectTimeout(3000);
-            c.setReadTimeout(5000);
-            c.setRequestProperty("Content-Type", "application/x-ndjson");
-            String auth = Base64.getEncoder().encodeToString(
-                    (properties.getUsername() + ":" + properties.getPassword()).getBytes(StandardCharsets.UTF_8));
-            c.setRequestProperty("Authorization", "Basic " + auth);
-            if (c instanceof HttpsURLConnection https) {
-                configureHttps(https);
-            }
-            try (OutputStream os = c.getOutputStream()) {
-                os.write(sb.toString().getBytes(StandardCharsets.UTF_8));
-            }
-            int code = c.getResponseCode();
+            var response = transport.exchange("POST", "/_bulk", "application/x-ndjson",
+                    sb.toString().getBytes(StandardCharsets.UTF_8));
+            int code = response.status();
             if (code >= 200 && code < 300) {
-                String resp = new String(c.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+                String resp = response.bodyText();
                 int failed = countBulkErrors(resp);
                 if (failed != 0) {
                     log.warn("OpenSearch bulk 写入 {}/{} 条失败（items error，HTTP {}）-> {} : {}",
@@ -239,57 +219,4 @@ public class OsEventWriter {
         }
     }
 
-    private SSLSocketFactory sslSocketFactory() throws Exception {
-        SSLSocketFactory current = sslSocketFactory;
-        if (current != null) return current;
-        synchronized (this) {
-            if (sslSocketFactory == null) {
-                if (properties.getTls().isInsecureSkipVerify()) {
-                    sslSocketFactory = createTrustAllSsl();
-                } else if (properties.getTls().getTrustStore() == null
-                        || properties.getTls().getTrustStore().isBlank()) {
-                    sslSocketFactory = (SSLSocketFactory) SSLSocketFactory.getDefault();
-                } else {
-                    sslSocketFactory = createConfiguredSsl(properties.getTls());
-                }
-            }
-            return sslSocketFactory;
-        }
-    }
-
-    private void configureHttps(HttpsURLConnection https) throws Exception {
-        https.setSSLSocketFactory(sslSocketFactory());
-        if (properties.getTls().isInsecureSkipVerify()) {
-            // Deliberate local/integration escape hatch. ProdGuard rejects it.
-            https.setHostnameVerifier((hostname, session) -> true);
-        } else {
-            https.setHostnameVerifier(HttpsURLConnection.getDefaultHostnameVerifier());
-        }
-    }
-
-    private static SSLSocketFactory createConfiguredSsl(OpenSearchProperties.Tls tls) throws Exception {
-        KeyStore store = KeyStore.getInstance(KeyStore.getDefaultType());
-        char[] password = tls.getTrustStorePassword() == null
-                ? new char[0] : tls.getTrustStorePassword().toCharArray();
-        try (FileInputStream input = new FileInputStream(tls.getTrustStore())) {
-            store.load(input, password);
-        }
-        TrustManagerFactory factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-        factory.init(store);
-        SSLContext context = SSLContext.getInstance("TLS");
-        context.init(null, factory.getTrustManagers(), new SecureRandom());
-        return context.getSocketFactory();
-    }
-
-    /** Explicit local/integration escape hatch; production validation rejects it. */
-    private static SSLSocketFactory createTrustAllSsl() throws Exception {
-        TrustManager[] tm = {new X509TrustManager() {
-            @Override public void checkClientTrusted(X509Certificate[] chain, String authType) { }
-            @Override public void checkServerTrusted(X509Certificate[] chain, String authType) { }
-            @Override public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
-        }};
-        SSLContext ctx = SSLContext.getInstance("TLS");
-        ctx.init(null, tm, new SecureRandom());
-        return ctx.getSocketFactory();
-    }
 }

@@ -69,6 +69,7 @@ public class AttackController {
      * 检测覆盖率：请求体 {"ruleTechniques": ["T1110","T1190"]}，
      * 返回每个战术的覆盖数/覆盖率、总体覆盖率、未覆盖技术列表。
      */
+    @RequireRole({"admin", "analyst", "viewer"})
     @PostMapping("/coverage")
     public Map<String, Object> coverage(@Valid @RequestBody CoverageRequest body) {
         List<String> ruleTechs = body.ruleTechniques();

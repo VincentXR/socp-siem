@@ -17,6 +17,10 @@
     <dependencies>
         <dependency>
             <groupId>com.socp.platform</groupId>
+            <artifactId>socp-auth</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
             <artifactId>socp-error</artifactId>
         </dependency>
         <dependency>

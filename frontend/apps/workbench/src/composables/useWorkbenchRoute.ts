@@ -1,24 +1,19 @@
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { isMenuKey, menuForPath, pathForMenu, type MenuKey } from '../app/routes'
 
-/** Lightweight URL routing for the single-shell workbench, including deep links and back/forward. */
+/** Vue Router adapter for the single-shell workbench. */
 export function useWorkbenchRoute() {
-  const activeMenu = ref<MenuKey>(menuForPath(window.location.pathname))
+  const route = useRoute()
+  const router = useRouter()
+  const activeMenu = computed<MenuKey>(() => menuForPath(route.path))
 
   function navigate(menu: string, replace = false): void {
     if (!isMenuKey(menu)) return
-    activeMenu.value = menu
     const path = pathForMenu(menu)
-    if (window.location.pathname === path) return
-    window.history[replace ? 'replaceState' : 'pushState']({ menu }, '', path)
+    if (route.path === path) return
+    void (replace ? router.replace(path) : router.push(path))
   }
-
-  function syncFromLocation(): void {
-    activeMenu.value = menuForPath(window.location.pathname)
-  }
-
-  onMounted(() => window.addEventListener('popstate', syncFromLocation))
-  onUnmounted(() => window.removeEventListener('popstate', syncFromLocation))
 
   return { activeMenu, navigate }
 }

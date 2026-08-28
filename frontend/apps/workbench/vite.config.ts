@@ -19,7 +19,6 @@ export default defineConfig({
           const normalized = id.replace(/\\/g, '/')
           if (normalized.includes('/node_modules/zrender/')) return 'echarts-renderer'
           if (normalized.includes('/node_modules/echarts/')) return 'echarts'
-          if (normalized.includes('node_modules/element-plus') || normalized.includes('node_modules/@element-plus')) return 'element-plus'
           if (normalized.includes('node_modules/vue') || normalized.includes('node_modules/@vue') || normalized.includes('node_modules/@vueuse')) return 'vue-vendor'
           if (normalized.includes('node_modules')) return 'vendor'
         },

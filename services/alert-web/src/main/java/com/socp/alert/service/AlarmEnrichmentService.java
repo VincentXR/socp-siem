@@ -117,19 +117,14 @@ public class AlarmEnrichmentService {
 
     private void submit(Alarm alarm) {
         try {
-            executor().execute(() -> {
-                String previous = TenantContext.get();
+            executor().execute(TenantContext.wrap(alarm.getTenantId(), () -> {
                 try {
-                    TenantContext.set(alarm.getTenantId());
                     enrich(alarm);
                 } catch (RuntimeException failure) {
                     log.warn("Threat enrichment failed alarmId={} entity={} reason={}",
                             alarm.getId(), alarm.getEntity(), failure.toString());
-                } finally {
-                    if (previous == null) TenantContext.clear();
-                    else TenantContext.set(previous);
                 }
-            });
+            }));
         } catch (java.util.concurrent.RejectedExecutionException saturated) {
             log.warn("Threat enrichment queue is full; skipping optional enrichment alarmId={}", alarm.getId());
         }

@@ -81,8 +81,8 @@ def main() -> int:
     args = parser.parse_args()
     dataset = json.loads(DATASET.read_text(encoding="utf-8"))
     if not args.results:
-        print("[PASS] dataset contract loaded; pass --results to evaluate an Agent run")
-        return 0
+        print("[FAIL] --results is required; dataset shape alone is not evaluation evidence")
+        return 2
     failures = evaluate(dataset, load_results(args.results))
     if failures:
         for failure in failures:

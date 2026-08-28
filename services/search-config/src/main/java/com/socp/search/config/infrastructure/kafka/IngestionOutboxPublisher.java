@@ -1,5 +1,7 @@
 package com.socp.search.config.infrastructure.kafka;
 
+import com.socp.platform.data.outbox.OutboxRetryPolicy;
+
 import jakarta.annotation.PreDestroy;
 import com.socp.search.config.config.IngestRuntimeProperties;
 import com.socp.search.config.domain.IngestionOutboxEvent;
@@ -133,23 +135,22 @@ public class IngestionOutboxPublisher {
     }
 
     private void scheduleRetry(IngestionOutboxEvent event, String error) {
-        int attempts = event.getAttempts() + 1;
         Instant now = Instant.now();
-        String safeError = truncate(error);
+        var decision = OutboxRetryPolicy.afterClaim(
+                event.getAttempts() + 1, maxAttempts, now, error, 900);
         try {
-            if (attempts >= maxAttempts) {
-                if (repository.markDead(event.getId(), safeError, now) == 1) {
+            if (decision.exhausted()) {
+                if (repository.markDead(event.getId(), decision.error(), now) == 1) {
                     log.error("Ingestion outbox moved to DEAD id={} eventId={} attempts={} reason={}",
-                            event.getId(), event.getEventId(), attempts, safeError);
+                            event.getId(), event.getEventId(), decision.attempts(), decision.error());
                     lifecycle("dead", 1);
                 }
                 return;
             }
-            long delaySeconds = Math.min(900, 1L << Math.min(10, Math.max(1, attempts)));
-            Instant nextAttempt = now.plusSeconds(delaySeconds);
-            if (repository.scheduleRetry(event.getId(), nextAttempt, safeError, now) == 1) {
+            if (repository.scheduleRetry(event.getId(), decision.nextAttemptAt(), decision.error(), now) == 1) {
                 log.warn("Ingestion outbox retry scheduled id={} eventId={} attempts={} next={} reason={}",
-                        event.getId(), event.getEventId(), attempts, nextAttempt, safeError);
+                        event.getId(), event.getEventId(), decision.attempts(),
+                        decision.nextAttemptAt(), decision.error());
                 lifecycle("retry", 1);
             }
         } catch (RuntimeException stateFailure) {

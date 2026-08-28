@@ -1,5 +1,7 @@
 package com.socp.alert.service;
 
+import com.socp.platform.data.outbox.OutboxRetryPolicy;
+
 import com.socp.alert.api.controller.*;
 import com.socp.alert.api.request.*;
 import com.socp.alert.config.AlertOutboxProperties;
@@ -148,22 +150,22 @@ public class OutboxPublisher {
     }
 
     private void scheduleRetry(OutboxEvent event, String error) {
-        int attempts = event.getAttempts() + 1;
         Instant now = Instant.now();
-        String safeError = truncate(error);
+        var decision = OutboxRetryPolicy.afterClaim(
+                event.getAttempts() + 1, maxAttempts, now, error, 900);
         try {
-            if (attempts >= maxAttempts) {
-                if (outboxRepo.markDead(event.getId(), safeError, now) == 1) {
+            if (decision.exhausted()) {
+                if (outboxRepo.markDead(event.getId(), decision.error(), now) == 1) {
                     log.error("Alert outbox moved to DEAD id={} aggregateId={} attempts={} reason={}",
-                            event.getId(), event.getAggregateId(), attempts, safeError);
+                            event.getId(), event.getAggregateId(), decision.attempts(), decision.error());
                     lifecycle("dead", 1);
                 }
                 return;
             }
-            long delaySeconds = Math.min(900, 1L << Math.min(10, Math.max(1, attempts)));
-            if (outboxRepo.scheduleRetry(event.getId(), now.plusSeconds(delaySeconds), safeError, now) == 1) {
+            if (outboxRepo.scheduleRetry(event.getId(), decision.nextAttemptAt(), decision.error(), now) == 1) {
                 log.warn("Alert outbox retry scheduled id={} aggregateId={} attempts={} next={} reason={}",
-                        event.getId(), event.getAggregateId(), attempts, now.plusSeconds(delaySeconds), safeError);
+                        event.getId(), event.getAggregateId(), decision.attempts(),
+                        decision.nextAttemptAt(), decision.error());
                 lifecycle("retry", 1);
             }
         } catch (RuntimeException stateFailure) {

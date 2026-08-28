@@ -89,6 +89,7 @@ public class TiController {
     }
 
     /** 批量匹配：请求体为候选值数组，返回命中映射。 */
+    @RequireRole({"admin", "analyst", "viewer"})
     @PostMapping("/iocs/match")
     public Map<String, Object> matchBulk(@Valid @Size(min = 1, max = 1000)
                                          @RequestBody List<@Size(max = 512) String> values) {

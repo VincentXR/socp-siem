@@ -68,7 +68,7 @@ class AuthInterceptorTest {
     void signedServiceIdentityCanDelegateItsCurrentTenant() throws Exception {
         properties.setServiceSecret("a-long-shared-secret");
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
-                .subject("svc-alert").claim("role", "viewer").claim("tenant", "default").build();
+                .subject("service:alert-web").claim("role", "viewer").claim("tenant", "default").build();
         org.mockito.BDDMockito.given(validator.isDevBypass()).willReturn(false);
         org.mockito.BDDMockito.given(validator.validate("service-token")).willReturn(claims);
         org.mockito.BDDMockito.given(validator.extractTenant(claims)).willReturn("default");
@@ -85,7 +85,7 @@ class AuthInterceptorTest {
     void serviceProofCannotBeReplayed() throws Exception {
         properties.setServiceSecret("a-long-shared-secret");
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
-                .subject("svc-alert").claim("role", "analyst").claim("tenant", "default").build();
+                .subject("service:alert-web").claim("role", "analyst").claim("tenant", "default").build();
         org.mockito.BDDMockito.given(validator.isDevBypass()).willReturn(false);
         org.mockito.BDDMockito.given(validator.validate("service-token")).willReturn(claims);
         org.mockito.BDDMockito.given(validator.extractTenant(claims)).willReturn("default");
@@ -166,7 +166,7 @@ class AuthInterceptorTest {
     void serviceOnlyEndpointAcceptsSignedServiceProof() throws Exception {
         properties.setServiceSecret("a-long-shared-secret");
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
-                .subject("svc-alert").claim("role", "analyst").claim("tenant", "default").build();
+                .subject("service:alert-web").claim("role", "analyst").claim("tenant", "default").build();
         org.mockito.BDDMockito.given(validator.isDevBypass()).willReturn(false);
         org.mockito.BDDMockito.given(validator.validate("service-token")).willReturn(claims);
         org.mockito.BDDMockito.given(validator.extractTenant(claims)).willReturn("default");
@@ -177,6 +177,40 @@ class AuthInterceptorTest {
 
         assertTrue(interceptor.preHandle(request, new MockHttpServletResponse(), serviceHandler()));
         assertEquals("alert-web", request.getAttribute(RequireService.SERVICE_ID_ATTRIBUTE));
+    }
+
+    @Test
+    void serviceTokenCannotActAsAUserWithoutMatchingSignedProof() throws Exception {
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .subject("service:alert-web").claim("role", "analyst").claim("tenant", "default").build();
+        org.mockito.BDDMockito.given(validator.isDevBypass()).willReturn(false);
+        org.mockito.BDDMockito.given(validator.validate("service-token")).willReturn(claims);
+        org.mockito.BDDMockito.given(validator.extractTenant(claims)).willReturn("default");
+        MockHttpServletRequest request = request("service-token", "analyst", "default");
+
+        ApiException rejected = assertThrows(ApiException.class,
+                () -> interceptor.preHandle(request, new MockHttpServletResponse(), protectedHandler()));
+
+        assertEquals(403, rejected.getCode());
+    }
+
+    @Test
+    void serviceTokenMustMatchTheServiceNamedByTheSignature() throws Exception {
+        properties.setServiceSecret("a-long-shared-secret");
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .subject("service:notify-web").claim("role", "analyst").claim("tenant", "default").build();
+        org.mockito.BDDMockito.given(validator.isDevBypass()).willReturn(false);
+        org.mockito.BDDMockito.given(validator.validate("service-token")).willReturn(claims);
+        org.mockito.BDDMockito.given(validator.extractTenant(claims)).willReturn("default");
+        MockHttpServletRequest request = request("service-token", "analyst", "tenant-a");
+        request.setMethod("POST");
+        request.setRequestURI("/api/v1/write");
+        signService(request, "alert-web", "tenant-a", "wrong-service-nonce");
+
+        ApiException rejected = assertThrows(ApiException.class,
+                () -> interceptor.preHandle(request, new MockHttpServletResponse(), protectedHandler()));
+
+        assertEquals(401, rejected.getCode());
     }
 
     @Test

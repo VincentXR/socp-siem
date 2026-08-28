@@ -13,7 +13,14 @@ const entryName = initialScripts.find(name => name.startsWith('index-'))
 
 assert.ok(initialScripts.length > 0, 'production index must reference an entry module')
 assert.ok(entryName, 'production index must reference the workbench entry module')
-assert.ok(assets.some(name => /^element-plus-.*\.js$/.test(name)), 'Element Plus chunk is missing')
+const initialVendorName = initialScripts.find(name => name.startsWith('vendor-'))
+if (initialVendorName) {
+  const initialVendor = await readFile(join(dist, 'assets', initialVendorName))
+  assert.ok(
+    initialVendor.byteLength < 500 * 1024,
+    `initial vendor chunk is ${initialVendor.byteLength} bytes; keep it below 500 KiB`,
+  )
+}
 assert.equal(
   initialScripts.some(name => /^echarts-.*\.js$/.test(name)),
   false,

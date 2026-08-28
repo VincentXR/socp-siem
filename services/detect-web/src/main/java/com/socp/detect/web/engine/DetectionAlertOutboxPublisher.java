@@ -1,5 +1,7 @@
 package com.socp.detect.web.engine;
 
+import com.socp.platform.data.outbox.OutboxRetryPolicy;
+
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.detect.web.persistence.entity.DetectionAlertOutboxEntity;
@@ -250,10 +252,11 @@ public class DetectionAlertOutboxPublisher {
     void fail(DetectionAlertOutboxEntity event, String reason, String stage) {
         int attempts = event.getAttempts();
         Instant now = Instant.now();
+        var decision = OutboxRetryPolicy.afterClaim(attempts, maxAttempts, now, reason, 60);
         event.setAttempts(attempts);
         event.setUpdatedAt(now);
-        event.setLastError(truncate(reason));
-        if (attempts >= maxAttempts) {
+        event.setLastError(decision.error());
+        if (decision.exhausted()) {
             event.setStatus("DEAD");
             event.setNextAttemptAt(now);
             repository.save(event);
@@ -263,9 +266,8 @@ public class DetectionAlertOutboxPublisher {
                     event.getAlertId(), stage, attempts, event.getLastError());
             return;
         }
-        long delaySeconds = Math.min(60, 1L << Math.min(attempts, 6));
         event.setStatus(stage);
-        event.setNextAttemptAt(now.plusSeconds(delaySeconds));
+        event.setNextAttemptAt(decision.nextAttemptAt());
         repository.save(event);
         if (performanceMetrics != null) performanceMetrics.outboxStateTransaction("retry_state");
         lifecycle("retry", 1);
@@ -298,14 +300,7 @@ public class DetectionAlertOutboxPublisher {
 
     private static <T> T withTenant(DetectionAlertOutboxEntity event,
                                     java.util.function.Supplier<T> action) {
-        String previous = TenantContext.get();
-        try {
-            TenantContext.set(event.getTenantId());
-            return action.get();
-        } finally {
-            if (previous == null) TenantContext.clear();
-            else TenantContext.set(previous);
-        }
+        return TenantContext.callWith(event.getTenantId(), action);
     }
 
     private static String truncate(String value) {

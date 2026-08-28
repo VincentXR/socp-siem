@@ -56,6 +56,7 @@ class ComplianceControllerTest {
 
         mvc.perform(post("/api/v1/compliance/coverage")
                         .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "viewer")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isOk())
@@ -75,6 +76,7 @@ class ComplianceControllerTest {
 
         mvc.perform(post("/api/v1/compliance/coverage")
                         .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "viewer")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isOk())

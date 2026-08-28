@@ -24,6 +24,7 @@ public class AiController {
         this.investigation = investigation;
     }
 
+    @RequireRole({"admin", "analyst"})
     @PostMapping("/ask")
     public AiResult ask(@Valid @RequestBody AiAskRequest request) {
         return service.ask(request.question());

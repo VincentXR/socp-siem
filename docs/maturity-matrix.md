@@ -1,33 +1,32 @@
-# Service maturity matrix
+# Service readiness matrix
 
-Maturity is a product contract, not a claim that a local process is highly
-available. `demo` means seeded or simulated behavior is part of the service;
-`preview` means the boundary is usable but still needs an external integration
-or operational hardening; `production-ready` means the repository owns the
-durable transaction and verification boundary.
+Readiness is recorded by dimension. A green correctness result on a local or
+CI stack is not a production HA, capacity, or external-integration claim.
 
-| Service | Maturity | Production contract |
-|---|---|---|
-| `api-gateway` | production-ready | OIDC/JWKS or explicitly approved HMAC, configured secrets and Redis for distributed limits |
-| `search-config` | production-ready | PostgreSQL, Kafka, OpenSearch, Vector/collector credentials and bounded ingest requests |
-| `detect-web` | production-ready | PostgreSQL/Kafka and durable journal/outbox; real rule content is operator-owned |
-| `alert-web` | production-ready | PostgreSQL, Kafka and ClickHouse/notification dependencies are reachable |
-| `incident-web` | production-ready | PostgreSQL is the source of truth for cases and timelines |
-| `soc-base` | production-ready | PostgreSQL and platform-admin-only tenant mutation |
-| `threat-web` | production-ready | PostgreSQL-backed IOC data; external feeds are optional inputs |
-| `report-web` | preview | ClickHouse and optional object storage are required for complete production reports |
-| `soar-web` | preview | Real connector URLs must be configured; unconfigured firewall/isolation/snapshot actions fail |
-| `notify-web` | preview | Durable dispatch records exist, but email/SMS/webhook vendor delivery remains deployment-specific |
-| `asset-web` | preview | Inventory and collection ingress are durable; CMDB/agent ownership is external |
-| `hips-web` | preview | Endpoint events are durable; agent/Falco ownership is external |
-| `detect-model` | preview | Secondary analysis endpoint is available; model lifecycle is not included in this repository |
-| `attack-web` | preview | ATT&CK catalog and coverage APIs are available; content updates are operator-owned |
-| `ai-assistant` | preview | LLM is optional; without an enabled client the service is a knowledge-base assistant, not an LLM |
-| `asset-collect` | demo/compatibility | Standalone simulator is local-only and rejected by the `prod` profile |
-| `hips-collect` | demo/compatibility | Standalone simulator is local-only and rejected by the `prod` profile |
+| Service group | Correctness evidence | Security boundary | Operational readiness | External acceptance |
+|---|---|---|---|---|
+| Gateway/auth | Unit + browser flows | JWT/JWKS, CSRF-origin check, login/service-token rate limit, security headers | Redis-backed distributed limits; prod fail-fast | IdP, proxy trust, certificate and secret rotation remain deployment-owned |
+| Ingest/search | Pipeline + duplicate/recovery chaos | Collector credential binds source and tenant; schema validation follows authentication | Durable ingest outbox, Kafka/OpenSearch recovery | Collector inventory, OpenSearch sizing/backups remain deployment-owned |
+| Detection | Rule vectors, journal/outbox tests, multi-instance rebalance oracle | User mutations require role; internal side effects require signed service identity | Durable journal/outbox, partition ownership and lag evidence | Capacity/SLO and broker/database HA remain deployment-owned |
+| Alert/incident | Idempotency, normalized timeline, downstream receipt tests | Tenant-scoped queries and negative authorization tests | Durable fan-out receipts, stale-claim recovery and replay | ClickHouse retention, notification vendors and case workflow acceptance remain deployment-owned |
+| SOAR/notify | Action/dispatch tests; human approval contract | Service-only evaluation/notify boundaries; simulation rejected in prod | Durable execution/dispatch state | Real connector/vendor certification is required before production use |
+| Assets/HIPS/threat/ATT&CK | CRUD/import/tenant tests | Role-gated mutation and ingest identity where applicable | PostgreSQL-backed state | CMDB, endpoint agents, feeds and content lifecycle remain operator-owned |
+| Reports | Query/archive tests | Tenant-scoped report paths | ClickHouse/object-store adapters | Retention, object-lock, restore and report SLO are deployment-owned |
+| AI assistant | Versioned dataset executes the real evidence composer; citations and human approval are evaluated | Evidence is treated as untrusted; no automatic containment | Deterministic fallback and bounded tool/timeout budgets | LLM model/vendor quality, privacy and safety acceptance remain deployment-owned |
+| Compatibility collectors | Local/demo tests | Production guard rejects simulation | Not a production runtime | Replace with managed collectors/agents |
 
-The `local`, `integration`, and `prod` profile overlays enforce the most
-important part of this contract: demo data and simulation are disabled by
-production guards, while external response actions require a verified
-connector acknowledgement. A maturity label does not replace HA, backup,
-secret rotation, network policy, or vendor acceptance testing.
+## Release interpretation
+
+- `correctness evidence` means the repository has an executable oracle for the
+  named invariant; it does not imply all workloads or failures were explored.
+- `security boundary` means the owning service re-checks authorization and
+  tenancy. Gateway policy is defense in depth, not the sole authority.
+- `operational readiness` describes state, recovery and observability owned by
+  this repository. Backup restore, multi-zone failover and SLO burn-rate
+  operations require deployment-specific evidence.
+- `external acceptance` must be closed by the target environment. Until then,
+  the service is integration-ready or preview, not generally production-ready.
+
+The authoritative pass/fail commands and cadence live in
+[`validation-matrix.md`](validation-matrix.md). Evidence is commit-scoped: a
+workflow result from an older commit must not be presented as proof for HEAD.

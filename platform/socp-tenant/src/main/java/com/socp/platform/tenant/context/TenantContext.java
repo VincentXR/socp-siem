@@ -37,6 +37,57 @@ public final class TenantContext {
         CURRENT.remove();
     }
 
+    /** Installs a tenant for a bounded block and restores the previous value. */
+    public static Scope open(String tenantId) {
+        String previous = get();
+        set(tenantId);
+        return new Scope(previous);
+    }
+
+    public static void runWith(String tenantId, Runnable action) {
+        try (Scope ignored = open(tenantId)) {
+            action.run();
+        }
+    }
+
+    public static <T> T callWith(String tenantId, java.util.function.Supplier<T> action) {
+        try (Scope ignored = open(tenantId)) {
+            return action.get();
+        }
+    }
+
+    /** Captures the current tenant for execution on another thread. */
+    public static Runnable wrap(Runnable action) {
+        String captured = require();
+        return () -> runWith(captured, action);
+    }
+
+    public static Runnable wrap(String tenantId, Runnable action) {
+        return () -> runWith(tenantId, action);
+    }
+
+    public static <T> java.util.function.Supplier<T> wrap(
+            String tenantId, java.util.function.Supplier<T> action) {
+        return () -> callWith(tenantId, action);
+    }
+
+    public static final class Scope implements AutoCloseable {
+        private final String previous;
+        private boolean closed;
+
+        private Scope(String previous) {
+            this.previous = previous;
+        }
+
+        @Override
+        public void close() {
+            if (closed) return;
+            closed = true;
+            if (previous == null) clear();
+            else set(previous);
+        }
+    }
+
     /** 租户前缀工具：Kafka topic / Redis key / ES index 统一加 {tenantId}- */
     public static String prefix(String name) {
         String t = get();

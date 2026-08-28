@@ -1,6 +1,6 @@
 ﻿<script setup lang="ts">
 import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
-import { ElConfigProvider } from 'element-plus'
+import ElConfigProvider from 'element-plus/es/components/config-provider/index.mjs'
 import LoginView from './LoginView.vue'
 import AppShell from './components/AppShell.vue'
 import OverviewView from './views/OverviewView.vue'
@@ -104,6 +104,7 @@ onMounted(async () => {
 
 <template>
   <el-config-provider :locale="elLocale">
+    <RouterView />
     <div v-if="isOffline" class="fixed top-0 left-0 w-full z-50 bg-amber-500 text-white text-xs py-1 text-center font-medium shadow">
       {{ t('app.offlineBanner') }}
     </div>

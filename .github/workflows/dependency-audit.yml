@@ -10,9 +10,9 @@ env:
   SOCP_MAVEN_SETTINGS: "none"
 
 jobs:
-  audit:
+  java-audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
 
@@ -26,11 +26,45 @@ jobs:
       - name: Build Java artifacts
         run: bash build/mvnw.sh package -DskipTests
 
+      - name: Restore OWASP vulnerability database
+        uses: actions/cache@v4
+        with:
+          path: .cache/dependency-check
+          key: dependency-check-${{ runner.os }}-v12-${{ github.run_id }}
+          restore-keys: |
+            dependency-check-${{ runner.os }}-v12-
+
       - name: Scan Java dependency CVEs
-        run: >-
-          bash build/mvnw.sh org.owasp:dependency-check-maven:12.2.2:aggregate
-          -DskipTestScope=true -DfailBuildOnCVSS=8 -Dformat=HTML
-          -DnvdApiDelay=6000
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: |
+          args=(
+            org.owasp:dependency-check-maven:12.2.2:aggregate
+            -DskipTestScope=true
+            -DfailBuildOnCVSS=8
+            -Dformat=HTML
+            -DdataDirectory=.cache/dependency-check
+          )
+          if [[ -n "${NVD_API_KEY}" ]]; then
+            args+=("-DnvdApiKey=${NVD_API_KEY}" -DnvdApiDelay=3500)
+          else
+            args+=(-DnvdApiDelay=6000)
+          fi
+          bash build/mvnw.sh "${args[@]}"
+
+      - name: Upload Java dependency report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: java-dependency-check-report
+          path: target/dependency-check-report.html
+          if-no-files-found: ignore
+
+  frontend-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Set up pnpm and Node 22
         uses: pnpm/action-setup@v4
@@ -48,11 +82,3 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm audit --registry=https://registry.npmjs.org --audit-level high
-
-      - name: Upload dependency report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: dependency-check-report
-          path: target/dependency-check-report.html
-          if-no-files-found: ignore

@@ -110,4 +110,19 @@ class AnalyzeServiceTest {
         verify(receipts).claim("tenant-a", "alarm-1", "v1");
         verify(repository, never()).save(any(AnalyzedEntity.class));
     }
+
+    @Test
+    void stormCounterCacheIsBoundedDuringScheduledCleanup() {
+        AnalyzedRepository repository = mock(AnalyzedRepository.class);
+        AnalyzeService service = new AnalyzeService(repository, new AlertWindowAggregator());
+        ReflectionTestUtils.setField(service, "maxStormCounterEntries", 1);
+
+        service.analyze(java.util.Map.of("tenantId", "tenant-a", "ruleId", "r-1", "entity", "host-1"));
+        service.analyze(java.util.Map.of("tenantId", "tenant-a", "ruleId", "r-2", "entity", "host-2"));
+        assertEquals(2, service.cachedStormCounters());
+
+        service.evictIdleRuleState();
+
+        assertEquals(1, service.cachedStormCounters());
+    }
 }

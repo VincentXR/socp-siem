@@ -1,5 +1,7 @@
 package com.socp.alert.service;
 
+import com.socp.platform.data.outbox.OutboxRetryPolicy;
+
 import com.socp.alert.api.controller.*;
 import com.socp.alert.api.request.*;
 import com.socp.alert.config.AlertDeliveryProperties;
@@ -128,13 +130,11 @@ public class AlarmDeliveryPublisher {
 
     private void deliver(AlarmDelivery delivery) {
         boolean claimed = false;
-        String previousTenant = TenantContext.get();
         String previousTrace = MDC.get("traceId");
-        try {
+        try (TenantContext.Scope ignored = TenantContext.open(delivery.getTenantId())) {
             Instant now = Instant.now();
             if (repository.claim(delivery.getId(), now, maxAttempts) != 1) return;
             claimed = true;
-            TenantContext.set(delivery.getTenantId());
             if (delivery.getTraceId() != null) MDC.put("traceId", delivery.getTraceId());
             DeliveryResult result = dispatch(delivery);
             if (result.delivered()) {
@@ -147,8 +147,6 @@ public class AlarmDeliveryPublisher {
         } catch (RuntimeException failure) {
             if (claimed) scheduleRetry(delivery, failure.getClass().getSimpleName() + ": " + failure.getMessage());
         } finally {
-            if (previousTenant == null) TenantContext.clear();
-            else TenantContext.set(previousTenant);
             if (previousTrace == null) MDC.remove("traceId");
             else MDC.put("traceId", previousTrace);
         }
@@ -176,24 +174,23 @@ public class AlarmDeliveryPublisher {
     }
 
     private void scheduleRetry(AlarmDelivery delivery, String error) {
-        int attempts = delivery.getAttempts() + 1;
-        long delaySeconds = Math.min(900, 1L << Math.min(10, Math.max(1, attempts)));
         Instant now = Instant.now();
-        String safeError = error == null ? "unknown delivery failure" : error;
-        if (safeError.length() > MAX_ERROR_LENGTH) safeError = safeError.substring(0, MAX_ERROR_LENGTH);
+        var decision = OutboxRetryPolicy.afterClaim(
+                delivery.getAttempts() + 1, maxAttempts, now, error, 900);
         try {
-            if (attempts >= maxAttempts) {
-                if (repository.markDead(delivery.getId(), safeError, now) == 1) {
+            if (decision.exhausted()) {
+                if (repository.markDead(delivery.getId(), decision.error(), now) == 1) {
                     log.error("Alarm delivery moved to DEAD alarmId={} destination={} attempts={} reason={}",
-                            delivery.getAlarmId(), delivery.getDestination(), attempts, safeError);
+                            delivery.getAlarmId(), delivery.getDestination(),
+                            decision.attempts(), decision.error());
                     lifecycle("dead", 1);
                 }
                 return;
             }
-            Instant nextAttempt = now.plusSeconds(delaySeconds);
-            if (repository.scheduleRetry(delivery.getId(), nextAttempt, safeError, now) == 1) {
+            if (repository.scheduleRetry(delivery.getId(), decision.nextAttemptAt(), decision.error(), now) == 1) {
                 log.warn("Alarm delivery retry scheduled alarmId={} destination={} attempts={} next={} reason={}",
-                        delivery.getAlarmId(), delivery.getDestination(), attempts, nextAttempt, safeError);
+                        delivery.getAlarmId(), delivery.getDestination(), decision.attempts(),
+                        decision.nextAttemptAt(), decision.error());
                 lifecycle("retry", 1);
             }
         } catch (RuntimeException stateFailure) {

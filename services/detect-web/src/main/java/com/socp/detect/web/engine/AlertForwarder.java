@@ -89,12 +89,10 @@ public class AlertForwarder {
             return;
         }
         String tenant = resolveTenant(alert);
-        String previousTenant = TenantContext.get();
-        try {
+        try (TenantContext.Scope ignored = TenantContext.open(tenant)) {
             // Kafka callbacks run on a worker thread, so the HTTP request's
             // ThreadLocal tenant is not available here. The canonical event
             // carries tenant_id specifically for this asynchronous boundary.
-            TenantContext.set(tenant);
             Map<String, Object> spec = ruleStore.get(alert.ruleId());
             String mitre = spec == null ? "" : String.valueOf(spec.getOrDefault("mitre", ""));
             if (mitre.isBlank() || "null".equalsIgnoreCase(mitre)) mitre = null;
@@ -134,9 +132,6 @@ public class AlertForwarder {
 
             outbox.enqueue(alert.id(), tenant, toJson(payload));
             log.debug("Detection alert payload persisted alertId={} tenant={}", alert.id(), tenant);
-        } finally {
-            if (previousTenant == null) TenantContext.clear();
-            else TenantContext.set(previousTenant);
         }
     }
 

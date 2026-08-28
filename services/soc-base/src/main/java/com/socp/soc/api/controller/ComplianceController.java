@@ -85,6 +85,7 @@ public class ComplianceController {
      * 返回每个框架哪些控制项已被现有规则覆盖。
      */
     @PostMapping("/coverage")
+    @com.socp.platform.auth.security.RequireRole({"admin", "analyst", "viewer"})
     public Map<String, Object> coverage(@Valid @RequestBody CoverageRequest request) {
         List<String> ruleIds = request.ruleIds();
         Set<String> have = Set.copyOf(ruleIds);

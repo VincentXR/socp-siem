@@ -1,6 +1,9 @@
 package com.socp.gateway.api.controller;
 
 import com.socp.gateway.api.request.*;
+import com.socp.gateway.security.AuthAttemptLimiter;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.crypto.MACSigner;
@@ -12,6 +15,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseCookie;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -27,6 +31,7 @@ import java.time.Instant;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /** Issues short-lived SOCP sessions and keeps bearer tokens out of browser JavaScript. */
 @RestController
@@ -45,6 +50,29 @@ public class AuthController {
 
     private Map<String, String> users = Map.of();
     private Map<String, String> roles = Map.of();
+    private final AuthAttemptLimiter attemptLimiter;
+    private final ObjectMapper objectMapper;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public AuthController(AuthAttemptLimiter attemptLimiter, ObjectMapper objectMapper) {
+        this.attemptLimiter = attemptLimiter;
+        this.objectMapper = objectMapper;
+    }
+
+    /** Focused unit-test constructor; Spring always uses the limiter constructor above. */
+    AuthController() {
+        this(new AuthAttemptLimiter() {
+            @Override
+            public Mono<Decision> acquire(String kind, String clientAddress, String identity) {
+                return Mono.just(Decision.permit());
+            }
+
+            @Override
+            public Mono<Void> reset(String kind, String clientAddress, String identity) {
+                return Mono.empty();
+            }
+        }, new ObjectMapper());
+    }
 
     @jakarta.annotation.PostConstruct
     void init() {
@@ -56,50 +84,66 @@ public class AuthController {
         }
     }
 
-    private static Map<String, String> parseJson(String json) throws Exception {
-        return new com.fasterxml.jackson.databind.ObjectMapper().readValue(
-                json, new com.fasterxml.jackson.core.type.TypeReference<>() {});
+    private Map<String, String> parseJson(String json) throws Exception {
+        return objectMapper.readValue(json, new TypeReference<>() {});
     }
 
     @PostMapping(value = "/login", consumes = MediaType.APPLICATION_JSON_VALUE)
-    public Mono<ResponseEntity<?>> login(@Valid @RequestBody LoginRequest body) {
+    public Mono<ResponseEntity<?>> login(@Valid @RequestBody LoginRequest body, ServerHttpRequest request) {
         String username = body == null ? null : body.username();
         String password = body == null ? null : body.password();
-        if (username == null || password == null || !password.equals(users.get(username))) {
-            return Mono.just(ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(Map.of("code", 401, "message", "Invalid username or password")));
-        }
-        String role = supportedRole(roles.getOrDefault(username, "analyst"));
-        String token = sign(username, role, "default");
-        Map<String, Object> response = Map.of(
-                "username", username,
-                "role", role,
-                "tenant", "default",
-                "expiresIn", EXPIRES_SECONDS);
-        return Mono.just(ResponseEntity.ok()
-                .header(HttpHeaders.SET_COOKIE, sessionCookie(token).toString())
-                .body(response));
+        String address = clientAddress(request);
+        return attemptLimiter.acquire("login", address, username).flatMap(decision -> {
+            if (!decision.allowed()) return Mono.just(rateLimited(decision.retryAfterSeconds()));
+            if (username == null || password == null || !password.equals(users.get(username))) {
+                return Mono.just(ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(Map.of("code", 401, "message", "Invalid username or password")));
+            }
+            String role = supportedRole(roles.getOrDefault(username, "analyst"));
+            String token = sign(username, role, "default");
+            Map<String, Object> response = Map.of(
+                    "username", username,
+                    "role", role,
+                    "tenant", "default",
+                    "expiresIn", EXPIRES_SECONDS);
+            return attemptLimiter.reset("login", address, username).thenReturn(ResponseEntity.ok()
+                    .header(HttpHeaders.SET_COOKIE, sessionCookie(token).toString())
+                    .body(response));
+        });
+    }
+
+    Mono<ResponseEntity<?>> login(LoginRequest body) {
+        return login(body, null);
     }
 
     /** Token endpoint for internal services; unlike browser login it returns the bearer token. */
     @PostMapping(value = "/service-token", consumes = MediaType.APPLICATION_JSON_VALUE)
-    public Mono<ResponseEntity<?>> serviceToken(@Valid @RequestBody ServiceTokenRequest body) {
+    public Mono<ResponseEntity<?>> serviceToken(@Valid @RequestBody ServiceTokenRequest body,
+                                                 ServerHttpRequest request) {
         String service = body == null ? null : body.service();
         String suppliedSecret = body == null ? null : body.secret();
-        if (service == null || !service.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
-                || serviceSecret == null || serviceSecret.isBlank()
-                || suppliedSecret == null
-                || !java.security.MessageDigest.isEqual(
-                        serviceSecret.getBytes(StandardCharsets.UTF_8),
-                        suppliedSecret.getBytes(StandardCharsets.UTF_8))) {
-            return Mono.just(ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(Map.of("code", 401, "message", "Invalid service credentials")));
-        }
-        String token = sign("service:" + service, "analyst", "default");
-        return Mono.just(ResponseEntity.ok(Map.of(
-                "token", token,
-                "tokenType", "Bearer",
-                "expiresIn", EXPIRES_SECONDS)));
+        String address = clientAddress(request);
+        return attemptLimiter.acquire("service", address, service).flatMap(decision -> {
+            if (!decision.allowed()) return Mono.just(rateLimited(decision.retryAfterSeconds()));
+            if (service == null || !service.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+                    || serviceSecret == null || serviceSecret.isBlank()
+                    || suppliedSecret == null
+                    || !java.security.MessageDigest.isEqual(
+                            serviceSecret.getBytes(StandardCharsets.UTF_8),
+                            suppliedSecret.getBytes(StandardCharsets.UTF_8))) {
+                return Mono.just(ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(Map.of("code", 401, "message", "Invalid service credentials")));
+            }
+            String token = sign("service:" + service, "analyst", "default");
+            return attemptLimiter.reset("service", address, service).thenReturn(ResponseEntity.ok(Map.of(
+                    "token", token,
+                    "tokenType", "Bearer",
+                    "expiresIn", EXPIRES_SECONDS)));
+        });
+    }
+
+    Mono<ResponseEntity<?>> serviceToken(ServiceTokenRequest body) {
+        return serviceToken(body, null);
     }
 
     @GetMapping("/session")
@@ -123,10 +167,13 @@ public class AuthController {
             Instant now = Instant.now();
             JWTClaimsSet claims = new JWTClaimsSet.Builder()
                     .subject(username)
+                    .jwtID(UUID.randomUUID().toString())
                     .issuer("socp-gateway")
                     .audience(audiences())
                     .claim("tenant", tenant == null || tenant.isBlank() ? "default" : tenant)
                     .claim("role", supportedRole(role))
+                    .claim("identity_type", username != null && username.startsWith("service:")
+                            ? "service" : "user")
                     .issueTime(Date.from(now))
                     .expirationTime(Date.from(now.plusSeconds(EXPIRES_SECONDS)))
                     .build();
@@ -161,5 +208,17 @@ public class AuthController {
             throw new IllegalArgumentException("Unsupported SOCP role");
         }
         return normalized;
+    }
+
+    private static ResponseEntity<?> rateLimited(long retryAfterSeconds) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(HttpHeaders.RETRY_AFTER, String.valueOf(Math.max(1, retryAfterSeconds)))
+                .body(Map.of("code", 429, "message", "Too many authentication attempts"));
+    }
+
+    private static String clientAddress(ServerHttpRequest request) {
+        if (request == null || request.getRemoteAddress() == null
+                || request.getRemoteAddress().getAddress() == null) return "unknown";
+        return request.getRemoteAddress().getAddress().getHostAddress();
     }
 }

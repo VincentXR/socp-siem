@@ -3,6 +3,7 @@ import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import 'element-plus/es/components/base/style/css.mjs'
 import 'element-plus/es/components/message/style/css.mjs'
 import App from './App.vue'
+import { router } from './app/router'
 import './styles/tokens.css'
 import './styles.css'
 
@@ -21,5 +22,6 @@ const queryClient = new QueryClient({
 })
 
 createApp(App)
+  .use(router)
   .use(VueQueryPlugin, { queryClient })
   .mount('#app')

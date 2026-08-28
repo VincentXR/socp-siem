@@ -41,6 +41,7 @@ const { t, locale, toggleLocale } = useI18n()
             :aria-current="activeMenu === item.key ? 'page' : undefined"
             :aria-label="item.label"
             :title="item.label"
+            :data-menu-key="item.key"
             @click="emit('menu-change', item.key)"
           >
             <span class="icon" aria-hidden="true" v-html="`<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'>${MENU_ICONS[item.icon] || ''}</svg>`" />

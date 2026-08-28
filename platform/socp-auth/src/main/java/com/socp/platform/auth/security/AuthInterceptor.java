@@ -14,9 +14,9 @@ import org.springframework.web.method.HandlerMethod;
 import org.springframework.web.servlet.HandlerInterceptor;
 
 import java.time.Instant;
+import java.time.Duration;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.util.concurrent.ConcurrentHashMap;
 
 /** Authenticates user JWTs, fixed ingest credentials, and signed internal service requests. */
 @Component
@@ -28,19 +28,26 @@ public class AuthInterceptor implements HandlerInterceptor {
     private final JwtValidator jwtValidator;
     private final SocpSecurityProperties properties;
     private final CollectorCredentialRegistry collectorCredentials;
-    private final ConcurrentHashMap<String, Long> serviceNonces = new ConcurrentHashMap<>();
-    private volatile long nextNonceCleanupAt;
+    private final ServiceNonceStore serviceNonces;
 
     public AuthInterceptor(JwtValidator jwtValidator, SocpSecurityProperties properties) {
-        this(jwtValidator, properties, new CollectorCredentialRegistry(properties));
+        this(jwtValidator, properties, new CollectorCredentialRegistry(properties),
+                new InMemoryServiceNonceStore());
+    }
+
+    public AuthInterceptor(JwtValidator jwtValidator, SocpSecurityProperties properties,
+                           CollectorCredentialRegistry collectorCredentials) {
+        this(jwtValidator, properties, collectorCredentials, new InMemoryServiceNonceStore());
     }
 
     @org.springframework.beans.factory.annotation.Autowired
     public AuthInterceptor(JwtValidator jwtValidator, SocpSecurityProperties properties,
-                           CollectorCredentialRegistry collectorCredentials) {
+                           CollectorCredentialRegistry collectorCredentials,
+                           ServiceNonceStore serviceNonces) {
         this.jwtValidator = jwtValidator;
         this.properties = properties;
         this.collectorCredentials = collectorCredentials;
+        this.serviceNonces = serviceNonces;
     }
 
     @Override
@@ -63,6 +70,7 @@ public class AuthInterceptor implements HandlerInterceptor {
 
         String tenant = null;
         String role;
+        String authenticatedService = null;
         boolean ingestCredential = false;
         CollectorCredentialRegistry.Identity collectorIdentity =
                 collectorCredentials.authenticate(token).orElse(null);
@@ -105,6 +113,10 @@ public class AuthInterceptor implements HandlerInterceptor {
                 throw ApiException.unauthorized(invalid.getMessage());
             }
             tenant = jwtValidator.extractTenant(claims);
+            String subject = claims.getSubject();
+            if (subject != null && subject.startsWith("service:")) {
+                authenticatedService = subject.substring("service:".length());
+            }
             try {
                 role = claims.getStringClaim("role");
             } catch (Exception missingRole) {
@@ -114,10 +126,22 @@ public class AuthInterceptor implements HandlerInterceptor {
 
         String delegatedTenant = verifyServiceIdentity(request);
         if (delegatedTenant != null) {
+            String signedService = request.getHeader(ServiceRequestSignature.SERVICE_HEADER);
+            // Dev bypass has no verifiable JWT claims. The HMAC proof remains
+            // authoritative for local/test service calls; production still
+            // requires the JWT subject and signed service identity to match.
+            if (jwtValidator.isDevBypass()) {
+                authenticatedService = signedService;
+            }
+            if (authenticatedService == null || !authenticatedService.equals(signedService)) {
+                throw ApiException.unauthorized("Service token does not match the signed service identity");
+            }
             tenant = delegatedTenant;
             role = "analyst";
             request.setAttribute(RequireService.SERVICE_ID_ATTRIBUTE,
-                    request.getHeader(ServiceRequestSignature.SERVICE_HEADER));
+                    signedService);
+        } else if (authenticatedService != null) {
+            throw ApiException.forbidden("Service tokens require a signed service identity proof");
         } else if (ingestCredential) {
             String requestedTenant = request.getHeader("X-Tenant-Id");
             if (requestedTenant != null && !requestedTenant.isBlank()) {
@@ -228,18 +252,15 @@ public class AuthInterceptor implements HandlerInterceptor {
                 request.getRequestURI(), tenant, timestamp, nonce)) {
             throw ApiException.unauthorized("Invalid service identity signature");
         }
-        cleanupNonces(now);
-        if (serviceNonces.putIfAbsent(service + ':' + nonce, now) != null) {
+        ServiceNonceStore.ClaimResult nonceResult = serviceNonces.claim(service, nonce,
+                Duration.ofSeconds(properties.getServiceMaxSkewSeconds() * 2L));
+        if (nonceResult == ServiceNonceStore.ClaimResult.REPLAYED) {
             throw ApiException.unauthorized("Replayed service identity proof");
         }
+        if (nonceResult == ServiceNonceStore.ClaimResult.UNAVAILABLE) {
+            throw ApiException.of(503, "Service identity replay guard is unavailable");
+        }
         return tenant;
-    }
-
-    private void cleanupNonces(long now) {
-        if (now < nextNonceCleanupAt) return;
-        long cutoff = now - properties.getServiceMaxSkewSeconds();
-        serviceNonces.entrySet().removeIf(entry -> entry.getValue() < cutoff);
-        nextNonceCleanupAt = now + properties.getServiceMaxSkewSeconds();
     }
 
     private static boolean isBlank(String value) {

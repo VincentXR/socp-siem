@@ -107,6 +107,10 @@ socp:
     roles: ${SOCP_AUTH_ROLES:}
     cookie-secure: ${SOCP_AUTH_COOKIE_SECURE:false}
     allowed-origins: ${SOCP_AUTH_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:18092}
+    rate-limit:
+      login-permits: ${SOCP_AUTH_LOGIN_PERMITS:5}
+      service-permits: ${SOCP_AUTH_SERVICE_PERMITS:10}
+      window-seconds: ${SOCP_AUTH_WINDOW_SECONDS:60}
 
   ratelimit:
     backend: ${SOCP_RATELIMIT_BACKEND:memory}

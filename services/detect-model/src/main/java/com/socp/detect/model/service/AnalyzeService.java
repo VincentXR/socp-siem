@@ -51,6 +51,9 @@ public class AnalyzeService {
     @Value("${socp.detect.model.rule-state-max-tenants:1000}")
     private int maxRuleStateTenants = 1000;
 
+    @Value("${socp.detect.model.storm-counter-max-entries:100000}")
+    private int maxStormCounterEntries = 100_000;
+
     @Value("${socp.detect.model.analyzer-version:v1}")
     private String analyzerVersion = "v1";
 
@@ -98,8 +101,13 @@ public class AnalyzeService {
         SecurityEvent event = new SecurityEvent(eventId, eventTimestamp(alarm), source, entity, message, fields, severity);
 
         // 告警风暴智能抑制：同实体同规则在一分钟内超出 50 次时启动收敛
-        String stormKey = tenant + ":" + ruleId + ":" + entity + ":" + (System.currentTimeMillis() / 60000);
-        long count = stormCounters.compute(stormKey, (k, v) -> v == null ? 1L : v + 1);
+        long minute = System.currentTimeMillis() / 60_000;
+        String stormKey = tenant + "\u0000" + ruleId + "\u0000" + entity;
+        StormCounter counter = stormCounters.compute(stormKey, (key, current) ->
+                current == null || current.minute != minute
+                        ? new StormCounter(minute, 1)
+                        : new StormCounter(minute, current.count + 1));
+        long count = counter.count;
         boolean suppressed = count > 50;
 
         List<Alert> alerts = evaluateRules(tenant, event);
@@ -138,7 +146,7 @@ public class AnalyzeService {
         return result;
     }
 
-    private final Map<String, Long> stormCounters = new ConcurrentHashMap<>();
+    private final Map<String, StormCounter> stormCounters = new ConcurrentHashMap<>();
 
     @Transactional(readOnly = true)
     public AnalyzedPage analyzed(int page, int size) {
@@ -198,6 +206,17 @@ public class AnalyzeService {
                         .limit(excess)
                         .forEach(entry -> rulesByTenant.remove(entry.getKey(), entry.getValue()));
             }
+
+            long currentMinute = now / 60_000;
+            stormCounters.entrySet().removeIf(entry -> entry.getValue().minute < currentMinute - 2);
+            int stormExcess = stormCounters.size() - Math.max(1, maxStormCounterEntries);
+            if (stormExcess > 0) {
+                stormCounters.entrySet().stream()
+                        .sorted(Map.Entry.comparingByValue(
+                                java.util.Comparator.comparingLong(value -> value.minute)))
+                        .limit(stormExcess)
+                        .forEach(entry -> stormCounters.remove(entry.getKey(), entry.getValue()));
+            }
         } finally {
             ruleStateLifecycle.writeLock().unlock();
         }
@@ -217,6 +236,10 @@ public class AnalyzeService {
 
     int cachedTenantRuleStates() {
         return rulesByTenant.size();
+    }
+
+    int cachedStormCounters() {
+        return stormCounters.size();
     }
 
     private static String tenant(Map<String, Object> alarm) {
@@ -308,6 +331,9 @@ public class AnalyzeService {
         private void touch() {
             lastAccessMillis = System.currentTimeMillis();
         }
+    }
+
+    private record StormCounter(long minute, long count) {
     }
 
     public record AnalyzedPage(List<Alert> items, long total, int page, int size, int totalPages) {

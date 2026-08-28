@@ -49,6 +49,7 @@ public class OsEventReader {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final OpenSearchProperties properties;
+    private final OpenSearchHttpTransport transport;
 
     public OsEventReader() {
         this(new OpenSearchProperties());
@@ -56,7 +57,13 @@ public class OsEventReader {
 
     @Autowired
     public OsEventReader(OpenSearchProperties properties) {
+        this(properties, new OpenSearchHttpTransport(properties));
+    }
+
+    @Autowired
+    public OsEventReader(OpenSearchProperties properties, OpenSearchHttpTransport transport) {
         this.properties = properties;
+        this.transport = transport;
     }
 
     /**
@@ -66,31 +73,15 @@ public class OsEventReader {
         if (!properties.isEnabled()) return null;
         String query = q == null ? "" : q.trim();
         try {
-            String endpoint = properties.getUrl() + "/" + properties.getSearchIndex() + "/_search";
-            HttpURLConnection c = (HttpURLConnection) new URL(endpoint).openConnection();
-            c.setRequestMethod("POST");
-            c.setDoOutput(true);
-            c.setConnectTimeout(3000);
-            c.setReadTimeout(5000);
-            String auth = Base64.getEncoder().encodeToString(
-                    (properties.getUsername() + ":" + properties.getPassword()).getBytes(StandardCharsets.UTF_8));
-            c.setRequestProperty("Authorization", "Basic " + auth);
-            c.setRequestProperty("Accept", "application/json");
-            c.setRequestProperty("Content-Type", "application/json");
-            if (c instanceof HttpsURLConnection https) {
-                configureHttps(https);
-            }
             byte[] request = tenantQuery(query, size);
-            try (OutputStream output = c.getOutputStream()) {
-                output.write(request);
-            }
-            int code = c.getResponseCode();
+            var response = transport.exchange("POST", "/" + properties.getSearchIndex() + "/_search",
+                    "application/json", request);
+            int code = response.status();
             if (code < 200 || code >= 300) {
                 log.warn("OpenSearch 检索失败 HTTP {}（回退 H2 检索）", code);
                 return null;
             }
-            byte[] body = c.getInputStream().readAllBytes();
-            c.disconnect();
+            byte[] body = response.body();
             SplEngine.QueryResult r = parse(body, size);
             log.info("OpenSearch 检索命中 {} 条 (q={})", r.total(), query);
             return r;
@@ -162,43 +153,4 @@ public class OsEventReader {
         return m;
     }
 
-    private void configureHttps(HttpsURLConnection https) throws Exception {
-        https.setSSLSocketFactory(sslSocketFactory());
-        if (properties.getTls().isInsecureSkipVerify()) {
-            https.setHostnameVerifier((hostname, session) -> true);
-        } else {
-            https.setHostnameVerifier(HttpsURLConnection.getDefaultHostnameVerifier());
-        }
-    }
-
-    private SSLSocketFactory sslSocketFactory() throws Exception {
-        OpenSearchProperties.Tls tls = properties.getTls();
-        if (tls.isInsecureSkipVerify()) return trustAllSsl();
-        if (tls.getTrustStore() == null || tls.getTrustStore().isBlank()) {
-            return (SSLSocketFactory) SSLSocketFactory.getDefault();
-        }
-        KeyStore store = KeyStore.getInstance(KeyStore.getDefaultType());
-        char[] password = tls.getTrustStorePassword() == null
-                ? new char[0] : tls.getTrustStorePassword().toCharArray();
-        try (FileInputStream input = new FileInputStream(tls.getTrustStore())) {
-            store.load(input, password);
-        }
-        TrustManagerFactory factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-        factory.init(store);
-        SSLContext context = SSLContext.getInstance("TLS");
-        context.init(null, factory.getTrustManagers(), new SecureRandom());
-        return context.getSocketFactory();
-    }
-
-    /** Explicit local/integration escape hatch; production validation rejects it. */
-    private static SSLSocketFactory trustAllSsl() throws Exception {
-        TrustManager[] tm = {new X509TrustManager() {
-            @Override public void checkClientTrusted(X509Certificate[] chain, String authType) { }
-            @Override public void checkServerTrusted(X509Certificate[] chain, String authType) { }
-            @Override public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
-        }};
-        SSLContext ctx = SSLContext.getInstance("TLS");
-        ctx.init(null, tm, new SecureRandom());
-        return ctx.getSocketFactory();
-    }
 }

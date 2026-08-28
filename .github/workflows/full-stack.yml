@@ -12,13 +12,16 @@ env:
 jobs:
   full-stack:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 70
     env:
       SOCP_JWT_SECRET: ci-full-stack-jwt-secret-0123456789abcdef0123456789abcdef
       SOCP_LOGIN_SECRET: ci-full-stack-jwt-secret-0123456789abcdef0123456789abcdef
       SOCP_RUNTIME_PROFILES: dev,pg
       SOCP_RATELIMIT_BACKEND: redis
       SOCP_RATELIMIT_FAIL_CLOSED: "true"
+      # Fifteen Spring Boot processes plus Kafka/OpenSearch/ClickHouse run on one
+      # hosted runner. Keep the evidence job inside a predictable memory budget.
+      SOCP_JVM_OPTS: "-Xms16m -Xmx192m -XX:MaxMetaspaceSize=128m -XX:+UseSerialGC"
       SOCP_COLLECTOR_CREDENTIALS: "ci-chaos|default|ci-chaos-collector-secret"
       SOCP_ALLOW_GLOBAL_INGEST_TOKEN: "false"
       PIPELINE_INGEST_URL: http://127.0.0.1:18081/search-config/api/v1/ingest
@@ -51,7 +54,12 @@ jobs:
           cache-dependency-path: frontend/pnpm-lock.yaml
 
       - name: Start integration middleware
-        run: docker compose -f infra/docker-compose.yml --profile extra up -d
+        # Full-stack verification does not require dashboards, Keycloak,
+        # Temporal UI, Loki, or Jaeger. Starting those containers previously
+        # starved the application JVMs and made startup evidence flaky.
+        run: >-
+          docker compose -f infra/docker-compose.yml up -d
+          postgres kafka opensearch redis clickhouse minio
 
       - name: Build backend
         run: bash build/mvnw.sh -DskipTests package
@@ -117,7 +125,7 @@ jobs:
         if: always()
         run: |
           mkdir -p .cache
-          docker compose -f infra/docker-compose.yml --profile extra logs --no-color > .cache/compose.log 2>&1 || true
+          docker compose -f infra/docker-compose.yml logs --no-color > .cache/compose.log 2>&1 || true
 
       - name: Upload verification logs
         if: always()
@@ -133,4 +141,4 @@ jobs:
         run: |
           bash build/detection-cluster.sh stop || true
           bash build/run-all.sh stop || true
-          docker compose -f infra/docker-compose.yml --profile extra down || true
+          docker compose -f infra/docker-compose.yml down || true

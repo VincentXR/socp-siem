@@ -234,14 +234,8 @@ public class PlaybookExecutor {
         String tenant = carried == null ? (previous == null ? TenantContext.require() : previous)
                 : String.valueOf(carried);
         if (!TenantContext.isValid(tenant)) throw new IllegalArgumentException("invalid playbook tenant");
-        try {
-            TenantContext.set(tenant);
-            return executeActionScoped(action, alarm, activeFailed,
-                    idempotencyKey(tenant, alarm, action, actionIndex));
-        } finally {
-            if (previous == null) TenantContext.clear();
-            else TenantContext.set(previous);
-        }
+        return TenantContext.callWith(tenant, () -> executeActionScoped(action, alarm, activeFailed,
+                idempotencyKey(tenant, alarm, action, actionIndex)));
     }
 
     private Map<String, Object> executeActionScoped(String action, Map<String, Object> alarm,
