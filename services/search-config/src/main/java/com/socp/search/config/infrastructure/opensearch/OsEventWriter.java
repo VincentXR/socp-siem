@@ -51,7 +51,6 @@ public class OsEventWriter {
         this(new OpenSearchProperties());
     }
 
-    @Autowired
     public OsEventWriter(OpenSearchProperties properties) {
         this(properties, new OpenSearchHttpTransport(properties));
     }

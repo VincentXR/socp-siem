@@ -40,7 +40,7 @@ public interface AlarmRepository extends JpaRepository<Alarm, String>, AlarmRepo
     @Query("""
            select count(a) from Alarm a
            where a.tenantId = :tenant
-             and (:since is null or a.occurredAt >= :since)
+             and a.occurredAt >= :since
            """)
     long countForStatistics(@Param("tenant") String tenant, @Param("since") Instant since);
 
@@ -48,7 +48,7 @@ public interface AlarmRepository extends JpaRepository<Alarm, String>, AlarmRepo
            select new com.socp.alert.domain.AlarmSeverityCount(a.severity, count(a))
            from Alarm a
            where a.tenantId = :tenant
-             and (:since is null or a.occurredAt >= :since)
+             and a.occurredAt >= :since
            group by a.severity
            """)
     List<AlarmSeverityCount> countBySeverityForStatistics(
@@ -58,7 +58,7 @@ public interface AlarmRepository extends JpaRepository<Alarm, String>, AlarmRepo
            select new com.socp.alert.domain.AlarmRuleCount(a.ruleId, count(a))
            from Alarm a
            where a.tenantId = :tenant
-             and (:since is null or a.occurredAt >= :since)
+             and a.occurredAt >= :since
            group by a.ruleId
            order by count(a) desc, a.ruleId asc
            """)
@@ -78,7 +78,7 @@ public interface AlarmRepository extends JpaRepository<Alarm, String>, AlarmRepo
            from Alarm a
            where a.tenantId = :tenant
              and a.riskScore is not null
-             and (:since is null or a.occurredAt >= :since)
+             and a.occurredAt >= :since
            group by case
                when a.riskScore >= 85 then 'CRITICAL'
                when a.riskScore >= 65 then 'HIGH'
@@ -94,7 +94,7 @@ public interface AlarmRepository extends JpaRepository<Alarm, String>, AlarmRepo
            select avg(a.riskScore) from Alarm a
            where a.tenantId = :tenant
              and a.riskScore is not null
-             and (:since is null or a.occurredAt >= :since)
+             and a.occurredAt >= :since
            """)
     Double averageRiskForStatistics(@Param("tenant") String tenant, @Param("since") Instant since);
 
@@ -102,7 +102,7 @@ public interface AlarmRepository extends JpaRepository<Alarm, String>, AlarmRepo
            select a from Alarm a
            where a.tenantId = :tenant
              and a.riskScore is not null
-             and (:since is null or a.occurredAt >= :since)
+             and a.occurredAt >= :since
            order by a.riskScore desc, a.id asc
            """)
     List<Alarm> topRiskForStatistics(

@@ -60,7 +60,7 @@ public class GatewayAuthAttemptLimiter implements AuthAttemptLimiter {
         return redis.execute(INCREMENT, List.of(key), List.of(String.valueOf(windowSeconds)))
                 .next()
                 .map(count -> count <= permits ? Decision.permit() : Decision.reject(windowSeconds))
-                .switchIfEmpty(onRedisFailure(key, permits, "empty Redis response"))
+                .switchIfEmpty(Mono.defer(() -> onRedisFailure(key, permits, "empty Redis response")))
                 .onErrorResume(failure -> onRedisFailure(key, permits, failure.getMessage()));
     }
 

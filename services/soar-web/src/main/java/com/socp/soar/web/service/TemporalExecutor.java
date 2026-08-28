@@ -34,6 +34,7 @@ public class TemporalExecutor {
     private volatile Boolean cachedAvailable;
     private volatile long cachedAt;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public TemporalExecutor(WorkflowClient workflowClient,
                             TemporalProperties properties) {
         this.workflowClient = workflowClient;

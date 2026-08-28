@@ -15,8 +15,25 @@ import time
 import random
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
 
 PASS, FAIL = [], []
+
+
+class _WebhookSink(BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        self.send_response(204)
+        self.end_headers()
+
+    def log_message(self, _format, *_args):
+        return
+
+
+_WEBHOOK_SERVER = ThreadingHTTPServer(("127.0.0.1", 0), _WebhookSink)
+_WEBHOOK_PORT = _WEBHOOK_SERVER.server_address[1]
+Thread(target=_WEBHOOK_SERVER.serve_forever, daemon=True).start()
 
 # 端口/地址唯一来源：build/ports.env（经 build/ports.py 读取）。
 # 想换端口跑： SOCP_PORT_ALERT_WEB=28080 python build/verify-full.py
@@ -113,6 +130,17 @@ check("检测覆盖率可计算且 > 0", st == 200 and cov.get("coverage", 0) > 
 print("\n=== 4. 通知集成 notify-web ===")
 st, chans = call(U["notify-web"] + "/notify-web/api/v1/channels")
 check("内置通知渠道存在", st == 200 and len(chans) >= 2, len(chans) if st == 200 else st)
+if st == 200:
+    for channel in chans:
+        if channel.get("enabled"):
+            call(U["notify-web"] + "/notify-web/api/v1/channels/" + channel["id"] + "/toggle", "POST")
+st, fixture_channel = call(U["notify-web"] + "/notify-web/api/v1/channels", "POST", {
+    "name": "Full-stack webhook sink", "type": "WEBHOOK",
+    "target": "http://127.0.0.1:%d/notify" % _WEBHOOK_PORT,
+    "enabled": True, "description": "Hermetic full-stack verification fixture"})
+check("Webhook verification fixture is ready",
+      st == 200 and fixture_channel.get("enabled") is True,
+      fixture_channel if st == 200 else st)
 
 # ---------------------------------------------------------------- 5. 全链路
 print("\n=== 5. 端到端：采集→检测→告警→富化→通知→建案→SOAR ===")
@@ -163,10 +191,10 @@ if new_alarm:
     def my_dispatch():
         st_, dlog_ = call(U["notify-web"] + "/notify-web/api/v1/dispatch-log")
         mine_ = [d for d in dlog_ if d.get("alarmId") == aid] if st_ == 200 else []
-        return mine_ if len(mine_) >= 2 else None
+        return mine_ if any(d.get("type") == "WEBHOOK" and d.get("status") == "sent" for d in mine_) else None
 
     mine = wait_for(my_dispatch) or []
-    check("通知已派发到渠道", len(mine) >= 2,
+    check("通知已派发到渠道", len(mine) >= 1,
           [str(d.get("channel")) + ":" + str(d.get("status")) for d in mine])
     check("Webhook 渠道派发成功",
           any(d.get("type") == "WEBHOOK" and d.get("status") == "sent" for d in mine),

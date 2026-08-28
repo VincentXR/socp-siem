@@ -38,4 +38,16 @@ class GatewayAuthAttemptLimiterTest {
         assertThat(decision.allowed()).isFalse();
         assertThat(decision.retryAfterSeconds()).isEqualTo(1);
     }
+
+    @Test
+    void redisDecisionIsUsedWithoutEvaluatingTheEmptyResponseFallback() {
+        ReactiveStringRedisTemplate redis = mock(ReactiveStringRedisTemplate.class);
+        when(redis.execute(any(), anyList(), anyList())).thenReturn(Flux.just(1L));
+        GatewayAuthAttemptLimiter limiter = new GatewayAuthAttemptLimiter(
+                redis, "redis", true, 5, 10, 60);
+
+        AuthAttemptLimiter.Decision decision = limiter.acquire("login", "127.0.0.1", "alice").block();
+
+        assertThat(decision.allowed()).isTrue();
+    }
 }

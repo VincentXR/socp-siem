@@ -63,4 +63,10 @@ class AlarmStatisticsServiceTest {
         assertThat(since.getValue()).isNotNull();
         verify(repository, never()).findByTenantId(any());
     }
+
+    @Test
+    void allWindowUsesTypedEpochBoundaryInsteadOfNullableDatabaseParameter() {
+        assertThat(AlarmStatisticsService.windowStart("all")).isEqualTo(Instant.EPOCH);
+        assertThat(AlarmStatisticsService.windowStart("unknown")).isEqualTo(Instant.EPOCH);
+    }
 }

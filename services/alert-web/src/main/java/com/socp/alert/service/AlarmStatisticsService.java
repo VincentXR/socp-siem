@@ -76,8 +76,8 @@ public class AlarmStatisticsService {
         return days;
     }
 
-    private static Instant windowStart(String window) {
-        if (window == null || window.isBlank() || "all".equalsIgnoreCase(window)) return null;
+    static Instant windowStart(String window) {
+        if (window == null || window.isBlank() || "all".equalsIgnoreCase(window)) return Instant.EPOCH;
         LocalDate today = LocalDate.now(ZoneOffset.UTC);
         if ("today".equalsIgnoreCase(window) || "1d".equalsIgnoreCase(window)) {
             return today.atStartOfDay(ZoneOffset.UTC).toInstant();
@@ -85,7 +85,7 @@ public class AlarmStatisticsService {
         if ("7d".equalsIgnoreCase(window)) {
             return today.minusDays(6).atStartOfDay(ZoneOffset.UTC).toInstant();
         }
-        return null;
+        return Instant.EPOCH;
     }
 
     private static Map<String, Long> riskLevels() {

@@ -19,6 +19,9 @@ jobs:
       SOCP_RUNTIME_PROFILES: dev,pg
       SOCP_RATELIMIT_BACKEND: redis
       SOCP_RATELIMIT_FAIL_CLOSED: "true"
+      SOCP_CLIENT_EXTERNAL_ALLOWED_HOSTS: "127.0.0.1"
+      SOCP_CLIENT_EXTERNAL_HTTPS_ONLY: "false"
+      SOCP_CLIENT_EXTERNAL_ALLOW_PRIVATE_NETWORKS: "true"
       # Fifteen Spring Boot processes plus Kafka/OpenSearch/ClickHouse run on one
       # hosted runner. Keep the evidence job inside a predictable memory budget.
       SOCP_JVM_OPTS: "-Xms16m -Xmx192m -XX:MaxMetaspaceSize=128m -XX:+UseSerialGC"
