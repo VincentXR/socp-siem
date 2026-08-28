@@ -23,6 +23,8 @@ jobs:
       SOCP_CLIENT_EXTERNAL_ALLOWED_HOSTS: "127.0.0.1"
       SOCP_CLIENT_EXTERNAL_HTTPS_ONLY: "false"
       SOCP_CLIENT_EXTERNAL_ALLOW_PRIVATE_NETWORKS: "true"
+      SOCP_WEBHOOK_FIXTURE_PORT: "38421"
+      SOCP_WEBHOOK_FIXTURE_URL: http://127.0.0.1:38421/notify
       # Fifteen Spring Boot processes plus Kafka/OpenSearch/ClickHouse run on one
       # hosted runner. Keep the evidence job inside a predictable memory budget.
       SOCP_JVM_OPTS: "-Xms16m -Xmx192m -XX:MaxMetaspaceSize=128m -XX:+UseSerialGC"
@@ -93,6 +95,21 @@ jobs:
       - name: Run true event-pipeline verification
         run: python3 build/verify-pipeline.py
 
+      - name: Start persistent webhook verification fixture
+        run: |
+          mkdir -p .cache
+          python3 build/webhook-sink.py --port "$SOCP_WEBHOOK_FIXTURE_PORT" \
+            > .cache/webhook-sink.log 2>&1 &
+          echo $! > .cache/webhook-sink.pid
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent "http://127.0.0.1:${SOCP_WEBHOOK_FIXTURE_PORT}/health" >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat .cache/webhook-sink.log
+          exit 1
+
       - name: Run Compose-backed dependency chaos evidence
         run: |
           mkdir -p .cache/chaos
@@ -148,6 +165,9 @@ jobs:
       - name: Stop services
         if: always()
         run: |
+          if [ -f .cache/webhook-sink.pid ]; then
+            kill "$(cat .cache/webhook-sink.pid)" 2>/dev/null || true
+          fi
           bash build/detection-cluster.sh stop || true
           bash build/run-all.sh stop || true
           docker compose -f infra/docker-compose.yml down || true

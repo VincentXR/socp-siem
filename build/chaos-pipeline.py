@@ -292,15 +292,18 @@ def clickhouse_scalar(sql):
 def delivery_evidence(source_alert_ids):
     """Return durable fan-out counts for a set of source alert IDs."""
     if not source_alert_ids:
-        return {"rows": 0, "duplicates": 0, "pendingOrProcessing": 0}
+        return {"rows": 0, "duplicates": 0, "pendingOrProcessing": 0,
+                "undelivered": 0, "distinctRows": 0}
     quoted = ",".join("'" + value.replace("'", "''") + "'" for value in source_alert_ids)
     join = "alarm_delivery d join t_alarm a on a.tenant_id=d.tenant_id and a.id=d.alarm_id"
     where = f"a.source_alert_id in ({quoted})"
     rows = int(psql_scalar("alert", f"select count(*) from {join} where {where}") or 0)
     distinct = int(psql_scalar("alert", f"select count(distinct d.tenant_id || ':' || d.alarm_id || ':' || d.destination) from {join} where {where}") or 0)
     pending = int(psql_scalar("alert", f"select count(*) from {join} where {where} and d.status in ('PENDING','PROCESSING')") or 0)
+    undelivered = int(psql_scalar("alert", f"select count(*) from {join} where {where} and d.status <> 'DELIVERED'") or 0)
     return {"rows": rows, "duplicates": max(0, rows - distinct),
-            "pendingOrProcessing": pending, "distinctRows": distinct}
+            "pendingOrProcessing": pending, "undelivered": undelivered,
+            "distinctRows": distinct}
 
 
 def publish_detection_event(event):
@@ -510,8 +513,9 @@ def java_name_uuid(value):
     return str(uuid.UUID(bytes=bytes(digest)))
 
 
-def expected_alert_id(rule_id, entity, event_ids):
-    return java_name_uuid("|".join([rule_id, entity, *event_ids]))
+def expected_alert_id(rule_id, entity, event_ids, tenant="default"):
+    """Match Alert.stableId: tenant, rule, entity, then evidence IDs."""
+    return java_name_uuid("|".join([tenant, rule_id, entity, *event_ids]))
 
 
 def ingest(token, events):
@@ -941,7 +945,9 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
                 "message": "RDP connection to 3389",
                 "src_ip": src_ip,
             } for i, event_id in enumerate(ids))
-            expected.append(expected_alert_id(dataset.get("ruleId", "LATERAL-RDP"), src_ip, ids))
+            expected.append(expected_alert_id(
+                dataset.get("ruleId", "LATERAL-RDP"), src_ip, ids,
+                str(dataset.get("tenantId") or os.environ.get("PIPELINE_TENANT_ID", "default"))))
         return events, expected
 
     events, expected_initial = threshold_batch("initial", 220)
@@ -1034,7 +1040,8 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
         if os.environ.get("SOCP_REQUIRE_DOWNSTREAM_DRAIN", "false").lower() == "true":
             delivery = wait_for(
                 lambda: (snapshot if (snapshot := delivery_evidence(expected_ids))["rows"] >= len(expected_ids) * 4
-                         and snapshot["pendingOrProcessing"] == 0 else None),
+                         and snapshot["pendingOrProcessing"] == 0
+                         and snapshot["undelivered"] == 0 else None),
                 timeout=240, interval=3) or delivery_evidence(expected_ids)
         else:
             try:
@@ -1063,7 +1070,8 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
                        and all(value == 0 for value in pending_values)
                        and (not isinstance(delivery, dict) or "unavailable" in delivery
                             or (delivery.get("duplicates") == 0
-                                and delivery.get("pendingOrProcessing") == 0))
+                                and delivery.get("pendingOrProcessing") == 0
+                                and delivery.get("undelivered", 0) == 0))
                        and len(cycle_results) == rebalance_cycles
                       and all(item["rebalanceComplete"] for item in cycle_results)),
         }

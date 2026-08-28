@@ -31,9 +31,16 @@ class _WebhookSink(BaseHTTPRequestHandler):
         return
 
 
-_WEBHOOK_SERVER = ThreadingHTTPServer(("127.0.0.1", 0), _WebhookSink)
-_WEBHOOK_PORT = _WEBHOOK_SERVER.server_address[1]
-Thread(target=_WEBHOOK_SERVER.serve_forever, daemon=True).start()
+# The verifier normally owns a short-lived in-process sink. Full-stack CI runs
+# later verification processes after this process exits, so it may provide a
+# persistent fixture URL instead.
+_WEBHOOK_FIXTURE_URL = os.environ.get("SOCP_WEBHOOK_FIXTURE_URL", "").strip()
+if _WEBHOOK_FIXTURE_URL:
+    _WEBHOOK_TARGET = _WEBHOOK_FIXTURE_URL
+else:
+    _WEBHOOK_SERVER = ThreadingHTTPServer(("127.0.0.1", 0), _WebhookSink)
+    _WEBHOOK_TARGET = "http://127.0.0.1:%d/notify" % _WEBHOOK_SERVER.server_address[1]
+    Thread(target=_WEBHOOK_SERVER.serve_forever, daemon=True).start()
 
 # 端口/地址唯一来源：build/ports.env（经 build/ports.py 读取）。
 # 想换端口跑： SOCP_PORT_ALERT_WEB=28080 python build/verify-full.py
@@ -136,7 +143,7 @@ if st == 200:
             call(U["notify-web"] + "/notify-web/api/v1/channels/" + channel["id"] + "/toggle", "POST")
 st, fixture_channel = call(U["notify-web"] + "/notify-web/api/v1/channels", "POST", {
     "name": "Full-stack webhook sink", "type": "WEBHOOK",
-    "target": "http://127.0.0.1:%d/notify" % _WEBHOOK_PORT,
+    "target": _WEBHOOK_TARGET,
     "enabled": True, "description": "Hermetic full-stack verification fixture"})
 check("Webhook verification fixture is ready",
       st == 200 and fixture_channel.get("enabled") is True,
