@@ -6,4 +6,5 @@ onlyBuiltDependencies:
   - esbuild
 
 overrides:
+  glob: 10.5.0
   nanoid: 3.3.18
