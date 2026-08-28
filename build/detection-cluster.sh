@@ -55,7 +55,9 @@ stop_port() {
     fi
   fi
   rm -f "$pid_file"
-  [ -n "$launcher_pid_file" ] && rm -f "$launcher_pid_file"
+  if [ -n "$launcher_pid_file" ]; then
+    rm -f "$launcher_pid_file"
+  fi
 }
 
 stop_cluster() {
