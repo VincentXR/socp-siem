@@ -44,6 +44,7 @@ jobs:
             -DfailBuildOnCVSS=8
             -Dformat=HTML
             -DdataDirectory=.cache/dependency-check
+            -DsuppressionFile=config/dependency-check-suppressions.xml
           )
           if [[ -n "${NVD_API_KEY}" ]]; then
             args+=("-DnvdApiKey=${NVD_API_KEY}" -DnvdApiDelay=3500)

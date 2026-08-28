@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.4.xsd">
+    <suppress>
+        <notes><![CDATA[
+            CVE-2026-53914 describes unsafe deserialization in Kotlin build-cache
+            metadata. SOCP ships only Kotlin JVM runtime artifacts transitively
+            through Okio/OTel; it does not ship the Kotlin compiler or build-cache
+            implementation. The project pins the latest stable Kotlin line (2.4.10)
+            and must re-evaluate this narrow suppression when Kotlin 2.4.20 is GA.
+        ]]></notes>
+        <cve>CVE-2026-53914</cve>
+        <packageUrl regex="true">^pkg:maven/org\.jetbrains\.kotlin/kotlin-(stdlib|stdlib-common|stdlib-jdk7|stdlib-jdk8)@.*$</packageUrl>
+    </suppress>
+    <suppress>
+        <notes><![CDATA[
+            CVE-2026-54285 is published for opentelemetry-js and its Node.js
+            W3CBaggagePropagator. The Java opentelemetry-api and opentelemetry-sdk
+            artifacts have no JavaScript baggage parser; this is a CPE mapping
+            false positive and is limited to these two Java package URLs.
+        ]]></notes>
+        <cve>CVE-2026-54285</cve>
+        <packageUrl regex="true">^pkg:maven/io\.opentelemetry/opentelemetry-(api|sdk)@.*$</packageUrl>
+    </suppress>
+</suppressions>

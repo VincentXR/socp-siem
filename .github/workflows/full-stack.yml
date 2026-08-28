@@ -16,6 +16,7 @@ jobs:
     env:
       SOCP_JWT_SECRET: ci-full-stack-jwt-secret-0123456789abcdef0123456789abcdef
       SOCP_LOGIN_SECRET: ci-full-stack-jwt-secret-0123456789abcdef0123456789abcdef
+      SOCP_SECURITY_SERVICE_SECRET: ci-full-stack-service-secret-0123456789abcdef
       SOCP_RUNTIME_PROFILES: dev,pg
       SOCP_RATELIMIT_BACKEND: redis
       SOCP_RATELIMIT_FAIL_CLOSED: "true"
