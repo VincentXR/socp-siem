@@ -360,7 +360,7 @@ jobs:
           tar -xzf backend-pipeline-extra-jars.tgz
 
       - name: Install kafka-python (pipeline probe)
-        run: pip install kafka-python
+        run: pip install kafka-python==3.0.10
 
       - name: Start pipeline services
         run: |

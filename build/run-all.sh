@@ -78,12 +78,29 @@ service_names() {
 }
 
 pid_on_port() {
-  # Windows(netstat) 与 Unix(lsof) 两条路，找不到就返回空
-  if command -v netstat >/dev/null 2>&1 && netstat -ano >/dev/null 2>&1; then
+  # Prefer the native Windows form only under Git Bash. On Linux, netstat's
+  # final column is PID/program (for example 123/java), not a bare PID.
+  if [ "${OS:-}" = "Windows_NT" ] && command -v netstat >/dev/null 2>&1; then
     netstat -ano 2>/dev/null | grep -i listen | grep ":$1 " | awk '{print $NF}' | head -1
   elif command -v lsof >/dev/null 2>&1; then
     lsof -ti tcp:"$1" -s tcp:LISTEN 2>/dev/null | head -1
+  elif command -v ss >/dev/null 2>&1; then
+    ss -ltnp "sport = :$1" 2>/dev/null | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | head -1
+  elif command -v netstat >/dev/null 2>&1; then
+    netstat -lntp 2>/dev/null | awk -v port=":$1" '$4 ~ (port "$") {sub(/\/.*/, "", $7); print $7; exit}'
   fi
+}
+
+managed_pid() {
+  local name="$1" port="$2" pid_file="$LOGDIR/$1.pid" pid=""
+  if [ -r "$pid_file" ]; then
+    pid="$(sed -n '1{s/[^0-9].*//;p;}' "$pid_file")"
+    if [ -n "$pid" ] && kill -0 "$pid" >/dev/null 2>&1; then
+      printf '%s\n' "$pid"
+      return 0
+    fi
+  fi
+  pid_on_port "$port"
 }
 
 kill_pid() {
@@ -174,7 +191,7 @@ wait_for_batch() {
 }
 
 start_service() {
-  local java="$1" name="$2" port jar existing
+  local java="$1" name="$2" port jar existing started_pid
   port="$(socp_port "$name")"
   jar="$(jar_of "$name")"
   if [ ! -f "$jar" ]; then
@@ -188,7 +205,9 @@ start_service() {
   fi
   nohup "$java" $JVM_OPTS -jar "$jar" --server.port="$port" \
     --spring.profiles.active="$RUNTIME_PROFILES" > "$LOGDIR/$name.log" 2>&1 < /dev/null &
-  echo "  [启动] $name -> :$port  (日志 .cache/$name.log)"
+  started_pid=$!
+  printf '%s\n' "$started_pid" > "$LOGDIR/$name.pid"
+  echo "  [启动] $name -> :$port PID=$started_pid  (日志 .cache/$name.log)"
 }
 
 start_backend() {
@@ -230,8 +249,12 @@ stop_backend() {
   services="$(service_names "$profile")" || return 1
   for name in $services; do
     port="$(socp_port "$name")"
-    pid="$(pid_on_port "$port")"
-    [ -n "$pid" ] && { kill_pid "$pid"; echo "  [停止] $name :$port PID=$pid"; }
+    pid="$(managed_pid "$name" "$port")"
+    if [ -n "$pid" ]; then
+      kill_pid "$pid"
+      rm -f "$LOGDIR/$name.pid"
+      echo "  [停止] $name :$port PID=$pid"
+    fi
   done
 }
 
@@ -261,9 +284,10 @@ stop_one_service() {
     return 1
   fi
   port="$(socp_port "$name")"
-  pid="$(pid_on_port "$port")"
+  pid="$(managed_pid "$name" "$port")"
   if [ -n "$pid" ]; then
     kill_pid "$pid"
+    rm -f "$LOGDIR/$name.pid"
     echo "  [停止] $name :$port PID=$pid"
   else
     echo "  [未运行] $name :$port"

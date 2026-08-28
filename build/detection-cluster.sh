@@ -20,17 +20,33 @@ csv_ports() {
 }
 
 pid_on_port() {
-  if command -v lsof >/dev/null 2>&1; then
+  if [ "${OS:-}" = "Windows_NT" ] && command -v netstat >/dev/null 2>&1; then
+    netstat -ano 2>/dev/null | grep -i listen | grep ":$1 " | awk '{print $NF}' | head -1
+  elif command -v lsof >/dev/null 2>&1; then
     lsof -ti tcp:"$1" -s tcp:LISTEN 2>/dev/null | head -1
+  elif command -v ss >/dev/null 2>&1; then
+    ss -ltnp "sport = :$1" 2>/dev/null | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | head -1
   elif command -v netstat >/dev/null 2>&1; then
-    netstat -ano 2>/dev/null | grep -i "LISTEN.*:$1 " | awk '{print $NF}' | head -1
+    netstat -lntp 2>/dev/null | awk -v port=":$1" '$4 ~ (port "$") {sub(/\/.*/, "", $7); print $7; exit}'
   fi
 }
 
 stop_port() {
-  local port pid
+  local port pid pid_file launcher_pid_file candidate
   port="$1"
-  pid="$(pid_on_port "$port" || true)"
+  pid_file="$LOGDIR/detect-$port.pid"
+  launcher_pid_file=""
+  if [ "$port" = "$SOCP_PORT_DETECT_WEB" ]; then
+    launcher_pid_file="$ROOT/.cache/detect-web.pid"
+  fi
+  pid=""
+  for candidate in "$pid_file" "$launcher_pid_file"; do
+    [ -n "$candidate" ] && [ -r "$candidate" ] || continue
+    pid="$(sed -n '1{s/[^0-9].*//;p;}' "$candidate")"
+    if [ -z "$pid" ] || ! kill -0 "$pid" >/dev/null 2>&1; then pid=""; fi
+    [ -n "$pid" ] && break
+  done
+  [ -n "$pid" ] || pid="$(pid_on_port "$port" || true)"
   if [ -n "$pid" ]; then
     if command -v taskkill >/dev/null 2>&1; then
       MSYS_NO_PATHCONV=1 taskkill /F /PID "$pid" >/dev/null 2>&1 || true
@@ -38,6 +54,8 @@ stop_port() {
       kill "$pid" >/dev/null 2>&1 || true
     fi
   fi
+  rm -f "$pid_file"
+  [ -n "$launcher_pid_file" ] && rm -f "$launcher_pid_file"
 }
 
 stop_cluster() {

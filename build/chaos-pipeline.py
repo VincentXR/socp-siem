@@ -303,7 +303,55 @@ def delivery_evidence(source_alert_ids):
             "pendingOrProcessing": pending, "distinctRows": distinct}
 
 
+def kafka_cli_snapshot():
+    """Read offsets with the broker image's own CLI when Compose is available.
+
+    This keeps the chaos oracle aligned with the running Kafka distribution and
+    avoids coupling scheduled evidence to a third-party client's admin-protocol
+    implementation. Non-Compose installations transparently use kafka-python.
+    """
+    target = resolve_container("socp-kafka")
+    inspected = subprocess.run(
+        ["docker", "inspect", target], cwd=REPO,
+        capture_output=True, text=True, timeout=15, check=False)
+    if inspected.returncode != 0:
+        return None
+    result = subprocess.run(
+        ["docker", "exec", target, "/opt/kafka/bin/kafka-consumer-groups.sh",
+         "--bootstrap-server", "localhost:9092", "--group", GROUP, "--describe"],
+        cwd=REPO, capture_output=True, text=True, timeout=30, check=False)
+    if result.returncode != 0:
+        return None
+
+    partitions = []
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) < 6 or fields[0] != GROUP or fields[1] != TOPIC:
+            continue
+        try:
+            partition = int(fields[2])
+            committed = int(fields[3]) if fields[3] != "-" else 0
+            end = int(fields[4])
+            lag = int(fields[5]) if fields[5] != "-" else max(0, end - committed)
+        except ValueError:
+            continue
+        partitions.append({"partition": partition, "end": end,
+                           "committed": committed, "lag": max(0, lag)})
+    if not partitions:
+        return None
+    partitions.sort(key=lambda item: item["partition"])
+    return {"end": sum(item["end"] for item in partitions),
+            "committed": sum(item["committed"] for item in partitions),
+            "lag": sum(item["lag"] for item in partitions),
+            "partitions": len(partitions),
+            "perPartition": partitions,
+            "source": "broker-cli"}
+
+
 def kafka_snapshot():
+    cli_snapshot = kafka_cli_snapshot()
+    if cli_snapshot is not None:
+        return cli_snapshot
     try:
         from kafka import KafkaConsumer
         from kafka.admin import KafkaAdminClient
@@ -338,10 +386,21 @@ def kafka_snapshot():
                 return value
             return int(getattr(value, "offset", 0))
 
-        committed_total = sum(committed_value(offset) for offset in committed.values())
+        per_partition = []
+        committed_total = 0
+        for tp in tps:
+            current = committed_value(committed.get(tp))
+            end = int(ends.get(tp, 0))
+            committed_total += current
+            per_partition.append({"partition": tp.partition,
+                                  "end": end,
+                                  "committed": current,
+                                  "lag": max(0, end - current)})
         return {"end": end_total, "committed": committed_total,
                 "lag": max(0, end_total - committed_total),
-                "partitions": len(tps)}
+                "partitions": len(tps),
+                "perPartition": per_partition,
+                "source": "kafka-python"}
     finally:
         if admin is not None:
             admin.close()
@@ -357,15 +416,18 @@ def drained_kafka_snapshot(timeout=60, interval=1):
     records.  Keep the diagnostic consumer out of the production group and
     wait only for the observable lag invariant.
     """
-    initial = kafka_snapshot()
-    if initial is None or initial["lag"] == 0:
-        return initial
+    last = kafka_snapshot()
+    if last is None or last["lag"] == 0:
+        return last
 
     def probe():
+        nonlocal last
         snapshot = kafka_snapshot()
+        if snapshot is not None:
+            last = snapshot
         return snapshot if snapshot and snapshot["lag"] == 0 else None
 
-    return wait_for(probe, timeout=timeout, interval=interval)
+    return wait_for(probe, timeout=timeout, interval=interval) or last
 
 
 def alert_total(token):
@@ -444,7 +506,7 @@ def scenario_detection_restart(token, count):
     if baseline is None:
         raise RuntimeError("Kafka snapshot unavailable; check kafka-python and the broker")
     if baseline["lag"] != 0:
-        raise RuntimeError(f"detection restart scenario requires a drained baseline, got lag={baseline['lag']}")
+        raise RuntimeError(f"detection restart scenario requires a drained baseline, got {baseline}")
     stopped = False
     try:
         control("stop-service", "detect-web")
