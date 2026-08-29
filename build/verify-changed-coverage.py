@@ -23,7 +23,8 @@ def diff_lines(base: str | None) -> dict[str, set[int]]:
     else:
         command.append("HEAD")
     command.extend(["--", "platform/*/src/main/java/**/*.java", "services/*/src/main/java/**/*.java"])
-    result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+    result = subprocess.run(command, cwd=ROOT, text=True, encoding="utf-8",
+                            errors="replace", capture_output=True)
     if result.returncode:
         raise RuntimeError(result.stderr.strip() or "git diff failed")
     changed: dict[str, set[int]] = {}
@@ -41,7 +42,8 @@ def diff_lines(base: str | None) -> dict[str, set[int]]:
     if not base:
         untracked = subprocess.run(
             ["git", "ls-files", "--others", "--exclude-standard"],
-            cwd=ROOT, text=True, capture_output=True, check=True).stdout.splitlines()
+            cwd=ROOT, text=True, encoding="utf-8", errors="replace",
+            capture_output=True, check=True).stdout.splitlines()
         java_path = re.compile(r"^(?:platform|services)/[^/]+/src/main/java/.+\.java$")
         for relative in untracked:
             normalized = relative.replace("\\", "/")
