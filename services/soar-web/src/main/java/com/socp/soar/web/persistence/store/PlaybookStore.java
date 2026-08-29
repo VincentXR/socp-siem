@@ -8,10 +8,10 @@ import com.socp.soar.web.persistence.entity.*;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.tenant.context.TenantContext;
-import com.socp.soar.web.config.SoarRuntimeProperties;
 import com.socp.soar.web.domain.Playbook;
 import com.socp.soar.web.domain.PlaybookStatus;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -30,16 +30,15 @@ public class PlaybookStore {
     };
 
     private final PlaybookRepository repo;
-    private final boolean demoDataEnabled;
 
     public PlaybookStore(PlaybookRepository repo) {
-        this(repo, defaultProperties());
+        this(repo, true);
     }
 
     @Autowired
-    public PlaybookStore(PlaybookRepository repo, SoarRuntimeProperties properties) {
+    public PlaybookStore(PlaybookRepository repo,
+                         @Value("${socp.demo-data.enabled:true}") boolean demoDataEnabled) {
         this.repo = repo;
-        this.demoDataEnabled = properties.isDemoDataEnabled();
         if (demoDataEnabled && repo.countByTenantId("default") == 0) {
             String previous = TenantContext.get();
             try {
@@ -49,12 +48,6 @@ public class PlaybookStore {
                 if (previous == null) TenantContext.clear(); else TenantContext.set(previous);
             }
         }
-    }
-
-    private static SoarRuntimeProperties defaultProperties() {
-        SoarRuntimeProperties properties = new SoarRuntimeProperties();
-        properties.setDemoDataEnabled(true);
-        return properties;
     }
 
     private String tenant() {
@@ -76,6 +69,11 @@ public class PlaybookStore {
 
     public List<Playbook> list() {
         return repo.findByTenantId(tenant()).stream().map(PlaybookStore::fromEntity).toList();
+    }
+
+    /** Scheduler entry point: enumerate tenant scopes without inventing a request tenant. */
+    public List<String> tenantsWithEnabledPlaybooks() {
+        return repo.findTenantIdsWithEnabledPlaybooks();
     }
 
     public Playbook save(Playbook pb) {

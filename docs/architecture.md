@@ -96,6 +96,11 @@ the intentional all-H2 fallback.
   idempotent; the system does not claim distributed exactly-once processing.
 - Temporal is optional for development. SOAR can use the local executor when
   Temporal is unavailable; the `prod` guard rejects that fallback.
+- The fallback SOAR scheduler enumerates enabled playbooks by tenant, evaluates
+  times in `SOCP_SOAR_SCHEDULE_ZONE`, and claims
+  `(tenant_id, playbook_id, scheduled_for)` in PostgreSQL/H2 before executing.
+  Multiple SOAR instances therefore cannot fire the same scheduled side effect
+  twice for one minute.
 - Secondary analysis claims `(tenant_id, source_alarm_id, analyzer_version)` in
   `t_analysis_receipt` in the same transaction as its result. Kafka redelivery
   is therefore a state-preserving no-op after a committed analysis, while a

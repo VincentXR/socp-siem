@@ -17,6 +17,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.time.LocalTime;
 import java.util.List;
 import java.util.Map;
 
@@ -226,6 +227,9 @@ class PlaybookExecutorTest {
         assertEquals(3, ScheduledPlaybookRunner.parseHour("每天 03:00"));
         assertEquals(15, ScheduledPlaybookRunner.parseHour("定时 15:30 巡检"));
         assertEquals(2, ScheduledPlaybookRunner.parseHour("每天 2 点"));
+        assertEquals(LocalTime.of(15, 30), ScheduledPlaybookRunner.parseTime("定时 15:30 巡检"));
+        assertNull(ScheduledPlaybookRunner.parseTime("schedule 24:00"));
+        assertNull(ScheduledPlaybookRunner.parseTime("schedule 12:60"));
         assertNull(ScheduledPlaybookRunner.parseHour("无时间"));
     }
 }

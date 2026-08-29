@@ -11,16 +11,16 @@ class SoarPropertiesTest {
     @Test
     void runtimePropertiesExposeSafeDefaultsAndOverrides() {
         SoarRuntimeProperties properties = new SoarRuntimeProperties();
-        assertTrue(properties.isDemoDataEnabled());
         assertEquals("preview", properties.getMaturity());
+        assertEquals("UTC", properties.getScheduleZone());
 
-        properties.setDemoDataEnabled(false);
         properties.setSimulationEnabled(true);
         properties.setMaturity("production-ready");
+        properties.setScheduleZone("Asia/Shanghai");
 
-        assertFalse(properties.isDemoDataEnabled());
         assertTrue(properties.isSimulationEnabled());
         assertEquals("production-ready", properties.getMaturity());
+        assertEquals("Asia/Shanghai", properties.getScheduleZone());
     }
 
     @Test

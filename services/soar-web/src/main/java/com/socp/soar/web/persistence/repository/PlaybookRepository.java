@@ -6,6 +6,7 @@ import com.socp.soar.web.persistence.store.*;
 import com.socp.soar.web.persistence.repository.*;
 import com.socp.soar.web.persistence.entity.*;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
 
 import java.util.List;
 import java.util.Optional;
@@ -14,6 +15,9 @@ import java.util.Optional;
 public interface PlaybookRepository extends JpaRepository<PlaybookEntity, String> {
 
     List<PlaybookEntity> findByTenantId(String tenantId);
+
+    @Query("select distinct p.tenantId from PlaybookEntity p where p.enabled = true order by p.tenantId")
+    List<String> findTenantIdsWithEnabledPlaybooks();
 
     Optional<PlaybookEntity> findByIdAndTenantId(String id, String tenantId);
 

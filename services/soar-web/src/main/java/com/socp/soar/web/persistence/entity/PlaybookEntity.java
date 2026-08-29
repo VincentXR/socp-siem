@@ -40,7 +40,7 @@ public class PlaybookEntity {
     @Column(nullable = false)
     private Instant createdAt;
 
-    @Column(length = 64)
+    @Column(length = 64, nullable = false)
     private String tenantId;
 
     public PlaybookEntity() {

@@ -37,6 +37,8 @@ socp:
     namespace: default
   soar:
     maturity: preview
+    # Every node must interpret a schedule in the same zone.
+    schedule-zone: ${SOCP_SOAR_SCHEDULE_ZONE:UTC}
     # Local/integration dry-runs remain visibly SIMULATED; application-prod.yml disables them.
     simulation-enabled: ${SOCP_SOAR_SIMULATION_ENABLED:true}
     action-connectors:

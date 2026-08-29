@@ -94,7 +94,8 @@ Important variables include `SOCP_JWT_SECRET`, `SOCP_RUNTIME_PROFILES`,
 settings, OIDC settings, the Vector ingest token, and
 `SOCP_SECURITY_METRICS_TOKEN`. External Notify/SOAR connectors also require
 `SOCP_CLIENT_EXTERNAL_ALLOWED_HOSTS`; HTTPS and public DNS resolution are
-enforced by default. `build/ports.env`
+enforced by default. Scheduled SOAR playbooks use UTC unless
+`SOCP_SOAR_SCHEDULE_ZONE` names another IANA time zone. `build/ports.env`
 documents the service URL overrides used by scripts and gateway configuration.
 
 ## Verification
