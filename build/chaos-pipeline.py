@@ -224,13 +224,13 @@ def resolve_container(container):
     image = CONTAINER_IMAGES.get(container)
     if image:
         discovered = subprocess.run(
-            ["docker", "ps", "-aq", "--filter", f"ancestor={image}",
-             "--format", "{{{{.Names}}}}"], cwd=REPO,
+            ["docker", "ps", "-a", "--filter", f"ancestor={image}",
+             "--format", "{{{{.ID}}}}"], cwd=REPO,
             capture_output=True, text=True, timeout=15, check=False)
-        name = next((line.strip() for line in discovered.stdout.splitlines()
-                     if line.strip()), None)
-        if name:
-            return name
+        container_id = next((line.strip() for line in discovered.stdout.splitlines()
+                             if line.strip()), None)
+        if discovered.returncode == 0 and container_id:
+            return container_id
     return container
 
 

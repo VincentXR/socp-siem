@@ -407,6 +407,10 @@ jobs:
 
       - name: Run PR chaos evidence (duplicate + Detection outbox replay)
         if: github.event_name == 'pull_request'
+        env:
+          # Service containers have generated names. Pass the stable job ID to
+          # the probe instead of relying on Compose's socp-postgres name.
+          SOCP_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
         run: |
           mkdir -p .cache/chaos
           set +e
@@ -428,6 +432,8 @@ jobs:
       # process/database/OpenSearch outage experiments.
       - name: Run nightly chaos evidence (deterministic replay invariants)
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        env:
+          SOCP_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
         run: |
           mkdir -p .cache/chaos
           set +e
