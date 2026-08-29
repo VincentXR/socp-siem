@@ -5,14 +5,19 @@ package com.socp.detect.web.persistence.repository;
 import com.socp.detect.web.persistence.store.*;
 import com.socp.detect.web.persistence.repository.*;
 import com.socp.detect.web.persistence.entity.*;
-import org.springframework.data.jpa.repository.JpaRepository;
+import com.socp.platform.tenant.persistence.TenantScopedRepository;
 
 import java.util.List;
 import java.util.Optional;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.transaction.annotation.Transactional;
 
-public interface WatchlistRepository extends JpaRepository<WatchlistEntity, Long> {
+public interface WatchlistRepository extends TenantScopedRepository<WatchlistEntity, Long> {
+    java.util.Optional<WatchlistEntity> findByIdAndTenantId(Long id, String tenantId);
+    @Modifying
+    @Transactional
+    int deleteByTenantId(String tenantId);
 
     Optional<WatchlistEntity> findByTenantIdAndListName(String tenantId, String listName);
 
-    List<WatchlistEntity> findByTenantId(String tenantId);
 }

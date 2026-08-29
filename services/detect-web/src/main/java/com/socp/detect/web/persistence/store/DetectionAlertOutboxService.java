@@ -45,7 +45,7 @@ public class DetectionAlertOutboxService {
                 || !TenantContext.isValid(tenantId)) {
             throw new IllegalArgumentException("alertId, tenantId and payload are required");
         }
-        if (repository.existsById(alertId)) return;
+        if (repository.existsByAlertIdAndTenantId(alertId, tenantId)) return;
         Instant now = Instant.now();
         try {
             repository.saveAndFlush(new DetectionAlertOutboxEntity(

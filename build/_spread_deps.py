@@ -11,7 +11,7 @@ import sys
 SERVICES = pathlib.Path(__file__).resolve().parent.parent / "services"
 
 PLATFORM = ["socp-error", "socp-tenant", "socp-auth", "socp-audit",
-            "socp-obs", "socp-ratelimit", "socp-data"]
+            "socp-obs", "socp-ratelimit", "socp-data", "socp-starter"]
 
 IND = " " * 8
 

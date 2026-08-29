@@ -2,9 +2,11 @@
  * 前端 UI 工具库（从 App.vue 抽取的纯函数，页面组件共用）。
  */
 
+import { severityColor } from '@socp/library'
+
 /** 严重级别颜色映射 */
 export function sevColor(s: string): string {
-  return { CRITICAL: '#f56c6c', HIGH: '#e63946', MEDIUM: '#e6a23c', LOW: '#909399', INFO: '#909399' }[s] ?? '#909399'
+  return severityColor(s)
 }
 
 /** 严重级别徽标内联样式（背景色 + 白色文字） */

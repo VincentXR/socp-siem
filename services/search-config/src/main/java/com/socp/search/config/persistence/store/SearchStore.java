@@ -48,24 +48,14 @@ public class SearchStore {
         this.osWriter = osWriter;
         this.tenantBufferIdleTtlMs = properties.getIdleTtlMs();
         this.maxTenantBuffers = properties.getMaxTenants();
-        long persisted = repo.countByTenantId("default");
-        if (persisted == 0) {
-            String previous = TenantContext.get();
-            try {
-                TenantContext.set("default");
+        TenantContext.runWith("default", () -> {
+            long persisted = repo.countByTenantId("default");
+            if (persisted == 0) {
                 seed();
-            } finally {
-                if (previous == null) TenantContext.clear(); else TenantContext.set(previous);
-            }
-        } else {
-            String previous = TenantContext.get();
-            try {
-                TenantContext.set("default");
+            } else {
                 events("default");
-            } finally {
-                if (previous == null) TenantContext.clear(); else TenantContext.set(previous);
             }
-        }
+        });
     }
 
     public List<SearchEvent> all() {

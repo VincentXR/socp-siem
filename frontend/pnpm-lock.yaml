@@ -24,6 +24,12 @@ importers:
 
   apps/workbench:
     dependencies:
+      '@socp/library':
+        specifier: workspace:*
+        version: link:../../packages/library
+      '@socp/soc-ui':
+        specifier: workspace:*
+        version: link:../../packages/soc-ui
       '@tanstack/vue-query':
         specifier: 5.59.0
         version: 5.59.0(vue@3.5.41(typescript@5.9.3))

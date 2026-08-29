@@ -5,11 +5,14 @@ package com.socp.hips.web.persistence.repository;
 import com.socp.hips.web.persistence.store.*;
 import com.socp.hips.web.persistence.repository.*;
 import com.socp.hips.web.persistence.entity.*;
-import org.springframework.data.jpa.repository.JpaRepository;
+import com.socp.platform.tenant.persistence.TenantScopedRepository;
 
 import java.util.List;
+import java.util.Optional;
 
-public interface EndpointEventRepository extends JpaRepository<EndpointEventEntity, String> {
+public interface EndpointEventRepository extends TenantScopedRepository<EndpointEventEntity, String> {
+    List<EndpointEventEntity> findByTenantId(String tenantId);
+    Optional<EndpointEventEntity> findByEventIdAndTenantId(String eventId, String tenantId);
 
     List<EndpointEventEntity> findTop200ByTenantIdOrderByReceivedAtDesc(String tenantId);
 }

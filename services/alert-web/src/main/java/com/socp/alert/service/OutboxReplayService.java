@@ -38,10 +38,8 @@ public class OutboxReplayService {
     @Transactional
     public OutboxReplayResult requeueAlarmEvent(String id) {
         String tenant = TenantContext.require();
-        OutboxEvent event = eventRepository.findById(id)
+        OutboxEvent event = eventRepository.findByIdAndTenantId(id, tenant)
                 .orElseThrow(() -> ApiException.notFound("Alarm event outbox row does not exist: " + id));
-        // Outbox events predate a tenant_id column. Resolve the aggregate through
-        // the tenant-scoped alarm repository before allowing an operator action.
         alarmRepository.findByTenantIdAndId(tenant, event.getAggregateId())
                 .orElseThrow(() -> ApiException.notFound("Alarm event outbox row does not exist: " + id));
         Instant now = Instant.now();

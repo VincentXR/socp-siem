@@ -5,7 +5,7 @@ package com.socp.incident.web.persistence.repository;
 import com.socp.incident.web.persistence.store.*;
 import com.socp.incident.web.persistence.repository.*;
 import com.socp.incident.web.persistence.entity.*;
-import org.springframework.data.jpa.repository.JpaRepository;
+import com.socp.platform.tenant.persistence.TenantScopedRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -16,7 +16,7 @@ import java.util.List;
 import java.util.Optional;
 
 /** 案件仓储：所有查询强制带租户条件（多租户隔离，见 §3.3）。 */
-public interface CaseRepository extends JpaRepository<CaseEntity, String> {
+public interface CaseRepository extends TenantScopedRepository<CaseEntity, String> {
 
     List<CaseEntity> findByTenantId(String tenantId);
 

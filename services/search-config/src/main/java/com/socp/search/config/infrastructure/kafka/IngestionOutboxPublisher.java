@@ -6,6 +6,7 @@ import jakarta.annotation.PreDestroy;
 import com.socp.search.config.config.IngestRuntimeProperties;
 import com.socp.search.config.domain.IngestionOutboxEvent;
 import com.socp.search.config.persistence.repository.IngestionOutboxRepository;
+import com.socp.platform.tenant.context.TenantContext;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,6 +35,7 @@ public class IngestionOutboxPublisher {
     private final KafkaEventProducer producer;
     private final MeterRegistry meterRegistry;
     private final ExecutorService executor;
+    private final ExecutorService triggerExecutor;
     private final int maxAttempts;
     private final long retentionMs;
     private Instant nextRecoveryAt = Instant.EPOCH;
@@ -59,6 +61,8 @@ public class IngestionOutboxPublisher {
         int bounded = Math.max(1, Math.min(32, concurrency));
         this.executor = Executors.newFixedThreadPool(bounded,
                 Thread.ofVirtual().name("ingestion-outbox-", 0).factory());
+        this.triggerExecutor = Executors.newSingleThreadExecutor(
+                Thread.ofVirtual().name("ingestion-outbox-trigger-", 0).factory());
         this.maxAttempts = Math.max(1, maxAttempts);
         this.retentionMs = Math.max(Duration.ofMinutes(1).toMillis(), retentionMs);
     }
@@ -73,9 +77,11 @@ public class IngestionOutboxPublisher {
     public void triggerAsync() {
         if (!producer.isEnabled()) return;
         if (activeTrigger.compareAndSet(false, true)) {
-            executor.execute(() -> {
+            triggerExecutor.execute(() -> {
                 try {
-                    publish();
+                    // Publishing scans all tenants; the async path bypasses
+                    // the @Scheduled proxy and must set system scope itself.
+                    TenantContext.runAsSystem(this::publish);
                 } finally {
                     activeTrigger.set(false);
                 }
@@ -99,7 +105,9 @@ public class IngestionOutboxPublisher {
             List<IngestionOutboxEvent> pending =
                     repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc("PENDING", now);
             List<CompletableFuture<Void>> deliveries = pending.stream()
-                    .map(event -> CompletableFuture.runAsync(() -> deliver(event), executor))
+                    .map(event -> CompletableFuture.runAsync(
+                            () -> TenantContext.runWith(event.getTenantId(), () -> deliver(event)),
+                            executor))
                     .toList();
             CompletableFuture.allOf(deliveries.toArray(CompletableFuture[]::new)).join();
         } catch (Exception failure) {
@@ -187,6 +195,7 @@ public class IngestionOutboxPublisher {
 
     @PreDestroy
     void stop() {
+        triggerExecutor.shutdownNow();
         executor.shutdownNow();
     }
 }

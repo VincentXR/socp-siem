@@ -35,11 +35,19 @@ public class AlarmDeliveryRegistrar {
         if (alarmId == null || alarmId.isBlank()) throw new IllegalArgumentException("missing alarm id");
         if (payload == null || payload.isBlank()) throw new IllegalArgumentException("missing alarm payload");
 
+        String current = TenantContext.get();
+        if (!TenantContext.isSystemScope() && current != null && !tenantId.equals(current)) {
+            throw new IllegalArgumentException("alarm tenant does not match the current tenant scope");
+        }
+        TenantContext.runWith(tenantId, () -> registerInScope(tenantId, alarmId, payload));
+    }
+
+    private void registerInScope(String tenantId, String alarmId, String payload) {
         List<AlarmDelivery> candidates = java.util.Arrays.stream(AlarmDeliveryDestination.values())
                 .map(destination -> pending(tenantId, alarmId, destination, payload))
                 .toList();
         Set<String> existing = new HashSet<>();
-        repository.findAllById(candidates.stream().map(AlarmDelivery::getId).toList())
+        repository.findByTenantIdAndIdIn(tenantId, candidates.stream().map(AlarmDelivery::getId).toList())
                 .forEach(delivery -> existing.add(delivery.getId()));
         List<AlarmDelivery> missing = candidates.stream()
                 .filter(delivery -> !existing.contains(delivery.getId()))
@@ -50,7 +58,12 @@ public class AlarmDeliveryRegistrar {
     /** Diagnostic view used by operators and release evidence; payload is never returned. */
     @Transactional(readOnly = true)
     public List<Map<String, Object>> status(String tenantId, String alarmId) {
-        return repository.findByTenantIdAndAlarmIdOrderByDestinationAsc(tenantId, alarmId).stream()
+        if (!TenantContext.isValid(tenantId)) throw new IllegalArgumentException("invalid alarm tenant");
+        String current = TenantContext.get();
+        if (!TenantContext.isSystemScope() && current != null && !tenantId.equals(current)) {
+            throw new IllegalArgumentException("alarm tenant does not match the current tenant scope");
+        }
+        return TenantContext.callWith(tenantId, () -> repository.findByTenantIdAndAlarmIdOrderByDestinationAsc(tenantId, alarmId).stream()
                 .map(delivery -> {
                     Map<String, Object> row = new LinkedHashMap<>();
                     row.put("deliveryId", delivery.getId());
@@ -64,7 +77,7 @@ public class AlarmDeliveryRegistrar {
                     row.put("deliveredAt", delivery.getDeliveredAt());
                     if (delivery.getLastError() != null) row.put("lastError", delivery.getLastError());
                     return row;
-                }).toList();
+                }).toList());
     }
 
     private static AlarmDelivery pending(String tenantId, String alarmId,

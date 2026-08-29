@@ -46,6 +46,10 @@ public class ProdGuard {
                 && !url.toLowerCase(java.util.Locale.ROOT).startsWith("jdbc:postgresql:")) {
             violations.add("spring.datasource.url 指向 H2（生产禁止 H2，请配置 SOCP_PG_* 指向 PostgreSQL）");
         }
+        if (env.containsProperty("spring.datasource.url")
+                && !isEnabled(env, "socp.tenant.rls.enabled")) {
+            violations.add("socp.tenant.rls.enabled must be true for production database services");
+        }
 
         String secret = env.getProperty("socp.security.jwt-secret", "");
         String issuerUri = env.getProperty("socp.security.issuer-uri", "");

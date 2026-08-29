@@ -62,7 +62,10 @@ public class IngestEventNormalizer {
                 canonical.get("id"), fields.get("eventId"), fields.get("event_id"));
         if (eventId == null) eventId = java.util.UUID.randomUUID().toString();
 
-        fields.putIfAbsent("tenant_id", tenant());
+        // Tenant identity comes from the authenticated request context, never
+        // from a JSON field supplied by the collector.  Overwrite a spoofed
+        // tenant_id before persistence, routing, and downstream publication.
+        fields.put("tenant_id", tenant());
         Map<String, String> routingFields = stringValues(fields);
         fields.put("detection_routing_field", DetectionRoutingKey.field(source, host, routingFields));
         fields.put("detection_routing_value", DetectionRoutingKey.value(source, host, routingFields));

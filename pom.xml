@@ -61,6 +61,8 @@
         <maven-surefire-plugin.version>3.5.4</maven-surefire-plugin.version>
         <mockito.version>5.17.0</mockito.version>
         <dependency-check.version>12.2.2</dependency-check.version>
+        <!-- Keep generated HTTP contracts on one compatible Spring Boot line. -->
+        <springdoc.version>2.8.13</springdoc.version>
         <!-- JaCoCo populates this property in the coverage profile. -->
         <argLine></argLine>
     </properties>
@@ -78,6 +80,7 @@
         <module>platform/socp-test</module>
         <module>platform/socp-rule</module>
         <module>platform/socp-client</module>
+        <module>platform/socp-starter</module>
 
         <!-- 17 个业务服务 -->
         <module>services/soc-base</module>
@@ -237,9 +240,25 @@
             </dependency>
             <dependency>
                 <groupId>com.socp.platform</groupId>
+                <artifactId>socp-starter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.socp.platform</groupId>
                 <artifactId>socp-test</artifactId>
                 <version>${project.version}</version>
                 <scope>test</scope>
+            </dependency>
+
+            <dependency>
+                <groupId>org.springdoc</groupId>
+                <artifactId>springdoc-openapi-starter-webmvc-api</artifactId>
+                <version>${springdoc.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.springdoc</groupId>
+                <artifactId>springdoc-openapi-starter-webflux-api</artifactId>
+                <version>${springdoc.version}</version>
             </dependency>
 
             <!-- 第三方（按需由具体模块引入） -->

@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: socp-runtime
+  namespace: socp-system
+data:
+  SPRING_PROFILES_ACTIVE: prod
+  SOCP_TENANT_RLS_ENABLED: "true"
+  SOCP_ALLOW_GLOBAL_INGEST_TOKEN: "false"
+  SOCP_OPENSEARCH_INSECURE_SKIP_VERIFY: "false"
+  SOCP_AUTH_COOKIE_SECURE: "true"
+  SOCP_RATELIMIT_BACKEND: redis
+  SOCP_RATELIMIT_FAIL_CLOSED: "true"
+  SOCP_AUDIT_SINK: kafka
+  SOCP_AUDIT_FAIL_CLOSED: "true"
+  SOCP_KAFKA_BOOTSTRAP: kafka.socp-data.svc.cluster.local:9092
+  SOCP_PG_HOST: postgres.socp-data.svc.cluster.local
+  SOCP_PG_PORT: "5432"
+  SOCP_OPENSEARCH_URL: https://opensearch.socp-data.svc.cluster.local:9200

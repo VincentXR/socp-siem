@@ -95,7 +95,15 @@
             <artifactId>micrometer-registry-prometheus</artifactId>
             <scope>runtime</scope>
         </dependency>
-    </dependencies>
+            <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-data</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-starter</artifactId>
+        </dependency>
+</dependencies>
 
     <build>
         <plugins>

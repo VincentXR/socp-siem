@@ -110,6 +110,7 @@ class ProdGuardTest {
     void acceptsExplicitProductionConfiguration() {
         MockEnvironment env = new MockEnvironment()
                 .withProperty("spring.datasource.url", "jdbc:postgresql://db.example.test/socp")
+                .withProperty("socp.tenant.rls.enabled", "true")
                 .withProperty("socp.security.jwt-secret", "production-secret-that-is-not-the-demo-value-012345")
                 .withProperty("socp.security.allow-prod-hmac", "true")
                 .withProperty("socp.security.audience", "socp-api")
@@ -150,6 +151,7 @@ class ProdGuardTest {
     void acceptsPureJwksProductionConfigurationWithoutHmacSecret() {
         MockEnvironment env = new MockEnvironment()
                 .withProperty("spring.datasource.url", "jdbc:postgresql://db.example.test/socp")
+                .withProperty("socp.tenant.rls.enabled", "true")
                 .withProperty("socp.security.jwk-set-uri", "https://id.example.test/realms/socp/protocol/openid-connect/certs")
                 .withProperty("socp.security.audience", "socp-api")
                 .withProperty("socp.security.dev-bypass", "false")
@@ -239,6 +241,7 @@ class ProdGuardTest {
     private static MockEnvironment validProductionEnvironment() {
         return new MockEnvironment()
                 .withProperty("spring.datasource.url", "jdbc:postgresql://db.example.test/socp")
+                .withProperty("socp.tenant.rls.enabled", "true")
                 .withProperty("socp.security.jwk-set-uri", "https://id.example.test/keys")
                 .withProperty("socp.security.audience", "socp-api")
                 .withProperty("socp.security.ingest-token", "production-ingest-token")

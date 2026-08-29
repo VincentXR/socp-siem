@@ -6,7 +6,7 @@ import com.socp.alert.domain.*;
 import com.socp.alert.repository.*;
 import com.socp.alert.service.*;
 
-import org.springframework.data.jpa.repository.JpaRepository;
+import com.socp.platform.tenant.persistence.TenantScopedRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -14,11 +14,14 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Outbox 出站事件仓库：查询待发布事件（按时间升序，保证发布顺序与创建一致）。
  */
-public interface OutboxRepository extends JpaRepository<OutboxEvent, String> {
+public interface OutboxRepository extends TenantScopedRepository<OutboxEvent, String> {
+    List<OutboxEvent> findByTenantId(String tenantId);
+    Optional<OutboxEvent> findByIdAndTenantId(String id, String tenantId);
 
     List<OutboxEvent> findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
             String status, Instant nextAttemptAt);

@@ -185,9 +185,11 @@ public class KafkaEventConsumer {
                     Set<Integer> assigned = partitions.stream()
                             .map(TopicPartition::partition)
                             .collect(java.util.stream.Collectors.toUnmodifiableSet());
-                    engine.rebuildForPartitions(assigned);
-                    for (Integer partition : assigned) lane(partition);
-                    replayPending(assigned);
+                    com.socp.platform.tenant.context.TenantContext.runAsSystem(() -> {
+                        engine.rebuildForPartitions(assigned);
+                        for (Integer partition : assigned) lane(partition);
+                        replayPending(assigned);
+                    });
                     log.info("Detection state restored for partitions={}", assigned);
                 }
             });
@@ -252,14 +254,15 @@ public class KafkaEventConsumer {
                                   long epoch) {
         long delay = 250;
         String traceparent = extractHeader(record, "traceparent");
-        String tenant = extractHeader(record, "X-Tenant-Id");
         String traceId = extractTraceId(traceparent);
 
         while (running.get() && !Thread.currentThread().isInterrupted()) {
             try {
                 if (traceId != null) org.slf4j.MDC.put("traceId", traceId);
                 if (traceparent != null) org.slf4j.MDC.put("traceparent", traceparent);
-                if (tenant != null && !tenant.isBlank()) com.socp.platform.tenant.context.TenantContext.set(tenant);
+                // The normalized event is the source of truth for tenant
+                // ownership. DetectionRecordProcessor installs that scope
+                // after parsing, so a Kafka header can never re-home a row.
 
                 processOne(record.partition(), record.offset(), record.key(), record.value());
                 completions.offer(new RecordCompletion(record.partition(), record.offset(), epoch));
@@ -287,7 +290,7 @@ public class KafkaEventConsumer {
             } finally {
                 if (traceId != null) org.slf4j.MDC.remove("traceId");
                 if (traceparent != null) org.slf4j.MDC.remove("traceparent");
-                if (tenant != null) com.socp.platform.tenant.context.TenantContext.clear();
+                com.socp.platform.tenant.context.TenantContext.clear();
             }
             try {
                 Thread.sleep(delay);
@@ -317,13 +320,16 @@ public class KafkaEventConsumer {
         while (running.get() && !Thread.currentThread().isInterrupted()) {
             try {
                 String routingKey = com.socp.rule.partition.DetectionRoutingKey.forEvent(row.event());
-                recordProcessor.processNormalized(row.partition(), row.offset(), routingKey, row.event());
+                com.socp.platform.tenant.context.TenantContext.runWith(
+                        row.event().requireTenantId(),
+                        () -> recordProcessor.processNormalized(row.partition(), row.offset(), routingKey, row.event()));
                 return;
             } catch (Exception failure) {
                 log.warn("Pending Detection replay deferred partition={} offset={} retry={} reason={}",
                         row.partition(), row.offset(), delay, failure.getMessage());
                 try {
-                    rebuildOwnedState(row.partition());
+                    com.socp.platform.tenant.context.TenantContext.runAsSystem(
+                            () -> rebuildOwnedState(row.partition()));
                 } catch (Exception rebuildFailure) {
                     log.warn("Pending Detection state rebuild deferred partition={}: {}",
                             row.partition(), rebuildFailure.getMessage());

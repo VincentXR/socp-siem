@@ -16,7 +16,7 @@ class PackageLayoutTest {
     @Test
     void productionClassesUseFeatureLayerPackages() throws IOException {
         Path root = Path.of("src/main/java/com/socp/gateway");
-        List<String> allowed = List.of("api", "filter", "oidc", "security");
+        List<String> allowed = List.of("api", "config", "filter", "oidc", "security");
 
         try (Stream<Path> files = Files.walk(root)) {
             List<Path> javaFiles = files.filter(path -> path.toString().endsWith(".java")).toList();

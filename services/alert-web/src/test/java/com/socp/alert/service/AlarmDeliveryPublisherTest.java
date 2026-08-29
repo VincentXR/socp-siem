@@ -20,13 +20,16 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
@@ -97,6 +100,45 @@ class AlarmDeliveryPublisherTest {
 
         verify(repository).markDead(eq(delivery.getId()), eq("unavailable"), any(Instant.class));
         verify(repository, never()).scheduleRetry(eq(delivery.getId()), any(), any(), any());
+    }
+
+    @Test
+    void asyncTriggerRunsCrossTenantScanInsideSystemScope() {
+        AtomicBoolean systemScope = new AtomicBoolean();
+        given(repository.markExhausted(anyInt(), anyString(), any(Instant.class))).willAnswer(invocation -> {
+            systemScope.set(TenantContext.isSystemScope());
+            return 0;
+        });
+        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+                eq("PENDING"), any(Instant.class))).willReturn(List.of());
+        publisher = new AlarmDeliveryPublisher(repository, ckReporter, notifyClient, incidentClient, soarClient);
+
+        TenantContext.set("tenant-a");
+        publisher.triggerAsync();
+
+        verify(repository, timeout(2_000)).markExhausted(anyInt(), anyString(), any(Instant.class));
+        assertEquals(true, systemScope.get());
+    }
+
+    @Test
+    void asyncDeliveryBindsEventTenantAndDoesNotDeadlockSingleWorker() {
+        AlarmDelivery delivery = delivery(AlarmDeliveryDestination.NOTIFY);
+        AtomicBoolean tenantScope = new AtomicBoolean();
+        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+                eq("PENDING"), any(Instant.class))).willReturn(List.of(delivery));
+        given(repository.claim(eq(delivery.getId()), any(Instant.class), anyInt())).willAnswer(invocation -> {
+            tenantScope.set("tenant-b".equals(TenantContext.get()) && !TenantContext.isSystemScope());
+            return 1;
+        });
+        given(notifyClient.notifyAlert(delivery.getPayload())).willReturn(ok());
+        given(repository.markDelivered(eq(delivery.getId()), any(Instant.class))).willReturn(1);
+        publisher = new AlarmDeliveryPublisher(repository, ckReporter, notifyClient, incidentClient, soarClient);
+
+        TenantContext.set("tenant-a");
+        publisher.triggerAsync();
+
+        verify(repository, timeout(2_000)).markDelivered(eq(delivery.getId()), any(Instant.class));
+        assertEquals(true, tenantScope.get());
     }
 
     private static AlarmDelivery delivery(AlarmDeliveryDestination destination) {

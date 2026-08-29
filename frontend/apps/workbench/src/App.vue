@@ -1,10 +1,8 @@
 ﻿<script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, provide, ref, watch } from 'vue'
 import ElConfigProvider from 'element-plus/es/components/config-provider/index.mjs'
 import LoginView from './LoginView.vue'
 import AppShell from './components/AppShell.vue'
-import OverviewView from './views/OverviewView.vue'
-import AlarmsView from './views/AlarmsView.vue'
 import { getVisibleMenuGroups } from './app/navigation'
 import { exportAlarms } from './api'
 import { useAlarmQuery } from './composables/useAlarmQuery'
@@ -14,24 +12,7 @@ import { useTheme } from './composables/useTheme'
 import { useWorkbenchRoute } from './composables/useWorkbenchRoute'
 import { accessibleMenu, isMenuKey } from './app/routes'
 import { useI18n } from './composables/useI18n'
-
-const AiAssistantView = defineAsyncComponent(() => import('./views/AiAssistantView.vue'))
-const AssetsView = defineAsyncComponent(() => import('./views/AssetsView.vue'))
-const EndpointsView = defineAsyncComponent(() => import('./views/EndpointsView.vue'))
-const SearchView = defineAsyncComponent(() => import('./views/SearchView.vue'))
-const SoarView = defineAsyncComponent(() => import('./views/SoarView.vue'))
-const NotifyView = defineAsyncComponent(() => import('./views/NotifyView.vue'))
-const CasesView = defineAsyncComponent(() => import('./views/CasesView.vue'))
-const RefsetView = defineAsyncComponent(() => import('./views/RefsetView.vue'))
-const ComplianceView = defineAsyncComponent(() => import('./views/ComplianceView.vue'))
-const ReportView = defineAsyncComponent(() => import('./views/ReportView.vue'))
-const ThreatIntelView = defineAsyncComponent(() => import('./views/ThreatIntelView.vue'))
-const AttackView = defineAsyncComponent(() => import('./views/AttackView.vue'))
-const IngestView = defineAsyncComponent(() => import('./views/IngestView.vue'))
-const MetaView = defineAsyncComponent(() => import('./views/MetaView.vue'))
-const DetectView = defineAsyncComponent(() => import('./views/DetectView.vue'))
-const UebaView = defineAsyncComponent(() => import('./views/UebaView.vue'))
-const SituationView = defineAsyncComponent(() => import('./views/SituationView.vue'))
+import { WORKBENCH_STATE } from './app/workbenchState'
 
 const { t, elLocale } = useI18n()
 const auth = useAuth()
@@ -48,21 +29,8 @@ const activeLabel = computed(() => {
 
 const { theme, initTheme, toggleTheme } = useTheme()
 const overview = useOverview(isAuthed)
-const { alarms, healths, sitStats, stat, refreshOverview, loadOverviewStats } = overview
+const { alarms, refreshOverview, loadOverviewStats } = overview
 const alarmQuery = useAlarmQuery()
-const {
-  alarmSeverity,
-  alarmKeyword,
-  alarmStatus,
-  alarmRule,
-  alarmPageNum,
-  alarmPageSize,
-  alarmPageData,
-  filteredAlarms,
-  loadAlarmPage,
-  onAlarmSearch,
-  onAlarmSortChange,
-} = alarmQuery
 
 const isOffline = ref(typeof navigator !== 'undefined' ? !navigator.onLine : false)
 
@@ -78,9 +46,19 @@ function onMenuChange(key: string) {
   navigate(accessibleMenu(key, visibleMenus))
 }
 
+provide(WORKBENCH_STATE, {
+  theme,
+  overview,
+  alarmQuery,
+  alarms,
+  navigate: onMenuChange,
+  exportAlarms,
+  logout: auth.doLogout,
+})
+
 watch(activeMenu, key => {
   if (key === 'overview') void refreshOverview()
-  if (key === 'alarms') void loadAlarmPage()
+  if (key === 'alarms') void alarmQuery.loadAlarmPage()
 })
 
 watch(menuGroups, groups => {
@@ -104,7 +82,6 @@ onMounted(async () => {
 
 <template>
   <el-config-provider :locale="elLocale">
-    <RouterView />
     <div v-if="isOffline" class="fixed top-0 left-0 w-full z-50 bg-amber-500 text-white text-xs py-1 text-center font-medium shadow">
       {{ t('app.offlineBanner') }}
     </div>
@@ -122,54 +99,7 @@ onMounted(async () => {
       @toggle-theme="toggleTheme"
       @logout="auth.doLogout"
     >
-      <main class="socp-content">
-        <OverviewView
-          v-if="activeMenu === 'overview'"
-          :stat="stat"
-          :sit-stats="sitStats"
-          :filtered-alarms="alarms"
-          :healths="healths"
-          @refresh="refreshOverview"
-        />
-
-        <SituationView v-else-if="activeMenu === 'situation'" :theme="theme" @session-expired="auth.doLogout" />
-
-        <AlarmsView
-          v-else-if="activeMenu === 'alarms'"
-          v-model:keyword="alarmKeyword"
-          v-model:severity="alarmSeverity"
-          v-model:status="alarmStatus"
-          v-model:rule="alarmRule"
-          v-model:page-num="alarmPageNum"
-          :filtered-alarms="filteredAlarms"
-          :alarm-page-data="alarmPageData"
-          :alarm-page-size="alarmPageSize"
-          :on-search="onAlarmSearch"
-          :load-page="loadAlarmPage"
-          :on-sort-change="onAlarmSortChange"
-          :export-csv="() => exportAlarms('csv')"
-          :export-json="() => exportAlarms('json')"
-          :go-case="() => onMenuChange('case')"
-          :go-search="() => onMenuChange('search')"
-        />
-
-        <SearchView v-else-if="activeMenu === 'search'" />
-        <IngestView v-else-if="activeMenu === 'ingest'" />
-        <MetaView v-else-if="activeMenu === 'meta'" />
-        <DetectView v-else-if="activeMenu === 'detect'" />
-        <UebaView v-else-if="activeMenu === 'ueba'" :theme="theme" @go-alarms="keyword => { alarmKeyword = keyword; onMenuChange('alarms') }" />
-        <SoarView v-else-if="activeMenu === 'soar'" />
-        <ReportView v-else-if="activeMenu === 'report'" :theme="theme" />
-        <AssetsView v-else-if="activeMenu === 'assets'" />
-        <EndpointsView v-else-if="activeMenu === 'endpoints'" />
-        <AiAssistantView v-else-if="activeMenu === 'ai'" />
-        <ThreatIntelView v-else-if="activeMenu === 'threat-intel'" />
-        <AttackView v-else-if="activeMenu === 'attack'" :alarms="alarms" />
-        <NotifyView v-else-if="activeMenu === 'notify'" />
-        <CasesView v-else-if="activeMenu === 'case'" />
-        <RefsetView v-else-if="activeMenu === 'refset'" />
-        <ComplianceView v-else-if="activeMenu === 'compliance'" />
-      </main>
+      <main class="socp-content"><RouterView /></main>
     </AppShell>
   </el-config-provider>
 </template>

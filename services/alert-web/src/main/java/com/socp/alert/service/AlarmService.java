@@ -88,7 +88,7 @@ public class AlarmService {
 
         String deliveryPayload = AlarmPayloadCodec.write(saved, captured);
         deliveryRegistrar.register(tenant, saved.getId(), deliveryPayload);
-        outboxRepository.save(pendingEvent(saved.getId(), deliveryPayload));
+        outboxRepository.save(pendingEvent(tenant, saved.getId(), deliveryPayload));
         enrichmentService.scheduleAfterCommit(saved);
         scheduleOutboxTrigger();
         return saved;
@@ -179,8 +179,9 @@ public class AlarmService {
                 .toList());
     }
 
-    private static OutboxEvent pendingEvent(String alarmId, String payload) {
+    private static OutboxEvent pendingEvent(String tenantId, String alarmId, String payload) {
         OutboxEvent event = new OutboxEvent();
+        event.setTenantId(tenantId);
         event.setAggregateId(alarmId);
         event.setEventType("ALARM_CREATED");
         event.setPayload(payload);

@@ -22,12 +22,12 @@ class DetectionAlertOutboxServiceTest {
 
     @Test
     void deterministicAlertIdMakesEnqueueIdempotent() {
-        when(repository.existsById("alert-1")).thenReturn(true);
+        when(repository.existsByAlertIdAndTenantId("alert-1", "tenant-a")).thenReturn(true);
 
         new DetectionAlertOutboxService(repository).enqueue(
                 "alert-1", "tenant-a", "{\"id\":\"alert-1\"}");
 
-        verify(repository).existsById("alert-1");
+        verify(repository).existsByAlertIdAndTenantId("alert-1", "tenant-a");
         verify(repository, never()).saveAndFlush(org.mockito.ArgumentMatchers.any());
     }
 }

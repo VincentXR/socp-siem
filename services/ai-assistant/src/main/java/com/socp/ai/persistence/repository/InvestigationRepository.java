@@ -2,15 +2,17 @@ package com.socp.ai.persistence.repository;
 
 import com.socp.ai.persistence.entity.InvestigationEntity;
 import org.springframework.data.jpa.repository.Modifying;
-import org.springframework.data.jpa.repository.JpaRepository;
+import com.socp.platform.tenant.persistence.TenantScopedRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
-public interface InvestigationRepository extends JpaRepository<InvestigationEntity, String> {
+public interface InvestigationRepository extends TenantScopedRepository<InvestigationEntity, String> {
+    List<InvestigationEntity> findByTenantId(String tenantId);
     Optional<InvestigationEntity> findByIdAndTenantId(String id, String tenantId);
     Optional<InvestigationEntity> findByTenantIdAndAlertId(String tenantId, String alertId);
 

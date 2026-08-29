@@ -1,0 +1,129 @@
+# Production-shaped Compose overlay for a controlled lab or pre-production
+# rehearsal. It is not an HA substitute for the Kubernetes baseline.
+# Every application image and secret is required from the environment; there
+# are deliberately no development fallbacks in this file.
+
+services:
+  postgres:
+    environment:
+      POSTGRES_PASSWORD: ${SOCP_PG_PASSWORD:?set SOCP_PG_PASSWORD}
+
+  kafka:
+    environment:
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+
+  opensearch:
+    environment:
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: ${SOCP_OPENSEARCH_PASSWORD:?set SOCP_OPENSEARCH_PASSWORD}
+
+  api-gateway:
+    image: ${SOCP_API_GATEWAY_IMAGE:?set SOCP_API_GATEWAY_IMAGE to an image@sha256:digest}
+    restart: unless-stopped
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SERVER_PORT: 8080
+      SOCP_LOGIN_SECRET: ${SOCP_LOGIN_SECRET:?set SOCP_LOGIN_SECRET}
+      SOCP_SECURITY_ISSUER_URI: ${SOCP_SECURITY_ISSUER_URI:?set SOCP_SECURITY_ISSUER_URI}
+      SOCP_SECURITY_JWK_SET_URI: ${SOCP_SECURITY_JWK_SET_URI:?set SOCP_SECURITY_JWK_SET_URI}
+      SOCP_SECURITY_AUDIENCE: ${SOCP_SECURITY_AUDIENCE:?set SOCP_SECURITY_AUDIENCE}
+      SOCP_SECURITY_SERVICE_SECRET: ${SOCP_SECURITY_SERVICE_SECRET:?set SOCP_SECURITY_SERVICE_SECRET}
+      SOCP_SECURITY_METRICS_TOKEN: ${SOCP_SECURITY_METRICS_TOKEN:?set SOCP_SECURITY_METRICS_TOKEN}
+      SOCP_AUDIT_SINK: kafka
+      SOCP_AUDIT_FAIL_CLOSED: "true"
+      SOCP_TENANT_RLS_ENABLED: "true"
+      SOCP_AUTH_COOKIE_SECURE: "true"
+      SOCP_RATELIMIT_BACKEND: redis
+      SOCP_RATELIMIT_FAIL_CLOSED: "true"
+      SOCP_SSA_URI: http://alert-web:8080
+      SOCP_GLS_URI: http://search-config:8080
+      SOCP_GAS_WEB_URI: http://detect-web:8080
+    ports:
+      - "${SOCP_GATEWAY_BIND:-127.0.0.1:18092}:8080"
+    networks: [socp]
+    depends_on: [postgres, kafka, opensearch, alert-web, search-config, detect-web]
+
+  search-config:
+    image: ${SOCP_SEARCH_CONFIG_IMAGE:?set SOCP_SEARCH_CONFIG_IMAGE to an image@sha256:digest}
+    restart: unless-stopped
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SERVER_PORT: 8080
+      SOCP_PG_HOST: postgres
+      SOCP_PG_PASSWORD: ${SOCP_PG_PASSWORD:?set SOCP_PG_PASSWORD}
+      SOCP_KAFKA_BOOTSTRAP: kafka:9092
+      SOCP_SECURITY_ISSUER_URI: ${SOCP_SECURITY_ISSUER_URI:?set SOCP_SECURITY_ISSUER_URI}
+      SOCP_SECURITY_JWK_SET_URI: ${SOCP_SECURITY_JWK_SET_URI:?set SOCP_SECURITY_JWK_SET_URI}
+      SOCP_SECURITY_AUDIENCE: ${SOCP_SECURITY_AUDIENCE:?set SOCP_SECURITY_AUDIENCE}
+      SOCP_SECURITY_SERVICE_SECRET: ${SOCP_SECURITY_SERVICE_SECRET:?set SOCP_SECURITY_SERVICE_SECRET}
+      SOCP_SECURITY_METRICS_TOKEN: ${SOCP_SECURITY_METRICS_TOKEN:?set SOCP_SECURITY_METRICS_TOKEN}
+      SOCP_AUDIT_SINK: kafka
+      SOCP_AUDIT_FAIL_CLOSED: "true"
+      SOCP_DETECT_URL: http://detect-web:8080
+      SOCP_OPENSEARCH_URL: https://opensearch:9200
+      SOCP_OPENSEARCH_USERNAME: ${SOCP_OPENSEARCH_USERNAME:?set SOCP_OPENSEARCH_USERNAME}
+      SOCP_OPENSEARCH_PASSWORD: ${SOCP_OPENSEARCH_PASSWORD:?set SOCP_OPENSEARCH_PASSWORD}
+      SOCP_OPENSEARCH_INSECURE_SKIP_VERIFY: "false"
+      SOCP_COLLECTOR_CREDENTIALS: ${SOCP_COLLECTOR_CREDENTIALS:?set SOCP_COLLECTOR_CREDENTIALS}
+      SOCP_INGEST_TOKEN: ${SOCP_INGEST_TOKEN:?set SOCP_INGEST_TOKEN}
+      SOCP_VECTOR_TOKEN: ${SOCP_VECTOR_TOKEN:?set SOCP_VECTOR_TOKEN}
+      SOCP_ALLOW_GLOBAL_INGEST_TOKEN: "false"
+      SOCP_TENANT_RLS_ENABLED: "true"
+    networks: [socp]
+    depends_on: [postgres, kafka, opensearch, detect-web]
+
+  detect-web:
+    image: ${SOCP_DETECT_WEB_IMAGE:?set SOCP_DETECT_WEB_IMAGE to an image@sha256:digest}
+    restart: unless-stopped
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SERVER_PORT: 8080
+      SOCP_PG_HOST: postgres
+      SOCP_PG_PASSWORD: ${SOCP_PG_PASSWORD:?set SOCP_PG_PASSWORD}
+      SOCP_KAFKA_BOOTSTRAP: kafka:9092
+      SOCP_SECURITY_ISSUER_URI: ${SOCP_SECURITY_ISSUER_URI:?set SOCP_SECURITY_ISSUER_URI}
+      SOCP_SECURITY_JWK_SET_URI: ${SOCP_SECURITY_JWK_SET_URI:?set SOCP_SECURITY_JWK_SET_URI}
+      SOCP_SECURITY_AUDIENCE: ${SOCP_SECURITY_AUDIENCE:?set SOCP_SECURITY_AUDIENCE}
+      SOCP_SECURITY_SERVICE_SECRET: ${SOCP_SECURITY_SERVICE_SECRET:?set SOCP_SECURITY_SERVICE_SECRET}
+      SOCP_SECURITY_METRICS_TOKEN: ${SOCP_SECURITY_METRICS_TOKEN:?set SOCP_SECURITY_METRICS_TOKEN}
+      SOCP_AUDIT_SINK: kafka
+      SOCP_AUDIT_FAIL_CLOSED: "true"
+      SOCP_KAFKA_GROUP_ID: socp-detect
+      SOCP_ALERT_URL: http://alert-web:8080
+      SOCP_TENANT_RLS_ENABLED: "true"
+    networks: [socp]
+    depends_on: [postgres, kafka, alert-web]
+
+  alert-web:
+    image: ${SOCP_ALERT_WEB_IMAGE:?set SOCP_ALERT_WEB_IMAGE to an image@sha256:digest}
+    restart: unless-stopped
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SERVER_PORT: 8080
+      SOCP_PG_HOST: postgres
+      SOCP_PG_PASSWORD: ${SOCP_PG_PASSWORD:?set SOCP_PG_PASSWORD}
+      SOCP_CK_URL: http://clickhouse:8123
+      SOCP_CK_USER: ${SOCP_CK_USER:?set SOCP_CK_USER}
+      SOCP_CK_PASSWORD: ${SOCP_CK_PASSWORD:?set SOCP_CK_PASSWORD}
+      SOCP_KAFKA_BOOTSTRAP: kafka:9092
+      SOCP_SECURITY_ISSUER_URI: ${SOCP_SECURITY_ISSUER_URI:?set SOCP_SECURITY_ISSUER_URI}
+      SOCP_SECURITY_JWK_SET_URI: ${SOCP_SECURITY_JWK_SET_URI:?set SOCP_SECURITY_JWK_SET_URI}
+      SOCP_SECURITY_AUDIENCE: ${SOCP_SECURITY_AUDIENCE:?set SOCP_SECURITY_AUDIENCE}
+      SOCP_SECURITY_SERVICE_SECRET: ${SOCP_SECURITY_SERVICE_SECRET:?set SOCP_SECURITY_SERVICE_SECRET}
+      SOCP_SECURITY_METRICS_TOKEN: ${SOCP_SECURITY_METRICS_TOKEN:?set SOCP_SECURITY_METRICS_TOKEN}
+      SOCP_AUDIT_SINK: kafka
+      SOCP_AUDIT_FAIL_CLOSED: "true"
+      SOCP_TENANT_RLS_ENABLED: "true"
+    networks: [socp]
+    depends_on: [postgres, kafka, clickhouse]

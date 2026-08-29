@@ -39,15 +39,11 @@ public class PlaybookStore {
     public PlaybookStore(PlaybookRepository repo,
                          @Value("${socp.demo-data.enabled:true}") boolean demoDataEnabled) {
         this.repo = repo;
-        if (demoDataEnabled && repo.countByTenantId("default") == 0) {
-            String previous = TenantContext.get();
-            try {
-                TenantContext.set("default");
+        TenantContext.runWith("default", () -> {
+            if (demoDataEnabled && repo.countByTenantId("default") == 0) {
                 seed();
-            } finally {
-                if (previous == null) TenantContext.clear(); else TenantContext.set(previous);
             }
-        }
+        });
     }
 
     private String tenant() {

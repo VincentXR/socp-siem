@@ -6,7 +6,7 @@ import com.socp.detect.web.persistence.store.*;
 import com.socp.detect.web.persistence.repository.*;
 import com.socp.detect.web.persistence.entity.*;
 import com.socp.detect.web.service.RuleChangeOutbox;
-import org.springframework.data.jpa.repository.JpaRepository;
+import com.socp.platform.tenant.persistence.TenantScopedRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -15,7 +15,9 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.util.List;
 
-public interface RuleChangeOutboxRepository extends JpaRepository<RuleChangeOutbox, String> {
+public interface RuleChangeOutboxRepository extends TenantScopedRepository<RuleChangeOutbox, String> {
+    List<RuleChangeOutbox> findByTenantId(String tenantId);
+    java.util.Optional<RuleChangeOutbox> findByIdAndTenantId(String id, String tenantId);
 
     List<RuleChangeOutbox> findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
             String status, Instant nextAttemptAt);

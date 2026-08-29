@@ -72,6 +72,18 @@ class IocStoreTest {
         assertThat(store.delete("ioc-4")).isFalse();
     }
 
+    @Test
+    void seedsDefaultTenantOnlyWhenDemoDataIsEnabled() {
+        TenantContext.clear();
+        when(repository.countByTenantId("default")).thenReturn(0L);
+        IocStore store = new IocStore(repository, true);
+
+        store.seed();
+
+        verify(repository, times(8)).save(any(IocEntity.class));
+        verify(repository).countByTenantId("default");
+    }
+
     private static IocEntity entity(String id, String type, String value) {
         IocEntity entity = new IocEntity();
         entity.setId(id);

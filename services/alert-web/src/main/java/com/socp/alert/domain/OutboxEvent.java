@@ -30,6 +30,9 @@ public class OutboxEvent {
     @Column(name = "aggregate_id")
     private String aggregateId;
 
+    @Column(name = "tenant_id", nullable = false, length = 64)
+    private String tenantId;
+
     @Column(name = "event_type")
     private String eventType;
 
@@ -68,6 +71,14 @@ public class OutboxEvent {
 
     public String getAggregateId() {
         return aggregateId;
+    }
+
+    public String getTenantId() {
+        return tenantId;
+    }
+
+    public void setTenantId(String tenantId) {
+        this.tenantId = tenantId;
     }
 
     public void setAggregateId(String aggregateId) {

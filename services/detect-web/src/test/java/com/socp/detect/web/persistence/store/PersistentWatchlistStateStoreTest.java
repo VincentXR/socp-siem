@@ -18,6 +18,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 @DataJpaTest
 class PersistentWatchlistStateStoreTest {
@@ -55,5 +58,22 @@ class PersistentWatchlistStateStoreTest {
         store.find("tenant-b", "second");
 
         assertEquals(1, store.cachedEntries());
+    }
+
+    @Test
+    void clearDeletesOnlyTheCurrentTenantAndInvalidatesCache() {
+        WatchlistRepository mocked = mock(WatchlistRepository.class);
+        PersistentWatchlistStateStore store = new PersistentWatchlistStateStore(mocked, new ObjectMapper());
+        org.springframework.test.util.ReflectionTestUtils.setField(store, "refreshMs", 60_000L);
+        com.socp.platform.tenant.context.TenantContext.set("tenant-a");
+
+        when(mocked.findByTenantIdAndListName("tenant-a", "blocked_ips"))
+                .thenReturn(java.util.Optional.empty());
+        store.find("tenant-a", "blocked_ips");
+        store.clear();
+
+        verify(mocked).deleteByTenantId("tenant-a");
+        assertEquals(0, store.cachedEntries());
+        com.socp.platform.tenant.context.TenantContext.clear();
     }
 }

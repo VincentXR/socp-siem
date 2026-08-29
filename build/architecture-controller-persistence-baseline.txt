@@ -1,11 +1,2 @@
 # Existing controller-to-persistence coupling. The gate permits no additions
 # and requires deleting an entry as soon as the corresponding debt is retired.
-services/search-config/src/main/java/com/socp/search/config/api/controller/HealthController.java
-services/search-config/src/main/java/com/socp/search/config/api/controller/IngestTaskController.java
-services/search-config/src/main/java/com/socp/search/config/api/controller/LogSourceController.java
-services/search-config/src/main/java/com/socp/search/config/api/controller/MetaController.java
-services/search-config/src/main/java/com/socp/search/config/api/controller/ParseRuleController.java
-services/search-config/src/main/java/com/socp/search/config/api/controller/ReferenceSetController.java
-services/search-config/src/main/java/com/socp/search/config/api/controller/SearchController.java
-services/search-config/src/main/java/com/socp/search/config/api/controller/SinkTargetController.java
-services/soc-base/src/main/java/com/socp/soc/api/controller/AuditController.java

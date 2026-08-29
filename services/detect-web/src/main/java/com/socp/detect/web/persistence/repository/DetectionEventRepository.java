@@ -6,7 +6,7 @@ import com.socp.detect.web.persistence.store.*;
 import com.socp.detect.web.persistence.repository.*;
 import com.socp.detect.web.persistence.entity.*;
 import org.springframework.data.domain.Pageable;
-import org.springframework.data.jpa.repository.JpaRepository;
+import com.socp.platform.tenant.persistence.TenantScopedRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -16,7 +16,9 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Set;
 
-public interface DetectionEventRepository extends JpaRepository<DetectionEventEntity, String> {
+public interface DetectionEventRepository extends TenantScopedRepository<DetectionEventEntity, String> {
+    List<DetectionEventEntity> findByTenantId(String tenantId);
+    java.util.Optional<DetectionEventEntity> findByStorageIdAndTenantId(String storageId, String tenantId);
 
     List<DetectionEventEntity> findByStatusAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
             String status, Instant after, Pageable pageable);

@@ -15,7 +15,8 @@ preview, and production-readiness contract of each service.
 | `frontend/apps/workbench` | Vue 3 and TypeScript security operations workbench |
 | `frontend/packages` | Frontend shared packages and reusable UI helpers |
 | `agents/` | Vector pipeline and Falco rule assets |
-| `infra/` | Docker Compose, database bootstrap SQL, and observability configuration |
+| `infra/` | Docker Compose, production-shaped overlay, database bootstrap SQL, tenant RLS, and observability configuration |
+| `deploy/` | Digest-addressed application image and Kubernetes rolling-update baseline |
 | `build/` | Toolchain, startup, port registry, verification, failure injection, benchmark, and demo scripts |
 | `docs/` | Architecture, operating guidance, test scope, demo instructions, and ADRs |
 
@@ -69,6 +70,9 @@ collection must come from Agent/Falco/CMDB inputs.
   suppression, routing keys, and UEBA primitives.
 - `socp-client`: typed service-to-service clients with explicit failure
   results and trace headers.
+- `socp-starter`: explicit servlet-side auto-configuration for the platform
+  modules and generated OpenAPI metadata; business applications scan only
+  their own domain package.
 - `socp-bom` and `socp-test`: dependency management and shared test support.
 
 ## Middleware and event topics

@@ -17,9 +17,11 @@ import UebaEntityDrawer from '../components/ueba/UebaEntityDrawer.vue'
 import UebaRiskPanel from '../components/ueba/UebaRiskPanel.vue'
 import UebaScorePanel from '../components/ueba/UebaScorePanel.vue'
 import UebaWatchlistsPanel from '../components/ueba/UebaWatchlistsPanel.vue'
+import { useI18n } from '../composables/useI18n'
 
 const props = defineProps<{ theme: 'light' | 'dark' }>()
 const emit = defineEmits<{ 'go-alarms': [entity: string] }>()
+const { t } = useI18n()
 
 const riskEntities = ref<RiskEntity[]>([])
 const riskSummary = ref<RiskSummary | null>(null)
@@ -53,7 +55,7 @@ async function refreshWatchlists() { watchlists.value = await listWatchlists() }
 async function createWatchlist(name: string, values: string[]) { await putWatchlist(name, values); await refreshWatchlists() }
 async function appendToWatchlist(name: string, values: string[]) { await appendWatchlist(name, values); await refreshWatchlists() }
 async function removeWatchlist(name: string) {
-  if (!confirm(`确认删除观察名单“${name}”？其中的值也会一并删除。`)) return
+  if (!confirm(t('ueba.deleteWatchlistConfirm', { name }))) return
   await deleteWatchlist(name)
   await refreshWatchlists()
 }
@@ -71,15 +73,15 @@ onMounted(loadUeba)
 <template>
   <div class="page-pad view-enter">
     <el-row :gutter="12" style="margin-bottom:14px">
-      <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num">{{ riskSummary?.entities ?? 0 }}</div><div class="label">画像实体数</div></div></el-card></el-col>
-      <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#f56c6c">{{ riskSummary?.maxRisk ?? 0 }}</div><div class="label">最高风险分</div></div></el-card></el-col>
-      <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#e6a23c">{{ (riskSummary?.byLevel?.CRITICAL ?? 0) + (riskSummary?.byLevel?.HIGH ?? 0) }}</div><div class="label">高危实体</div></div></el-card></el-col>
-      <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num">{{ riskSummary?.halfLifeHours ?? 0 }}h</div><div class="label">风险半衰期</div></div></el-card></el-col>
-      <el-col :span="4"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#409eff">{{ watchlists.length }}</div><div class="label">观察名单</div></div></el-card></el-col>
+      <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num">{{ riskSummary?.entities ?? 0 }}</div><div class="label">{{ t('ueba.entityCount') }}</div></div></el-card></el-col>
+      <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#f56c6c">{{ riskSummary?.maxRisk ?? 0 }}</div><div class="label">{{ t('ueba.maxRisk') }}</div></div></el-card></el-col>
+      <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#e6a23c">{{ (riskSummary?.byLevel?.CRITICAL ?? 0) + (riskSummary?.byLevel?.HIGH ?? 0) }}</div><div class="label">{{ t('ueba.highRiskEntities') }}</div></div></el-card></el-col>
+      <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num">{{ riskSummary?.halfLifeHours ?? 0 }}h</div><div class="label">{{ t('ueba.halfLife') }}</div></div></el-card></el-col>
+      <el-col :span="4"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#409eff">{{ watchlists.length }}</div><div class="label">{{ t('ueba.watchlists') }}</div></div></el-card></el-col>
     </el-row>
 
     <el-tabs v-model="uebaTab">
-      <el-tab-pane label="实体风险排名" name="entities">
+      <el-tab-pane :label="t('ueba.entityRanking')" name="entities">
         <UebaRiskPanel
           :theme="props.theme"
           :entities="riskEntities"
@@ -90,7 +92,7 @@ onMounted(loadUeba)
           @select="openEntity"
         />
       </el-tab-pane>
-      <el-tab-pane label="观察名单" name="watchlists">
+      <el-tab-pane :label="t('ueba.watchlists')" name="watchlists">
         <UebaWatchlistsPanel
           :watchlists="watchlists"
           @create="createWatchlist"
@@ -98,7 +100,7 @@ onMounted(loadUeba)
           @remove="removeWatchlist"
         />
       </el-tab-pane>
-      <el-tab-pane label="评分模型试算" name="score">
+      <el-tab-pane :label="t('ueba.scoreSimulation')" name="score">
         <UebaScorePanel :form="scoreForm" :result="scoreResult" @calculate="calcScore" />
       </el-tab-pane>
     </el-tabs>

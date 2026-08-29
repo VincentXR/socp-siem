@@ -8,6 +8,7 @@ import com.socp.detect.web.persistence.entity.*;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.rule.engine.WatchlistStateStore;
+import com.socp.platform.tenant.context.TenantContext;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -97,7 +98,7 @@ public class PersistentWatchlistStateStore implements WatchlistStateStore {
     @Override
     @Transactional
     public void clear() {
-        repository.deleteAll();
+        repository.deleteByTenantId(TenantContext.require());
         cache.clear();
     }
 

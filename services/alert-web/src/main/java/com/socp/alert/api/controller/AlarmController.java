@@ -30,7 +30,7 @@ import java.util.List;
 import java.util.Map;
 
 @RestController
-@RequestMapping("/api/alarms")
+@RequestMapping({"/api/v1/alarms", "/api/alarms"})
 public class AlarmController {
 
     private static final ObjectMapper MAPPER = new ObjectMapper()

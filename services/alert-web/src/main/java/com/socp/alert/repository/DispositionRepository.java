@@ -7,7 +7,7 @@ import com.socp.alert.persistence.entity.DispositionEntity;
 import com.socp.alert.repository.*;
 import com.socp.alert.service.*;
 
-import org.springframework.data.jpa.repository.JpaRepository;
+import com.socp.platform.tenant.persistence.TenantScopedRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -15,11 +15,14 @@ import org.springframework.data.repository.query.Param;
 import jakarta.persistence.LockModeType;
 
 import java.util.Optional;
+import java.util.List;
 
 /**
  * 告警处置仓库（t_alarm_disposition）。
  */
-public interface DispositionRepository extends JpaRepository<DispositionEntity, String> {
+public interface DispositionRepository extends TenantScopedRepository<DispositionEntity, String> {
+    List<DispositionEntity> findByTenantId(String tenantId);
+    Optional<DispositionEntity> findByIdAndTenantId(String id, String tenantId);
 
     Optional<DispositionEntity> findByAlarmIdAndTenantId(String alarmId, String tenantId);
 

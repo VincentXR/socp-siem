@@ -3,15 +3,18 @@ package com.socp.search.config.infrastructure.kafka;
 import com.socp.search.config.config.IngestRuntimeProperties;
 import com.socp.search.config.domain.IngestionOutboxEvent;
 import com.socp.search.config.persistence.repository.IngestionOutboxRepository;
+import com.socp.platform.tenant.context.TenantContext;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -31,7 +34,7 @@ class IngestionOutboxPublisherTest {
         IngestionOutboxRepository repository = mock(IngestionOutboxRepository.class);
         KafkaEventProducer producer = mock(KafkaEventProducer.class);
         when(producer.isEnabled()).thenReturn(true);
-        IngestionOutboxEvent event = IngestionOutboxEvent.pending(
+        IngestionOutboxEvent event = pending(
                 "event-1", "default|user|alice", "{}", "00-trace-01");
         when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
                 org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class)))
@@ -53,7 +56,7 @@ class IngestionOutboxPublisherTest {
         IngestionOutboxRepository repository = mock(IngestionOutboxRepository.class);
         KafkaEventProducer producer = mock(KafkaEventProducer.class);
         when(producer.isEnabled()).thenReturn(true);
-        IngestionOutboxEvent event = IngestionOutboxEvent.pending(
+        IngestionOutboxEvent event = pending(
                 "event-1", "route", "{}", null);
         when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
                 org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class)))
@@ -74,7 +77,7 @@ class IngestionOutboxPublisherTest {
         IngestionOutboxRepository repository = mock(IngestionOutboxRepository.class);
         KafkaEventProducer producer = mock(KafkaEventProducer.class);
         when(producer.isEnabled()).thenReturn(true);
-        IngestionOutboxEvent event = IngestionOutboxEvent.pending("event-1", "route", "{}", null);
+        IngestionOutboxEvent event = pending("event-1", "route", "{}", null);
         when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
                 org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class)))
                 .thenReturn(List.of(event));
@@ -119,7 +122,7 @@ class IngestionOutboxPublisherTest {
         IngestionOutboxRepository repository = mock(IngestionOutboxRepository.class);
         KafkaEventProducer producer = mock(KafkaEventProducer.class);
         when(producer.isEnabled()).thenReturn(true);
-        IngestionOutboxEvent event = IngestionOutboxEvent.pending("event-dead", "route", "{}", null);
+        IngestionOutboxEvent event = pending("event-dead", "route", "{}", null);
         when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
                 org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class))).thenReturn(List.of(event));
         when(repository.claim(any(), any(Instant.class), org.mockito.ArgumentMatchers.eq(1))).thenReturn(1);
@@ -131,5 +134,60 @@ class IngestionOutboxPublisherTest {
         verify(repository).markDead(any(),
                 org.mockito.ArgumentMatchers.eq("Kafka broker did not acknowledge the event"), any(Instant.class));
         verify(repository, never()).scheduleRetry(any(), any(), any(), any());
+    }
+
+    @Test
+    void asyncTriggerRunsCrossTenantScanInsideSystemScope() {
+        IngestionOutboxRepository repository = mock(IngestionOutboxRepository.class);
+        KafkaEventProducer producer = mock(KafkaEventProducer.class);
+        when(producer.isEnabled()).thenReturn(true);
+        AtomicBoolean systemScope = new AtomicBoolean();
+        when(repository.markExhausted(anyInt(), anyString(), any(Instant.class))).thenAnswer(invocation -> {
+            systemScope.set(TenantContext.isSystemScope());
+            return 0;
+        });
+        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+                org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class))).thenReturn(List.of());
+        publisher = new IngestionOutboxPublisher(repository, producer);
+
+        TenantContext.set("tenant-a");
+        publisher.triggerAsync();
+
+        verify(repository, org.mockito.Mockito.timeout(2_000))
+                .markExhausted(anyInt(), anyString(), any(Instant.class));
+        org.junit.jupiter.api.Assertions.assertTrue(systemScope.get());
+    }
+
+    @Test
+    void asyncDeliveryBindsEventTenantAndDoesNotDeadlockSingleWorker() {
+        IngestionOutboxRepository repository = mock(IngestionOutboxRepository.class);
+        KafkaEventProducer producer = mock(KafkaEventProducer.class);
+        IngestionOutboxEvent event = pending("event-async", "route", "{}", null);
+        AtomicBoolean tenantScope = new AtomicBoolean();
+        when(producer.isEnabled()).thenReturn(true);
+        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+                org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class)))
+                .thenReturn(List.of(event));
+        when(repository.claim(any(), any(Instant.class), anyInt())).thenAnswer(invocation -> {
+            tenantScope.set("tenant-a".equals(TenantContext.get()) && !TenantContext.isSystemScope());
+            return 1;
+        });
+        when(producer.sendAndAwait(event.getRoutingKey(), event.getPayload(), event.getTraceparent()))
+                .thenReturn(true);
+        when(repository.markPublished(any(), any(Instant.class))).thenReturn(1);
+        publisher = new IngestionOutboxPublisher(repository, producer);
+
+        TenantContext.set("tenant-b");
+        publisher.triggerAsync();
+
+        verify(repository, org.mockito.Mockito.timeout(2_000)).markPublished(any(), any(Instant.class));
+        org.junit.jupiter.api.Assertions.assertTrue(tenantScope.get());
+    }
+
+    private static IngestionOutboxEvent pending(String eventId, String routingKey,
+                                                String payload, String traceparent) {
+        IngestionOutboxEvent event = IngestionOutboxEvent.pending(eventId, routingKey, payload, traceparent);
+        event.setTenantId("tenant-a");
+        return event;
     }
 }

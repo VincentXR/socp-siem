@@ -43,7 +43,7 @@ class OutboxReplayServiceTest {
         event.setId("event-1");
         event.setAggregateId("alarm-1");
         event.setStatus("DEAD");
-        given(eventRepository.findById("event-1")).willReturn(Optional.of(event));
+        given(eventRepository.findByIdAndTenantId("event-1", "tenant-a")).willReturn(Optional.of(event));
         given(alarmRepository.findByTenantIdAndId("tenant-a", "alarm-1"))
                 .willReturn(Optional.of(new Alarm()));
         given(eventRepository.requeueDead(eq("event-1"), any(Instant.class))).willReturn(1);

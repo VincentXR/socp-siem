@@ -58,29 +58,34 @@ final class DetectionRecordProcessor {
     }
 
     void processNormalized(Integer partition, Long offset, String routingKey, SecurityEvent normalized) {
-        if (performanceMetrics != null) performanceMetrics.kafkaReceived(normalized);
-        DetectionEventClaim claim = stateStore.claim(normalized, partition, offset, routingKey);
-        if (performanceMetrics != null) performanceMetrics.journalCommitted(normalized);
-        if (claim == DetectionEventClaim.COMPLETED || claim == DetectionEventClaim.DEAD_LETTERED) {
-            if (performanceMetrics != null) {
-                performanceMetrics.terminalWithoutEvaluation(
-                        normalized, claim.name().toLowerCase(Locale.ROOT));
+        if (normalized == null) throw new IllegalArgumentException("normalized event is required");
+        String tenant = normalized.requireTenantId();
+        try (com.socp.platform.tenant.context.TenantContext.Scope ignored =
+                     com.socp.platform.tenant.context.TenantContext.open(tenant)) {
+            if (performanceMetrics != null) performanceMetrics.kafkaReceived(normalized);
+            DetectionEventClaim claim = stateStore.claim(normalized, partition, offset, routingKey);
+            if (performanceMetrics != null) performanceMetrics.journalCommitted(normalized);
+            if (claim == DetectionEventClaim.COMPLETED || claim == DetectionEventClaim.DEAD_LETTERED) {
+                if (performanceMetrics != null) {
+                    performanceMetrics.terminalWithoutEvaluation(
+                            normalized, claim.name().toLowerCase(Locale.ROOT));
+                }
+                return;
             }
-            return;
-        }
 
-        CompletableFuture<Void> completion = engine.ingestFromKafkaAndAwait(normalized);
-        if (completion == null) throw new IllegalStateException("detection completion signal is null");
-        try {
-            completion.get(10, TimeUnit.MINUTES);
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("detection processing interrupted", interrupted);
-        } catch (java.util.concurrent.TimeoutException timeout) {
-            throw new IllegalStateException("detection processing timeout", timeout);
-        } catch (ExecutionException failed) {
-            Throwable cause = failed.getCause() == null ? failed : failed.getCause();
-            throw new IllegalStateException("durable detection result failed: " + cause.getMessage(), cause);
+            CompletableFuture<Void> completion = engine.ingestFromKafkaAndAwait(normalized);
+            if (completion == null) throw new IllegalStateException("detection completion signal is null");
+            try {
+                completion.get(10, TimeUnit.MINUTES);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("detection processing interrupted", interrupted);
+            } catch (java.util.concurrent.TimeoutException timeout) {
+                throw new IllegalStateException("detection processing timeout", timeout);
+            } catch (ExecutionException failed) {
+                Throwable cause = failed.getCause() == null ? failed : failed.getCause();
+                throw new IllegalStateException("durable detection result failed: " + cause.getMessage(), cause);
+            }
         }
     }
 

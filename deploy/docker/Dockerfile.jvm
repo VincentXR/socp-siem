@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1.7
+#
+# The runtime image is intentionally a required build argument. Release CI
+# must pass an image digest, for example:
+#   --build-arg RUNTIME_IMAGE=eclipse-temurin:21-jre-jammy@sha256:<digest>
+# A mutable tag is never silently promoted to a production image.
+ARG RUNTIME_IMAGE
+FROM ${RUNTIME_IMAGE} AS runtime
+
+ARG APP_JAR=target/app.jar
+ARG BUILD_VERSION=unknown
+ARG VCS_REF=unknown
+
+LABEL org.opencontainers.image.title="SOCP service" \
+      org.opencontainers.image.version="${BUILD_VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.source="https://github.com/VincentXR/socp-siem"
+
+# The supported runtime image family is Debian/Ubuntu based Temurin 21 JRE.
+# Numeric IDs keep the resulting image independent from host user databases.
+RUN groupadd --system --gid 10001 socp \
+    && useradd --system --uid 10001 --gid 10001 --no-create-home \
+       --home-dir /nonexistent --shell /usr/sbin/nologin socp
+
+WORKDIR /app
+COPY --chown=10001:10001 ${APP_JAR} /app/app.jar
+
+USER 10001:10001
+ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75.0 -XX:InitialRAMPercentage=25.0 -Djava.security.egd=file:/dev/urandom"
+EXPOSE 8080
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]

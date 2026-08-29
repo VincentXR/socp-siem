@@ -5,11 +5,14 @@ package com.socp.asset.collect.persistence.repository;
 import com.socp.asset.collect.persistence.store.*;
 import com.socp.asset.collect.persistence.repository.*;
 import com.socp.asset.collect.persistence.entity.*;
-import org.springframework.data.jpa.repository.JpaRepository;
+import com.socp.platform.tenant.persistence.TenantScopedRepository;
 
 import java.util.List;
+import java.util.Optional;
 
-public interface AssetCollectionRepository extends JpaRepository<AssetCollectionEntity, String> {
+public interface AssetCollectionRepository extends TenantScopedRepository<AssetCollectionEntity, String> {
+    List<AssetCollectionEntity> findByTenantId(String tenantId);
+    Optional<AssetCollectionEntity> findByIdAndTenantId(String id, String tenantId);
 
     List<AssetCollectionEntity> findTop200ByTenantIdOrderByCollectedAtDesc(String tenantId);
 

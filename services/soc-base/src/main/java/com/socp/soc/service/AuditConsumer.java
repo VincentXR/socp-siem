@@ -100,12 +100,14 @@ public class AuditConsumer {
         } catch (Exception invalid) {
             throw new InvalidAuditEventException(invalid.getMessage(), invalid);
         }
-        if (repository.existsByEventId(entity.getEventId())) return;
-        try {
-            repository.saveAndFlush(entity);
-        } catch (DataIntegrityViolationException race) {
-            if (!repository.existsByEventId(entity.getEventId())) throw race;
-        }
+        TenantContext.runWith(entity.getTenantId(), () -> {
+            if (repository.existsByTenantIdAndEventId(entity.getTenantId(), entity.getEventId())) return;
+            try {
+                repository.saveAndFlush(entity);
+            } catch (DataIntegrityViolationException race) {
+                if (!repository.existsByTenantIdAndEventId(entity.getTenantId(), entity.getEventId())) throw race;
+            }
+        });
     }
 
     @SuppressWarnings("unchecked")

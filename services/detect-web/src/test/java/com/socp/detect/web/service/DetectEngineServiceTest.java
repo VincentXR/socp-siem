@@ -6,6 +6,7 @@ import com.socp.detect.web.persistence.store.DetectionStateStore;
 import com.socp.detect.web.persistence.store.RuleSpecStore;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
+import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -22,11 +23,13 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.doAnswer;
 
 @ExtendWith(MockitoExtension.class)
 class DetectEngineServiceTest {
@@ -105,6 +108,33 @@ class DetectEngineServiceTest {
                     org.mockito.ArgumentMatchers.any());
         } finally {
             service.stop();
+        }
+    }
+
+    @Test
+    void restoreAllRunsTheFullStateReplayInsideSystemScope() {
+        AtomicBoolean systemScope = new AtomicBoolean();
+        doAnswer(invocation -> {
+            systemScope.set(TenantContext.isSystemScope());
+            return null;
+        }).when(stateStore).replayRecent(
+                org.mockito.ArgumentMatchers.any(Duration.class),
+                org.mockito.ArgumentMatchers.any());
+
+        DetectEngineService service = new DetectEngineService(
+                store, new RecentAlertSink(10, null, null), forwarder, rulePublisher, stateStore);
+        try {
+            TenantContext.set("tenant-a");
+            service.restoreAll();
+
+            assertEquals(Set.of(), service.assignedPartitions());
+            assertTrue(systemScope.get());
+            verify(stateStore).replayRecent(
+                    org.mockito.ArgumentMatchers.any(Duration.class),
+                    org.mockito.ArgumentMatchers.any());
+        } finally {
+            service.stop();
+            TenantContext.clear();
         }
     }
 

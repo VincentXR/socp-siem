@@ -154,12 +154,14 @@ public class DetectEngineService {
      * so a rebalance cannot mix windows from another instance's partitions.
      */
     public synchronized void restoreForPartitions(Set<Integer> partitions) {
-        restoreForPartitions(partitions, false);
+        com.socp.platform.tenant.context.TenantContext.runAsSystem(
+                () -> restoreForPartitions(partitions, false));
     }
 
     /** Force a state rebuild after a durable sink failure before retrying. */
     public synchronized void rebuildForPartitions(Set<Integer> partitions) {
-        restoreForPartitions(partitions, true);
+        com.socp.platform.tenant.context.TenantContext.runAsSystem(
+                () -> restoreForPartitions(partitions, true));
     }
 
     private synchronized void restoreForPartitions(Set<Integer> partitions, boolean force) {
@@ -172,8 +174,10 @@ public class DetectEngineService {
 
     /** Used when Kafka is disabled or for an operational full-state replay. */
     public synchronized void restoreAll() {
-        assignedPartitions.set(Set.of());
-        replaceAllEnginesFromState(Set.of());
+        com.socp.platform.tenant.context.TenantContext.runAsSystem(() -> {
+            assignedPartitions.set(Set.of());
+            replaceAllEnginesFromState(Set.of());
+        });
     }
 
     private void restoreState(String tenant, RuleEngine replacement, Set<Integer> partitions) {

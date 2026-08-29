@@ -5,14 +5,14 @@ package com.socp.soar.web.persistence.repository;
 import com.socp.soar.web.persistence.store.*;
 import com.socp.soar.web.persistence.repository.*;
 import com.socp.soar.web.persistence.entity.*;
-import org.springframework.data.jpa.repository.JpaRepository;
+import com.socp.platform.tenant.persistence.TenantScopedRepository;
 import org.springframework.data.jpa.repository.Query;
 
 import java.util.List;
 import java.util.Optional;
 
 /** 剧本仓储（H2/PG）。 */
-public interface PlaybookRepository extends JpaRepository<PlaybookEntity, String> {
+public interface PlaybookRepository extends TenantScopedRepository<PlaybookEntity, String> {
 
     List<PlaybookEntity> findByTenantId(String tenantId);
 

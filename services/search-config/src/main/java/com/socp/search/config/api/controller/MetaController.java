@@ -4,21 +4,12 @@ package com.socp.search.config.api.controller;
 
 
 
-import com.socp.search.config.persistence.store.*;
-import com.socp.search.config.parser.*;
-import com.socp.search.config.domain.*;
-import com.socp.search.config.domain.*;
-import com.socp.search.config.infrastructure.kafka.*;
-import com.socp.search.config.infrastructure.opensearch.*;
-import com.socp.search.config.infrastructure.serialization.*;
-import com.socp.search.config.persistence.entity.*;
-import com.socp.search.config.persistence.repository.*;
-import com.socp.search.config.persistence.store.*;
-import com.socp.search.config.service.*;
-import com.socp.search.config.api.request.*;
 import com.socp.search.config.domain.DataSourceType;
 import com.socp.search.config.domain.FieldDef;
 import com.socp.search.config.domain.LogCategory;
+import com.socp.search.config.api.request.DataSourceTypeRequest;
+import com.socp.search.config.api.request.FieldDefRequest;
+import com.socp.search.config.api.request.LogCategoryRequest;
 import com.socp.search.config.persistence.store.DataSourceTypeStore;
 import com.socp.search.config.persistence.store.FieldDefStore;
 import com.socp.search.config.persistence.store.LogCategoryStore;

@@ -42,16 +42,16 @@ public class ChannelStore {
     @PostConstruct
     void seed() {
         if (!demoDataEnabled) return;
-        TenantContext.set("default");
-        List<ChannelEntity> all = repository.findByTenantId("default");
-        if (all.isEmpty()) {
-            add(Channel.of("值班群(Slack)", "SLACK",
-                    "https://hooks.slack.com/services/T000/B000/XXXXXXXX", true, "安全值班 IM 群"));
-            add(Channel.of("工单系统(Webhook)", "WEBHOOK",
-                    "http://localhost:18097/incident-web/api/v1/incidents/from-alarm", true, "推送至案件系统建案"));
-            add(Channel.of("安全邮件", "EMAIL", "soc@example.com", false, "邮件摘要（演示未启 SMTP）"));
-        }
-        TenantContext.clear();
+        TenantContext.runWith("default", () -> {
+            List<ChannelEntity> all = repository.findByTenantId("default");
+            if (all.isEmpty()) {
+                add(Channel.of("值班群(Slack)", "SLACK",
+                        "https://hooks.slack.com/services/T000/B000/XXXXXXXX", true, "安全值班 IM 群"));
+                add(Channel.of("工单系统(Webhook)", "WEBHOOK",
+                        "http://localhost:18097/incident-web/api/v1/incidents/from-alarm", true, "推送至案件系统建案"));
+                add(Channel.of("安全邮件", "EMAIL", "soc@example.com", false, "邮件摘要（演示未启 SMTP）"));
+            }
+        });
     }
 
     public synchronized Channel add(Channel ch) {

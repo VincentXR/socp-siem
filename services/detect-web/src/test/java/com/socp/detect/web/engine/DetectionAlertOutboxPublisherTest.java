@@ -5,6 +5,7 @@ import com.socp.detect.web.persistence.repository.DetectionAlertOutboxRepository
 import com.socp.platform.client.service.AlertClient;
 import com.socp.platform.client.http.ServiceCall;
 import com.socp.platform.client.service.SocpService;
+import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -13,6 +14,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -59,7 +61,10 @@ class DetectionAlertOutboxPublisherTest {
                 eq("PENDING"), any(Instant.class))).willReturn(List.of(event));
         given(repository.claim(eq("alert-2"), eq("PENDING"), any(Instant.class), any(Integer.class))).willReturn(1);
         given(alertClient.forwardAlarm(anyString())).willReturn(success());
-        given(alarmProducer.sendAndAwait(any(), eq("alert-2"))).willReturn(true);
+        given(alarmProducer.sendAndAwait(any(), eq("alert-2"))).willAnswer(invocation -> {
+            assertEquals("tenant-a", TenantContext.get());
+            return true;
+        });
 
         DetectionAlertOutboxPublisher publisher = publisher();
         publisher.publishDue();
@@ -196,6 +201,32 @@ class DetectionAlertOutboxPublisherTest {
 
         assertTrue(peak.get() > 1, "delivery should no longer be globally serial");
         assertTrue(peak.get() <= 4, "delivery must respect the configured bound");
+    }
+
+    @Test
+    void asyncTriggerRunsCrossTenantScanInsideSystemScope() {
+        AtomicBoolean systemScope = new AtomicBoolean();
+        given(repository.findByStatusAndUpdatedAtBefore(eq("PROCESSING"), any(Instant.class)))
+                .willReturn(List.of());
+        given(repository.markExhausted(any(Integer.class), anyString(), any(Instant.class))).willAnswer(invocation -> {
+            systemScope.set(TenantContext.isSystemScope());
+            return 0;
+        });
+        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+                anyString(), any(Instant.class))).willReturn(List.of());
+
+        DetectionAlertOutboxPublisher publisher = publisher();
+        try {
+            TenantContext.set("tenant-a");
+            publisher.triggerAsync();
+
+            verify(repository, org.mockito.Mockito.timeout(2_000))
+                    .markExhausted(any(Integer.class), anyString(), any(Instant.class));
+            assertTrue(systemScope.get());
+        } finally {
+            publisher.stopDeliveryExecutor();
+            TenantContext.clear();
+        }
     }
 
     private DetectionAlertOutboxPublisher publisher() {

@@ -7,7 +7,7 @@ import com.socp.alert.repository.*;
 import com.socp.alert.service.*;
 
 import org.springframework.data.domain.Pageable;
-import org.springframework.data.jpa.repository.JpaRepository;
+import com.socp.platform.tenant.persistence.TenantScopedRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -16,7 +16,7 @@ import java.util.List;
 import java.util.Optional;
 
 /** Tenant-scoped persistence plus database aggregation projections for alarms. */
-public interface AlarmRepository extends JpaRepository<Alarm, String>, AlarmRepositoryCustom {
+public interface AlarmRepository extends TenantScopedRepository<Alarm, String>, AlarmRepositoryCustom {
 
     List<Alarm> findByTenantId(String tenantId);
 

@@ -49,4 +49,23 @@ class TenantContextTest {
 
         assertThat(TenantContext.require()).isEqualTo("worker-tenant");
     }
+
+    @Test
+    void systemScopeIsExplicitAndRestoredAfterNestedTenantWork() {
+        TenantContext.set("request-tenant");
+
+        try (TenantContext.Scope ignored = TenantContext.openSystem()) {
+            assertThat(TenantContext.get()).isNull();
+            assertThat(TenantContext.isSystemScope()).isTrue();
+            TenantContext.runWith("worker-tenant", () -> {
+                assertThat(TenantContext.require()).isEqualTo("worker-tenant");
+                assertThat(TenantContext.isSystemScope()).isFalse();
+            });
+            assertThat(TenantContext.get()).isNull();
+            assertThat(TenantContext.isSystemScope()).isTrue();
+        }
+
+        assertThat(TenantContext.require()).isEqualTo("request-tenant");
+        assertThat(TenantContext.isSystemScope()).isFalse();
+    }
 }

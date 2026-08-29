@@ -93,7 +93,15 @@
             <groupId>org.apache.kafka</groupId>
             <artifactId>kafka-clients</artifactId>
         </dependency>
-    </dependencies>
+            <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-data</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-starter</artifactId>
+        </dependency>
+</dependencies>
 
     <build>
         <plugins>

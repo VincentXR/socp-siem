@@ -42,17 +42,14 @@ public class EndpointStore {
     @PostConstruct
     void init() {
         if (!demoDataEnabled) return;
-        List<EndpointEntity> all = repository.findByTenantId("default");
-        if (all.isEmpty()) {
-            TenantContext.set("default");
-            try {
+        TenantContext.runWith("default", () -> {
+            List<EndpointEntity> all = repository.findByTenantId("default");
+            if (all.isEmpty()) {
                 save(Endpoint.register("web01", "10.0.0.5", "Ubuntu 22.04", "falco-0.39"));
                 save(Endpoint.register("web02", "10.0.0.6", "Ubuntu 22.04", "falco-0.39"));
                 save(Endpoint.register("db-master", "10.0.0.10", "Debian 12", "falco-0.38"));
-            } finally {
-                TenantContext.clear();
             }
-        }
+        });
     }
 
     @Transactional(readOnly = true)

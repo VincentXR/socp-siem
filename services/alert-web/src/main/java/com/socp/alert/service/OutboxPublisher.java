@@ -8,6 +8,7 @@ import com.socp.alert.config.AlertOutboxProperties;
 import com.socp.alert.domain.*;
 import com.socp.alert.repository.*;
 import com.socp.alert.service.*;
+import com.socp.platform.tenant.context.TenantContext;
 
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
@@ -45,6 +46,7 @@ public class OutboxPublisher {
     private final AlertKafkaPublisher kafkaPublisher;
     private final AlertPerformanceMetrics performanceMetrics;
     private final ExecutorService deliveryExecutor;
+    private final ExecutorService triggerExecutor;
     private final int maxAttempts;
     private final long retentionMs;
     private Instant nextRecoveryAt = Instant.EPOCH;
@@ -66,6 +68,8 @@ public class OutboxPublisher {
         int bounded = Math.max(1, Math.min(32, concurrency));
         this.deliveryExecutor = Executors.newFixedThreadPool(bounded,
                 Thread.ofVirtual().name("alert-outbox-delivery-", 0).factory());
+        this.triggerExecutor = Executors.newSingleThreadExecutor(
+                Thread.ofVirtual().name("alert-outbox-trigger-", 0).factory());
         this.maxAttempts = Math.max(1, maxAttempts);
         this.retentionMs = Math.max(Duration.ofMinutes(1).toMillis(), retentionMs);
     }
@@ -81,9 +85,12 @@ public class OutboxPublisher {
     public void triggerAsync() {
         if (!kafkaPublisher.isAvailable()) return;
         if (activeTrigger.compareAndSet(false, true)) {
-            deliveryExecutor.execute(() -> {
+            triggerExecutor.execute(() -> {
                 try {
-                    publish();
+                    // The scan is cross-tenant maintenance work.  Scheduled
+                    // invocations are wrapped by ScheduledSystemScopeAspect,
+                    // but this direct executor path bypasses Spring AOP.
+                    TenantContext.runAsSystem(this::publish);
                 } finally {
                     activeTrigger.set(false);
                 }
@@ -114,7 +121,9 @@ public class OutboxPublisher {
                 return;
             }
             List<CompletableFuture<Void>> deliveries = pending.stream()
-                    .map(event -> CompletableFuture.runAsync(() -> deliver(event), deliveryExecutor))
+                    .map(event -> CompletableFuture.runAsync(
+                            () -> TenantContext.runWith(event.getTenantId(), () -> deliver(event)),
+                            deliveryExecutor))
                     .toList();
             CompletableFuture.allOf(deliveries.toArray(CompletableFuture[]::new)).join();
         } catch (Exception failure) {
@@ -200,6 +209,7 @@ public class OutboxPublisher {
 
     @PreDestroy
     void stop() {
+        triggerExecutor.shutdownNow();
         deliveryExecutor.shutdownNow();
     }
 }

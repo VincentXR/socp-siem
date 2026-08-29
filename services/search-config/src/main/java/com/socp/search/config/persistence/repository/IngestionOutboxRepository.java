@@ -2,7 +2,7 @@ package com.socp.search.config.persistence.repository;
 
 import com.socp.search.config.domain.IngestionOutboxEvent;
 
-import org.springframework.data.jpa.repository.JpaRepository;
+import com.socp.platform.tenant.persistence.TenantScopedRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -10,8 +10,11 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 
-public interface IngestionOutboxRepository extends JpaRepository<IngestionOutboxEvent, String> {
+public interface IngestionOutboxRepository extends TenantScopedRepository<IngestionOutboxEvent, String> {
+    List<IngestionOutboxEvent> findByTenantId(String tenantId);
+    Optional<IngestionOutboxEvent> findByIdAndTenantId(String id, String tenantId);
 
     List<IngestionOutboxEvent> findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
             String status, Instant nextAttemptAt);

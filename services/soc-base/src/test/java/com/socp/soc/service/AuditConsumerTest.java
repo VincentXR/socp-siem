@@ -37,7 +37,7 @@ class AuditConsumerTest {
     @Test
     void duplicateEventIdIsPersistedOnlyOnce() {
         AuditRepository repository = mock(AuditRepository.class);
-        when(repository.existsByEventId("event-1")).thenReturn(false, true);
+        when(repository.existsByTenantIdAndEventId("tenant-a", "event-1")).thenReturn(false, true);
         AuditConsumer consumer = new AuditConsumer(repository);
         String raw = "{\"eventId\":\"event-1\",\"tenantId\":\"tenant-a\",\"action\":\"CREATE\"}";
 

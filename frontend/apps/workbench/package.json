@@ -12,6 +12,8 @@
     "verify": "pnpm build && node scripts/verify-build.mjs"
   },
   "dependencies": {
+    "@socp/library": "workspace:*",
+    "@socp/soc-ui": "workspace:*",
     "@tanstack/vue-query": "5.59.0",
     "echarts": "6.1.0",
     "element-plus": "2.14.3",

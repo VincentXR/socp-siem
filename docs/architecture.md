@@ -111,9 +111,11 @@ the intentional all-H2 fallback.
 `socp-auth` validates HMAC or JWKS JWTs, extracts the tenant claim, and applies
 method-level `@RequireRole` checks. Side-effecting internal endpoints can also
 require a signed `ServiceRequestSignature`; the endpoint then rejects a user
-JWT even when the caller has an otherwise valid role. Tenant isolation is
-logical: services use `tenant_id` and shared context/query filters rather than
-separate databases.
+JWT even when the caller has an otherwise valid role. Tenant isolation uses
+three layers: `TenantScopedRepository` exposes explicit tenant predicates,
+`TenantEntityWriteGuard` rejects cross-tenant writes, and PostgreSQL RLS can
+enforce the same boundary at the connection/database layer. Scheduled jobs
+must enter the explicit system scope; missing request scope fails closed.
 
 The canonical `search-config /api/v1/ingest` boundary requires an authenticated
 collector identity or a signed internal service request. Collector credentials
@@ -153,6 +155,12 @@ outbox retry logs provide operational evidence for the event path.
 - `SOCP_KAFKA_GROUP_ID` overrides the Detection consumer group when launching
   multiple instances; all instances that share state must use the same
   PostgreSQL database and group.
+- Servlet services use the explicit `socp-starter` integration and expose
+  generated OpenAPI at `/v3/api-docs`; the API versioning and compatibility
+  policy is recorded in [API contract](api-contract.md).
+- Application image/Kubernetes and backup baselines live in
+  [production-readiness](production-readiness.md); they are release contracts,
+  not evidence that this repository operates a production cluster.
 
 ## Known scaling boundaries
 

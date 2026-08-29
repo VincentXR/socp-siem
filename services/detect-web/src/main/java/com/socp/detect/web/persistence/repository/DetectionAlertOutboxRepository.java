@@ -5,7 +5,7 @@ package com.socp.detect.web.persistence.repository;
 import com.socp.detect.web.persistence.store.*;
 import com.socp.detect.web.persistence.repository.*;
 import com.socp.detect.web.persistence.entity.*;
-import org.springframework.data.jpa.repository.JpaRepository;
+import com.socp.platform.tenant.persistence.TenantScopedRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -15,7 +15,9 @@ import java.time.Instant;
 import java.util.List;
 
 /** Repository for the durable Detection -> Alert Web hand-off. */
-public interface DetectionAlertOutboxRepository extends JpaRepository<DetectionAlertOutboxEntity, String> {
+public interface DetectionAlertOutboxRepository extends TenantScopedRepository<DetectionAlertOutboxEntity, String> {
+    List<DetectionAlertOutboxEntity> findByTenantId(String tenantId);
+    boolean existsByAlertIdAndTenantId(String alertId, String tenantId);
 
     List<DetectionAlertOutboxEntity> findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
             String status, Instant now);

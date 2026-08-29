@@ -61,4 +61,24 @@ class IngestEventNormalizerTest {
         assertEquals("registered-collector", result.collector());
         assertEquals("registered-collector", result.event().fields().get("collector"));
     }
+
+    @Test
+    void authenticatedTenantCannotBeRelabelledByPayload() {
+        ParserRegistry parsers = mock(ParserRegistry.class);
+        ReferenceSetStore references = mock(ReferenceSetStore.class);
+        when(parsers.parse(anyString(), anyString())).thenReturn(Map.of(
+                CanonicalEvent.EVENT_MESSAGE, "failed password",
+                "tenant_id", "tenant-b",
+                "tenantId", "tenant-b"));
+        when(references.matchedSets(anyString())).thenReturn(java.util.List.of());
+        IngestEventNormalizer normalizer = new IngestEventNormalizer(
+                mock(ParsePreviewService.class), mock(ParseRuleStore.class), references, parsers);
+        TenantContext.set("tenant-a");
+
+        var result = normalizer.normalize("raw event", "registered-collector");
+
+        assertEquals("tenant-a", result.event().fields().get("tenant_id"));
+        assertEquals("tenant-a", result.payload().get("fields") instanceof Map<?, ?> fields
+                ? fields.get("tenant_id") : null);
+    }
 }

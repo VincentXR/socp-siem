@@ -13,6 +13,8 @@ BASELINE = ROOT / "build" / "architecture-controller-persistence-baseline.txt"
 WRITE_MAPPING = re.compile(r"@(Post|Put|Patch|Delete)Mapping\b")
 AUTH_BOUNDARY = re.compile(r"@(?:[\w.]+\.)?(RequireRole|RequireService|RequireIngestIdentity)\b")
 PERSISTENCE_IMPORT = re.compile(r"^import\s+com\.socp\..*\.persistence\.(repository|entity)\.", re.MULTILINE)
+REPOSITORY_DECL = re.compile(
+    r"public\s+interface\s+(\w+Repository)\s+extends\s+([^\{]+)\{", re.MULTILINE)
 SERVICE_DEPENDENCY = re.compile(r"<artifactId>([^<]+)</artifactId>")
 METHOD_END = re.compile(r"^ {4}}\s*$", re.MULTILINE)
 
@@ -75,10 +77,37 @@ def dependency_checks(errors: list[str]) -> int:
     return checked
 
 
+def tenant_repository_checks(errors: list[str]) -> int:
+    """Require tenant-owned JPA repositories to use the fail-closed SDK contract."""
+    tenant_entities: set[str] = set()
+    for path in ROOT.glob("services/*/src/main/java/**/*.java"):
+        content = path.read_text(encoding="utf-8")
+        if "@Entity" not in content and "tenantId" not in content and "tenant_id" not in content:
+            continue
+        class_match = re.search(r"\bclass\s+(\w+)", content)
+        if class_match and re.search(r"\btenantId\b|\btenant_id\b", content):
+            tenant_entities.add(class_match.group(1))
+
+    checked = 0
+    for path in ROOT.glob("services/*/src/main/java/**/*Repository.java"):
+        content = path.read_text(encoding="utf-8")
+        for _, declaration in REPOSITORY_DECL.findall(content):
+            entity_match = re.search(r"<(\w+)\s*,", declaration)
+            if entity_match is None or entity_match.group(1) not in tenant_entities:
+                continue
+            checked += 1
+            if "TenantScopedRepository" not in declaration:
+                errors.append(
+                    f"{relative(path)}: tenant entity repository must extend TenantScopedRepository"
+                )
+    return checked
+
+
 def main() -> int:
     errors: list[str] = []
     controller_count, current_debt = controller_checks(errors)
     pom_count = dependency_checks(errors)
+    tenant_repo_count = tenant_repository_checks(errors)
     expected_debt = {
         line.strip() for line in BASELINE.read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.startswith("#")
@@ -99,7 +128,7 @@ def main() -> int:
         return 1
     print(
         f"Architecture gate passed: {controller_count} controllers, {pom_count} service modules; "
-        f"direct-persistence baseline={len(current_debt)}"
+        f"direct-persistence baseline={len(current_debt)}; tenant repositories={tenant_repo_count}"
     )
     return 0
 

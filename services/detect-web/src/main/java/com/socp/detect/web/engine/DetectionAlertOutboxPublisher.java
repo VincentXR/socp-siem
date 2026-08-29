@@ -109,7 +109,9 @@ public class DetectionAlertOutboxPublisher {
         if (activeTrigger.compareAndSet(false, true)) {
             deliveryExecutor.execute(() -> {
                 try {
-                    publishDue();
+                    // This direct executor path does not pass through the
+                    // scheduled-job aspect, so establish explicit system scope.
+                    TenantContext.runAsSystem(this::publishDue);
                 } finally {
                     activeTrigger.set(false);
                 }
@@ -141,25 +143,27 @@ public class DetectionAlertOutboxPublisher {
         for (DetectionAlertOutboxEntity event : due) {
             if (!claim(event, stage)) continue;
             deliveries.add(CompletableFuture.runAsync(() -> {
-                boolean acquired = false;
-                try {
-                    deliveryPermits.acquire();
-                    acquired = true;
-                    if ("PENDING".equals(stage)) {
-                        Instant claimedAt = performanceMetrics == null
-                                ? Instant.now() : performanceMetrics.outboxClaimed(event);
-                        deliverAndPublish(event, claimedAt);
-                    } else {
-                        if (performanceMetrics != null) {
-                            performanceMetrics.outboxStateTransaction("original_claim");
+                try (TenantContext.Scope ignored = TenantContext.open(event.getTenantId())) {
+                    boolean acquired = false;
+                    try {
+                        deliveryPermits.acquire();
+                        acquired = true;
+                        if ("PENDING".equals(stage)) {
+                            Instant claimedAt = performanceMetrics == null
+                                    ? Instant.now() : performanceMetrics.outboxClaimed(event);
+                            deliverAndPublish(event, claimedAt);
+                        } else {
+                            if (performanceMetrics != null) {
+                                performanceMetrics.outboxStateTransaction("original_claim");
+                            }
+                            publishOriginalAlarm(event);
                         }
-                        publishOriginalAlarm(event);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        fail(event, "delivery interrupted", stage);
+                    } finally {
+                        if (acquired) deliveryPermits.release();
                     }
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    fail(event, "delivery interrupted", stage);
-                } finally {
-                    if (acquired) deliveryPermits.release();
                 }
             }, deliveryExecutor));
         }
@@ -301,11 +305,6 @@ public class DetectionAlertOutboxPublisher {
     private static <T> T withTenant(DetectionAlertOutboxEntity event,
                                     java.util.function.Supplier<T> action) {
         return TenantContext.callWith(event.getTenantId(), action);
-    }
-
-    private static String truncate(String value) {
-        if (value == null) return "unknown";
-        return value.length() <= 1024 ? value : value.substring(0, 1024);
     }
 
     @PreDestroy

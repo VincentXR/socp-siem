@@ -29,6 +29,14 @@ navigation, resource-list, and resource-import contracts. `pnpm test:e2e`
 uses Playwright to cover cookie-backed login, viewer navigation denial, deep
 links, and browser history.
 
+The browser flows install a catch-all network guard before their explicit
+endpoint mocks. Any newly introduced gateway/service request that is not
+handled by the test is aborted and fails the test, so mocked UI coverage does
+not silently drift away from the API contract. To run the additional browser
+smoke against a live gateway, set `SOCP_E2E_BACKEND_URL` (for example
+`http://127.0.0.1:18092`) before `pnpm test:e2e`; the smoke accepts either a
+200 authenticated session or the expected unauthenticated 401 response.
+
 ## Test ownership
 
 - `socp-auth` and `api-gateway`: JWT configuration, production guard, missing

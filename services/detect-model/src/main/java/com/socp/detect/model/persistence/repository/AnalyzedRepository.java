@@ -3,7 +3,7 @@ package com.socp.detect.model.persistence.repository;
 
 import com.socp.detect.model.persistence.repository.*;
 import com.socp.detect.model.persistence.entity.*;
-import org.springframework.data.jpa.repository.JpaRepository;
+import com.socp.platform.tenant.persistence.TenantScopedRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -14,9 +14,12 @@ import org.springframework.data.domain.Pageable;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 
 @Repository
-public interface AnalyzedRepository extends JpaRepository<AnalyzedEntity, Long> {
+public interface AnalyzedRepository extends TenantScopedRepository<AnalyzedEntity, Long> {
+    List<AnalyzedEntity> findByTenantId(String tenantId);
+    Optional<AnalyzedEntity> findByIdAndTenantId(Long id, String tenantId);
     Page<AnalyzedEntity> findByTenantId(String tenantId, Pageable pageable);
 
     long countByTenantId(String tenantId);

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.socp.detect.web.metrics.DetectionPerformanceMetrics;
 import com.socp.detect.web.persistence.repository.RuleChangeOutboxRepository;
 import com.socp.platform.client.kafka.KafkaClientSupport;
+import com.socp.platform.data.outbox.OutboxRetryPolicy;
 import com.socp.platform.tenant.context.TenantContext;
 import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.producer.KafkaProducer;
@@ -126,22 +127,20 @@ public class RuleChangePublisher {
     void scheduleRetry(RuleChangeOutbox row, Exception failure) {
         int attempt = row.getAttempts() + 1;
         String error = failure.getClass().getSimpleName() + ": " + failure.getMessage();
-        if (error.length() > 1024) error = error.substring(0, 1024);
         Instant now = Instant.now();
+        var decision = OutboxRetryPolicy.afterClaim(attempt, effectiveMaxAttempts(), now, error, 300);
         try {
-            if (attempt >= effectiveMaxAttempts()) {
-                if (repository.markDead(row.getId(), error, now) == 1) {
+            if (decision.exhausted()) {
+                if (repository.markDead(row.getId(), decision.error(), now) == 1) {
                     log.error("Rule-change outbox moved to DEAD tenant={} ruleId={} attempts={} reason={}",
-                            row.getTenantId(), row.getRuleId(), attempt, error);
+                            row.getTenantId(), row.getRuleId(), decision.attempts(), decision.error());
                     lifecycle("dead", 1);
                 }
                 return;
             }
-            long delay = Math.min(300, 1L << Math.min(8, Math.max(1, attempt)));
-            Instant nextAttempt = now.plusSeconds(delay);
-            if (repository.scheduleRetry(row.getId(), nextAttempt, error, now) == 1) {
+            if (repository.scheduleRetry(row.getId(), decision.nextAttemptAt(), decision.error(), now) == 1) {
                 log.warn("Rule-change delivery scheduled for retry tenant={} ruleId={} attempt={} next={}: {}",
-                        row.getTenantId(), row.getRuleId(), attempt, nextAttempt, error);
+                        row.getTenantId(), row.getRuleId(), decision.attempts(), decision.nextAttemptAt(), decision.error());
                 lifecycle("retry", 1);
             }
         } catch (RuntimeException stateFailure) {

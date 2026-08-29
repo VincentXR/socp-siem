@@ -45,6 +45,7 @@ public class AlarmDeliveryPublisher {
     private final SoarClient soarClient;
     private final AlertPerformanceMetrics performanceMetrics;
     private final ExecutorService executor;
+    private final ExecutorService triggerExecutor;
     private final int maxAttempts;
     private final long retentionMs;
     private Instant nextRecoveryAt = Instant.EPOCH;
@@ -71,6 +72,8 @@ public class AlarmDeliveryPublisher {
         int bounded = Math.max(1, Math.min(32, concurrency));
         this.executor = Executors.newFixedThreadPool(bounded,
                 Thread.ofVirtual().name("alarm-delivery-", 0).factory());
+        this.triggerExecutor = Executors.newSingleThreadExecutor(
+                Thread.ofVirtual().name("alarm-delivery-trigger-", 0).factory());
         this.maxAttempts = Math.max(1, maxAttempts);
         this.retentionMs = Math.max(Duration.ofMinutes(1).toMillis(), retentionMs);
     }
@@ -86,9 +89,11 @@ public class AlarmDeliveryPublisher {
     /** Triggers an immediate asynchronous downstream delivery cycle on transaction commit. */
     public void triggerAsync() {
         if (activeTrigger.compareAndSet(false, true)) {
-            executor.execute(() -> {
+            triggerExecutor.execute(() -> {
                 try {
-                    publish();
+                    // Keep the executor path explicit: direct self-invocation
+                    // does not pass through the scheduled-job system scope.
+                    TenantContext.runAsSystem(this::publish);
                 } finally {
                     activeTrigger.set(false);
                 }
@@ -220,6 +225,7 @@ public class AlarmDeliveryPublisher {
 
     @PreDestroy
     void stop() {
+        triggerExecutor.shutdownNow();
         executor.shutdownNow();
     }
 

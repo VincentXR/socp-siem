@@ -46,6 +46,7 @@ class SplEngineTest {
     private final SearchStore store = new SearchStore(new EmptyRepo(), null);
 
     private static final class EmptyRepo implements SearchEventRepository {
+        @Override public List<SearchEventEntity> findByTenantId(String tenantId) { return List.of(); }
         @Override public List<SearchEventEntity> findAll() { return List.of(); }
         @Override public SearchEventEntity save(SearchEventEntity e) { return e; }
         @Override public Optional<SearchEventEntity> findById(String s) { return Optional.empty(); }

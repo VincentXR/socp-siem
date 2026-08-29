@@ -6,7 +6,7 @@ import com.socp.alert.domain.*;
 import com.socp.alert.repository.*;
 import com.socp.alert.service.*;
 
-import org.springframework.data.jpa.repository.JpaRepository;
+import com.socp.platform.tenant.persistence.TenantScopedRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -16,12 +16,15 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
-public interface AlarmDeliveryRepository extends JpaRepository<AlarmDelivery, String> {
+public interface AlarmDeliveryRepository extends TenantScopedRepository<AlarmDelivery, String> {
+    List<AlarmDelivery> findByTenantId(String tenantId);
 
     List<AlarmDelivery> findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
             String status, Instant nextAttemptAt);
 
     Optional<AlarmDelivery> findByIdAndTenantId(String id, String tenantId);
+
+    List<AlarmDelivery> findByTenantIdAndIdIn(String tenantId, Iterable<String> ids);
 
     List<AlarmDelivery> findByTenantIdAndAlarmIdOrderByDestinationAsc(String tenantId, String alarmId);
 
