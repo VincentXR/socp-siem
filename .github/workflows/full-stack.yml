@@ -32,6 +32,10 @@ jobs:
       # client reinitialization after a broker outage needs more class metadata
       # headroom than the CRUD-oriented services, without increasing all JVMs.
       SOCP_SEARCH_CONFIG_JVM_OPTS: "-Xms16m -Xmx192m -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC"
+      # SOAR loads the Temporal, connector, auth, and JPA stacks in one JVM.
+      # Its steady-state metadata exceeds the generic 128 MiB evidence budget
+      # under concurrent alarm evaluation, so keep the override service-local.
+      SOCP_SOAR_WEB_JVM_OPTS: "-Xms16m -Xmx192m -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC"
       # The PostgreSQL container defaults to 100 connections. Hikari otherwise
       # reserves up to ten per JVM and exhausts the shared database during the
       # 15-service startup burst.
