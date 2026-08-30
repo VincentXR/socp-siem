@@ -1,0 +1,19 @@
+* text=auto
+
+# Keep source, manifests, and executable build gates LF-stable on Windows and
+# Unix alike.  The frontend format gate intentionally rejects CRLF in source
+# files, so repository checkout rules must not reintroduce it on a developer
+# workstation configured with core.autocrlf=true.
+*.java text eol=lf
+*.ts text eol=lf
+*.vue text eol=lf
+*.mjs text eol=lf
+*.py text eol=lf
+*.sh text eol=lf
+*.ps1 text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.xml text eol=lf
+*.sql text eol=lf
+*.md text eol=lf

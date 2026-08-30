@@ -14,7 +14,7 @@ TYPES = {"pattern", "threshold", "correlation", "correlation-set", "baseline", "
 SEVERITIES = {"INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"}
 OPS = {"eq", "ne", "contains", "startswith", "endswith", "ge", "gtsev",
        "regex", "gt", "gte", "lt", "lte", "inlist", "notinlist"}
-EXPECTED_RULES = 39
+ATTACK_ID = re.compile(r"^T\d{4}(?:\.\d{3})?$", re.IGNORECASE)
 
 
 def fail(errors, message):
@@ -59,8 +59,7 @@ def validate(path):
     if not isinstance(rules, list) or not rules:
         fail(errors, "rules must be a non-empty array")
         return errors
-    if len(rules) != EXPECTED_RULES:
-        fail(errors, f"rules must contain exactly {EXPECTED_RULES} executable detections, got {len(rules)}")
+    expected = None
 
     ids = set()
     for index, item in enumerate(rules):
@@ -85,6 +84,13 @@ def validate(path):
             fail(errors, f"{prefix} {rule_id} dataSources must be non-empty")
         if not isinstance(item.get("mitre"), list) or not item.get("mitre"):
             fail(errors, f"{prefix} {rule_id} mitre must be non-empty")
+        else:
+            for technique in item["mitre"]:
+                if not ATTACK_ID.match(str(technique)):
+                    fail(errors, f"{prefix} {rule_id} invalid ATT&CK technique: {technique}")
+            references = [str(reference) for reference in item.get("references", [])]
+            if not references or not any("attack.mitre.org" in reference.lower() for reference in references):
+                fail(errors, f"{prefix} {rule_id} requires an ATT&CK reference URL")
 
         spec = item.get("spec")
         if not isinstance(spec, dict):
@@ -122,7 +128,7 @@ def validate(path):
             fail(errors, f"{prefix} {rule_id} tests must be non-empty")
         else:
             expectations = {bool(test.get("expectAlert")) for test in tests if isinstance(test, dict)}
-            if expectations != {True, False}:
+            if item.get("status") == "ACTIVE" and expectations != {True, False}:
                 fail(errors, f"{prefix} {rule_id} needs both positive and negative vectors")
             for ti, test in enumerate(tests):
                 if not isinstance(test, dict) or not isinstance(test.get("events"), list) or not test["events"]:

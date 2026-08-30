@@ -1,10 +1,6 @@
 package com.socp.asset.collect.persistence.entity;
 
 
-
-import com.socp.asset.collect.persistence.store.*;
-import com.socp.asset.collect.persistence.repository.*;
-import com.socp.asset.collect.persistence.entity.*;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;

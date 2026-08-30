@@ -122,6 +122,8 @@ public class AuthInterceptor implements HandlerInterceptor {
             } catch (Exception missingRole) {
                 role = null;
             }
+            Object permissions = claims.getClaim("permissions");
+            if (permissions != null) request.setAttribute("socp.jwt.permissions", permissions);
         }
 
         String delegatedTenant = verifyServiceIdentity(request);
@@ -154,6 +156,7 @@ public class AuthInterceptor implements HandlerInterceptor {
 
         requireIdentity(handler, delegatedTenant != null, ingestCredential);
         requireRole(handler, role, request.getRequestURI());
+        requirePermission(handler, role, request.getAttribute("socp.jwt.permissions"));
 
         if (tenant != null && !tenant.isBlank()) {
             if (!TenantContext.isValid(tenant)) throw ApiException.unauthorized("Invalid tenant claim");
@@ -180,6 +183,25 @@ public class AuthInterceptor implements HandlerInterceptor {
         }
         log.warn("RBAC rejected path={} role={} required={}",
                 path, effectiveRole, String.join(",", requirement.value()));
+        throw ApiException.forbidden(requirement.message());
+    }
+
+    private void requirePermission(Object handler, String role, Object claimsPermissions) {
+        if (!(handler instanceof HandlerMethod method)) return;
+        RequirePermission requirement = method.getMethodAnnotation(RequirePermission.class);
+        if (requirement == null) requirement = method.getBeanType().getAnnotation(RequirePermission.class);
+        if (requirement == null || requirement.value().length == 0) return;
+        java.util.Set<String> granted = new java.util.HashSet<>(Permission.roleDefaults(role));
+        if (claimsPermissions instanceof java.util.Collection<?> values) {
+            values.forEach(value -> granted.add(String.valueOf(value).toLowerCase(java.util.Locale.ROOT)));
+        } else if (claimsPermissions instanceof String values) {
+            for (String value : values.split("[,\\s]+")) if (!value.isBlank()) {
+                granted.add(value.toLowerCase(java.util.Locale.ROOT));
+            }
+        }
+        for (String required : requirement.value()) {
+            if (granted.contains(required.toLowerCase(java.util.Locale.ROOT))) return;
+        }
         throw ApiException.forbidden(requirement.message());
     }
 

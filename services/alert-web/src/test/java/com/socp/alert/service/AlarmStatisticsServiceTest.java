@@ -1,10 +1,12 @@
 package com.socp.alert.service;
 
-import com.socp.alert.api.controller.*;
-import com.socp.alert.api.request.*;
-import com.socp.alert.domain.*;
-import com.socp.alert.repository.*;
-import com.socp.alert.service.*;
+import com.socp.alert.domain.Alarm;
+import com.socp.alert.domain.AlarmRiskLevelCount;
+import com.socp.alert.domain.AlarmRuleCount;
+import com.socp.alert.domain.AlarmSeverityCount;
+import com.socp.alert.domain.Severity;
+import com.socp.alert.repository.AlarmRepository;
+
 
 import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.AfterEach;

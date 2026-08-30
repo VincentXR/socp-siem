@@ -1,6 +1,7 @@
 package com.socp.threat.web.api.controller;
 
-import com.socp.threat.web.api.request.*;
+import com.socp.threat.web.api.request.IocImportRequest;
+import com.socp.threat.web.api.request.IocRequest;
 import com.socp.threat.web.domain.Ioc;
 import com.socp.threat.web.persistence.store.IocStore;
 import org.junit.jupiter.api.Test;

@@ -1,9 +1,6 @@
 package com.socp.search.config.api.controller;
 
 
-
-
-
 import com.socp.search.config.domain.ReferenceSet;
 import com.socp.search.config.api.request.ReferenceEntryRequest;
 import com.socp.search.config.api.request.ReferenceSetCreateRequest;

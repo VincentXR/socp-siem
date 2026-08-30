@@ -1,6 +1,5 @@
 package com.socp.search.config.infrastructure.kafka;
 
-import com.socp.search.config.config.IngestRuntimeProperties;
 import com.socp.search.config.domain.IngestionOutboxEvent;
 import com.socp.search.config.persistence.repository.IngestionOutboxRepository;
 import com.socp.platform.tenant.context.TenantContext;

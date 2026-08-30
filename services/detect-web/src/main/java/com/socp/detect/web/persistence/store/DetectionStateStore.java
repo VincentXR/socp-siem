@@ -1,13 +1,10 @@
 package com.socp.detect.web.persistence.store;
 
 
-
-import com.socp.detect.web.persistence.store.*;
-import com.socp.detect.web.persistence.repository.*;
-import com.socp.detect.web.persistence.entity.*;
 import com.socp.rule.model.SecurityEvent;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Set;
 import java.util.List;
 import java.util.function.Consumer;
@@ -136,5 +133,23 @@ public interface DetectionStateStore {
     /** Human-readable configured replay window for health/operations output. */
     default String recoveryWindow() {
         return "unknown";
+    }
+
+    /** Whether the store can replay completed rows after a checkpoint cut. */
+    default boolean supportsCheckpointReplay() {
+        return false;
+    }
+
+    /**
+     * Replay completed events after a durable state checkpoint.  The default
+     * is deliberately disabled so an in-memory/test store cannot accidentally
+     * double-apply a restored snapshot.
+     */
+    default void replayCompletedAfter(String tenantId, Instant checkpoint,
+                                      Set<Integer> partitions,
+                                      Consumer<List<SecurityEvent>> batchConsumer) {
+        if (!supportsCheckpointReplay()) {
+            throw new UnsupportedOperationException("checkpoint replay is not supported by this state store");
+        }
     }
 }

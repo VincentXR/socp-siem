@@ -1,6 +1,5 @@
 package com.socp.soc.api.controller;
 
-import com.socp.soc.api.request.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -40,7 +39,9 @@ class ComplianceControllerTest {
 
     @Test
     void frameworksExposeAllBuiltInCatalogs() throws Exception {
-        mvc.perform(get("/api/v1/compliance/frameworks").header(HttpHeaders.AUTHORIZATION, BEARER))
+        mvc.perform(get("/api/v1/compliance/frameworks")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "viewer"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.frameworks.length()").value(5))
                 .andExpect(jsonPath("$.frameworks[0].name").value("PCI-DSS"))

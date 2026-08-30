@@ -7,7 +7,6 @@ import com.socp.report.web.service.ReportService;
 import com.socp.report.web.persistence.store.ReportObjectStore;
 import com.socp.platform.tenant.context.TenantContext;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -31,7 +30,11 @@ public class ReportController {
     public ReportController(ReportService service, ReportObjectStore objectStore) {
         this.service = service;
         this.objectStore = objectStore;
-        this.mapper = new ObjectMapper();
+        // This controller serializes report provenance (Instant) into archived
+        // objects.  The application ObjectMapper is configured by Spring, but
+        // this controller is also constructed directly in slice/unit tests and
+        // must retain the same Java time contract there.
+        this.mapper = new ObjectMapper().findAndRegisterModules();
     }
 
     @GetMapping("/daily")

@@ -1,10 +1,6 @@
 package com.socp.detect.web.persistence.store;
 
 
-
-import com.socp.detect.web.persistence.store.*;
-import com.socp.detect.web.persistence.repository.*;
-import com.socp.detect.web.persistence.entity.*;
 import com.socp.rule.config.RuleSpec;
 import com.socp.rule.engine.AlertSink;
 import com.socp.rule.engine.RuleEngine;

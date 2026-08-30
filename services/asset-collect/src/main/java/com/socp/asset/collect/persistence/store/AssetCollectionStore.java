@@ -1,10 +1,8 @@
 package com.socp.asset.collect.persistence.store;
 
 
-
-import com.socp.asset.collect.persistence.store.*;
-import com.socp.asset.collect.persistence.repository.*;
-import com.socp.asset.collect.persistence.entity.*;
+import com.socp.asset.collect.persistence.repository.AssetCollectionRepository;
+import com.socp.asset.collect.persistence.entity.AssetCollectionEntity;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;

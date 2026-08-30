@@ -1,6 +1,7 @@
 package com.socp.attack.web.api.controller;
 
-import com.socp.attack.web.api.request.*;
+import com.socp.attack.web.api.request.CoverageRequest;
+import com.socp.attack.web.api.request.TechniqueUpdateRequest;
 import com.socp.attack.web.domain.Technique;
 import com.socp.attack.web.persistence.store.AttackStore;
 import com.socp.platform.audit.api.AuditOperation;

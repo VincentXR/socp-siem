@@ -1,6 +1,5 @@
 package com.socp.asset.collect.api.controller;
 
-import com.socp.asset.collect.api.request.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.asset.collect.collector.AssetScanner;
 import com.socp.asset.collect.persistence.store.AssetCollectionStore;

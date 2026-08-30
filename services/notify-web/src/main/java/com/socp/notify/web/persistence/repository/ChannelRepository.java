@@ -1,10 +1,7 @@
 package com.socp.notify.web.persistence.repository;
 
 
-
-import com.socp.notify.web.persistence.store.*;
-import com.socp.notify.web.persistence.repository.*;
-import com.socp.notify.web.persistence.entity.*;
+import com.socp.notify.web.persistence.entity.ChannelEntity;
 import com.socp.platform.tenant.persistence.TenantScopedRepository;
 import org.springframework.stereotype.Repository;
 

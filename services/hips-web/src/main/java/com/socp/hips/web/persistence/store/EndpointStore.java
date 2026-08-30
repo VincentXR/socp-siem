@@ -1,10 +1,8 @@
 package com.socp.hips.web.persistence.store;
 
 
-
-import com.socp.hips.web.persistence.store.*;
-import com.socp.hips.web.persistence.repository.*;
-import com.socp.hips.web.persistence.entity.*;
+import com.socp.hips.web.persistence.repository.EndpointRepository;
+import com.socp.hips.web.persistence.entity.EndpointEntity;
 import com.socp.hips.web.domain.Endpoint;
 import com.socp.platform.tenant.context.TenantContext;
 import jakarta.annotation.PostConstruct;

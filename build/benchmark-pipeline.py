@@ -46,6 +46,20 @@ from auth_client import login_token  # noqa: E402
 # can be written to the failure sidecar instead of losing the useful before /
 # after snapshots.
 LAST_BENCHMARK_CONTEXT = None
+MANIFEST_PATH = Path(__file__).resolve().parents[1] / \
+    "services/detect-web/src/main/resources/detection-content/manifest.json"
+
+
+def manifest_rule_count(path=MANIFEST_PATH):
+    """Read the executable rule count from the versioned content pack."""
+    try:
+        with open(path, "r", encoding="utf-8") as manifest:
+            rules = json.load(manifest).get("rules", [])
+        if not isinstance(rules, list) or not rules:
+            raise ValueError("manifest rules must be a non-empty list")
+        return len(rules)
+    except (OSError, ValueError, json.JSONDecodeError) as failure:
+        raise RuntimeError(f"unable to read detection manifest: {failure}") from failure
 
 
 def request(url, method="GET", body=None, headers=None, timeout=30):
@@ -613,12 +627,15 @@ def main():
     parser.add_argument("--instances", type=int, default=1,
                         help="number of Detection instances used for this run")
     parser.add_argument("--rules", type=int, default=None,
-                        help="rule count configured for this run, if known")
+                        help="assertion for the manifest rule count (auto-read by default)")
     parser.add_argument("--offered-eps", type=float, default=None,
                         help="pace e2e ingestion at this offered load instead of burst mode")
     parser.add_argument("--duration", type=float, default=180.0,
                         help="steady-state offered-load duration in seconds")
     args = parser.parse_args()
+    manifest_rules = manifest_rule_count()
+    if args.rules is not None and args.rules != manifest_rules:
+        parser.error(f"--rules={args.rules} does not match manifest rule count {manifest_rules}")
     if args.offered_eps is not None:
         if args.mode != "e2e" or args.offered_eps <= 0 or args.duration <= 0:
             parser.error("--offered-eps requires e2e mode and positive rate/duration")
@@ -700,7 +717,8 @@ def main():
         "recordedAt": datetime.now(timezone.utc).isoformat(),
         "machine": profile,
         "detectionInstances": args.instances,
-        "configuredRules": args.rules,
+        "configuredRules": manifest_rules,
+        "rulesAssertion": args.rules if args.rules is not None else manifest_rules,
         "mode": args.mode,
         "requested": args.count,
         "batchSize": args.batch_size,

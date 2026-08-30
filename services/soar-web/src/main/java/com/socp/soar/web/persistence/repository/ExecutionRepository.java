@@ -1,10 +1,7 @@
 package com.socp.soar.web.persistence.repository;
 
 
-
-import com.socp.soar.web.persistence.store.*;
-import com.socp.soar.web.persistence.repository.*;
-import com.socp.soar.web.persistence.entity.*;
+import com.socp.soar.web.persistence.entity.ExecutionEntity;
 import com.socp.platform.tenant.persistence.TenantScopedRepository;
 
 import java.util.List;

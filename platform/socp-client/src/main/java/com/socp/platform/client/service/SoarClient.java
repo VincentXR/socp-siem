@@ -1,8 +1,6 @@
 package com.socp.platform.client.service;
 
 
-
-
 import com.socp.platform.client.http.ServiceCall;
 import com.socp.platform.client.http.SocpHttpClient;
 import org.springframework.stereotype.Component;

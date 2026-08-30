@@ -1,10 +1,6 @@
 package com.socp.detect.web.persistence.store;
 
 
-
-import com.socp.detect.web.persistence.store.*;
-import com.socp.detect.web.persistence.repository.*;
-import com.socp.detect.web.persistence.entity.*;
 import com.socp.rule.config.RuleSpec;
 import com.socp.rule.engine.Watchlists;
 import com.socp.rule.model.SecurityEvent;
@@ -89,6 +85,25 @@ class DetectionContentCatalogTest {
                 rule.close();
             }
         }
+    }
+
+    @Test
+    void statefulRulesDeclareTheSameGroupingAndKafkaRoutingDimension() {
+        Map<String, Object> legacy = new LinkedHashMap<>();
+        legacy.put("id", "legacy-threshold");
+        legacy.put("name", "legacy");
+        legacy.put("type", "threshold");
+        legacy.put("severity", "HIGH");
+        legacy.put("version", "1");
+        legacy.put("owner", "test");
+        legacy.put("keyField", "host");
+        legacy.put("threshold", 2);
+        assertEquals("host", DetectionContentCatalog.enrich(legacy).get("routingField"));
+
+        Map<String, Object> invalid = new LinkedHashMap<>(legacy);
+        invalid.put("routingField", "user");
+        assertTrue(DetectionContentCatalog.validateSpec(invalid).stream()
+                .anyMatch(error -> error.contains("keyField and routingField must match")));
     }
 
     @SuppressWarnings("unchecked")

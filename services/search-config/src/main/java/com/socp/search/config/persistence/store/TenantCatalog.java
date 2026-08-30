@@ -1,10 +1,6 @@
 package com.socp.search.config.persistence.store;
 
 
-
-import com.socp.search.config.persistence.store.*;
-import com.socp.search.config.persistence.repository.*;
-import com.socp.search.config.persistence.entity.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.tenant.context.TenantContext;
 

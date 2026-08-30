@@ -161,6 +161,12 @@ jobs:
           mkdir -p .cache
           docker compose -f infra/docker-compose.yml logs --no-color > .cache/compose.log 2>&1 || true
 
+      - name: Collect commit-scoped full-stack evidence
+        if: always()
+        run: python3 build/collect-evidence.py --output .cache/evidence \
+          --benchmark .cache/chaos/dependency-matrix.json \
+          --benchmark .cache/chaos/multi-instance.json
+
       - name: Upload verification logs
         if: always()
         uses: actions/upload-artifact@v4

@@ -1,8 +1,7 @@
 package com.socp.detect.model.persistence.repository;
 
 
-import com.socp.detect.model.persistence.repository.*;
-import com.socp.detect.model.persistence.entity.*;
+import com.socp.detect.model.persistence.entity.AnalyzedEntity;
 import com.socp.platform.tenant.persistence.TenantScopedRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;

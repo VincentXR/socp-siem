@@ -4,6 +4,8 @@ import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.rule.state.RuleStateMap;
+import com.socp.rule.state.StateSnapshotCodec;
+import com.socp.rule.state.StatefulRule;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -19,7 +21,7 @@ import java.util.function.Predicate;
  *
  * steps 为有序谓词列表，必须按序命中；窗口内未走完则过期重置。由 com.siem 迁移。
  */
-public final class CorrelationRule extends AbstractRule {
+public final class CorrelationRule extends AbstractRule implements StatefulRule {
 
     private final Function<SecurityEvent, String> keyOf;
     private final List<Predicate<SecurityEvent>> steps;
@@ -107,5 +109,54 @@ public final class CorrelationRule extends AbstractRule {
         Map<String, Object> out = super.stats();
         out.putAll(states.stats());
         return out;
+    }
+
+    @Override
+    public String stateVersion() {
+        return "correlation-v1";
+    }
+
+    @Override
+    public byte[] snapshotState() {
+        Map<String, Object> out = new java.util.LinkedHashMap<>();
+        states.forEach((key, state) -> {
+            synchronized (state) {
+                Map<String, Object> value = new java.util.LinkedHashMap<>();
+                value.put("step", state.step);
+                value.put("firstTs", state.firstTs == null ? null : state.firstTs.toString());
+                value.put("lastTs", state.lastTs == null ? null : state.lastTs.toString());
+                value.put("evidence", state.evidence.stream().map(StateSnapshotCodec::event).toList());
+                out.put(key, value);
+            }
+        });
+        return StateSnapshotCodec.write(out);
+    }
+
+    @Override
+    public void restoreState(byte[] serializedState) {
+        StateSnapshotCodec.read(serializedState).forEach((key, raw) -> {
+            if (!(raw instanceof Map<?, ?> values)) return;
+            State state = states.get(key, State::new);
+            synchronized (state) {
+                state.step = values.get("step") instanceof Number n ? n.intValue() : 0;
+                state.firstTs = parseInstant(values.get("firstTs"));
+                state.lastTs = parseInstant(values.get("lastTs"));
+                state.evidence.clear();
+                Object evidence = values.get("evidence");
+                if (evidence instanceof List<?> items) {
+                    items.stream().map(StateSnapshotCodec::event).filter(java.util.Objects::nonNull)
+                            .limit(Math.max(1, steps.size())).forEach(state.evidence::add);
+                }
+            }
+        });
+    }
+
+    private static Instant parseInstant(Object value) {
+        if (value == null) return null;
+        try {
+            return Instant.parse(String.valueOf(value));
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 }

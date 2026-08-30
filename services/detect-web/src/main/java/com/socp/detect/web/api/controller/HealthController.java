@@ -1,8 +1,6 @@
 package com.socp.detect.web.api.controller;
 
 
-import com.socp.detect.web.api.response.*;
-import com.socp.detect.web.api.request.*;
 import com.socp.platform.error.api.ApiResult;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;

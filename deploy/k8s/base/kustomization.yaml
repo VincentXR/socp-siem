@@ -9,3 +9,6 @@ resources:
   - search-config.yaml
   - detect-web.yaml
   - alert-web.yaml
+  - autoscaling.yaml
+  - network-policies.yaml
+  - slo-alerts.yaml

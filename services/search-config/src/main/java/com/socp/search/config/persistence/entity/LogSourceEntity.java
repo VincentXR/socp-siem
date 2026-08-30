@@ -1,10 +1,8 @@
 package com.socp.search.config.persistence.entity;
 
 
+import com.socp.search.config.persistence.store.LogSourceStore;
 
-import com.socp.search.config.persistence.store.*;
-import com.socp.search.config.persistence.repository.*;
-import com.socp.search.config.persistence.entity.*;
 import com.socp.platform.tenant.context.TenantContext;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;

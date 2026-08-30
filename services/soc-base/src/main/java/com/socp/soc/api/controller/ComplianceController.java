@@ -1,6 +1,6 @@
 package com.socp.soc.api.controller;
 
-import com.socp.soc.api.request.*;
+import com.socp.soc.api.request.CoverageRequest;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -22,6 +22,8 @@ import java.util.Set;
 @RestController
 @RequestMapping("/api/v1/compliance")
 public class ComplianceController {
+
+    private static final String CONTENT_VERSION = "2026.08.30";
 
     /** 框架 -> 控制项（id / 名称 / 建议映射的规则 ID 列表）。 */
     private static final Map<String, List<Control>> FRAMEWORKS = build();
@@ -67,6 +69,7 @@ public class ComplianceController {
     }
 
     @GetMapping("/frameworks")
+    @com.socp.platform.auth.security.RequireRole({"admin", "analyst", "viewer"})
     public Map<String, Object> frameworks() {
         Map<String, Object> out = new LinkedHashMap<>();
         List<Map<String, Object>> list = new ArrayList<>();
@@ -77,6 +80,12 @@ public class ComplianceController {
             list.add(f);
         }
         out.put("frameworks", list);
+        out.put("contentVersion", CONTENT_VERSION);
+        out.put("evidencePolicy", Map.of(
+                "source", "detection-content/manifest.json",
+                "assessment", "rule-mapping",
+                "owner", "security-engineering",
+                "validUntil", "2027-12-31"));
         return out;
     }
 
@@ -103,6 +112,13 @@ public class ComplianceController {
                 cm.put("name", c.name);
                 cm.put("covered", covered);
                 cm.put("mappedRules", c.ruleIds);
+                cm.put("evidence", Map.of(
+                        "source", "detection-content/manifest.json",
+                        "ruleIds", c.ruleIds,
+                        "contentVersion", CONTENT_VERSION));
+                cm.put("assessment", covered ? "covered" : "gap");
+                cm.put("owner", c.owner);
+                cm.put("validUntil", c.validUntil);
                 controls.add(cm);
             }
             Map<String, Object> fm = new LinkedHashMap<>();
@@ -116,9 +132,15 @@ public class ComplianceController {
         out.put("totalControls", totalControls);
         out.put("coveredControls", coveredControls);
         out.put("coverage", totalControls == 0 ? 0 : (int) Math.round(100.0 * coveredControls / totalControls));
+        out.put("contentVersion", CONTENT_VERSION);
+        out.put("generatedAt", java.time.Instant.now().toString());
         return out;
     }
 
-    private record Control(String id, String name, List<String> ruleIds) {
+    private record Control(String id, String name, List<String> ruleIds,
+                           String owner, String validUntil) {
+        private Control(String id, String name, List<String> ruleIds) {
+            this(id, name, ruleIds, "security-engineering", "2027-12-31");
+        }
     }
 }

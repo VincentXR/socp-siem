@@ -59,6 +59,7 @@ export const enUS: LocaleMessages = {
     copy: 'Copy',
     exportCsv: 'Export CSV',
     exportJson: 'Export JSON',
+    loadMore: 'Load more',
     refresh: 'Refresh',
     total: 'Total {total} items',
     status: 'Status',

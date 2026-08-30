@@ -2,7 +2,6 @@ package com.socp.search.config.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.search.config.domain.SearchEvent;
-import com.socp.search.config.infrastructure.kafka.KafkaEventProducer;
 import com.socp.search.config.infrastructure.kafka.IngestionOutboxPublisher;
 import com.socp.search.config.domain.IngestionOutboxEvent;
 import com.socp.search.config.persistence.repository.SearchEventRepository;

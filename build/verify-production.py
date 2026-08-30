@@ -25,6 +25,7 @@ REQUIRED_K8S = {
     "search-config.yaml",
     "detect-web.yaml",
     "alert-web.yaml",
+    "autoscaling.yaml",
     "kustomization.yaml",
 }
 
@@ -54,7 +55,9 @@ def main() -> int:
             text = path.read_text(encoding="utf-8")
             if re.search(r"image:\s+[^\n]*:latest\b", text):
                 errors.append(f"{path.relative_to(ROOT)} uses mutable :latest")
-            if "kind: Deployment" not in text:
+            # HPA manifests refer to a Deployment in scaleTargetRef; only a
+            # top-level workload document should receive pod hardening checks.
+            if not re.search(r"^kind:\s*Deployment\s*$", text, re.MULTILINE):
                 continue
             checks = {
                 "RollingUpdate strategy": r"strategy:\s*[\s\S]*?type:\s*RollingUpdate",
@@ -83,6 +86,13 @@ def main() -> int:
         for workload in ("api-gateway.yaml", "search-config.yaml", "detect-web.yaml", "alert-web.yaml"):
             if not re.search(rf"^\s*-\s+{re.escape(workload)}\s*$", kustomization, re.MULTILINE):
                 errors.append(f"Kubernetes kustomization omits {workload}")
+        if not re.search(r"^\s*-\s+autoscaling\.yaml\s*$", kustomization, re.MULTILINE):
+            errors.append("Kubernetes kustomization omits autoscaling.yaml")
+
+        autoscaling = (K8S_DIR / "autoscaling.yaml").read_text(encoding="utf-8")
+        for workload in ("api-gateway", "search-config", "detect-web", "alert-web"):
+            if not re.search(rf"kind:\s+HorizontalPodAutoscaler[\s\S]*?name:\s+{re.escape(workload)}\b", autoscaling):
+                errors.append(f"autoscaling.yaml lacks HPA for {workload}")
 
         runtime = (K8S_DIR / "runtime-config.yaml").read_text(encoding="utf-8")
         required_routes = {

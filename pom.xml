@@ -58,6 +58,7 @@
         <jacoco.version>0.8.13</jacoco.version>
         <spotbugs-maven-plugin.version>4.10.3.0</spotbugs-maven-plugin.version>
         <maven-enforcer-plugin.version>3.5.0</maven-enforcer-plugin.version>
+        <maven-checkstyle-plugin.version>3.6.0</maven-checkstyle-plugin.version>
         <maven-surefire-plugin.version>3.5.4</maven-surefire-plugin.version>
         <mockito.version>5.17.0</mockito.version>
         <dependency-check.version>12.2.2</dependency-check.version>
@@ -461,6 +462,25 @@
                             <threshold>High</threshold>
                             <failOnError>true</failOnError>
                             <excludeFilterFile>${maven.multiModuleProjectDirectory}/build/spotbugs-exclude.xml</excludeFilterFile>
+                        </configuration>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-checkstyle-plugin</artifactId>
+                        <version>${maven-checkstyle-plugin.version}</version>
+                        <executions>
+                            <execution>
+                                <id>check-import-policy</id>
+                                <phase>verify</phase>
+                                <goals><goal>check</goal></goals>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <configLocation>${maven.multiModuleProjectDirectory}/build/checkstyle.xml</configLocation>
+                            <includeTestSourceDirectory>false</includeTestSourceDirectory>
+                            <failOnViolation>true</failOnViolation>
+                            <failsOnError>true</failsOnError>
+                            <consoleOutput>true</consoleOutput>
                         </configuration>
                     </plugin>
                 </plugins>

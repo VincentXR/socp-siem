@@ -1,10 +1,8 @@
 package com.socp.detect.web.persistence.store;
 
 
-
-import com.socp.detect.web.persistence.store.*;
-import com.socp.detect.web.persistence.repository.*;
-import com.socp.detect.web.persistence.entity.*;
+import com.socp.detect.web.persistence.repository.WatchlistRepository;
+import com.socp.detect.web.persistence.entity.WatchlistEntity;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.rule.engine.WatchlistStateStore;

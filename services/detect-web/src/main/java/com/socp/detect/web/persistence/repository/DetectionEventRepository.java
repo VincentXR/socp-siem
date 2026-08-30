@@ -1,10 +1,7 @@
 package com.socp.detect.web.persistence.repository;
 
 
-
-import com.socp.detect.web.persistence.store.*;
-import com.socp.detect.web.persistence.repository.*;
-import com.socp.detect.web.persistence.entity.*;
+import com.socp.detect.web.persistence.entity.DetectionEventEntity;
 import org.springframework.data.domain.Pageable;
 import com.socp.platform.tenant.persistence.TenantScopedRepository;
 import org.springframework.data.jpa.repository.Modifying;
@@ -33,6 +30,17 @@ public interface DetectionEventRepository extends TenantScopedRepository<Detecti
             @Param("after") Instant after,
             Pageable pageable);
 
+    @Query("select e from DetectionEventEntity e "
+            + "where e.tenantId = :tenant and e.status = :status "
+            + "and e.kafkaPartition in :partitions and e.occurredAt > :after "
+            + "order by e.kafkaPartition asc, e.kafkaOffset asc, e.occurredAt asc, e.sourceEventId asc")
+    List<DetectionEventEntity> findByTenantIdAndStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
+            @Param("tenant") String tenant,
+            @Param("status") String status,
+            @Param("partitions") Set<Integer> partitions,
+            @Param("after") Instant after,
+            Pageable pageable);
+
     long countByStatus(String status);
 
     long countByTenantIdAndStatus(String tenantId, String status);
@@ -42,6 +50,20 @@ public interface DetectionEventRepository extends TenantScopedRepository<Detecti
 
     List<DetectionEventEntity> findByTenantIdAndStatusAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
             String tenantId, String status, Instant after, Pageable pageable);
+
+    @Query("select e from DetectionEventEntity e where e.tenantId = :tenant and e.status = :status "
+            + "and e.completedAt > :after order by e.completedAt asc, e.sourceEventId asc")
+    List<DetectionEventEntity> findByTenantIdAndStatusAndCompletedAtAfterOrderByCompletedAt(
+            @Param("tenant") String tenantId, @Param("status") String status,
+            @Param("after") Instant after, Pageable pageable);
+
+    @Query("select e from DetectionEventEntity e where e.tenantId = :tenant and e.status = :status "
+            + "and e.kafkaPartition in :partitions and e.completedAt > :after "
+            + "order by e.completedAt asc, e.sourceEventId asc")
+    List<DetectionEventEntity> findByTenantIdAndStatusAndKafkaPartitionInAndCompletedAtAfterOrderByCompletedAt(
+            @Param("tenant") String tenantId, @Param("status") String status,
+            @Param("partitions") Set<Integer> partitions, @Param("after") Instant after,
+            Pageable pageable);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional

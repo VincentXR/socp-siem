@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, onMounted, provide, ref, watch } from 'vue'
 import ElConfigProvider from 'element-plus/es/components/config-provider/index.mjs'
 import LoginView from './LoginView.vue'

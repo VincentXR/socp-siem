@@ -1,7 +1,6 @@
 package com.socp.soar.web.config;
 import com.socp.soar.web.temporal.PlaybookActivity;
 import com.socp.soar.web.temporal.PlaybookWorkflowImpl;
-import com.socp.soar.web.config.TemporalProperties;
 import io.temporal.client.WorkflowClient;
 import io.temporal.client.WorkflowClientOptions;
 import io.temporal.serviceclient.WorkflowServiceStubs;

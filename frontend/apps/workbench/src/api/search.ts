@@ -26,8 +26,13 @@ export const deleteCategory = (id: string) => del(`/search-config/api/v1/meta/ca
 export const listFields = () => get<FieldDef[]>('/search-config/api/v1/meta/fields')
 export const createField = (f: Partial<FieldDef>) => post<FieldDef>('/search-config/api/v1/meta/fields', f)
 export const deleteField = (id: string) => del(`/search-config/api/v1/meta/fields/${encodeURIComponent(id)}`)
-export const splSearch = (q: string, options?: ApiRequestOptions) => get<SearchResult>(withQuery('/search-config/api/v1/search', { q }), options)
-export const exportSearch = (q: string, format = 'json') => downloadFile(withQuery('/search-config/api/v1/search/export', { q, format }), `search.${format}`)
+export type SearchRequestOptions = ApiRequestOptions & { cursor?: string | null; limit?: number }
+export const splSearch = (q: string, options: SearchRequestOptions = {}) => {
+  const { cursor, limit, ...requestOptions } = options
+  return get<SearchResult>(withQuery('/search-config/api/v1/search', { q, cursor, limit }), requestOptions)
+}
+export const exportSearch = (q: string, format = 'json', options: Pick<SearchRequestOptions, 'cursor' | 'limit'> = {}) =>
+  downloadFile(withQuery('/search-config/api/v1/search/export', { q, format, ...options }), `search.${format}`)
 
 export const listRefSets = () => get<ReferenceSet[]>('/search-config/api/v1/reference-sets')
 export const createRefSet = (r: { name: string; description?: string; entries: string[] }) => post<ReferenceSet>('/search-config/api/v1/reference-sets', r)

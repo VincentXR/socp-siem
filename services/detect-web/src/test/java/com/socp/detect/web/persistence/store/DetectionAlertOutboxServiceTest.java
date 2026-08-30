@@ -1,10 +1,7 @@
 package com.socp.detect.web.persistence.store;
 
 
-
-import com.socp.detect.web.persistence.store.*;
-import com.socp.detect.web.persistence.repository.*;
-import com.socp.detect.web.persistence.entity.*;
+import com.socp.detect.web.persistence.repository.DetectionAlertOutboxRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;

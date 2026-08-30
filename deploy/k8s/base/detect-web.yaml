@@ -22,6 +22,15 @@ spec:
     spec:
       serviceAccountName: socp-service
       terminationGracePeriodSeconds: 45
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: topology.kubernetes.io/zone
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: detect-web
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001

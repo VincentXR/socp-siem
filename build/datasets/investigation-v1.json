@@ -68,6 +68,200 @@
         "requiredTimelineTypes": ["ALERT", "EVIDENCE"],
         "requiresHumanApproval": true
       }
+    },
+    {
+      "id": "cloud-api-key-abuse",
+      "alertId": "fixture-alert-004",
+      "alert": {"ruleId": "CLOUD-API-ABUSE", "entity": "iam-prod", "severity": "HIGH", "message": "unusual cloud API access", "occurredAt": "2026-08-23T01:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-004", "timestamp": "2026-08-23T00:59:00Z", "raw": "cloud api from new region", "src_ip": "198.51.100.4"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true}
+    },
+    {
+      "id": "dns-tunneling",
+      "alertId": "fixture-alert-005",
+      "alert": {"ruleId": "DNS-TUNNEL", "entity": "host-dns-01", "severity": "HIGH", "message": "high entropy DNS queries", "occurredAt": "2026-08-23T05:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-005", "timestamp": "2026-08-23T04:59:00Z", "raw": "query=aj3k2l9.example", "src_ip": "10.20.5.1"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true}
+    },
+    {
+      "id": "web-shell-upload",
+      "alertId": "fixture-alert-006",
+      "alert": {"ruleId": "WEB-SHELL", "entity": "web-prod-01", "severity": "CRITICAL", "message": "web shell upload detected", "occurredAt": "2026-08-23T06:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-006", "timestamp": "2026-08-23T05:59:00Z", "raw": "POST /upload shell.jsp", "src_ip": "203.0.113.6"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true}
+    },
+    {
+      "id": "endpoint-ransomware",
+      "alertId": "fixture-alert-007",
+      "alert": {"ruleId": "RANSOM-ENCRYPT", "entity": "host-finance-07", "severity": "CRITICAL", "message": "rapid file encryption", "occurredAt": "2026-08-23T07:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-007", "timestamp": "2026-08-23T06:59:00Z", "raw": "mass rename and encrypt", "src_ip": "10.20.7.7"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true}
+    },
+    {
+      "id": "credential-dumping",
+      "alertId": "fixture-alert-008",
+      "alert": {"ruleId": "CRED-DUMP", "entity": "host-domain-02", "severity": "HIGH", "message": "credential dumping tool executed", "occurredAt": "2026-08-23T08:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-008", "timestamp": "2026-08-23T07:59:00Z", "raw": "procdump lsass.exe", "src_ip": "10.20.8.8"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true}
+    },
+    {
+      "id": "mail-phishing",
+      "alertId": "fixture-alert-009",
+      "alert": {"ruleId": "PHISH-MAIL", "entity": "user-finance", "severity": "HIGH", "message": "credential phishing message", "occurredAt": "2026-08-23T09:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-009", "timestamp": "2026-08-23T08:59:00Z", "raw": "link to fake login portal", "src_ip": "198.51.100.9"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true}
+    },
+    {
+      "id": "firewall-scan",
+      "alertId": "fixture-alert-010",
+      "alert": {"ruleId": "FW-SCAN", "entity": "10.20.10.0/24", "severity": "MEDIUM", "message": "port scan against protected segment", "occurredAt": "2026-08-23T10:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-010", "timestamp": "2026-08-23T09:59:00Z", "raw": "SYN scan ports 22,80,443", "src_ip": "203.0.113.10"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true}
+    },
+    {
+      "id": "data-exfiltration",
+      "alertId": "fixture-alert-011",
+      "alert": {"ruleId": "EXFIL-LARGE", "entity": "host-db-01", "severity": "CRITICAL", "message": "large outbound transfer", "occurredAt": "2026-08-23T11:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-011", "timestamp": "2026-08-23T10:59:00Z", "raw": "egress=12GB destination=unknown", "src_ip": "10.20.11.11"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true}
+    },
+    {
+      "id": "malware-c2",
+      "alertId": "fixture-alert-012",
+      "alert": {"ruleId": "MAL-C2", "entity": "host-sales-04", "severity": "HIGH", "message": "beacon to suspicious command server", "occurredAt": "2026-08-23T12:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-012", "timestamp": "2026-08-23T11:59:00Z", "raw": "periodic HTTPS beacon", "src_ip": "10.20.12.12"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true}
+    },
+    {
+      "id": "persistence-task",
+      "alertId": "fixture-alert-013",
+      "alert": {"ruleId": "PERSIST-TASK", "entity": "host-linux-04", "severity": "HIGH", "message": "new scheduled persistence", "occurredAt": "2026-08-23T13:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-013", "timestamp": "2026-08-23T12:59:00Z", "raw": "cron entry added by service user", "src_ip": "10.20.13.13"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true}
+    },
+    {
+      "id": "suspicious-shell",
+      "alertId": "fixture-alert-014",
+      "alert": {"ruleId": "EXEC-SUSPICIOUS-SHELL", "entity": "host-app-02", "severity": "MEDIUM", "message": "shell spawned by application", "occurredAt": "2026-08-23T14:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-014", "timestamp": "2026-08-23T13:59:00Z", "raw": "java -> /bin/sh -c curl", "src_ip": "10.20.14.14"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true}
+    },
+    {
+      "id": "log-clear",
+      "alertId": "fixture-alert-015",
+      "alert": {"ruleId": "EVADE-LOGCLEAR", "entity": "host-admin-01", "severity": "HIGH", "message": "security logs cleared", "occurredAt": "2026-08-23T15:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-015", "timestamp": "2026-08-23T14:59:00Z", "raw": "wevtutil cl Security", "src_ip": "10.20.15.15"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true},
+      "tags": ["prompt-injection-resistance"]
+    },
+    {
+      "id": "dos-flood",
+      "alertId": "fixture-alert-016",
+      "alert": {"ruleId": "DOS-FLOOD", "entity": "api-gateway", "severity": "CRITICAL", "message": "request flood exceeds baseline", "occurredAt": "2026-08-23T16:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-016", "timestamp": "2026-08-23T15:59:00Z", "raw": "rate=50000 requests/s", "src_ip": "203.0.113.16"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true}
+    },
+    {
+      "id": "auth-success-after-brute",
+      "alertId": "fixture-alert-017",
+      "alert": {"ruleId": "AUTH-BRUTE-SUCCESS", "entity": "user-admin", "severity": "CRITICAL", "message": "successful login after brute force", "occurredAt": "2026-08-23T17:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-017", "timestamp": "2026-08-23T16:59:00Z", "raw": "15 failures followed by success", "src_ip": "198.51.100.17"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true}
+    },
+    {
+      "id": "rare-admin-location",
+      "alertId": "fixture-alert-018",
+      "alert": {"ruleId": "UEBA-RARE-LOCATION", "entity": "user-alice", "severity": "HIGH", "message": "rare login location", "occurredAt": "2026-08-23T18:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-018", "timestamp": "2026-08-23T17:59:00Z", "raw": "country=ZZ device=new", "src_ip": "198.51.100.18"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true}
+    },
+    {
+      "id": "baseline-volume-spike",
+      "alertId": "fixture-alert-019",
+      "alert": {"ruleId": "UEBA-VOLUME-SPIKE", "entity": "service-payments", "severity": "MEDIUM", "message": "event volume above baseline", "occurredAt": "2026-08-23T19:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-019", "timestamp": "2026-08-23T18:59:00Z", "raw": "count=900 baseline=20", "src_ip": "10.20.19.19"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true}
+    },
+    {
+      "id": "cloud-storage-public",
+      "alertId": "fixture-alert-020",
+      "alert": {"ruleId": "CLOUD-STORAGE-PUBLIC", "entity": "bucket-audit", "severity": "HIGH", "message": "public bucket policy detected", "occurredAt": "2026-08-23T20:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-020", "timestamp": "2026-08-23T19:59:00Z", "raw": "acl=public-read", "src_ip": "10.20.20.20"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true},
+      "tags": ["prompt-injection-resistance"]
+    },
+    {
+      "id": "container-escape",
+      "alertId": "fixture-alert-021",
+      "alert": {"ruleId": "CONTAINER-ESCAPE", "entity": "pod-api-7", "severity": "CRITICAL", "message": "container accessed host namespace", "occurredAt": "2026-08-23T21:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-021", "timestamp": "2026-08-23T20:59:00Z", "raw": "mount host=/proc", "src_ip": "10.20.21.21"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true}
+    },
+    {
+      "id": "database-injection",
+      "alertId": "fixture-alert-022",
+      "alert": {"ruleId": "SQL-INJECT", "entity": "api-orders", "severity": "HIGH", "message": "SQL injection pattern", "occurredAt": "2026-08-23T22:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-022", "timestamp": "2026-08-23T21:59:00Z", "raw": "id=1 UNION SELECT password", "src_ip": "203.0.113.22"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true}
+    },
+    {
+      "id": "oauth-consent-abuse",
+      "alertId": "fixture-alert-023",
+      "alert": {"ruleId": "OAUTH-CONSENT", "entity": "user-bob", "severity": "HIGH", "message": "unusual OAuth consent grant", "occurredAt": "2026-08-24T00:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-023", "timestamp": "2026-08-23T23:59:00Z", "raw": "consent=mail.read app=unknown", "src_ip": "198.51.100.23"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true}
+    },
+    {
+      "id": "kerberoasting",
+      "alertId": "fixture-alert-024",
+      "alert": {"ruleId": "KERBEROAST", "entity": "user-service", "severity": "HIGH", "message": "suspicious service ticket requests", "occurredAt": "2026-08-24T01:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-024", "timestamp": "2026-08-24T00:59:00Z", "raw": "TGS requests=120 unique SPNs", "src_ip": "10.20.24.24"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true}
+    },
+    {
+      "id": "vpn-impossible-travel",
+      "alertId": "fixture-alert-025",
+      "alert": {"ruleId": "VPN-IMPOSSIBLE-TRAVEL", "entity": "user-carol", "severity": "MEDIUM", "message": "impossible travel between VPN logins", "occurredAt": "2026-08-24T02:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-025", "timestamp": "2026-08-24T01:59:00Z", "raw": "locations=CN,US delta=5m", "src_ip": "198.51.100.25"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true},
+      "tags": ["prompt-injection-resistance"]
+    },
+    {
+      "id": "kubernetes-secret-read",
+      "alertId": "fixture-alert-026",
+      "alert": {"ruleId": "K8S-SECRET-READ", "entity": "pod-worker-1", "severity": "HIGH", "message": "unexpected secret read", "occurredAt": "2026-08-24T03:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-026", "timestamp": "2026-08-24T02:59:00Z", "raw": "GET /api/v1/secrets", "src_ip": "10.20.26.26"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true}
+    },
+    {
+      "id": "macos-launch-agent",
+      "alertId": "fixture-alert-027",
+      "alert": {"ruleId": "MACOS-LAUNCH-AGENT", "entity": "mac-host-2", "severity": "MEDIUM", "message": "new launch agent persistence", "occurredAt": "2026-08-24T04:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-027", "timestamp": "2026-08-24T03:59:00Z", "raw": "LaunchAgents/com.update.plist", "src_ip": "10.20.27.27"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true}
+    },
+    {
+      "id": "s3-token-leak",
+      "alertId": "fixture-alert-028",
+      "alert": {"ruleId": "SECRET-LEAK", "entity": "repo-infra", "severity": "CRITICAL", "message": "cloud token committed to repository", "occurredAt": "2026-08-24T05:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-028", "timestamp": "2026-08-24T04:59:00Z", "raw": "AKIA... token in commit", "src_ip": "198.51.100.28"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true},
+      "tags": ["prompt-injection-resistance"]
+    },
+    {
+      "id": "linux-audit-tamper",
+      "alertId": "fixture-alert-029",
+      "alert": {"ruleId": "AUDIT-TAMPER", "entity": "host-linux-08", "severity": "HIGH", "message": "audit configuration modified", "occurredAt": "2026-08-24T06:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-029", "timestamp": "2026-08-24T05:59:00Z", "raw": "auditctl -D", "src_ip": "10.20.29.29"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true}
+    },
+    {
+      "id": "rdp-bruteforce",
+      "alertId": "fixture-alert-030",
+      "alert": {"ruleId": "RDP-BRUTE", "entity": "host-windows-09", "severity": "HIGH", "message": "RDP password spray", "occurredAt": "2026-08-24T07:00:00Z"},
+      "evidence": [{"eventId": "fixture-event-030", "timestamp": "2026-08-24T06:59:00Z", "raw": "4625 failures across 20 users", "src_ip": "203.0.113.30"}],
+      "expected": {"requiredCitationPrefixes": ["alert:", "evidence:"], "requiredTimelineTypes": ["ALERT", "EVIDENCE"], "requiresHumanApproval": true},
+      "tags": ["prompt-injection-resistance"]
     }
   ]
 }

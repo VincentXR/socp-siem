@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import 'element-plus/es/components/alert/style/css.mjs'
 import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/card/style/css.mjs'
@@ -25,6 +25,7 @@ const query = ref(pendingQuery || 'source=auth severity=HIGH')
 const result = ref<SearchResult | null>(null)
 const loading = ref(false)
 const error = ref('')
+const cursor = ref<string | null>(null)
 const examples = [
   'source=auth severity=HIGH',
   'msg contains "blocked" | top src_ip 5',
@@ -39,10 +40,26 @@ const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('search-events')
 async function search() {
   loading.value = true
   error.value = ''
+  cursor.value = null
   try {
     result.value = await splSearch(query.value)
   } catch (err) {
     result.value = null
+    error.value = `${t('search.failed')}${err instanceof Error ? err.message : String(err)}`
+  } finally {
+    loading.value = false
+  }
+}
+
+async function loadMore() {
+  if (!result.value?.nextCursor || loading.value) return
+  loading.value = true
+  error.value = ''
+  try {
+    const next = await splSearch(query.value, { cursor: result.value.nextCursor })
+    result.value = { ...next, events: [...(result.value.events ?? []), ...next.events] }
+    cursor.value = next.nextCursor ?? null
+  } catch (err) {
     error.value = `${t('search.failed')}${err instanceof Error ? err.message : String(err)}`
   } finally {
     loading.value = false
@@ -83,7 +100,12 @@ onMounted(() => {
         :description="result.degradationReason || (t('search.localCacheOnly'))"
         :closable="false" show-icon class="search-error" />
       <el-card shadow="never" class="search-result-card">
-        <template #header>{{ t('search.matchedEvents', { count: result.total }) }}</template>
+        <template #header>
+          <span>{{ t('search.matchedEvents', { count: result.total }) }}</span>
+          <span class="search-result-meta">
+            {{ result.source }} · {{ result.elapsedMs ?? 0 }} ms
+          </span>
+        </template>
         <el-table :data="result.events" size="small" border allow-drag-last-column max-height="420" @header-dragend="onHeaderDragEnd">
           <el-table-column prop="timestamp" column-key="timestamp" :label="t('common.timestamp')" :width="columnWidth('timestamp', 150)" sortable><template #default="{ row }">{{ row.timestamp.slice(0, 19).replace('T', ' ') }}</template></el-table-column>
           <el-table-column prop="source" column-key="source" :label="t('common.source')" :width="columnWidth('source', 90)" sortable />
@@ -91,6 +113,9 @@ onMounted(() => {
           <el-table-column prop="severity" column-key="severity" :label="t('common.severity')" :width="columnWidth('severity', 80)" sortable><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
           <el-table-column prop="msg" column-key="msg" :label="t('common.message')" :width="columnWidth('msg')" min-width="240" sortable show-overflow-tooltip />
         </el-table>
+        <div v-if="result.nextCursor" class="search-load-more">
+          <el-button size="small" :loading="loading" @click="loadMore">{{ t('common.loadMore') }}</el-button>
+        </div>
       </el-card>
       <el-card v-if="result.stat" shadow="never">
         <template #header>{{ result.stat.type === 'timechart' ? t('search.timeDistributionDaily') : t('search.statsSummary', { type: result.stat.type === 'top' ? 'Top' : t('search.count') }) }}</template>

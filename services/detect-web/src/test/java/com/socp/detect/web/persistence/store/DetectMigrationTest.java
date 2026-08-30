@@ -1,10 +1,6 @@
 package com.socp.detect.web.persistence.store;
 
 
-
-import com.socp.detect.web.persistence.store.*;
-import com.socp.detect.web.persistence.repository.*;
-import com.socp.detect.web.persistence.entity.*;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
 

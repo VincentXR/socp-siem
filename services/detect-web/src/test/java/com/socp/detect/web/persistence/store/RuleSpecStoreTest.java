@@ -1,10 +1,8 @@
 package com.socp.detect.web.persistence.store;
 
 
-
-import com.socp.detect.web.persistence.store.*;
-import com.socp.detect.web.persistence.repository.*;
-import com.socp.detect.web.persistence.entity.*;
+import com.socp.detect.web.persistence.repository.RuleRepository;
+import com.socp.detect.web.persistence.entity.RuleEntity;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;

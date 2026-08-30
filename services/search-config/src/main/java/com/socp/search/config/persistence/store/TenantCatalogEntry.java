@@ -1,10 +1,6 @@
 package com.socp.search.config.persistence.store;
 
 
-
-import com.socp.search.config.persistence.store.*;
-import com.socp.search.config.persistence.repository.*;
-import com.socp.search.config.persistence.entity.*;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;

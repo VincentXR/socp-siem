@@ -1,8 +1,6 @@
 package com.socp.detect.web.api.controller;
 
 
-import com.socp.detect.web.api.response.*;
-import com.socp.detect.web.api.request.*;
 import com.socp.detect.web.persistence.store.WatchlistStore;
 import com.socp.detect.web.service.EntityRiskStore;
 import com.socp.rule.score.RiskScorer;

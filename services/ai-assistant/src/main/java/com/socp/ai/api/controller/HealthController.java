@@ -1,6 +1,5 @@
 package com.socp.ai.api.controller;
 
-import com.socp.ai.api.request.*;
 import com.socp.ai.config.AiRuntimeProperties;
 import com.socp.platform.error.api.ApiResult;
 import org.springframework.web.bind.annotation.GetMapping;

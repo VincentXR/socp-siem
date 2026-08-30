@@ -13,7 +13,11 @@ import com.socp.rule.engine.RuleProcessingObserver;
 import com.socp.rule.engine.Suppressor;
 import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
+import com.socp.rule.partition.DetectionRoutingKey;
 import com.socp.rule.rules.Rule;
+import com.socp.rule.state.DetectionStateSnapshot;
+import com.socp.rule.state.DetectionStateSnapshotStore;
+import com.socp.rule.state.StateRoutingKey;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.springframework.beans.factory.annotation.Value;
@@ -28,6 +32,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
@@ -49,6 +54,8 @@ public class DetectEngineService {
     private final RuleChangePublisher rulePublisher;
     private final DetectionStateStore stateStore;
     private final RuleProcessingObserver processingObserver;
+    private final DetectionStateSnapshotStore snapshotStore;
+    private final Map<String, AtomicLong> snapshotCounters = new ConcurrentHashMap<>();
     private final AtomicReference<Set<Integer>> assignedPartitions = new AtomicReference<>(Set.of());
     private final ReentrantReadWriteLock engineLifecycle = new ReentrantReadWriteLock(true);
 
@@ -58,16 +65,34 @@ public class DetectEngineService {
     @Value("${socp.detect.engine.max-tenants:1000}")
     private int maxTenantEngines = 1000;
 
+    @Value("${socp.detect.state.snapshot-every-events:500}")
+    private long snapshotEveryEvents = 500L;
+
+    /** Number of independent in-process state shards. One preserves the
+     * historical single-engine behaviour; larger values route by the same
+     * tenant/entity tuple used as the Kafka key. */
+    @Value("${socp.detect.state.shards:1}")
+    private int stateShardCount = 1;
+
     @org.springframework.beans.factory.annotation.Autowired
     public DetectEngineService(RuleSpecStore store, RecentAlertSink sink, AlertForwarder forwarder,
                                RuleChangePublisher rulePublisher, DetectionStateStore stateStore,
-                               DetectionPerformanceMetrics performanceMetrics) {
+                               DetectionPerformanceMetrics performanceMetrics,
+                               DetectionStateSnapshotStore snapshotStore) {
         this.store = store;
         this.sink = sink;
         this.forwarder = forwarder;
         this.rulePublisher = rulePublisher;
         this.stateStore = stateStore;
         this.processingObserver = performanceMetrics;
+        this.snapshotStore = snapshotStore;
+    }
+
+    /** Source-compatible constructor for callers that do not configure snapshots. */
+    public DetectEngineService(RuleSpecStore store, RecentAlertSink sink, AlertForwarder forwarder,
+                               RuleChangePublisher rulePublisher, DetectionStateStore stateStore,
+                               DetectionPerformanceMetrics performanceMetrics) {
+        this(store, sink, forwarder, rulePublisher, stateStore, performanceMetrics, null);
     }
 
     /** Unit-test/source compatibility constructor with a caller-provided state store. */
@@ -79,6 +104,7 @@ public class DetectEngineService {
         this.rulePublisher = rulePublisher;
         this.stateStore = stateStore;
         this.processingObserver = RuleProcessingObserver.NOOP;
+        this.snapshotStore = null;
     }
 
     /** Unit-test/source compatibility constructor; production uses the JPA journal. */
@@ -99,6 +125,7 @@ public class DetectEngineService {
             engines.values().forEach(RuleEngine::close);
             engines.clear();
             engineLastAccess.clear();
+            snapshotCounters.clear();
             suppressor.close();
         } finally {
             engineLifecycle.writeLock().unlock();
@@ -127,20 +154,46 @@ public class DetectEngineService {
     }
 
     private RuleEngine engineFor(String tenant) {
+        return engineFor(tenant, 0);
+    }
+
+    private RuleEngine engineFor(String tenant, int shard) {
         String resolved = tenant == null || tenant.isBlank() ? "default" : tenant;
+        int resolvedShard = normalizeShard(shard);
+        String key = engineKey(resolved, resolvedShard);
         engineLifecycle.readLock().lock();
         try {
-            RuleEngine engine = engines.computeIfAbsent(resolved, key -> {
-                RuleEngine created = buildEngine(key, List.of());
-                restoreState(key, created, assignedPartitions.get());
+            RuleEngine engine = engines.computeIfAbsent(key, ignored -> {
+                RuleEngine created = buildEngine(resolved, List.of());
+                restoreState(resolved, created, assignedPartitions.get(), resolvedShard);
                 created.start();
                 return created;
             });
-            engineLastAccess.put(resolved, System.currentTimeMillis());
+            engineLastAccess.put(key, System.currentTimeMillis());
             return engine;
         } finally {
             engineLifecycle.readLock().unlock();
         }
+    }
+
+    private int normalizeShard(int shard) {
+        return Math.floorMod(shard, effectiveShardCount());
+    }
+
+    private int effectiveShardCount() {
+        return Math.max(1, Math.min(256, stateShardCount));
+    }
+
+    private static String engineKey(String tenant, int shard) {
+        return tenant + "\u0000shard-" + shard;
+    }
+
+    private int shardFor(SecurityEvent event) {
+        if (effectiveShardCount() == 1) return 0;
+        String tenant = event.requireTenantId();
+        String field = DetectionRoutingKey.field(event.source(), event.host(), event.fields());
+        String value = DetectionRoutingKey.value(event.source(), event.host(), event.fields());
+        return new StateRoutingKey(tenant, field, value).shard(effectiveShardCount());
     }
 
     /** 规则热更新：原子替换引擎（旧引擎毒丸退出），无需重启进程 */
@@ -180,15 +233,45 @@ public class DetectEngineService {
         });
     }
 
-    private void restoreState(String tenant, RuleEngine replacement, Set<Integer> partitions) {
+    private void restoreState(String tenant, RuleEngine replacement, Set<Integer> partitions, int shard) {
         try {
+            if (snapshotStore != null && stateStore.supportsCheckpointReplay()) {
+                Map<String, RuleEngine.RuleState> snapshots = new LinkedHashMap<>();
+                java.time.Instant checkpoint = null;
+                for (String ruleId : replacement.statefulRuleIds()) {
+                    var latest = snapshotStore.latest(tenant, ruleId, normalizeShard(shard));
+                    if (latest.isEmpty()) continue;
+                    var snapshot = latest.get();
+                    snapshots.put(ruleId, new RuleEngine.RuleState(ruleId,
+                            snapshot.ruleVersion(), snapshot.serializedState()));
+                    if (checkpoint == null || snapshot.snapshotTimestamp().isBefore(checkpoint)) {
+                        checkpoint = snapshot.snapshotTimestamp();
+                    }
+                }
+                if (!snapshots.isEmpty() && checkpoint != null) {
+                    List<String> restored = replacement.restoreStates(snapshots);
+                    if (!restored.isEmpty()) {
+                        stateStore.replayCompletedAfter(tenant, checkpoint, partitions,
+                                events -> replacement.restore(events.stream()
+                                        .filter(event -> tenant.equals(event.tenantId()))
+                                        .filter(event -> shardFor(event) == normalizeShard(shard))
+                                        .toList()));
+                        org.slf4j.LoggerFactory.getLogger(DetectEngineService.class).info(
+                                "Detection state restored from snapshots tenant={} rules={} checkpoint={}",
+                                tenant, restored.size(), checkpoint);
+                        return;
+                    }
+                }
+            }
             if (partitions == null || partitions.isEmpty()) {
-                stateStore.replayRecentForTenant(tenant, Duration.ofHours(24), replacement::restore);
+                stateStore.replayRecentForTenant(tenant, Duration.ofHours(24), events -> replacement.restore(
+                        events.stream().filter(event -> shardFor(event) == normalizeShard(shard)).toList()));
             } else {
                 stateStore.replayRecentForPartitions(
                         partitions, Duration.ofHours(24), events -> {
                             List<SecurityEvent> owned = events.stream()
                                     .filter(event -> tenant.equals(event.tenantId()))
+                                    .filter(event -> shardFor(event) == normalizeShard(shard))
                                     .toList();
                             if (!owned.isEmpty()) replacement.restore(owned);
                         });
@@ -204,7 +287,7 @@ public class DetectEngineService {
     }
 
     private void replaceTenantEngine(String tenant) {
-        tenant = tenant == null || tenant.isBlank() ? "default" : tenant;
+        String resolvedTenant = tenant == null || tenant.isBlank() ? "default" : tenant;
         engineLifecycle.writeLock().lock();
         try {
             // Resolve the rules before closing the live engine so a temporary
@@ -212,13 +295,25 @@ public class DetectEngineService {
             // be built, stop admission and drain all accepted events before
             // reading the Journal. The new hot state therefore includes every
             // durable completion that happened before the swap.
-            RuleEngine replacement = buildEngine(tenant, List.of());
-            RuleEngine old = engines.remove(tenant);
-            if (old != null) old.close();
-            restoreState(tenant, replacement, assignedPartitions.get());
-            replacement.start();
-            engines.put(tenant, replacement);
-            engineLastAccess.put(tenant, System.currentTimeMillis());
+            Map<String, RuleEngine> replacements = new LinkedHashMap<>();
+            for (int shard = 0; shard < effectiveShardCount(); shard++) {
+                RuleEngine replacement = buildEngine(resolvedTenant, List.of());
+                restoreState(resolvedTenant, replacement, assignedPartitions.get(), shard);
+                replacements.put(engineKey(resolvedTenant, shard), replacement);
+            }
+            List<String> oldKeys = engines.keySet().stream()
+                    .filter(key -> key.startsWith(resolvedTenant + "\u0000shard-"))
+                    .toList();
+            oldKeys.forEach(key -> {
+                RuleEngine old = engines.remove(key);
+                if (old != null) old.close();
+                engineLastAccess.remove(key);
+            });
+            replacements.forEach((key, replacement) -> {
+                replacement.start();
+                engines.put(key, replacement);
+                engineLastAccess.put(key, System.currentTimeMillis());
+            });
         } finally {
             engineLifecycle.writeLock().unlock();
         }
@@ -230,23 +325,36 @@ public class DetectEngineService {
             engines.values().forEach(RuleEngine::close);
             engines.clear();
             engineLastAccess.clear();
+            snapshotCounters.clear();
             java.util.function.Consumer<List<SecurityEvent>> restoreBatch = events -> {
-                Map<String, List<SecurityEvent>> byTenant = events.stream()
-                        .collect(java.util.stream.Collectors.groupingBy(SecurityEvent::tenantId));
-                byTenant.forEach((tenant, owned) -> {
-                    RuleEngine engine = engines.get(tenant);
+                Map<String, List<SecurityEvent>> byEngine = events.stream()
+                        .collect(java.util.stream.Collectors.groupingBy(event ->
+                                engineKey(event.tenantId(), shardFor(event))));
+                byEngine.forEach((key, owned) -> {
+                    String tenant = key.substring(0, key.indexOf('\u0000'));
+                    RuleEngine engine = engines.get(key);
                     if (engine == null) {
                         engine = buildEngine(tenant, List.of());
-                        engines.put(tenant, engine);
+                        engines.put(key, engine);
                     }
                     engine.restore(owned);
-                    engineLastAccess.put(tenant, System.currentTimeMillis());
+                    engineLastAccess.put(key, System.currentTimeMillis());
                 });
             };
             if (partitions == null || partitions.isEmpty()) {
                 stateStore.replayRecent(Duration.ofHours(24), restoreBatch);
             } else {
                 stateStore.replayRecentForPartitions(partitions, Duration.ofHours(24), restoreBatch);
+            }
+            // Keep an empty default shard warm when no history exists. Do not
+            // call engineFor() here: that path restores the journal again and
+            // would double the replay cost after the full replay above.
+            // Other tenant/shard engines are started only when their first
+            // event is admitted, avoiding an O(tenants × shards) startup storm.
+            if (engines.isEmpty()) {
+                String key = engineKey("default", 0);
+                engines.put(key, buildEngine("default", List.of()));
+                engineLastAccess.put(key, System.currentTimeMillis());
             }
             engines.values().forEach(RuleEngine::start);
         } finally {
@@ -277,6 +385,7 @@ public class DetectEngineService {
             for (String tenant : candidates) {
                 RuleEngine removed = engines.remove(tenant);
                 engineLastAccess.remove(tenant);
+                snapshotCounters.remove(tenant);
                 if (removed != null) removed.close();
             }
         } finally {
@@ -306,13 +415,37 @@ public class DetectEngineService {
 
     @org.springframework.transaction.annotation.Transactional
     public Map<String, Object> updateRule(Map<String, Object> spec) {
-        if (store.get(String.valueOf(spec.get("id"))) == null) {
+        String id = String.valueOf(spec.get("id"));
+        Map<String, Object> current = store.get(id);
+        if (current == null) {
             throw new IllegalArgumentException("规则不存在: " + spec.get("id"));
+        }
+        // Preserve lifecycle status when older clients only send the legacy
+        // enabled flag. Disabling a live rule is safe; promotion to ACTIVE is
+        // intentionally reserved for activateRule().
+        spec = new java.util.LinkedHashMap<>(spec);
+        if (!spec.containsKey("status") && current.get("status") != null) {
+            spec.put("status", current.get("status"));
+        }
+        if (Boolean.FALSE.equals(spec.get("enabled"))
+                && "ACTIVE".equalsIgnoreCase(String.valueOf(current.get("status")))) {
+            spec.put("status", "DISABLED");
         }
         Map<String, Object> saved = store.save(spec);
         rulePublisher.publish(String.valueOf(saved.get("id")), "update");
         reloadAfterCommit();
         return saved;
+    }
+
+    /** Promote a tested rule into the live engine under an explicit approval permission. */
+    @org.springframework.transaction.annotation.Transactional
+    public Map<String, Object> activateRule(String id) {
+        Map<String, Object> current = store.get(id);
+        if (current == null) throw new IllegalArgumentException("rule not found " + id);
+        Map<String, Object> activated = new java.util.LinkedHashMap<>(current);
+        activated.put("status", "ACTIVE");
+        activated.put("enabled", true);
+        return updateRule(activated);
     }
 
     @org.springframework.transaction.annotation.Transactional
@@ -349,7 +482,7 @@ public class DetectEngineService {
         RuleEngine.Submission submission;
         engineLifecycle.readLock().lock();
         try {
-            submission = engineFor(ev.tenantId()).submit(ev, true);
+            submission = engineFor(ev.tenantId(), shardFor(ev)).submit(ev, true);
         } finally {
             engineLifecycle.readLock().unlock();
         }
@@ -360,6 +493,7 @@ public class DetectEngineService {
         submission.completion().whenComplete((ignored, failure) -> {
             if (failure == null) {
                 stateStore.markCompleted(ev);
+                snapshotAfterDurable(ev, null, -1L);
             }
         });
         return true;
@@ -378,16 +512,41 @@ public class DetectEngineService {
     public CompletableFuture<Void> ingestFromKafkaAndAwait(SecurityEvent ev) {
         engineLifecycle.readLock().lock();
         try {
-            return engineFor(ev.tenantId()).ingestAndAwait(ev);
+            return engineFor(ev.tenantId(), shardFor(ev)).ingestAndAwait(ev);
         } finally {
             engineLifecycle.readLock().unlock();
+        }
+    }
+
+    /** Persist a versioned rule-state checkpoint after durable sink completion. */
+    public void snapshotAfterDurable(SecurityEvent event, Integer partition, Long offset) {
+        if (snapshotStore == null || event == null) return;
+        String tenant = event.requireTenantId();
+        long every = Math.max(1L, snapshotEveryEvents);
+        int shard = shardFor(event);
+        String counterKey = engineKey(tenant, shard);
+        long count = snapshotCounters.computeIfAbsent(counterKey, ignored -> new AtomicLong()).incrementAndGet();
+        if (count % every != 0) return;
+        try {
+            RuleEngine engine = engineFor(tenant, shard);
+            Map<String, RuleEngine.RuleState> states = engine.snapshotStates();
+            java.time.Instant timestamp = java.time.Instant.now();
+            long processedOffset = offset == null ? -1L : offset;
+            states.forEach((ruleId, state) -> snapshotStore.save(new DetectionStateSnapshot(
+                    ruleId, state.version(), tenant, shard, processedOffset,
+                    state.serializedState(), timestamp)));
+        } catch (RuntimeException failure) {
+            // Checkpoints are an optimization. The durable journal remains the
+            // source of truth when a snapshot write is temporarily unavailable.
+            org.slf4j.LoggerFactory.getLogger(DetectEngineService.class).warn(
+                    "Detection state snapshot deferred tenant={}: {}", tenant, failure.getMessage());
         }
     }
 
     private boolean enqueue(SecurityEvent ev) {
         engineLifecycle.readLock().lock();
         try {
-            return engineFor(ev.tenantId()).ingest(ev);
+            return engineFor(ev.tenantId(), shardFor(ev)).ingest(ev);
         } finally {
             engineLifecycle.readLock().unlock();
         }
@@ -399,20 +558,38 @@ public class DetectEngineService {
 
     public Map<String, Object> stats() {
         String tenant = store.tenant();
-        RuleEngine e = engineFor(tenant);
+        List<RuleEngine> tenantEngines = engines.entrySet().stream()
+                .filter(entry -> entry.getKey().startsWith(tenant + "\u0000shard-"))
+                .map(Map.Entry::getValue)
+                .toList();
+        if (tenantEngines.isEmpty()) tenantEngines = List.of(engineFor(tenant, 0));
+        long eventCount = tenantEngines.stream().mapToLong(RuleEngine::eventCount).sum();
+        long alertCount = tenantEngines.stream().mapToLong(RuleEngine::alertCount).sum();
+        long dropCount = tenantEngines.stream().mapToLong(RuleEngine::dropCount).sum();
+        long suppressedCount = tenantEngines.stream().mapToLong(RuleEngine::suppressedCount).sum();
+        double queueLoad = tenantEngines.stream().mapToDouble(RuleEngine::queueLoad).max().orElse(0.0);
+        List<Map<String, Object>> ruleStats = tenantEngines.stream()
+                .flatMap(engine -> engine.ruleStats().stream())
+                .toList();
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("rules", store.list(tenant).size());
-        m.put("eventCount", e.eventCount());
-        m.put("alertCount", e.alertCount());
-        m.put("dropCount", e.dropCount());
-        m.put("suppressedCount", e.suppressedCount());
-        m.put("queueLoad", e.queueLoad());
-        m.put("ruleStats", e.ruleStats());
+        m.put("eventCount", eventCount);
+        m.put("alertCount", alertCount);
+        m.put("dropCount", dropCount);
+        m.put("suppressedCount", suppressedCount);
+        m.put("queueLoad", queueLoad);
+        m.put("ruleStats", ruleStats);
         m.put("assignedPartitions", assignedPartitions.get());
         m.put("pendingEvents", stateStore.pendingCount(tenant));
-        m.put("stateRecovery", Map.of(
-                "store", stateStore.getClass().getSimpleName(),
-                "replayWindow", stateStore.recoveryWindow()));
+        Map<String, Object> recovery = new LinkedHashMap<>();
+        recovery.put("store", stateStore.getClass().getSimpleName());
+        String recoveryWindow = stateStore.recoveryWindow();
+        recovery.put("replayWindow", recoveryWindow == null ? "unknown" : recoveryWindow);
+        m.put("stateRecovery", recovery);
+        m.put("stateSnapshots", Map.of(
+                "store", snapshotStore == null ? "disabled" : snapshotStore.getClass().getSimpleName(),
+                "everyEvents", Math.max(1L, snapshotEveryEvents),
+                "shards", effectiveShardCount()));
         m.put("cachedTenantEngines", engines.size());
         return m;
     }

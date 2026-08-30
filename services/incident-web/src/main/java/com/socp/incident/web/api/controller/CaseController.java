@@ -1,9 +1,11 @@
 package com.socp.incident.web.api.controller;
-import com.socp.incident.web.api.request.*;
+import com.socp.incident.web.api.request.AlarmRequest;
+import com.socp.incident.web.api.request.CreateCaseRequest;
 import com.socp.incident.web.domain.Case;
 import com.socp.incident.web.service.CaseService;
 import com.socp.platform.audit.api.AuditOperation;
 import com.socp.platform.auth.security.RequireRole;
+import com.socp.platform.auth.security.RequirePermission;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -37,6 +39,7 @@ public class CaseController {
 
     /** 由告警自动建案/归并（alert-web 创建告警时调用，或 SOAR 触发）。 */
     @RequireRole({"admin", "analyst"})
+    @RequirePermission("case:write")
     @AuditOperation(action = "CREATE_INCIDENT", target = "case")
     @PostMapping("/incidents/from-alarm")
     public Map<String, Object> fromAlarm(@Valid @RequestBody AlarmRequest alarm) {
@@ -44,6 +47,7 @@ public class CaseController {
     }
 
     @RequireRole({"admin", "analyst"})
+    @RequirePermission("case:write")
     @AuditOperation(action = "CREATE_INCIDENT", target = "case")
     @PostMapping("/incidents")
     public Map<String, Object> create(@Valid @RequestBody CreateCaseRequest request) {
@@ -82,6 +86,7 @@ public class CaseController {
     }
 
     @RequireRole({"admin", "analyst"})
+    @RequirePermission("case:write")
     @AuditOperation(action = "UPDATE_INCIDENT_STATUS", target = "case")
     @PostMapping("/incidents/{id}/status")
     public Map<String, Object> status(@PathVariable String id,
@@ -91,6 +96,7 @@ public class CaseController {
     }
 
     @RequireRole({"admin", "analyst"})
+    @RequirePermission("case:write")
     @PostMapping("/incidents/{id}/notes")
     public Map<String, Object> note(@PathVariable String id,
                                      @RequestParam String author,

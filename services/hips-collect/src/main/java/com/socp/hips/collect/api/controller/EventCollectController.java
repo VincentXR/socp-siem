@@ -1,6 +1,6 @@
 package com.socp.hips.collect.api.controller;
 
-import com.socp.hips.collect.api.request.*;
+import com.socp.hips.collect.api.request.EventCollectRequest;
 import com.socp.hips.collect.collector.EndpointSimulator;
 import com.socp.hips.collect.persistence.store.HipsEventStore;
 import com.socp.platform.client.http.ServiceCall;
@@ -9,7 +9,11 @@ import com.socp.platform.client.service.SocpService;
 import com.socp.platform.tenant.context.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 import jakarta.validation.Valid;
 
 import java.util.LinkedHashMap;

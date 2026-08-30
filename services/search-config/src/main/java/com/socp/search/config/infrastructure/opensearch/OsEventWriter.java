@@ -10,23 +10,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
-import javax.net.ssl.HttpsURLConnection;
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLSocketFactory;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
-import java.io.OutputStream;
 import java.net.HttpURLConnection;
-import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.security.SecureRandom;
-import java.security.KeyStore;
-import java.security.cert.X509Certificate;
-import javax.net.ssl.TrustManagerFactory;
-import java.io.FileInputStream;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
-import java.util.Base64;
 import java.util.List;
 
 /**
@@ -87,7 +74,9 @@ public class OsEventWriter {
                         },
                         "mappings": {
                           "properties": {
+                            "schemaVersion": { "type": "keyword" },
                             "eventId": { "type": "keyword" },
+                            "tenantId": { "type": "keyword" },
                             "timestamp": { "type": "date" },
                             "@timestamp": { "type": "date" },
                             "source": { "type": "keyword" },

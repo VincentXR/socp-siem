@@ -1,10 +1,8 @@
 package com.socp.detect.web.persistence.store;
 
 
-
-import com.socp.detect.web.persistence.store.*;
-import com.socp.detect.web.persistence.repository.*;
-import com.socp.detect.web.persistence.entity.*;
+import com.socp.detect.web.persistence.repository.DetectionAlertOutboxRepository;
+import com.socp.detect.web.persistence.entity.DetectionAlertOutboxEntity;
 import com.socp.detect.web.engine.DetectionAlertOutboxPublisher;
 import com.socp.platform.tenant.context.TenantContext;
 import org.springframework.beans.factory.annotation.Autowired;

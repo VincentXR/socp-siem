@@ -5,6 +5,7 @@ import { withQuery } from '../lib/query'
 export const listRules = () => get<RuleSpec[]>('/detect-web/api/v1/rules')
 export const createGasRule = (spec: Partial<RuleSpec>) => post<RuleSpec>('/detect-web/api/v1/rules', spec)
 export const updateGasRule = (id: string, spec: Partial<RuleSpec>) => put<RuleSpec>(`/detect-web/api/v1/rules/${encodeURIComponent(id)}`, spec)
+export const activateGasRule = (id: string) => post<RuleSpec>(`/detect-web/api/v1/rules/${encodeURIComponent(id)}/activate`, {})
 export const deleteGasRule = (id: string) => del(`/detect-web/api/v1/rules/${encodeURIComponent(id)}`)
 export const gasStats = () => get<GasStats>('/detect-web/api/v1/stats')
 export const gasAlerts = () => get<GasAlert[]>('/detect-web/api/v1/alerts')

@@ -1,10 +1,8 @@
 package com.socp.detect.web.persistence.store;
 
 
-
-import com.socp.detect.web.persistence.store.*;
-import com.socp.detect.web.persistence.repository.*;
-import com.socp.detect.web.persistence.entity.*;
+import com.socp.detect.web.persistence.repository.RuleRepository;
+import com.socp.detect.web.persistence.entity.RuleEntity;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.util.Json;
 import org.springframework.dao.DataIntegrityViolationException;

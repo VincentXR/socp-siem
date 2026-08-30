@@ -1,10 +1,10 @@
 package com.socp.attack.web.persistence.store;
 
 
-
-import com.socp.attack.web.persistence.store.*;
-import com.socp.attack.web.persistence.repository.*;
-import com.socp.attack.web.persistence.entity.*;
+import com.socp.attack.web.persistence.repository.TacticRepository;
+import com.socp.attack.web.persistence.repository.TechniqueRepository;
+import com.socp.attack.web.persistence.entity.TacticEntity;
+import com.socp.attack.web.persistence.entity.TechniqueEntity;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;

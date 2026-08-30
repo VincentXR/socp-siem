@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0",
+  "fields": [
+    { "name": "eventId", "type": "keyword", "aggregatable": true, "mapping": "keyword" },
+    { "name": "tenantId", "type": "keyword", "aggregatable": true, "mapping": "keyword" },
+    { "name": "timestamp", "type": "date", "aggregatable": false, "mapping": "date" },
+    { "name": "source", "type": "keyword", "aggregatable": true, "mapping": "keyword" },
+    { "name": "host", "type": "keyword", "aggregatable": true, "mapping": "keyword" },
+    { "name": "severity", "type": "keyword", "aggregatable": true, "mapping": "keyword" },
+    { "name": "msg", "type": "text", "aggregatable": false, "mapping": "text" },
+    { "name": "fields.*", "type": "string-or-number", "aggregatable": true, "mapping": "object.dynamic" },
+    { "name": "ecs.*", "type": "string-or-number", "aggregatable": true, "mapping": "object.dynamic" }
+  ]
+}

@@ -1,8 +1,6 @@
 package com.socp.detect.model.persistence.entity;
 
 
-import com.socp.detect.model.persistence.repository.*;
-import com.socp.detect.model.persistence.entity.*;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;

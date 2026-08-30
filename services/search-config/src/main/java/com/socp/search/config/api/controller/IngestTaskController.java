@@ -1,9 +1,6 @@
 package com.socp.search.config.api.controller;
 
 
-
-
-
 import com.socp.search.config.domain.LogSource;
 import com.socp.search.config.api.request.IngestTestRequest;
 import com.socp.search.config.service.IngestPipeline;

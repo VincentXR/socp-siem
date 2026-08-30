@@ -4,6 +4,8 @@ import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.rule.state.RuleStateMap;
+import com.socp.rule.state.StateSnapshotCodec;
+import com.socp.rule.state.StatefulRule;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -19,7 +21,7 @@ import java.util.function.Predicate;
  * 当数量达到阈值即告警。命中后清空窗口桶，避免刷屏式重复告警。
  * 典型场景：X 秒内同一 IP 失败登录 &gt;= N 次 =&gt; 暴力破解。由 com.siem 迁移。
  */
-public final class ThresholdRule extends AbstractRule {
+public final class ThresholdRule extends AbstractRule implements StatefulRule {
 
     private final Predicate<SecurityEvent> matcher;     // 哪些事件计入统计
     private final Function<SecurityEvent, String> keyOf; // 聚合维度
@@ -81,5 +83,34 @@ public final class ThresholdRule extends AbstractRule {
         Map<String, Object> out = super.stats();
         out.putAll(buckets.stats());
         return out;
+    }
+
+    @Override
+    public String stateVersion() {
+        return "threshold-v1";
+    }
+
+    @Override
+    public byte[] snapshotState() {
+        Map<String, Object> out = new java.util.LinkedHashMap<>();
+        buckets.forEach((key, queue) -> {
+            synchronized (queue) {
+                out.put(key, queue.stream().map(StateSnapshotCodec::event).toList());
+            }
+        });
+        return StateSnapshotCodec.write(out);
+    }
+
+    @Override
+    public void restoreState(byte[] serializedState) {
+        StateSnapshotCodec.read(serializedState).forEach((key, raw) -> {
+            if (!(raw instanceof List<?> items)) return;
+            ArrayDeque<SecurityEvent> queue = buckets.get(key, ArrayDeque::new);
+            synchronized (queue) {
+                queue.clear();
+                items.stream().map(StateSnapshotCodec::event).filter(java.util.Objects::nonNull)
+                        .limit(Math.max(threshold * 2, 200)).forEach(queue::addLast);
+            }
+        });
     }
 }

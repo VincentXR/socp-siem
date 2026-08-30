@@ -1,6 +1,5 @@
 package com.socp.detect.model.api.controller;
 
-import com.socp.detect.model.api.request.*;
 import com.socp.platform.error.api.ApiResult;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;

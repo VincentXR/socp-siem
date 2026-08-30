@@ -35,6 +35,7 @@ public record RuleSpecRequest(
         @Size(max = 128) String contentPack,
         @Size(max = 64) String contentVersion,
         @Size(max = 128) List<@Valid RuleConditionRequest> match,
+        @Size(max = 128) List<@Size(max = 128) @Valid List<@Valid RuleConditionRequest>> matchAny,
         @Size(max = 64) List<@Size(max = 128) @Valid List<@Valid RuleConditionRequest>> steps) {
 
     public Map<String, Object> asMap() {
@@ -47,6 +48,8 @@ public record RuleSpecRequest(
         put(out, "version", version); put(out, "status", status); put(out, "owner", owner);
         put(out, "contentPack", contentPack); put(out, "contentVersion", contentVersion);
         if (match != null) out.put("match", match.stream().map(RuleConditionRequest::asMap).toList());
+        if (matchAny != null) out.put("matchAny", matchAny.stream()
+                .map(group -> group.stream().map(RuleConditionRequest::asMap).toList()).toList());
         if (steps != null) out.put("steps", steps.stream()
                 .map(step -> step.stream().map(RuleConditionRequest::asMap).toList()).toList());
         return out;

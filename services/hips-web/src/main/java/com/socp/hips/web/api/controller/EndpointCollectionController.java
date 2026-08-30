@@ -1,6 +1,6 @@
 package com.socp.hips.web.api.controller;
 
-import com.socp.hips.web.api.request.*;
+import com.socp.hips.web.api.request.EndpointEventRequest;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.hips.web.persistence.store.EndpointEventStore;

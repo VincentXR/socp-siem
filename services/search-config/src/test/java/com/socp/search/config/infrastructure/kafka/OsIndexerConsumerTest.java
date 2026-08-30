@@ -194,4 +194,26 @@ class OsIndexerConsumerTest {
         assertEquals(1.0, registry.get("socp.opensearch.indexer.records")
                 .tag("stage", "dlq_failed").counter().count());
     }
+
+    @Test
+    void routesUnsupportedSchemaToDurableDlqBeforeIndexing() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        OsIndexerConsumer indexer = new OsIndexerConsumer(mock(OsEventWriter.class),
+                new KafkaProperties(), new OpenSearchIndexerProperties(), registry) {
+            @Override
+            boolean sendToDlqAndAwait(String eventId, String raw) {
+                return true;
+            }
+        };
+        KafkaConsumer<String, String> kafka = mock(KafkaConsumer.class);
+        TopicPartition partition = new TopicPartition("socp-events", 0);
+        String unsupported = EVENT.replace("{\"eventId\"", "{\"schemaVersion\":\"2.0\",\"eventId\"");
+        ConsumerRecords<String, String> records = new ConsumerRecords<>(Map.of(partition, List.of(
+                new ConsumerRecord<>("socp-events", 0, 10L, "event-1", unsupported))));
+
+        assertTrue(indexer.processRecords(kafka, records));
+        assertEquals(1.0, registry.get("socp.opensearch.indexer.records")
+                .tag("stage", "schema_rejected").counter().count());
+        verify(kafka).commitSync(org.mockito.ArgumentMatchers.<Map<TopicPartition, OffsetAndMetadata>>any());
+    }
 }

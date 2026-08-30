@@ -1,10 +1,7 @@
 package com.socp.hips.web.persistence.repository;
 
 
-
-import com.socp.hips.web.persistence.store.*;
-import com.socp.hips.web.persistence.repository.*;
-import com.socp.hips.web.persistence.entity.*;
+import com.socp.hips.web.persistence.entity.EndpointEntity;
 import com.socp.platform.tenant.persistence.TenantScopedRepository;
 
 import java.util.List;

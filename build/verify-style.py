@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep import debt from growing while the repository is cleaned incrementally."""
+"""Enforce explicit imports in production Java sources."""
 
 from pathlib import Path
 import re
@@ -32,10 +32,10 @@ def main():
     baseline = int(BASELINE_FILE.read_text(encoding="utf-8").strip())
     total, files = count_wildcards()
     if total != baseline:
-        direction = "increased" if total > baseline else "decreased without updating the baseline"
-        print(f"wildcard imports {direction}: actual={total}, baseline={baseline}", file=sys.stderr)
+        direction = "increased" if total > baseline else "non-zero"
+        print(f"wildcard imports {direction}: actual={total}, expected={baseline}", file=sys.stderr)
         return 1
-    print(f"wildcard imports={total}; baseline is exact")
+    print(f"wildcard imports={total}; explicit import policy passes")
     return 0
 
 

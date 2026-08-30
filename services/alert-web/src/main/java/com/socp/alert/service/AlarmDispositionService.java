@@ -1,11 +1,8 @@
 package com.socp.alert.service;
 
-import com.socp.alert.api.controller.*;
-import com.socp.alert.api.request.*;
-import com.socp.alert.domain.*;
 import com.socp.alert.persistence.entity.DispositionEntity;
-import com.socp.alert.repository.*;
-import com.socp.alert.service.*;
+import com.socp.alert.repository.DispositionRepository;
+
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -16,7 +13,13 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * 告警处置（工单化）：状态流转 + 备注 + 分配人 + 操作历史。
@@ -57,7 +60,7 @@ public class AlarmDispositionService {
 
     @Transactional
     public Disposition setStatus(String alarmId, String status) {
-        String s = status == null ? "" : status.trim().toUpperCase();
+        String s = status == null ? "" : status.trim().toUpperCase(Locale.ROOT);
         if (!List.of("OPEN", "INVESTIGATING", "RESOLVED", "CLOSED").contains(s)) {
             throw ApiException.badRequest("非法状态: " + status + "（可选 OPEN/INVESTIGATING/RESOLVED/CLOSED）");
         }
@@ -83,6 +86,62 @@ public class AlarmDispositionService {
         notes.add(new Disposition.Note(author == null ? "operator" : author, content.trim(), Instant.now()));
         Disposition next = new Disposition(cur.status(), cur.assignee(), List.copyOf(notes));
         return persist(alarmId, next);
+    }
+
+    /**
+     * Apply one bounded triage mutation to multiple alarms.  IDs are
+     * de-duplicated and locked in lexical order to avoid lock inversion when
+     * two analysts update overlapping selections concurrently.  The returned
+     * item list is deterministic, which also makes audit/retry evidence easy
+     * to compare.
+     */
+    @Transactional
+    public Map<String, Object> batchUpdate(List<String> alarmIds, String status,
+                                           String assignee, String reason) {
+        if (alarmIds == null || alarmIds.isEmpty() || alarmIds.size() > 500) {
+            throw ApiException.badRequest("alarmIds must contain between 1 and 500 items");
+        }
+        Set<String> normalizedIds = new LinkedHashSet<>();
+        for (String id : alarmIds) {
+            if (id == null || id.isBlank() || id.trim().length() > 255) {
+                throw ApiException.badRequest("alarm id must not be blank or longer than 255 characters");
+            }
+            normalizedIds.add(id.trim());
+        }
+        if (normalizedIds.isEmpty()) {
+            throw ApiException.badRequest("alarmIds must contain at least one non-blank id");
+        }
+        String normalizedStatus = normalizeOptionalStatus(status);
+        String normalizedAssignee = normalizeOptional(assignee);
+        String normalizedReason = normalizeOptional(reason);
+        if (normalizedStatus == null && normalizedAssignee == null && normalizedReason == null) {
+            throw ApiException.badRequest("at least one of status, assignee or reason is required");
+        }
+
+        List<Map<String, Object>> items = new ArrayList<>();
+        normalizedIds.stream().sorted(Comparator.naturalOrder()).forEach(alarmId -> {
+            Disposition current = currentForUpdate(alarmId);
+            List<Disposition.Note> notes = new ArrayList<>(current.notes());
+            if (normalizedReason != null) {
+                notes.add(new Disposition.Note("operator", normalizedReason, Instant.now()));
+            }
+            Disposition next = new Disposition(
+                    normalizedStatus == null ? current.status() : normalizedStatus,
+                    normalizedAssignee == null ? current.assignee() : normalizedAssignee,
+                    List.copyOf(notes));
+            persist(alarmId, next);
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("alarmId", alarmId);
+            item.put("status", next.status());
+            item.put("assignee", next.assignee());
+            item.put("reasonRecorded", normalizedReason != null);
+            items.add(item);
+        });
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("updated", items.size());
+        result.put("alarmIds", items.stream().map(item -> String.valueOf(item.get("alarmId"))).toList());
+        result.put("items", List.copyOf(items));
+        return result;
     }
 
     /** Persist the complete disposition in the authoritative tenant row. */
@@ -124,6 +183,21 @@ public class AlarmDispositionService {
         } catch (Exception ex) {
             return "[]";
         }
+    }
+
+    private static String normalizeOptionalStatus(String status) {
+        String normalized = normalizeOptional(status);
+        if (normalized == null) return null;
+        normalized = normalized.toUpperCase(Locale.ROOT);
+        if (!List.of("OPEN", "INVESTIGATING", "RESOLVED", "CLOSED").contains(normalized)) {
+            throw ApiException.badRequest("非法状态: " + status + "（可选 OPEN/INVESTIGATING/RESOLVED/CLOSED）");
+        }
+        return normalized;
+    }
+
+    private static String normalizeOptional(String value) {
+        if (value == null || value.isBlank()) return null;
+        return value.trim();
     }
 
     private static List<Disposition.Note> readNotes(String json) {

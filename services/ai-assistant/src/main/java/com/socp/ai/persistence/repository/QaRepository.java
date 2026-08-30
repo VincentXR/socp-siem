@@ -1,8 +1,7 @@
 package com.socp.ai.persistence.repository;
 
 
-import com.socp.ai.persistence.repository.*;
-import com.socp.ai.persistence.entity.*;
+import com.socp.ai.persistence.entity.QaEntity;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;

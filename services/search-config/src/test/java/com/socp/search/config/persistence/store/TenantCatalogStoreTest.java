@@ -1,10 +1,6 @@
 package com.socp.search.config.persistence.store;
 
 
-
-import com.socp.search.config.persistence.store.*;
-import com.socp.search.config.persistence.repository.*;
-import com.socp.search.config.persistence.entity.*;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.search.config.domain.SinkTarget;
 import org.junit.jupiter.api.AfterEach;

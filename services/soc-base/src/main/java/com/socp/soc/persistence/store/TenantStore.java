@@ -1,10 +1,8 @@
 package com.socp.soc.persistence.store;
 
 
-
-import com.socp.soc.persistence.store.*;
-import com.socp.soc.persistence.repository.*;
-import com.socp.soc.persistence.entity.*;
+import com.socp.soc.persistence.repository.TenantRepository;
+import com.socp.soc.persistence.entity.TenantEntity;
 import com.socp.soc.domain.TenantInfo;
 import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Autowired;

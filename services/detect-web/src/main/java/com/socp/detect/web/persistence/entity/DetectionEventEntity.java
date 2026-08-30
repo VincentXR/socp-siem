@@ -1,10 +1,8 @@
 package com.socp.detect.web.persistence.entity;
 
 
+import com.socp.detect.web.persistence.store.DetectionEventStatus;
 
-import com.socp.detect.web.persistence.store.*;
-import com.socp.detect.web.persistence.repository.*;
-import com.socp.detect.web.persistence.entity.*;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;

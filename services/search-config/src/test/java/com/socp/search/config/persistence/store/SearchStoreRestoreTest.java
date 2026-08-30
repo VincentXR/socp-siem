@@ -1,7 +1,6 @@
 package com.socp.search.config.persistence.store;
 
 import com.socp.search.config.domain.SearchEvent;
-import com.socp.search.config.infrastructure.opensearch.OsEventWriter;
 import com.socp.search.config.persistence.entity.SearchEventEntity;
 import com.socp.search.config.persistence.repository.SearchEventRepository;
 

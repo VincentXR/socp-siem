@@ -1,10 +1,7 @@
 package com.socp.search.config.persistence.store;
 
 
-
-import com.socp.search.config.persistence.store.*;
-import com.socp.search.config.persistence.repository.*;
-import com.socp.search.config.persistence.entity.*;
+import com.socp.search.config.persistence.repository.TenantCatalogEntryRepository;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 

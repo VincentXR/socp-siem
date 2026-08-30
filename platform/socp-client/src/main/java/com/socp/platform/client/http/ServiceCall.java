@@ -1,8 +1,6 @@
 package com.socp.platform.client.http;
 
 
-
-
 import com.socp.platform.client.service.SocpService;
 
 /**

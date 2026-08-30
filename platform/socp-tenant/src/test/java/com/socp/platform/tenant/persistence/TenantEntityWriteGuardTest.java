@@ -5,7 +5,6 @@ import org.aspectj.lang.ProceedingJoinPoint;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -108,6 +107,27 @@ class TenantEntityWriteGuardTest {
 
         assertThrows(IllegalStateException.class, () -> guard.guard(joinPoint));
         verify(joinPoint, never()).proceed();
+    }
+
+    @Test
+    void rejectsRepositoryReadForAnotherTenant() throws Throwable {
+        TenantContext.set("tenant-a");
+        ProceedingJoinPoint joinPoint = mock(ProceedingJoinPoint.class);
+        when(joinPoint.getArgs()).thenReturn(new Object[]{"tenant-b"});
+
+        assertThrows(IllegalArgumentException.class, () -> guard.guardTenantRead(joinPoint));
+        verify(joinPoint, never()).proceed();
+    }
+
+    @Test
+    void allowsRepositoryReadForCurrentTenant() throws Throwable {
+        TenantContext.set("tenant-a");
+        ProceedingJoinPoint joinPoint = mock(ProceedingJoinPoint.class);
+        when(joinPoint.getArgs()).thenReturn(new Object[]{"tenant-a"});
+        when(joinPoint.proceed()).thenReturn("ok");
+
+        assertEquals("ok", guard.guardTenantRead(joinPoint));
+        verify(joinPoint).proceed();
     }
 
     static final class TenantEntity {

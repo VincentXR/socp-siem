@@ -1,7 +1,8 @@
 package com.socp.search.config.domain;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 import java.time.Instant;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 
@@ -27,6 +28,19 @@ public record SearchEvent(
         Map<String, String> fields,
         Map<String, String> ecs
 ) {
+    /** Version carried on every Kafka/OpenSearch envelope. */
+    @JsonProperty("schemaVersion")
+    public String schemaVersion() {
+        return com.socp.search.config.schema.CanonicalEventSchema.CURRENT;
+    }
+
+    /** Tenant is duplicated at the envelope boundary for consumers that do not
+     * understand the legacy fields map. */
+    @JsonProperty("tenantId")
+    public String tenantId() {
+        return fields == null ? null : fields.get("tenant_id");
+    }
+
     public SearchEvent(Instant timestamp, String source, String host, String severity, String msg, Map<String, String> fields) {
         this(UUID.randomUUID().toString(), timestamp, source, host, severity, msg, fields, Map.of());
     }

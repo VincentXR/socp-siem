@@ -1,5 +1,8 @@
 import { del, downloadFile, get, post, put, type ApiRequestOptions } from './core'
-import type { Alarm, AlarmEvidenceResponse, AlarmPage, AlarmStats, Disposition } from './models'
+import type {
+  Alarm, AlarmBatchDispositionResult, AlarmFeedback, AlarmFeedbackKind,
+  AlarmEvidenceResponse, AlarmPage, AlarmStats, Disposition,
+} from './models'
 import { withQuery } from '../lib/query'
 
 export const listAlarms = (q?: string, options?: ApiRequestOptions) => get<Alarm[]>(withQuery('/alert-web/api/alarms', { q }), options)
@@ -14,5 +17,13 @@ export const getAlarmEvidence = (id: string) => get<AlarmEvidenceResponse>(`/ale
 export const setDispositionStatus = (id: string, status: string) => put<Disposition>(`/alert-web/api/alarms/${encodeURIComponent(id)}/status`, { status })
 export const assignAlarm = (id: string, assignee: string) => post<Disposition>(`/alert-web/api/alarms/${encodeURIComponent(id)}/assign`, { assignee })
 export const addAlarmNote = (id: string, content: string, author = 'operator') => post<Disposition>(`/alert-web/api/alarms/${encodeURIComponent(id)}/notes`, { content, author })
+export const batchUpdateAlarmDisposition = (alarmIds: string[], mutation: { status?: string; assignee?: string; reason?: string }) =>
+  post<AlarmBatchDispositionResult>('/alert-web/api/v1/alarms/batch/disposition', { alarmIds, ...mutation })
+export const listAlarmFeedback = (id: string) =>
+  get<AlarmFeedback[]>(`/alert-web/api/alarms/${encodeURIComponent(id)}/feedback`)
+export const saveAlarmFeedback = (id: string, feedback: { kind: AlarmFeedbackKind; reason: string; expiresAt?: string; actor?: string }) =>
+  post<AlarmFeedback>(`/alert-web/api/alarms/${encodeURIComponent(id)}/feedback`, feedback)
+export const listSimilarAlarms = (id: string, limit = 20) =>
+  get<Alarm[]>(withQuery(`/alert-web/api/alarms/${encodeURIComponent(id)}/similar`, { limit }))
 export const alarmStats = (options?: ApiRequestOptions, window = '7d') => get<AlarmStats>(withQuery('/alert-web/api/alarms/stats', { window }), options)
 export const exportAlarms = (format = 'csv') => downloadFile(withQuery('/alert-web/api/alarms/export', { format }), `alarms.${format}`)

@@ -27,7 +27,7 @@ import { onMounted, ref } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import SevBadge from '../components/SevBadge.vue'
 import {
-  createGasRule, deleteGasRule, gasIngest, gasStats, listRules, SEVERITIES, updateGasRule,
+  activateGasRule, createGasRule, deleteGasRule, gasIngest, gasStats, listRules, SEVERITIES, updateGasRule,
   type GasStats, type RuleSpec,
 } from '../api'
 import { useI18n } from '../composables/useI18n'
@@ -102,7 +102,8 @@ async function removeRule(id: string) {
   await loadRules()
 }
 async function toggleRule(rule: RuleSpec) {
-  await updateGasRule(String(rule.id), { ...rule, enabled: !rule.enabled })
+  if (rule.enabled) await updateGasRule(String(rule.id), { enabled: false, status: 'DISABLED' })
+  else await activateGasRule(String(rule.id))
   await loadRules()
 }
 function isRuleSpec(row: unknown): row is RuleSpec {

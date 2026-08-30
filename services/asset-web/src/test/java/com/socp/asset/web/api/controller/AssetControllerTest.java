@@ -1,6 +1,5 @@
 package com.socp.asset.web.api.controller;
 
-import com.socp.asset.web.api.request.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.asset.web.domain.Asset;
 import com.socp.asset.web.persistence.store.AssetStore;

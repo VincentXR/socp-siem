@@ -1,11 +1,15 @@
 package com.socp.soc.api.controller;
 
-import com.socp.soc.api.request.*;
+import com.socp.soc.api.request.TenantCreateRequest;
 import com.socp.platform.auth.security.RequireRole;
 import com.socp.soc.domain.TenantInfo;
 import com.socp.soc.persistence.store.TenantStore;
 import jakarta.validation.Valid;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 import java.util.Map;

@@ -20,17 +20,17 @@ the final event count.
 ## Reproducible runs
 
 Start middleware and the core services and keep the JVM/middleware
-configuration fixed. A fresh database installs the 25 rules from the versioned
+configuration fixed. A fresh database installs the 39 rules from the versioned
 `socp-core-detections` content pack. The pack is the sole executable source of
 packaged rules; older benchmark reports that used 39 rules are historical and
 must not be compared as if the workload were unchanged:
 
 ```bash
 python build/benchmark-pipeline.py --mode e2e --profile realistic --count 10000 --batch-size 500 \
-  --alert-every 1000 --instances 3 --rules 25 --label realistic-10k \
+  --alert-every 1000 --instances 3 --rules 39 --label realistic-10k \
   --output .cache/benchmark/e2e-10k.json
 python build/benchmark-pipeline.py --mode e2e --profile alert-heavy --count 1000 --batch-size 100 \
-  --instances 3 --rules 25 --label alert-heavy-1k \
+  --instances 3 --rules 39 --label alert-heavy-1k \
   --output .cache/benchmark/e2e-alert-heavy-1k.json
 ```
 
@@ -85,7 +85,7 @@ bounded offered-load checks after the fixed-size profiles:
 
 ```bash
 python build/benchmark-pipeline.py --mode e2e --profile realistic --offered-eps 100 \
-  --duration 120 --batch-size 100 --instances 3 --rules 25 \
+  --duration 120 --batch-size 100 --instances 3 --rules 39 \
   --output .cache/benchmark/steady-100.json
 ```
 
@@ -100,7 +100,7 @@ reports; a failed round also retains the benchmark's `.failed.json` sidecar.
 
 ```bash
 python build/benchmark-series.py --rounds 3 --count 50000 --batch-size 500 \
-  --mode e2e --profile realistic --instances 1 --rules 25 \
+  --mode e2e --profile realistic --instances 1 --rules 39 \
   --output .cache/benchmark/realistic-50k-1x-series.json
 ```
 
@@ -110,7 +110,7 @@ boundary without alert materialization:
 
 ```bash
 python build/benchmark-series.py --rounds 3 --count 50000 --batch-size 500 \
-  --mode bulk --profile realistic --instances 1 --rules 25 \
+  --mode bulk --profile realistic --instances 1 --rules 39 \
   --output .cache/benchmark/bulk-50k-1x-series.json
 ```
 
@@ -134,7 +134,7 @@ state; neither is run automatically by the benchmark.
 The 2026-08-21 run used one Windows development host, eight logical CPUs, six
 Kafka partitions, three 256 MiB Detection JVMs, PostgreSQL-backed state, and 39
 active rules. It remains a historical comparison only: current packaged
-content is 25 rules and must be benchmarked with a new run before capacity
+content is 39 rules and must be benchmarked with a new run before capacity
 numbers are reused. The controlled change removed a redundant post-completion
 transaction and bounded Alert Outbox delivery at two requests per Detection
 instance (six total).

@@ -1,10 +1,7 @@
 package com.socp.detect.web.persistence.repository;
 
 
-
-import com.socp.detect.web.persistence.store.*;
-import com.socp.detect.web.persistence.repository.*;
-import com.socp.detect.web.persistence.entity.*;
+import com.socp.detect.web.persistence.entity.RuleEntity;
 import com.socp.platform.tenant.persistence.TenantScopedRepository;
 
 import java.util.List;

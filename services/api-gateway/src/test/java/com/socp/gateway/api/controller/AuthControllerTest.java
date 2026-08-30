@@ -1,6 +1,7 @@
 package com.socp.gateway.api.controller;
 
-import com.socp.gateway.api.request.*;
+import com.socp.gateway.api.request.LoginRequest;
+import com.socp.gateway.api.request.ServiceTokenRequest;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 import org.springframework.test.util.ReflectionTestUtils;

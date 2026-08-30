@@ -1,12 +1,19 @@
 package com.socp.ai.api.controller;
 
-import com.socp.ai.api.request.*;
+import com.socp.ai.api.request.AiAskRequest;
+import com.socp.ai.api.request.AppendInvestigationRequest;
+import com.socp.ai.api.request.InvestigationRequest;
 import com.socp.ai.domain.AiResult;
 import com.socp.ai.service.AiAssistantService;
 import com.socp.ai.service.InvestigationAgentService;
 import com.socp.platform.audit.api.AuditOperation;
 import com.socp.platform.auth.security.RequireRole;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 import jakarta.validation.Valid;
 
 /**
@@ -18,6 +25,8 @@ public class AiController {
 
     private final AiAssistantService service;
     private final InvestigationAgentService investigation;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.socp.ai.service.AsyncInvestigationJobService asyncInvestigation;
 
     public AiController(AiAssistantService service, InvestigationAgentService investigation) {
         this.service = service;
@@ -36,6 +45,15 @@ public class AiController {
     @PostMapping("/investigations")
     public java.util.Map<String, Object> investigate(@Valid @RequestBody InvestigationRequest request) {
         return investigation.investigate(request.alertId());
+    }
+
+    /** Queue an investigation and return immediately; poll the durable receipt for completion. */
+    @RequireRole({"admin", "analyst"})
+    @AuditOperation(action = "AI_INVESTIGATION_ASYNC", target = "alert")
+    @PostMapping("/investigations/async")
+    public java.util.Map<String, Object> investigateAsync(@Valid @RequestBody InvestigationRequest request) {
+        if (asyncInvestigation == null) return investigate(request);
+        return asyncInvestigation.submit(request.alertId());
     }
 
     @RequireRole({"admin", "analyst"})

@@ -1,10 +1,6 @@
 package com.socp.hips.web.persistence.entity;
 
 
-
-import com.socp.hips.web.persistence.store.*;
-import com.socp.hips.web.persistence.repository.*;
-import com.socp.hips.web.persistence.entity.*;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;

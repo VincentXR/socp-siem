@@ -1,10 +1,7 @@
 package com.socp.hips.collect.persistence.repository;
 
 
-
-import com.socp.hips.collect.persistence.store.*;
-import com.socp.hips.collect.persistence.repository.*;
-import com.socp.hips.collect.persistence.entity.*;
+import com.socp.hips.collect.persistence.entity.HipsEventEntity;
 import com.socp.platform.tenant.persistence.TenantScopedRepository;
 
 import java.util.List;

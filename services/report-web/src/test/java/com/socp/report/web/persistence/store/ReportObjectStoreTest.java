@@ -1,6 +1,6 @@
 package com.socp.report.web.persistence.store;
 
-import com.socp.report.web.persistence.store.*;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

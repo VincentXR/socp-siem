@@ -1,10 +1,7 @@
 package com.socp.alert.service;
 
-import com.socp.alert.api.controller.*;
-import com.socp.alert.api.request.*;
-import com.socp.alert.domain.*;
-import com.socp.alert.repository.*;
-import com.socp.alert.service.*;
+import com.socp.alert.domain.Alarm;
+
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.alert.config.ClickHouseProperties;

@@ -1,10 +1,8 @@
 package com.socp.search.config.persistence.store;
 
 
-
-import com.socp.search.config.persistence.store.*;
-import com.socp.search.config.persistence.repository.*;
-import com.socp.search.config.persistence.entity.*;
+import com.socp.search.config.persistence.repository.LogSourceRepository;
+import com.socp.search.config.persistence.entity.LogSourceEntity;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.search.config.domain.LogSource;

@@ -1,0 +1,14 @@
+{
+  "Event": {
+    "EventID": 1,
+    "Computer": "WIN-SOCP-DEMO",
+    "EventData": {
+      "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "ProcessId": "4242",
+      "CommandLine": "powershell.exe -NoProfile -EncodedCommand ZABlAG0AbwA=",
+      "User": "SOCP\\analyst",
+      "Hashes": "SHA256=demo-not-real",
+      "UtcTime": "2026-08-30T12:00:00.000Z"
+    }
+  }
+}

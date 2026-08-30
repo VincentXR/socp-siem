@@ -1,11 +1,19 @@
 package com.socp.alert.service;
 
-import com.socp.alert.api.controller.*;
-import com.socp.alert.api.request.*;
-import com.socp.alert.domain.*;
+import com.socp.alert.domain.Alarm;
+import com.socp.alert.domain.AlarmEvidence;
+import com.socp.alert.domain.AlarmEvidenceInput;
+import com.socp.alert.domain.AlarmQuery;
+import com.socp.alert.domain.OutboxEvent;
+import com.socp.alert.domain.Severity;
+import com.socp.alert.api.request.CreateAlarmRequest;
+import com.socp.alert.persistence.entity.AlarmBatchIdempotency;
 import com.socp.alert.api.response.AlarmEvidenceResponse;
-import com.socp.alert.repository.*;
-import com.socp.alert.service.*;
+import com.socp.alert.repository.AlarmEvidenceRepository;
+import com.socp.alert.repository.AlarmBatchIdempotencyRepository;
+import com.socp.alert.repository.AlarmRepository;
+import com.socp.alert.repository.OutboxRepository;
+
 
 import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.AfterEach;
@@ -21,6 +29,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.StreamSupport;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -51,6 +60,9 @@ class AlarmServiceTest {
 
     @Mock
     private AlarmDeliveryRegistrar deliveryRegistrar;
+
+    @Mock
+    private AlarmBatchIdempotencyRepository batchIdempotencyRepository;
 
     @InjectMocks
     private AlarmService service;
@@ -184,5 +196,77 @@ class AlarmServiceTest {
         service.create(alarm);
 
         verify(enrichmentService).scheduleAfterCommit(alarm);
+    }
+
+    @Test
+    void batchPersistsResponseAndReplaysItForTheSameRequest() {
+        TenantContext.set("tenant-a");
+        CreateAlarmRequest request = request("source-1");
+        given(batchIdempotencyRepository.findByTenantIdAndIdempotencyKey("tenant-a", "batch-1"))
+                .willReturn(Optional.empty());
+        given(repository.findByTenantIdAndSourceAlertId("tenant-a", "source-1"))
+                .willReturn(Optional.empty());
+        AtomicInteger ids = new AtomicInteger();
+        given(repository.save(org.mockito.ArgumentMatchers.any(Alarm.class))).willAnswer(invocation -> {
+            Alarm alarm = invocation.getArgument(0);
+            alarm.setId("alarm-" + ids.incrementAndGet());
+            return alarm;
+        });
+
+        Map<String, Object> first = service.createBatch(List.of(request), "batch-1");
+
+        assertEquals(List.of("alarm-1"), first.get("accepted"));
+        ArgumentCaptor<AlarmBatchIdempotency> row = ArgumentCaptor.forClass(AlarmBatchIdempotency.class);
+        verify(batchIdempotencyRepository).saveAndFlush(row.capture());
+        given(batchIdempotencyRepository.findByTenantIdAndIdempotencyKey("tenant-a", "batch-1"))
+                .willReturn(Optional.of(row.getValue()));
+
+        Map<String, Object> replay = service.createBatch(List.of(request), "batch-1");
+        assertEquals(first, replay);
+        verify(repository, org.mockito.Mockito.times(1)).save(org.mockito.ArgumentMatchers.any(Alarm.class));
+    }
+
+    @Test
+    void batchRejectsChangedPayloadForAnExistingIdempotencyKey() {
+        TenantContext.set("tenant-a");
+        CreateAlarmRequest request = request("source-1");
+        AlarmBatchIdempotency row = new AlarmBatchIdempotency();
+        row.setRequestHash("different");
+        row.setResponseJson("{}");
+        given(batchIdempotencyRepository.findByTenantIdAndIdempotencyKey("tenant-a", "batch-1"))
+                .willReturn(Optional.of(row));
+
+        org.junit.jupiter.api.Assertions.assertThrows(com.socp.platform.error.exception.ApiException.class,
+                () -> service.createBatch(List.of(request), "batch-1"));
+    }
+
+    @Test
+    void similarAlertsStayTenantAndRuleEntityScoped() {
+        TenantContext.set("tenant-a");
+        Alarm source = new Alarm("AUTH-BRUTE", "SSH brute force", Severity.HIGH,
+                "failed login", "host-1");
+        source.setId("alarm-1");
+        Alarm candidate = new Alarm("AUTH-BRUTE", "SSH brute force", Severity.HIGH,
+                "failed login", "host-1");
+        candidate.setId("alarm-2");
+        given(repository.findByTenantIdAndId("tenant-a", "alarm-1")).willReturn(Optional.of(source));
+        given(repository.findSimilar(org.mockito.ArgumentMatchers.eq("tenant-a"),
+                org.mockito.ArgumentMatchers.eq("alarm-1"), org.mockito.ArgumentMatchers.eq("AUTH-BRUTE"),
+                org.mockito.ArgumentMatchers.eq("host-1"), org.mockito.ArgumentMatchers.any()))
+                .willReturn(List.of(candidate));
+
+        assertEquals(List.of(candidate), service.similar("alarm-1", 500));
+        org.mockito.ArgumentCaptor<org.springframework.data.domain.Pageable> pageable =
+                org.mockito.ArgumentCaptor.forClass(org.springframework.data.domain.Pageable.class);
+        verify(repository).findSimilar(org.mockito.ArgumentMatchers.eq("tenant-a"),
+                org.mockito.ArgumentMatchers.eq("alarm-1"), org.mockito.ArgumentMatchers.eq("AUTH-BRUTE"),
+                org.mockito.ArgumentMatchers.eq("host-1"), pageable.capture());
+        assertEquals(100, pageable.getValue().getPageSize());
+    }
+
+    private static CreateAlarmRequest request(String sourceAlertId) {
+        return new CreateAlarmRequest("AUTH-BRUTE", "SSH brute force", Severity.HIGH,
+                "failed login", "host-1", null, null, null, List.of(), sourceAlertId,
+                null, null, null, null, null);
     }
 }

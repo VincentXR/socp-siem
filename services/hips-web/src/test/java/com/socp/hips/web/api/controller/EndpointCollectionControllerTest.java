@@ -1,6 +1,5 @@
 package com.socp.hips.web.api.controller;
 
-import com.socp.hips.web.api.request.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.hips.web.persistence.store.EndpointEventStore;
 import com.socp.platform.client.http.ServiceCall;

@@ -20,10 +20,14 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Style debt gate failed' }
     python build/verify-frontend-i18n.py
     if ($LASTEXITCODE -ne 0) { throw 'Frontend i18n gate failed' }
+    python build/verify-event-schema.py
+    if ($LASTEXITCODE -ne 0) { throw 'Canonical event schema gate failed' }
     python build/verify-production.py
     if ($LASTEXITCODE -ne 0) { throw 'Production deployment contract gate failed' }
     python build/validate-detection-content.py
     if ($LASTEXITCODE -ne 0) { throw 'Detection content gate failed' }
+    python build/generate-detection-summary.py --check-readme
+    if ($LASTEXITCODE -ne 0) { throw 'Detection summary/documentation gate failed' }
     python build/verify-investigation-dataset.py
     if ($LASTEXITCODE -ne 0) { throw 'Investigation dataset gate failed' }
     python build/eval-investigation.py --results services/ai-assistant/target/investigation-eval-results.json
@@ -37,6 +41,10 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Frontend install failed' }
         pnpm --dir apps/workbench test
         if ($LASTEXITCODE -ne 0) { throw 'Frontend tests failed' }
+        pnpm --dir apps/workbench lint
+        if ($LASTEXITCODE -ne 0) { throw 'Frontend lint failed' }
+        pnpm --dir apps/workbench format:check
+        if ($LASTEXITCODE -ne 0) { throw 'Frontend format check failed' }
         pnpm --dir apps/workbench verify
         if ($LASTEXITCODE -ne 0) { throw 'Frontend verification failed' }
     } finally {

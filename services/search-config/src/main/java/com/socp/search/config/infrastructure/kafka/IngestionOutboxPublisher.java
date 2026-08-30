@@ -12,7 +12,6 @@ import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -22,6 +21,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** Reliably drains canonical-event publication intents to Kafka. */
 @Component
@@ -39,6 +39,7 @@ public class IngestionOutboxPublisher {
     private final ExecutorService triggerExecutor;
     private final int maxAttempts;
     private final long retentionMs;
+    private final AtomicInteger pendingGauge = new AtomicInteger();
     private Instant nextRecoveryAt = Instant.EPOCH;
 
     @Autowired
@@ -66,6 +67,10 @@ public class IngestionOutboxPublisher {
                 Thread.ofVirtual().name("ingestion-outbox-trigger-", 0).factory());
         this.maxAttempts = Math.max(1, maxAttempts);
         this.retentionMs = Math.max(Duration.ofMinutes(1).toMillis(), retentionMs);
+        if (meterRegistry != null) {
+            io.micrometer.core.instrument.Gauge.builder("socp.ingestion.outbox.pending", pendingGauge,
+                    AtomicInteger::get).register(meterRegistry);
+        }
     }
 
     private final java.util.concurrent.atomic.AtomicBoolean activeTrigger = new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -106,6 +111,16 @@ public class IngestionOutboxPublisher {
             }
             List<IngestionOutboxEvent> pending =
                     repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc("PENDING", now);
+            if (meterRegistry != null) {
+                for (IngestionOutboxEvent event : pending) {
+                    if (event.getCreatedAt() != null) {
+                        meterRegistry.timer("socp.ingestion.outbox.queue_age").record(
+                                Math.max(0, Duration.between(event.getCreatedAt(), now).toNanos()),
+                                java.util.concurrent.TimeUnit.NANOSECONDS);
+                    }
+                }
+                pendingGauge.set(pending.size());
+            }
             List<CompletableFuture<Void>> deliveries = pending.stream()
                     .map(event -> CompletableFuture.runAsync(
                             () -> TenantContext.runWith(event.getTenantId(), () -> deliver(event)),

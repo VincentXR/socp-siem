@@ -1,10 +1,7 @@
 package com.socp.asset.web.persistence.repository;
 
 
-
-import com.socp.asset.web.persistence.store.*;
-import com.socp.asset.web.persistence.repository.*;
-import com.socp.asset.web.persistence.entity.*;
+import com.socp.asset.web.persistence.entity.AssetEntity;
 import com.socp.platform.tenant.persistence.TenantScopedRepository;
 
 import java.util.List;

@@ -8,6 +8,7 @@ import com.socp.search.config.config.KafkaProperties;
 import com.socp.search.config.domain.SearchEvent;
 import com.socp.search.config.infrastructure.opensearch.OsEventWriter;
 import com.socp.search.config.config.OpenSearchIndexerProperties;
+import com.socp.search.config.schema.CanonicalEventSchema;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -169,9 +170,15 @@ public class OsIndexerConsumer {
                 try {
                     @SuppressWarnings("unchecked")
                     Map<String, Object> value = MAPPER.readValue(record.value(), Map.class);
+                    CanonicalEventSchema.requireSupported(value);
                     events.add(toEvent(value, record.key()));
                 } catch (Exception invalid) {
                     recordMetric("drop", 1);
+                    if (invalid instanceof CanonicalEventSchema.UnsupportedSchemaVersionException) {
+                        recordMetric("schema_rejected", 1);
+                    } else if (invalid instanceof CanonicalEventSchema.SchemaValidationException) {
+                        recordMetric("schema_invalid", 1);
+                    }
                     if (!sendToDlqAndAwait(record.key(), record.value())) {
                         recordMetric("dlq_failed", 1);
                         log.warn("Invalid event DLQ write failed partition={} offset={}",
@@ -242,8 +249,21 @@ public class OsIndexerConsumer {
         }
         Map<String, String> fields = stringMap(value.get("fields"));
         String tenant = fields.get("tenant_id");
+        String envelopeTenant = value.get("tenantId") == null ? null : String.valueOf(value.get("tenantId"));
+        if (tenant == null) tenant = envelopeTenant;
+        if (tenant != null && envelopeTenant != null && !tenant.equals(envelopeTenant)) {
+            throw new IllegalArgumentException("tenant_id and tenantId do not match");
+        }
         if (tenant == null || !com.socp.platform.tenant.context.TenantContext.isValid(tenant)) {
             throw new IllegalArgumentException("tenant_id is required for idempotent indexing");
+        }
+        // Keep the legacy rule/storage field populated even when a versioned
+        // producer only supplies the envelope tenantId.  OpenSearch document
+        // identity and older detection queries both rely on this bridge.
+        if (!fields.containsKey("tenant_id")) {
+            Map<String, String> withTenant = new LinkedHashMap<>(fields);
+            withTenant.put("tenant_id", tenant);
+            fields = Map.copyOf(withTenant);
         }
         return new SearchEvent(eventId, timestamp,
                 String.valueOf(value.getOrDefault("source", "unknown")),

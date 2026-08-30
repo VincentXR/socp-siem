@@ -4,7 +4,6 @@ import com.socp.platform.error.exception.ApiException;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.platform.tenant.security.ServiceRequestSignature;
 import com.nimbusds.jwt.JWTClaimsSet;
-import jakarta.servlet.http.HttpServletRequest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
@@ -214,6 +213,19 @@ class AuthInterceptorTest {
     }
 
     @Test
+    void analystGetsDefaultOperationalPermissionsButNotApproval() throws Exception {
+        properties.setDevBypass(true);
+        org.mockito.BDDMockito.given(validator.isDevBypass()).willReturn(true);
+        MockHttpServletRequest request = request("analyst-token", "analyst", "tenant-a");
+        assertTrue(interceptor.preHandle(request, new MockHttpServletResponse(), permissionHandler()));
+
+        MockHttpServletRequest denied = request("analyst-token", "analyst", "tenant-a");
+        ApiException error = assertThrows(ApiException.class,
+                () -> interceptor.preHandle(denied, new MockHttpServletResponse(), approvalHandler()));
+        assertEquals(403, error.getCode());
+    }
+
+    @Test
     void metricsCredentialIsLimitedToReadOnlyMetrics() throws Exception {
         properties.setMetricsToken("metrics-token");
         MockHttpServletRequest request = request("metrics-token", null, null);
@@ -283,5 +295,21 @@ class AuthInterceptorTest {
         @RequireService
         public void serviceOnly() {
         }
+
+        @RequirePermission("alarm:triage")
+        public void permission() {
+        }
+
+        @RequirePermission("soar:approve")
+        public void approval() {
+        }
+    }
+
+    private static HandlerMethod permissionHandler() throws NoSuchMethodException {
+        return new HandlerMethod(new ProtectedHandler(), ProtectedHandler.class.getMethod("permission"));
+    }
+
+    private static HandlerMethod approvalHandler() throws NoSuchMethodException {
+        return new HandlerMethod(new ProtectedHandler(), ProtectedHandler.class.getMethod("approval"));
     }
 }

@@ -1,6 +1,8 @@
 package com.socp.soar.web.api.controller;
 
-import com.socp.soar.web.api.request.*;
+import com.socp.soar.web.api.request.AlarmEvaluationRequest;
+import com.socp.soar.web.api.request.CreatePlaybookRequest;
+import com.socp.soar.web.api.request.PlaybookExecutionRequest;
 import com.socp.soar.web.domain.Playbook;
 import com.socp.soar.web.persistence.store.PlaybookStore;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -18,6 +20,8 @@ import com.socp.platform.auth.security.RequireRole;
 import com.socp.soar.web.service.AlarmEvaluationService;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.beans.factory.annotation.Autowired;
+import com.socp.soar.web.service.ApprovalService;
 
 /**
  * SOAR 剧本 API：CRUD + 启停。剧本元数据持久化；执行由
@@ -30,6 +34,8 @@ public class PlaybookController {
     private final PlaybookStore store;
     private final com.socp.soar.web.service.PlaybookExecutor executor;
     private final AlarmEvaluationService evaluationService;
+    @Autowired(required = false)
+    private ApprovalService approvalService;
 
     public PlaybookController(PlaybookStore store, com.socp.soar.web.service.PlaybookExecutor executor,
                               AlarmEvaluationService evaluationService) {
@@ -80,15 +86,49 @@ public class PlaybookController {
 
     /** 手动触发指定剧本执行（忽略触发条件，直接跑 actions）。 */
     @RequireRole({"admin", "analyst"})
+    @com.socp.platform.auth.security.RequirePermission("soar:execute")
     @PostMapping("/{id}/execute")
     public Map<String, Object> execute(@PathVariable String id,
                                        @RequestBody(required = false) PlaybookExecutionRequest request) {
         Map<String, Object> context = request == null ? Map.of() : request.context();
         validateMap(context, "context");
+        if (approvalService != null && approvalService.requiresApproval(id)) {
+            String requestedBy = String.valueOf(context.getOrDefault("requestedBy", "operator"));
+            String reason = String.valueOf(context.getOrDefault("reason", "manual high-risk action"));
+            return approvalService.request(id, context, requestedBy, reason);
+        }
         return executor.runById(id, context);
     }
 
+    @com.socp.platform.auth.security.RequirePermission("soar:approve")
+    @GetMapping("/approvals")
+    public List<Map<String, Object>> approvals() {
+        return approvalService == null ? List.of() : approvalService.list();
+    }
+
+    @RequireRole("admin")
+    @com.socp.platform.auth.security.RequirePermission("soar:approve")
+    @PostMapping("/approvals/{approvalId}/approve")
+    public Map<String, Object> approve(@PathVariable String approvalId,
+                                       @RequestBody(required = false) Map<String, Object> body) {
+        if (approvalService == null) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                "approval service is unavailable");
+        String approver = body == null ? "operator" : String.valueOf(body.getOrDefault("approver", "operator"));
+        String reason = body == null ? null : String.valueOf(body.getOrDefault("reason", ""));
+        return approvalService.approve(approvalId, approver, reason);
+    }
+
+    @RequireRole("admin")
+    @com.socp.platform.auth.security.RequirePermission("soar:execute")
+    @PostMapping("/approvals/{approvalId}/execute")
+    public Map<String, Object> executeApproved(@PathVariable String approvalId) {
+        if (approvalService == null) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                "approval service is unavailable");
+        return approvalService.execute(approvalId);
+    }
+
     /** 执行历史（最近 200 条）。 */
+    @com.socp.platform.auth.security.RequirePermission("soar:execute")
     @GetMapping("/executions")
     public List<Map<String, Object>> executions() {
         return executor.executions();

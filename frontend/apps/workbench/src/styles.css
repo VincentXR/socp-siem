@@ -323,6 +323,8 @@ body {
 .search-examples .el-tag { cursor: pointer; }
 .search-error { margin-bottom: var(--ns-space-4); }
 .search-result-card { margin-bottom: var(--ns-space-4); }
+.search-result-meta { float: right; color: var(--ns-text-3); font-size: 12px; font-weight: 400; }
+.search-load-more { display: flex; justify-content: center; margin-top: 12px; }
 .search-stat-row { display: flex; align-items: center; gap: var(--ns-space-2); }
 .search-stat-track { flex: 1; height: 10px; overflow: hidden; border-radius: var(--ns-radius-sm); background: var(--ns-bg-inset); }
 .search-stat-track i { display: block; height: 100%; border-radius: inherit; background: var(--ns-accent); }

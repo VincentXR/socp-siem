@@ -1,6 +1,6 @@
 package com.socp.asset.web.api.controller;
 
-import com.socp.asset.web.api.request.*;
+import com.socp.asset.web.api.request.AssetCollectionRequest;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.asset.web.domain.Asset;

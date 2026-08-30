@@ -86,6 +86,7 @@ final class DetectionRecordProcessor {
                 Throwable cause = failed.getCause() == null ? failed : failed.getCause();
                 throw new IllegalStateException("durable detection result failed: " + cause.getMessage(), cause);
             }
+            engine.snapshotAfterDurable(normalized, partition, offset);
         }
     }
 

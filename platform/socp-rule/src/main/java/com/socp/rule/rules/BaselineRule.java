@@ -4,6 +4,8 @@ import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.rule.state.RuleStateMap;
+import com.socp.rule.state.StateSnapshotCodec;
+import com.socp.rule.state.StatefulRule;
 
 import java.time.Duration;
 import java.util.ArrayDeque;
@@ -27,7 +29,7 @@ import java.util.function.Predicate;
  *   <li>同一个桶内只告警一次，避免刷屏。</li>
  * </ul>
  */
-public final class BaselineRule extends AbstractRule {
+public final class BaselineRule extends AbstractRule implements StatefulRule {
 
     /** 标准差下限，防止零方差导致过敏感 */
     private static final double MIN_STDDEV = 1.0;
@@ -146,6 +148,57 @@ public final class BaselineRule extends AbstractRule {
             }
         });
         return out;
+    }
+
+    @Override
+    public String stateVersion() {
+        return "baseline-v1";
+    }
+
+    @Override
+    public byte[] snapshotState() {
+        Map<String, Object> out = new java.util.LinkedHashMap<>();
+        states.forEach((key, state) -> {
+            synchronized (state) {
+                Map<String, Object> value = new java.util.LinkedHashMap<>();
+                value.put("bucketIdx", state.bucketIdx);
+                value.put("count", state.count);
+                value.put("alerted", state.alerted);
+                value.put("history", new ArrayList<>(state.history));
+                value.put("evidence", state.evidence.stream().map(StateSnapshotCodec::event).toList());
+                out.put(key, value);
+            }
+        });
+        return StateSnapshotCodec.write(out);
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public void restoreState(byte[] serializedState) {
+        StateSnapshotCodec.read(serializedState).forEach((key, raw) -> {
+            if (!(raw instanceof Map<?, ?> values)) return;
+            State state = states.get(key, State::new);
+            synchronized (state) {
+                state.bucketIdx = number(values.get("bucketIdx"), Long.MIN_VALUE);
+                state.count = (int) number(values.get("count"), 0);
+                state.alerted = Boolean.TRUE.equals(values.get("alerted"));
+                state.history.clear();
+                Object history = values.get("history");
+                if (history instanceof List<?> items) {
+                    items.forEach(item -> state.history.addLast((int) number(item, 0)));
+                }
+                state.evidence.clear();
+                Object evidence = values.get("evidence");
+                if (evidence instanceof List<?> items) {
+                    items.stream().map(StateSnapshotCodec::event).filter(java.util.Objects::nonNull)
+                            .limit(MAX_EVIDENCE).forEach(state.evidence::addLast);
+                }
+            }
+        });
+    }
+
+    private static long number(Object value, long fallback) {
+        return value instanceof Number number ? number.longValue() : fallback;
     }
 
     @Override

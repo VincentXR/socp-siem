@@ -43,6 +43,9 @@ export interface ReportSummary {
   degraded: boolean
   freshness: string | null
   degradationReason: string | null
+  generatedAt?: string
+  queryWindow?: string
+  contentVersion?: string
 }
 export interface ReportTrend {
   days: string[]
@@ -51,6 +54,9 @@ export interface ReportTrend {
   degraded: boolean
   freshness: string | null
   degradationReason: string | null
+  generatedAt?: string
+  queryWindow?: string
+  contentVersion?: string
 }
 export interface Asset {
   id: string; name: string; type: string; ip: string
@@ -100,6 +106,15 @@ export interface Disposition {
   status: string; assignee: string | null
   notes: Array<{ author: string; content: string; at: string }>
 }
+export type AlarmFeedbackKind = 'FALSE_POSITIVE' | 'RULE_EXCEPTION'
+export interface AlarmFeedback {
+  id?: string; tenantId?: string; alarmId: string; kind: AlarmFeedbackKind
+  reason: string; expiresAt?: string | null; actor?: string | null; createdAt?: string | null
+}
+export interface AlarmBatchDispositionResult {
+  updated: number; alarmIds: string[]
+  items: Array<{ alarmId: string; status: string; assignee: string | null; reasonRecorded: boolean }>
+}
 export interface AlarmEvidence {
   id: string
   eventId: string | null
@@ -140,12 +155,14 @@ export interface SearchResult {
   degraded: boolean
   freshness: string | null
   degradationReason: string | null
+  nextCursor?: string | null
+  elapsedMs?: number
 }
 
 export interface RuleCondition { field: string; op: string; value: string }
 export interface RuleSpec {
   id: string; name: string; type: string; severity: string; message?: string
-  enabled: boolean; window?: string; keyField?: string; threshold?: number
+  enabled: boolean; status?: string; window?: string; keyField?: string; routingField?: string; threshold?: number
   match?: RuleCondition[]; steps?: RuleCondition[][]; mitre?: string
 }
 export interface GasStats {
@@ -172,7 +189,12 @@ export interface PlaybookExecution {
   results: PlaybookActionResult[]
 }
 
-export interface Ioc { id: string; type: string; value: string; severity: string; source: string; description: string; tags: string[] }
+export interface Ioc {
+  id: string; type: string; value: string; severity: string; source: string; description: string; tags: string[]
+  feed?: string; externalId?: string; confidence?: number | null; tlp?: string | null
+  validFrom?: string | null; validUntil?: string | null; expiration?: string | null
+  revoked?: boolean; provenance?: string
+}
 export interface Tactic { id: string; name: string; order: number }
 export interface Technique { id: string; name: string; tactic: string; url: string; description: string }
 export interface Channel { id: string; name: string; type: string; target: string; enabled: boolean; description: string }

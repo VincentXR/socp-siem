@@ -1,7 +1,6 @@
 package com.socp.search.config.service;
 
 import com.socp.search.config.domain.SearchEvent;
-import com.socp.search.config.infrastructure.kafka.KafkaEventProducer;
 import com.socp.search.config.persistence.repository.IngestionOutboxRepository;
 import com.socp.search.config.persistence.repository.SearchEventRepository;
 import com.socp.search.config.persistence.store.SearchStore;

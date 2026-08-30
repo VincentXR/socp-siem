@@ -1,14 +1,13 @@
 package com.socp.detect.web.persistence.store;
 
 
-
-import com.socp.detect.web.persistence.store.*;
-import com.socp.detect.web.persistence.repository.*;
-import com.socp.detect.web.persistence.entity.*;
+import com.socp.detect.web.persistence.repository.DetectionEventRepository;
+import com.socp.detect.web.persistence.entity.DetectionEventEntity;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.platform.tenant.persistence.TenantSystemJob;
+import com.socp.platform.tenant.context.TenantContext;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -198,9 +197,16 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Override
     @Transactional(readOnly = true)
     public List<SecurityEvent> recent(Duration window) {
+        if (TenantContext.isSystemScope()) {
+            return readPages((page, size) -> repository
+                    .findByStatusAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
+                            DetectionEventStatus.COMPLETED.name(), cutoff(window),
+                            org.springframework.data.domain.PageRequest.of(page, size)), true);
+        }
+        String tenant = TenantContext.require();
         return readPages((page, size) -> repository
-                .findByStatusAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
-                        DetectionEventStatus.COMPLETED.name(), cutoff(window),
+                .findByTenantIdAndStatusAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
+                        tenant, DetectionEventStatus.COMPLETED.name(), cutoff(window),
                         org.springframework.data.domain.PageRequest.of(page, size)), true);
     }
 
@@ -208,17 +214,32 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Transactional(readOnly = true)
     public List<SecurityEvent> recentForPartitions(Set<Integer> partitions, Duration window) {
         if (partitions == null || partitions.isEmpty()) return List.of();
+        if (TenantContext.isSystemScope()) {
+            return readPages((page, size) -> repository
+                    .findByStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
+                            DetectionEventStatus.COMPLETED.name(), partitions, cutoff(window),
+                            org.springframework.data.domain.PageRequest.of(page, size)), false);
+        }
+        String tenant = TenantContext.require();
         return readPages((page, size) -> repository
-                .findByStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
-                        DetectionEventStatus.COMPLETED.name(), partitions, cutoff(window),
+                .findByTenantIdAndStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
+                        tenant, DetectionEventStatus.COMPLETED.name(), partitions, cutoff(window),
                         org.springframework.data.domain.PageRequest.of(page, size)), false);
     }
 
     @Override
     public void replayRecent(Duration window, Consumer<List<SecurityEvent>> batchConsumer) {
+        if (TenantContext.isSystemScope()) {
+            replayPages((page, size) -> repository
+                    .findByStatusAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
+                            DetectionEventStatus.COMPLETED.name(), cutoff(window),
+                            org.springframework.data.domain.PageRequest.of(page, size)), batchConsumer);
+            return;
+        }
+        String tenant = TenantContext.require();
         replayPages((page, size) -> repository
-                .findByStatusAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
-                        DetectionEventStatus.COMPLETED.name(), cutoff(window),
+                .findByTenantIdAndStatusAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
+                        tenant, DetectionEventStatus.COMPLETED.name(), cutoff(window),
                         org.springframework.data.domain.PageRequest.of(page, size)), batchConsumer);
     }
 
@@ -226,9 +247,17 @@ public class DetectionEventJournal implements DetectionStateStore {
     public void replayRecentForPartitions(Set<Integer> partitions, Duration window,
                                           Consumer<List<SecurityEvent>> batchConsumer) {
         if (partitions == null || partitions.isEmpty()) return;
+        if (TenantContext.isSystemScope()) {
+            replayPages((page, size) -> repository
+                    .findByStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
+                            DetectionEventStatus.COMPLETED.name(), partitions, cutoff(window),
+                            org.springframework.data.domain.PageRequest.of(page, size)), batchConsumer);
+            return;
+        }
+        String tenant = TenantContext.require();
         replayPages((page, size) -> repository
-                .findByStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
-                        DetectionEventStatus.COMPLETED.name(), partitions, cutoff(window),
+                .findByTenantIdAndStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
+                        tenant, DetectionEventStatus.COMPLETED.name(), partitions, cutoff(window),
                         org.springframework.data.domain.PageRequest.of(page, size)), batchConsumer);
     }
 
@@ -245,9 +274,16 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Transactional(readOnly = true)
     public List<SecurityEvent> pendingForPartitions(Set<Integer> partitions, Duration window) {
         if (partitions == null || partitions.isEmpty()) return List.of();
+        if (TenantContext.isSystemScope()) {
+            return readPages((page, size) -> repository
+                    .findByStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
+                            DetectionEventStatus.PENDING.name(), partitions, cutoff(window),
+                            org.springframework.data.domain.PageRequest.of(page, size)), false);
+        }
+        String tenant = TenantContext.require();
         return readPages((page, size) -> repository
-                .findByStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
-                        DetectionEventStatus.PENDING.name(), partitions, cutoff(window),
+                .findByTenantIdAndStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
+                        tenant, DetectionEventStatus.PENDING.name(), partitions, cutoff(window),
                         org.springframework.data.domain.PageRequest.of(page, size)), false);
     }
 
@@ -256,11 +292,15 @@ public class DetectionEventJournal implements DetectionStateStore {
     public List<PendingDetectionEvent> pendingRecordsForPartitions(Set<Integer> partitions,
                                                                     Duration window) {
         if (partitions == null || partitions.isEmpty()) return List.of();
+        String tenant = TenantContext.isSystemScope() ? null : TenantContext.require();
         List<DetectionEventEntity> rows = new ArrayList<>();
         for (int page = 0; ; page++) {
-            List<DetectionEventEntity> batch = repository
-                    .findByStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
+            List<DetectionEventEntity> batch = tenant == null
+                    ? repository.findByStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
                             DetectionEventStatus.PENDING.name(), partitions, cutoff(window),
+                            org.springframework.data.domain.PageRequest.of(page, replayPageSize))
+                    : repository.findByTenantIdAndStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
+                            tenant, DetectionEventStatus.PENDING.name(), partitions, cutoff(window),
                             org.springframework.data.domain.PageRequest.of(page, replayPageSize));
             rows.addAll(batch);
             if (batch.size() < replayPageSize) break;
@@ -271,7 +311,9 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Override
     @Transactional(readOnly = true)
     public long pendingCount() {
-        return repository.countByStatus(DetectionEventStatus.PENDING.name());
+        return TenantContext.isSystemScope()
+                ? repository.countByStatus(DetectionEventStatus.PENDING.name())
+                : repository.countByTenantIdAndStatus(TenantContext.require(), DetectionEventStatus.PENDING.name());
     }
 
     @Override
@@ -283,6 +325,30 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Override
     public String recoveryWindow() {
         return retention.toString();
+    }
+
+    @Override
+    public boolean supportsCheckpointReplay() {
+        return true;
+    }
+
+    @Override
+    public void replayCompletedAfter(String tenantId, Instant checkpoint,
+                                     Set<Integer> partitions,
+                                     Consumer<List<SecurityEvent>> batchConsumer) {
+        if (tenantId == null || tenantId.isBlank() || checkpoint == null || batchConsumer == null) return;
+        for (int page = 0; ; page++) {
+            org.springframework.data.domain.Pageable request =
+                    org.springframework.data.domain.PageRequest.of(page, replayPageSize);
+            List<DetectionEventEntity> rows = partitions == null || partitions.isEmpty()
+                    ? repository.findByTenantIdAndStatusAndCompletedAtAfterOrderByCompletedAt(
+                            tenantId, DetectionEventStatus.COMPLETED.name(), checkpoint, request)
+                    : repository.findByTenantIdAndStatusAndKafkaPartitionInAndCompletedAtAfterOrderByCompletedAt(
+                            tenantId, DetectionEventStatus.COMPLETED.name(), partitions, checkpoint, request);
+            List<SecurityEvent> events = fromRows(rows);
+            if (!events.isEmpty()) batchConsumer.accept(events);
+            if (rows.size() < replayPageSize) break;
+        }
     }
 
     public Duration retention() {

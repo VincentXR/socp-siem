@@ -57,6 +57,7 @@ export const zhCN = {
     copy: '复制',
     exportCsv: '导出 CSV',
     exportJson: '导出 JSON',
+    loadMore: '加载更多',
     refresh: '刷新',
     total: '共 {total} 条',
     status: '状态',

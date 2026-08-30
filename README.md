@@ -46,7 +46,7 @@ Outbox for the Kafka fan-out hand-off.
 - JSON, NDJSON, Syslog, CEF, LEEF, KV, Sysmon, auditd, and Falco parsing.
 - Canonical event fields and stable tenant/entity Kafka routing keys.
 - Pattern, threshold, correlation, correlation-set, baseline, and rare rules.
-- A versioned 25-rule Detection-as-Code pack with ATT&CK, data-source, and
+- A versioned 39-rule Detection-as-Code pack with ATT&CK, data-source, and
   positive/negative execution metadata.
 - Hot reload, suppression, partition-serial processing lanes, contiguous
   manual Kafka commits, durable DLQ acknowledgement, event-ID de-duplication,
@@ -62,8 +62,15 @@ Outbox for the Kafka fan-out hand-off.
 
 The versioned detection pack is at
 `services/detect-web/src/main/resources/detection-content/manifest.json`.
-On a fresh Detection database, the 25 packaged rules and 14 non-overlapping
-built-in seed rules produce 39 active rules before user customization.
+It is the sole executable source for packaged detections; a fresh Detection
+database installs the manifest rules before user customization.
+
+<!-- detection-summary:start -->
+**Detection content**: `39` rules (`39` ACTIVE), pack `socp-core-detections` version `2026.08.30` (schema `1`).
+Types: baseline=3, correlation=2, correlation-set=1, pattern=18, rare=5, threshold=10. Statuses: ACTIVE=39.
+ATT&CK techniques: `23`; data sources: `22` (alert, application, audit, auditd, auth, database, dlp, dns, edr, falco, firewall, linux, mail, netflow, nginx, proxy, risk, sshd, sysmon, waf, web, windows).
+Manifest SHA-256: `fafd608e3c89207c49fcf83c984725ef73bba56cde3ccae5bb3bdb014eb54673`.
+<!-- detection-summary:end -->
 The exact partition and recovery contract is in
 `docs/detection-state-semantics.md`.
 

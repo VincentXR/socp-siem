@@ -1,10 +1,8 @@
 package com.socp.notify.web.persistence.store;
 
 
-
-import com.socp.notify.web.persistence.store.*;
-import com.socp.notify.web.persistence.repository.*;
-import com.socp.notify.web.persistence.entity.*;
+import com.socp.notify.web.persistence.repository.ChannelRepository;
+import com.socp.notify.web.persistence.entity.ChannelEntity;
 import com.socp.notify.web.domain.Channel;
 import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -12,11 +10,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import com.socp.platform.tenant.context.TenantContext;
 
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * 通知渠道存储——内存 + H2 双写（t_channel）：启动从库恢复，写操作同步落库，重启不丢。

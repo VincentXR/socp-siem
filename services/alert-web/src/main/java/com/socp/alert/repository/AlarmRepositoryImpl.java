@@ -1,10 +1,9 @@
 package com.socp.alert.repository;
 
-import com.socp.alert.api.controller.*;
-import com.socp.alert.api.request.*;
-import com.socp.alert.domain.*;
-import com.socp.alert.repository.*;
-import com.socp.alert.service.*;
+import com.socp.alert.domain.Alarm;
+import com.socp.alert.domain.AlarmQuery;
+import com.socp.alert.domain.Severity;
+
 
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;

@@ -1,6 +1,5 @@
 package com.socp.asset.web.api.controller;
 
-import com.socp.asset.web.api.request.*;
 import com.socp.platform.error.api.ApiResult;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;

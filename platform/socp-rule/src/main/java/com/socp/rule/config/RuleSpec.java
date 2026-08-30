@@ -36,6 +36,13 @@ public final class RuleSpec {
     public final String message;
     public final String mitre;        // 关联的 MITRE ATT&CK 技术 ID（如 T1110），可空
     public final String keyField;     // 阈值/关联的分组字段
+    /**
+     * Canonical event-key dimension used to keep this stateful rule
+     * partition-local.  Older rule documents omitted it; in that case it is
+     * derived from {@code keyField} by the content catalog before the rule is
+     * persisted.
+     */
+    public final String routingField;
     public final Integer threshold;   // 阈值规则的触发次数
     public final Duration window;     // 时间窗口
     /** 规则生命周期状态（2026-08-11）：DRAFT / TESTING / ACTIVE / DISABLED / ARCHIVED。
@@ -43,6 +50,8 @@ public final class RuleSpec {
     public final String status;
     public final boolean enabled;     // 派生：status==ACTIVE 或（status 缺失时）旧 enabled 布尔
     public final List<Map<String, String>> match;             // pattern / threshold 的匹配条件
+    /** Alternative condition groups (OR semantics), used by lossless Sigma imports. */
+    public final List<List<Map<String, String>>> matchAny;
     public final List<List<Map<String, String>>> steps;       // correlation 的有序步骤
 
     // ---- UEBA 参数（baseline / rare 专用） ----
@@ -62,6 +71,8 @@ public final class RuleSpec {
         this.mitre = str(m, "mitre");
         Object kf = m.get("keyField");
         this.keyField = kf == null ? null : String.valueOf(kf);
+        Object rf = m.get("routingField");
+        this.routingField = rf == null ? this.keyField : String.valueOf(rf);
         Object th = m.get("threshold");
         this.threshold = th == null ? null : ((Number) th).intValue();
         Object w = m.get("window");
@@ -80,6 +91,7 @@ public final class RuleSpec {
         this.enabled = st != null && !String.valueOf(st).isBlank()
                 ? "ACTIVE".equals(this.status) : enB;
         this.match = parseConds((List<Object>) m.getOrDefault("match", List.of()));
+        this.matchAny = parseSteps((List<Object>) m.getOrDefault("matchAny", List.of()));
         this.steps = parseSteps((List<Object>) m.getOrDefault("steps", List.of()));
 
         Object vf = m.get("valueField");
@@ -98,9 +110,9 @@ public final class RuleSpec {
     public Rule toRule() {
         return switch (type) {
             case "threshold" -> new ThresholdRule(
-                    id, name, and(match), keyExtractor(),
+                    id, name, matcher(), keyExtractor(),
                     threshold, window, severity, message);
-            case "pattern" -> new PatternRule(id, name, and(match), severity, message);
+            case "pattern" -> new PatternRule(id, name, matcher(), severity, message);
             case "correlation" -> new CorrelationRule(
                     id, name, keyExtractor(),
                     steps.stream().map(this::and).toList(),
@@ -111,7 +123,7 @@ public final class RuleSpec {
                     window, severity, message);
             // UEBA：与实体自身历史水位比较的离群检测
             case "baseline" -> new BaselineRule(
-                    id, name, and(match), keyExtractor(),
+                    id, name, matcher(), keyExtractor(),
                     window,
                     baselineWindows == null ? 12 : baselineWindows,
                     warmup == null ? 4 : warmup,
@@ -120,7 +132,7 @@ public final class RuleSpec {
                     severity, message);
             // UEBA：该实体从未出现过的取值
             case "rare" -> new RareValueRule(
-                    id, name, and(match), keyExtractor(),
+                    id, name, matcher(), keyExtractor(),
                     fieldExtractor(valueField), valueField,
                     warmup == null ? 20 : warmup,
                     severity, message);
@@ -149,6 +161,7 @@ public final class RuleSpec {
         out.put("message", message);
         if (mitre != null && !mitre.isBlank()) out.put("mitre", mitre);
         if (keyField != null) out.put("keyField", keyField);
+        if (routingField != null) out.put("routingField", routingField);
         if (threshold != null) out.put("threshold", threshold);
         out.put("window", window.toSeconds() + "s");
         out.put("enabled", enabled);
@@ -159,6 +172,7 @@ public final class RuleSpec {
         if (warmup != null) out.put("warmup", warmup);
         if (minCount != null) out.put("minCount", minCount);
         if (!match.isEmpty()) out.put("match", match);
+        if (!matchAny.isEmpty()) out.put("matchAny", matchAny);
         if (!steps.isEmpty()) out.put("steps", steps);
         return out;
     }
@@ -167,6 +181,16 @@ public final class RuleSpec {
         Predicate<SecurityEvent> p = e -> true;
         for (var c : conds) p = p.and(toPredicate(c));
         return p;
+    }
+
+    /** Required conditions are ANDed; matchAny groups are ORed as one expression. */
+    private Predicate<SecurityEvent> matcher() {
+        Predicate<SecurityEvent> required = and(match);
+        if (matchAny.isEmpty()) return required;
+        Predicate<SecurityEvent> alternatives = e -> matchAny.stream()
+                .map(this::and)
+                .anyMatch(predicate -> predicate.test(e));
+        return required.and(alternatives);
     }
 
     private Predicate<SecurityEvent> toPredicate(Map<String, String> c) {

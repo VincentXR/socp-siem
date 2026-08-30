@@ -1,16 +1,19 @@
 package com.socp.alert.api.controller;
-import com.socp.alert.api.controller.*;
-import com.socp.alert.api.request.*;
-import com.socp.alert.domain.*;
+
+import com.socp.alert.api.request.CreateAlarmRequest;
+import com.socp.alert.api.request.AlarmBatchRequest;
+import com.socp.alert.domain.Alarm;
+import com.socp.alert.domain.Severity;
 import com.socp.alert.api.response.AlarmEvidenceResponse;
-import com.socp.alert.repository.*;
-import com.socp.alert.service.*;
+import com.socp.alert.service.AlarmService;
+import com.socp.alert.service.AlertPerformanceMetrics;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.socp.platform.audit.api.AuditOperation;
 import com.socp.platform.auth.security.RequireRole;
+import com.socp.platform.auth.security.RequirePermission;
 import com.socp.platform.error.api.ApiResult;
 import com.socp.platform.ratelimit.api.RateLimit;
 import jakarta.validation.Valid;
@@ -21,11 +24,11 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
@@ -53,6 +56,7 @@ public class AlarmController {
 
     /** 写入告警（接入→检测→分析 的产物落 t_alarm）。带审计注解，结果进 Kafka socp-audit（Docker 环境）。 */
     @RequireRole({"admin", "analyst"})
+    @RequirePermission("alarm:triage")
     @AuditOperation(action = "CREATE_ALARM", target = "t_alarm")
     @PostMapping
     public ApiResult<Alarm> create(@Valid @RequestBody CreateAlarmRequest req) {
@@ -81,6 +85,21 @@ public class AlarmController {
             if (performanceMetrics != null) performanceMetrics.failed();
             throw failure;
         }
+    }
+
+    /**
+     * Batch materialization used by high-volume detection consumers. The
+     * caller must provide an idempotency key because each item can emit an
+     * alarm outbox event and downstream delivery receipt.
+     */
+    @RequireRole({"admin", "analyst"})
+    @RequirePermission("alarm:triage")
+    @AuditOperation(action = "CREATE_ALARM_BATCH", target = "t_alarm")
+    @PostMapping("/batch")
+    public ApiResult<Map<String, Object>> createBatch(
+            @Valid @RequestBody AlarmBatchRequest request,
+            @RequestHeader("Idempotency-Key") String idempotencyKey) {
+        return ApiResult.ok(service.createBatch(request.alarms(), idempotencyKey));
     }
 
     /** 查询告警：支持 severity / rule / q 过滤 + 分页（page 从 1 起，size 缺省 20）。
@@ -146,6 +165,13 @@ public class AlarmController {
     @GetMapping("/{id}/deliveries")
     public ApiResult<List<Map<String, Object>>> deliveries(@PathVariable String id) {
         return ApiResult.ok(service.deliveryStatus(id));
+    }
+
+    /** Bounded same-rule/entity candidates for investigation expansion. */
+    @GetMapping("/{id}/similar")
+    public ApiResult<List<Alarm>> similar(@PathVariable String id,
+                                          @RequestParam(defaultValue = "20") int limit) {
+        return ApiResult.ok(service.similar(id, limit));
     }
 
     /** 告警聚合统计：默认全量；window=7d 时返回近 7 个自然日数据。 */

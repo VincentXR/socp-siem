@@ -1,6 +1,5 @@
 package com.socp.gateway.api.controller;
 
-import com.socp.gateway.api.request.*;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.socp.gateway.oidc.InMemoryOidcStateStore;
 import com.socp.gateway.oidc.OidcStateStore;

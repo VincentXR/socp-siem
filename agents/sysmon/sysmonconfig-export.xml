@@ -1,0 +1,14 @@
+<!-- Minimal, reproducible Sysmon configuration for the SOCP Golden Path. -->
+<Sysmon schemaversion="4.90">
+  <EventFiltering>
+    <ProcessCreate onmatch="include">
+      <CommandLine condition="contains any">powershell;pwsh;EncodedCommand</CommandLine>
+    </ProcessCreate>
+    <NetworkConnect onmatch="include">
+      <DestinationPort condition="is">443</DestinationPort>
+    </NetworkConnect>
+    <FileCreate onmatch="include">
+      <TargetFilename condition="contains any">\Startup\;\Temp\</TargetFilename>
+    </FileCreate>
+  </EventFiltering>
+</Sysmon>

@@ -1,10 +1,7 @@
 package com.socp.incident.web.persistence.repository;
 
 
-
-import com.socp.incident.web.persistence.store.*;
-import com.socp.incident.web.persistence.repository.*;
-import com.socp.incident.web.persistence.entity.*;
+import com.socp.incident.web.persistence.entity.AlarmCaseLinkEntity;
 import com.socp.platform.tenant.persistence.TenantScopedRepository;
 
 import java.util.Optional;

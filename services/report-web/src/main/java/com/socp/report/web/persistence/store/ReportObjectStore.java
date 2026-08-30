@@ -1,6 +1,6 @@
 package com.socp.report.web.persistence.store;
 
-import com.socp.report.web.persistence.store.*;
+
 import io.minio.BucketExistsArgs;
 import io.minio.GetPresignedObjectUrlArgs;
 import io.minio.ListObjectsArgs;

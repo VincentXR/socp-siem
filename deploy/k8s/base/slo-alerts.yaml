@@ -1,0 +1,32 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: socp-slo-alerts
+  namespace: socp-system
+  labels:
+    app.kubernetes.io/part-of: socp-siem
+spec:
+  groups:
+    - name: socp-event-path
+      rules:
+        - alert: SocpDetectionConsumerLag
+          expr: max(socp_kafka_consumer_lag) > 10000
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: SOCP detection consumer lag is high
+        - alert: SocpOutboxOldestAge
+          expr: max(socp_ingestion_outbox_queue_age_seconds) > 300
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: SOCP ingestion outbox has an old pending row
+        - alert: SocpDeadLetterGrowth
+          expr: increase(socp_opensearch_indexer_records_total{stage="dlq"}[15m]) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: SOCP OpenSearch indexer is sending events to DLQ

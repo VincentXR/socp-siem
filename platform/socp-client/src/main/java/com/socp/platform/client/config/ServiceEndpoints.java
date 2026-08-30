@@ -1,8 +1,6 @@
 package com.socp.platform.client.config;
 
 
-
-
 import com.socp.platform.client.service.SocpService;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;

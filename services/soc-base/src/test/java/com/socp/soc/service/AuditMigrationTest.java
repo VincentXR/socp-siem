@@ -1,7 +1,5 @@
 package com.socp.soc.service;
 
-import com.socp.soc.persistence.entity.AuditEntity;
-import com.socp.soc.persistence.repository.AuditRepository;
 
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;

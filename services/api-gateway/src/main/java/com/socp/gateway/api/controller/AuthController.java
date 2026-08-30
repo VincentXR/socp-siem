@@ -1,6 +1,7 @@
 package com.socp.gateway.api.controller;
 
-import com.socp.gateway.api.request.*;
+import com.socp.gateway.api.request.LoginRequest;
+import com.socp.gateway.api.request.ServiceTokenRequest;
 import com.socp.gateway.security.AuthAttemptLimiter;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -193,6 +194,8 @@ public class AuthController {
                     .audience(audiences())
                     .claim("tenant", tenant == null || tenant.isBlank() ? "default" : tenant)
                     .claim("role", supportedRole(role))
+                    .claim("permissions", com.socp.platform.auth.security.Permission
+                            .roleDefaults(supportedRole(role)))
                     .claim("locale", resolvedLocale)
                     .claim("identity_type", username != null && username.startsWith("service:")
                             ? "service" : "user")

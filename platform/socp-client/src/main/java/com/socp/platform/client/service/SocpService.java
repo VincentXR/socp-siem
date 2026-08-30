@@ -1,8 +1,6 @@
 package com.socp.platform.client.service;
 
 
-
-
 /**
  * SOCP 内部服务枚举：服务间调用的**唯一**地址来源。
  *

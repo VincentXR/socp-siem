@@ -1,15 +1,13 @@
 package com.socp.search.config.api.controller;
 
 
-
-
-
 import com.socp.platform.error.exception.ApiException;
 import com.socp.search.config.domain.SearchEvent;
 import com.socp.search.config.infrastructure.opensearch.OsEventReader;
 import com.socp.search.config.infrastructure.serialization.SearchEventJson;
 import com.socp.search.config.persistence.store.SearchStore;
 import com.socp.search.config.service.SplEngine;
+import com.socp.search.config.query.SplParseException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -31,7 +29,7 @@ import java.util.List;
 public class SearchController {
 
     private static final int SEARCH_LIMIT = 200;
-    private static final int EXPORT_LIMIT = 500;
+    private static final int EXPORT_LIMIT = 5_000;
 
     private final SplEngine engine;
     private final SearchStore store;
@@ -43,17 +41,27 @@ public class SearchController {
         this.osReader = osReader;
     }
 
+    /** Java/source-compatible convenience used by unit tests and internal callers. */
+    public SplEngine.QueryResult search(String q) {
+        return resolveSafely(q, SEARCH_LIMIT, null);
+    }
+
     @GetMapping
-    public SplEngine.QueryResult search(@RequestParam(value = "q", defaultValue = "") String q) {
-        return resolve(q, SEARCH_LIMIT);
+    public SplEngine.QueryResult searchHttp(
+            @RequestParam(value = "q", defaultValue = "") String q,
+            @RequestParam(value = "limit", required = false) Integer limit,
+            @RequestParam(value = "cursor", required = false) String cursor) {
+        return resolveSafely(q, bounded(limit, SEARCH_LIMIT), cursor);
     }
 
     /** Export follows the same source-selection policy as interactive search. */
     @GetMapping("/export")
     public ResponseEntity<String> export(
             @RequestParam(value = "q", defaultValue = "") String q,
-            @RequestParam(defaultValue = "json") String format) {
-        SplEngine.QueryResult result = resolve(q, EXPORT_LIMIT);
+            @RequestParam(defaultValue = "json") String format,
+            @RequestParam(value = "limit", required = false) Integer limit,
+            @RequestParam(value = "cursor", required = false) String cursor) {
+        SplEngine.QueryResult result = resolveSafely(q, bounded(limit, EXPORT_LIMIT), cursor);
         String filename;
         String contentType;
         String body;
@@ -77,8 +85,17 @@ public class SearchController {
         return response.contentType(MediaType.parseMediaType(contentType)).body(body);
     }
 
-    private SplEngine.QueryResult resolve(String q, int limit) {
-        SplEngine.QueryResult authoritative = osReader.search(q, limit);
+    private SplEngine.QueryResult resolveSafely(String q, int limit, String cursor) {
+        try {
+            return resolve(q, limit, cursor);
+        } catch (SplParseException syntax) {
+            throw ApiException.badRequest(syntax.getMessage());
+        }
+    }
+
+    private SplEngine.QueryResult resolve(String q, int limit, String cursor) {
+        SplEngine.QueryResult authoritative = cursor == null || cursor.isBlank()
+                ? osReader.search(q, limit) : osReader.search(q, limit, cursor);
         if (authoritative != null) {
             return authoritative.limitEvents(limit).withSource("opensearch", false,
                     freshest(authoritative.events()), null);
@@ -95,9 +112,15 @@ public class SearchController {
             throw ApiException.of(503,
                     "Search is unavailable: OpenSearch did not return a result and the local cache is unavailable");
         }
-        SplEngine.QueryResult fallback = engine.execute(q, localEvents).limitEvents(limit);
+        SplEngine.QueryResult fallback = engine.execute(engine.parse(q).withPage(limit, cursor), localEvents);
         return fallback.withSource("local-cache", true, freshest(fallback.events()),
                 "OpenSearch did not return a result; data is limited to the local cache");
+    }
+
+    private static int bounded(Integer requested, int fallback) {
+        if (requested == null) return fallback;
+        if (requested < 1 || requested > 100_000) throw ApiException.badRequest("limit must be between 1 and 100000");
+        return requested;
     }
 
     private static Instant freshest(List<SearchEvent> events) {

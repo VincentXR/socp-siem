@@ -5,8 +5,6 @@ import com.socp.search.config.persistence.entity.SearchEventEntity;
 import com.socp.search.config.persistence.repository.SearchEventRepository;
 import com.socp.search.config.persistence.store.SearchStore;
 
-import com.socp.search.config.persistence.store.ParseRuleStore;
-import com.socp.search.config.service.ParsePreviewService;
 import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;

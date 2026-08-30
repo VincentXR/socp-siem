@@ -2,58 +2,39 @@ package com.socp.search.config.infrastructure.opensearch;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.socp.search.config.domain.SearchEvent;
-import com.socp.search.config.service.SplEngine;
-import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.search.config.config.OpenSearchProperties;
+import com.socp.search.config.domain.SearchEvent;
+import com.socp.search.config.query.LocalQueryExecutor;
+import com.socp.search.config.query.OpenSearchQueryCompiler;
+import com.socp.search.config.query.PipelineCommand;
+import com.socp.search.config.query.SearchQueryAst;
+import com.socp.search.config.query.SplParser;
+import com.socp.search.config.service.SplEngine;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
-import javax.net.ssl.HttpsURLConnection;
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLSocketFactory;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
-import java.security.SecureRandom;
-import java.security.KeyStore;
-import java.security.cert.X509Certificate;
-import javax.net.ssl.TrustManagerFactory;
-import java.io.FileInputStream;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-/**
- * OpenSearch 检索读取端（修复"只写不读"缺口）：原生 HttpURLConnection 读
- * socp-events-* 索引的 _search 端点（query_string 语义），返回与 SplEngine.QueryResult 同构的结果；
- * 不可达/超时/异常返回 {@code null}，由 SearchController 回退 H2 + SplEngine。
- *
- * <p>复用 OsEventWriter 的连接约定：HTTPS 自签忽略校验 + Basic 认证 + 3s/5s 超时。
- */
+/** OpenSearch adapter for the storage-independent SPL AST. */
 @Component
 public class OsEventReader {
-
     private static final Logger log = LoggerFactory.getLogger(OsEventReader.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final OpenSearchProperties properties;
     private final OpenSearchHttpTransport transport;
+    private final SplParser parser;
+    private final OpenSearchQueryCompiler compiler;
 
-    public OsEventReader() {
-        this(new OpenSearchProperties());
-    }
+    public OsEventReader() { this(new OpenSearchProperties()); }
 
     public OsEventReader(OpenSearchProperties properties) {
         this(properties, new OpenSearchHttpTransport(properties));
@@ -61,95 +42,129 @@ public class OsEventReader {
 
     @Autowired
     public OsEventReader(OpenSearchProperties properties, OpenSearchHttpTransport transport) {
-        this.properties = properties;
-        this.transport = transport;
+        this(properties, transport, new SplParser(), new OpenSearchQueryCompiler());
     }
 
-    /**
-     * 搜索：OS 可用返回同构 QueryResult，不可用/失败返回 null（调用方回退本地检索库）。
-     */
-    public SplEngine.QueryResult search(String q, int size) {
+    public OsEventReader(OpenSearchProperties properties, OpenSearchHttpTransport transport,
+                         SplParser parser, OpenSearchQueryCompiler compiler) {
+        this.properties = properties;
+        this.transport = transport;
+        this.parser = parser;
+        this.compiler = compiler;
+    }
+
+    /** Backwards-compatible first page. */
+    public SplEngine.QueryResult search(String query, int size) {
+        return search(query, size, null);
+    }
+
+    /** Searches OpenSearch using the same AST semantics as the local executor. */
+    public SplEngine.QueryResult search(String query, int size, String cursor) {
+        int pageSize = Math.max(1, Math.min(100_000, size));
+        SearchQueryAst ast = parser.parse(query).withPage(pageSize, cursor);
         if (!properties.isEnabled()) return null;
-        String query = q == null ? "" : q.trim();
         try {
-            byte[] request = tenantQuery(query, size);
+            String tenant = TenantContext.require();
+            byte[] request = compiler.compile(ast, tenant, pageSize).toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
             var response = transport.exchange("POST", "/" + properties.getSearchIndex() + "/_search",
                     "application/json", request);
-            int code = response.status();
-            if (code < 200 || code >= 300) {
-                log.warn("OpenSearch 检索失败 HTTP {}（回退 H2 检索）", code);
+            if (!response.successful()) {
+                log.warn("OpenSearch search failed HTTP {}; local execution remains an explicit fallback", response.status());
                 return null;
             }
-            byte[] body = response.body();
-            SplEngine.QueryResult r = parse(body, size);
-            log.info("OpenSearch 检索命中 {} 条 (q={})", r.total(), query);
-            return r;
-        } catch (Exception e) {
-            log.warn("OpenSearch 检索异常（回退 H2 检索）: {}", e.toString());
+            SplEngine.QueryResult result = parse(response.body(), ast, pageSize);
+            log.debug("OpenSearch search matched={} returned={} query={}", result.total(), result.events().size(), query);
+            return result;
+        } catch (com.socp.search.config.query.SplParseException syntax) {
+            throw syntax;
+        } catch (Exception failure) {
+            log.warn("OpenSearch search unavailable; local execution remains an explicit fallback: {}", failure.toString());
             return null;
         }
     }
 
-    private static byte[] tenantQuery(String query, int size) throws Exception {
-        ObjectNode root = MAPPER.createObjectNode();
-        root.put("size", Math.min(Math.max(size, 1), 500));
-        ArrayNode sort = root.putArray("sort");
-        sort.addObject().putObject("timestamp").put("order", "desc");
-
-        ObjectNode bool = root.putObject("query").putObject("bool");
-        String tenant = TenantContext.require();
-        bool.putArray("filter").addObject().putObject("term")
-                .put("fields.tenant_id.keyword", tenant);
-        if (query == null || query.isBlank()) {
-            bool.putArray("must").addObject().putObject("match_all");
-        } else {
-            bool.putArray("must").addObject().putObject("query_string").put("query", query);
-        }
-        return MAPPER.writeValueAsBytes(root);
-    }
-
-    /** 解析 _search 响应：hits.hits[]._source → SearchEvent（字段与写入端对称）。 */
-    private SplEngine.QueryResult parse(byte[] body, int size) throws Exception {
+    private SplEngine.QueryResult parse(byte[] body, SearchQueryAst ast, int size) throws Exception {
+        long started = System.nanoTime();
         JsonNode root = MAPPER.readTree(body);
         JsonNode hits = root.path("hits").path("hits");
         List<SearchEvent> events = new ArrayList<>();
-        int total = root.path("hits").path("total").path("value").asInt(hits.size());
-        for (JsonNode h : hits) {
-            JsonNode src = h.path("_source");
-            if (src.isMissingNode()) continue;
-            SearchEvent e = toEvent(src);
-            if (e != null) events.add(e);
+        String nextCursor = null;
+        for (JsonNode hit : hits) {
+            JsonNode source = hit.path("_source");
+            if (source.isMissingNode()) continue;
+            SearchEvent event = toEvent(source);
+            if (event != null) {
+                events.add(event);
+                nextCursor = cursorFromHit(hit, event);
+            }
         }
-        return new SplEngine.QueryResult(total, events,
-                new SplEngine.QueryResult.Stat("opensearch", List.of()));
+        int total = root.path("hits").path("total").path("value").asInt(events.size());
+        if (total <= events.size()) nextCursor = null;
+        SplEngine.QueryResult.Stat stat = parseStat(root.path("aggregations"), ast);
+        return new SplEngine.QueryResult(total, events, stat, "opensearch", false,
+                SplEngine.freshest(events), null, nextCursor,
+                (System.nanoTime() - started) / 1_000_000L);
     }
 
-    @SuppressWarnings("unchecked")
+    private static SplEngine.QueryResult.Stat parseStat(JsonNode aggregations, SearchQueryAst ast) {
+        if (aggregations == null || !aggregations.isObject()) return null;
+        for (PipelineCommand command : ast.pipeline()) {
+            String name;
+            String type;
+            if (command instanceof PipelineCommand.Top) { name = "top"; type = "top"; }
+            else if (command instanceof PipelineCommand.CountBy) { name = "count_by"; type = "count"; }
+            else if (command instanceof PipelineCommand.Timechart) { name = "timechart"; type = "timechart"; }
+            else continue;
+            JsonNode buckets = aggregations.path(name).path("buckets");
+            if (!buckets.isArray()) return new SplEngine.QueryResult.Stat(type, List.of());
+            List<Map<String, Object>> rows = new ArrayList<>();
+            for (JsonNode bucket : buckets) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("key", bucket.path("key_as_string").isMissingNode()
+                        ? bucket.path("key").asText() : bucket.path("key_as_string").asText());
+                row.put("count", bucket.path("doc_count").asLong());
+                rows.add(row);
+            }
+            return new SplEngine.QueryResult.Stat(type, rows);
+        }
+        return null;
+    }
+
+    private static String cursorFromHit(JsonNode hit, SearchEvent event) {
+        JsonNode sort = hit.path("sort");
+        if (sort.isArray() && sort.size() >= 2 && !sort.get(0).isNull()) {
+            try {
+                Instant timestamp = Instant.parse(sort.get(0).asText());
+                String id = sort.get(1).asText();
+                int separator = id.indexOf('|');
+                if (separator >= 0) id = id.substring(separator + 1);
+                return LocalQueryExecutor.encodeCursor(new SearchEvent(id, timestamp, event.source(), event.host(),
+                        event.severity(), event.msg(), event.fields(), event.ecs()));
+            } catch (Exception ignored) { /* fall back to _source identity */ }
+        }
+        return LocalQueryExecutor.encodeCursor(event);
+    }
+
     private SearchEvent toEvent(JsonNode src) {
         try {
             String eventId = src.path("eventId").asText("");
             if (eventId.isBlank()) eventId = UUID.randomUUID().toString();
-            String ts = src.path("timestamp").asText("");
-            Instant timestamp = ts.isBlank() ? Instant.now() : Instant.parse(ts);
-            String source = src.path("source").asText("unknown");
-            String host = src.path("host").asText("unknown");
-            String severity = src.path("severity").asText("INFO");
-            String msg = src.path("msg").asText("");
-            Map<String, String> fields = strMap(src.path("fields"));
-            Map<String, String> ecs = strMap(src.path("ecs"));
-            return new SearchEvent(eventId, timestamp, source, host, severity, msg, fields, ecs);
-        } catch (Exception e) {
-            log.warn("OpenSearch 文档解析失败: {}", e.toString());
+            String rawTimestamp = src.path("timestamp").asText("");
+            Instant timestamp = rawTimestamp.isBlank() ? Instant.now() : Instant.parse(rawTimestamp);
+            return new SearchEvent(eventId, timestamp, src.path("source").asText("unknown"),
+                    src.path("host").asText("unknown"), src.path("severity").asText("INFO"),
+                    src.path("msg").asText(""), strMap(src.path("fields")), strMap(src.path("ecs")));
+        } catch (Exception failure) {
+            log.warn("OpenSearch document parse failed: {}", failure.toString());
             return null;
         }
     }
 
     private static Map<String, String> strMap(JsonNode node) {
-        Map<String, String> m = new LinkedHashMap<>();
+        Map<String, String> result = new LinkedHashMap<>();
         if (node != null && node.isObject()) {
-            node.fields().forEachRemaining(en -> m.put(en.getKey(), en.getValue().asText()));
+            node.fields().forEachRemaining(entry -> result.put(entry.getKey(), entry.getValue().asText()));
         }
-        return m;
+        return result;
     }
-
 }

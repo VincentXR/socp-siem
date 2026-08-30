@@ -1,10 +1,9 @@
 package com.socp.threat.web.persistence.store;
 
 
-
-import com.socp.threat.web.persistence.store.*;
-import com.socp.threat.web.persistence.repository.*;
-import com.socp.threat.web.persistence.entity.*;
+import com.socp.threat.web.persistence.repository.IocRepository;
+import com.socp.threat.web.persistence.entity.IocEntity;
+import com.socp.threat.web.domain.Ioc;
 import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -70,6 +69,56 @@ class IocStoreTest {
         verify(repository).delete(entity);
         when(repository.findByIdAndTenantId("ioc-4", "tenant-c")).thenReturn(Optional.empty());
         assertThat(store.delete("ioc-4")).isFalse();
+    }
+
+    @Test
+    void upsertPreservesObservationWindowAcrossFeedRefreshes() {
+        TenantContext.set("tenant-d");
+        IocEntity existing = entity("ioc-4", "DOMAIN", "example.com");
+        existing.setFirstSeen(Instant.parse("2026-01-01T00:00:00Z"));
+        existing.setLastSeen(Instant.parse("2026-01-10T00:00:00Z"));
+        when(repository.findByTenantIdAndSourceAndExternalId("tenant-d", "feed", "stix--1"))
+                .thenReturn(Optional.of(existing));
+        when(repository.save(any(IocEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        IocStore store = new IocStore(repository, false);
+
+        Ioc incoming = new Ioc("new-id", "DOMAIN", "example.com", "HIGH", "feed", "refresh",
+                List.of("stix"), Instant.parse("2026-01-05T00:00:00Z"),
+                Instant.parse("2026-01-20T00:00:00Z"), "feed", "stix--1", 80d, "TLP:AMBER",
+                Instant.parse("2026-01-01T00:00:00Z"), null, null, false, "taxii");
+        Ioc persisted = store.add(incoming);
+
+        assertThat(persisted.firstSeen()).isEqualTo(Instant.parse("2026-01-01T00:00:00Z"));
+        assertThat(persisted.lastSeen()).isEqualTo(Instant.parse("2026-01-20T00:00:00Z"));
+        verify(repository).save(existing);
+    }
+
+    @Test
+    void revokedAndExpiredIndicatorsNeverEnrich() {
+        TenantContext.set("tenant-e");
+        IocEntity revoked = entity("ioc-5", "IP", "203.0.113.9");
+        revoked.setRevoked(true);
+        IocEntity expired = entity("ioc-6", "IP", "203.0.113.10");
+        expired.setExpiration(Instant.now().minusSeconds(60));
+        when(repository.findByTenantIdAndValue("tenant-e", "203.0.113.9")).thenReturn(Optional.of(revoked));
+        when(repository.findByTenantIdAndValue("tenant-e", "203.0.113.10")).thenReturn(Optional.of(expired));
+        IocStore store = new IocStore(repository, false);
+
+        assertThat(store.match("203.0.113.9")).isNull();
+        assertThat(store.match("203.0.113.10")).isNull();
+    }
+
+    @Test
+    void cleanupDeletesExpiredRowsButKeepsRevokedEvidence() {
+        TenantContext.openSystem().close();
+        when(repository.deleteByExpirationBeforeAndRevokedFalse(any(Instant.class))).thenReturn(2L);
+        when(repository.deleteByValidUntilBeforeAndRevokedFalse(any(Instant.class))).thenReturn(1L);
+        IocStore store = new IocStore(repository, false);
+
+        store.cleanupExpired();
+
+        verify(repository).deleteByExpirationBeforeAndRevokedFalse(any(Instant.class));
+        verify(repository).deleteByValidUntilBeforeAndRevokedFalse(any(Instant.class));
     }
 
     @Test

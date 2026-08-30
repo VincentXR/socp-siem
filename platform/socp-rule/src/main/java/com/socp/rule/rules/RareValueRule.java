@@ -4,6 +4,8 @@ import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.rule.state.RuleStateMap;
+import com.socp.rule.state.StateSnapshotCodec;
+import com.socp.rule.state.StatefulRule;
 
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -26,7 +28,7 @@ import java.util.function.Predicate;
  * <p>这是签名规则完全覆盖不了的检测面——没有任何"恶意特征"，异常只体现在"与该实体的
  * 历史行为不符"。学习期（warmup）保证冷启动时不会把正常行为全部报成首次出现。
  */
-public final class RareValueRule extends AbstractRule {
+public final class RareValueRule extends AbstractRule implements StatefulRule {
 
     /** 每个实体记忆的取值上限，超出后淘汰最早的（LRU 近似） */
     private static final int MAX_SEEN = 512;
@@ -109,6 +111,39 @@ public final class RareValueRule extends AbstractRule {
             }
         });
         return out;
+    }
+
+    @Override
+    public String stateVersion() {
+        return "rare-value-v1";
+    }
+
+    @Override
+    public byte[] snapshotState() {
+        Map<String, Object> out = new java.util.LinkedHashMap<>();
+        states.forEach((key, state) -> {
+            synchronized (state) {
+                out.put(key, Map.of("seen", List.copyOf(state.seen), "observed", state.observed));
+            }
+        });
+        return StateSnapshotCodec.write(out);
+    }
+
+    @Override
+    public void restoreState(byte[] serializedState) {
+        StateSnapshotCodec.read(serializedState).forEach((key, raw) -> {
+            if (!(raw instanceof Map<?, ?> values)) return;
+            State state = states.get(key, State::new);
+            synchronized (state) {
+                state.seen.clear();
+                Object seen = values.get("seen");
+                if (seen instanceof List<?> items) {
+                    items.stream().map(String::valueOf).limit(MAX_SEEN).forEach(state.seen::add);
+                }
+                Object observed = values.get("observed");
+                state.observed = observed instanceof Number n ? n.longValue() : 0L;
+            }
+        });
     }
 
     @Override

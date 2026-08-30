@@ -1,9 +1,6 @@
 package com.socp.search.config.api.controller;
 
 
-
-
-
 import com.socp.platform.error.api.ApiResult;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;

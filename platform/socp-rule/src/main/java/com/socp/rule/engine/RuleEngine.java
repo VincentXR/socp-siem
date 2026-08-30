@@ -4,6 +4,7 @@ import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.rule.rules.Rule;
+import com.socp.rule.state.StatefulRule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -265,6 +266,54 @@ public final class RuleEngine implements AutoCloseable {
 
     public List<Map<String, Object>> ruleStats() {
         return rulesRef.get().stream().map(Rule::stats).toList();
+    }
+
+    /** Portable state checkpoint payloads keyed by rule id. */
+    public Map<String, RuleState> snapshotStates() {
+        Map<String, RuleState> out = new java.util.LinkedHashMap<>();
+        for (Rule rule : rulesRef.get()) {
+            if (!(rule instanceof StatefulRule stateful)) continue;
+            out.put(rule.id(), new RuleState(rule.id(), stateful.stateVersion(), stateful.snapshotState()));
+        }
+        return Map.copyOf(out);
+    }
+
+    public List<String> statefulRuleIds() {
+        return rulesRef.get().stream()
+                .filter(StatefulRule.class::isInstance)
+                .map(Rule::id)
+                .toList();
+    }
+
+    /** Restore compatible rule state before journal replay. Incompatible bytes are ignored. */
+    public List<String> restoreStates(Map<String, RuleState> states) {
+        if (states == null || states.isEmpty()) return List.of();
+        List<String> restored = new ArrayList<>();
+        for (Rule rule : rulesRef.get()) {
+            if (!(rule instanceof StatefulRule stateful)) continue;
+            RuleState snapshot = states.get(rule.id());
+            if (snapshot == null || !stateful.stateVersion().equals(snapshot.version())) continue;
+            try {
+                stateful.restoreState(snapshot.serializedState());
+                restored.add(rule.id());
+            } catch (RuntimeException failure) {
+                log.warn("Ignoring corrupt state snapshot ruleId={}: {}", rule.id(), failure.getMessage());
+            }
+        }
+        return List.copyOf(restored);
+    }
+
+    public record RuleState(String ruleId, String version, byte[] serializedState) {
+        public RuleState {
+            if (ruleId == null || ruleId.isBlank()) throw new IllegalArgumentException("ruleId is required");
+            if (version == null || version.isBlank()) throw new IllegalArgumentException("version is required");
+            serializedState = serializedState == null ? new byte[0] : serializedState.clone();
+        }
+
+        @Override
+        public byte[] serializedState() {
+            return serializedState.clone();
+        }
     }
 
     public long eventCount() {

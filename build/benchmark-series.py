@@ -23,6 +23,19 @@ import time
 
 
 ROOT = Path(__file__).resolve().parents[1]
+MANIFEST_PATH = ROOT / "services/detect-web/src/main/resources/detection-content/manifest.json"
+
+
+def manifest_rule_count() -> int:
+    """Return the executable detection rule count used by every round."""
+    try:
+        data = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        rules = data.get("rules", [])
+        if not isinstance(rules, list) or not rules:
+            raise ValueError("manifest rules must be a non-empty list")
+        return len(rules)
+    except (OSError, ValueError, json.JSONDecodeError) as failure:
+        raise RuntimeError(f"unable to read detection manifest: {failure}") from failure
 
 
 def read_json(path: Path) -> dict | None:
@@ -178,6 +191,13 @@ def main() -> int:
         parser.error("--count, --batch-size, and --alert-every must be positive")
     if args.instances <= 0:
         parser.error("--instances must be positive")
+
+    effective_rules = manifest_rule_count()
+    if args.rules is not None and args.rules != effective_rules:
+        parser.error(f"--rules={args.rules} does not match manifest rule count {effective_rules}")
+    # Pass the resolved value to every round and expose it in the aggregate
+    # report.  A baseline without its rule-pack dimension is not comparable.
+    args.rules = effective_rules
 
     final_path = Path(args.output)
     rounds: list[dict] = []

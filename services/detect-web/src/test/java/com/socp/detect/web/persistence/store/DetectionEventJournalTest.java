@@ -153,8 +153,8 @@ class DetectionEventJournalTest {
         DetectionEventEntity invalid = new DetectionEventEntity(
                 "tenant-a", "event-8", "auth", "host", "raw", "{}", "not-a-severity",
                 Instant.parse("2026-08-21T00:00:00Z"), 4, 8L, "tenant-a|host|host");
-        when(repository.findByStatusAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
-                anyString(), any(Instant.class), any(Pageable.class)))
+        when(repository.findByTenantIdAndStatusAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
+                eq("tenant-a"), anyString(), any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(invalid, valid), List.of());
 
         List<SecurityEvent> restored = journal.recent(Duration.ofHours(1));
@@ -171,12 +171,12 @@ class DetectionEventJournalTest {
     @Test
     void replaysPendingRecordsAndExposesCountsAndTenantScopedRemoval() {
         DetectionEventEntity pending = row("event-9", "tenant-a", "{}");
-        when(repository.findByStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
-                eq(DetectionEventStatus.PENDING.name()), eq(Set.of(4)), any(Instant.class), any(Pageable.class)))
+        when(repository.findByTenantIdAndStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
+                eq("tenant-a"), eq(DetectionEventStatus.PENDING.name()), eq(Set.of(4)),
+                any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(pending));
-        when(repository.countByStatus(DetectionEventStatus.PENDING.name())).thenReturn(3L);
         when(repository.countByTenantIdAndStatus("tenant-a", DetectionEventStatus.PENDING.name()))
-                .thenReturn(2L);
+                .thenReturn(3L, 2L);
 
         List<PendingDetectionEvent> records = journal.pendingRecordsForPartitions(
                 Set.of(4), Duration.ofMinutes(5));
@@ -197,6 +197,73 @@ class DetectionEventJournalTest {
         journal.replayRecentForPartitions(Set.of(), Duration.ofHours(1), ignored -> {
             throw new AssertionError("empty partitions must not replay");
         });
+    }
+
+    @Test
+    void systemScopeReadsBothCompletedAndPendingPartitions() {
+        DetectionEventEntity completed = row("event-10", "tenant-a", "{}");
+        completed.setStatus(DetectionEventStatus.COMPLETED.name());
+        DetectionEventEntity pending = row("event-11", "tenant-b", "{}");
+        when(repository.findByStatusAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
+                anyString(), any(Instant.class), any(Pageable.class)))
+                .thenReturn(List.of(completed));
+        when(repository.findByStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
+                anyString(), eq(Set.of(4)), any(Instant.class), any(Pageable.class)))
+                .thenReturn(List.of(completed));
+        when(repository.countByStatus(DetectionEventStatus.PENDING.name())).thenReturn(4L);
+
+        TenantContext.runAsSystem(() -> {
+            assertThat(journal.recent(Duration.ofMinutes(5))).hasSize(1);
+            assertThat(journal.recentForPartitions(Set.of(4), Duration.ofMinutes(5))).hasSize(1);
+            List<List<SecurityEvent>> replayed = new java.util.ArrayList<>();
+            journal.replayRecent(Duration.ofMinutes(5), replayed::add);
+            journal.replayRecentForPartitions(Set.of(4), Duration.ofMinutes(5), replayed::add);
+            assertThat(replayed).hasSize(2);
+            assertThat(journal.pendingCount()).isEqualTo(4L);
+        });
+
+        when(repository.findByStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
+                eq(DetectionEventStatus.PENDING.name()), eq(Set.of(4)), any(Instant.class), any(Pageable.class)))
+                .thenReturn(List.of(pending));
+        TenantContext.runAsSystem(() -> {
+            assertThat(journal.pendingForPartitions(Set.of(4), Duration.ofMinutes(5))).hasSize(1);
+            assertThat(journal.pendingRecordsForPartitions(Set.of(4), Duration.ofMinutes(5)))
+                    .singleElement().satisfies(record -> assertThat(record.event().tenantId()).isEqualTo("tenant-b"));
+        });
+        verify(repository).countByStatus(DetectionEventStatus.PENDING.name());
+    }
+
+    @Test
+    void replaysCheckpointRowsWithAndWithoutPartitionFilterAndSkipsInvalidArguments() {
+        DetectionEventEntity valid = row("event-12", "tenant-a", "{}");
+        when(repository.findByTenantIdAndStatusAndCompletedAtAfterOrderByCompletedAt(
+                eq("tenant-a"), anyString(), any(Instant.class), any(Pageable.class)))
+                .thenReturn(List.of(valid));
+        when(repository.findByTenantIdAndStatusAndKafkaPartitionInAndCompletedAtAfterOrderByCompletedAt(
+                eq("tenant-a"), anyString(), eq(Set.of(2)), any(Instant.class), any(Pageable.class)))
+                .thenReturn(List.of(valid));
+
+        List<List<SecurityEvent>> batches = new java.util.ArrayList<>();
+        journal.replayCompletedAfter("tenant-a", Instant.EPOCH, Set.of(), batches::add);
+        journal.replayCompletedAfter("tenant-a", Instant.EPOCH, Set.of(2), batches::add);
+        journal.replayCompletedAfter("", Instant.EPOCH, Set.of(), batches::add);
+        journal.replayCompletedAfter("tenant-a", null, Set.of(), batches::add);
+        journal.replayCompletedAfter("tenant-a", Instant.EPOCH, Set.of(), null);
+        assertThat(batches).hasSize(2);
+        assertThat(journal.recoveryWindow()).contains("PT");
+        assertThat(journal.supportsCheckpointReplay()).isTrue();
+    }
+
+    @Test
+    void constructorClampsPoliciesAndFromRowsSkipsMalformedJson() {
+        DetectionEventJournal configured = new DetectionEventJournal(repository, "", 1,
+                "0", "not-a-duration");
+        assertThat(configured.retention()).isEqualTo(Duration.ofHours(24));
+        DetectionEventEntity malformed = row("event-13", "tenant-a", "not-json");
+        when(repository.findByTenantIdAndStatusAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
+                eq("tenant-a"), anyString(), any(Instant.class), any(Pageable.class)))
+                .thenReturn(List.of(malformed));
+        assertThat(configured.recent(Duration.ZERO)).isEmpty();
     }
 
     @Test

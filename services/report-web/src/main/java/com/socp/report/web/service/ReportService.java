@@ -13,10 +13,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -154,7 +150,8 @@ public class ReportService {
                     + (fallback.available() ? "; top rules came from alert-web" : "; top rules are unavailable");
         }
         return new ReportSummary(LocalDate.now(ZoneOffset.UTC).toString(), total, bySeverity, byRule,
-                source, degraded, ckFreshness(predicate), degradationReason);
+                source, degraded, ckFreshness(predicate), degradationReason, Instant.now(),
+                "today", contentVersion());
     }
 
     public ReportTrend trend7d() {
@@ -188,7 +185,8 @@ public class ReportService {
         int total = ((Number) stats.get("total")).intValue();
         return new ReportSummary(LocalDate.now(ZoneOffset.UTC).toString(), total, bySeverity,
                 ruleCounts(stats), "alert-web", true, null,
-                "ClickHouse unavailable; result was computed by alert-web");
+                "ClickHouse unavailable; result was computed by alert-web", Instant.now(),
+                "today", contentVersion());
     }
 
     private Instant ckFreshness(String predicate) {
@@ -212,7 +210,14 @@ public class ReportService {
             days.add(day.substring(5));
             counts.add(countsByDay.getOrDefault(day, 0));
         }
-        return new ReportTrend(days, counts, source, degraded, freshness, reason);
+        return new ReportTrend(days, counts, source, degraded, freshness, reason, Instant.now(), "7d",
+                contentVersion());
+    }
+
+    private static String contentVersion() {
+        String commit = System.getProperty("socp.build.commit");
+        if (commit == null || commit.isBlank()) commit = System.getenv("GITHUB_SHA");
+        return commit == null || commit.isBlank() ? "unknown" : commit;
     }
 
     @SuppressWarnings("unchecked")

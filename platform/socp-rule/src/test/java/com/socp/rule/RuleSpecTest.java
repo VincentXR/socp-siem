@@ -108,4 +108,14 @@ class RuleSpecTest {
         assertTrue(List.of("id", "name", "type", "severity", "message", "window", "enabled")
                 .stream().allMatch(map::containsKey), "关键字段齐全");
     }
+
+    @Test
+    void statefulRoutingFieldDefaultsToGroupingFieldAndRoundTrips() {
+        RuleSpec spec = new RuleSpec(Json.parseObject("""
+                {"id":"R2","name":"n","type":"threshold","severity":"HIGH",
+                 "keyField":"host","threshold":2}
+                """));
+        assertEquals("host", spec.routingField);
+        assertEquals("host", spec.toMap().get("routingField"));
+    }
 }

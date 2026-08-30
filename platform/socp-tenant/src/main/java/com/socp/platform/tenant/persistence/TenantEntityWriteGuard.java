@@ -40,6 +40,37 @@ public class TenantEntityWriteGuard {
         return joinPoint.proceed();
     }
 
+    /**
+     * A tenant-aware repository method is still unsafe if a caller can pass a
+     * different tenant id.  Keep the explicit tenant predicate (which is
+     * useful for generated Spring Data queries), but bind its argument to the
+     * authenticated scope at the repository boundary.  System maintenance is
+     * the only intentionally cross-tenant scope.
+     */
+    @Around("execution(* com.socp.platform.tenant.persistence.TenantScopedRepository+.findByTenantId*(..)) || "
+            + "execution(* com.socp.platform.tenant.persistence.TenantScopedRepository+.findAllByTenantId*(..)) || "
+            + "execution(* com.socp.platform.tenant.persistence.TenantScopedRepository+.countByTenantId*(..)) || "
+            + "execution(* com.socp.platform.tenant.persistence.TenantScopedRepository+.existsByTenantId*(..)) || "
+            + "execution(* com.socp.platform.tenant.persistence.TenantScopedRepository+.deleteByTenantId*(..))")
+    public Object guardTenantRead(ProceedingJoinPoint joinPoint) throws Throwable {
+        if (!TenantContext.isSystemScope()) {
+            String current = TenantContext.require();
+            String requested = firstStringArgument(joinPoint.getArgs());
+            if (requested == null || !current.equals(requested)) {
+                throw new IllegalArgumentException("repository tenant does not match authenticated tenant");
+            }
+        }
+        return joinPoint.proceed();
+    }
+
+    private static String firstStringArgument(Object[] arguments) {
+        if (arguments == null) return null;
+        for (Object argument : arguments) {
+            if (argument instanceof String value) return value;
+        }
+        return null;
+    }
+
     private static void validateArgument(Object argument, String tenant) {
         if (argument == null) return;
         if (argument instanceof Iterable<?> values) {

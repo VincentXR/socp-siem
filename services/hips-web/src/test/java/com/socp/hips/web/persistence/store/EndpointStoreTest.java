@@ -1,10 +1,8 @@
 package com.socp.hips.web.persistence.store;
 
 
-
-import com.socp.hips.web.persistence.store.*;
-import com.socp.hips.web.persistence.repository.*;
-import com.socp.hips.web.persistence.entity.*;
+import com.socp.hips.web.persistence.repository.EndpointRepository;
+import com.socp.hips.web.persistence.entity.EndpointEntity;
 import com.socp.hips.web.domain.Endpoint;
 import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.AfterEach;
@@ -12,8 +10,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
-import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;

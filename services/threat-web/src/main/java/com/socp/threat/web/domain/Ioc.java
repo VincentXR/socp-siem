@@ -1,6 +1,7 @@
 package com.socp.threat.web.domain;
 
 import java.time.Instant;
+import java.util.Locale;
 import java.util.List;
 
 /**
@@ -23,20 +24,67 @@ public record Ioc(
         String description,
         List<String> tags,
         Instant firstSeen,
-        Instant lastSeen) {
+        Instant lastSeen,
+        String feed,
+        String externalId,
+        Double confidence,
+        String tlp,
+        Instant validFrom,
+        Instant validUntil,
+        Instant expiration,
+        boolean revoked,
+        String provenance) {
+
+    /** Source-compatible constructor for the original local IOC contract. */
+    public Ioc(String id, String type, String value, String severity, String source,
+               String description, List<String> tags, Instant firstSeen, Instant lastSeen) {
+        this(id, type, value, severity, source, description, tags, firstSeen, lastSeen,
+                source, null, null, null, firstSeen, null, null, false, "manual");
+    }
 
     public static Ioc of(String type, String value, String severity, String source,
                          String description, List<String> tags) {
-        String id = (type + ":" + value.toLowerCase()).replaceAll("[^A-Za-z0-9:._-]", "_");
-        return new Ioc(id, type.toUpperCase(), value.toLowerCase(),
-                normSev(severity), source, description, tags, Instant.now(), Instant.now());
+        String id = (type + ":" + value.toLowerCase(Locale.ROOT)).replaceAll("[^A-Za-z0-9:._-]", "_");
+        Instant now = Instant.now();
+        return new Ioc(id, type.toUpperCase(Locale.ROOT), value.toLowerCase(Locale.ROOT),
+                normSev(severity), source, description, tags, now, now,
+                source, null, null, null, now, null, null, false, "manual");
+    }
+
+    /** Build an IOC imported from STIX/TAXII while retaining feed provenance. */
+    public static Ioc external(String type, String value, String severity, String feed,
+                               String externalId, String description, List<String> tags,
+                               Double confidence, String tlp, Instant validFrom,
+                               Instant validUntil, Instant expiration, boolean revoked,
+                               String provenance) {
+        Instant now = Instant.now();
+        String normalizedValue = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
+        String id = (type + ":" + normalizedValue).replaceAll("[^A-Za-z0-9:._-]", "_");
+        return new Ioc(id, type.toUpperCase(Locale.ROOT), normalizedValue, normSev(severity),
+                feed, description, tags == null ? List.of() : List.copyOf(tags), now, now,
+                feed, externalId, confidence, tlp, validFrom == null ? now : validFrom,
+                validUntil, expiration, revoked, provenance == null ? "taxii" : provenance);
     }
 
     public static String normSev(String s) {
         if (s == null) return "MEDIUM";
-        return switch (s.toUpperCase()) {
+        return switch (s.toUpperCase(Locale.ROOT)) {
             case "CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO" -> s.toUpperCase();
             default -> "MEDIUM";
         };
+    }
+
+    /**
+     * Returns whether this indicator is eligible for enrichment at the given
+     * instant.  Revocation always wins over the validity window; expired
+     * indicators remain queryable through the list APIs for audit purposes but
+     * are never returned by exact-match enrichment.
+     */
+    public boolean isActiveAt(Instant instant) {
+        Instant at = instant == null ? Instant.now() : instant;
+        if (revoked) return false;
+        if (validFrom != null && at.isBefore(validFrom)) return false;
+        if (validUntil != null && !at.isBefore(validUntil)) return false;
+        return expiration == null || at.isBefore(expiration);
     }
 }

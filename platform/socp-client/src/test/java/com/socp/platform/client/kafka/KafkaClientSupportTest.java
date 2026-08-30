@@ -1,9 +1,6 @@
 package com.socp.platform.client.kafka;
 
 
-
-
-
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.junit.jupiter.api.Test;

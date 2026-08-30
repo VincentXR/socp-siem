@@ -1,10 +1,9 @@
 package com.socp.detect.web.persistence.store;
 
 
-
-import com.socp.detect.web.persistence.store.*;
-import com.socp.detect.web.persistence.repository.*;
-import com.socp.detect.web.persistence.entity.*;
+import com.socp.detect.web.persistence.repository.DetectionEventRepository;
+import com.socp.platform.tenant.context.TenantContext;
+import com.socp.detect.web.persistence.entity.DetectionEventEntity;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.domain.Pageable;
 
@@ -27,13 +26,14 @@ class DetectionEventJournalReplayTest {
 
     @Test
     void partitionReplayDeliversBoundedPagesWithoutAccumulatingAllRows() {
+        TenantContext.set("tenant-a");
         DetectionEventRepository repository = mock(DetectionEventRepository.class);
         List<DetectionEventEntity> first = rows(0, 100);
         List<DetectionEventEntity> second = rows(100, 1);
-        when(repository.findByStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
-                anyString(), eq(Set.of(2)), any(Instant.class), any(Pageable.class)))
+        when(repository.findByTenantIdAndStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
+                eq("tenant-a"), anyString(), eq(Set.of(2)), any(Instant.class), any(Pageable.class)))
                 .thenAnswer(invocation -> {
-                    Pageable page = invocation.getArgument(3);
+                    Pageable page = invocation.getArgument(4);
                     return page.getPageNumber() == 0 ? first : second;
                 });
 
@@ -43,6 +43,7 @@ class DetectionEventJournalReplayTest {
                 Set.of(2), Duration.ofHours(1), batch -> deliveredPageSizes.add(batch.size()));
 
         assertEquals(List.of(100, 1), deliveredPageSizes);
+        TenantContext.clear();
     }
 
     @Test

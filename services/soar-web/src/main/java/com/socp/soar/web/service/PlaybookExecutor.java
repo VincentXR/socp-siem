@@ -16,6 +16,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 
@@ -52,6 +53,8 @@ public class PlaybookExecutor {
     private final TemporalExecutor temporalExecutor;
     private final ExecutionRepository executionRepository;
     private final PlaybookActionHandlerRegistry handlerRegistry;
+    /** Lazy to avoid a constructor cycle: ApprovalService delegates approved execution here. */
+    private ApprovalService approvalService;
 
     /**
      * Dry-run actions are enabled for the local/integration demo, but they retain the
@@ -99,15 +102,32 @@ public class PlaybookExecutor {
 
     /** 按 ID 手动触发执行（忽略启用状态与触发条件）。 */
     public Map<String, Object> runById(String id, Map<String, Object> context) {
+        return runByIdInternal(id, context, false);
+    }
+
+    /**
+     * Entry point used only after a durable approval has been verified. It is
+     * deliberately separate from {@link #runById(String, Map)} so callers
+     * cannot bypass the policy by adding a flag to a request body.
+     */
+    public Map<String, Object> runApprovedById(String id, Map<String, Object> context) {
+        return runByIdInternal(id, context, true);
+    }
+
+    private Map<String, Object> runByIdInternal(String id, Map<String, Object> context,
+                                                  boolean approved) {
         Playbook pb = store.get(id);
         if (pb == null) {
             return Map.of("error", "playbook not found", "playbookId", id);
         }
-        Map<String, Object> alarm = new LinkedHashMap<>(context);
+        Map<String, Object> alarm = new LinkedHashMap<>(context == null ? Map.of() : context);
         alarm.putIfAbsent("ruleId", pb.trigger());
         alarm.putIfAbsent("severity", "HIGH");
-        alarm.putIfAbsent("id", "manual-" + java.util.UUID.randomUUID().toString().substring(0, 8));
-        return run(pb, alarm);
+        Object approvalId = alarm.get("approvalId");
+        alarm.putIfAbsent("id", approvalId == null
+                ? "manual-" + java.util.UUID.randomUUID().toString().substring(0, 8)
+                : "approval-" + approvalId);
+        return run(pb, alarm, approved);
     }
 
     /** 评估并编排执行。返回本次触发的剧本与动作结果。 */
@@ -119,7 +139,7 @@ public class PlaybookExecutor {
         for (Playbook pb : store.list()) {
             if (!pb.enabled()) continue;
             if (!matches(pb.trigger(), ruleId, severity, sevLevel)) continue;
-            Map<String, Object> exec = run(pb, alarm);
+            Map<String, Object> exec = run(pb, alarm, false);
             triggered.add(exec);
         }
         Map<String, Object> out = new LinkedHashMap<>();
@@ -131,7 +151,10 @@ public class PlaybookExecutor {
 
     private static final int MAX_ATTEMPTS = 3; // 每个动作最多尝试次数（重试 2 次）
 
-    private Map<String, Object> run(Playbook pb, Map<String, Object> alarm) {
+    private Map<String, Object> run(Playbook pb, Map<String, Object> alarm, boolean approved) {
+        if (!approved && ApprovalPolicy.requiresApproval(pb)) {
+            return requestApproval(pb, alarm);
+        }
         // 双模式（2026-08-12）：Temporal 可用走分布式编排，不可用回退进程内
         if (temporalExecutor.isAvailable()) {
             Map<String, Object> exec = temporalExecutor.run(pb, alarm);
@@ -186,6 +209,27 @@ public class PlaybookExecutor {
         exec.put("ts", Instant.now().toString());
         recordExecution(exec);
         return exec;
+    }
+
+    private Map<String, Object> requestApproval(Playbook playbook, Map<String, Object> alarm) {
+        if (approvalService == null) {
+            return Map.of("status", "APPROVAL_REQUIRED", "playbookId", playbook.id(),
+                    "reason", "high-risk SOAR action requires human approval");
+        }
+        String requestedBy = str(alarm, "requestedBy");
+        if (requestedBy.isBlank()) requestedBy = "system";
+        String reason = str(alarm, "reason");
+        if (reason.isBlank()) reason = "alarm-triggered high-risk action";
+        Map<String, Object> requested = approvalService.request(playbook.id(), alarm, requestedBy, reason);
+        Map<String, Object> out = new LinkedHashMap<>(requested);
+        out.put("status", "APPROVAL_REQUIRED");
+        out.put("playbookId", playbook.id());
+        return out;
+    }
+
+    @Autowired(required = false)
+    void setApprovalService(@Lazy ApprovalService approvalService) {
+        this.approvalService = approvalService;
     }
 
     /** 记录一次执行结果（进程内与 Temporal 模式共用，前端 /executions 可见）。 */
@@ -287,8 +331,18 @@ public class PlaybookExecutor {
                 r.put("error", "unsupported playbook action: " + action);
                 return r;
             }
-            r.putAll(handler.handle(new PlaybookActionContext(
-                    action, alarm, idempotencyKey, simulationAllowed())));
+            PlaybookActionContext context = new PlaybookActionContext(
+                    action, alarm, idempotencyKey, simulationAllowed());
+            Map<String, Object> validation = handler.validate(context);
+            if (lifecycleFailure(validation)) return lifecycleResult(r, validation, "VALIDATION_FAILED");
+            Map<String, Object> prepared = handler.prepare(context);
+            if (lifecycleFailure(prepared)) return lifecycleResult(r, prepared, "PREPARATION_FAILED");
+            Map<String, Object> approval = handler.requestApproval(context);
+            if (approval != null && "approval_required".equalsIgnoreCase(
+                    String.valueOf(approval.getOrDefault("status", "")))) {
+                return lifecycleResult(r, approval, "CONNECTOR_APPROVAL_REQUIRED");
+            }
+            r.putAll(handler.execute(context));
         } catch (RuntimeException e) {
             log.warn("剧本动作执行异常 action={} alarmId={} error={}: {}",
                     action, alarm == null ? null : alarm.get("id"), e.getClass().getSimpleName(), e.getMessage());
@@ -297,6 +351,30 @@ public class PlaybookExecutor {
             r.put("error", e.getClass().getSimpleName() + ": " + e.getMessage());
         }
         return r;
+    }
+
+    private static boolean lifecycleFailure(Map<String, Object> result) {
+        if (result == null) return true;
+        String status = String.valueOf(result.getOrDefault("status", ""));
+        return "failed".equalsIgnoreCase(status)
+                || "error".equalsIgnoreCase(status)
+                || "rejected".equalsIgnoreCase(status);
+    }
+
+    private static Map<String, Object> lifecycleResult(Map<String, Object> base,
+                                                       Map<String, Object> lifecycle,
+                                                       String defaultCode) {
+        if (lifecycle != null) base.putAll(lifecycle);
+        String status = String.valueOf(base.getOrDefault("status", "failed"));
+        if ("approval_required".equalsIgnoreCase(status)) {
+            base.put("status", "failed");
+            base.put("errorCode", defaultCode);
+        } else {
+            base.put("status", PlaybookActionStatus.FAILED.wireValue());
+            base.putIfAbsent("errorCode", defaultCode);
+        }
+        base.putIfAbsent("mode", "NOT_EXECUTED");
+        return base;
     }
 
     private boolean simulationAllowed() {

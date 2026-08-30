@@ -2,7 +2,6 @@ package com.socp.search.config.api.request;
 import com.socp.search.config.domain.LogSource;
 import com.socp.search.config.domain.ParseFormat;
 import com.socp.search.config.domain.SourceType;
-import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;

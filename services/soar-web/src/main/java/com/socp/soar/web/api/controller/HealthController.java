@@ -1,6 +1,5 @@
 package com.socp.soar.web.api.controller;
 
-import com.socp.soar.web.api.request.*;
 import com.socp.soar.web.config.SoarRuntimeProperties;
 import com.socp.platform.error.api.ApiResult;
 import org.springframework.web.bind.annotation.GetMapping;

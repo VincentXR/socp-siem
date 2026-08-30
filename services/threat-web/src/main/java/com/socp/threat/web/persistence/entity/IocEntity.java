@@ -1,10 +1,6 @@
 package com.socp.threat.web.persistence.entity;
 
 
-
-import com.socp.threat.web.persistence.store.*;
-import com.socp.threat.web.persistence.repository.*;
-import com.socp.threat.web.persistence.entity.*;
 import com.socp.platform.data.domain.BaseEntity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -38,6 +34,19 @@ public class IocEntity extends BaseEntity {
     private String tagsJson;
     private Instant firstSeen;
     private Instant lastSeen;
+    @Column(name = "feed", length = 256)
+    private String feed;
+    @Column(name = "external_id", length = 512)
+    private String externalId;
+    private Double confidence;
+    @Column(name = "tlp", length = 32)
+    private String tlp;
+    private Instant validFrom;
+    private Instant validUntil;
+    private Instant expiration;
+    private boolean revoked;
+    @Column(length = 128)
+    private String provenance;
 
     public IocEntity() {
     }
@@ -113,4 +122,23 @@ public class IocEntity extends BaseEntity {
     public void setLastSeen(Instant lastSeen) {
         this.lastSeen = lastSeen;
     }
+
+    public String getFeed() { return feed; }
+    public void setFeed(String feed) { this.feed = feed; }
+    public String getExternalId() { return externalId; }
+    public void setExternalId(String externalId) { this.externalId = externalId; }
+    public Double getConfidence() { return confidence; }
+    public void setConfidence(Double confidence) { this.confidence = confidence; }
+    public String getTlp() { return tlp; }
+    public void setTlp(String tlp) { this.tlp = tlp; }
+    public Instant getValidFrom() { return validFrom; }
+    public void setValidFrom(Instant validFrom) { this.validFrom = validFrom; }
+    public Instant getValidUntil() { return validUntil; }
+    public void setValidUntil(Instant validUntil) { this.validUntil = validUntil; }
+    public Instant getExpiration() { return expiration; }
+    public void setExpiration(Instant expiration) { this.expiration = expiration; }
+    public boolean isRevoked() { return revoked; }
+    public void setRevoked(boolean revoked) { this.revoked = revoked; }
+    public String getProvenance() { return provenance; }
+    public void setProvenance(String provenance) { this.provenance = provenance; }
 }

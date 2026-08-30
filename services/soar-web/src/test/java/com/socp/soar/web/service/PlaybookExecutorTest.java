@@ -26,6 +26,8 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 
 /**
  * SOAR 剧本执行器测试：触发条件评估 + 动作编排 + 重试/补偿 + 定时解析。
@@ -59,6 +61,9 @@ class PlaybookExecutorTest {
 
     @Mock
     private TemporalExecutor temporalExecutor;
+
+    @Mock
+    private ApprovalService approvalService;
 
     @InjectMocks
     private PlaybookExecutor executor;
@@ -124,6 +129,22 @@ class PlaybookExecutorTest {
         List<?> results = (List<?>) r.get("results");
         assertEquals(2, results.size());
         assertEquals("executed", ((Map<?, ?>) results.get(0)).get("status"));
+    }
+
+    @Test
+    void highRiskManualTriggerCreatesApprovalAndDoesNotExecuteActions() {
+        Playbook pb = Playbook.create("封禁", "manual", List.of("firewall-block"), true);
+        given(store.get(pb.id())).willReturn(pb);
+        given(approvalService.request(any(String.class), any(Map.class), any(String.class), any(String.class)))
+                .willReturn(Map.of("approvalId", "APR-1", "status", "PENDING"));
+        executor.setApprovalService(approvalService);
+
+        Map<String, Object> result = executor.runById(pb.id(), Map.of("host", "web-1"));
+
+        assertEquals("APPROVAL_REQUIRED", result.get("status"));
+        assertEquals("APR-1", result.get("approvalId"));
+        verify(approvalService).request(any(String.class), any(Map.class), any(String.class), any(String.class));
+        verify(temporalExecutor, never()).run(any(), any());
     }
 
     @Test

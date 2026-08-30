@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://socp.example/schemas/canonical-event-1.0.json",
+  "title": "SOCP Canonical Security Event",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schemaVersion", "eventId", "tenantId", "timestamp", "source", "host", "severity", "msg", "fields"],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "eventId": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "tenantId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "source": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "category": { "type": "string", "maxLength": 128 },
+    "host": { "type": "string", "maxLength": 255 },
+    "severity": { "type": "string", "enum": ["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"] },
+    "msg": { "type": "string", "maxLength": 8192 },
+    "fields": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean", "null"] } },
+    "ecs": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean", "null"] } },
+    "attributes": { "type": "object", "additionalProperties": true }
+  }
+}

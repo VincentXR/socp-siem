@@ -1,6 +1,5 @@
 package com.socp.hips.collect.api.controller;
 
-import com.socp.hips.collect.api.request.*;
 import com.socp.platform.error.api.ApiResult;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.ObjectProvider;

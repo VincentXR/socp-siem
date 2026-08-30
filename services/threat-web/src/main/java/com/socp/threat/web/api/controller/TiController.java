@@ -1,10 +1,14 @@
 package com.socp.threat.web.api.controller;
 
-import com.socp.threat.web.api.request.*;
+import com.socp.threat.web.api.request.IocImportRequest;
+import com.socp.threat.web.api.request.IocRequest;
 import com.socp.platform.audit.api.AuditOperation;
 import com.socp.platform.auth.security.RequireRole;
 import com.socp.threat.web.domain.Ioc;
 import com.socp.threat.web.persistence.store.IocStore;
+import com.socp.threat.web.service.StixIndicatorImporter;
+import com.socp.threat.web.service.TaxiiSyncService;
+import com.socp.threat.web.api.request.TaxiiSyncRequest;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -13,6 +17,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.MediaType;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Size;
 
@@ -29,6 +35,8 @@ import java.util.Map;
 public class TiController {
 
     private final IocStore store;
+    @Autowired(required = false)
+    private TaxiiSyncService taxiiSyncService;
 
     public TiController(IocStore store) {
         this.store = store;
@@ -68,6 +76,42 @@ public class TiController {
             imported++;
         }
         return Map.of("imported", imported, "skipped", errors.size(), "errors", errors);
+    }
+
+    /** Import a STIX 2.1 bundle produced by a TAXII collection. */
+    @RequireRole({"admin", "analyst"})
+    @AuditOperation(action = "IMPORT_STIX", target = "threat")
+    @PostMapping(value = "/iocs/import/stix", consumes = {
+            MediaType.APPLICATION_JSON_VALUE, "application/stix+json"
+    })
+    public Map<String, Object> importStix(@RequestParam(defaultValue = "taxii") String feed,
+                                          @RequestBody String bundle) {
+        StixIndicatorImporter.ImportResult parsed = new StixIndicatorImporter().parse(bundle, feed);
+        int imported = 0;
+        for (Ioc indicator : parsed.indicators()) {
+            store.add(indicator);
+            imported++;
+        }
+        return Map.of("imported", imported, "skipped", parsed.skipped(), "feed", feed,
+                "revoked", parsed.indicators().stream().filter(Ioc::revoked).count());
+    }
+
+    /** Pull one TAXII 2.1 collection; credentials are supplied per request and never persisted. */
+    @RequireRole("admin")
+    @AuditOperation(action = "SYNC_TAXII", target = "threat")
+    @PostMapping("/feeds/taxii/sync")
+    public Map<String, Object> syncTaxii(@Valid @RequestBody TaxiiSyncRequest request) {
+        if (taxiiSyncService == null) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, "TAXII sync is unavailable");
+        }
+        try {
+            return taxiiSyncService.sync(request.feed(), java.net.URI.create(request.collectionUrl()),
+                    request.authorization(), Boolean.TRUE.equals(request.allowHttp()));
+        } catch (IllegalArgumentException invalid) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST, invalid.getMessage(), invalid);
+        }
     }
 
     @RequireRole({"admin", "analyst"})

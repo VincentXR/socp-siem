@@ -1,10 +1,6 @@
 package com.socp.attack.web.persistence.entity;
 
 
-
-import com.socp.attack.web.persistence.store.*;
-import com.socp.attack.web.persistence.repository.*;
-import com.socp.attack.web.persistence.entity.*;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;

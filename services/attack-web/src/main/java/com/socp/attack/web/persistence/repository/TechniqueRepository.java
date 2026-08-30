@@ -1,10 +1,7 @@
 package com.socp.attack.web.persistence.repository;
 
 
-
-import com.socp.attack.web.persistence.store.*;
-import com.socp.attack.web.persistence.repository.*;
-import com.socp.attack.web.persistence.entity.*;
+import com.socp.attack.web.persistence.entity.TechniqueEntity;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 

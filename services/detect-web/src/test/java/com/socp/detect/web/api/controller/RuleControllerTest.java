@@ -1,8 +1,6 @@
 package com.socp.detect.web.api.controller;
 
 
-import com.socp.detect.web.api.response.*;
-import com.socp.detect.web.api.request.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.detect.web.engine.AlertStreamHub;
 import com.socp.detect.web.service.DetectEngineService;
@@ -138,5 +136,25 @@ class RuleControllerTest {
                 .andExpect(jsonPath("$.rules").value(2));
 
         verify(engine).reload();
+    }
+
+    @Test
+    void directActivationIsRejectedInCreateAndUpdateContracts() throws Exception {
+        String body = json.writeValueAsString(Map.of(
+                "name", "active rule", "type", "pattern", "severity", "HIGH", "status", "ACTIVE"));
+
+        mvc.perform(post("/api/v1/rules")
+                        .header("Authorization", BEARER)
+                        .header("X-Role", "analyst")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isForbidden());
+
+        mvc.perform(put("/api/v1/rules/{id}", "R-1")
+                        .header("Authorization", BEARER)
+                        .header("X-Role", "analyst")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isForbidden());
     }
 }

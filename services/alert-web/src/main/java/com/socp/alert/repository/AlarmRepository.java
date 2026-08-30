@@ -1,10 +1,11 @@
 package com.socp.alert.repository;
 
-import com.socp.alert.api.controller.*;
-import com.socp.alert.api.request.*;
-import com.socp.alert.domain.*;
-import com.socp.alert.repository.*;
-import com.socp.alert.service.*;
+import com.socp.alert.domain.Alarm;
+import com.socp.alert.domain.AlarmRiskLevelCount;
+import com.socp.alert.domain.AlarmRuleCount;
+import com.socp.alert.domain.AlarmSeverityCount;
+import com.socp.alert.domain.Severity;
+
 
 import org.springframework.data.domain.Pageable;
 import com.socp.platform.tenant.persistence.TenantScopedRepository;
@@ -23,6 +24,21 @@ public interface AlarmRepository extends TenantScopedRepository<Alarm, String>, 
     Optional<Alarm> findByTenantIdAndId(String tenantId, String id);
 
     Optional<Alarm> findByTenantIdAndSourceAlertId(String tenantId, String sourceAlertId);
+
+    /** Same tenant/rule/entity candidates used by alert investigation drill-down. */
+    @Query("""
+           select a from Alarm a
+           where a.tenantId = :tenant
+             and a.id <> :alarmId
+             and a.ruleId = :ruleId
+             and ((:entity is null and a.entity is null) or a.entity = :entity)
+           order by a.occurredAt desc, a.id asc
+           """)
+    List<Alarm> findSimilar(@Param("tenant") String tenant,
+                            @Param("alarmId") String alarmId,
+                            @Param("ruleId") String ruleId,
+                            @Param("entity") String entity,
+                            Pageable pageable);
 
     List<Alarm> findByTenantIdAndSeverity(String tenantId, Severity severity);
 

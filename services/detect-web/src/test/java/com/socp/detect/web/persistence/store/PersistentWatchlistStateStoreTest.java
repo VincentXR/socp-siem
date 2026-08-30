@@ -1,10 +1,7 @@
 package com.socp.detect.web.persistence.store;
 
 
-
-import com.socp.detect.web.persistence.store.*;
-import com.socp.detect.web.persistence.repository.*;
-import com.socp.detect.web.persistence.entity.*;
+import com.socp.detect.web.persistence.repository.WatchlistRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.rule.engine.WatchlistStateStore;
 import org.junit.jupiter.api.Test;

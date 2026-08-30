@@ -1,10 +1,8 @@
 package com.socp.threat.web.persistence.store;
 
 
-
-import com.socp.threat.web.persistence.store.*;
-import com.socp.threat.web.persistence.repository.*;
-import com.socp.threat.web.persistence.entity.*;
+import com.socp.threat.web.persistence.repository.IocRepository;
+import com.socp.threat.web.persistence.entity.IocEntity;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.threat.web.domain.Ioc;
@@ -12,11 +10,16 @@ import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.transaction.annotation.Transactional;
+import com.socp.platform.tenant.persistence.TenantSystemJob;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.time.Instant;
+import java.util.Locale;
 
 /**
  * 威胁情报 IOC 存储——本地切片用 H2 文件库（重启不丢）；生产由 MISP/OTX 同步至 OpenSearch/PG。
@@ -45,23 +48,41 @@ public class IocStore {
         if (!demoDataEnabled) return;
         com.socp.platform.tenant.context.TenantContext.runWith("default", () -> {
         if (repo.countByTenantId("default") > 0) return;
-        add(Ioc.of("IP", "45.146.165.37", "CRITICAL", "AlienVault OTX", "已知 C2 回连地址", List.of("c2", "malware")));
-        add(Ioc.of("IP", "185.220.101.1", "HIGH", "Tor Exit", "Tor 出口节点", List.of("tor", "anonymizer")));
-        add(Ioc.of("IP", "10.0.0.66", "HIGH", "内部研判", "内网失陷主机（模拟）", List.of("compromised")));
-        add(Ioc.of("DOMAIN", "malware-c2.example.com", "CRITICAL", "MISP", "C2 域名", List.of("c2", "malware")));
-        add(Ioc.of("DOMAIN", "phishing-bank.example.net", "HIGH", "PhishTank", "钓鱼域名", List.of("phishing")));
-        add(Ioc.of("URL", "http://45.146.165.37/payload.bin", "CRITICAL", "AlienVault OTX", "恶意载荷下载", List.of("malware", "c2")));
-        add(Ioc.of("SHA256", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "HIGH", "VirusTotal", "可疑样本哈希", List.of("malware")));
-        add(Ioc.of("EMAIL", "attacker@evil.com", "MEDIUM", "内部研判", "攻击者邮箱", List.of("phishing")));
+        add(Ioc.of("IP", "45.146.165.37", "CRITICAL", "demo-feed", "已知 C2 回连地址", List.of("demo", "c2", "malware")));
+        add(Ioc.of("IP", "185.220.101.1", "HIGH", "demo-feed", "Tor 出口节点", List.of("demo", "tor", "anonymizer")));
+        add(Ioc.of("IP", "10.0.0.66", "HIGH", "demo-feed", "内网失陷主机（模拟）", List.of("demo", "compromised")));
+        add(Ioc.of("DOMAIN", "malware-c2.example.com", "CRITICAL", "demo-feed", "C2 域名", List.of("demo", "c2", "malware")));
+        add(Ioc.of("DOMAIN", "phishing-bank.example.net", "HIGH", "demo-feed", "钓鱼域名", List.of("demo", "phishing")));
+        add(Ioc.of("URL", "http://45.146.165.37/payload.bin", "CRITICAL", "demo-feed", "恶意载荷下载", List.of("demo", "malware", "c2")));
+        add(Ioc.of("SHA256", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "HIGH", "demo-feed", "可疑样本哈希", List.of("demo", "malware")));
+        add(Ioc.of("EMAIL", "attacker@evil.com", "MEDIUM", "demo-feed", "攻击者邮箱", List.of("demo", "phishing")));
         });
     }
 
     private final Map<String, Ioc> cache = new java.util.concurrent.ConcurrentHashMap<>();
 
     public synchronized Ioc add(Ioc ioc) {
-        repo.save(toEntity(ioc));
-        cache.put(cacheKey(tenant(), ioc.value()), ioc);
-        return ioc;
+        String tenant = tenant();
+        IocEntity entity = ioc.externalId() == null || ioc.externalId().isBlank()
+                ? repo.findByIdAndTenantId(ioc.id(), tenant).orElseGet(IocEntity::new)
+                : repo.findByTenantIdAndSourceAndExternalId(tenant, ioc.source(), ioc.externalId())
+                        .orElseGet(IocEntity::new);
+        String previousValue = entity.getValue();
+        Instant existingFirstSeen = entity.getFirstSeen();
+        Instant existingLastSeen = entity.getLastSeen();
+        Instant incomingFirstSeen = ioc.firstSeen();
+        Instant incomingLastSeen = ioc.lastSeen();
+        copy(toEntity(ioc), entity);
+        entity.setFirstSeen(earliest(existingFirstSeen, incomingFirstSeen));
+        entity.setLastSeen(latest(existingLastSeen, incomingLastSeen));
+        entity.setTenantId(tenant);
+        IocEntity saved = repo.save(entity);
+        Ioc persisted = fromEntity(saved == null ? entity : saved);
+        if (previousValue != null && !previousValue.equalsIgnoreCase(persisted.value())) {
+            cache.remove(cacheKey(tenant, previousValue));
+        }
+        cache.put(cacheKey(tenant, persisted.value()), persisted);
+        return persisted;
     }
 
     public List<Ioc> list(String type) {
@@ -86,17 +107,22 @@ public class IocStore {
     /** 精确匹配单个值（大小写不敏感），优先读缓存，未命中则查库并回填缓存。 */
     public Ioc match(String value) {
         if (value == null || value.isBlank()) return null;
-        String normalized = value.trim().toLowerCase();
+        String normalized = value.trim().toLowerCase(Locale.ROOT);
         String key = cacheKey(tenant(), normalized);
         Ioc cached = cache.get(key);
-        if (cached != null) return cached;
+        if (cached != null) {
+            if (cached.isActiveAt(Instant.now())) return cached;
+            cache.remove(key, cached);
+            return null;
+        }
 
         Ioc found = repo.findByTenantIdAndValue(tenant(), normalized)
                 .map(IocStore::fromEntity).orElse(null);
-        if (found != null) {
+        if (found != null && found.isActiveAt(Instant.now())) {
             cache.put(key, found);
+            return found;
         }
-        return found;
+        return null;
     }
 
     /** 批量匹配：通过缓存 + 批量 In-List 单次查询优化，避免循环单条 DB 往返。 */
@@ -108,12 +134,14 @@ public class IocStore {
 
         for (String val : values) {
             if (val == null || val.isBlank()) continue;
-            String normalized = val.trim().toLowerCase();
+            String normalized = val.trim().toLowerCase(Locale.ROOT);
             Ioc cached = cache.get(cacheKey(tenant, normalized));
-            if (cached != null) {
+            if (cached != null && cached.isActiveAt(Instant.now())) {
                 out.put(val, cached);
-            } else {
+            } else if (cached == null || cached.isActiveAt(Instant.now())) {
                 missing.add(normalized);
+            } else {
+                cache.remove(cacheKey(tenant, normalized), cached);
             }
         }
 
@@ -122,7 +150,8 @@ public class IocStore {
             List<IocEntity> foundEntities = repo.findByTenantIdAndValueIn(tenant, distinctMissing);
             for (IocEntity entity : foundEntities) {
                 Ioc ioc = fromEntity(entity);
-                String normalizedVal = entity.getValue().toLowerCase();
+                if (!ioc.isActiveAt(Instant.now())) continue;
+                String normalizedVal = entity.getValue().toLowerCase(Locale.ROOT);
                 cache.put(cacheKey(tenant, normalizedVal), ioc);
                 for (String originalVal : values) {
                     if (originalVal != null && originalVal.trim().equalsIgnoreCase(normalizedVal)) {
@@ -150,8 +179,35 @@ public class IocStore {
         return out;
     }
 
+    /**
+     * Removes only expired, non-revoked feed indicators. Revoked indicators
+     * are retained as audit evidence and remain visible through list/all.
+     * The tenant system-job aspect installs an explicit cross-tenant scope.
+     */
+    @Scheduled(fixedDelayString = "${socp.threat.ioc.expiry-cleanup-ms:3600000}")
+    @TenantSystemJob
+    @Transactional
+    public synchronized void cleanupExpired() {
+        Instant now = Instant.now();
+        repo.deleteByExpirationBeforeAndRevokedFalse(now);
+        repo.deleteByValidUntilBeforeAndRevokedFalse(now);
+        cache.entrySet().removeIf(entry -> !entry.getValue().isActiveAt(now));
+    }
+
     private static String tenant() {
         return com.socp.platform.tenant.context.TenantContext.require();
+    }
+
+    private static Instant earliest(Instant first, Instant second) {
+        if (first == null) return second;
+        if (second == null) return first;
+        return first.isBefore(second) ? first : second;
+    }
+
+    private static Instant latest(Instant first, Instant second) {
+        if (first == null) return second;
+        if (second == null) return first;
+        return first.isAfter(second) ? first : second;
     }
 
     // ---- 互转 ----
@@ -167,13 +223,45 @@ public class IocStore {
         e.setTagsJson(writeJson(i.tags()));
         e.setFirstSeen(i.firstSeen());
         e.setLastSeen(i.lastSeen());
+        e.setFeed(i.feed());
+        e.setExternalId(i.externalId());
+        e.setConfidence(i.confidence());
+        e.setTlp(i.tlp());
+        e.setValidFrom(i.validFrom());
+        e.setValidUntil(i.validUntil());
+        e.setExpiration(i.expiration());
+        e.setRevoked(i.revoked());
+        e.setProvenance(i.provenance());
         return e;
     }
 
     static Ioc fromEntity(IocEntity e) {
         List<String> tags = readList(e.getTagsJson());
         return new Ioc(e.getId(), e.getType(), e.getValue(), e.getSeverity(), e.getSource(),
-                e.getDescription(), tags == null ? List.of() : tags, e.getFirstSeen(), e.getLastSeen());
+                e.getDescription(), tags == null ? List.of() : tags, e.getFirstSeen(), e.getLastSeen(),
+                e.getFeed(), e.getExternalId(), e.getConfidence(), e.getTlp(), e.getValidFrom(),
+                e.getValidUntil(), e.getExpiration(), e.isRevoked(), e.getProvenance());
+    }
+
+    private static void copy(IocEntity source, IocEntity target) {
+        if (target.getId() == null || target.getId().isBlank()) target.setId(source.getId());
+        target.setType(source.getType());
+        target.setValue(source.getValue());
+        target.setSeverity(source.getSeverity());
+        target.setSource(source.getSource());
+        target.setDescription(source.getDescription());
+        target.setTagsJson(source.getTagsJson());
+        target.setFirstSeen(source.getFirstSeen());
+        target.setLastSeen(source.getLastSeen());
+        target.setFeed(source.getFeed());
+        target.setExternalId(source.getExternalId());
+        target.setConfidence(source.getConfidence());
+        target.setTlp(source.getTlp());
+        target.setValidFrom(source.getValidFrom());
+        target.setValidUntil(source.getValidUntil());
+        target.setExpiration(source.getExpiration());
+        target.setRevoked(source.isRevoked());
+        target.setProvenance(source.getProvenance());
     }
 
     private static String writeJson(Object o) {

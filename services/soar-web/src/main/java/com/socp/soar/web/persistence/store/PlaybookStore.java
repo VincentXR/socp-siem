@@ -1,10 +1,8 @@
 package com.socp.soar.web.persistence.store;
 
 
-
-import com.socp.soar.web.persistence.store.*;
-import com.socp.soar.web.persistence.repository.*;
-import com.socp.soar.web.persistence.entity.*;
+import com.socp.soar.web.persistence.repository.PlaybookRepository;
+import com.socp.soar.web.persistence.entity.PlaybookEntity;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.tenant.context.TenantContext;

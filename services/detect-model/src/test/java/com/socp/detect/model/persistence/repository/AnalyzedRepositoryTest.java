@@ -1,8 +1,7 @@
 package com.socp.detect.model.persistence.repository;
 
 
-import com.socp.detect.model.persistence.repository.*;
-import com.socp.detect.model.persistence.entity.*;
+import com.socp.detect.model.persistence.entity.AnalyzedEntity;
 import com.socp.detect.model.persistence.store.AnalysisReceiptStore;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;

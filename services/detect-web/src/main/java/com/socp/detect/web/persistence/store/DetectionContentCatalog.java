@@ -1,10 +1,6 @@
 package com.socp.detect.web.persistence.store;
 
 
-
-import com.socp.detect.web.persistence.store.*;
-import com.socp.detect.web.persistence.repository.*;
-import com.socp.detect.web.persistence.entity.*;
 import com.socp.rule.util.Json;
 import com.socp.rule.model.Severity;
 
@@ -68,6 +64,14 @@ public final class DetectionContentCatalog {
                     ? "ACTIVE" : "DISABLED");
             copyIfMissing(spec, "owner", "unowned");
         }
+        // Stateful detection is partition-local only when the rule grouping
+        // dimension is the same dimension encoded in the Kafka key.  Preserve
+        // compatibility for legacy specs while making the contract explicit
+        // in every persisted/returned rule document.
+        String type = String.valueOf(spec.getOrDefault("type", "")).toLowerCase();
+        if (List.of("threshold", "correlation", "correlation-set", "baseline", "rare").contains(type)) {
+            copyIfMissing(spec, "routingField", spec.get("keyField"));
+        }
         return spec;
     }
 
@@ -98,6 +102,16 @@ public final class DetectionContentCatalog {
                 && (spec.get("keyField") == null || String.valueOf(spec.get("keyField")).isBlank())) {
             errors.add("stateful rule requires keyField");
         }
+        if (List.of("threshold", "correlation", "correlation-set", "baseline", "rare").contains(type)
+                && spec.get("keyField") != null && !String.valueOf(spec.get("keyField")).isBlank()
+                && (spec.get("routingField") == null || String.valueOf(spec.get("routingField")).isBlank())) {
+            errors.add("stateful rule requires routingField");
+        }
+        if (spec.get("keyField") != null && spec.get("routingField") != null
+                && !String.valueOf(spec.get("keyField")).trim()
+                .equals(String.valueOf(spec.get("routingField")).trim())) {
+            errors.add("keyField and routingField must match for partition-local state");
+        }
         if ("rare".equals(type)
                 && (spec.get("valueField") == null || String.valueOf(spec.get("valueField")).isBlank())) {
             errors.add("rare rule requires valueField");
@@ -111,6 +125,7 @@ public final class DetectionContentCatalog {
             errors.add("correlation rule requires at least two steps");
         }
         validateConditions(errors, spec.get("match"), "match");
+        validateConditionGroups(errors, spec.get("matchAny"), "matchAny");
         if (spec.get("steps") instanceof List<?> steps) {
             for (int i = 0; i < steps.size(); i++) {
                 Object step = steps.get(i);
@@ -122,6 +137,19 @@ public final class DetectionContentCatalog {
             }
         }
         return errors;
+    }
+
+    private static void validateConditionGroups(List<String> errors, Object raw, String label) {
+        if (raw == null) return;
+        if (!(raw instanceof List<?> groups)) {
+            errors.add(label + " must be an array");
+            return;
+        }
+        for (int i = 0; i < groups.size(); i++) {
+            Object group = groups.get(i);
+            if (!(group instanceof List<?>)) errors.add(label + "[" + i + "] must be an array");
+            else validateConditions(errors, group, label + "[" + i + "]");
+        }
     }
 
     private static void validateConditions(List<String> errors, Object raw, String label) {

@@ -1,20 +1,23 @@
 package com.socp.alert.api.controller;
-import com.socp.alert.api.controller.*;
-import com.socp.alert.api.request.*;
-import com.socp.alert.domain.*;
-import com.socp.alert.repository.*;
-import com.socp.alert.service.*;
 
 import com.socp.alert.api.request.AlarmAssignmentRequest;
 import com.socp.alert.api.request.AlarmNoteRequest;
 import com.socp.alert.api.request.AlarmStatusRequest;
+import com.socp.alert.service.AlarmDispositionService;
+import com.socp.alert.service.AlarmService;
+
 import com.socp.platform.error.exception.ApiException;
 import jakarta.validation.Valid;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
-import java.util.List;
-import java.util.Map;
 import com.socp.platform.auth.security.RequireRole;
+import com.socp.platform.auth.security.RequirePermission;
 
 /**
  * 告警处置 API（工单化）：状态流转 / 分配 / 备注。
@@ -39,6 +42,7 @@ public class AlarmDispositionController {
     }
 
     @RequireRole({"admin", "analyst"})
+    @RequirePermission("alarm:triage")
     @PutMapping("/status")
     public AlarmDispositionService.Disposition setStatus(@PathVariable String id, @Valid @RequestBody AlarmStatusRequest body) {
         alarmService.get(id);
@@ -46,6 +50,7 @@ public class AlarmDispositionController {
     }
 
     @RequireRole({"admin", "analyst"})
+    @RequirePermission("alarm:triage")
     @PostMapping("/assign")
     public AlarmDispositionService.Disposition assign(@PathVariable String id, @Valid @RequestBody AlarmAssignmentRequest body) {
         alarmService.get(id);
@@ -55,6 +60,7 @@ public class AlarmDispositionController {
     }
 
     @RequireRole({"admin", "analyst"})
+    @RequirePermission("alarm:triage")
     @PostMapping("/notes")
     public AlarmDispositionService.Disposition addNote(@PathVariable String id, @Valid @RequestBody AlarmNoteRequest body) {
         alarmService.get(id);

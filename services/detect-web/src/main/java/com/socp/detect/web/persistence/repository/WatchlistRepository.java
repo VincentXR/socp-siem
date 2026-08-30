@@ -1,13 +1,9 @@
 package com.socp.detect.web.persistence.repository;
 
 
-
-import com.socp.detect.web.persistence.store.*;
-import com.socp.detect.web.persistence.repository.*;
-import com.socp.detect.web.persistence.entity.*;
+import com.socp.detect.web.persistence.entity.WatchlistEntity;
 import com.socp.platform.tenant.persistence.TenantScopedRepository;
 
-import java.util.List;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.transaction.annotation.Transactional;

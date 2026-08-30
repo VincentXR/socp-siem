@@ -1,6 +1,5 @@
 package com.socp.hips.collect.api.controller;
 
-import com.socp.hips.collect.api.request.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.hips.collect.collector.EndpointSimulator;
 import com.socp.hips.collect.persistence.store.HipsEventStore;

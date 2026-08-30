@@ -1,9 +1,14 @@
 package com.socp.detect.model.api.controller;
 
-import com.socp.detect.model.api.request.*;
+import com.socp.detect.model.api.request.AnalyzeRequest;
 import com.socp.detect.model.engine.AlertWindowAggregator;
 import com.socp.detect.model.service.AnalyzeService;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
 import jakarta.validation.Valid;
 import com.socp.platform.auth.security.RequireRole;
 

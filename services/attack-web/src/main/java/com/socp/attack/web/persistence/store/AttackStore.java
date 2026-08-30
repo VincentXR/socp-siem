@@ -1,10 +1,10 @@
 package com.socp.attack.web.persistence.store;
 
 
-
-import com.socp.attack.web.persistence.store.*;
-import com.socp.attack.web.persistence.repository.*;
-import com.socp.attack.web.persistence.entity.*;
+import com.socp.attack.web.persistence.repository.TacticRepository;
+import com.socp.attack.web.persistence.repository.TechniqueRepository;
+import com.socp.attack.web.persistence.entity.TacticEntity;
+import com.socp.attack.web.persistence.entity.TechniqueEntity;
 import com.socp.attack.web.domain.Tactic;
 import com.socp.attack.web.domain.Technique;
 import jakarta.annotation.PostConstruct;
