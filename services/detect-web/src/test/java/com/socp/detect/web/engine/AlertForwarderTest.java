@@ -137,4 +137,24 @@ class AlertForwarderTest {
         verify(stateStore).markCompleted("tenant-worker", "event-zero-alert");
         assertNull(TenantContext.get());
     }
+
+    @Test
+    void fallsBackToExistingTenantForLegacyEvidenceWithoutTenant() {
+        TenantContext.set("tenant-request");
+        when(ruleStore.get("AUTH-PRIVESC")).thenReturn(Map.of());
+        when(riskStore.recordForAlert(anyString(), anyString(), eq(Severity.HIGH), eq(null),
+                eq("AUTH-PRIVESC"), eq("Privilege escalation"), anyInt()))
+                .thenReturn(new RiskScorer.Score(45, "MEDIUM", Map.of()));
+
+        SecurityEvent legacyEvent = new SecurityEvent(
+                "event-legacy", Instant.now(), "auth", "host-legacy", "probe",
+                Map.of(), Severity.HIGH);
+        Alert alert = new Alert("AUTH-PRIVESC", "Privilege escalation", Severity.HIGH,
+                "probe", "host-legacy", List.of(legacyEvent));
+
+        new AlertForwarder(ruleStore, riskStore, outbox).forward(alert);
+
+        verify(outbox).enqueue(eq(alert.id()), eq("tenant-request"), anyString());
+        assertEquals("tenant-request", TenantContext.get());
+    }
 }
