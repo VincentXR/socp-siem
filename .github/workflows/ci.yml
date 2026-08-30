@@ -204,7 +204,11 @@ jobs:
 
           for _ in range(60):
               ok = 0
-              for port, path in [(18092, "/actuator/health"), (18080, "/alert-web/actuator/health")]:
+              # The minimal slice intentionally omits Kafka and ClickHouse.
+              # Check liveness here so optional dependency readiness does not
+              # turn a successfully started process into a false CI failure.
+              for port, path in [(18092, "/actuator/health/liveness"),
+                                 (18080, "/alert-web/actuator/health/liveness")]:
                   try:
                       if urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=2).status == 200:
                           ok += 1
