@@ -51,7 +51,11 @@ public final class LeefParser implements EventParser {
             String normalized = ext.contains("\t") ? ext.replace('\t', ' ') : ext;
             Map<String, String> kv = new KvParser().parse(normalized);
             if (kv != null) {
-                out.putAll(CanonicalEvent.canonicalize(kv));
+                // LEEF uses the same short network/user extension names as CEF.
+                // Route them through the dedicated extension mapper so src/dst,
+                // ports and protocol remain canonical instead of leaking as
+                // vendor-specific keys (e.g. "src" or "cef.network.protocol").
+                out.putAll(CanonicalEvent.cefExt(kv));
             }
         }
         return out;

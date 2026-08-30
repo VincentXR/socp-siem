@@ -23,9 +23,9 @@ public final class SyslogParser implements EventParser {
 
     // <PRI>VERSION? TIMESTAMP HOST TAG[PID]: MSG 或 <PRI>TIMESTAMP HOST TAG[PID]: MSG
     private static final Pattern RFC5424 = Pattern.compile(
-            "^<(?<pri>\\d{1,3})>\\s*(?<ver>\\d)\\s+(?<ts>\\S+)\\s+(?<host>\\S+)\\s+(?<app>\\S+)(?:\\s+\\S+){0,2}\\s*(?:\\[(?<pid>\\d+)])?\\s*:?\\s*(?<msg>.*)$");
+            "^<(?<pri>\\d{1,3})>\\s*(?<ver>\\d)\\s+(?<ts>\\S+)\\s+(?<host>\\S+)\\s+(?<app>[^\\s\\[]+)(?:\\s+\\S+){0,2}\\s*(?:\\[(?<pid>\\d+)])?\\s*:?\\s*(?<msg>.*)$");
     private static final Pattern RFC3164 = Pattern.compile(
-            "^<(?<pri>\\d{1,3})>\\s*(?<ts>[A-Z][a-z]{2}\\s+\\d{1,2}\\s+\\d{2}:\\d{2}:\\d{2})\\s+(?<host>\\S+)\\s+(?<app>\\S+)(?:\\[(?<pid>\\d+)])?\\s*:?\\s*(?<msg>.*)$");
+            "^<(?<pri>\\d{1,3})>\\s*(?<ts>[A-Z][a-z]{2}\\s+\\d{1,2}\\s+\\d{2}:\\d{2}:\\d{2})\\s+(?<host>\\S+)\\s+(?<app>[^\\s\\[]+)(?:\\[(?<pid>\\d+)])?\\s*:?\\s*(?<msg>.*)$");
     private static final DateTimeFormatter RFC3164_FMT = DateTimeFormatter.ofPattern("MMM d HH:mm:ss").withZone(ZoneOffset.UTC);
 
     @Override

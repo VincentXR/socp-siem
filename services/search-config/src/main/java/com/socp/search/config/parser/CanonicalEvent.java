@@ -2,6 +2,7 @@ package com.socp.search.config.parser;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Canonical Event Schema（2026-08-11，简化 ECS 风格）。
@@ -106,8 +107,23 @@ public final class CanonicalEvent {
         Map<String, String> out = new LinkedHashMap<>();
         for (var en : kv.entrySet()) {
             String canonical = CEF_KEYS.get(en.getKey());
-            putIf(out, canonical != null ? canonical : "cef." + en.getKey(), en.getValue());
+            if (canonical != null) {
+                putIf(out, canonical, en.getValue());
+            } else if (CANONICAL_KEYS.contains(en.getKey())) {
+                // KvParser canonicalizes aliases before CEF gets the extension.
+                // Preserve those keys instead of producing cef.event.message or
+                // cef.network.protocol, which would silently break detections.
+                putIf(out, en.getKey(), en.getValue());
+            } else {
+                putIf(out, "cef." + en.getKey(), en.getValue());
+            }
         }
         return out;
     }
+
+    private static final Set<String> CANONICAL_KEYS = Set.of(
+            EVENT_CODE, EVENT_CATEGORY, EVENT_TYPE, EVENT_ACTION, EVENT_SEVERITY, EVENT_MESSAGE,
+            SOURCE_IP, SOURCE_PORT, DESTINATION_IP, DESTINATION_PORT, HOST_NAME, USER_NAME,
+            PROCESS_NAME, PROCESS_PID, PROCESS_COMMAND_LINE, FILE_PATH, FILE_HASH_SHA256,
+            NETWORK_PROTOCOL, "timestamp");
 }

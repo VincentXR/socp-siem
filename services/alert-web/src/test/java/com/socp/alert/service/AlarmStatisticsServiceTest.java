@@ -68,5 +68,43 @@ class AlarmStatisticsServiceTest {
     void allWindowUsesTypedEpochBoundaryInsteadOfNullableDatabaseParameter() {
         assertThat(AlarmStatisticsService.windowStart("all")).isEqualTo(Instant.EPOCH);
         assertThat(AlarmStatisticsService.windowStart("unknown")).isEqualTo(Instant.EPOCH);
+        assertThat(AlarmStatisticsService.windowStart("today")).isNotEqualTo(Instant.EPOCH);
+        assertThat(AlarmStatisticsService.windowStart("1d")).isEqualTo(
+                AlarmStatisticsService.windowStart("today"));
+        assertThat(AlarmStatisticsService.windowStart("7d")).isBefore(
+                AlarmStatisticsService.windowStart("today"));
+        assertThat(AlarmStatisticsService.windowStart(" ")).isEqualTo(Instant.EPOCH);
+    }
+
+    @Test
+    void preservesUnknownBucketsAndProjectsTopRiskAlarms() {
+        TenantContext.set("tenant-a");
+        given(repository.countForStatistics(eq("tenant-a"), any())).willReturn(1L);
+        given(repository.countBySeverityForStatistics(eq("tenant-a"), any()))
+                .willReturn(List.of(new AlarmSeverityCount(null, 1)));
+        given(repository.countByRiskLevelForStatistics(eq("tenant-a"), any()))
+                .willReturn(List.of(new AlarmRiskLevelCount(null, 2)));
+        given(repository.topRulesForStatistics(eq("tenant-a"), any(), any()))
+                .willReturn(List.of(new AlarmRuleCount(null, 1)));
+        given(repository.averageRiskForStatistics(eq("tenant-a"), any())).willReturn(null);
+        Alarm topRisk = new Alarm();
+        topRisk.setId("alarm-1");
+        topRisk.setRuleName("Privilege escalation");
+        topRisk.setEntity("host-1");
+        topRisk.setRiskScore(70);
+        given(repository.topRiskForStatistics(eq("tenant-a"), any(), any()))
+                .willReturn(List.of(topRisk));
+        given(repository.countByTenantIdAndOccurredAtGreaterThanEqualAndOccurredAtLessThan(
+                eq("tenant-a"), any(), any())).willReturn(0L);
+
+        Map<String, Object> stats = new AlarmStatisticsService(repository).stats("today");
+
+        assertThat(((Map<?, ?>) stats.get("bySeverity")).get("UNKNOWN")).isEqualTo(1L);
+        assertThat(((Map<?, ?>) stats.get("byRiskLevel")).get(null)).isEqualTo(2L);
+        assertThat(stats.get("avgRisk")).isEqualTo(0.0);
+        assertThat(((List<?>) stats.get("topRules")).getFirst())
+                .isEqualTo(Map.of("ruleId", "?", "count", 1L));
+        assertThat(((List<?>) stats.get("topRisk")).getFirst().toString())
+                .contains("riskLevel=HIGH");
     }
 }

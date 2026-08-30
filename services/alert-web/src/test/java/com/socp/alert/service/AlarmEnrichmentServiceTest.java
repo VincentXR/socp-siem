@@ -14,6 +14,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -54,5 +55,73 @@ class AlarmEnrichmentServiceTest {
         TransactionSynchronizationManager.getSynchronizations()
                 .forEach(org.springframework.transaction.support.TransactionSynchronization::afterCommit);
         verify(threatClient, timeout(1_000)).matchIocs(anyString());
+    }
+
+    @Test
+    void enrichesCandidatesRecalculatesRiskAndPersistsTheProjection() {
+        AlarmRepository repository = mock(AlarmRepository.class);
+        ThreatClient threatClient = mock(ThreatClient.class);
+        service = new AlarmEnrichmentService(repository, threatClient, 1, 100);
+        Alarm alarm = new Alarm("R-1", "IOC match", Severity.HIGH,
+                "connection to 203.0.113.10 and evil.example.com", "203.0.113.10");
+        alarm.setId("alarm-tenant-a");
+        alarm.setTenantId("tenant-a");
+        alarm.setMitre("T1110");
+        when(threatClient.matchIocs(anyString())).thenReturn(new ServiceCall(
+                SocpService.THREAT, "http://threat", true, 200,
+                "{\"hits\":[{\"ioc\":\"203.0.113.10\"},{\"ioc\":\"evil.example.com\"}]}",
+                null, 1, false, 1));
+        when(repository.countRecentByEntity(anyString(), anyString(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(2L);
+
+        service.enrich(alarm);
+
+        verify(threatClient).matchIocs(org.mockito.ArgumentMatchers.argThat(json ->
+                json.contains("203.0.113.10") && json.contains("evil.example.com")));
+        verify(repository).save(alarm);
+        assertThat(alarm.getTiHits()).contains("203.0.113.10");
+        assertThat(alarm.getRiskScore()).isNotNull();
+        assertThat(alarm.getRiskLevel()).isNotBlank();
+    }
+
+    @Test
+    void ignoresMissingCandidatesUnavailableThreatResponsesAndInvalidHits() {
+        AlarmRepository repository = mock(AlarmRepository.class);
+        ThreatClient threatClient = mock(ThreatClient.class);
+        service = new AlarmEnrichmentService(repository, threatClient, 1, 100);
+
+        Alarm noCandidate = new Alarm("R-1", "No IOC", Severity.INFO, "plain message", "");
+        noCandidate.setTenantId("tenant-a");
+        service.enrich(noCandidate);
+        verify(threatClient, org.mockito.Mockito.never()).matchIocs(anyString());
+
+        Alarm alarm = new Alarm("R-1", "IOC", Severity.INFO, "1.2.3.4", null);
+        alarm.setId("alarm-2");
+        alarm.setTenantId("tenant-a");
+        when(threatClient.matchIocs(anyString())).thenReturn(null);
+        service.enrich(alarm);
+        when(threatClient.matchIocs(anyString())).thenReturn(new ServiceCall(
+                SocpService.THREAT, "http://threat", false, 503, "", "unavailable", 1, true, 1));
+        service.enrich(alarm);
+        when(threatClient.matchIocs(anyString())).thenReturn(new ServiceCall(
+                SocpService.THREAT, "http://threat", true, 200, "not-json", null, 1, false, 1));
+        service.enrich(alarm);
+
+        verify(repository, org.mockito.Mockito.never()).save(alarm);
+    }
+
+    @Test
+    void riskScoringFailsOpenWhenRecentAlarmLookupIsUnavailable() {
+        AlarmRepository repository = mock(AlarmRepository.class);
+        ThreatClient threatClient = mock(ThreatClient.class);
+        service = new AlarmEnrichmentService(repository, threatClient, 1, 100);
+        Alarm alarm = new Alarm();
+        alarm.setTenantId("tenant-a");
+        alarm.setEntity("host-1");
+        alarm.setSeverity(null);
+        when(repository.countRecentByEntity(anyString(), anyString(), org.mockito.ArgumentMatchers.any()))
+                .thenThrow(new IllegalStateException("database unavailable"));
+
+        assertThat(service.score(alarm, 2)).isNotNull();
     }
 }

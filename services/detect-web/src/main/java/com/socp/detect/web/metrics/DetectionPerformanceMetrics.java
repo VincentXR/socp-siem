@@ -119,6 +119,7 @@ public class DetectionPerformanceMetrics implements RuleProcessingObserver {
 
     /** T8: Detection received Alert Web's HTTP acknowledgement. */
     public void alertAcknowledged(String alertId, ServiceCall call) {
+        if (alertId == null) return;
         AlertTiming timing = alerts.remove(alertId);
         if (timing == null) return;
         long nowNanos = System.nanoTime();
@@ -130,7 +131,7 @@ public class DetectionPerformanceMetrics implements RuleProcessingObserver {
     }
 
     public void alertDeliveryFailed(String alertId) {
-        alerts.remove(alertId);
+        if (alertId != null) alerts.remove(alertId);
         registry.counter("socp.detection.alert.delivery", "outcome", "failed").increment();
     }
 

@@ -47,4 +47,62 @@ class RuleChangeListenerTest {
 
         verify(engine, never()).reload();
     }
+
+    @Test
+    void rejectsEmptyAndMalformedPayloadsBeforeReload() {
+        DetectEngineService engine = mock(DetectEngineService.class);
+        RuleChangeListener listener = new RuleChangeListener(engine);
+
+        assertThrows(RuleChangeListener.InvalidRuleChangeException.class,
+                () -> listener.processRecord(null));
+        assertThrows(RuleChangeListener.InvalidRuleChangeException.class,
+                () -> listener.processRecord("  "));
+        assertThrows(RuleChangeListener.InvalidRuleChangeException.class,
+                () -> listener.processRecord("{broken"));
+
+        verify(engine, never()).reload();
+    }
+
+    @Test
+    void rejectsMissingEventOrRuleActionFields() {
+        DetectEngineService engine = mock(DetectEngineService.class);
+        RuleChangeListener listener = new RuleChangeListener(engine);
+
+        assertThrows(RuleChangeListener.InvalidRuleChangeException.class,
+                () -> listener.processRecord("{\"tenantId\":\"tenant-a\",\"ruleId\":\"r-1\",\"action\":\"update\"}"));
+        assertThrows(RuleChangeListener.InvalidRuleChangeException.class,
+                () -> listener.processRecord("{\"eventId\":\"e-1\",\"tenantId\":\"tenant-a\",\"action\":\"update\"}"));
+        assertThrows(RuleChangeListener.InvalidRuleChangeException.class,
+                () -> listener.processRecord("{\"eventId\":\"e-1\",\"tenantId\":\"tenant-a\",\"ruleId\":\"r-1\"}"));
+
+        verify(engine, never()).reload();
+    }
+
+    @Test
+    void reloadFailureStillClearsTenantContext() {
+        DetectEngineService engine = mock(DetectEngineService.class);
+        org.mockito.Mockito.doThrow(new IllegalStateException("cache unavailable"))
+                .when(engine).reload();
+        RuleChangeListener listener = new RuleChangeListener(engine);
+
+        assertThrows(IllegalStateException.class, () -> listener.processRecord(
+                "{\"eventId\":\"e-2\",\"tenantId\":\"tenant-a\",\"ruleId\":\"r-1\",\"action\":\"update\"}"));
+
+        assertNull(TenantContext.get());
+        verify(engine).reload();
+    }
+
+    @Test
+    void trimsAndRejectsNullLiteralIdentifiers() {
+        DetectEngineService engine = mock(DetectEngineService.class);
+        RuleChangeListener listener = new RuleChangeListener(engine);
+
+        assertThrows(RuleChangeListener.InvalidRuleChangeException.class,
+                () -> listener.processRecord(
+                        "{\"eventId\":\"null\",\"tenantId\":\"tenant-a\",\"ruleId\":\"r-1\",\"action\":\"update\"}"));
+        assertThrows(RuleChangeListener.InvalidRuleChangeException.class,
+                () -> listener.processRecord(
+                        "{\"eventId\":\"e-3\",\"tenantId\":\"tenant-a\",\"ruleId\":\"null\",\"action\":\"update\"}"));
+        verify(engine, never()).reload();
+    }
 }
