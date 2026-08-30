@@ -20,7 +20,7 @@ import { archiveReport, dailyReport, downloadArchivedReport, listArchive, trend7
 import { useI18n } from '../composables/useI18n'
 
 const props = defineProps<{ theme: 'light' | 'dark' }>()
-const { t, n } = useI18n()
+const { t, n, locale } = useI18n()
 
 const report = ref<ReportSummary | null>(null)
 const trend = ref<ReportTrend | null>(null)
@@ -113,6 +113,7 @@ function onResize() {
 }
 
 watch(() => props.theme, () => { void nextTick(renderCharts) })
+watch(locale, () => { void nextTick(renderCharts) })
 onMounted(() => {
   loadReport()
   loadArchive()

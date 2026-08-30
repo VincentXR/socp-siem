@@ -46,7 +46,25 @@ class AuthControllerTest {
         assertNotNull(response);
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertNotNull(response.getHeaders().getFirst("Set-Cookie"));
-        assertFalse(((Map<?, ?>) response.getBody()).containsKey("token"));
+        Map<?, ?> body = (Map<?, ?>) response.getBody();
+        assertFalse(body.containsKey("token"));
+        assertEquals(AuthController.DEFAULT_LOCALE, body.get("locale"));
+    }
+
+    @Test
+    void carriesConfiguredUserLocaleIntoLoginAndSession() {
+        AuthController controller = controller();
+        ReflectionTestUtils.setField(controller, "usersJson", "{\"demo\":\"demo123\"}");
+        ReflectionTestUtils.setField(controller, "rolesJson", "{\"demo\":\"analyst\"}");
+        ReflectionTestUtils.setField(controller, "localesJson", "{\"demo\":\"en-US\"}");
+        controller.init();
+
+        var login = controller.login(new LoginRequest("demo", "demo123")).block();
+        assertNotNull(login);
+        assertEquals("en-US", ((Map<?, ?>) login.getBody()).get("locale"));
+
+        Map<String, Object> session = controller.session("demo", "analyst", "default", "en-US");
+        assertEquals("en-US", session.get("locale"));
     }
 
     private static AuthController controller() {
@@ -56,6 +74,7 @@ class AuthControllerTest {
         ReflectionTestUtils.setField(controller, "serviceSecret", "service-secret-0123456789");
         ReflectionTestUtils.setField(controller, "usersJson", "{}");
         ReflectionTestUtils.setField(controller, "rolesJson", "{}");
+        ReflectionTestUtils.setField(controller, "localesJson", "{}");
         controller.init();
         return controller;
     }

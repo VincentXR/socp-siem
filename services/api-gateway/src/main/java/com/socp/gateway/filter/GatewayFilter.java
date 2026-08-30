@@ -86,10 +86,12 @@ public class GatewayFilter implements GlobalFilter, Ordered {
         String tenant;
         String role;
         String subject;
+        String locale;
         if (jwtValidator.isDevBypass()) {
             tenant = defaultValue(exchange.getRequest().getHeaders().getFirst("X-Tenant-Id"), "default");
             role = "analyst";
             subject = "dev-user";
+            locale = defaultLocale(exchange.getRequest().getHeaders().getFirst(HttpHeaders.ACCEPT_LANGUAGE));
         } else {
             JWTClaimsSet claims;
             try {
@@ -97,6 +99,10 @@ public class GatewayFilter implements GlobalFilter, Ordered {
                 tenant = jwtValidator.extractTenant(claims);
                 role = claims.getStringClaim("role");
                 subject = claims.getSubject();
+                String tokenLocale = AuthController.normalizeLocale(claims.getStringClaim("locale"));
+                locale = tokenLocale == null
+                        ? defaultLocale(exchange.getRequest().getHeaders().getFirst(HttpHeaders.ACCEPT_LANGUAGE))
+                        : tokenLocale;
             } catch (JwtValidationException | java.text.ParseException failure) {
                 log.warn("Authentication rejected traceId={} path={} reason={}",
                         traceId, path, failure.getMessage());
@@ -130,6 +136,7 @@ public class GatewayFilter implements GlobalFilter, Ordered {
         String resolvedTenant = tenant;
         String resolvedRole = role;
         String resolvedSubject = subject;
+        String resolvedLocale = locale;
         ServerWebExchange trusted = exchange.mutate().request(request -> request.headers(headers -> {
             stripServiceIdentity(headers);
             headers.set("X-Trace-Id", traceId);
@@ -137,6 +144,7 @@ public class GatewayFilter implements GlobalFilter, Ordered {
             headers.set("X-Tenant-Id", resolvedTenant);
             headers.set("X-Socp-Role", resolvedRole);
             headers.set("X-Socp-User", resolvedSubject);
+            headers.set("X-Socp-Locale", resolvedLocale);
         })).build();
         return chain.filter(trusted);
     }
@@ -147,6 +155,7 @@ public class GatewayFilter implements GlobalFilter, Ordered {
             headers.set("X-Trace-Id", traceId);
             headers.remove("X-Socp-Role");
             headers.remove("X-Socp-User");
+            headers.remove("X-Socp-Locale");
             headers.remove("X-Tenant-Id");
         })).build();
     }
@@ -169,6 +178,11 @@ public class GatewayFilter implements GlobalFilter, Ordered {
 
     private static String defaultValue(String value, String fallback) {
         return value == null || value.isBlank() ? fallback : value;
+    }
+
+    private static String defaultLocale(String value) {
+        String normalized = AuthController.normalizeLocale(value);
+        return normalized == null ? AuthController.DEFAULT_LOCALE : normalized;
     }
 
     private Mono<Void> reject(ServerWebExchange exchange, String traceId,

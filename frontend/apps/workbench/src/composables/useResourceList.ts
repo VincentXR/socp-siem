@@ -1,4 +1,5 @@
 import { computed, ref, type Ref } from 'vue'
+import { i18n } from '../i18n/index.ts'
 
 export interface ResourceListOptions<T> {
   searchFields: (item: T) => unknown[]
@@ -23,6 +24,17 @@ export function useResourceList<T>(options: ResourceListOptions<T>) {
   const loading = ref(false)
   const sortProp = ref('')
   const sortOrder = ref<ResourceSortOrder | null>(null)
+  let collator: Intl.Collator | null = null
+  let collatorLocale = ''
+
+  function compareText(left: string, right: string): number {
+    const activeLocale = i18n.global.locale.value
+    if (!collator || collatorLocale !== activeLocale) {
+      collatorLocale = activeLocale
+      collator = new Intl.Collator(activeLocale, { numeric: true, sensitivity: 'base' })
+    }
+    return collator.compare(left, right)
+  }
 
   const filtered = computed(() => {
     const query = keyword.value.trim().toLowerCase()
@@ -47,7 +59,7 @@ export function useResourceList<T>(options: ResourceListOptions<T>) {
       if (rightValue === null || rightValue === undefined || rightValue === '') return 1
       const comparison = typeof leftValue === 'number' && typeof rightValue === 'number'
         ? leftValue - rightValue
-        : String(leftValue).localeCompare(String(rightValue), 'zh-CN', { numeric: true, sensitivity: 'base' })
+        : compareText(String(leftValue), String(rightValue))
       return sortOrder.value === 'ascending' ? comparison : -comparison
     })
     return result

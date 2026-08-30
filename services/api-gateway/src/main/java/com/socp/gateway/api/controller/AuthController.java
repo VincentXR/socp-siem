@@ -30,6 +30,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 
@@ -39,17 +40,20 @@ import java.util.UUID;
 public class AuthController {
 
     public static final String SESSION_COOKIE = "SOCP_SESSION";
+    public static final String DEFAULT_LOCALE = "zh-CN";
     private static final long EXPIRES_SECONDS = 1800;
 
     @Value("${socp.auth.users:}") private String usersJson;
     @Value("${socp.auth.roles:}") private String rolesJson;
     @Value("${socp.auth.login-secret}") private String secret;
+    @Value("${socp.auth.locales:}") private String localesJson;
     @Value("${socp.auth.cookie-secure:false}") private boolean cookieSecure;
     @Value("${socp.security.service-secret:}") private String serviceSecret;
     @Value("${socp.security.audience:socp-api}") private String audience;
 
     private Map<String, String> users = Map.of();
     private Map<String, String> roles = Map.of();
+    private Map<String, String> locales = Map.of();
     private final AuthAttemptLimiter attemptLimiter;
     private final ObjectMapper objectMapper;
 
@@ -79,8 +83,9 @@ public class AuthController {
         try {
             users = usersJson == null || usersJson.isBlank() ? Map.of() : parseJson(usersJson);
             roles = rolesJson == null || rolesJson.isBlank() ? Map.of() : parseJson(rolesJson);
+            locales = localesJson == null || localesJson.isBlank() ? Map.of() : parseJson(localesJson);
         } catch (Exception failure) {
-            throw new IllegalStateException("socp.auth users/roles configuration is invalid", failure);
+            throw new IllegalStateException("socp.auth users/roles/locales configuration is invalid", failure);
         }
     }
 
@@ -100,11 +105,14 @@ public class AuthController {
                         .body(Map.of("code", 401, "message", "Invalid username or password")));
             }
             String role = supportedRole(roles.getOrDefault(username, "analyst"));
-            String token = sign(username, role, "default");
+            String locale = resolveLocale(username, request == null
+                    ? null : request.getHeaders().getFirst(HttpHeaders.ACCEPT_LANGUAGE));
+            String token = sign(username, role, "default", locale);
             Map<String, Object> response = Map.of(
                     "username", username,
                     "role", role,
                     "tenant", "default",
+                    "locale", locale,
                     "expiresIn", EXPIRES_SECONDS);
             return attemptLimiter.reset("login", address, username).thenReturn(ResponseEntity.ok()
                     .header(HttpHeaders.SET_COOKIE, sessionCookie(token).toString())
@@ -150,8 +158,15 @@ public class AuthController {
     public Map<String, Object> session(
             @RequestHeader(value = "X-Socp-User", defaultValue = "socp-user") String username,
             @RequestHeader(value = "X-Socp-Role", defaultValue = "analyst") String role,
-            @RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenant) {
-        return Map.of("username", username, "role", supportedRole(role), "tenant", tenant);
+            @RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenant,
+            @RequestHeader(value = "X-Socp-Locale", defaultValue = DEFAULT_LOCALE) String locale) {
+        return Map.of("username", username, "role", supportedRole(role), "tenant", tenant,
+                "locale", resolveLocale(username, locale));
+    }
+
+    /** Compatibility overload for direct callers that do not have trusted identity headers. */
+    Map<String, Object> session(String username, String role, String tenant) {
+        return session(username, role, tenant, DEFAULT_LOCALE);
     }
 
     @PostMapping("/logout")
@@ -163,8 +178,14 @@ public class AuthController {
     }
 
     public String sign(String username, String role, String tenant) {
+        return sign(username, role, tenant, DEFAULT_LOCALE);
+    }
+
+    public String sign(String username, String role, String tenant, String locale) {
         try {
             Instant now = Instant.now();
+            String resolvedLocale = normalizeLocale(locale);
+            if (resolvedLocale == null) resolvedLocale = DEFAULT_LOCALE;
             JWTClaimsSet claims = new JWTClaimsSet.Builder()
                     .subject(username)
                     .jwtID(UUID.randomUUID().toString())
@@ -172,6 +193,7 @@ public class AuthController {
                     .audience(audiences())
                     .claim("tenant", tenant == null || tenant.isBlank() ? "default" : tenant)
                     .claim("role", supportedRole(role))
+                    .claim("locale", resolvedLocale)
                     .claim("identity_type", username != null && username.startsWith("service:")
                             ? "service" : "user")
                     .issueTime(Date.from(now))
@@ -183,6 +205,26 @@ public class AuthController {
         } catch (Exception failure) {
             throw new IllegalStateException("Unable to issue SOCP session", failure);
         }
+    }
+
+    /** Resolve a trusted configured profile locale, then a client language hint, then the default. */
+    String resolveLocale(String username, String requestedLocale) {
+        String configured = locales.get(username);
+        String resolved = normalizeLocale(configured);
+        if (resolved != null) return resolved;
+        resolved = normalizeLocale(requestedLocale);
+        return resolved == null ? DEFAULT_LOCALE : resolved;
+    }
+
+    /** Normalize a BCP-47 language tag or the first value in Accept-Language. */
+    public static String normalizeLocale(String value) {
+        if (value == null || value.isBlank()) return null;
+        String candidate = value.trim().split("[,;]", 2)[0].trim().replace('_', '-');
+        return switch (candidate.toLowerCase(Locale.ROOT)) {
+            case "zh", "zh-cn" -> "zh-CN";
+            case "en", "en-us" -> "en-US";
+            default -> null;
+        };
     }
 
     private List<String> audiences() {

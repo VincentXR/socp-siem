@@ -12,6 +12,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -94,10 +95,14 @@ public class OidcAuthController {
 
     @GetMapping("/callback")
     public Mono<ResponseEntity<?>> callback(@RequestParam("code") String code,
-                                             @RequestParam("state") String state) {
+                                             @RequestParam("state") String state,
+                                             ServerHttpRequest request) {
+        String browserLocale = request == null
+                ? null : request.getHeaders().getFirst(HttpHeaders.ACCEPT_LANGUAGE);
         return stateStore.consume(state)
                 .filter(entry -> entry.expiresAt() > System.currentTimeMillis())
-                .flatMap(entry -> Mono.<ResponseEntity<?>>fromCallable(() -> completeCallback(code, entry))
+                .flatMap(entry -> Mono.<ResponseEntity<?>>fromCallable(
+                                () -> completeCallback(code, entry, browserLocale))
                         .subscribeOn(Schedulers.boundedElastic()))
                 .switchIfEmpty(Mono.just(error(HttpStatus.UNAUTHORIZED, "OIDC state is invalid or expired")))
                 .onErrorResume(failure -> {
@@ -106,7 +111,8 @@ public class OidcAuthController {
                 });
     }
 
-    private ResponseEntity<?> completeCallback(String code, OidcStateStore.Entry entry) {
+    private ResponseEntity<?> completeCallback(String code, OidcStateStore.Entry entry,
+                                               String browserLocale) {
         try {
             Map<String, Object> claims = exchangeCode(code, entry.verifier(), entry.nonce());
             String subject = first(claims, "preferred_username", "sub");
@@ -116,7 +122,11 @@ public class OidcAuthController {
             if (role == null) throw new IllegalArgumentException("OIDC user has no supported SOCP role");
             if (tenant == null || tenant.isBlank()) throw new IllegalArgumentException("OIDC tenant claim is missing");
 
-            String token = authController.sign(subject, role, tenant);
+            String identityLocale = first(claims, "locale", "preferred_locale");
+            if (identityLocale == null) identityLocale = first(claims, "language", "lang");
+            String localeHint = identityLocale == null ? browserLocale : identityLocale;
+            String token = authController.sign(subject, role, tenant,
+                    authController.resolveLocale(subject, localeHint));
             log.info("OIDC login succeeded subject={} role={} tenant={}", subject, role, tenant);
             return ResponseEntity.status(HttpStatus.FOUND)
                     .header(HttpHeaders.SET_COOKIE, authController.sessionCookie(token).toString())

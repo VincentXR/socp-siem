@@ -29,7 +29,7 @@ import { useI18n } from '../composables/useI18n'
 const props = defineProps<{ theme: 'light' | 'dark' }>()
 const emit = defineEmits<{ 'session-expired': [] }>()
 
-const { t, d } = useI18n()
+const { t, d, locale } = useI18n()
 
 const liveFeed = ref<Array<GasAlert & { _new?: boolean }>>([])
 const liveOn = ref(true)
@@ -160,6 +160,7 @@ function onVisibilityChange() {
 }
 
 watch(() => props.theme, renderSitCharts)
+watch(locale, renderSitCharts)
 watch(() => situationQuery.data.value, snapshot => {
   if (!snapshot) return
   mergeFeed(snapshot.recent)

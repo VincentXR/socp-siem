@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { useResourceList } from '../src/composables/useResourceList.ts'
+import { i18n } from '../src/i18n/index.ts'
 
 interface Resource {
   id: string
@@ -48,4 +49,21 @@ test('resource list sorts the complete filtered set before pagination', () => {
   assert.deepEqual(list.paged.value.map(item => item.name), ['web-02', 'web-01'])
   list.page.value = 2
   assert.deepEqual(list.paged.value.map(item => item.name), ['db-01'])
+})
+
+test('resource list sorting follows the active locale', () => {
+  const list = useResourceList<Resource>({ searchFields: item => [item.name] })
+  list.setItems([
+    { id: 'a', name: '张', status: 'ONLINE' },
+    { id: 'b', name: '李', status: 'ONLINE' },
+    { id: 'c', name: '阿', status: 'ONLINE' },
+  ])
+  list.onSortChange({ prop: 'name', order: 'ascending' })
+
+  const previousLocale = i18n.global.locale.value
+  i18n.global.locale.value = 'zh-CN'
+  assert.deepEqual(list.sorted.value.map(item => item.name), ['阿', '李', '张'])
+  i18n.global.locale.value = 'en-US'
+  assert.notDeepEqual(list.sorted.value.map(item => item.name), ['阿', '李', '张'])
+  i18n.global.locale.value = previousLocale
 })

@@ -74,6 +74,7 @@ class GatewayFilterTest {
                 .subject("analyst-user")
                 .claim("role", "analyst")
                 .claim("tenant", "tenant-a")
+                .claim("locale", "en-US")
                 .build();
         given(jwtValidator.isDevBypass()).willReturn(false);
         given(jwtValidator.validate("analyst-token")).willReturn(claims);
@@ -98,6 +99,8 @@ class GatewayFilterTest {
                 forwarded.getValue().getRequest().getHeaders().getFirst("Authorization"));
         assertEquals("analyst-user",
                 forwarded.getValue().getRequest().getHeaders().getFirst("X-Socp-User"));
+        assertEquals("en-US",
+                forwarded.getValue().getRequest().getHeaders().getFirst("X-Socp-Locale"));
         assertEquals(null, forwarded.getValue().getRequest().getHeaders()
                 .getFirst(ServiceRequestSignature.SERVICE_HEADER));
         assertEquals(null, forwarded.getValue().getRequest().getHeaders()

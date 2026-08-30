@@ -105,6 +105,8 @@ socp:
     login-secret: ${SOCP_LOGIN_SECRET}
     users: ${SOCP_AUTH_USERS:}
     roles: ${SOCP_AUTH_ROLES:}
+    # Optional per-user BCP-47 locale map, for example {"analyst":"en-US"}.
+    locales: ${SOCP_AUTH_LOCALES:}
     cookie-secure: ${SOCP_AUTH_COOKIE_SECURE:false}
     allowed-origins: ${SOCP_AUTH_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:18092}
     rate-limit:

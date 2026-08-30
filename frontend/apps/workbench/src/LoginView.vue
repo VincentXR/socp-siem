@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { login as apiLogin } from './api'
 import ElMessage from 'element-plus/es/components/message/index.mjs'
 import { useI18n } from './composables/useI18n'
+import { normalizeLocale, setLocale } from './i18n/locale-manager'
 
 const emit = defineEmits<{ (e: 'done', user: string, role: string): void }>()
 const { t, toggleLocale } = useI18n()
@@ -17,6 +18,8 @@ async function doLogin() {
   busy.value = true
   try {
     const d = await apiLogin(username.value, password.value)
+    const serverLocale = normalizeLocale(d.locale)
+    if (serverLocale) setLocale(serverLocale)
     try {
       localStorage.setItem('socp_user', d.username)
       localStorage.setItem('socp_role', d.role)

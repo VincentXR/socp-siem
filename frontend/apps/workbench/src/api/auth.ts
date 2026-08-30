@@ -1,6 +1,6 @@
 import { post, requestJson } from './core'
 
-export async function login(username: string, password: string): Promise<{ username: string; role: string; tenant: string; expiresIn: number }> {
+export async function login(username: string, password: string): Promise<{ username: string; role: string; tenant: string; locale?: string; expiresIn: number }> {
   return requestJson('/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

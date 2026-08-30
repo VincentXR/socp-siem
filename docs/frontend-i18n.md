@@ -25,6 +25,12 @@ Preferences are resolved in this order:
 
 Only `zh-CN` and `en-US` are accepted. A switch updates the Vue I18n locale, Element Plus locale, document metadata, and persisted preference. API requests send `Accept-Language` unless a caller explicitly provides it.
 
+The gateway is the source of truth once a session is established. Local auth can
+optionally configure `SOCP_AUTH_LOCALES` as a JSON username-to-locale map. The
+gateway validates that locale, places it in the signed session claim, forwards
+only the trusted `X-Socp-Locale` header, and includes `locale` in `/auth/session`.
+OIDC sessions use the locale claim when the identity provider supplies one.
+
 ## Message rules
 
 Use stable semantic keys such as `threat.importSuccess`, `ueba.scoreExplanation`, and `common.delete`. Keep fixed enum and protocol values as stable codes and translate them at the presentation boundary. User-authored rule names, case titles, and descriptions are never translated. Server errors should expose an error code and parameters; the client resolves `errors.*`.

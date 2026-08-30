@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { ECharts } from 'echarts/core'
 import { loadEcharts } from '../lib/echarts'
 import { translate } from '../i18n'
+import { useI18n } from '../composables/useI18n'
 
 /**
  * 近 7 日告警趋势折线图（概览页/态势页共用）。
@@ -12,6 +13,7 @@ import { translate } from '../i18n'
 const props = withDefaults(defineProps<{ data?: Record<string, number>; variant?: 'overview' | 'situation' }>(), {
   variant: 'overview',
 })
+const { locale } = useI18n()
 
 const el = ref<HTMLElement>()
 let chart: ECharts | null = null
@@ -99,6 +101,7 @@ onMounted(() => {
 })
 
 watch(() => props.data, () => { void render() }, { deep: true })
+watch(locale, () => { void render() })
 
 onBeforeUnmount(() => {
   renderToken++
