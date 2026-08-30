@@ -68,9 +68,18 @@ public class AlertForwarder {
     @Transactional
     public void forwardAll(SecurityEvent sourceEvent, List<Alert> alerts) {
         if (alerts == null) alerts = List.of();
-        for (Alert alert : alerts) forwardOne(alert);
-        if (stateStore != null && sourceEvent != null) {
-            stateStore.markCompleted(sourceEvent);
+        String tenant = sourceEvent == null ? tenantFromAlerts(alerts) : sourceEvent.requireTenantId();
+        try (TenantContext.Scope ignored = TenantContext.open(tenant)) {
+            // RuleEngine drains alerts on its own worker thread. Establish the
+            // source event tenant for the complete durable boundary, including
+            // the zero-alert completion path and any tenant-aware projection
+            // invoked by a sink. Per-alert scopes below still protect against
+            // a malformed/mixed evidence list; the canonical source event is
+            // authoritative for completion.
+            for (Alert alert : alerts) forwardOne(alert);
+            if (stateStore != null && sourceEvent != null) {
+                stateStore.markCompleted(tenant, sourceEvent.id());
+            }
         }
     }
 
@@ -148,6 +157,25 @@ public class AlertForwarder {
         }
         String current = TenantContext.get();
         if (current != null && !current.isBlank()) return current;
+        return TenantContext.require();
+    }
+
+    private static String tenantFromAlerts(List<Alert> alerts) {
+        if (alerts != null) {
+            for (Alert alert : alerts) {
+                if (alert == null || alert.evidence() == null) continue;
+                for (SecurityEvent event : alert.evidence()) {
+                    if (event == null) continue;
+                    try {
+                        String tenant = event.requireTenantId();
+                        if (tenant != null && !tenant.isBlank()) return tenant;
+                    } catch (IllegalStateException ignored) {
+                        // Legacy/direct callers may provide evidence without a
+                        // tenant; preserve the current scoped tenant fallback.
+                    }
+                }
+            }
+        }
         return TenantContext.require();
     }
 

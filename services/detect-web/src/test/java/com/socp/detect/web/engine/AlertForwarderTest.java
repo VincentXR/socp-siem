@@ -1,6 +1,7 @@
 package com.socp.detect.web.engine;
 
 import com.socp.detect.web.persistence.store.DetectionAlertOutboxService;
+import com.socp.detect.web.persistence.store.DetectionStateStore;
 import com.socp.detect.web.persistence.store.RuleSpecStore;
 import com.socp.detect.web.service.EntityRiskStore;
 import com.socp.platform.tenant.context.TenantContext;
@@ -28,6 +29,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.mock;
 
 @ExtendWith(MockitoExtension.class)
 class AlertForwarderTest {
@@ -115,5 +117,24 @@ class AlertForwarderTest {
         assertTrue(payload.getValue().contains("\"triggerIngestedAt\":\"2026-08-19T12:00:00Z\""));
         assertTrue(payload.getValue().contains("\"alertCreatedAt\":"));
         assertTrue(payload.getValue().contains("\"processingLatencyMs\":"));
+    }
+
+    @Test
+    void restoresSourceTenantAcrossZeroAlertDurableCompletion() {
+        DetectionStateStore stateStore = mock(DetectionStateStore.class);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            assertEquals("tenant-worker", TenantContext.require());
+            return null;
+        }).when(stateStore).markCompleted("tenant-worker", "event-zero-alert");
+
+        SecurityEvent event = new SecurityEvent(
+                "event-zero-alert", Instant.now(), "system", "host-1", "heartbeat",
+                Map.of("tenant_id", "tenant-worker"), Severity.INFO);
+
+        new AlertForwarder(ruleStore, riskStore, outbox, stateStore)
+                .forwardAll(event, List.of());
+
+        verify(stateStore).markCompleted("tenant-worker", "event-zero-alert");
+        assertNull(TenantContext.get());
     }
 }
