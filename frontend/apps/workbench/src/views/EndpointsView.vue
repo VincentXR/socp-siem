@@ -17,7 +17,7 @@ import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { endpointApi, type Endpoint } from '../api/domains'
 import { useI18n } from '../composables/useI18n'
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 
 const endpointStat = ref<{ total: number; online: number; byType: Record<string, number> } | null>(null)
 const endpointsList = useResourceList<Endpoint>({
@@ -41,7 +41,7 @@ async function loadEndpoints() {
 }
 
 async function removeEndpoint(id: string) {
-  if (!confirm(locale.value === 'zh-CN' ? '确认注销这个端点？注销后需要 Agent 重新注册。' : 'Unregister this endpoint? Agent will need to re-register.')) return
+  if (!confirm(t('inline.endpointsView.unregisterThisEndpointAgentWillNeedTo'))) return
   await endpointApi.remove(id)
   await loadEndpoints()
 }
@@ -56,16 +56,16 @@ onMounted(loadEndpoints)
     </PageHeader>
 
     <div v-if="endpointStat" class="page-metrics">
-      <MetricCard :label="locale === 'zh-CN' ? '端点总数' : 'Total Endpoints'" tone="info">{{ endpointStat.total }}</MetricCard>
-      <MetricCard :label="locale === 'zh-CN' ? '在线端点' : 'Online Endpoints'" tone="success">{{ endpointStat.online }}</MetricCard>
-      <MetricCard :label="locale === 'zh-CN' ? '离线端点' : 'Offline Endpoints'" tone="warning">{{ endpointStat.total - endpointStat.online }}</MetricCard>
-      <MetricCard :label="locale === 'zh-CN' ? '端点类型' : 'Endpoint Types'" tone="neutral">{{ Object.keys(endpointStat.byType || {}).length }}</MetricCard>
+      <MetricCard :label="t('inline.endpointsView.totalEndpoints')" tone="info">{{ endpointStat.total }}</MetricCard>
+      <MetricCard :label="t('inline.endpointsView.onlineEndpoints')" tone="success">{{ endpointStat.online }}</MetricCard>
+      <MetricCard :label="t('inline.endpointsView.offlineEndpoints')" tone="warning">{{ endpointStat.total - endpointStat.online }}</MetricCard>
+      <MetricCard :label="t('inline.endpointsView.endpointTypes')" tone="neutral">{{ Object.keys(endpointStat.byType || {}).length }}</MetricCard>
     </div>
 
     <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="endpointsFiltered.length">
       <template #toolbar>
         <FilterToolbar :count="endpointsFiltered.length">
-        <el-input v-model="keyword" :placeholder="locale === 'zh-CN' ? '搜索主机名 / IP / 系统' : 'Search Hostname / IP / OS'" clearable @input="page = 1" />
+        <el-input v-model="keyword" :placeholder="t('inline.endpointsView.searchHostnameIpOs')" clearable @input="page = 1" />
         </FilterToolbar>
       </template>
       <el-table :data="endpointsPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @sort-change="endpointsList.onSortChange">
@@ -77,7 +77,7 @@ onMounted(loadEndpoints)
           <template #default="{ row }"><el-tag :type="row.status === 'ONLINE' ? 'success' : 'info'" size="small">{{ t('statuses.' + row.status) || row.status }}</el-tag></template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="80" :resizable="false">
-          <template #default="{ row }"><el-button link type="danger" size="small" @click="removeEndpoint(row.id)">{{ locale === 'zh-CN' ? '注销' : 'Unregister' }}</el-button></template>
+          <template #default="{ row }"><el-button link type="danger" size="small" @click="removeEndpoint(row.id)">{{ t('inline.endpointsView.unregister') }}</el-button></template>
         </el-table-column>
       </el-table>
     </DataTableCard>

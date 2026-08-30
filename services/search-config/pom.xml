@@ -20,21 +20,9 @@
             <artifactId>socp-client</artifactId>
         </dependency>
 
-    <dependency>
-            <groupId>com.socp.platform</groupId>
-            <artifactId>socp-error</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.socp.platform</groupId>
-            <artifactId>socp-tenant</artifactId>
-        </dependency>
         <dependency>
             <groupId>com.socp.platform</groupId>
             <artifactId>socp-rule</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.socp.platform</groupId>
-            <artifactId>socp-audit</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -71,22 +59,6 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>com.socp.platform</groupId>
-            <artifactId>socp-auth</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.socp.platform</groupId>
-            <artifactId>socp-obs</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.socp.platform</groupId>
-            <artifactId>socp-ratelimit</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.socp.platform</groupId>
-            <artifactId>socp-data</artifactId>
         </dependency>
         <dependency>
             <groupId>io.micrometer</groupId>

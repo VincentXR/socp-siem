@@ -1,6 +1,7 @@
 package com.socp.soar.web.service;
 
 import com.socp.platform.tenant.context.TenantContext;
+import com.socp.platform.tenant.persistence.TenantSystemJob;
 import com.socp.soar.web.config.SoarRuntimeProperties;
 import com.socp.soar.web.domain.Playbook;
 import com.socp.soar.web.persistence.store.PlaybookStore;
@@ -57,6 +58,7 @@ public class ScheduledPlaybookRunner {
 
     @Scheduled(fixedDelayString = "${socp.soar.schedule-poll-ms:60000}",
             initialDelayString = "${socp.soar.schedule-initial-delay-ms:10000}")
+    @TenantSystemJob
     public void tick() {
         tick(ZonedDateTime.now(scheduleZone));
     }

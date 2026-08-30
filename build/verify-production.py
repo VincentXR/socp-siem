@@ -22,6 +22,7 @@ REQUIRED_K8S = {
     "service-account.yaml",
     "runtime-config.yaml",
     "api-gateway.yaml",
+    "search-config.yaml",
     "detect-web.yaml",
     "alert-web.yaml",
     "kustomization.yaml",
@@ -68,12 +69,34 @@ def main() -> int:
             for label, pattern in checks.items():
                 if not re.search(pattern, text):
                     errors.append(f"{path.relative_to(ROOT)} lacks {label}")
+            if path.name in {"search-config.yaml", "detect-web.yaml", "alert-web.yaml"}:
+                if "SOCP_HEALTH_REQUIRED_ENDPOINTS" not in text:
+                    errors.append(f"{path.relative_to(ROOT)} lacks dependency-aware readiness configuration")
             images = re.findall(r"^\s*image:\s*([^\s]+)", text, re.MULTILINE)
             for image in images:
                 if "@sha256:" not in image:
                     errors.append(f"{path.relative_to(ROOT)} image is not digest-addressed: {image}")
                 elif not re.search(r"@sha256:(?:[0-9a-f]{64}|REPLACE_WITH_RELEASE_DIGEST)$", image):
                     errors.append(f"{path.relative_to(ROOT)} has malformed image digest: {image}")
+
+        kustomization = (K8S_DIR / "kustomization.yaml").read_text(encoding="utf-8")
+        for workload in ("api-gateway.yaml", "search-config.yaml", "detect-web.yaml", "alert-web.yaml"):
+            if not re.search(rf"^\s*-\s+{re.escape(workload)}\s*$", kustomization, re.MULTILINE):
+                errors.append(f"Kubernetes kustomization omits {workload}")
+
+        runtime = (K8S_DIR / "runtime-config.yaml").read_text(encoding="utf-8")
+        required_routes = {
+            "SOCP_SSA_URI": "http://alert-web:8080",
+            "SOCP_GLS_URI": "http://search-config:8080",
+            "SOCP_GAS_WEB_URI": "http://detect-web:8080",
+            "SOCP_DETECT_URL": "http://detect-web:8080",
+            "SOCP_ALERT_URL": "http://alert-web:8080",
+        }
+        for name, endpoint in required_routes.items():
+            if not re.search(rf"^\s*{name}:\s*{re.escape(endpoint)}\s*$", runtime, re.MULTILINE):
+                errors.append(f"Kubernetes runtime config must set {name}={endpoint}")
+        if "localhost" in runtime or "127.0.0.1" in runtime:
+            errors.append("Kubernetes runtime config must not route dependencies to loopback")
 
     if not COMPOSE_PROD.is_file():
         errors.append("missing infra/docker-compose.prod.yml")

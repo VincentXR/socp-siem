@@ -20,18 +20,6 @@
             <artifactId>socp-client</artifactId>
         </dependency>
 
-    <dependency>
-            <groupId>com.socp.platform</groupId>
-            <artifactId>socp-error</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.socp.platform</groupId>
-            <artifactId>socp-tenant</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.socp.platform</groupId>
-            <artifactId>socp-audit</artifactId>
-        </dependency>
         <!-- 对象存储（MinIO S3，报表导出/归档） -->
         <dependency>
             <groupId>io.minio</groupId>
@@ -52,25 +40,9 @@
             <scope>test</scope>
         </dependency>
         <dependency>
-            <groupId>com.socp.platform</groupId>
-            <artifactId>socp-auth</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.socp.platform</groupId>
-            <artifactId>socp-obs</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.socp.platform</groupId>
-            <artifactId>socp-ratelimit</artifactId>
-        </dependency>
-        <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
             <scope>runtime</scope>
-        </dependency>
-            <dependency>
-            <groupId>com.socp.platform</groupId>
-            <artifactId>socp-data</artifactId>
         </dependency>
         <dependency>
             <groupId>com.socp.platform</groupId>

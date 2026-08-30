@@ -10,6 +10,7 @@ import com.socp.detect.web.metrics.DetectionPerformanceMetrics;
 import com.socp.platform.client.service.AlertClient;
 import com.socp.platform.client.http.ServiceCall;
 import com.socp.platform.tenant.context.TenantContext;
+import com.socp.platform.tenant.persistence.TenantSystemJob;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -121,6 +122,7 @@ public class DetectionAlertOutboxPublisher {
 
     @Scheduled(fixedDelayString = "${socp.detect.alert-outbox.poll-interval-ms:1000}",
             initialDelayString = "${socp.detect.alert-outbox.initial-delay-ms:1000}")
+    @TenantSystemJob
     public void publishDue() {
         try {
             recoverStaleClaims();
@@ -286,6 +288,7 @@ public class DetectionAlertOutboxPublisher {
 
     @Scheduled(fixedDelayString = "${socp.detect.alert-outbox.cleanup-interval-ms:3600000}",
             initialDelayString = "${socp.detect.alert-outbox.cleanup-initial-delay-ms:60000}")
+    @TenantSystemJob
     void cleanupPublished() {
         try {
             int removed = repository.deletePublishedBefore(Instant.now().minusMillis(retentionMs));

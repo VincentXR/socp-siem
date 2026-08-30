@@ -7,6 +7,7 @@ import com.socp.search.config.config.IngestRuntimeProperties;
 import com.socp.search.config.domain.IngestionOutboxEvent;
 import com.socp.search.config.persistence.repository.IngestionOutboxRepository;
 import com.socp.platform.tenant.context.TenantContext;
+import com.socp.platform.tenant.persistence.TenantSystemJob;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -91,6 +92,7 @@ public class IngestionOutboxPublisher {
 
     @Scheduled(fixedDelayString = "${socp.ingest.outbox.poll-interval-ms:500}",
             initialDelayString = "${socp.ingest.outbox.initial-delay-ms:1000}")
+    @TenantSystemJob
     public void publish() {
         if (!producer.isEnabled()) return;
         try {
@@ -170,6 +172,7 @@ public class IngestionOutboxPublisher {
 
     @Scheduled(fixedDelayString = "${socp.ingest.outbox.cleanup-interval-ms:3600000}",
             initialDelayString = "${socp.ingest.outbox.cleanup-initial-delay-ms:60000}")
+    @TenantSystemJob
     void cleanupPublished() {
         try {
             int removed = repository.deletePublishedBefore(Instant.now().minusMillis(retentionMs));

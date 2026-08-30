@@ -6,5 +6,6 @@ resources:
   - service-account.yaml
   - runtime-config.yaml
   - api-gateway.yaml
+  - search-config.yaml
   - detect-web.yaml
   - alert-web.yaml

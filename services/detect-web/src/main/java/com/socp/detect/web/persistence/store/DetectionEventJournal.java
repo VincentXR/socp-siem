@@ -8,6 +8,7 @@ import com.socp.detect.web.persistence.entity.*;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
+import com.socp.platform.tenant.persistence.TenantSystemJob;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -275,6 +276,7 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Scheduled(
             fixedDelayString = "${socp.detect.state.cleanup-interval-ms:600000}",
             initialDelayString = "${socp.detect.state.cleanup-initial-delay-ms:600000}")
+    @TenantSystemJob
     public void cleanupExpiredTerminalEvents() {
         try {
             long deleted = repository.deleteTerminalBefore(

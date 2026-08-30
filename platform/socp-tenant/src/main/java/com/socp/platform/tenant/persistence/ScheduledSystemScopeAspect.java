@@ -9,19 +9,19 @@ import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 /**
- * Gives scheduled maintenance an explicit cross-tenant scope.
+ * Gives reviewed maintenance jobs an explicit cross-tenant scope.
  *
- * <p>Schedulers do not carry an HTTP tenant context.  Without this boundary,
- * PostgreSQL RLS correctly fails closed but every outbox/recovery job would be
- * unable to make progress.  A job that needs a narrower tenant scope can still
- * use {@link TenantContext#runWith(String, Runnable)} inside its method.</p>
+ * <p>The scope is attached to {@link TenantSystemJob}, not to every scheduled
+ * method. This makes a database-wide RLS bypass visible in code review. A job
+ * should switch back to {@link TenantContext#runWith(String, Runnable)} before
+ * processing an individual tenant row.</p>
  */
 @Aspect
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
 public class ScheduledSystemScopeAspect {
 
-    @Around("@annotation(org.springframework.scheduling.annotation.Scheduled)")
+    @Around("@annotation(com.socp.platform.tenant.persistence.TenantSystemJob)")
     public Object withSystemScope(ProceedingJoinPoint joinPoint) throws Throwable {
         try (TenantContext.Scope ignored = TenantContext.openSystem()) {
             return joinPoint.proceed();

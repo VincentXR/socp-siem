@@ -40,6 +40,10 @@ public class EndpointSimulator {
 
     @Scheduled(fixedDelay = 45_000, initialDelay = 25_000)
     public void simulate() {
+        TenantContext.runWith("default", this::simulateDefaultTenant);
+    }
+
+    private void simulateDefaultTenant() {
         if (!simulationAllowed()) {
             log.info("hips-collect simulator is disabled; waiting for Falco/Agent events");
             return;

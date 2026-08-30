@@ -26,6 +26,9 @@ spring:
 
 # 采集管线转发归一化事件的目标（DETECT 检测引擎）
 socp:
+  health:
+    required-endpoints: ${SOCP_HEALTH_REQUIRED_ENDPOINTS:kafka=localhost:9092,opensearch=localhost:9200,detect=localhost:18082}
+    connect-timeout-ms: ${SOCP_HEALTH_CONNECT_TIMEOUT_MS:500}
   search:
     local-cache:
       idle-ttl-ms: ${SOCP_SEARCH_CACHE_IDLE_TTL_MS:1800000}
@@ -54,7 +57,7 @@ socp:
     topic: ${SOCP_KAFKA_TOPIC:socp-events}
     enabled: ${SOCP_KAFKA_ENABLED:true}
   detect:
-    url: http://localhost:18082
+    url: ${SOCP_DETECT_URL:http://localhost:18082}
   ingest:
     limits:
       max-body-bytes: ${SOCP_INGEST_MAX_BODY_BYTES:16777216}
@@ -90,3 +93,11 @@ management:
     web:
       exposure:
         include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db,socpDependencies

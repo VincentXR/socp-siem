@@ -14,21 +14,9 @@
     <description>AI 助手（LangChain4j 网关，AIP14）</description>
 
     <dependencies>
-    <dependency>
-            <groupId>com.socp.platform</groupId>
-            <artifactId>socp-error</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.socp.platform</groupId>
-            <artifactId>socp-tenant</artifactId>
-        </dependency>
         <dependency>
             <groupId>com.socp.platform</groupId>
             <artifactId>socp-client</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.socp.platform</groupId>
-            <artifactId>socp-audit</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -46,18 +34,6 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>com.socp.platform</groupId>
-            <artifactId>socp-auth</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.socp.platform</groupId>
-            <artifactId>socp-obs</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.socp.platform</groupId>
-            <artifactId>socp-ratelimit</artifactId>
         </dependency>
         <dependency>
             <groupId>io.micrometer</groupId>
@@ -88,10 +64,6 @@
             <scope>runtime</scope>
         </dependency>
 
-            <dependency>
-            <groupId>com.socp.platform</groupId>
-            <artifactId>socp-data</artifactId>
-        </dependency>
         <dependency>
             <groupId>com.socp.platform</groupId>
             <artifactId>socp-starter</artifactId>

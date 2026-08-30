@@ -36,7 +36,7 @@ const props = defineProps<{
   goSearch: () => void
 }>()
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 
 const keyword = defineModel<string>('keyword', { default: '' })
 const severity = defineModel<string>('severity', { default: '' })
@@ -93,11 +93,11 @@ function handleSortChange({ prop, order }: { prop?: string | null; order?: 'asce
         <el-table-column prop="ruleName" column-key="ruleName" :label="t('alarms.ruleName')" :width="columnWidth('ruleName')" min-width="180" sortable="custom" show-overflow-tooltip><template #default="{ row }">{{ row.ruleName || row.ruleId }}</template></el-table-column>
         <el-table-column prop="entity" column-key="entity" :label="t('common.entity')" :width="columnWidth('entity')" min-width="150" sortable="custom" show-overflow-tooltip />
         <el-table-column prop="status" column-key="status" :label="t('common.status')" :width="columnWidth('status', 125)" sortable="custom"><template #default="{ row }"><span class="alarm-status" :class="(row.status || 'OPEN').toLowerCase()">{{ t('statuses.' + (row.status || 'OPEN')) || row.status }}</span></template></el-table-column>
-        <el-table-column prop="riskScore" column-key="riskScore" :label="locale === 'zh-CN' ? '风险分' : 'Risk'" :width="columnWidth('riskScore', 90)" sortable="custom"><template #default="{ row }">{{ row.riskScore ?? '—' }}</template></el-table-column>
+        <el-table-column prop="riskScore" column-key="riskScore" :label="t('inline.alarmsView.risk')" :width="columnWidth('riskScore', 90)" sortable="custom"><template #default="{ row }">{{ row.riskScore ?? '—' }}</template></el-table-column>
         <el-table-column prop="message" column-key="message" :label="t('common.message')" :width="columnWidth('message')" min-width="260" show-overflow-tooltip />
-        <el-table-column :label="t('common.actions')" width="78" fixed="right" :resizable="false"><template #default="{ row }"><el-button link type="primary" size="small" @click.stop="openAlarmRow(row)">{{ locale === 'zh-CN' ? '处置' : 'Triage' }}</el-button></template></el-table-column>
+        <el-table-column :label="t('common.actions')" width="78" fixed="right" :resizable="false"><template #default="{ row }"><el-button link type="primary" size="small" @click.stop="openAlarmRow(row)">{{ t('inline.alarmsView.triage') }}</el-button></template></el-table-column>
       </el-table>
-      <EmptyState v-if="!props.filteredAlarms.length" :title="locale === 'zh-CN' ? '暂无告警' : 'No Alarms Found'" :description="locale === 'zh-CN' ? '调整筛选条件后重试，或等待新的告警进入系统。' : 'Try adjusting filter conditions or wait for new incoming events.'" />
+      <EmptyState v-if="!props.filteredAlarms.length" :title="t('inline.alarmsView.noAlarmsFound')" :description="t('inline.alarmsView.tryAdjustingFilterConditionsOrWaitFor')" />
     </el-card>
 
     <div class="alarm-pagination">

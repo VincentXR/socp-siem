@@ -2,6 +2,7 @@ package com.socp.platform.tenant.persistence;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.data.domain.Example;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 
 import java.util.List;
@@ -25,6 +26,8 @@ class TenantScopedRepositoryTest {
         assertThatThrownBy(() -> repository.findById("id")).isInstanceOf(UnsupportedOperationException.class);
         assertThatThrownBy(repository::findAll).isInstanceOf(UnsupportedOperationException.class);
         assertThatThrownBy(() -> repository.findAll(Sort.unsorted()))
+                .isInstanceOf(UnsupportedOperationException.class);
+        assertThatThrownBy(() -> repository.findAll(PageRequest.of(0, 20)))
                 .isInstanceOf(UnsupportedOperationException.class);
         assertThatThrownBy(() -> repository.findAllById(List.of("id")))
                 .isInstanceOf(UnsupportedOperationException.class);
@@ -53,11 +56,15 @@ class TenantScopedRepositoryTest {
                 .isInstanceOf(UnsupportedOperationException.class);
         assertThatThrownBy(() -> repository.findAll(example, Sort.unsorted()))
                 .isInstanceOf(UnsupportedOperationException.class);
+        assertThatThrownBy(() -> repository.findAll(example, PageRequest.of(0, 20)))
+                .isInstanceOf(UnsupportedOperationException.class);
         assertThatThrownBy(() -> repository.findOne(example))
                 .isInstanceOf(UnsupportedOperationException.class);
         assertThatThrownBy(() -> repository.count(example))
                 .isInstanceOf(UnsupportedOperationException.class);
         assertThatThrownBy(() -> repository.exists(example))
+                .isInstanceOf(UnsupportedOperationException.class);
+        assertThatThrownBy(() -> repository.findBy(example, query -> query.firstValue()))
                 .isInstanceOf(UnsupportedOperationException.class);
     }
 }

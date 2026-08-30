@@ -31,10 +31,11 @@ def count_wildcards():
 def main():
     baseline = int(BASELINE_FILE.read_text(encoding="utf-8").strip())
     total, files = count_wildcards()
-    if total > baseline:
-        print(f"wildcard imports increased: {total} > baseline {baseline}", file=sys.stderr)
+    if total != baseline:
+        direction = "increased" if total > baseline else "decreased without updating the baseline"
+        print(f"wildcard imports {direction}: actual={total}, baseline={baseline}", file=sys.stderr)
         return 1
-    print(f"wildcard imports={total} (baseline={baseline}); no new import debt")
+    print(f"wildcard imports={total}; baseline is exact")
     return 0
 
 

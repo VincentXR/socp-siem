@@ -7,6 +7,7 @@ import com.socp.detect.web.persistence.repository.RuleChangeOutboxRepository;
 import com.socp.platform.client.kafka.KafkaClientSupport;
 import com.socp.platform.data.outbox.OutboxRetryPolicy;
 import com.socp.platform.tenant.context.TenantContext;
+import com.socp.platform.tenant.persistence.TenantSystemJob;
 import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.slf4j.Logger;
@@ -85,6 +86,7 @@ public class RuleChangePublisher {
 
     @Scheduled(fixedDelayString = "${socp.kafka.rule-publish-interval-ms:500}",
             initialDelayString = "${socp.kafka.rule-publish-initial-delay-ms:500}")
+    @TenantSystemJob
     public void flush() {
         if (!enabled) return;
         try {
@@ -161,6 +163,7 @@ public class RuleChangePublisher {
 
     @Scheduled(fixedDelayString = "${socp.kafka.rule-outbox.cleanup-interval-ms:3600000}",
             initialDelayString = "${socp.kafka.rule-outbox.cleanup-initial-delay-ms:60000}")
+    @TenantSystemJob
     void cleanupPublished() {
         try {
             long safeRetention = Math.max(Duration.ofMinutes(1).toMillis(), retentionMs);

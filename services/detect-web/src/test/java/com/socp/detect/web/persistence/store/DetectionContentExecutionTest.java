@@ -39,6 +39,8 @@ class DetectionContentExecutionTest {
     void everyManifestRulePassesPositiveAndNegativeVectors() throws Exception {
         Watchlists.put("blocked_ips", List.of("10.0.0.66"));
         Watchlists.put("high_risk_entities", List.of("HIGH", "CRITICAL"));
+        Watchlists.put("privileged_accounts", List.of("root", "domain-admin"));
+        Watchlists.put("crown_jewels", List.of("10.0.0.10"));
 
         Object rawRules = DetectionContentCatalog.manifest().get("rules");
         assertTrue(rawRules instanceof List<?>);
@@ -78,6 +80,8 @@ class DetectionContentExecutionTest {
         List<SecurityEvent> out = new ArrayList<>();
         for (Object value : (List<?>) raw) {
             Map<?, ?> map = (Map<?, ?>) value;
+            int repeat = map.get("repeat") instanceof Number number ? number.intValue() : 1;
+            for (int occurrence = 0; occurrence < repeat; occurrence++) {
             Map<String, String> fields = new LinkedHashMap<>();
             Object rawFields = map.get("fields");
             if (rawFields instanceof Map<?, ?> fieldMap) {
@@ -97,6 +101,7 @@ class DetectionContentExecutionTest {
                     : Instant.parse(String.valueOf(rawTimestamp));
             out.add(new SecurityEvent(UUID.randomUUID().toString(), timestamp, source, host,
                     msg, fields, Severity.INFO));
+            }
         }
         return out;
     }

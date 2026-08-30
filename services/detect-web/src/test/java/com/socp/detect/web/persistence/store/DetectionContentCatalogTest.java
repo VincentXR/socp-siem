@@ -30,6 +30,8 @@ class DetectionContentCatalogTest {
     void seedContentWatchlists() {
         Watchlists.put("blocked_ips", List.of("10.0.0.66"));
         Watchlists.put("high_risk_entities", List.of("HIGH", "CRITICAL"));
+        Watchlists.put("privileged_accounts", List.of("root", "domain-admin"));
+        Watchlists.put("crown_jewels", List.of("10.0.0.10"));
     }
 
     @AfterEach
@@ -45,7 +47,7 @@ class DetectionContentCatalogTest {
 
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> rules = (List<Map<String, Object>>) manifest.get("rules");
-        assertTrue(rules.size() >= 20, "content pack should keep a meaningful executable rule set");
+        assertEquals(39, rules.size(), "content loss must fail the catalog contract");
         for (Map<String, Object> item : rules) {
             for (String field : List.of("id", "version", "owner", "dataSources", "mitre", "spec", "tests")) {
                 assertTrue(item.containsKey(field), () -> item.get("id") + " missing " + field);
@@ -75,7 +77,12 @@ class DetectionContentCatalogTest {
                 @SuppressWarnings("unchecked")
                 List<Map<String, Object>> events = (List<Map<String, Object>>) vector.get("events");
                 int index = 0;
-                for (Map<String, Object> input : events) rule.accept(toEvent(input, index++));
+                for (Map<String, Object> input : events) {
+                    int repeat = input.get("repeat") instanceof Number number ? number.intValue() : 1;
+                    for (int occurrence = 0; occurrence < repeat; occurrence++) {
+                        rule.accept(toEvent(input, index++));
+                    }
+                }
                 boolean alerted = !rule.drain().isEmpty();
                 assertEquals(Boolean.TRUE.equals(vector.get("expectAlert")), alerted,
                         () -> item.get("id") + ":" + vector.get("name"));

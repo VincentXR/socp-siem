@@ -23,9 +23,7 @@ import org.springframework.context.annotation.Import;
         "com.socp.platform.ratelimit",
         "com.socp.platform.obs",
         "com.socp.platform.error",
-        "com.socp.platform.data",
-        "com.socp.platform.rule",
-        "com.socp.platform.client"
+        "com.socp.platform.data"
 })
 public class SocpPlatformAutoConfiguration {
 }

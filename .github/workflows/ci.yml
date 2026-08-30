@@ -64,6 +64,7 @@ jobs:
           python3 build/verify-package-layout.py
           python3 build/verify-architecture.py
           python3 build/verify-style.py
+          python3 build/verify-frontend-i18n.py
           python3 build/verify-production.py
 
       - name: Run build policy and SpotBugs

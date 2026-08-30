@@ -1,12 +1,16 @@
 package com.socp.platform.tenant.persistence;
 
 import org.springframework.data.domain.Example;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.repository.NoRepositoryBean;
+import org.springframework.data.repository.query.FluentQuery;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Function;
 
 /**
  * Repository contract for tenant-owned data.
@@ -35,6 +39,11 @@ public interface TenantScopedRepository<T, ID> extends JpaRepository<T, ID> {
     @Override
     default List<T> findAll(Sort sort) {
         throw violation("findAll(Sort)");
+    }
+
+    @Override
+    default Page<T> findAll(Pageable pageable) {
+        throw violation("findAll(Pageable)");
     }
 
     @Override
@@ -113,6 +122,11 @@ public interface TenantScopedRepository<T, ID> extends JpaRepository<T, ID> {
     }
 
     @Override
+    default <S extends T> Page<S> findAll(Example<S> example, Pageable pageable) {
+        throw violation("findAll(Example, Pageable)");
+    }
+
+    @Override
     default <S extends T> Optional<S> findOne(Example<S> example) {
         throw violation("findOne(Example)");
     }
@@ -125,6 +139,13 @@ public interface TenantScopedRepository<T, ID> extends JpaRepository<T, ID> {
     @Override
     default <S extends T> boolean exists(Example<S> example) {
         throw violation("exists(Example)");
+    }
+
+    @Override
+    default <S extends T, R> R findBy(
+            Example<S> example,
+            Function<FluentQuery.FetchableFluentQuery<S>, R> queryFunction) {
+        throw violation("findBy(Example, Function)");
     }
 
     private static UnsupportedOperationException violation(String method) {

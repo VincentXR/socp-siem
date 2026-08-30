@@ -14,6 +14,7 @@ import com.socp.platform.client.service.NotifyClient;
 import com.socp.platform.client.http.ServiceCall;
 import com.socp.platform.client.service.SoarClient;
 import com.socp.platform.tenant.context.TenantContext;
+import com.socp.platform.tenant.persistence.TenantSystemJob;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -103,6 +104,7 @@ public class AlarmDeliveryPublisher {
 
     @Scheduled(fixedDelayString = "${socp.alert.delivery.poll-interval-ms:1000}",
             initialDelayString = "${socp.alert.delivery.initial-delay-ms:1000}")
+    @TenantSystemJob
     public void publish() {
         try {
             Instant now = Instant.now();
@@ -207,6 +209,7 @@ public class AlarmDeliveryPublisher {
 
     @Scheduled(fixedDelayString = "${socp.alert.delivery.cleanup-interval-ms:3600000}",
             initialDelayString = "${socp.alert.delivery.cleanup-initial-delay-ms:60000}")
+    @TenantSystemJob
     void cleanupDelivered() {
         try {
             int removed = repository.deleteDeliveredBefore(Instant.now().minusMillis(retentionMs));

@@ -69,7 +69,6 @@
 
     <modules>
         <!-- 横切平台 -->
-        <module>platform/socp-bom</module>
         <module>platform/socp-auth</module>
         <module>platform/socp-tenant</module>
         <module>platform/socp-audit</module>

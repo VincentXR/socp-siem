@@ -26,7 +26,7 @@ import { assetApi, type Asset } from '../api/domains'
 import { readImportRows, type ImportRow } from '../lib/resource-import'
 import { useI18n } from '../composables/useI18n'
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 
 const assetStat = ref<{ total: number; byType: Record<string, number>; byCriticality: Record<string, number> } | null>(null)
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('assets')
@@ -36,20 +36,20 @@ const editingAssetId = ref<string | null>(null)
 const assetForm = ref({ name: '', type: 'SERVER', ip: '', os: '', owner: '', criticality: 'HIGH' })
 
 const assetTypes = computed(() => [
-  { value: 'SERVER', label: locale.value === 'zh-CN' ? '服务器' : 'Server' },
-  { value: 'DATABASE', label: locale.value === 'zh-CN' ? '数据库' : 'Database' },
-  { value: 'FIREWALL', label: locale.value === 'zh-CN' ? '防火墙' : 'Firewall' },
-  { value: 'MESSAGE', label: locale.value === 'zh-CN' ? '消息组件' : 'Message Queue' },
-  { value: 'LOADBALANCER', label: locale.value === 'zh-CN' ? '负载均衡' : 'Load Balancer' },
-  { value: 'APPLICATION', label: locale.value === 'zh-CN' ? '应用' : 'Application' },
-  { value: 'NETWORK', label: locale.value === 'zh-CN' ? '网络设备' : 'Network Device' },
+  { value: 'SERVER', label: t('inline.assetsView.server') },
+  { value: 'DATABASE', label: t('inline.assetsView.database') },
+  { value: 'FIREWALL', label: t('inline.assetsView.firewall') },
+  { value: 'MESSAGE', label: t('inline.assetsView.messageQueue') },
+  { value: 'LOADBALANCER', label: t('inline.assetsView.loadBalancer') },
+  { value: 'APPLICATION', label: t('inline.assetsView.application') },
+  { value: 'NETWORK', label: t('inline.assetsView.networkDevice') },
 ])
 
 const criticalityOptions = computed(() => [
-  { value: 'CRITICAL', label: locale.value === 'zh-CN' ? '关键' : 'Critical' },
-  { value: 'HIGH', label: locale.value === 'zh-CN' ? '高' : 'High' },
-  { value: 'MEDIUM', label: locale.value === 'zh-CN' ? '中' : 'Medium' },
-  { value: 'LOW', label: locale.value === 'zh-CN' ? '低' : 'Low' },
+  { value: 'CRITICAL', label: t('inline.assetsView.critical') },
+  { value: 'HIGH', label: t('inline.assetsView.high') },
+  { value: 'MEDIUM', label: t('inline.assetsView.medium') },
+  { value: 'LOW', label: t('inline.assetsView.low') },
 ])
 
 const rowValue = (row: ImportRow, ...keys: string[]) => {
@@ -95,10 +95,10 @@ function openEditAsset(asset: Asset) {
 async function removeAsset(id: string) {
   try {
     await assetApi.remove(id)
-    ElMessage.success(locale.value === 'zh-CN' ? '资产已删除' : 'Asset deleted')
+    ElMessage.success(t('inline.assetsView.assetDeleted'))
     await loadAssets()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : (locale.value === 'zh-CN' ? '删除资产失败' : 'Failed to delete asset'))
+    ElMessage.error(error instanceof Error ? error.message : (t('inline.assetsView.failedToDeleteAsset')))
   }
 }
 
@@ -115,10 +115,10 @@ async function saveAsset() {
     if (editingAssetId.value) await assetApi.update(editingAssetId.value, payload)
     else await assetApi.create(payload)
     showAssetDialog.value = false
-    ElMessage.success(editingAssetId.value ? (locale.value === 'zh-CN' ? '资产已更新' : 'Asset updated') : (locale.value === 'zh-CN' ? '资产已创建' : 'Asset created'))
+    ElMessage.success(editingAssetId.value ? (t('inline.assetsView.assetUpdated')) : (t('inline.assetsView.assetCreated')))
     await loadAssets()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : (locale.value === 'zh-CN' ? '保存资产失败' : 'Failed to save asset'))
+    ElMessage.error(error instanceof Error ? error.message : (t('inline.assetsView.failedToSaveAsset')))
   }
 }
 
@@ -143,11 +143,11 @@ async function importAssetFile(event: Event) {
       }
     })
     const result = await assetApi.bulkImport(payload)
-    if (result.skipped) ElMessage.warning(locale.value === 'zh-CN' ? `已导入 ${result.imported} 条，跳过 ${result.skipped} 条` : `Imported ${result.imported}, skipped ${result.skipped}`)
-    else ElMessage.success(locale.value === 'zh-CN' ? `成功导入 ${result.imported} 条资产` : `Successfully imported ${result.imported} assets`)
+    if (result.skipped) ElMessage.warning(t('inline.assetsView.importedSkipped', { p0: result.imported, p1: result.skipped }))
+    else ElMessage.success(t('inline.assetsView.successfullyImportedAssets', { p0: result.imported }))
     await loadAssets()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : (locale.value === 'zh-CN' ? '资产导入失败' : 'Asset import failed'))
+    ElMessage.error(error instanceof Error ? error.message : (t('inline.assetsView.assetImportFailed')))
   } finally {
     input.value = ''
   }
@@ -168,16 +168,16 @@ onMounted(loadAssets)
     </PageHeader>
 
     <div v-if="assetStat" class="page-metrics">
-      <MetricCard :label="locale === 'zh-CN' ? '资产总数' : 'Total Assets'" tone="info">{{ assetStat.total }}</MetricCard>
-      <MetricCard :label="locale === 'zh-CN' ? '关键资产' : 'Critical Assets'" tone="danger">{{ assetStat.byCriticality?.CRITICAL ?? 0 }}</MetricCard>
-      <MetricCard :label="locale === 'zh-CN' ? '高价值资产' : 'High Value Assets'" tone="warning">{{ assetStat.byCriticality?.HIGH ?? 0 }}</MetricCard>
-      <MetricCard :label="locale === 'zh-CN' ? '资产类型' : 'Asset Types'" tone="neutral">{{ Object.keys(assetStat.byType || {}).length }}</MetricCard>
+      <MetricCard :label="t('inline.assetsView.totalAssets')" tone="info">{{ assetStat.total }}</MetricCard>
+      <MetricCard :label="t('inline.assetsView.criticalAssets')" tone="danger">{{ assetStat.byCriticality?.CRITICAL ?? 0 }}</MetricCard>
+      <MetricCard :label="t('inline.assetsView.highValueAssets')" tone="warning">{{ assetStat.byCriticality?.HIGH ?? 0 }}</MetricCard>
+      <MetricCard :label="t('inline.assetsView.assetTypes')" tone="neutral">{{ Object.keys(assetStat.byType || {}).length }}</MetricCard>
     </div>
 
     <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="assetsFiltered.length">
       <template #toolbar>
         <FilterToolbar :count="assetsFiltered.length">
-        <el-input v-model="keyword" :placeholder="locale === 'zh-CN' ? '搜索名称 / IP / 类型 / 负责人' : 'Search Name / IP / Type / Owner'" clearable @input="page = 1" />
+        <el-input v-model="keyword" :placeholder="t('inline.assetsView.searchNameIpTypeOwner')" clearable @input="page = 1" />
         </FilterToolbar>
       </template>
       <el-table :data="assetsPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @sort-change="assetsList.onSortChange">
@@ -200,13 +200,13 @@ onMounted(loadAssets)
       </el-table>
     </DataTableCard>
 
-    <el-dialog v-model="showAssetDialog" :title="editingAssetId ? (locale === 'zh-CN' ? '编辑资产' : 'Edit Asset') : t('assets.createAsset')" width="560px">
+    <el-dialog v-model="showAssetDialog" :title="editingAssetId ? (t('inline.assetsView.editAsset')) : t('assets.createAsset')" width="560px">
       <el-form label-width="90px">
-        <el-form-item :label="t('common.name')" required><el-input v-model="assetForm.name" :placeholder="locale === 'zh-CN' ? '如：web-prod-01' : 'e.g. web-prod-01'" /></el-form-item>
+        <el-form-item :label="t('common.name')" required><el-input v-model="assetForm.name" :placeholder="t('inline.assetsView.eGWebProd01')" /></el-form-item>
         <el-form-item :label="t('common.type')"><el-select v-model="assetForm.type" style="width: 180px"><el-option v-for="type in assetTypes" :key="type.value" :label="type.label" :value="type.value" /></el-select></el-form-item>
-        <el-form-item :label="t('common.ip')" required><el-input v-model="assetForm.ip" :placeholder="locale === 'zh-CN' ? '如：10.0.0.30' : 'e.g. 10.0.0.30'" /></el-form-item>
-        <el-form-item :label="t('endpoints.os')"><el-input v-model="assetForm.os" :placeholder="locale === 'zh-CN' ? '如：Ubuntu 24.04' : 'e.g. Ubuntu 24.04'" /></el-form-item>
-        <el-form-item :label="t('assets.owner')"><el-input v-model="assetForm.owner" :placeholder="locale === 'zh-CN' ? '如：infra' : 'e.g. infra'" /></el-form-item>
+        <el-form-item :label="t('common.ip')" required><el-input v-model="assetForm.ip" :placeholder="t('inline.assetsView.eG100030')" /></el-form-item>
+        <el-form-item :label="t('endpoints.os')"><el-input v-model="assetForm.os" :placeholder="t('inline.assetsView.eGUbuntu2404')" /></el-form-item>
+        <el-form-item :label="t('assets.owner')"><el-input v-model="assetForm.owner" :placeholder="t('inline.assetsView.eGInfra')" /></el-form-item>
         <el-form-item :label="t('assets.criticality')"><el-select v-model="assetForm.criticality" style="width: 180px"><el-option v-for="level in criticalityOptions" :key="level.value" :label="level.label" :value="level.value" /></el-select></el-form-item>
       </el-form>
       <template #footer>

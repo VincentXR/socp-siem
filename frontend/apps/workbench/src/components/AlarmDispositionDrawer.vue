@@ -39,7 +39,7 @@ const drawerVisible = computed({
   set: (value: boolean) => emit('update:modelValue', value),
 })
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 
 const DISP_STATUSES = ['OPEN', 'INVESTIGATING', 'RESOLVED', 'CLOSED']
 const disposition = ref<Disposition | null>(null)
@@ -71,7 +71,7 @@ async function loadDetails(alarm: Alarm) {
   if (token !== loadToken) return
   if (disp.status === 'fulfilled') disposition.value = disp.value
   if (ev.status === 'fulfilled') evidence.value = ev.value
-  else evidenceError.value = locale.value === 'zh-CN' ? '关联原始日志加载失败，请稍后重试' : 'Failed to load associated raw events, please try again later'
+  else evidenceError.value = t('inline.alarmDispositionDrawer.failedToLoadAssociatedRawEventsPlease')
   if (cases.status === 'fulfilled') relatedCase.value = cases.value.find(item => item.alarmIds.includes(alarm.id)) ?? null
   else relatedCase.value = null
 }
@@ -139,7 +139,7 @@ function openEvidenceSearch() {
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;font-size:12px;color:#909399">
           <span>{{ t('drawer.evidenceCount', { count: evidence.total }) }}</span>
           <div v-if="evidence.query" style="display:flex;align-items:center;gap:6px">
-            <span class="mono" style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="evidence.query">{{ locale === 'zh-CN' ? 'eventId 下钻可用' : 'eventId drill-down' }}</span>
+            <span class="mono" style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="evidence.query">{{ t('inline.alarmDispositionDrawer.eventidDrillDown') }}</span>
             <el-button link type="primary" size="small" @click="openEvidenceSearch">{{ t('drawer.openSearch') }}</el-button>
           </div>
         </div>

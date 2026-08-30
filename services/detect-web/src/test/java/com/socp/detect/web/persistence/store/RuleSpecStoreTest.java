@@ -49,7 +49,7 @@ class RuleSpecStoreTest {
         org.junit.jupiter.api.Assertions.assertTrue(saved.getAllValues().stream()
                 .map(RuleEntity::getSpec)
                 .anyMatch(spec -> spec.contains("\"id\":\"AUTH-BRUTE\"")
-                        && spec.contains("\"contentVersion\":\"2026.08.20\"")));
+                        && spec.contains("\"contentVersion\":\"2026.08.30\"")));
     }
 
     @Test
@@ -68,7 +68,7 @@ class RuleSpecStoreTest {
     void concurrentPackagedRuleInstallIsIdempotent() {
         RuleRepository repository = mock(RuleRepository.class);
         RuleEntity installed = entity("AUTH-BRUTE", """
-                {"id":"AUTH-BRUTE","contentPack":"socp-core-detections","contentVersion":"2026.08.20"}
+                {"id":"AUTH-BRUTE","contentPack":"socp-core-detections","contentVersion":"2026.08.30"}
                 """);
         when(repository.countByTenantId("default")).thenReturn(1L);
         when(repository.findByRuleIdAndTenantId(any(), any()))

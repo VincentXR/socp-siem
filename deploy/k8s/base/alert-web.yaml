@@ -40,6 +40,9 @@ spec:
                 name: socp-runtime
             - secretRef:
                 name: socp-runtime-secrets
+          env:
+            - name: SOCP_HEALTH_REQUIRED_ENDPOINTS
+              value: kafka=kafka.socp-data.svc.cluster.local:9092,clickhouse=clickhouse.socp-data.svc.cluster.local:8123
           readinessProbe:
             httpGet:
               path: /alert-web/actuator/health/readiness

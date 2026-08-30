@@ -18,6 +18,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Architecture gate failed' }
     python build/verify-style.py
     if ($LASTEXITCODE -ne 0) { throw 'Style debt gate failed' }
+    python build/verify-frontend-i18n.py
+    if ($LASTEXITCODE -ne 0) { throw 'Frontend i18n gate failed' }
     python build/verify-production.py
     if ($LASTEXITCODE -ne 0) { throw 'Production deployment contract gate failed' }
     python build/validate-detection-content.py

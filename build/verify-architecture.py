@@ -16,6 +16,10 @@ PERSISTENCE_IMPORT = re.compile(r"^import\s+com\.socp\..*\.persistence\.(reposit
 REPOSITORY_DECL = re.compile(
     r"public\s+interface\s+(\w+Repository)\s+extends\s+([^\{]+)\{", re.MULTILINE)
 SERVICE_DEPENDENCY = re.compile(r"<artifactId>([^<]+)</artifactId>")
+STARTER_MANAGED = {
+    "socp-auth", "socp-tenant", "socp-audit", "socp-ratelimit",
+    "socp-obs", "socp-error", "socp-data",
+}
 METHOD_END = re.compile(r"^ {4}}\s*$", re.MULTILINE)
 
 
@@ -65,27 +69,70 @@ def dependency_checks(errors: list[str]) -> int:
     for pom in poms:
         content = pom.read_text(encoding="utf-8")
         own = pom.parent.name
-        for dependency in re.findall(
+        dependencies = re.findall(
                 r"<dependency>.*?<artifactId>([^<]+)</artifactId>.*?</dependency>",
-                content, re.DOTALL):
+                content, re.DOTALL)
+        for dependency in dependencies:
             if dependency in service_artifacts and dependency != own:
                 errors.append(
                     f"{relative(pom)}: service module depends directly on service '{dependency}'; "
                     "use a platform contract/client instead"
                 )
+        if "socp-starter" in dependencies:
+            duplicated = STARTER_MANAGED.intersection(dependencies)
+            if duplicated:
+                errors.append(
+                    f"{relative(pom)}: dependencies already supplied by socp-starter: "
+                    + ", ".join(sorted(duplicated))
+                )
         checked += 1
+
+    root_pom = (ROOT / "pom.xml").read_text(encoding="utf-8")
+    if "platform/socp-bom" in root_pom or (ROOT / "platform" / "socp-bom" / "pom.xml").exists():
+        errors.append("unused platform/socp-bom must not return; the parent owns dependency management")
     return checked
 
 
 def tenant_repository_checks(errors: list[str]) -> int:
     """Require tenant-owned JPA repositories to use the fail-closed SDK contract."""
+    contract = (ROOT / "platform" / "socp-tenant" / "src" / "main" / "java" / "com" / "socp"
+                / "platform" / "tenant" / "persistence" / "TenantScopedRepository.java")
+    contract_text = contract.read_text(encoding="utf-8")
+    required_fail_closed_methods = (
+        "findAll(Pageable pageable)",
+        "findAll(Example<S> example, Pageable pageable)",
+        "findBy(\n            Example<S> example,",
+    )
+    for signature in required_fail_closed_methods:
+        if signature not in contract_text:
+            errors.append(f"{relative(contract)}: missing fail-closed repository method {signature}")
+
+    aspect = contract.parent / "ScheduledSystemScopeAspect.java"
+    aspect_text = aspect.read_text(encoding="utf-8")
+    if "@annotation(com.socp.platform.tenant.persistence.TenantSystemJob)" not in aspect_text:
+        errors.append(f"{relative(aspect)}: system scope must require TenantSystemJob")
+    if "@annotation(org.springframework.scheduling.annotation.Scheduled)" in aspect_text:
+        errors.append(f"{relative(aspect)}: @Scheduled must never grant system scope implicitly")
+    for path in ROOT.glob("services/*/src/main/java/**/*.java"):
+        content = path.read_text(encoding="utf-8")
+        for marker in re.finditer(r"@TenantSystemJob\b", content):
+            if "@Scheduled" not in content[max(0, marker.start() - 300):marker.start()]:
+                line = content.count("\n", 0, marker.start()) + 1
+                errors.append(
+                    f"{relative(path)}:{line}: TenantSystemJob is reserved for scheduled jobs"
+                )
+
     tenant_entities: set[str] = set()
     for path in ROOT.glob("services/*/src/main/java/**/*.java"):
         content = path.read_text(encoding="utf-8")
-        if "@Entity" not in content and "tenantId" not in content and "tenant_id" not in content:
+        if "@Entity" not in content:
             continue
         class_match = re.search(r"\bclass\s+(\w+)", content)
-        if class_match and re.search(r"\btenantId\b|\btenant_id\b", content):
+        tenant_owned = bool(re.search(
+            r"\btenantId\b|\btenant_id\b|\bgetTenantId\s*\(|\bextends\s+BaseEntity\b",
+            content,
+        ))
+        if class_match and tenant_owned:
             tenant_entities.add(class_match.group(1))
 
     checked = 0

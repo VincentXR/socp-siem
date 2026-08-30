@@ -28,11 +28,17 @@ uses them. Secret keys are intentionally not populated in Git.
 ## Kubernetes rollout
 
 `deploy/k8s/base` is a minimal reference for the high-throughput event path:
-two Gateway replicas, three Detection replicas, and two Alert replicas. It
+two Gateway replicas, two Search/Ingest replicas, three Detection replicas,
+and two Alert replicas. It
 sets rolling-update behavior, readiness/liveness/startup probes, resource
 requests and limits, a non-root/read-only container policy, and disruption
 budgets. Replace each `REPLACE_WITH_RELEASE_DIGEST` token during release
 rendering, then run `kubectl apply --server-side` and wait for rollout status.
+
+Search, Detection, and Alert readiness includes TCP reachability for required
+Kafka/OpenSearch/ClickHouse/downstream-service endpoints through
+`SOCP_HEALTH_REQUIRED_ENDPOINTS`. Liveness remains process-local so a
+dependency outage removes a pod from traffic without creating a restart loop.
 
 The database, Kafka, OpenSearch, ClickHouse, Redis, identity provider, and
 object store are intentionally not bundled into this application baseline.

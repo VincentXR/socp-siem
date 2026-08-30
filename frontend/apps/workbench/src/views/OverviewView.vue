@@ -58,7 +58,7 @@ function getStatusLabel(status: string): string {
     <PageHeader :title="t('overview.title')">
       <template #description>{{ t('overview.description') }} · {{ updatedAt }}</template>
       <template #actions>
-        <span class="ov-date-pill">{{ locale === 'zh-CN' ? '近 7 日' : 'Last 7 Days' }}</span>
+        <span class="ov-date-pill">{{ t('inline.overviewView.last7Days') }}</span>
         <el-button type="primary" size="small" round @click="onRefresh">{{ t('common.refresh') }}</el-button>
       </template>
     </PageHeader>
@@ -66,7 +66,7 @@ function getStatusLabel(status: string): string {
     <div class="ov-kpis">
       <MetricCard :label="t('overview.totalEvents')" tone="info">
         <AnimatedNumber :value="stat.total" />
-        <template #hint>{{ locale === 'zh-CN' ? '近 7 日累计' : '7-Day Total' }} <b class="mono">{{ trendSum }}</b></template>
+        <template #hint>{{ t('inline.overviewView.text7DayTotal') }} <b class="mono">{{ trendSum }}</b></template>
       </MetricCard>
       <MetricCard :label="t('overview.criticalAlarms')" tone="danger">
         <AnimatedNumber :value="highPending" />
@@ -74,14 +74,14 @@ function getStatusLabel(status: string): string {
       </MetricCard>
       <MetricCard :label="t('overview.onlineEndpoints')" tone="success">
         <AnimatedNumber :value="onlinePct" /><span class="metric-suffix">%</span>
-        <template #hint>{{ stat.online }} / {{ HEALTH_TARGETS.length }} {{ locale === 'zh-CN' ? '个服务正常' : 'services healthy' }}</template>
+        <template #hint>{{ stat.online }} / {{ HEALTH_TARGETS.length }} {{ t('inline.overviewView.servicesHealthy') }}</template>
       </MetricCard>
     </div>
 
     <div class="ov-mid">
       <el-card shadow="never" class="ov-card">
         <template #header>
-          <div class="ov-card-head"><span>{{ t('overview.alarmTrend') }}</span><span class="ov-card-sub">{{ locale === 'zh-CN' ? '按日聚合 · 总量 ' + trendSum : 'Daily Aggregated · Total ' + trendSum }}</span></div>
+          <div class="ov-card-head"><span>{{ t('overview.alarmTrend') }}</span><span class="ov-card-sub">{{ t('inline.overviewView.dailyAggregatedTotal', { total: trendSum }) }}</span></div>
         </template>
         <TrendChart :data="sitStats?.trend7d" style="height:216px" />
       </el-card>
@@ -108,7 +108,7 @@ function getStatusLabel(status: string): string {
 
     <div class="ov-low">
       <el-card shadow="never" class="ov-card">
-        <template #header><span>Top 5 {{ locale === 'zh-CN' ? '风险实体' : 'Risk Entities' }}</span></template>
+        <template #header><span>Top 5 {{ t('inline.overviewView.riskEntities') }}</span></template>
         <div v-if="topRisk.length" class="ov-risk">
           <div v-for="(risk, index) in topRisk" :key="risk.id" class="ov-risk-item">
             <span class="ov-rank mono">{{ index + 1 }}</span>
@@ -119,7 +119,7 @@ function getStatusLabel(status: string): string {
             <span class="ov-risk-score mono" :style="{ background: sevColor(risk.severity) }">{{ risk.riskScore ?? '—' }}</span>
           </div>
         </div>
-        <EmptyState v-else :title="locale === 'zh-CN' ? '暂无高风险告警' : 'No High Risk Alarms'" :description="locale === 'zh-CN' ? '当前没有需要优先处置的风险项' : 'No urgent risk items require triage'" />
+        <EmptyState v-else :title="t('inline.overviewView.noHighRiskAlarms')" :description="t('inline.overviewView.noUrgentRiskItemsRequireTriage')" />
       </el-card>
 
       <el-card shadow="never" class="ov-card">
@@ -132,7 +132,7 @@ function getStatusLabel(status: string): string {
             <el-table-column :label="t('common.severity')" width="116">
               <template #default="{ row }"><SevBadge :value="row.severity" /></template>
             </el-table-column>
-            <el-table-column :label="locale === 'zh-CN' ? '规则 · 来源' : 'Rule · Entity'" min-width="180" show-overflow-tooltip>
+            <el-table-column :label="t('inline.overviewView.ruleEntity')" min-width="180" show-overflow-tooltip>
               <template #default="{ row }">
                 <span class="table-text"><span class="ov-alert-rule">{{ row.ruleName }}</span><span class="ov-alert-entity mono"> · {{ row.entity }}</span></span>
               </template>
@@ -142,13 +142,13 @@ function getStatusLabel(status: string): string {
             </el-table-column>
           </el-table>
         </div>
-        <EmptyState v-else :title="locale === 'zh-CN' ? '暂无最新告警' : 'No Live Alarms'" :description="locale === 'zh-CN' ? '告警进入系统后会显示在这里' : 'Alarms will appear here in real time'" />
+        <EmptyState v-else :title="t('inline.overviewView.noLiveAlarms')" :description="t('inline.overviewView.alarmsWillAppearHereInRealTime')" />
       </el-card>
     </div>
 
     <el-card shadow="never" class="ov-card">
       <template #header>
-        <div class="ov-card-head"><span>{{ locale === 'zh-CN' ? '后端服务健康' : 'Platform Service Health' }}</span><span class="ov-card-sub">{{ stat.online }} / {{ HEALTH_TARGETS.length }} {{ locale === 'zh-CN' ? '在线' : 'healthy' }}</span></div>
+        <div class="ov-card-head"><span>{{ t('inline.overviewView.platformServiceHealth') }}</span><span class="ov-card-sub">{{ stat.online }} / {{ HEALTH_TARGETS.length }} {{ t('inline.overviewView.healthy') }}</span></div>
       </template>
       <div class="ov-chips">
         <div v-for="health in HEALTH_TARGETS" :key="health.name" class="ov-chip">

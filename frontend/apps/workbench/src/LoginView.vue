@@ -5,7 +5,7 @@ import ElMessage from 'element-plus/es/components/message/index.mjs'
 import { useI18n } from './composables/useI18n'
 
 const emit = defineEmits<{ (e: 'done', user: string, role: string): void }>()
-const { t, locale, toggleLocale } = useI18n()
+const { t, toggleLocale } = useI18n()
 
 const demoMode = import.meta.env.DEV || import.meta.env.VITE_DEMO_MODE === 'true'
 const username = ref(demoMode ? 'demo' : '')
@@ -54,7 +54,7 @@ function oidcLogin() {
 
     <div class="login-lang-switch">
       <button type="button" class="lang-btn" @click="toggleLocale">
-        🌐 {{ locale === 'zh-CN' ? 'EN' : '中文' }}
+        🌐 {{ t('inline.loginView.message') }}
       </button>
     </div>
 
@@ -80,9 +80,9 @@ function oidcLogin() {
       </form>
 
       <div v-if="demoMode" class="quick">
-        <span class="quick-label">{{ locale === 'zh-CN' ? '演示账号' : 'Demo Accounts' }}</span>
-        <button type="button" class="chip" @click="quickFill('demo', 'demo123')">{{ locale === 'zh-CN' ? '分析师 demo' : 'Analyst demo' }}</button>
-        <button type="button" class="chip" @click="quickFill('admin', 'admin123')">{{ locale === 'zh-CN' ? '管理员 admin' : 'Admin admin' }}</button>
+        <span class="quick-label">{{ t('inline.loginView.demoAccounts') }}</span>
+        <button type="button" class="chip" @click="quickFill('demo', 'demo123')">{{ t('inline.loginView.analystDemo') }}</button>
+        <button type="button" class="chip" @click="quickFill('admin', 'admin123')">{{ t('inline.loginView.adminAdmin') }}</button>
       </div>
 
       <div class="oidc-row">
@@ -91,12 +91,12 @@ function oidcLogin() {
             <rect x="3" y="11" width="18" height="11" rx="2" />
             <path d="M7 11V7a5 5 0 0 1 10 0v4" />
           </svg>
-          <span>Keycloak {{ locale === 'zh-CN' ? '统一登录' : 'SSO Login' }}</span>
+          <span>Keycloak {{ t('inline.loginView.ssoLogin') }}</span>
         </button>
       </div>
     </div>
 
-    <div class="login-foot">JWT {{ locale === 'zh-CN' ? '会话 30 分钟 · 全链路强制验签 · 多租户隔离' : 'Session 30m · Mandatory Verification · Multi-Tenant Isolated' }}</div>
+    <div class="login-foot">JWT {{ t('inline.loginView.session30mMandatoryVerificationMultiTenantIsolated') }}</div>
   </div>
 </template>
 

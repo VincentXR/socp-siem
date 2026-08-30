@@ -20,14 +20,27 @@ non-matching sentinel, so a forgotten scope produces an empty/denied query
 instead of a cross-tenant read. Background maintenance must be explicit:
 
 ```java
-TenantContext.runAsSystem(() -> rebuildAllTenantIndexes());
+@Scheduled(fixedDelayString = "${socp.index.rebuild-ms}")
+@TenantSystemJob
+void rebuildAllTenantIndexes() {
+    // This review-visible marker is the RLS bypass for the job.
+}
 ```
+
+An ordinary `@Scheduled` method receives no elevated scope. Asynchronous
+maintenance paths that do not pass through the scheduled proxy must use
+`TenantContext.runAsSystem(...)` explicitly.
 
 `*` is reserved for that system scope and is never accepted as a user tenant
 identifier. Production startup fails when a database service does not enable
 the RLS connection context.
 
 The RLS script is intentionally separate from Flyway application migrations:
-the application role should not need DDL privileges, and operators can apply
+the application role must be `NOSUPERUSER NOBYPASSRLS`, should not own tenant
+tables, and should not need DDL privileges. Operators can apply
 the policy after all service schemas exist. Future seed/data migrations should
 run with the migration role or an explicit `SET socp.tenant_id='*'`.
+
+CI runs a real PostgreSQL proof when `SOCP_TESTCONTAINERS=true`; it verifies
+tenant-filtered reads, denied cross-tenant inserts, missing-scope fail-closed
+behavior, and the explicit system scope.

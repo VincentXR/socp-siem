@@ -1,6 +1,6 @@
 {
   "packId": "socp-core-detections",
-  "version": "2026.08.20",
+  "version": "2026.08.30",
   "schemaVersion": "1",
   "maintainer": "socp-detection",
   "rules": [
@@ -406,6 +406,90 @@
       "references": ["https://attack.mitre.org/techniques/T1078/", "https://attack.mitre.org/techniques/T1548/", "https://attack.mitre.org/techniques/T1059/"],
       "spec": {"id": "CORR-ATTACK-SIGNALS", "name": "Multi-stage host attack signals", "type": "correlation-set", "severity": "CRITICAL", "message": "Host {key} observed all {count} attack-stage signals", "keyField": "host", "routingField": "host", "window": "600s", "mitre": "T1078", "steps": [[{"field": "msg", "op": "contains", "value": "Accepted password"}], [{"field": "msg", "op": "contains", "value": "sudo:"}], [{"field": "msg", "op": "regex", "value": "(?i)(powershell|socat|reverse shell)"}]]},
       "tests": [{"name": "all stages in arbitrary order", "expectAlert": true, "events": [{"source": "edr", "host": "endpoint-corr-1", "msg": "socat reverse shell started", "fields": {"user": "alice"}}, {"source": "auth", "host": "endpoint-corr-1", "msg": "Accepted password for alice", "fields": {"user": "alice"}}, {"source": "auditd", "host": "endpoint-corr-1", "msg": "sudo: alice executed /bin/sh", "fields": {"user": "alice"}}]}, {"name": "missing privilege escalation", "expectAlert": false, "events": [{"source": "auth", "host": "endpoint-corr-2", "msg": "Accepted password for bob", "fields": {"user": "bob"}}, {"source": "edr", "host": "endpoint-corr-2", "msg": "powershell started", "fields": {"user": "bob"}}]}]
+    },
+    {
+      "id": "EXEC-SUSPICIOUS-SHELL", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
+      "description": "Encoded or download-and-execute shell activity.", "dataSources": ["edr", "sysmon", "auditd"], "mitre": ["T1059"],
+      "spec": {"id": "EXEC-SUSPICIOUS-SHELL", "name": "Suspicious shell execution", "type": "pattern", "severity": "HIGH", "message": "Suspicious command on {host}: {msg}", "mitre": "T1059", "match": [{"field": "msg", "op": "regex", "value": "(?i)powershell -enc|certutil -urlcache|invoke-expression|iex \\("}]},
+      "tests": [{"name": "encoded PowerShell", "expectAlert": true, "events": [{"source": "edr", "host": "host-1", "msg": "powershell -enc SQBFAFgA", "fields": {}}]}, {"name": "ordinary shell", "expectAlert": false, "events": [{"source": "edr", "host": "host-1", "msg": "bash backup.sh", "fields": {}}]}]
+    },
+    {
+      "id": "FW-SCAN", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
+      "description": "Repeated firewall blocks from one source indicate scanning.", "dataSources": ["firewall"], "mitre": ["T1046"],
+      "spec": {"id": "FW-SCAN", "name": "Firewall scan", "type": "threshold", "severity": "MEDIUM", "message": "Source {key} was blocked {count} times in {window}", "keyField": "src_ip", "threshold": 10, "window": "30s", "mitre": "T1046", "match": [{"field": "source", "op": "eq", "value": "firewall"}, {"field": "action", "op": "eq", "value": "block"}]},
+      "tests": [{"name": "ten blocks", "expectAlert": true, "events": [{"repeat": 10, "source": "firewall", "host": "fw-1", "msg": "blocked", "fields": {"src_ip": "198.51.100.70", "action": "block"}}]}, {"name": "allowed traffic", "expectAlert": false, "events": [{"source": "firewall", "host": "fw-1", "msg": "allowed", "fields": {"src_ip": "198.51.100.70", "action": "allow"}}]}]
+    },
+    {
+      "id": "MAL-C2", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
+      "description": "Known command-and-control terms in proxy traffic.", "dataSources": ["proxy"], "mitre": ["T1071"],
+      "spec": {"id": "MAL-C2", "name": "Suspected C2 traffic", "type": "pattern", "severity": "HIGH", "message": "Suspected C2 traffic on {host}: {msg}", "mitre": "T1071", "match": [{"field": "source", "op": "eq", "value": "proxy"}, {"field": "msg", "op": "regex", "value": "(?i)beacon|c2|command-and-control|cobaltstrike"}]},
+      "tests": [{"name": "Cobalt Strike beacon", "expectAlert": true, "events": [{"source": "proxy", "host": "proxy-1", "msg": "cobaltstrike beacon", "fields": {}}]}, {"name": "normal browsing", "expectAlert": false, "events": [{"source": "proxy", "host": "proxy-1", "msg": "GET /docs 200", "fields": {}}]}]
+    },
+    {
+      "id": "PHISH-MAIL", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
+      "description": "Phishing indicators in mail gateway events.", "dataSources": ["mail"], "mitre": ["T1566"],
+      "spec": {"id": "PHISH-MAIL", "name": "Phishing mail delivery", "type": "pattern", "severity": "MEDIUM", "message": "Possible phishing mail: {msg}", "mitre": "T1566", "match": [{"field": "source", "op": "eq", "value": "mail"}, {"field": "msg", "op": "regex", "value": "(?i)phish|suspicious attachment"}]},
+      "tests": [{"name": "suspicious attachment", "expectAlert": true, "events": [{"source": "mail", "host": "mx-1", "msg": "suspicious attachment quarantined", "fields": {}}]}, {"name": "delivered newsletter", "expectAlert": false, "events": [{"source": "mail", "host": "mx-1", "msg": "newsletter delivered", "fields": {}}]}]
+    },
+    {
+      "id": "RANSOM-ENCRYPT", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
+      "description": "High-volume ransomware file encryption indicators.", "dataSources": ["edr"], "mitre": ["T1486"],
+      "spec": {"id": "RANSOM-ENCRYPT", "name": "Ransomware encryption", "type": "threshold", "severity": "CRITICAL", "message": "Host {key} produced {count} encryption indicators", "keyField": "host", "threshold": 20, "window": "60s", "mitre": "T1486", "match": [{"field": "source", "op": "eq", "value": "edr"}, {"field": "msg", "op": "regex", "value": "(?i)locky|encrypted|wncry|ransom"}]},
+      "tests": [{"name": "twenty encrypted files", "expectAlert": true, "events": [{"repeat": 20, "source": "edr", "host": "endpoint-ransom", "msg": "file encrypted", "fields": {}}]}, {"name": "nineteen encrypted files", "expectAlert": false, "events": [{"repeat": 19, "source": "edr", "host": "endpoint-safe", "msg": "file encrypted", "fields": {}}]}]
+    },
+    {
+      "id": "UEBA-AUTH-SPIKE", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
+      "description": "Authentication volume deviates from the source's learned baseline.", "dataSources": ["auth"], "mitre": ["T1110"],
+      "spec": {"id": "UEBA-AUTH-SPIKE", "name": "Authentication volume spike", "type": "baseline", "severity": "HIGH", "message": "Source {key} generated {count} events versus baseline {baseline}", "keyField": "src_ip", "window": "60s", "baselineWindows": 12, "warmup": 3, "sigma": 3.0, "minCount": 5, "mitre": "T1110", "match": [{"field": "source", "op": "eq", "value": "auth"}]},
+      "tests": [{"name": "spike after warmup", "expectAlert": true, "events": [{"timestamp": "2026-01-01T00:00:01Z", "source": "auth", "msg": "login", "fields": {"src_ip": "198.51.100.80"}}, {"timestamp": "2026-01-01T00:01:01Z", "source": "auth", "msg": "login", "fields": {"src_ip": "198.51.100.80"}}, {"timestamp": "2026-01-01T00:02:01Z", "source": "auth", "msg": "login", "fields": {"src_ip": "198.51.100.80"}}, {"repeat": 5, "timestamp": "2026-01-01T00:03:01Z", "source": "auth", "msg": "login", "fields": {"src_ip": "198.51.100.80"}}]}, {"name": "below minimum", "expectAlert": false, "events": [{"timestamp": "2026-01-01T01:00:01Z", "source": "auth", "msg": "login", "fields": {"src_ip": "198.51.100.81"}}, {"timestamp": "2026-01-01T01:01:01Z", "source": "auth", "msg": "login", "fields": {"src_ip": "198.51.100.81"}}, {"timestamp": "2026-01-01T01:02:01Z", "source": "auth", "msg": "login", "fields": {"src_ip": "198.51.100.81"}}, {"repeat": 4, "timestamp": "2026-01-01T01:03:01Z", "source": "auth", "msg": "login", "fields": {"src_ip": "198.51.100.81"}}]}]
+    },
+    {
+      "id": "UEBA-NEW-DEST", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
+      "description": "A host contacts a new domain after its learning period.", "dataSources": ["proxy"], "mitre": ["T1071"],
+      "spec": {"id": "UEBA-NEW-DEST", "name": "First-seen destination", "type": "rare", "severity": "MEDIUM", "message": "Host {key} contacted first-seen {value}", "keyField": "host", "valueField": "dst_domain", "warmup": 10, "mitre": "T1071", "match": [{"field": "source", "op": "eq", "value": "proxy"}]},
+      "tests": [{"name": "new destination after warmup", "expectAlert": true, "events": [{"repeat": 10, "source": "proxy", "host": "dest-1", "msg": "request", "fields": {"dst_domain": "known.example"}}, {"source": "proxy", "host": "dest-1", "msg": "request", "fields": {"dst_domain": "new.example"}}]}, {"name": "known destination", "expectAlert": false, "events": [{"repeat": 11, "source": "proxy", "host": "dest-2", "msg": "request", "fields": {"dst_domain": "known.example"}}]}]
+    },
+    {
+      "id": "UEBA-NEW-GEO", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
+      "description": "An account authenticates from a new geography after learning.", "dataSources": ["auth"], "mitre": ["T1078"],
+      "spec": {"id": "UEBA-NEW-GEO", "name": "First-seen login geography", "type": "rare", "severity": "HIGH", "message": "Account {key} authenticated from first-seen {value}", "keyField": "user", "valueField": "geo", "warmup": 5, "mitre": "T1078", "match": [{"field": "source", "op": "eq", "value": "auth"}]},
+      "tests": [{"name": "new geography after warmup", "expectAlert": true, "events": [{"repeat": 5, "source": "auth", "host": "auth-geo", "msg": "login", "fields": {"user": "alice", "geo": "CN"}}, {"source": "auth", "host": "auth-geo", "msg": "login", "fields": {"user": "alice", "geo": "US"}}]}, {"name": "known geography", "expectAlert": false, "events": [{"repeat": 6, "source": "auth", "host": "auth-geo", "msg": "login", "fields": {"user": "bob", "geo": "CN"}}]}]
+    },
+    {
+      "id": "UEBA-NEW-PROCESS", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
+      "description": "A host executes a new process after its learning period.", "dataSources": ["edr"], "mitre": ["T1059"],
+      "spec": {"id": "UEBA-NEW-PROCESS", "name": "First-seen process", "type": "rare", "severity": "MEDIUM", "message": "Host {key} executed first-seen {value}", "keyField": "host", "valueField": "process", "warmup": 10, "mitre": "T1059", "match": [{"field": "source", "op": "eq", "value": "edr"}]},
+      "tests": [{"name": "new process after warmup", "expectAlert": true, "events": [{"repeat": 10, "source": "edr", "host": "proc-1", "msg": "process start", "fields": {"process": "bash"}}, {"source": "edr", "host": "proc-1", "msg": "process start", "fields": {"process": "socat"}}]}, {"name": "known process", "expectAlert": false, "events": [{"repeat": 11, "source": "edr", "host": "proc-2", "msg": "process start", "fields": {"process": "bash"}}]}]
+    },
+    {
+      "id": "UEBA-USER-VOLUME", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
+      "description": "Account activity volume deviates from its learned baseline.", "dataSources": ["audit", "application", "auth"], "mitre": ["T1078"],
+      "spec": {"id": "UEBA-USER-VOLUME", "name": "Account activity spike", "type": "baseline", "severity": "MEDIUM", "message": "Account {key} generated {count} operations versus baseline {baseline}", "keyField": "user", "window": "300s", "baselineWindows": 12, "warmup": 3, "sigma": 2.5, "minCount": 10, "mitre": "T1078", "match": []},
+      "tests": [{"name": "operation spike after warmup", "expectAlert": true, "events": [{"timestamp": "2026-01-01T00:00:01Z", "source": "audit", "msg": "operation", "fields": {"user": "alice"}}, {"timestamp": "2026-01-01T00:05:01Z", "source": "audit", "msg": "operation", "fields": {"user": "alice"}}, {"timestamp": "2026-01-01T00:10:01Z", "source": "audit", "msg": "operation", "fields": {"user": "alice"}}, {"repeat": 10, "timestamp": "2026-01-01T00:15:01Z", "source": "audit", "msg": "operation", "fields": {"user": "alice"}}]}, {"name": "below minimum", "expectAlert": false, "events": [{"timestamp": "2026-01-01T01:00:01Z", "source": "audit", "msg": "operation", "fields": {"user": "bob"}}, {"timestamp": "2026-01-01T01:05:01Z", "source": "audit", "msg": "operation", "fields": {"user": "bob"}}, {"timestamp": "2026-01-01T01:10:01Z", "source": "audit", "msg": "operation", "fields": {"user": "bob"}}, {"repeat": 9, "timestamp": "2026-01-01T01:15:01Z", "source": "audit", "msg": "operation", "fields": {"user": "bob"}}]}]
+    },
+    {
+      "id": "WATCH-BLOCKED-IP", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
+      "description": "Activity from an IP on the maintained blocklist.", "dataSources": ["firewall", "proxy", "auth"], "mitre": ["T1071"],
+      "spec": {"id": "WATCH-BLOCKED-IP", "name": "Blocked IP activity", "type": "pattern", "severity": "CRITICAL", "message": "Blocked source remained active: {msg}", "mitre": "T1071", "match": [{"field": "src_ip", "op": "inlist", "value": "blocked_ips"}]},
+      "tests": [{"name": "blocked source", "expectAlert": true, "events": [{"source": "firewall", "host": "fw-1", "msg": "connection", "fields": {"src_ip": "10.0.0.66"}}]}, {"name": "unlisted source", "expectAlert": false, "events": [{"source": "firewall", "host": "fw-1", "msg": "connection", "fields": {"src_ip": "10.0.0.67"}}]}]
+    },
+    {
+      "id": "WATCH-CROWN-JEWEL", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
+      "description": "Repeated access to an asset on the crown-jewel watchlist.", "dataSources": ["firewall", "netflow", "application"], "mitre": ["T1021"],
+      "spec": {"id": "WATCH-CROWN-JEWEL", "name": "Crown-jewel access", "type": "threshold", "severity": "HIGH", "message": "Crown jewel {key} was accessed {count} times", "keyField": "dst_ip", "threshold": 20, "window": "120s", "mitre": "T1021", "match": [{"field": "dst_ip", "op": "inlist", "value": "crown_jewels"}]},
+      "tests": [{"name": "twenty accesses", "expectAlert": true, "events": [{"repeat": 20, "source": "firewall", "host": "fw-1", "msg": "connection", "fields": {"dst_ip": "10.0.0.10"}}]}, {"name": "unlisted destination", "expectAlert": false, "events": [{"repeat": 20, "source": "firewall", "host": "fw-1", "msg": "connection", "fields": {"dst_ip": "10.0.0.11"}}]}]
+    },
+    {
+      "id": "WATCH-PRIV-ACCOUNT", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
+      "description": "Sensitive operation by an account on the privileged-account watchlist.", "dataSources": ["audit", "database", "linux"], "mitre": ["T1078"],
+      "spec": {"id": "WATCH-PRIV-ACCOUNT", "name": "Privileged account operation", "type": "pattern", "severity": "HIGH", "message": "Privileged account performed a sensitive action: {msg}", "mitre": "T1078", "match": [{"field": "user", "op": "inlist", "value": "privileged_accounts"}, {"field": "msg", "op": "regex", "value": "(?i)delete|drop|export|chmod 777|useradd"}]},
+      "tests": [{"name": "root export", "expectAlert": true, "events": [{"source": "audit", "host": "db-1", "msg": "export customer table", "fields": {"user": "root"}}]}, {"name": "ordinary read", "expectAlert": false, "events": [{"source": "audit", "host": "db-1", "msg": "select dashboard", "fields": {"user": "analyst"}}]}]
+    },
+    {
+      "id": "WEB-ATTACK", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
+      "description": "Broad web attack terminology retained for compatibility.", "dataSources": ["web", "waf"], "mitre": ["T1190"],
+      "spec": {"id": "WEB-ATTACK", "name": "Web attack indicator", "type": "pattern", "severity": "HIGH", "message": "Possible web attack on {host}: {msg}", "mitre": "T1190", "match": [{"field": "source", "op": "eq", "value": "web"}, {"field": "msg", "op": "regex", "value": "(?i)sqli|xss|injection|attack"}]},
+      "tests": [{"name": "XSS attack", "expectAlert": true, "events": [{"source": "web", "host": "web-1", "msg": "XSS attack blocked", "fields": {}}]}, {"name": "health request", "expectAlert": false, "events": [{"source": "web", "host": "web-1", "msg": "GET /health 200", "fields": {}}]}]
     }
   ]
 }

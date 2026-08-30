@@ -40,6 +40,10 @@ public class AssetScanner {
 
     @Scheduled(fixedDelay = 60_000, initialDelay = 20_000)
     public void scan() {
+        TenantContext.runWith("default", this::scanDefaultTenant);
+    }
+
+    private void scanDefaultTenant() {
         if (!simulationAllowed()) {
             log.info("asset-collect simulator is disabled; waiting for an Agent/CMDB source");
             return;

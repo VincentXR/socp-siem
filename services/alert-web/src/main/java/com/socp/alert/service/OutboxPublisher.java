@@ -9,6 +9,7 @@ import com.socp.alert.domain.*;
 import com.socp.alert.repository.*;
 import com.socp.alert.service.*;
 import com.socp.platform.tenant.context.TenantContext;
+import com.socp.platform.tenant.persistence.TenantSystemJob;
 
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
@@ -100,6 +101,7 @@ public class OutboxPublisher {
 
     @Scheduled(fixedDelayString = "${socp.alert.outbox.poll-interval-ms:1000}",
             initialDelayString = "${socp.alert.outbox.initial-delay-ms:1000}")
+    @TenantSystemJob
     public void publish() {
         try {
             Instant now = Instant.now();
@@ -186,6 +188,7 @@ public class OutboxPublisher {
 
     @Scheduled(fixedDelayString = "${socp.alert.outbox.cleanup-interval-ms:3600000}",
             initialDelayString = "${socp.alert.outbox.cleanup-initial-delay-ms:60000}")
+    @TenantSystemJob
     void cleanupPublished() {
         try {
             int removed = outboxRepo.deletePublishedBefore(Instant.now().minusMillis(retentionMs));

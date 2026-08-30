@@ -18,7 +18,7 @@ import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { exportSearch, splSearch, type SearchResult } from '../api'
 import { useI18n } from '../composables/useI18n'
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 
 const pendingQuery = typeof window === 'undefined' ? null : window.sessionStorage.getItem('socp.search.query')
 const query = ref(pendingQuery || 'source=auth severity=HIGH')
@@ -43,7 +43,7 @@ async function search() {
     result.value = await splSearch(query.value)
   } catch (err) {
     result.value = null
-    error.value = `${locale.value === 'zh-CN' ? '检索失败：' : 'Search failed: '}${err instanceof Error ? err.message : String(err)}`
+    error.value = `${t('inline.searchView.searchFailed')}${err instanceof Error ? err.message : String(err)}`
   } finally {
     loading.value = false
   }
@@ -79,11 +79,11 @@ onMounted(() => {
 
     <template v-if="result">
       <el-alert v-if="result.degraded" type="warning"
-        :title="locale === 'zh-CN' ? `搜索已降级到 ${result.source}` : `Search degraded to ${result.source}`"
-        :description="result.degradationReason || (locale === 'zh-CN' ? '结果可能只覆盖本地缓存。' : 'Results may only cover local cache.')"
+        :title="t('inline.searchView.searchDegradedTo', { p0: result.source })"
+        :description="result.degradationReason || (t('inline.searchView.resultsMayOnlyCoverLocalCache'))"
         :closable="false" show-icon class="search-error" />
       <el-card shadow="never" class="search-result-card">
-        <template #header>{{ locale === 'zh-CN' ? `命中 ${result.total} 条事件` : `Matched ${result.total} events` }}</template>
+        <template #header>{{ t('inline.searchView.matchedEvents', { p0: result.total }) }}</template>
         <el-table :data="result.events" size="small" border allow-drag-last-column max-height="420" @header-dragend="onHeaderDragEnd">
           <el-table-column prop="timestamp" column-key="timestamp" :label="t('common.timestamp')" :width="columnWidth('timestamp', 150)" sortable><template #default="{ row }">{{ row.timestamp.slice(0, 19).replace('T', ' ') }}</template></el-table-column>
           <el-table-column prop="source" column-key="source" :label="t('common.source')" :width="columnWidth('source', 90)" sortable />
@@ -93,10 +93,10 @@ onMounted(() => {
         </el-table>
       </el-card>
       <el-card v-if="result.stat" shadow="never">
-        <template #header>{{ result.stat.type === 'timechart' ? (locale === 'zh-CN' ? '时间分布（按天）' : 'Time Distribution (Daily)') : (locale === 'zh-CN' ? `统计（${result.stat.type === 'top' ? 'Top' : '分组计数'}）` : `Stats (${result.stat.type === 'top' ? 'Top' : 'Group Count'})`) }}</template>
+        <template #header>{{ result.stat.type === 'timechart' ? (t('inline.searchView.timeDistributionDaily')) : (t('inline.searchView.stats', { p0: result.stat.type === 'top' ? 'Top' : 'Group Count', p1: result.stat.type === 'top' ? 'Top' : '分组计数' })) }}</template>
         <el-table :data="result.stat.rows" size="small" border>
           <el-table-column prop="key" label="Key" sortable show-overflow-tooltip />
-          <el-table-column prop="count" :label="locale === 'zh-CN' ? '条数' : 'Count'" width="220" sortable>
+          <el-table-column prop="count" :label="t('inline.searchView.count')" width="220" sortable>
             <template #default="{ row }">
               <div class="search-stat-row"><span>{{ row.count }}</span><span class="search-stat-track"><i :style="{ width: `${Math.min(100, (row.count / maxStatCount) * 100)}%` }" /></span></div>
             </template>

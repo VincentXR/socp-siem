@@ -48,14 +48,6 @@
             <artifactId>socp-data</artifactId>
         </dependency>
         <dependency>
-            <groupId>com.socp.platform</groupId>
-            <artifactId>socp-rule</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.socp.platform</groupId>
-            <artifactId>socp-client</artifactId>
-        </dependency>
-        <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-autoconfigure</artifactId>
         </dependency>

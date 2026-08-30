@@ -5,6 +5,7 @@ import com.socp.detect.model.persistence.entity.AnalyzedEntity;
 import com.socp.detect.model.persistence.repository.AnalyzedRepository;
 import com.socp.detect.model.persistence.store.AnalysisReceiptStore;
 import com.socp.platform.tenant.context.TenantContext;
+import com.socp.platform.tenant.persistence.TenantSystemJob;
 import com.socp.rule.config.Rules;
 import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
@@ -183,6 +184,7 @@ public class AnalyzeService {
 
     @Scheduled(fixedDelayString = "${socp.detect.model.cleanup-interval-ms:3600000}",
             initialDelayString = "${socp.detect.model.cleanup-initial-delay-ms:60000}")
+    @TenantSystemJob
     @Transactional
     public void cleanupExpired() {
         Duration safeRetention = retention == null || retention.isNegative() || retention.isZero()

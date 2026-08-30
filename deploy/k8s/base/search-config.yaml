@@ -1,13 +1,13 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: detect-web
+  name: search-config
   namespace: socp-system
-  labels: &detect-labels
-    app.kubernetes.io/name: detect-web
+  labels: &search-labels
+    app.kubernetes.io/name: search-config
     app.kubernetes.io/part-of: socp-siem
 spec:
-  replicas: 3
+  replicas: 2
   revisionHistoryLimit: 5
   strategy:
     type: RollingUpdate
@@ -15,10 +15,10 @@ spec:
       maxUnavailable: 0
       maxSurge: 1
   selector:
-    matchLabels: *detect-labels
+    matchLabels: *search-labels
   template:
     metadata:
-      labels: *detect-labels
+      labels: *search-labels
     spec:
       serviceAccountName: socp-service
       terminationGracePeriodSeconds: 45
@@ -29,8 +29,8 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       containers:
-        - name: detect-web
-          image: ghcr.io/vincentxr/socp-detect-web@sha256:REPLACE_WITH_RELEASE_DIGEST
+        - name: search-config
+          image: ghcr.io/vincentxr/socp-search-config@sha256:REPLACE_WITH_RELEASE_DIGEST
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -41,33 +41,31 @@ spec:
             - secretRef:
                 name: socp-runtime-secrets
           env:
-            - name: SOCP_KAFKA_GROUP_ID
-              value: socp-detect
             - name: SOCP_HEALTH_REQUIRED_ENDPOINTS
-              value: kafka=kafka.socp-data.svc.cluster.local:9092,alert=alert-web:8080
+              value: kafka=kafka.socp-data.svc.cluster.local:9092,opensearch=opensearch.socp-data.svc.cluster.local:9200,detect=detect-web:8080
           readinessProbe:
             httpGet:
-              path: /detect-web/actuator/health/readiness
+              path: /search-config/actuator/health/readiness
               port: http
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /detect-web/actuator/health/liveness
+              path: /search-config/actuator/health/liveness
               port: http
             periodSeconds: 20
             timeoutSeconds: 3
             failureThreshold: 3
           startupProbe:
             httpGet:
-              path: /detect-web/actuator/health
+              path: /search-config/actuator/health
               port: http
             periodSeconds: 5
             failureThreshold: 30
           resources:
             requests:
-              cpu: 250m
+              cpu: 200m
               memory: 512Mi
             limits:
               cpu: "2"
@@ -81,11 +79,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: detect-web
+  name: search-config
   namespace: socp-system
 spec:
   selector:
-    app.kubernetes.io/name: detect-web
+    app.kubernetes.io/name: search-config
   ports:
     - name: http
       port: 8080
@@ -95,10 +93,10 @@ spec:
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: detect-web
+  name: search-config
   namespace: socp-system
 spec:
-  minAvailable: 2
+  minAvailable: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: detect-web
+      app.kubernetes.io/name: search-config

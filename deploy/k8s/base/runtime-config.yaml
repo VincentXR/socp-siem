@@ -17,3 +17,8 @@ data:
   SOCP_PG_HOST: postgres.socp-data.svc.cluster.local
   SOCP_PG_PORT: "5432"
   SOCP_OPENSEARCH_URL: https://opensearch.socp-data.svc.cluster.local:9200
+  SOCP_SSA_URI: http://alert-web:8080
+  SOCP_GLS_URI: http://search-config:8080
+  SOCP_GAS_WEB_URI: http://detect-web:8080
+  SOCP_DETECT_URL: http://detect-web:8080
+  SOCP_ALERT_URL: http://alert-web:8080

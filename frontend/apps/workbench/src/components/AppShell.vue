@@ -22,7 +22,7 @@ const emit = defineEmits<{
   (event: 'logout'): void
 }>()
 
-const { t, locale, toggleLocale } = useI18n()
+const { t, toggleLocale } = useI18n()
 
 </script>
 
@@ -66,7 +66,7 @@ const { t, locale, toggleLocale } = useI18n()
         <span class="header-spacer" />
         <el-button size="small" :title="t('app.langToggle')" @click="toggleLocale">
           <span class="header-icon" aria-hidden="true">🌐</span>
-          {{ locale === 'zh-CN' ? 'EN' : '中文' }}
+          {{ t('inline.appShell.message') }}
         </el-button>
         <el-button size="small" :title="t('app.themeToggle')" @click="emit('toggle-theme')">
           <span class="header-icon" aria-hidden="true">

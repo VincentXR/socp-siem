@@ -29,7 +29,7 @@ import { SEVERITIES } from '../api'
 import { readImportRows, type ImportRow } from '../lib/resource-import'
 import { useI18n } from '../composables/useI18n'
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 
 const tiStat = ref<{ total?: number; byType?: Record<string, number> }>({})
 const iocType = ref('')
@@ -89,13 +89,13 @@ async function addIoc() {
     tags: newIoc.value.tags ? newIoc.value.tags.split(',').map(s => s.trim()).filter(Boolean) : undefined,
   })
   showIocDialog.value = false
-  ElMessage.success(locale.value === 'zh-CN' ? '威胁情报已添加' : 'Threat indicator added')
+  ElMessage.success(t('inline.threatIntelView.threatIndicatorAdded'))
   await loadTi()
 }
 
 async function removeIoc(id: string) {
   await threatIntelApi.remove(id)
-  ElMessage.success(locale.value === 'zh-CN' ? '已删除' : 'Deleted')
+  ElMessage.success(t('inline.threatIntelView.deleted'))
   await loadTi()
 }
 
@@ -131,11 +131,11 @@ async function importIocFile(event: Event) {
       }
     })
     const result = await threatIntelApi.bulkImport(payload)
-    if (result.skipped) ElMessage.warning(locale.value === 'zh-CN' ? `已导入 ${result.imported} 条，跳过 ${result.skipped} 条` : `Imported ${result.imported}, skipped ${result.skipped}`)
-    else ElMessage.success(locale.value === 'zh-CN' ? `成功导入 ${result.imported} 条威胁情报` : `Successfully imported ${result.imported} indicators`)
+    if (result.skipped) ElMessage.warning(t('inline.threatIntelView.importedSkipped', { p0: result.imported, p1: result.skipped }))
+    else ElMessage.success(t('inline.threatIntelView.successfullyImportedIndicators', { p0: result.imported }))
     await loadTi()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : (locale.value === 'zh-CN' ? '威胁情报导入失败' : 'Import failed'))
+    ElMessage.error(error instanceof Error ? error.message : (t('inline.threatIntelView.importFailed')))
   } finally {
     input.value = ''
   }
@@ -151,7 +151,7 @@ onMounted(loadTi)
     </PageHeader>
     <div class="page-metrics ti-metrics">
       <el-card shadow="never" :body-style="{ padding: '12px 18px' }">
-        <div style="font-size:12px;color:#909399">{{ locale === 'zh-CN' ? '情报总量' : 'Total IOCs' }}</div>
+        <div style="font-size:12px;color:#909399">{{ t('inline.threatIntelView.totalIocs') }}</div>
         <div style="font-size:22px;font-weight:700">{{ tiStat.total ?? 0 }}</div>
       </el-card>
       <el-card v-for="(count, kind) in (tiStat.byType || {})" :key="kind" shadow="never" :body-style="{ padding: '12px 18px' }">
@@ -160,22 +160,22 @@ onMounted(loadTi)
       </el-card>
     </div>
     <FilterToolbar class="ti-query-toolbar" :count="iocsFiltered.length">
-      <el-input v-model="iocKeyword" :placeholder="locale === 'zh-CN' ? '搜索情报值 / 来源 / 描述；输入 IP 或域名可查询命中' : 'Search value / source / description; Enter IP to match'" clearable @input="iocPage = 1" @keyup.enter="doTiMatch" />
-      <el-button type="primary" @click="doTiMatch">{{ locale === 'zh-CN' ? '查询命中' : 'Check Match' }}</el-button>
-      <el-select v-model="iocType" :placeholder="locale === 'zh-CN' ? '全部类型' : 'All Types'" clearable @change="loadTi">
+      <el-input v-model="iocKeyword" :placeholder="t('inline.threatIntelView.searchValueSourceDescriptionEnterIpTo')" clearable @input="iocPage = 1" @keyup.enter="doTiMatch" />
+      <el-button type="primary" @click="doTiMatch">{{ t('inline.threatIntelView.checkMatch') }}</el-button>
+      <el-select v-model="iocType" :placeholder="t('inline.threatIntelView.allTypes')" clearable @change="loadTi">
         <el-option v-for="t in ['ip', 'domain', 'url', 'sha256', 'email']" :key="t" :label="t" :value="t" />
       </el-select>
     </FilterToolbar>
-    <el-alert v-if="tiMatchResult" :title="tiMatchResult.matched ? (locale === 'zh-CN' ? `命中情报库：${tiMatchResult.ioc?.value}（${tiMatchResult.ioc?.severity}）` : `Matched Threat Intel: ${tiMatchResult.ioc?.value} (${tiMatchResult.ioc?.severity})`) : (locale === 'zh-CN' ? '未命中情报库' : 'No Threat Intel Matched')" :type="tiMatchResult.matched ? 'error' : 'info'" :closable="false" style="margin-bottom:14px" />
+    <el-alert v-if="tiMatchResult" :title="tiMatchResult.matched ? t('inline.threatIntelView.matchedThreatIntel', { p0: tiMatchResult.ioc?.value ?? '—', p1: tiMatchResult.ioc?.severity ?? '—' }) : t('inline.threatIntelView.noThreatIntelMatched')" :type="tiMatchResult.matched ? 'error' : 'info'" :closable="false" style="margin-bottom:14px" />
     <div class="add-bar">
       <el-button type="primary" @click="openIocDialog">+ {{ t('threat.addIoc') }}</el-button>
-      <el-button @click="selectIocImport">{{ locale === 'zh-CN' ? '批量导入' : 'Batch Import' }}</el-button>
+      <el-button @click="selectIocImport">{{ t('inline.threatIntelView.batchImport') }}</el-button>
       <input ref="iocImportInput" type="file" accept=".csv,.json,application/json,text/csv" hidden @change="importIocFile" />
-      <span class="hint">{{ locale === 'zh-CN' ? 'IP / 域名 / URL / 文件哈希 / 邮箱，命中后被规则与富化引用' : 'IP / Domain / URL / File Hash / Email, matched automatically during detection' }}</span>
+      <span class="hint">{{ t('inline.threatIntelView.ipDomainUrlFileHashEmailMatched') }}</span>
     </div>
     <el-dialog v-model="showIocDialog" :title="t('threat.addIoc')" width="560px">
       <el-form label-width="90px">
-        <el-form-item :label="t('threat.iocValue')"><el-input v-model="newIoc.value" :placeholder="locale === 'zh-CN' ? '如 1.2.3.4' : 'e.g. 1.2.3.4'" /></el-form-item>
+        <el-form-item :label="t('threat.iocValue')"><el-input v-model="newIoc.value" :placeholder="t('inline.threatIntelView.eG1234')" /></el-form-item>
         <el-form-item :label="t('common.type')"><el-select v-model="newIoc.type" style="width:160px"><el-option v-for="t in ['ip', 'domain', 'url', 'sha256', 'email']" :key="t" :label="t" :value="t" /></el-select></el-form-item>
         <el-form-item :label="t('common.severity')"><el-select v-model="newIoc.severity" style="width:160px"><el-option v-for="s in SEVERITIES" :key="s" :label="t('severities.' + s) || s" :value="s" /></el-select></el-form-item>
         <el-form-item :label="t('common.description')"><el-input v-model="newIoc.description" :placeholder="t('common.description')" /></el-form-item>

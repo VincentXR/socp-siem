@@ -14,7 +14,7 @@ TYPES = {"pattern", "threshold", "correlation", "correlation-set", "baseline", "
 SEVERITIES = {"INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"}
 OPS = {"eq", "ne", "contains", "startswith", "endswith", "ge", "gtsev",
        "regex", "gt", "gte", "lt", "lte", "inlist", "notinlist"}
-MIN_RULES = 20
+EXPECTED_RULES = 39
 
 
 def fail(errors, message):
@@ -59,8 +59,8 @@ def validate(path):
     if not isinstance(rules, list) or not rules:
         fail(errors, "rules must be a non-empty array")
         return errors
-    if len(rules) < MIN_RULES:
-        fail(errors, f"rules must contain at least {MIN_RULES} executable detections")
+    if len(rules) != EXPECTED_RULES:
+        fail(errors, f"rules must contain exactly {EXPECTED_RULES} executable detections, got {len(rules)}")
 
     ids = set()
     for index, item in enumerate(rules):
@@ -129,6 +129,11 @@ def validate(path):
                     fail(errors, f"{prefix} {rule_id} tests[{ti}] needs events")
                 elif any(not isinstance(event, dict) for event in test["events"]):
                     fail(errors, f"{prefix} {rule_id} tests[{ti}] contains malformed event")
+                else:
+                    for event in test["events"]:
+                        repeat = event.get("repeat", 1)
+                        if not isinstance(repeat, int) or isinstance(repeat, bool) or repeat <= 0:
+                            fail(errors, f"{prefix} {rule_id} tests[{ti}] repeat must be a positive integer")
     return errors
 
 
