@@ -20,11 +20,12 @@ class SplQuerySemanticsTest {
 
     @Test
     void parsesFilterPipelineAndImplicitAnd() {
-        SearchQueryAst ast = parser.parse("source=auth severity>=HIGH | top src_ip 5 | limit 20");
+        SearchQueryAst ast = parser.parse("source=auth severity>=HIGH | sort timestamp desc | limit 20");
 
         assertThat(ast.filter()).isInstanceOf(FilterExpression.And.class);
         assertThat(ast.pipeline()).containsExactly(
-                new PipelineCommand.Top("src_ip", 5), new PipelineCommand.Limit(20));
+                new PipelineCommand.Sort("timestamp", PipelineCommand.SortOrder.DESC),
+                new PipelineCommand.Limit(20));
     }
 
     @Test
@@ -37,10 +38,11 @@ class SplQuerySemanticsTest {
 
     @Test
     void parsesEverySupportedPipelineCommand() {
-        SearchQueryAst ast = parser.parse("* | count by source | timechart | sort timestamp desc | head 3");
-
-        assertThat(ast.pipeline()).containsExactly(
-                new PipelineCommand.CountBy("source"), new PipelineCommand.Timechart(),
+        assertThat(parser.parse("* | count by source").pipeline())
+                .containsExactly(new PipelineCommand.CountBy("source"));
+        assertThat(parser.parse("* | timechart").pipeline())
+                .containsExactly(new PipelineCommand.Timechart());
+        assertThat(parser.parse("* | sort timestamp desc | head 3").pipeline()).containsExactly(
                 new PipelineCommand.Sort("timestamp", PipelineCommand.SortOrder.DESC),
                 new PipelineCommand.Head(3));
     }
@@ -146,10 +148,12 @@ class SplQuerySemanticsTest {
     void compilerCoversAllComparisonOperatorsRangesAndAggregations() {
         SearchQueryAst ast = parser.parse(
                 "eventId=e1 source!=auth msg contains \"failed\" timestamp>=2026-08-01T00:00:00Z "
-                        + "severity<INVALID | top src_ip 3 | count by host | timechart | sort source asc | head 4 | limit 2")
+                        + "severity<HIGH | sort source asc | head 4")
                 .withPage(0 + 20, null);
-        String dsl = compiler.compile(ast, "tenant-a", 200_001).toString();
-        assertThat(dsl).contains("must_not", "match", "range", "match_none", "count_by", "timechart").doesNotContain("query_string");
+        String dsl = compiler.compile(ast, "tenant-a", 20).toString();
+        assertThat(dsl).contains("must_not", "match", "range").doesNotContain("query_string");
+        assertThat(compiler.compile(parser.parse("* | top src_ip 3"), "tenant-a").toString())
+                .contains("top");
 
         SearchQueryAst cursorQuery = parser.parse("*").withPage(10, LocalQueryExecutor.encodeCursor(event("cursor", "10.0.0.1", "INFO")));
         assertThat(compiler.compile(cursorQuery, "tenant-a").path("search_after")).isNotEmpty();
@@ -157,6 +161,60 @@ class SplQuerySemanticsTest {
                 .doesNotThrowAnyException();
         assertThatThrownBy(() -> OpenSearchQueryCompiler.fieldPath("bad field", true))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void semanticAnalyzerRejectsInvalidFieldTypesAndPipelineShapes() {
+        assertThatThrownBy(() -> parser.parse("severity>=urgent"))
+                .isInstanceOf(SplSemanticException.class)
+                .hasMessageContaining("invalid severity", "position");
+        assertThatThrownBy(() -> parser.parse("timestamp>=yesterday"))
+                .isInstanceOf(SplSemanticException.class)
+                .hasMessageContaining("invalid date");
+        assertThatThrownBy(() -> parser.parse("count>=many"))
+                .isInstanceOf(SplSemanticException.class)
+                .hasMessageContaining("invalid integer");
+        assertThatThrownBy(() -> parser.parse("unknown_field>1"))
+                .isInstanceOf(SplSemanticException.class)
+                .hasMessageContaining("does not support range");
+        assertThatThrownBy(() -> parser.parse("source contains auth"))
+                .isInstanceOf(SplSemanticException.class)
+                .hasMessageContaining("does not support contains");
+        assertThatThrownBy(() -> parser.parse("* | top unknown_field"))
+                .isInstanceOf(SplSemanticException.class)
+                .hasMessageContaining("not aggregatable");
+        assertThatThrownBy(() -> parser.parse("* | sort msg"))
+                .isInstanceOf(SplSemanticException.class)
+                .hasMessageContaining("not sortable");
+        assertThatThrownBy(() -> parser.parse("* | top src_ip | count by source"))
+                .isInstanceOf(SplSemanticException.class)
+                .hasMessageContaining("one terminal aggregation");
+        assertThatThrownBy(() -> parser.parse("* | count by source | limit 10"))
+                .isInstanceOf(SplSemanticException.class)
+                .hasMessageContaining("cannot be combined");
+        assertThatThrownBy(() -> parser.parse("* | count by source | sort source"))
+                .isInstanceOf(SplSemanticException.class)
+                .hasMessageContaining("final pipeline command");
+        assertThatCode(() -> parser.parse("custom_field=value"))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void semanticAnalyzerEnforcesResultAndCursorBoundsAtExecutionBoundaries() {
+        assertThatThrownBy(() -> compiler.compile(parser.parse("*").withPage(5_001, null), "tenant-a"))
+                .isInstanceOf(SplSemanticException.class)
+                .hasMessageContaining("page size");
+        String cursor = LocalQueryExecutor.encodeCursor(event("cursor", "10.0.0.1", "INFO"));
+        assertThatThrownBy(() -> executor.execute(
+                parser.parse("* | sort timestamp").withPage(10, cursor), List.of()))
+                .isInstanceOf(SplSemanticException.class)
+                .hasMessageContaining("cursor paging");
+        assertThatThrownBy(() -> parser.parse("* | head 5001"))
+                .isInstanceOf(SplSemanticException.class)
+                .hasMessageContaining("head limit");
+        assertThatThrownBy(() -> parser.parse("* | top src_ip 1001"))
+                .isInstanceOf(SplSemanticException.class)
+                .hasMessageContaining("top limit");
     }
 
     @Test
@@ -169,7 +227,7 @@ class SplQuerySemanticsTest {
                         Map.of("tenant_id", "tenant-a", "count", "2", "src_ip", "10.0.0.3"), Map.of()));
         assertThat(executor.execute(parser.parse("source=auth severity>=HIGH"), events).events())
                 .extracting(SearchEvent::eventId).containsExactly("1");
-        assertThat(executor.execute(parser.parse("count>=10 | sort count asc | head 1 | limit 1"), events).events())
+        assertThat(executor.execute(parser.parse("count>=10 | sort count asc | head 1"), events).events())
                 .extracting(SearchEvent::eventId).containsExactly("2");
         assertThat(executor.execute(parser.parse("source!=missing | count by source"), events).stat().rows())
                 .isNotEmpty();

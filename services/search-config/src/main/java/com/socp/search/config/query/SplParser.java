@@ -7,10 +7,16 @@ import java.util.Locale;
 /** Parser for the intentionally small, documented SPL subset. */
 public final class SplParser {
     private final SplLexer lexer;
+    private final QuerySemanticAnalyzer semanticAnalyzer;
 
-    public SplParser() { this(new SplLexer()); }
+    public SplParser() { this(new SplLexer(), QuerySemanticAnalyzer.standard()); }
 
-    public SplParser(SplLexer lexer) { this.lexer = lexer; }
+    public SplParser(SplLexer lexer) { this(lexer, QuerySemanticAnalyzer.standard()); }
+
+    public SplParser(SplLexer lexer, QuerySemanticAnalyzer semanticAnalyzer) {
+        this.lexer = lexer;
+        this.semanticAnalyzer = semanticAnalyzer;
+    }
 
     public SearchQueryAst parse(String query) {
         List<SplLexer.Token> tokens = lexer.tokenize(query);
@@ -19,7 +25,7 @@ public final class SplParser {
         List<PipelineCommand> commands = new ArrayList<>();
         while (parser.accept(SplLexer.Kind.PIPE)) commands.add(parser.parseCommand());
         parser.expect(SplLexer.Kind.EOF, "unexpected token");
-        return new SearchQueryAst(filter, commands);
+        return semanticAnalyzer.analyze(new SearchQueryAst(filter, commands));
     }
 
     private static final class Parser {

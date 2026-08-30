@@ -17,7 +17,10 @@ import java.util.stream.Collectors;
 
 /** Executes the same AST used by the OpenSearch compiler against the bounded local cache. */
 public final class LocalQueryExecutor {
+    private static final QuerySemanticAnalyzer SEMANTIC_ANALYZER = QuerySemanticAnalyzer.standard();
+
     public SplEngine.QueryResult execute(SearchQueryAst ast, List<SearchEvent> corpus) {
+        SEMANTIC_ANALYZER.analyze(ast);
         long started = System.nanoTime();
         List<SearchEvent> matched = (corpus == null ? List.<SearchEvent>of() : corpus).stream()
                 .filter(Objects::nonNull)

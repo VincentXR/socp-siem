@@ -68,6 +68,21 @@ class SearchControllerTest {
                 .isEqualTo(503);
     }
 
+    @Test
+    void enforcesSeparateInteractiveAndExportLimits() {
+        SearchController controller = new SearchController(
+                mock(SplEngine.class), mock(SearchStore.class), mock(OsEventReader.class));
+
+        assertThatThrownBy(() -> controller.searchHttp("*", 501, null))
+                .isInstanceOf(ApiException.class)
+                .extracting(error -> ((ApiException) error).getCode())
+                .isEqualTo(400);
+        assertThatThrownBy(() -> controller.export("*", "json", 5_001, null))
+                .isInstanceOf(ApiException.class)
+                .extracting(error -> ((ApiException) error).getCode())
+                .isEqualTo(400);
+    }
+
     private static SearchEvent event(String id, String timestamp) {
         return new SearchEvent(id, Instant.parse(timestamp), "auth", "host-1", "HIGH", "failed login",
                 Map.of("tenant_id", "default"), Map.of());

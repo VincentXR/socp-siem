@@ -31,7 +31,17 @@ Baseline: `6aae664` on 2026-08-31.
     skipped), `DetectJournalPostgresMigrationTest` with
     `SOCP_TESTCONTAINERS=true` (1 test), `python build/verify-style.py`, and
     `git diff --check`.
-- [ ] P0-B-1 Typed SPL semantic validation.
+- [x] P0-B-1 Typed SPL semantic validation.
+  - A shared typed field catalog now validates equality, range, contains, sort,
+    aggregation, and cursor capabilities after parsing and again at execution
+    boundaries; invalid typed literals and unsupported dynamic-field operations
+    fail with stable semantic errors instead of falling through to a backend.
+  - Pipeline validation rejects duplicate/ambiguous terminal commands,
+    aggregation plus row limits, aggregation with cursors, and explicit cursor
+    sorts; interactive results are capped at 500 rows and exports at 5,000.
+  - Validation: search-config reactor tests (112 tests, 6 opt-in container tests
+    skipped), `python build/verify-event-schema.py`,
+    `python build/verify-style.py`, and `git diff --check`.
 - [ ] P0-B-2 Local/OpenSearch execution parity.
 - [ ] P0-B-3 Real OpenSearch parity and tenant tests.
 - [ ] P0-C-1 Indexer per-item write and offset invariants.

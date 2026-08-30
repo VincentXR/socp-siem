@@ -29,6 +29,7 @@ import java.util.List;
 public class SearchController {
 
     private static final int SEARCH_LIMIT = 200;
+    private static final int SEARCH_MAX_LIMIT = 500;
     private static final int EXPORT_LIMIT = 5_000;
 
     private final SplEngine engine;
@@ -51,7 +52,7 @@ public class SearchController {
             @RequestParam(value = "q", defaultValue = "") String q,
             @RequestParam(value = "limit", required = false) Integer limit,
             @RequestParam(value = "cursor", required = false) String cursor) {
-        return resolveSafely(q, bounded(limit, SEARCH_LIMIT), cursor);
+        return resolveSafely(q, bounded(limit, SEARCH_LIMIT, SEARCH_MAX_LIMIT), cursor);
     }
 
     /** Export follows the same source-selection policy as interactive search. */
@@ -61,7 +62,7 @@ public class SearchController {
             @RequestParam(defaultValue = "json") String format,
             @RequestParam(value = "limit", required = false) Integer limit,
             @RequestParam(value = "cursor", required = false) String cursor) {
-        SplEngine.QueryResult result = resolveSafely(q, bounded(limit, EXPORT_LIMIT), cursor);
+        SplEngine.QueryResult result = resolveSafely(q, bounded(limit, EXPORT_LIMIT, EXPORT_LIMIT), cursor);
         String filename;
         String contentType;
         String body;
@@ -117,9 +118,11 @@ public class SearchController {
                 "OpenSearch did not return a result; data is limited to the local cache");
     }
 
-    private static int bounded(Integer requested, int fallback) {
+    private static int bounded(Integer requested, int fallback, int maximum) {
         if (requested == null) return fallback;
-        if (requested < 1 || requested > 100_000) throw ApiException.badRequest("limit must be between 1 and 100000");
+        if (requested < 1 || requested > maximum) {
+            throw ApiException.badRequest("limit must be between 1 and " + maximum);
+        }
         return requested;
     }
 

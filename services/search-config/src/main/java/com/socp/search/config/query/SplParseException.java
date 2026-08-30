@@ -1,7 +1,7 @@
 package com.socp.search.config.query;
 
 /** A client-visible SPL syntax error with a zero-based character position. */
-public final class SplParseException extends IllegalArgumentException {
+public class SplParseException extends IllegalArgumentException {
     private final int position;
 
     public SplParseException(String message, int position) {

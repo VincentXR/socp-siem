@@ -14,6 +14,7 @@ import java.util.Locale;
 public final class OpenSearchQueryCompiler {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final List<String> SEVERITIES = List.of("INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL");
+    private static final QuerySemanticAnalyzer SEMANTIC_ANALYZER = QuerySemanticAnalyzer.standard();
 
     public ObjectNode compile(SearchQueryAst ast, String tenantId) {
         return compile(ast, tenantId, ast == null ? 200 : ast.pageSize());
@@ -22,6 +23,7 @@ public final class OpenSearchQueryCompiler {
     public ObjectNode compile(SearchQueryAst ast, String tenantId, int requestedSize) {
         if (ast == null) throw new IllegalArgumentException("query AST is required");
         if (!TenantContext.isValid(tenantId)) throw new IllegalArgumentException("valid tenant is required");
+        SEMANTIC_ANALYZER.analyze(ast);
         int size = Math.max(1, Math.min(100_000, requestedSize));
         ObjectNode root = MAPPER.createObjectNode();
         root.put("size", size);
