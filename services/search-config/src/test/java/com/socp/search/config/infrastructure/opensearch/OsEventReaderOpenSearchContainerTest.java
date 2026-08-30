@@ -14,9 +14,11 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -55,13 +57,13 @@ class OsEventReaderOpenSearchContainerTest {
         properties.setUrl("http://" + OPENSEARCH.getHost() + ":" + OPENSEARCH.getMappedPort(9200));
         properties.setSearchIndex(index);
         reader = new OsEventReader(properties);
-        put("/" + index + "/_doc/" + TENANT_A + "|evt-1?refresh=true", event(TENANT_A, "evt-1",
+        put(documentPath(TENANT_A, "evt-1"), event(TENANT_A, "evt-1",
                 "2026-08-30T00:00:00Z", "10.0.0.1", "auth", "HIGH"));
-        put("/" + index + "/_doc/" + TENANT_A + "|evt-2?refresh=true", event(TENANT_A, "evt-2",
+        put(documentPath(TENANT_A, "evt-2"), event(TENANT_A, "evt-2",
                 "2026-08-30T00:01:00Z", "10.0.0.1", "auth", "LOW"));
-        put("/" + index + "/_doc/" + TENANT_A + "|evt-3?refresh=true", event(TENANT_A, "evt-3",
+        put(documentPath(TENANT_A, "evt-3"), event(TENANT_A, "evt-3",
                 "2026-08-31T00:00:00Z", "10.0.0.2", "dns", "MEDIUM"));
-        put("/" + index + "/_doc/" + TENANT_B + "|evt-4?refresh=true", event(TENANT_B, "evt-4",
+        put(documentPath(TENANT_B, "evt-4"), event(TENANT_B, "evt-4",
                 "2026-08-30T00:02:00Z", "10.0.0.1", "auth", "CRITICAL"));
         TenantContext.set(TENANT_A);
     }
@@ -121,6 +123,11 @@ class OsEventReaderOpenSearchContainerTest {
 
         assertThat(second.events()).hasSize(1);
         assertThat(second.events().getFirst().eventId()).isNotEqualTo(first.events().getFirst().eventId());
+    }
+
+    private String documentPath(String tenant, String eventId) {
+        String documentId = URLEncoder.encode(tenant + "|" + eventId, StandardCharsets.UTF_8);
+        return "/" + index + "/_doc/" + documentId + "?refresh=true";
     }
 
     private static String event(String tenant, String id, String timestamp, String srcIp,

@@ -14,7 +14,6 @@ import java.nio.charset.StandardCharsets;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class OsEventReaderTest {
 
@@ -25,6 +24,7 @@ class OsEventReaderTest {
 
     @BeforeEach
     void setUp() throws Exception {
+        TenantContext.clear();
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", exchange -> {
             byte[] body = responseBody == null ? new byte[0] : responseBody.getBytes(StandardCharsets.UTF_8);
@@ -52,6 +52,7 @@ class OsEventReaderTest {
     @AfterEach
     void tearDown() {
         server.stop(0);
+        TenantContext.clear();
     }
 
     @Test
@@ -103,6 +104,6 @@ class OsEventReaderTest {
 
         responseBody = "not-json";
         assertNull(TenantContext.callWith("tenant-a", () -> reader.search("*", 10)));
-        assertTrue("tenant-a".equals(TenantContext.get()), "TenantContext.callWith must restore the caller scope");
+        assertNull(TenantContext.get(), "TenantContext.callWith must restore the caller scope");
     }
 }
