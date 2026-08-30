@@ -17,6 +17,7 @@ import ElRow from 'element-plus/es/components/row/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { ref } from 'vue'
 import type { Watchlist } from '../../api'
+import { useI18n } from '../../composables/useI18n'
 
 defineProps<{ watchlists: Watchlist[] }>()
 const emit = defineEmits<{
@@ -28,6 +29,7 @@ const emit = defineEmits<{
 const appendValues = ref<Record<string, string>>({})
 const newWatchlist = ref({ name: '', values: '' })
 const dialogVisible = ref(false)
+const { t } = useI18n()
 
 function splitValues(value: string) {
   return value.split(/[\n,\s，]+/).map(item => item.trim()).filter(Boolean)
@@ -58,19 +60,19 @@ function submitAppend(name: string) {
 <template>
   <div>
     <div class="add-bar">
-      <el-button type="primary" @click="openDialog">+ 新增观察名单</el-button>
-      <span class="hint">名单可被规则条件 <code class="mono">op=inlist / notinlist</code> 引用，改完立即生效，无需重载规则</span>
+      <el-button type="primary" @click="openDialog">+ {{ t('ueba.watchlistCreate') }}</el-button>
+      <span class="hint">{{ t('ueba.watchlistHint') }} <code class="mono">op=inlist / notinlist</code></span>
     </div>
-    <el-dialog v-model="dialogVisible" title="新增观察名单" width="560px">
+    <el-dialog v-model="dialogVisible" :title="t('ueba.watchlistCreate')" width="560px">
       <el-form label-width="92px">
-        <el-form-item label="名单标识"><el-input v-model="newWatchlist.name" placeholder="如 vip_accounts" /></el-form-item>
-        <el-form-item label="成员值">
-          <el-input v-model="newWatchlist.values" type="textarea" :rows="4" placeholder="值以逗号/空格/换行分隔" />
+        <el-form-item :label="t('ueba.watchlistName')"><el-input v-model="newWatchlist.name" :placeholder="t('ueba.watchlistNamePlaceholder')" /></el-form-item>
+        <el-form-item :label="t('ueba.watchlistValues')">
+          <el-input v-model="newWatchlist.values" type="textarea" :rows="4" :placeholder="t('ueba.watchlistValuesPlaceholder')" />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="submitCreate">创建/覆盖</el-button>
+        <el-button @click="dialogVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" @click="submitCreate">{{ t('ueba.overwrite') }}</el-button>
       </template>
     </el-dialog>
     <el-row :gutter="12">
@@ -79,17 +81,17 @@ function submitAppend(name: string) {
           <template #header>
             <div style="display:flex;align-items:center;gap:8px">
               <span class="mono" style="font-weight:600">{{ watchlist.name }}</span>
-              <el-tag size="small" type="info">{{ watchlist.size }} 项</el-tag>
-              <el-button link type="danger" size="small" style="margin-left:auto" @click="emit('remove', watchlist.name)">删除</el-button>
+              <el-tag size="small" type="info">{{ t('ueba.itemCount', { count: watchlist.size }) }}</el-tag>
+              <el-button link type="danger" size="small" style="margin-left:auto" @click="emit('remove', watchlist.name)">{{ t('common.delete') }}</el-button>
             </div>
           </template>
           <div class="wl-values">
             <el-tag v-for="value in watchlist.values" :key="value" size="small" style="margin:2px" class="mono">{{ value }}</el-tag>
-            <span v-if="!watchlist.values.length" style="color:#c0c4cc;font-size:12px">空名单</span>
+            <span v-if="!watchlist.values.length" style="color:#c0c4cc;font-size:12px">{{ t('ueba.emptyWatchlist') }}</span>
           </div>
           <div style="display:flex;gap:6px;margin-top:10px">
-            <el-input v-model="appendValues[watchlist.name]" size="small" placeholder="追加值" @keyup.enter="submitAppend(watchlist.name)" />
-            <el-button size="small" @click="submitAppend(watchlist.name)">追加</el-button>
+            <el-input v-model="appendValues[watchlist.name]" size="small" :placeholder="t('ueba.appendValue')" @keyup.enter="submitAppend(watchlist.name)" />
+            <el-button size="small" @click="submitAppend(watchlist.name)">{{ t('ueba.append') }}</el-button>
           </div>
         </el-card>
       </el-col>

@@ -95,7 +95,7 @@ function openCreateCase() {
 
 async function saveCase() {
   if (!caseForm.value.title.trim()) {
-    ElMessage.warning(t('inline.casesView.pleaseEnterCaseTitle'))
+    ElMessage.warning(t('cases.pleaseEnterTitle'))
     return
   }
   try {
@@ -104,10 +104,10 @@ async function saveCase() {
       severity: caseForm.value.severity, assignee: caseForm.value.assignee.trim() || undefined,
     })
     createDialogVisible.value = false
-    ElMessage.success(t('inline.casesView.caseCreatedSuccessfully'))
+    ElMessage.success(t('cases.createdSuccessfully'))
     await loadCases()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : (t('inline.casesView.failedToCreateCase')))
+    ElMessage.error(error instanceof Error ? error.message : (t('cases.createFailed')))
   }
 }
 
@@ -119,21 +119,21 @@ onMounted(loadCases)
     <PageHeader :title="t('cases.title')" :description="t('cases.description')">
       <template #actions>
         <el-button type="primary" size="small" @click="openCreateCase">{{ t('cases.createCase') }}</el-button>
-        <el-button size="small" @click="caseApi.export()">{{ t('inline.casesView.exportCasesJson') }}</el-button>
+        <el-button size="small" @click="caseApi.export()">{{ t('cases.exportJson') }}</el-button>
       </template>
     </PageHeader>
 
     <div class="page-metrics">
-      <MetricCard :label="t('inline.casesView.totalCases')" tone="info">{{ stats.total ?? 0 }}</MetricCard>
-      <MetricCard :label="t('inline.casesView.activeCases')" tone="warning">{{ stats.open ?? 0 }}</MetricCard>
-      <MetricCard :label="t('inline.casesView.resolvedCases')" tone="success">{{ stats.resolved ?? 0 }}</MetricCard>
+      <MetricCard :label="t('cases.totalCases')" tone="info">{{ stats.total ?? 0 }}</MetricCard>
+      <MetricCard :label="t('cases.activeCases')" tone="warning">{{ stats.open ?? 0 }}</MetricCard>
+      <MetricCard :label="t('cases.resolvedCases')" tone="success">{{ stats.resolved ?? 0 }}</MetricCard>
     </div>
 
     <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="casesFiltered.length">
       <template #toolbar>
         <FilterToolbar :count="casesFiltered.length">
-        <el-input v-model="keyword" :placeholder="t('inline.casesView.searchCaseIdTitleEntity')" clearable @input="page = 1" />
-        <el-select v-model="statusFilter" :placeholder="t('inline.casesView.allStatuses')" clearable @change="page = 1">
+        <el-input v-model="keyword" :placeholder="t('cases.searchPlaceholder')" clearable @input="page = 1" />
+        <el-select v-model="statusFilter" :placeholder="t('cases.allStatuses')" clearable @change="page = 1">
           <el-option v-for="status in ['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']" :key="status" :label="t('statuses.' + status) || status" :value="status" />
         </el-select>
         </FilterToolbar>
@@ -145,16 +145,16 @@ onMounted(loadCases)
         <el-table-column prop="severity" column-key="severity" :label="t('common.severity')" :width="columnWidth('severity', 90)" sortable="custom"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
         <el-table-column prop="status" column-key="status" :label="t('common.status')" :width="columnWidth('status', 120)" sortable="custom"><template #default="{ row }"><el-tag :type="row.status === 'OPEN' ? 'danger' : row.status === 'RESOLVED' || row.status === 'CLOSED' ? 'success' : 'warning'" size="small">{{ t('statuses.' + row.status) || row.status }}</el-tag></template></el-table-column>
         <el-table-column prop="alarmCount" column-key="alarmCount" :label="t('cases.associatedAlarms')" :width="columnWidth('alarmCount', 90)" sortable="custom"><template #default="{ row }">{{ row.alarmIds.length }}</template></el-table-column>
-        <el-table-column :label="t('common.actions')" width="100" :resizable="false"><template #default="{ row }"><el-button link type="primary" size="small" @click="openCaseRow(row)">{{ t('inline.casesView.details') }}</el-button></template></el-table-column>
+        <el-table-column :label="t('common.actions')" width="100" :resizable="false"><template #default="{ row }"><el-button link type="primary" size="small" @click="openCaseRow(row)">{{ t('cases.detailsTimeline') }}</el-button></template></el-table-column>
       </el-table>
     </DataTableCard>
 
     <el-dialog v-model="createDialogVisible" :title="t('cases.createCase')" width="560px">
       <el-form label-width="90px">
-        <el-form-item :label="t('cases.caseTitle')" required><el-input v-model="caseForm.title" :placeholder="t('inline.casesView.eGSshBruteForceInvestigation')" /></el-form-item>
-        <el-form-item :label="t('common.entity')"><el-input v-model="caseForm.entity" :placeholder="t('inline.casesView.eG203011310Or')" /></el-form-item>
+        <el-form-item :label="t('cases.caseTitle')" required><el-input v-model="caseForm.title" :placeholder="t('cases.titlePlaceholder')" /></el-form-item>
+        <el-form-item :label="t('common.entity')"><el-input v-model="caseForm.entity" :placeholder="t('cases.entityPlaceholder')" /></el-form-item>
         <el-form-item :label="t('common.severity')"><el-select v-model="caseForm.severity" style="width: 180px"><el-option v-for="level in ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']" :key="level" :label="t('severities.' + level) || level" :value="level" /></el-select></el-form-item>
-        <el-form-item :label="t('cases.assignee')"><el-input v-model="caseForm.assignee" :placeholder="t('inline.casesView.optionalEGAnalyst')" /></el-form-item>
+        <el-form-item :label="t('cases.assignee')"><el-input v-model="caseForm.assignee" :placeholder="t('cases.assigneePlaceholder')" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="createDialogVisible = false">{{ t('common.cancel') }}</el-button>
@@ -169,10 +169,10 @@ onMounted(loadCases)
           <el-descriptions-item :label="t('common.entity')">{{ detail.entity }}</el-descriptions-item>
           <el-descriptions-item :label="t('common.severity')"><SevBadge :value="detail.severity" /></el-descriptions-item>
           <el-descriptions-item :label="t('common.status')">{{ t('statuses.' + detail.status) || detail.status }}</el-descriptions-item>
-          <el-descriptions-item :label="t('inline.casesView.linkedRules')" :span="2">{{ detail.ruleIds.join(', ') || '—' }}</el-descriptions-item>
+          <el-descriptions-item :label="t('cases.linkedRules')" :span="2">{{ detail.ruleIds.join(', ') || '—' }}</el-descriptions-item>
           <el-descriptions-item :label="t('cases.associatedAlarms')" :span="2">{{ detail.alarmIds.join(', ') || '—' }}</el-descriptions-item>
         </el-descriptions>
-        <div class="case-status-row"><el-select v-model="newStatus"><el-option v-for="status in ['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']" :key="status" :label="t('statuses.' + status) || status" :value="status" /></el-select><el-button type="primary" @click="updateStatus">{{ t('inline.casesView.updateStatus') }}</el-button></div>
+        <div class="case-status-row"><el-select v-model="newStatus"><el-option v-for="status in ['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']" :key="status" :label="t('statuses.' + status) || status" :value="status" /></el-select><el-button type="primary" @click="updateStatus">{{ t('cases.updateStatus') }}</el-button></div>
         <el-divider content-position="left">{{ t('cases.timeline') }}</el-divider>
         <el-timeline><el-timeline-item v-for="(event, index) in timeline" :key="index" :timestamp="event.ts" placement="top"><div>{{ event.message }}</div><div class="case-event-meta">{{ event.type }} · {{ event.source }}</div></el-timeline-item></el-timeline>
       </template>

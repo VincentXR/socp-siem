@@ -18,6 +18,7 @@ import type { ECharts } from 'echarts/core'
 import { loadEcharts } from '../../lib/echarts'
 import SevBadge from '../SevBadge.vue'
 import type { RiskEntity, RiskSummary } from '../../api'
+import { useI18n } from '../../composables/useI18n'
 
 const props = defineProps<{
   theme: 'light' | 'dark'
@@ -35,6 +36,7 @@ const emit = defineEmits<{
 const riskBarEl = ref<HTMLElement>()
 const chartRiskBar = shallowRef<ECharts>()
 let renderToken = 0
+const { t, d } = useI18n()
 
 function sevColor(severity: string) {
   return { CRITICAL: '#f56c6c', HIGH: '#e63946', MEDIUM: '#e6a23c', LOW: '#909399', INFO: '#909399' }[severity] ?? '#909399'
@@ -80,43 +82,43 @@ onUnmounted(() => {
     <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
       <span style="font-size:13px;color:#909399">Top N</span>
       <el-input-number :model-value="riskLimit" :min="5" :max="100" :step="5" size="small" @change="onLimitChange" />
-      <el-button size="small" @click="emit('refresh')">刷新</el-button>
+      <el-button size="small" @click="emit('refresh')">{{ t('common.refresh') }}</el-button>
       <span style="font-size:12px;color:#909399">
-        风险分 = 严重级别基线 + ATT&amp;CK 战术权重 + 情报命中 + 频次 + 资产重要性，按 {{ summary?.halfLifeHours ?? 6 }} 小时半衰期指数衰减
+        {{ t('ueba.scoreFormula', { hours: summary?.halfLifeHours ?? 6 }) }}
       </span>
     </div>
     <el-row :gutter="12">
       <el-col :span="10">
         <el-card shadow="never">
-          <template #header>风险 Top 10</template>
+          <template #header>{{ t('ueba.riskTop') }}</template>
           <div ref="riskBarEl" style="height:340px"></div>
         </el-card>
       </el-col>
       <el-col :span="14">
         <el-card shadow="never">
-          <template #header>实体明细（点击行下钻）</template>
+          <template #header>{{ t('ueba.entityDetails') }}</template>
           <el-table :data="entities" size="small" border height="340" @row-click="emit('select', $event)">
-            <el-table-column label="风险" width="80">
+            <el-table-column :label="t('ueba.riskScore')" width="80">
               <template #default="{ row }"><span class="risk-pill" :style="{ background: sevColor(row.level) }">{{ row.risk }}</span></template>
             </el-table-column>
-            <el-table-column label="实体" min-width="150" show-overflow-tooltip>
+            <el-table-column :label="t('ueba.entity')" min-width="150" show-overflow-tooltip>
               <template #default="{ row }">
                 <span class="mono">{{ row.entity }}</span>
-                <el-tag v-if="row.critical" size="small" type="danger" effect="dark" style="margin-left:6px">核心资产</el-tag>
+                <el-tag v-if="row.critical" size="small" type="danger" effect="dark" style="margin-left:6px">{{ t('ueba.coreAsset') }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="alerts" label="告警数" width="80" />
-            <el-table-column label="最高级别" width="100">
+            <el-table-column prop="alerts" :label="t('ueba.alertTotal')" width="80" />
+            <el-table-column :label="t('ueba.highestSeverity')" width="100">
               <template #default="{ row }"><SevBadge :value="row.maxSeverity" /></template>
             </el-table-column>
-            <el-table-column label="主要战术" min-width="140" show-overflow-tooltip>
+            <el-table-column :label="t('ueba.primaryTactic')" min-width="140" show-overflow-tooltip>
               <template #default="{ row }">
                 <el-tag v-for="m in row.mitre.slice(0, 3)" :key="m.technique" size="small" style="margin-right:4px">{{ m.technique }}×{{ m.count }}</el-tag>
-                <span v-if="!row.mitre.length" style="color:#c0c4cc">—</span>
+                <span v-if="!row.mitre.length" style="color:#c0c4cc">{{ t('time.notAvailable') }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="最近活动" width="150" show-overflow-tooltip>
-              <template #default="{ row }"><span class="mono" style="font-size:12px">{{ row.lastSeen ? new Date(row.lastSeen).toLocaleString('zh-CN', { hour12: false }) : '—' }}</span></template>
+            <el-table-column :label="t('ueba.recentActivity')" width="150" show-overflow-tooltip>
+              <template #default="{ row }"><span class="mono" style="font-size:12px">{{ row.lastSeen ? d(row.lastSeen, 'dateTime') : t('time.notAvailable') }}</span></template>
             </el-table-column>
           </el-table>
         </el-card>

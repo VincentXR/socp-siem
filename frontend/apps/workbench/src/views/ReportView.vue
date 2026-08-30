@@ -20,7 +20,7 @@ import { archiveReport, dailyReport, downloadArchivedReport, listArchive, trend7
 import { useI18n } from '../composables/useI18n'
 
 const props = defineProps<{ theme: 'light' | 'dark' }>()
-const { t, locale } = useI18n()
+const { t, n } = useI18n()
 
 const report = ref<ReportSummary | null>(null)
 const trend = ref<ReportTrend | null>(null)
@@ -58,7 +58,7 @@ async function renderCharts() {
     chartBar.value?.dispose()
     chartBar.value = echarts.init(barEl.value, 'socp')
     chartBar.value.setOption({
-      title: { text: '告警级别分布', textStyle: { fontSize: 14, color: tc('#1f2328', '#e6edf3') } }, tooltip: {},
+      title: { text: t('report.alarmSeverityDistribution'), textStyle: { fontSize: 14, color: tc('#1f2328', '#e6edf3') } }, tooltip: {},
       xAxis: { type: 'category', data: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'] }, yAxis: { type: 'value' },
       series: [{ type: 'bar', data: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].map(k => report.value?.bySeverity[k] ?? 0),
         itemStyle: { color: (p: { dataIndex: number }) => ['#f56c6c', '#e63946', '#e6a23c', '#909399'][p.dataIndex] } }],
@@ -68,7 +68,7 @@ async function renderCharts() {
     chartLine.value?.dispose()
     chartLine.value = echarts.init(lineEl.value, 'socp')
     chartLine.value.setOption({
-      title: { text: '近 7 日趋势', textStyle: { fontSize: 14, color: tc('#1f2328', '#e6edf3') } }, tooltip: { trigger: 'axis' },
+      title: { text: t('report.sevenDayTrend'), textStyle: { fontSize: 14, color: tc('#1f2328', '#e6edf3') } }, tooltip: { trigger: 'axis' },
       xAxis: { type: 'category', data: trend.value.days }, yAxis: { type: 'value' },
       series: [{ type: 'line', smooth: true, data: trend.value.counts, areaStyle: {} }],
     })
@@ -85,13 +85,13 @@ async function doArchive() {
   try {
     const result = await archiveReport()
     if (result.archived) {
-      ElMessage.success(`报表已归档至 MinIO（${result.day}/${result.dailyKey}）`)
+      ElMessage.success(t('report.archiveSuccess', { day: result.day ?? '', key: result.dailyKey ?? '' }))
     } else {
-      ElMessage.error(result.error || '归档失败')
+      ElMessage.error(result.error || t('report.archiveFailed'))
     }
     await loadArchive()
   } catch (e) {
-    ElMessage.error((e as Error).message || '归档失败')
+    ElMessage.error((e as Error).message || t('report.archiveFailed'))
   } finally {
     archiveBusy.value = false
   }
@@ -100,10 +100,10 @@ async function doArchive() {
 async function downloadArchive(key: string) {
   try {
     const result = await downloadArchivedReport(key)
-    if (!result.url) throw new Error('归档下载地址为空')
+    if (!result.url) throw new Error(t('report.archiveUrlEmpty'))
     window.open(result.url, '_blank', 'noopener,noreferrer')
   } catch (error) {
-    ElMessage.error((error as Error).message || '归档下载失败')
+    ElMessage.error((error as Error).message || t('report.archiveDownloadFailed'))
   }
 }
 
@@ -129,15 +129,15 @@ onUnmounted(() => {
 <template>
   <div class="page-pad view-enter">
     <div style="margin-bottom:12px;display:flex;gap:10px;align-items:center">
-      <el-button :loading="reportLoading" @click="loadReport">刷新</el-button>
-      <el-button type="primary" :loading="archiveBusy" @click="doArchive">归档至 MinIO</el-button>
-      <span v-if="archiveInfo" style="font-size:12px;color:var(--ns-text-3)">已归档 {{ archiveInfo.count }} 个对象</span>
+      <el-button :loading="reportLoading" @click="loadReport">{{ t('report.refresh') }}</el-button>
+      <el-button type="primary" :loading="archiveBusy" @click="doArchive">{{ t('report.archiveToMinio') }}</el-button>
+      <span v-if="archiveInfo" style="font-size:12px;color:var(--ns-text-3)">{{ t('report.archivedObjects', { count: archiveInfo.count }) }}</span>
     </div>
-    <el-alert v-if="reportError" type="error" title="报告加载失败，请重试" show-icon closable @close="reportRequest.reset" />
-    <el-alert v-if="report?.degraded" type="warning" :title="`当前报告来自 ${report.source} 降级路径`"
-      :description="report.degradationReason || '数据源未提供新鲜度水位，请结合来源状态判断。'" show-icon :closable="false" style="margin-bottom:12px" />
+    <el-alert v-if="reportError" type="error" :title="t('report.loadFailed')" show-icon closable @close="reportRequest.reset" />
+    <el-alert v-if="report?.degraded" type="warning" :title="t('report.degradedTitle', { source: report.source })"
+      :description="report.degradationReason || t('report.degradedDescription')" show-icon :closable="false" style="margin-bottom:12px" />
     <el-row :gutter="12" style="margin-bottom:14px" v-if="report">
-      <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ report.total }}</div><div class="label">今日告警</div></div></el-card></el-col>
+      <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ report.total }}</div><div class="label">{{ t('report.todayAlarms') }}</div></div></el-card></el-col>
       <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#f56c6c">{{ report.bySeverity.CRITICAL ?? 0 }}</div><div class="label">CRITICAL</div></div></el-card></el-col>
       <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#e63946">{{ report.bySeverity.HIGH ?? 0 }}</div><div class="label">HIGH</div></div></el-card></el-col>
       <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#e6a23c">{{ report.bySeverity.MEDIUM ?? 0 }}</div><div class="label">MEDIUM</div></div></el-card></el-col>
@@ -147,15 +147,15 @@ onUnmounted(() => {
       <el-col :span="12"><el-card shadow="never"><div ref="lineEl" style="height:300px" /></el-card></el-col>
     </el-row>
     <el-card shadow="never" style="margin-top:14px" v-if="report">
-      <template #header>TOP 规则</template>
-      <el-table :data="report.byRule" size="small" border><el-table-column prop="rule" label="规则" show-overflow-tooltip /><el-table-column prop="count" label="告警数" width="120" /></el-table>
+      <template #header>{{ t('report.topRules') }}</template>
+      <el-table :data="report.byRule" size="small" border><el-table-column prop="rule" :label="t('common.rule')" show-overflow-tooltip /><el-table-column prop="count" :label="t('report.alarmCount')" width="120" /></el-table>
     </el-card>
     <el-card shadow="never" style="margin-top:14px" v-if="archiveInfo?.objects.length">
-      <template #header>MinIO 归档对象</template>
+      <template #header>{{ t('report.minioObjects') }}</template>
       <el-table :data="archiveInfo.objects" size="small" border>
-        <el-table-column prop="key" label="对象 Key" min-width="240" show-overflow-tooltip />
-        <el-table-column prop="size" label="大小" width="120"><template #default="{ row }">{{ (row.size / 1024).toFixed(1) }} KB</template></el-table-column>
-        <el-table-column label="操作" width="80"><template #default="{ row }"><el-button link type="primary" size="small" @click="downloadArchive(row.key)">下载</el-button></template></el-table-column>
+        <el-table-column prop="key" :label="t('report.objectKey')" min-width="240" show-overflow-tooltip />
+        <el-table-column prop="size" :label="t('report.size')" width="120"><template #default="{ row }">{{ n(row.size / 1024, 'decimal') }} KB</template></el-table-column>
+        <el-table-column :label="t('common.actions')" width="80"><template #default="{ row }"><el-button link type="primary" size="small" @click="downloadArchive(row.key)">{{ t('report.download') }}</el-button></template></el-table-column>
       </el-table>
     </el-card>
   </div>

@@ -8,7 +8,7 @@ export async function login(username: string, password: string): Promise<{ usern
   }, { auth: false, notifyUnauthorized: false })
 }
 
-export const currentSession = () => requestJson<{ username: string; role: string; tenant: string }>(
+export const currentSession = () => requestJson<{ username: string; role: string; tenant: string; locale?: string }>(
   '/auth/session', {}, { unwrap: false, notifyUnauthorized: false },
 )
 export const logout = () => post<void>('/auth/logout', undefined, { unwrap: false, notifyUnauthorized: false })

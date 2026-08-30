@@ -2,6 +2,8 @@ import { computed, ref } from 'vue'
 import { useQueryClient } from '@tanstack/vue-query'
 import ElMessage from 'element-plus/es/components/message/index.mjs'
 import { currentSession, logout, setUnauthorizedHandler } from '../api'
+import { normalizeLocale, setLocale } from '../i18n/locale-manager'
+import { useI18n } from './useI18n'
 
 export function useAuth() {
   const currentUser = ref('')
@@ -9,6 +11,7 @@ export function useAuth() {
   const isAuthed = ref(false)
   const userInitials = computed(() => (currentUser.value || 'SY').slice(0, 2).toUpperCase())
   const queryClient = useQueryClient()
+  const { t } = useI18n()
 
   function onLoginDone(user: string, role: string) {
     currentUser.value = user
@@ -36,11 +39,13 @@ export function useAuth() {
 
   async function initAuth(): Promise<boolean> {
     setUnauthorizedHandler(() => {
-      ElMessage.warning('登录已过期，请重新登录')
+      ElMessage.warning(t('errors.UNAUTHORIZED'))
       window.setTimeout(() => { void doLogout() }, 600)
     })
     try {
       const session = await currentSession()
+      const profileLocale = normalizeLocale(session.locale)
+      if (profileLocale) setLocale(profileLocale)
       onLoginDone(session.username, session.role)
       return true
     } catch {

@@ -89,13 +89,13 @@ async function addIoc() {
     tags: newIoc.value.tags ? newIoc.value.tags.split(',').map(s => s.trim()).filter(Boolean) : undefined,
   })
   showIocDialog.value = false
-  ElMessage.success(t('inline.threatIntelView.threatIndicatorAdded'))
+  ElMessage.success(t('threat.added'))
   await loadTi()
 }
 
 async function removeIoc(id: string) {
   await threatIntelApi.remove(id)
-  ElMessage.success(t('inline.threatIntelView.deleted'))
+  ElMessage.success(t('threat.deleted'))
   await loadTi()
 }
 
@@ -131,11 +131,11 @@ async function importIocFile(event: Event) {
       }
     })
     const result = await threatIntelApi.bulkImport(payload)
-    if (result.skipped) ElMessage.warning(t('inline.threatIntelView.importedSkipped', { p0: result.imported, p1: result.skipped }))
-    else ElMessage.success(t('inline.threatIntelView.successfullyImportedIndicators', { p0: result.imported }))
+    if (result.skipped) ElMessage.warning(t('threat.importSkipped', { imported: result.imported, skipped: result.skipped }))
+    else ElMessage.success(t('threat.importSuccess', { count: result.imported }))
     await loadTi()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : (t('inline.threatIntelView.importFailed')))
+    ElMessage.error(error instanceof Error ? error.message : (t('threat.importFailed')))
   } finally {
     input.value = ''
   }
@@ -151,7 +151,7 @@ onMounted(loadTi)
     </PageHeader>
     <div class="page-metrics ti-metrics">
       <el-card shadow="never" :body-style="{ padding: '12px 18px' }">
-        <div style="font-size:12px;color:#909399">{{ t('inline.threatIntelView.totalIocs') }}</div>
+        <div style="font-size:12px;color:#909399">{{ t('threat.total') }}</div>
         <div style="font-size:22px;font-weight:700">{{ tiStat.total ?? 0 }}</div>
       </el-card>
       <el-card v-for="(count, kind) in (tiStat.byType || {})" :key="kind" shadow="never" :body-style="{ padding: '12px 18px' }">
@@ -160,22 +160,22 @@ onMounted(loadTi)
       </el-card>
     </div>
     <FilterToolbar class="ti-query-toolbar" :count="iocsFiltered.length">
-      <el-input v-model="iocKeyword" :placeholder="t('inline.threatIntelView.searchValueSourceDescriptionEnterIpTo')" clearable @input="iocPage = 1" @keyup.enter="doTiMatch" />
-      <el-button type="primary" @click="doTiMatch">{{ t('inline.threatIntelView.checkMatch') }}</el-button>
-      <el-select v-model="iocType" :placeholder="t('inline.threatIntelView.allTypes')" clearable @change="loadTi">
+      <el-input v-model="iocKeyword" :placeholder="t('threat.searchPlaceholder')" clearable @input="iocPage = 1" @keyup.enter="doTiMatch" />
+      <el-button type="primary" @click="doTiMatch">{{ t('threat.checkMatch') }}</el-button>
+      <el-select v-model="iocType" :placeholder="t('threat.allTypes')" clearable @change="loadTi">
         <el-option v-for="t in ['ip', 'domain', 'url', 'sha256', 'email']" :key="t" :label="t" :value="t" />
       </el-select>
     </FilterToolbar>
-    <el-alert v-if="tiMatchResult" :title="tiMatchResult.matched ? t('inline.threatIntelView.matchedThreatIntel', { p0: tiMatchResult.ioc?.value ?? '—', p1: tiMatchResult.ioc?.severity ?? '—' }) : t('inline.threatIntelView.noThreatIntelMatched')" :type="tiMatchResult.matched ? 'error' : 'info'" :closable="false" style="margin-bottom:14px" />
+    <el-alert v-if="tiMatchResult" :title="tiMatchResult.matched ? t('threat.matched', { value: tiMatchResult.ioc?.value ?? '—', severity: tiMatchResult.ioc?.severity ?? '—' }) : t('threat.noMatch')" :type="tiMatchResult.matched ? 'error' : 'info'" :closable="false" style="margin-bottom:14px" />
     <div class="add-bar">
       <el-button type="primary" @click="openIocDialog">+ {{ t('threat.addIoc') }}</el-button>
-      <el-button @click="selectIocImport">{{ t('inline.threatIntelView.batchImport') }}</el-button>
+      <el-button @click="selectIocImport">{{ t('threat.batchImport') }}</el-button>
       <input ref="iocImportInput" type="file" accept=".csv,.json,application/json,text/csv" hidden @change="importIocFile" />
-      <span class="hint">{{ t('inline.threatIntelView.ipDomainUrlFileHashEmailMatched') }}</span>
+      <span class="hint">{{ t('threat.descriptionHint') }}</span>
     </div>
     <el-dialog v-model="showIocDialog" :title="t('threat.addIoc')" width="560px">
       <el-form label-width="90px">
-        <el-form-item :label="t('threat.iocValue')"><el-input v-model="newIoc.value" :placeholder="t('inline.threatIntelView.eG1234')" /></el-form-item>
+        <el-form-item :label="t('threat.iocValue')"><el-input v-model="newIoc.value" :placeholder="t('threat.valuePlaceholder')" /></el-form-item>
         <el-form-item :label="t('common.type')"><el-select v-model="newIoc.type" style="width:160px"><el-option v-for="t in ['ip', 'domain', 'url', 'sha256', 'email']" :key="t" :label="t" :value="t" /></el-select></el-form-item>
         <el-form-item :label="t('common.severity')"><el-select v-model="newIoc.severity" style="width:160px"><el-option v-for="s in SEVERITIES" :key="s" :label="t('severities.' + s) || s" :value="s" /></el-select></el-form-item>
         <el-form-item :label="t('common.description')"><el-input v-model="newIoc.description" :placeholder="t('common.description')" /></el-form-item>

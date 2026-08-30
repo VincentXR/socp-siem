@@ -1,4 +1,6 @@
 import { unwrapApiBody } from '../lib/api-response'
+import { translate } from '../i18n'
+import { getCurrentLocale } from '../i18n/locale-manager'
 
 const DEFAULT_TIMEOUT_MS = 15_000
 
@@ -27,7 +29,7 @@ export function setUnauthorizedHandler(fn: (() => void) | null): void { unauthor
 async function assertOk(res: Response, notifyUnauthorized = true): Promise<void> {
   if (res.status === 401) {
     if (notifyUnauthorized) unauthorizedHandler?.()
-    throw new ApiError(401, '登录已过期，请重新登录')
+    throw new ApiError(401, translate('errors.UNAUTHORIZED'))
   }
   if (res.ok) return
   let message = `HTTP ${res.status}`
@@ -59,6 +61,7 @@ function createRequestSignal(options: ApiRequestOptions): { signal: AbortSignal;
 export async function requestRaw(path: string, init: RequestInit = {}, options: ApiRequestOptions = {}): Promise<{ response: Response; cleanup: () => void }> {
   const headers = new Headers(init.headers)
   if (!headers.has('Accept')) headers.set('Accept', 'application/json')
+  if (!headers.has('Accept-Language')) headers.set('Accept-Language', getCurrentLocale())
   const managed = createRequestSignal({ ...options, signal: options.signal ?? init.signal ?? undefined })
   try {
     return {

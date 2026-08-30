@@ -30,7 +30,7 @@ import {
 } from '../api'
 import { useI18n } from '../composables/useI18n'
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const metaTab = ref('ds')
 const dataSourceTypes = ref<DataSourceType[]>([])
 const logCategories = ref<LogCategory[]>([])
@@ -56,7 +56,7 @@ async function addDsType() {
   await loadMeta()
 }
 async function removeDsType(id: string) {
-  if (!confirm('确认删除这个数据源分类？')) return
+  if (!confirm(t('meta.deleteDataSourceTypeConfirm'))) return
   await deleteDataSourceType(id)
   await loadMeta()
 }
@@ -67,7 +67,7 @@ async function addCategory() {
   await loadMeta()
 }
 async function removeCategory(id: string) {
-  if (!confirm('确认删除这个日志类别？')) return
+  if (!confirm(t('meta.deleteCategoryConfirm'))) return
   await deleteCategory(id)
   await loadMeta()
 }
@@ -78,7 +78,7 @@ async function addField() {
   await loadMeta()
 }
 async function removeField(id: string) {
-  if (!confirm('确认删除这个字段定义？')) return
+  if (!confirm(t('meta.deleteFieldConfirm'))) return
   await deleteField(id)
   await loadMeta()
 }
@@ -89,86 +89,86 @@ onMounted(loadMeta)
 <template>
   <div class="page-pad view-enter">
     <el-tabs v-model="metaTab">
-      <el-tab-pane label="数据源分类" name="ds">
+      <el-tab-pane :label="t('meta.dataSourceTypes')" name="ds">
         <div class="add-bar">
-          <el-button type="primary" @click="showDsDialog = true">+ 新增数据源分类</el-button>
-          <span class="hint">接入方式注册表：9 类内置 + 可扩展</span>
+          <el-button type="primary" @click="showDsDialog = true">+ {{ t('meta.addDataSourceType') }}</el-button>
+          <span class="hint">{{ t('meta.registryHint') }}</span>
         </div>
-        <el-dialog v-model="showDsDialog" title="新增数据源分类" width="520px">
+        <el-dialog v-model="showDsDialog" :title="t('meta.addDataSourceType')" width="520px">
           <el-form label-width="80px">
-            <el-form-item label="编码"><el-input v-model="newDsType.code" placeholder="如 SYSLOG" /></el-form-item>
-            <el-form-item label="名称"><el-input v-model="newDsType.name" placeholder="如 Syslog 协议" /></el-form-item>
-            <el-form-item label="说明"><el-input v-model="newDsType.description" placeholder="说明" /></el-form-item>
-            <el-form-item label="启用"><el-switch v-model="newDsType.enabled" /></el-form-item>
+            <el-form-item :label="t('meta.code')"><el-input v-model="newDsType.code" :placeholder="t('meta.syslogPlaceholder')" /></el-form-item>
+            <el-form-item :label="t('meta.name')"><el-input v-model="newDsType.name" :placeholder="t('meta.syslogNamePlaceholder')" /></el-form-item>
+            <el-form-item :label="t('meta.explanation')"><el-input v-model="newDsType.description" :placeholder="t('meta.descriptionPlaceholder')" /></el-form-item>
+            <el-form-item :label="t('meta.enabled')"><el-switch v-model="newDsType.enabled" /></el-form-item>
           </el-form>
-          <template #footer><el-button @click="showDsDialog = false">取消</el-button><el-button type="success" @click="addDsType">新增分类</el-button></template>
+          <template #footer><el-button @click="showDsDialog = false">{{ t('common.cancel') }}</el-button><el-button type="success" @click="addDsType">{{ t('meta.addCategory') }}</el-button></template>
         </el-dialog>
         <el-card shadow="never">
-          <template #header>接入方式注册表（9 类内置 + 可扩展）</template>
+          <template #header>{{ t('meta.registryTitle') }}</template>
           <el-table :data="dataSourceTypes" size="small" border>
-            <el-table-column prop="code" label="编码" width="130" />
-            <el-table-column prop="name" label="名称" width="150" />
-            <el-table-column prop="description" label="说明" min-width="300" show-overflow-tooltip />
-            <el-table-column label="启用" width="65"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? '是' : '否' }}</el-tag></template></el-table-column>
-            <el-table-column label="操作" width="70"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeDsType(row.id)">删除</el-button></template></el-table-column>
+            <el-table-column prop="code" :label="t('meta.code')" width="130" />
+            <el-table-column prop="name" :label="t('meta.name')" width="150" />
+            <el-table-column prop="description" :label="t('meta.explanation')" min-width="300" show-overflow-tooltip />
+            <el-table-column :label="t('meta.enabled')" width="65"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('meta.yes') : t('meta.no') }}</el-tag></template></el-table-column>
+            <el-table-column :label="t('meta.operation')" width="70"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeDsType(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column>
           </el-table>
         </el-card>
       </el-tab-pane>
 
-      <el-tab-pane label="日志类别" name="cats">
+      <el-tab-pane :label="t('meta.logCategories')" name="cats">
         <div class="add-bar">
-          <el-button type="primary" @click="showCatDialog = true">+ 新增日志类别</el-button>
-          <span class="hint">日志分类体系：对齐 SIEM Taxonomy / MITRE ATT&CK</span>
+          <el-button type="primary" @click="showCatDialog = true">+ {{ t('meta.addLogCategory') }}</el-button>
+          <span class="hint">{{ t('meta.taxonomyHint') }}</span>
         </div>
-        <el-dialog v-model="showCatDialog" title="新增日志类别" width="520px">
+        <el-dialog v-model="showCatDialog" :title="t('meta.addLogCategory')" width="520px">
           <el-form label-width="80px">
-            <el-form-item label="编码"><el-input v-model="newCategory.code" placeholder="如 AUTH" /></el-form-item>
-            <el-form-item label="名称"><el-input v-model="newCategory.name" placeholder="名称" /></el-form-item>
-            <el-form-item label="基线级别"><el-select v-model="newCategory.defaultSeverity" style="width:160px"><el-option v-for="s in SEVERITIES" :key="s" :label="s" :value="s" /></el-select></el-form-item>
-            <el-form-item label="说明"><el-input v-model="newCategory.description" placeholder="说明" /></el-form-item>
-            <el-form-item label="启用"><el-switch v-model="newCategory.enabled" /></el-form-item>
+            <el-form-item :label="t('meta.code')"><el-input v-model="newCategory.code" :placeholder="t('meta.authPlaceholder')" /></el-form-item>
+            <el-form-item :label="t('meta.name')"><el-input v-model="newCategory.name" :placeholder="t('meta.name')" /></el-form-item>
+            <el-form-item :label="t('meta.baselineSeverity')"><el-select v-model="newCategory.defaultSeverity" style="width:160px"><el-option v-for="s in SEVERITIES" :key="s" :label="t('severities.' + s) || s" :value="s" /></el-select></el-form-item>
+            <el-form-item :label="t('meta.explanation')"><el-input v-model="newCategory.description" :placeholder="t('meta.descriptionPlaceholder')" /></el-form-item>
+            <el-form-item :label="t('meta.enabled')"><el-switch v-model="newCategory.enabled" /></el-form-item>
           </el-form>
-          <template #footer><el-button @click="showCatDialog = false">取消</el-button><el-button type="success" @click="addCategory">新增类别</el-button></template>
+          <template #footer><el-button @click="showCatDialog = false">{{ t('common.cancel') }}</el-button><el-button type="success" @click="addCategory">{{ t('meta.addCategory') }}</el-button></template>
         </el-dialog>
         <el-card shadow="never">
-          <template #header>日志分类体系（对齐 SIEM Taxonomy / MITRE ATT&CK）</template>
+          <template #header>{{ t('meta.taxonomyTitle') }}</template>
           <el-table :data="logCategories" size="small" border>
-            <el-table-column prop="code" label="编码" width="120" />
-            <el-table-column prop="name" label="名称" width="130" />
-            <el-table-column prop="description" label="说明" min-width="260" show-overflow-tooltip />
-            <el-table-column label="基线级别" width="100"><template #default="{ row }"><SevBadge :value="row.defaultSeverity" /></template></el-table-column>
-            <el-table-column label="启用" width="65"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? '是' : '否' }}</el-tag></template></el-table-column>
-            <el-table-column label="操作" width="70"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeCategory(row.id)">删除</el-button></template></el-table-column>
+            <el-table-column prop="code" :label="t('meta.code')" width="120" />
+            <el-table-column prop="name" :label="t('meta.name')" width="130" />
+            <el-table-column prop="description" :label="t('meta.explanation')" min-width="260" show-overflow-tooltip />
+            <el-table-column :label="t('meta.baselineSeverity')" width="100"><template #default="{ row }"><SevBadge :value="row.defaultSeverity" /></template></el-table-column>
+            <el-table-column :label="t('meta.enabled')" width="65"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('meta.yes') : t('meta.no') }}</el-tag></template></el-table-column>
+            <el-table-column :label="t('meta.operation')" width="70"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeCategory(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column>
           </el-table>
         </el-card>
       </el-tab-pane>
 
-      <el-tab-pane label="字段字典" name="fields">
+      <el-tab-pane :label="t('meta.fieldDictionary')" name="fields">
         <div class="add-bar">
-          <el-button type="primary" @click="showFieldDialog = true">+ 新增字段</el-button>
-          <span class="hint">统一字段语义，解析 / 检索 / 告警共用</span>
+          <el-button type="primary" @click="showFieldDialog = true">+ {{ t('meta.addField') }}</el-button>
+          <span class="hint">{{ t('meta.fieldHint') }}</span>
         </div>
-        <el-dialog v-model="showFieldDialog" title="新增字段" width="540px">
+        <el-dialog v-model="showFieldDialog" :title="t('meta.addField')" width="540px">
           <el-form label-width="80px">
-            <el-form-item label="字段名"><el-input v-model="newField.fieldName" placeholder="如 src_ip" /></el-form-item>
-            <el-form-item label="中文名"><el-input v-model="newField.fieldLabel" placeholder="中文名" /></el-form-item>
-            <el-form-item label="类型"><el-select v-model="newField.fieldType" style="width:160px"><el-option v-for="t in ['string', 'int', 'long', 'float', 'ip', 'date', 'bool', 'json']" :key="t" :label="t" :value="t" /></el-select></el-form-item>
-            <el-form-item label="来源"><el-select v-model="newField.source" style="width:160px"><el-option label="system" value="system" /><el-option label="parse" value="parse" /><el-option label="custom" value="custom" /></el-select></el-form-item>
-            <el-form-item label="索引策略"><el-checkbox v-model="newField.searchable">检索</el-checkbox><el-checkbox v-model="newField.aggregatable">聚合</el-checkbox><el-checkbox v-model="newField.stored">存储</el-checkbox></el-form-item>
-            <el-form-item label="说明"><el-input v-model="newField.description" placeholder="说明" /></el-form-item>
+            <el-form-item :label="t('meta.fieldName')"><el-input v-model="newField.fieldName" :placeholder="t('meta.fieldNamePlaceholder')" /></el-form-item>
+            <el-form-item :label="t('meta.fieldLabel')"><el-input v-model="newField.fieldLabel" :placeholder="t('meta.fieldLabelPlaceholder')" /></el-form-item>
+            <el-form-item :label="t('meta.dataType')"><el-select v-model="newField.fieldType" style="width:160px"><el-option v-for="fieldType in ['string', 'int', 'long', 'float', 'ip', 'date', 'bool', 'json']" :key="fieldType" :label="fieldType" :value="fieldType" /></el-select></el-form-item>
+            <el-form-item :label="t('meta.source')"><el-select v-model="newField.source" style="width:160px"><el-option label="system" value="system" /><el-option label="parse" value="parse" /><el-option label="custom" value="custom" /></el-select></el-form-item>
+            <el-form-item :label="t('meta.indexStrategy')"><el-checkbox v-model="newField.searchable">{{ t('common.search') }}</el-checkbox><el-checkbox v-model="newField.aggregatable">{{ t('meta.aggregation') }}</el-checkbox><el-checkbox v-model="newField.stored">{{ t('meta.storage') }}</el-checkbox></el-form-item>
+            <el-form-item :label="t('meta.explanation')"><el-input v-model="newField.description" :placeholder="t('meta.descriptionPlaceholder')" /></el-form-item>
           </el-form>
-          <template #footer><el-button @click="showFieldDialog = false">取消</el-button><el-button type="success" @click="addField">新增字段</el-button></template>
+          <template #footer><el-button @click="showFieldDialog = false">{{ t('common.cancel') }}</el-button><el-button type="success" @click="addField">{{ t('meta.addField') }}</el-button></template>
         </el-dialog>
         <el-card shadow="never">
-          <template #header>字段字典（统一字段语义，解析/检索/告警共用）</template>
+          <template #header>{{ t('meta.fieldDictionaryTitle') }}</template>
           <el-table :data="fieldDefs" size="small" border>
-            <el-table-column prop="fieldName" label="字段名" width="130" />
-            <el-table-column prop="fieldLabel" label="中文名" width="110" />
-            <el-table-column prop="fieldType" label="类型" width="80" />
-            <el-table-column prop="source" label="来源" width="80" />
-            <el-table-column label="索引策略" width="150"><template #default="{ row }"><el-tag v-if="row.searchable" size="small" type="success" style="margin-right:4px">检索</el-tag><el-tag v-if="row.aggregatable" size="small" type="warning" style="margin-right:4px">聚合</el-tag><el-tag v-if="row.stored" size="small" type="info">存储</el-tag></template></el-table-column>
-            <el-table-column prop="description" label="说明" min-width="200" show-overflow-tooltip />
-            <el-table-column label="操作" width="70"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeField(row.id)">删除</el-button></template></el-table-column>
+            <el-table-column prop="fieldName" :label="t('meta.fieldName')" width="130" />
+            <el-table-column prop="fieldLabel" :label="t('meta.fieldLabel')" width="110" />
+            <el-table-column prop="fieldType" :label="t('meta.dataType')" width="80" />
+            <el-table-column prop="source" :label="t('meta.source')" width="80" />
+            <el-table-column :label="t('meta.indexStrategy')" width="150"><template #default="{ row }"><el-tag v-if="row.searchable" size="small" type="success" style="margin-right:4px">{{ t('common.search') }}</el-tag><el-tag v-if="row.aggregatable" size="small" type="warning" style="margin-right:4px">{{ t('meta.aggregation') }}</el-tag><el-tag v-if="row.stored" size="small" type="info">{{ t('meta.storage') }}</el-tag></template></el-table-column>
+            <el-table-column prop="description" :label="t('meta.explanation')" min-width="200" show-overflow-tooltip />
+            <el-table-column :label="t('meta.operation')" width="70"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeField(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column>
           </el-table>
         </el-card>
       </el-tab-pane>

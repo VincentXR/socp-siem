@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { ECharts } from 'echarts/core'
 import { loadEcharts } from '../lib/echarts'
+import { translate } from '../i18n'
 
 /**
  * 近 7 日告警趋势折线图（概览页/态势页共用）。
@@ -63,7 +64,7 @@ async function render() {
       trigger: 'axis',
       formatter: (ps: Array<{ axisValue: string; value: number }>) => {
         const p = ps[0]
-        return `${p.axisValue}<br/><b>${p.value}</b> 条告警`
+        return `${p.axisValue}<br/><b>${p.value}</b> ${translate('common.alertCount')}`
       },
     },
     series: [{
@@ -82,7 +83,7 @@ async function render() {
         ]),
       },
       markPoint: {
-        data: [{ type: 'max', name: '峰值' }],
+        data: [{ type: 'max', name: translate('common.peak') }],
         symbolSize: 44, label: { fontSize: 10, color: '#fff', formatter: '{c}' },
         itemStyle: { color: dark ? '#3fb950' : '#1a7f37' },
       },

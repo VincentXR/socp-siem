@@ -15,7 +15,7 @@ import PageHeader from '../components/PageHeader.vue'
 import { complianceCoverage, complianceFrameworks, listRules } from '../api'
 import { useI18n } from '../composables/useI18n'
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 
 type Framework = { name: string; controls: Array<{ id: string; name: string; ruleIds: string[] }> }
 type Coverage = {
@@ -49,25 +49,25 @@ onMounted(loadCompliance)
 
 <template>
   <div class="page-pad view-enter">
-    <PageHeader title="合规" description="将检测规则映射到控制项，快速查看各框架的覆盖情况。">
-      <template #actions><el-button size="small" :loading="loading" @click="compute">重新计算</el-button></template>
+    <PageHeader :title="t('compliance.title')" :description="t('compliance.description')">
+      <template #actions><el-button size="small" :loading="loading" @click="compute">{{ t('compliance.recalculate') }}</el-button></template>
     </PageHeader>
 
     <div class="page-metrics compliance-metrics">
-      <MetricCard label="整体控制项覆盖率" tone="info">{{ coverage?.coverage ?? '—' }}<span class="metric-suffix">%</span></MetricCard>
-      <MetricCard label="已覆盖控制项" tone="success">{{ coverage?.coveredControls ?? '—' }}</MetricCard>
-      <MetricCard label="总控制项" tone="neutral">{{ coverage?.totalControls ?? '—' }}</MetricCard>
+      <MetricCard :label="t('compliance.overallCoverage')" tone="info">{{ coverage?.coverage ?? t('time.notAvailable') }}<span class="metric-suffix">%</span></MetricCard>
+      <MetricCard :label="t('compliance.coveredControls')" tone="success">{{ coverage?.coveredControls ?? t('time.notAvailable') }}</MetricCard>
+      <MetricCard :label="t('compliance.totalControls')" tone="neutral">{{ coverage?.totalControls ?? t('time.notAvailable') }}</MetricCard>
     </div>
 
     <el-card v-for="framework in (coverage?.byFramework ?? [])" :key="framework.framework" shadow="never" class="compliance-card">
       <div class="compliance-card-head"><strong>{{ framework.framework }}</strong><span>{{ framework.coverage }}%</span></div>
       <el-table :data="framework.controls" size="small" border>
-        <el-table-column prop="id" label="控制项" width="120" />
-        <el-table-column prop="name" label="名称" min-width="200" show-overflow-tooltip />
-        <el-table-column label="覆盖" width="90"><template #default="{ row }"><el-tag :type="row.covered ? 'success' : 'danger'" size="small">{{ row.covered ? '已覆盖' : '缺失' }}</el-tag></template></el-table-column>
-        <el-table-column prop="mappedRules" label="映射规则" min-width="160" show-overflow-tooltip><template #default="{ row }"><span class="table-text compliance-rules">{{ (row.mappedRules || []).join(', ') || '—' }}</span></template></el-table-column>
+        <el-table-column prop="id" :label="t('compliance.control')" width="120" />
+        <el-table-column prop="name" :label="t('compliance.name')" min-width="200" show-overflow-tooltip />
+        <el-table-column :label="t('compliance.coverage')" width="90"><template #default="{ row }"><el-tag :type="row.covered ? 'success' : 'danger'" size="small">{{ row.covered ? t('compliance.covered') : t('compliance.missing') }}</el-tag></template></el-table-column>
+        <el-table-column prop="mappedRules" :label="t('compliance.mappedRules')" min-width="160" show-overflow-tooltip><template #default="{ row }"><span class="table-text compliance-rules">{{ (row.mappedRules || []).join(', ') || t('time.notAvailable') }}</span></template></el-table-column>
       </el-table>
     </el-card>
-    <el-empty v-if="!coverage?.byFramework?.length" description="暂无合规覆盖数据" />
+    <el-empty v-if="!coverage?.byFramework?.length" :description="t('compliance.noData')" />
   </div>
 </template>

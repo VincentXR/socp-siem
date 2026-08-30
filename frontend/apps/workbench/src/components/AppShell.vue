@@ -49,7 +49,7 @@ const { t, toggleLocale } = useI18n()
           </button>
         </template>
       </nav>
-      <div class="socp-sidebar-footer" aria-label="Platform status">
+      <div class="socp-sidebar-footer" :aria-label="t('app.platformStatus')">
         <span class="sidebar-status-dot" aria-hidden="true" />
         <span>{{ t('app.platformStatus') }}</span>
         <span class="sidebar-version mono">{{ t('app.version') }}</span>
@@ -66,7 +66,7 @@ const { t, toggleLocale } = useI18n()
         <span class="header-spacer" />
         <el-button size="small" :title="t('app.langToggle')" @click="toggleLocale">
           <span class="header-icon" aria-hidden="true">🌐</span>
-          {{ t('inline.appShell.message') }}
+          {{ t('app.languageCode') }}
         </el-button>
         <el-button size="small" :title="t('app.themeToggle')" @click="emit('toggle-theme')">
           <span class="header-icon" aria-hidden="true">

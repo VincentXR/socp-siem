@@ -41,7 +41,7 @@ async function loadEndpoints() {
 }
 
 async function removeEndpoint(id: string) {
-  if (!confirm(t('inline.endpointsView.unregisterThisEndpointAgentWillNeedTo'))) return
+  if (!confirm(t('endpoints.unregisterConfirm'))) return
   await endpointApi.remove(id)
   await loadEndpoints()
 }
@@ -56,16 +56,16 @@ onMounted(loadEndpoints)
     </PageHeader>
 
     <div v-if="endpointStat" class="page-metrics">
-      <MetricCard :label="t('inline.endpointsView.totalEndpoints')" tone="info">{{ endpointStat.total }}</MetricCard>
-      <MetricCard :label="t('inline.endpointsView.onlineEndpoints')" tone="success">{{ endpointStat.online }}</MetricCard>
-      <MetricCard :label="t('inline.endpointsView.offlineEndpoints')" tone="warning">{{ endpointStat.total - endpointStat.online }}</MetricCard>
-      <MetricCard :label="t('inline.endpointsView.endpointTypes')" tone="neutral">{{ Object.keys(endpointStat.byType || {}).length }}</MetricCard>
+      <MetricCard :label="t('endpoints.totalEndpoints')" tone="info">{{ endpointStat.total }}</MetricCard>
+      <MetricCard :label="t('endpoints.onlineEndpoints')" tone="success">{{ endpointStat.online }}</MetricCard>
+      <MetricCard :label="t('endpoints.offlineEndpoints')" tone="warning">{{ endpointStat.total - endpointStat.online }}</MetricCard>
+      <MetricCard :label="t('endpoints.endpointTypes')" tone="neutral">{{ Object.keys(endpointStat.byType || {}).length }}</MetricCard>
     </div>
 
     <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="endpointsFiltered.length">
       <template #toolbar>
         <FilterToolbar :count="endpointsFiltered.length">
-        <el-input v-model="keyword" :placeholder="t('inline.endpointsView.searchHostnameIpOs')" clearable @input="page = 1" />
+        <el-input v-model="keyword" :placeholder="t('endpoints.searchPlaceholder')" clearable @input="page = 1" />
         </FilterToolbar>
       </template>
       <el-table :data="endpointsPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @sort-change="endpointsList.onSortChange">
@@ -77,7 +77,7 @@ onMounted(loadEndpoints)
           <template #default="{ row }"><el-tag :type="row.status === 'ONLINE' ? 'success' : 'info'" size="small">{{ t('statuses.' + row.status) || row.status }}</el-tag></template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="80" :resizable="false">
-          <template #default="{ row }"><el-button link type="danger" size="small" @click="removeEndpoint(row.id)">{{ t('inline.endpointsView.unregister') }}</el-button></template>
+          <template #default="{ row }"><el-button link type="danger" size="small" @click="removeEndpoint(row.id)">{{ t('endpoints.unregister') }}</el-button></template>
         </el-table-column>
       </el-table>
     </DataTableCard>

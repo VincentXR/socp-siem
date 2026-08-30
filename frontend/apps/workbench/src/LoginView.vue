@@ -54,7 +54,7 @@ function oidcLogin() {
 
     <div class="login-lang-switch">
       <button type="button" class="lang-btn" @click="toggleLocale">
-        🌐 {{ t('inline.loginView.message') }}
+        🌐 {{ t('login.languageCode') }}
       </button>
     </div>
 
@@ -80,9 +80,9 @@ function oidcLogin() {
       </form>
 
       <div v-if="demoMode" class="quick">
-        <span class="quick-label">{{ t('inline.loginView.demoAccounts') }}</span>
-        <button type="button" class="chip" @click="quickFill('demo', 'demo123')">{{ t('inline.loginView.analystDemo') }}</button>
-        <button type="button" class="chip" @click="quickFill('admin', 'admin123')">{{ t('inline.loginView.adminAdmin') }}</button>
+        <span class="quick-label">{{ t('login.demoAccounts') }}</span>
+        <button type="button" class="chip" @click="quickFill('demo', 'demo123')">{{ t('login.analystDemo') }}</button>
+        <button type="button" class="chip" @click="quickFill('admin', 'admin123')">{{ t('login.adminDemo') }}</button>
       </div>
 
       <div class="oidc-row">
@@ -91,12 +91,12 @@ function oidcLogin() {
             <rect x="3" y="11" width="18" height="11" rx="2" />
             <path d="M7 11V7a5 5 0 0 1 10 0v4" />
           </svg>
-          <span>Keycloak {{ t('inline.loginView.ssoLogin') }}</span>
+          <span>Keycloak {{ t('login.ssoLogin') }}</span>
         </button>
       </div>
     </div>
 
-    <div class="login-foot">JWT {{ t('inline.loginView.session30mMandatoryVerificationMultiTenantIsolated') }}</div>
+    <div class="login-foot">JWT {{ t('login.securityHint') }}</div>
   </div>
 </template>
 

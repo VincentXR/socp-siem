@@ -51,7 +51,7 @@ async function addChannel() {
 }
 
 async function removeChannel(id: string) {
-  if (!confirm(t('inline.notifyView.deleteThisNotificationChannel'))) return
+  if (!confirm(t('notify.confirmDelete'))) return
   await deleteChannel(id)
   await loadNotify()
 }
@@ -71,28 +71,28 @@ onMounted(loadNotify)
       <el-table :data="channels" size="small" border>
         <el-table-column prop="name" :label="t('common.name')" width="140" />
         <el-table-column prop="type" :label="t('common.type')" width="100" />
-        <el-table-column prop="target" :label="t('inline.notifyView.target')" min-width="200" show-overflow-tooltip />
+        <el-table-column prop="target" :label="t('notify.target')" min-width="200" show-overflow-tooltip />
         <el-table-column :label="t('common.enable')" width="90"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.enabled') : t('common.disabled') }}</el-tag></template></el-table-column>
         <el-table-column :label="t('common.actions')" width="150"><template #default="{ row }"><el-button link type="primary" size="small" @click="toggle(row.id)">{{ row.enabled ? t('common.disable') : t('common.enable') }}</el-button><el-button link type="danger" size="small" @click="removeChannel(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column>
       </el-table>
     </el-card>
 
     <el-card shadow="never">
-      <template #header>{{ t('inline.notifyView.dispatchLogsLiveRecords') }}</template>
+      <template #header>{{ t('notify.dispatchLogsLive') }}</template>
       <el-table :data="logs" size="small" border>
         <el-table-column prop="ts" :label="t('common.timestamp')" width="220" />
-        <el-table-column prop="channel" :label="t('inline.notifyView.channel')" width="120" />
+        <el-table-column prop="channel" :label="t('notify.channel')" width="120" />
         <el-table-column prop="type" :label="t('common.type')" width="90" />
-        <el-table-column prop="ruleId" :label="t('inline.notifyView.rule')" width="140" />
+        <el-table-column prop="ruleId" :label="t('notify.rule')" width="140" />
         <el-table-column :label="t('common.status')" width="100"><template #default="{ row }"><el-tag :type="row.status === 'sent' ? 'success' : row.status === 'failed' ? 'danger' : 'info'" size="small">{{ row.status }}</el-tag></template></el-table-column>
       </el-table>
     </el-card>
 
     <el-dialog v-model="dialogVisible" :title="t('notify.createChannel')" width="560px">
       <el-form label-width="90px">
-        <el-form-item :label="t('common.name')"><el-input v-model="form.name" :placeholder="t('inline.notifyView.eGSecurityOpsGroup')" /></el-form-item>
+        <el-form-item :label="t('common.name')"><el-input v-model="form.name" :placeholder="t('notify.namePlaceholder')" /></el-form-item>
         <el-form-item :label="t('common.type')"><el-select v-model="form.type" style="width:160px"><el-option v-for="type in ['SLACK', 'WEBHOOK', 'EMAIL', 'LOG']" :key="type" :label="type" :value="type" /></el-select></el-form-item>
-        <el-form-item :label="t('inline.notifyView.target')"><el-input v-model="form.target" :placeholder="t('inline.notifyView.webhookUrlEmail')" /></el-form-item>
+        <el-form-item :label="t('notify.target')"><el-input v-model="form.target" :placeholder="t('notify.targetPlaceholder')" /></el-form-item>
         <el-form-item :label="t('common.description')"><el-input v-model="form.description" :placeholder="t('common.description')" /></el-form-item>
         <el-form-item :label="t('common.enable')"><el-switch v-model="form.enabled" /></el-form-item>
       </el-form>

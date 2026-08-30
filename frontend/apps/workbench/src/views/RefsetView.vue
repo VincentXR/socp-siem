@@ -36,7 +36,7 @@ async function addRefSet() {
   await loadRefSets()
 }
 async function removeRefSet(id: string) {
-  if (!confirm(t('inline.refsetView.deleteReferenceSetAllEntriesWillBe'))) return
+  if (!confirm(t('refset.confirmDelete'))) return
   await deleteRefSet(id)
   await loadRefSets()
 }
@@ -57,18 +57,18 @@ onMounted(loadRefSets)
       <template #actions><el-button type="primary" size="small" @click="dialogVisible = true">{{ t('refset.createSet') }}</el-button></template>
     </PageHeader>
 
-    <el-empty v-if="!refSets.length" :description="t('inline.refsetView.noReferenceSets')" />
+    <el-empty v-if="!refSets.length" :description="t('refset.empty')" />
     <el-card v-for="refSet in refSets" :key="refSet.id" shadow="never" class="refset-card">
-      <div class="refset-head"><div><strong>{{ refSet.name }}</strong><span class="refset-meta">{{ refSet.description || '—' }} · {{ refSet.entries.length }} {{ t('inline.refsetView.items') }}</span></div><el-button link type="danger" size="small" @click="removeRefSet(refSet.id)">{{ t('common.delete') }}</el-button></div>
-      <div class="refset-entries"><el-tag v-for="(entry, index) in refSet.entries.slice(0, 40)" :key="index" size="small">{{ entry }}</el-tag><span v-if="refSet.entries.length > 40" class="refset-meta">… {{ t('inline.refsetView.total', { p0: refSet.entries.length }) }}</span></div>
-      <div class="refset-add-row"><el-input v-model="entryText[refSet.id]" :placeholder="t('inline.refsetView.addItem')" @keyup.enter="addEntry(refSet.id)" /><el-button size="small" @click="addEntry(refSet.id)">{{ t('common.add') }}</el-button></div>
+      <div class="refset-head"><div><strong>{{ refSet.name }}</strong><span class="refset-meta">{{ refSet.description || '—' }} · {{ refSet.entries.length }} {{ t('refset.itemUnit') }}</span></div><el-button link type="danger" size="small" @click="removeRefSet(refSet.id)">{{ t('common.delete') }}</el-button></div>
+      <div class="refset-entries"><el-tag v-for="(entry, index) in refSet.entries.slice(0, 40)" :key="index" size="small">{{ entry }}</el-tag><span v-if="refSet.entries.length > 40" class="refset-meta">… {{ t('refset.moreItems', { count: refSet.entries.length }) }}</span></div>
+      <div class="refset-add-row"><el-input v-model="entryText[refSet.id]" :placeholder="t('refset.addItem')" @keyup.enter="addEntry(refSet.id)" /><el-button size="small" @click="addEntry(refSet.id)">{{ t('common.add') }}</el-button></div>
     </el-card>
 
     <el-dialog v-model="dialogVisible" :title="t('refset.createSet')" width="560px">
       <el-form label-width="90px">
-        <el-form-item :label="t('inline.refsetView.setName')"><el-input v-model="form.name" :placeholder="t('inline.refsetView.eGVipUsers')" /></el-form-item>
+        <el-form-item :label="t('refset.nameLabel')"><el-input v-model="form.name" :placeholder="t('refset.namePlaceholder')" /></el-form-item>
         <el-form-item :label="t('common.description')"><el-input v-model="form.description" :placeholder="t('common.description')" /></el-form-item>
-        <el-form-item :label="t('inline.refsetView.initialEntries')"><el-input v-model="form.entries" type="textarea" :rows="4" :placeholder="t('inline.refsetView.commaOrLineSeparated')" /></el-form-item>
+        <el-form-item :label="t('refset.initialEntries')"><el-input v-model="form.entries" type="textarea" :rows="4" :placeholder="t('refset.initialEntriesPlaceholder')" /></el-form-item>
       </el-form>
       <template #footer><el-button @click="dialogVisible = false">{{ t('common.cancel') }}</el-button><el-button type="success" @click="addRefSet">{{ t('common.create') }}</el-button></template>
     </el-dialog>

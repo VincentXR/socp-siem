@@ -15,6 +15,7 @@ import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import ElSlider from 'element-plus/es/components/slider/index.mjs'
 import SevBadge from '../SevBadge.vue'
 import type { ScoreBreakdown } from '../../api'
+import { useI18n } from '../../composables/useI18n'
 
 type ScoreForm = { severity: string; mitre: string; tiHits: number; recentAlerts: number; assetCriticality: number }
 
@@ -23,10 +24,11 @@ defineProps<{
   result: ScoreBreakdown | null
 }>()
 const emit = defineEmits<{ calculate: [] }>()
+const { t } = useI18n()
 const severities = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO']
 const breakdownLabel: Record<string, string> = {
-  base: '严重级别基线', tactic: 'ATT&CK 战术权重', intel: '情报命中加成',
-  frequency: '实体频次加成', asset: '资产重要性加成',
+  base: 'ueba.severityBaseline', tactic: 'ueba.primaryTactic', intel: 'ueba.threatIntelHits',
+  frequency: 'ueba.recentEntityAlerts', asset: 'ueba.assetCriticality',
 }
 function riskColor(level: string) {
   return { CRITICAL: '#f56c6c', HIGH: '#e63946', MEDIUM: '#e6a23c', LOW: '#909399', INFO: '#909399' }[level] ?? '#909399'
@@ -37,38 +39,38 @@ function riskColor(level: string) {
   <el-row :gutter="12">
     <el-col :span="10">
       <el-card shadow="never">
-        <template #header>输入条件</template>
+        <template #header>{{ t('ueba.scoreInputs') }}</template>
         <el-form label-width="120px" size="small">
-          <el-form-item label="严重级别">
+          <el-form-item :label="t('ueba.severityBaseline')">
             <el-select v-model="form.severity" @change="emit('calculate')" style="width:160px">
-              <el-option v-for="severity in severities" :key="severity" :label="severity" :value="severity" />
+              <el-option v-for="severity in severities" :key="severity" :label="t('severities.' + severity) || severity" :value="severity" />
             </el-select>
           </el-form-item>
-          <el-form-item label="ATT&CK 技术">
-            <el-input v-model="form.mitre" placeholder="如 T1486" style="width:160px" @change="emit('calculate')" />
+          <el-form-item :label="t('ueba.attackTechnique')">
+            <el-input v-model="form.mitre" placeholder="T1486" style="width:160px" @change="emit('calculate')" />
           </el-form-item>
-          <el-form-item label="情报命中数"><el-slider v-model="form.tiHits" :min="0" :max="5" show-stops @change="emit('calculate')" /></el-form-item>
-          <el-form-item label="近 1h 同实体告警"><el-slider v-model="form.recentAlerts" :min="0" :max="20" @change="emit('calculate')" /></el-form-item>
-          <el-form-item label="资产重要性"><el-slider v-model="form.assetCriticality" :min="0" :max="3" show-stops @change="emit('calculate')" /></el-form-item>
+          <el-form-item :label="t('ueba.threatIntelHits')"><el-slider v-model="form.tiHits" :min="0" :max="5" show-stops @change="emit('calculate')" /></el-form-item>
+          <el-form-item :label="t('ueba.recentEntityAlerts')"><el-slider v-model="form.recentAlerts" :min="0" :max="20" @change="emit('calculate')" /></el-form-item>
+          <el-form-item :label="t('ueba.assetCriticality')"><el-slider v-model="form.assetCriticality" :min="0" :max="3" show-stops @change="emit('calculate')" /></el-form-item>
         </el-form>
       </el-card>
     </el-col>
     <el-col :span="14">
       <el-card shadow="never">
-        <template #header>评分拆解（与检测分析侧同一口径）</template>
+        <template #header>{{ t('ueba.scoreBreakdown') }}</template>
         <div v-if="result">
           <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:16px">
             <span style="font-size:44px;font-weight:700" :style="{ color: riskColor(result.level) }">{{ result.score }}</span>
             <SevBadge :value="result.level" />
-            <span style="font-size:12px;color:#909399">总分上限 100</span>
+            <span style="font-size:12px;color:#909399">{{ t('ueba.scoreCap') }}</span>
           </div>
           <div v-for="(value, key) in result.breakdown" :key="key" class="bd-row">
-            <span class="bd-label">{{ breakdownLabel[key] ?? key }}</span>
+            <span class="bd-label">{{ breakdownLabel[key] ? t(breakdownLabel[key]) : key }}</span>
             <div class="bd-bar"><div class="bd-fill" :style="{ width: Math.min(100, value) + '%', background: riskColor(result.level) }" /></div>
             <span class="bd-val">+{{ value }}</span>
           </div>
         </div>
-        <el-empty v-else description="评分服务不可用" />
+        <el-empty v-else :description="t('ueba.unavailable')" />
       </el-card>
     </el-col>
   </el-row>

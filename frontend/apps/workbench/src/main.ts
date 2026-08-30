@@ -4,6 +4,8 @@ import 'element-plus/es/components/base/style/css.mjs'
 import 'element-plus/es/components/message/style/css.mjs'
 import App from './App.vue'
 import { router } from './app/router'
+import { i18n } from './i18n'
+import { initializeLocale } from './i18n/locale-manager'
 import './styles/tokens.css'
 import './styles.css'
 
@@ -21,7 +23,10 @@ const queryClient = new QueryClient({
   },
 })
 
+initializeLocale()
+
 createApp(App)
+  .use(i18n)
   .use(router)
   .use(VueQueryPlugin, { queryClient })
   .mount('#app')

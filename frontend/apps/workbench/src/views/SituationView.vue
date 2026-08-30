@@ -29,7 +29,7 @@ import { useI18n } from '../composables/useI18n'
 const props = defineProps<{ theme: 'light' | 'dark' }>()
 const emit = defineEmits<{ 'session-expired': [] }>()
 
-const { t, locale } = useI18n()
+const { t, d } = useI18n()
 
 const liveFeed = ref<Array<GasAlert & { _new?: boolean }>>([])
 const liveOn = ref(true)
@@ -130,7 +130,7 @@ function renderSitCharts() {
           splitLine: { distance: -14, length: 14, lineStyle: { color: 'transparent', width: 2 } },
           axisLabel: { distance: 16, fontSize: 10, color: tc('#818b98', '#9198a1') },
           detail: { valueAnimation: true, fontSize: 26, fontWeight: 700, offsetCenter: [0, '38%'], formatter: '{value}', color: tc('#1f2328', '#e6edf3') },
-          title: { offsetCenter: [0, '72%'], fontSize: 12, color: tc('#59636e', '#9198a1') }, data: [{ value: stats?.avgRisk ?? 0, name: '平均威胁分' }] }],
+          title: { offsetCenter: [0, '72%'], fontSize: 12, color: tc('#59636e', '#9198a1') }, data: [{ value: stats?.avgRisk ?? 0, name: t('situation.avgThreatScore') }] }],
       })
     }
     if (donutEl.value) {
@@ -185,24 +185,24 @@ onUnmounted(() => {
           <!-- KPI 条 -->
           <div class="sit-kpis">
             <div class="sit-kpi">
-              <div class="k-num">{{ sitEngine?.eventCount ?? 0 }}</div><div class="k-label">引擎处理事件</div>
+              <div class="k-num">{{ sitEngine?.eventCount ?? 0 }}</div><div class="k-label">{{ t('situation.engineEvents') }}</div>
             </div>
             <div class="sit-kpi">
-              <div class="k-num" style="color:#f56c6c">{{ sitEngine?.alertCount ?? 0 }}</div><div class="k-label">规则命中告警</div>
+              <div class="k-num" style="color:#f56c6c">{{ sitEngine?.alertCount ?? 0 }}</div><div class="k-label">{{ t('situation.ruleAlerts') }}</div>
             </div>
             <div class="sit-kpi">
-              <div class="k-num" style="color:#e6a23c">{{ sitEngine?.suppressedCount ?? 0 }}</div><div class="k-label">抑制去重</div>
+              <div class="k-num" style="color:#e6a23c">{{ sitEngine?.suppressedCount ?? 0 }}</div><div class="k-label">{{ t('situation.suppressedDedup') }}</div>
             </div>
             <div class="sit-kpi">
               <div class="k-num" :style="{ color: (sitEngine?.dropCount ?? 0) > 0 ? '#f56c6c' : '#67c23a' }">{{ sitEngine?.dropCount ?? 0 }}</div>
-              <div class="k-label">背压丢弃</div>
+              <div class="k-label">{{ t('situation.backpressureDrops') }}</div>
             </div>
             <div class="sit-kpi">
-              <div class="k-num" style="color:#409eff">{{ sitIngest?.eps1m ?? 0 }}</div><div class="k-label">接入 EPS(1m)</div>
+              <div class="k-num" style="color:#409eff">{{ sitIngest?.eps1m ?? 0 }}</div><div class="k-label">{{ t('situation.ingestEps') }}</div>
             </div>
             <div class="sit-kpi">
               <div class="k-num">{{ queuePct }}%</div>
-              <div class="k-label">队列水位</div>
+              <div class="k-label">{{ t('situation.queueLevel') }}</div>
               <el-progress :percentage="Math.min(100, queuePct)" :show-text="false" :stroke-width="4"
                 :color="queuePct > 70 ? '#f56c6c' : queuePct > 30 ? '#e6a23c' : '#67c23a'" style="margin-top:4px" />
             </div>
@@ -211,29 +211,29 @@ onUnmounted(() => {
           <el-row :gutter="12" style="margin-bottom:12px">
             <el-col :span="6">
               <el-card shadow="never" class="sit-card">
-                <template #header>威胁评分（0–100）</template>
+                <template #header>{{ t('situation.threatScore') }}（0–100）</template>
                 <div ref="gaugeEl" style="height:180px"></div>
                 <div style="text-align:center;font-size:12px;color:#909399">
-                  近 7 日告警总量 <b style="color:#303133">{{ sitStats?.total ?? 0 }}</b>
-                  · 高危 <b style="color:#f56c6c">{{ (sitStats?.byRiskLevel?.CRITICAL ?? 0) + (sitStats?.byRiskLevel?.HIGH ?? 0) }}</b>
+                  {{ t('situation.sevenDayAlarms') }} <b style="color:#303133">{{ sitStats?.total ?? 0 }}</b>
+                  · {{ t('situation.highRisk') }} <b style="color:#f56c6c">{{ (sitStats?.byRiskLevel?.CRITICAL ?? 0) + (sitStats?.byRiskLevel?.HIGH ?? 0) }}</b>
                 </div>
               </el-card>
             </el-col>
             <el-col :span="6">
               <el-card shadow="never" class="sit-card">
-                <template #header>近 7 日风险档位分布</template>
+                <template #header>{{ t('situation.sevenDayRiskDistribution') }}</template>
                 <div ref="donutEl" style="height:210px"></div>
               </el-card>
             </el-col>
             <el-col :span="6">
               <el-card shadow="never" class="sit-card">
-                <template #header>近 7 日告警趋势</template>
+                <template #header>{{ t('situation.sevenDayTrend') }}</template>
                 <TrendChart :data="sitStats?.trend7d" variant="situation" style="height:210px" />
               </el-card>
             </el-col>
             <el-col :span="6">
               <el-card shadow="never" class="sit-card">
-                <template #header>接入吞吐（EPS 采样）</template>
+                <template #header>{{ t('situation.ingestThroughput') }}（EPS）</template>
                 <div ref="epsEl" style="height:210px"></div>
               </el-card>
             </el-col>
@@ -245,17 +245,17 @@ onUnmounted(() => {
                 <template #header>
                   <div style="display:flex;align-items:center;gap:10px">
                     <span class="live-dot" :class="{ off: !liveOn }" />
-                    <span>实时事件流</span>
-                    <el-select v-model="liveSevFilter" placeholder="全部级别" clearable size="small" style="width:120px">
-                      <el-option v-for="s in SEVERITIES" :key="s" :label="s" :value="s" />
+                    <span>{{ t('situation.liveEventStream') }}</span>
+                    <el-select v-model="liveSevFilter" :placeholder="t('situation.allLevels')" clearable size="small" style="width:120px">
+                      <el-option v-for="s in SEVERITIES" :key="s" :label="t('severities.' + s) || s" :value="s" />
                     </el-select>
-                    <el-button size="small" @click="toggleLive">{{ liveOn ? '暂停' : '继续' }}</el-button>
-                    <el-button size="small" @click="loadSituation">刷新</el-button>
-                    <span style="margin-left:auto;font-size:12px;color:#909399">{{ feedView.length }} 条</span>
+                    <el-button size="small" @click="toggleLive">{{ liveOn ? t('situation.pause') : t('situation.resume') }}</el-button>
+                    <el-button size="small" @click="loadSituation">{{ t('common.refresh') }}</el-button>
+                    <span style="margin-left:auto;font-size:12px;color:#909399">{{ t('situation.eventCount', { count: feedView.length }) }}</span>
                   </div>
                 </template>
                 <div class="feed">
-                  <div v-if="!feedView.length" class="feed-empty">暂无实时告警 —— 可在「日志接入 · 接入任务」里点自测灌一条样例日志</div>
+                  <div v-if="!feedView.length" class="feed-empty">{{ t('situation.noLiveAlarmsHint') }}</div>
                   <div v-for="a in feedView" :key="a.id" class="feed-item" :class="{ fresh: a._new }">
                     <span class="feed-dot" :style="{ background: sevColor(a.severity) }" />
                     <div class="feed-body">
@@ -263,7 +263,7 @@ onUnmounted(() => {
                         <SevBadge :value="a.severity" />
                         <span class="feed-rule">{{ a.ruleName }}</span>
                         <span class="feed-entity mono">{{ a.entity }}</span>
-                        <span class="feed-time mono">{{ new Date(a.timestamp).toLocaleTimeString('zh-CN', { hour12: false }) }}</span>
+                        <span class="feed-time mono">{{ d(a.timestamp, 'time') }}</span>
                       </div>
                       <div class="feed-msg">{{ a.message }}</div>
                     </div>
@@ -273,19 +273,19 @@ onUnmounted(() => {
             </el-col>
             <el-col :span="11">
               <el-card shadow="never" class="sit-card">
-                <template #header>近 7 日最该处置的告警（按威胁评分）</template>
+                <template #header>{{ t('situation.topRiskAlarms') }}</template>
                 <el-table :data="sitStats?.topRisk ?? []" size="small" height="368">
-                  <el-table-column label="评分" width="86">
+                  <el-table-column :label="t('situation.score')" width="86">
                     <template #default="{ row }">
                       <span class="risk-pill" :style="{ background: sevColor(row.riskLevel) }">{{ row.riskScore }}</span>
                     </template>
                   </el-table-column>
-                  <el-table-column prop="ruleName" label="规则" min-width="150" show-overflow-tooltip />
-                  <el-table-column prop="entity" label="实体" width="130" show-overflow-tooltip />
+                  <el-table-column prop="ruleName" :label="t('common.rule')" min-width="150" show-overflow-tooltip />
+                  <el-table-column prop="entity" :label="t('common.entity')" width="130" show-overflow-tooltip />
                   <el-table-column label="ATT&CK" width="92">
                     <template #default="{ row }"><span class="mono" style="font-size:12px">{{ row.mitre || '—' }}</span></template>
                   </el-table-column>
-                  <el-table-column label="级别" width="94">
+                  <el-table-column :label="t('situation.level')" width="94">
                     <template #default="{ row }"><SevBadge :value="row.severity" /></template>
                   </el-table-column>
                 </el-table>

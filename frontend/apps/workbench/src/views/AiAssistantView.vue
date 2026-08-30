@@ -107,7 +107,7 @@ async function appendToIncident() {
       </div>
 
       <div v-if="result" class="ai-result mt-4 p-4 rounded bg-gray-50 dark:bg-gray-800 border border-gray-100 dark:border-gray-700">
-        <div class="ai-result-question font-semibold text-base mb-2 text-primary">{{ t('inline.aiAssistantView.q') }}{{ result.question }}</div>
+        <div class="ai-result-question font-semibold text-base mb-2 text-primary">{{ t('ai.investigation.questionPrefix') }}{{ result.question }}</div>
         <div class="ai-result-answer whitespace-pre-wrap leading-relaxed text-sm text-gray-700 dark:text-gray-200">{{ result.answer }}</div>
         <div v-if="result.suggestion" class="ai-result-suggestion mt-3 p-2.5 rounded bg-blue-50/70 dark:bg-blue-950/40 text-blue-800 dark:text-blue-200 text-xs leading-normal">
           <span class="font-semibold">{{ t('ai.suggestionTitle') }}</span>{{ result.suggestion }}
@@ -123,42 +123,42 @@ async function appendToIncident() {
     <el-card shadow="never" class="ai-panel mt-4">
       <div class="flex items-center justify-between gap-3 mb-2">
         <div>
-          <h3 class="font-semibold text-base">{{ t('inline.aiAssistantView.alertInvestigationAgent') }}</h3>
-          <p class="text-xs text-gray-400 mt-1">{{ t('inline.aiAssistantView.evidenceFirstTenantScopedInvestigationSoarActions') }}</p>
+          <h3 class="font-semibold text-base">{{ t('ai.investigation.agentTitle') }}</h3>
+          <p class="text-xs text-gray-400 mt-1">{{ t('ai.investigation.evidenceFirstDescription') }}</p>
         </div>
-        <el-tag size="small" type="warning" effect="plain">{{ t('inline.aiAssistantView.humanApprovalRequired') }}</el-tag>
+        <el-tag size="small" type="warning" effect="plain">{{ t('ai.investigation.approvalRequired') }}</el-tag>
       </div>
       <div class="ai-ask-row flex gap-3 items-center">
-        <el-input v-model="alertId" clearable :placeholder="t('inline.aiAssistantView.alertId')" @keyup.enter="investigate" />
-        <el-button type="primary" :loading="investigationLoading" @click="investigate">{{ t('inline.aiAssistantView.investigate') }}</el-button>
+        <el-input v-model="alertId" clearable :placeholder="t('ai.investigation.alertId')" @keyup.enter="investigate" />
+        <el-button type="primary" :loading="investigationLoading" @click="investigate">{{ t('ai.investigation.investigate') }}</el-button>
       </div>
       <div v-if="investigationError" class="text-xs text-red-500 mt-2">{{ investigationError }}</div>
       <div v-if="investigation" class="ai-result mt-4 p-4 rounded bg-gray-50 dark:bg-gray-800 border border-gray-100 dark:border-gray-700">
         <div class="flex items-center gap-2 mb-3">
           <el-tag size="small" :type="investigation.status === 'COMPLETED' ? 'success' : 'warning'">{{ investigation.status }}</el-tag>
           <span class="text-xs text-gray-400">{{ investigation.investigationId }}</span>
-          <el-tag v-if="investigation.duplicate" size="small" effect="plain">{{ t('inline.aiAssistantView.replayedReceipt') }}</el-tag>
+          <el-tag v-if="investigation.duplicate" size="small" effect="plain">{{ t('ai.investigation.replayedReceipt') }}</el-tag>
         </div>
         <div class="text-sm leading-relaxed whitespace-pre-wrap">{{ investigation.analysis }}</div>
         <div class="mt-4">
-          <div class="font-semibold text-sm mb-2">{{ t('inline.aiAssistantView.evidenceTimeline') }}</div>
+          <div class="font-semibold text-sm mb-2">{{ t('ai.investigation.evidenceTimeline') }}</div>
           <div v-for="item in investigation.timeline" :key="`${item.timestamp}-${item.citation}`" class="text-xs border-l-2 border-blue-300 pl-3 mb-2">
             <span class="text-gray-400">{{ item.timestamp }}</span> · <span class="font-medium">{{ item.type }}</span> · {{ item.message }}
             <span class="text-blue-500 ml-1">[{{ item.citation }}]</span>
           </div>
         </div>
         <div class="mt-4">
-          <div class="font-semibold text-sm mb-2">{{ t('inline.aiAssistantView.recommendedSpl') }}</div>
+          <div class="font-semibold text-sm mb-2">{{ t('ai.investigation.recommendedSpl') }}</div>
           <code class="block text-xs p-2 rounded bg-gray-100 dark:bg-gray-900 whitespace-pre-wrap">{{ investigation.recommendedSpl }}</code>
         </div>
         <div v-if="investigation.hypotheses?.length" class="mt-4">
-          <div class="font-semibold text-sm mb-2">{{ t('inline.aiAssistantView.hypotheses') }}</div>
+          <div class="font-semibold text-sm mb-2">{{ t('ai.investigation.hypotheses') }}</div>
           <div v-for="hypothesis in investigation.hypotheses" :key="hypothesis.hypothesis" class="text-xs mb-2">
             <span class="font-medium">{{ hypothesis.hypothesis }}</span> · {{ Math.round(hypothesis.confidence * 100) }}%
           </div>
         </div>
         <div v-if="investigation.nextActions?.length" class="mt-4">
-          <div class="font-semibold text-sm mb-2">{{ t('inline.aiAssistantView.nextActions') }}</div>
+          <div class="font-semibold text-sm mb-2">{{ t('ai.investigation.nextActions') }}</div>
           <div v-for="action in investigation.nextActions" :key="`${action.type}-${action.description}`" class="text-xs mb-2">
             <span class="font-medium">{{ action.type }}</span> · {{ action.description }}
             <span v-if="action.status" class="text-gray-400"> ({{ action.status }})</span>
@@ -166,12 +166,12 @@ async function appendToIncident() {
         </div>
         <div class="mt-4 flex items-center gap-2">
           <el-button type="success" plain :loading="appendLoading" :disabled="investigation.summaryAppended" @click="appendToIncident">
-            {{ investigation.summaryAppended ? (t('inline.aiAssistantView.appendedToIncident')) : (t('inline.aiAssistantView.appendSummaryToIncident')) }}
+            {{ investigation.summaryAppended ? t('ai.investigation.appendedToIncident') : t('ai.investigation.appendSummaryToIncident') }}
           </el-button>
           <span v-if="investigation.incidentId" class="text-xs text-gray-400">{{ investigation.incidentId }}</span>
         </div>
         <div v-if="investigation.citations?.length" class="mt-3 text-xs text-gray-400">
-          {{ t('inline.aiAssistantView.citations') }}{{ investigation.citations.map(citation => citation.id).join(', ') }}
+          {{ t('ai.investigation.citations') }}{{ investigation.citations.map(citation => citation.id).join(', ') }}
         </div>
       </div>
     </el-card>

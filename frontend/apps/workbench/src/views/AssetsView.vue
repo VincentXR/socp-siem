@@ -36,20 +36,20 @@ const editingAssetId = ref<string | null>(null)
 const assetForm = ref({ name: '', type: 'SERVER', ip: '', os: '', owner: '', criticality: 'HIGH' })
 
 const assetTypes = computed(() => [
-  { value: 'SERVER', label: t('inline.assetsView.server') },
-  { value: 'DATABASE', label: t('inline.assetsView.database') },
-  { value: 'FIREWALL', label: t('inline.assetsView.firewall') },
-  { value: 'MESSAGE', label: t('inline.assetsView.messageQueue') },
-  { value: 'LOADBALANCER', label: t('inline.assetsView.loadBalancer') },
-  { value: 'APPLICATION', label: t('inline.assetsView.application') },
-  { value: 'NETWORK', label: t('inline.assetsView.networkDevice') },
+  { value: 'SERVER', label: t('assets.types.server') },
+  { value: 'DATABASE', label: t('assets.types.database') },
+  { value: 'FIREWALL', label: t('assets.types.firewall') },
+  { value: 'MESSAGE', label: t('assets.types.messageQueue') },
+  { value: 'LOADBALANCER', label: t('assets.types.loadBalancer') },
+  { value: 'APPLICATION', label: t('assets.types.application') },
+  { value: 'NETWORK', label: t('assets.types.networkDevice') },
 ])
 
 const criticalityOptions = computed(() => [
-  { value: 'CRITICAL', label: t('inline.assetsView.critical') },
-  { value: 'HIGH', label: t('inline.assetsView.high') },
-  { value: 'MEDIUM', label: t('inline.assetsView.medium') },
-  { value: 'LOW', label: t('inline.assetsView.low') },
+  { value: 'CRITICAL', label: t('assets.criticalityCritical') },
+  { value: 'HIGH', label: t('assets.criticalityHigh') },
+  { value: 'MEDIUM', label: t('assets.criticalityMedium') },
+  { value: 'LOW', label: t('assets.criticalityLow') },
 ])
 
 const rowValue = (row: ImportRow, ...keys: string[]) => {
@@ -95,10 +95,10 @@ function openEditAsset(asset: Asset) {
 async function removeAsset(id: string) {
   try {
     await assetApi.remove(id)
-    ElMessage.success(t('inline.assetsView.assetDeleted'))
+    ElMessage.success(t('assets.deleted'))
     await loadAssets()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : (t('inline.assetsView.failedToDeleteAsset')))
+    ElMessage.error(error instanceof Error ? error.message : (t('assets.deleteFailed')))
   }
 }
 
@@ -115,10 +115,10 @@ async function saveAsset() {
     if (editingAssetId.value) await assetApi.update(editingAssetId.value, payload)
     else await assetApi.create(payload)
     showAssetDialog.value = false
-    ElMessage.success(editingAssetId.value ? (t('inline.assetsView.assetUpdated')) : (t('inline.assetsView.assetCreated')))
+    ElMessage.success(editingAssetId.value ? (t('assets.updated')) : (t('assets.created')))
     await loadAssets()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : (t('inline.assetsView.failedToSaveAsset')))
+    ElMessage.error(error instanceof Error ? error.message : (t('assets.saveFailed')))
   }
 }
 
@@ -143,11 +143,11 @@ async function importAssetFile(event: Event) {
       }
     })
     const result = await assetApi.bulkImport(payload)
-    if (result.skipped) ElMessage.warning(t('inline.assetsView.importedSkipped', { p0: result.imported, p1: result.skipped }))
-    else ElMessage.success(t('inline.assetsView.successfullyImportedAssets', { p0: result.imported }))
+    if (result.skipped) ElMessage.warning(t('assets.importSkipped', { imported: result.imported, skipped: result.skipped }))
+    else ElMessage.success(t('assets.importSuccess', { count: result.imported }))
     await loadAssets()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : (t('inline.assetsView.assetImportFailed')))
+    ElMessage.error(error instanceof Error ? error.message : (t('assets.importFailed')))
   } finally {
     input.value = ''
   }
@@ -168,16 +168,16 @@ onMounted(loadAssets)
     </PageHeader>
 
     <div v-if="assetStat" class="page-metrics">
-      <MetricCard :label="t('inline.assetsView.totalAssets')" tone="info">{{ assetStat.total }}</MetricCard>
-      <MetricCard :label="t('inline.assetsView.criticalAssets')" tone="danger">{{ assetStat.byCriticality?.CRITICAL ?? 0 }}</MetricCard>
-      <MetricCard :label="t('inline.assetsView.highValueAssets')" tone="warning">{{ assetStat.byCriticality?.HIGH ?? 0 }}</MetricCard>
-      <MetricCard :label="t('inline.assetsView.assetTypes')" tone="neutral">{{ Object.keys(assetStat.byType || {}).length }}</MetricCard>
+      <MetricCard :label="t('assets.totalAssets')" tone="info">{{ assetStat.total }}</MetricCard>
+      <MetricCard :label="t('assets.criticalAssets')" tone="danger">{{ assetStat.byCriticality?.CRITICAL ?? 0 }}</MetricCard>
+      <MetricCard :label="t('assets.highValueAssets')" tone="warning">{{ assetStat.byCriticality?.HIGH ?? 0 }}</MetricCard>
+      <MetricCard :label="t('assets.assetTypes')" tone="neutral">{{ Object.keys(assetStat.byType || {}).length }}</MetricCard>
     </div>
 
     <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="assetsFiltered.length">
       <template #toolbar>
         <FilterToolbar :count="assetsFiltered.length">
-        <el-input v-model="keyword" :placeholder="t('inline.assetsView.searchNameIpTypeOwner')" clearable @input="page = 1" />
+        <el-input v-model="keyword" :placeholder="t('assets.searchPlaceholder')" clearable @input="page = 1" />
         </FilterToolbar>
       </template>
       <el-table :data="assetsPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @sort-change="assetsList.onSortChange">
@@ -200,13 +200,13 @@ onMounted(loadAssets)
       </el-table>
     </DataTableCard>
 
-    <el-dialog v-model="showAssetDialog" :title="editingAssetId ? (t('inline.assetsView.editAsset')) : t('assets.createAsset')" width="560px">
+    <el-dialog v-model="showAssetDialog" :title="editingAssetId ? (t('assets.edit')) : t('assets.createAsset')" width="560px">
       <el-form label-width="90px">
-        <el-form-item :label="t('common.name')" required><el-input v-model="assetForm.name" :placeholder="t('inline.assetsView.eGWebProd01')" /></el-form-item>
+        <el-form-item :label="t('common.name')" required><el-input v-model="assetForm.name" :placeholder="t('assets.namePlaceholder')" /></el-form-item>
         <el-form-item :label="t('common.type')"><el-select v-model="assetForm.type" style="width: 180px"><el-option v-for="type in assetTypes" :key="type.value" :label="type.label" :value="type.value" /></el-select></el-form-item>
-        <el-form-item :label="t('common.ip')" required><el-input v-model="assetForm.ip" :placeholder="t('inline.assetsView.eG100030')" /></el-form-item>
-        <el-form-item :label="t('endpoints.os')"><el-input v-model="assetForm.os" :placeholder="t('inline.assetsView.eGUbuntu2404')" /></el-form-item>
-        <el-form-item :label="t('assets.owner')"><el-input v-model="assetForm.owner" :placeholder="t('inline.assetsView.eGInfra')" /></el-form-item>
+        <el-form-item :label="t('common.ip')" required><el-input v-model="assetForm.ip" :placeholder="t('assets.ipPlaceholder')" /></el-form-item>
+        <el-form-item :label="t('endpoints.os')"><el-input v-model="assetForm.os" :placeholder="t('assets.osPlaceholder')" /></el-form-item>
+        <el-form-item :label="t('assets.owner')"><el-input v-model="assetForm.owner" :placeholder="t('assets.ownerPlaceholder')" /></el-form-item>
         <el-form-item :label="t('assets.criticality')"><el-select v-model="assetForm.criticality" style="width: 180px"><el-option v-for="level in criticalityOptions" :key="level.value" :label="level.label" :value="level.value" /></el-select></el-form-item>
       </el-form>
       <template #footer>

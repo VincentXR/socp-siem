@@ -43,7 +43,7 @@ async function search() {
     result.value = await splSearch(query.value)
   } catch (err) {
     result.value = null
-    error.value = `${t('inline.searchView.searchFailed')}${err instanceof Error ? err.message : String(err)}`
+    error.value = `${t('search.failed')}${err instanceof Error ? err.message : String(err)}`
   } finally {
     loading.value = false
   }
@@ -79,11 +79,11 @@ onMounted(() => {
 
     <template v-if="result">
       <el-alert v-if="result.degraded" type="warning"
-        :title="t('inline.searchView.searchDegradedTo', { p0: result.source })"
-        :description="result.degradationReason || (t('inline.searchView.resultsMayOnlyCoverLocalCache'))"
+        :title="t('search.degradedTo', { source: result.source })"
+        :description="result.degradationReason || (t('search.localCacheOnly'))"
         :closable="false" show-icon class="search-error" />
       <el-card shadow="never" class="search-result-card">
-        <template #header>{{ t('inline.searchView.matchedEvents', { p0: result.total }) }}</template>
+        <template #header>{{ t('search.matchedEvents', { count: result.total }) }}</template>
         <el-table :data="result.events" size="small" border allow-drag-last-column max-height="420" @header-dragend="onHeaderDragEnd">
           <el-table-column prop="timestamp" column-key="timestamp" :label="t('common.timestamp')" :width="columnWidth('timestamp', 150)" sortable><template #default="{ row }">{{ row.timestamp.slice(0, 19).replace('T', ' ') }}</template></el-table-column>
           <el-table-column prop="source" column-key="source" :label="t('common.source')" :width="columnWidth('source', 90)" sortable />
@@ -93,10 +93,10 @@ onMounted(() => {
         </el-table>
       </el-card>
       <el-card v-if="result.stat" shadow="never">
-        <template #header>{{ result.stat.type === 'timechart' ? (t('inline.searchView.timeDistributionDaily')) : (t('inline.searchView.stats', { p0: result.stat.type === 'top' ? 'Top' : 'Group Count', p1: result.stat.type === 'top' ? 'Top' : '分组计数' })) }}</template>
+        <template #header>{{ result.stat.type === 'timechart' ? t('search.timeDistributionDaily') : t('search.statsSummary', { type: result.stat.type === 'top' ? 'Top' : t('search.count') }) }}</template>
         <el-table :data="result.stat.rows" size="small" border>
           <el-table-column prop="key" label="Key" sortable show-overflow-tooltip />
-          <el-table-column prop="count" :label="t('inline.searchView.count')" width="220" sortable>
+          <el-table-column prop="count" :label="t('search.count')" width="220" sortable>
             <template #default="{ row }">
               <div class="search-stat-row"><span>{{ row.count }}</span><span class="search-stat-track"><i :style="{ width: `${Math.min(100, (row.count / maxStatCount) * 100)}%` }" /></span></div>
             </template>
