@@ -16,8 +16,13 @@ public interface IngestionOutboxRepository extends TenantScopedRepository<Ingest
     List<IngestionOutboxEvent> findByTenantId(String tenantId);
     Optional<IngestionOutboxEvent> findByIdAndTenantId(String id, String tenantId);
 
-    List<IngestionOutboxEvent> findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+    List<IngestionOutboxEvent> findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
             String status, Instant nextAttemptAt);
+
+    long countByStatus(String status);
+
+    @Query("select min(e.createdAt) from IngestionOutboxEvent e where e.status = :status")
+    Instant findOldestCreatedAtByStatus(@Param("status") String status);
 
     @Modifying
     @Transactional
@@ -69,6 +74,9 @@ public interface IngestionOutboxRepository extends TenantScopedRepository<Ingest
 
     @Modifying
     @Transactional
-    @Query("delete from IngestionOutboxEvent e where e.status = 'PUBLISHED' and e.publishedAt < :cutoff")
-    int deletePublishedBefore(@Param("cutoff") Instant cutoff);
+    @Query(value = "delete from t_ingestion_outbox where id in ("
+            + "select id from t_ingestion_outbox where status = 'PUBLISHED' and published_at < :cutoff "
+            + "order by published_at asc limit :batchSize)", nativeQuery = true)
+    int deletePublishedBatchBefore(@Param("cutoff") Instant cutoff,
+                                   @Param("batchSize") int batchSize);
 }

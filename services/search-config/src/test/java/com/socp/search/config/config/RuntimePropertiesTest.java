@@ -14,6 +14,8 @@ class RuntimePropertiesTest {
         assertFalse(properties.isForwardHttp());
         assertEquals(10_000, properties.getMonitor().getMaxEntries());
         assertEquals(12, properties.getOutbox().getMaxAttempts());
+        assertEquals(1_000, properties.getOutbox().getCleanupBatchSize());
+        assertEquals(10, properties.getOutbox().getCleanupMaxBatches());
 
         properties.setForwardHttp(true);
         properties.getMonitor().setMaxEntries(20);

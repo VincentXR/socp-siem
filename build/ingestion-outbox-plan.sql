@@ -8,7 +8,7 @@ SELECT *
   FROM t_ingestion_outbox
  WHERE status = 'PENDING'
    AND next_attempt_at <= CURRENT_TIMESTAMP
- ORDER BY created_at ASC
+ ORDER BY next_attempt_at ASC, created_at ASC
  LIMIT 200;
 
 -- Confirm the intended index is available to the planner without changing

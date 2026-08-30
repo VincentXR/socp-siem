@@ -73,6 +73,8 @@ socp:
       delivery-concurrency: ${SOCP_INGEST_OUTBOX_CONCURRENCY:8}
       max-attempts: ${SOCP_INGEST_OUTBOX_MAX_ATTEMPTS:12}
       retention-ms: ${SOCP_INGEST_OUTBOX_RETENTION_MS:2592000000}
+      cleanup-batch-size: ${SOCP_INGEST_OUTBOX_CLEANUP_BATCH_SIZE:1000}
+      cleanup-max-batches: ${SOCP_INGEST_OUTBOX_CLEANUP_MAX_BATCHES:10}
       cleanup-interval-ms: ${SOCP_INGEST_OUTBOX_CLEANUP_INTERVAL_MS:3600000}
       cleanup-initial-delay-ms: ${SOCP_INGEST_OUTBOX_CLEANUP_INITIAL_DELAY_MS:60000}
   os-indexer:

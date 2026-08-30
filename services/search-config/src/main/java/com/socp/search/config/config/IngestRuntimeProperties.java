@@ -29,6 +29,8 @@ public class IngestRuntimeProperties {
         private int deliveryConcurrency = 8;
         private int maxAttempts = 12;
         private long retentionMs = 2_592_000_000L;
+        private int cleanupBatchSize = 1_000;
+        private int cleanupMaxBatches = 10;
 
         public int getDeliveryConcurrency() { return deliveryConcurrency; }
         public void setDeliveryConcurrency(int deliveryConcurrency) { this.deliveryConcurrency = deliveryConcurrency; }
@@ -36,5 +38,9 @@ public class IngestRuntimeProperties {
         public void setMaxAttempts(int maxAttempts) { this.maxAttempts = maxAttempts; }
         public long getRetentionMs() { return retentionMs; }
         public void setRetentionMs(long retentionMs) { this.retentionMs = retentionMs; }
+        public int getCleanupBatchSize() { return cleanupBatchSize; }
+        public void setCleanupBatchSize(int cleanupBatchSize) { this.cleanupBatchSize = cleanupBatchSize; }
+        public int getCleanupMaxBatches() { return cleanupMaxBatches; }
+        public void setCleanupMaxBatches(int cleanupMaxBatches) { this.cleanupMaxBatches = cleanupMaxBatches; }
     }
 }

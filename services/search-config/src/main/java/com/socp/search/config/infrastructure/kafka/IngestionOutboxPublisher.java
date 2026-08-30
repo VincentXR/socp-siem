@@ -22,6 +22,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /** Reliably drains canonical-event publication intents to Kafka. */
 @Component
@@ -39,7 +40,11 @@ public class IngestionOutboxPublisher {
     private final ExecutorService triggerExecutor;
     private final int maxAttempts;
     private final long retentionMs;
-    private final AtomicInteger pendingGauge = new AtomicInteger();
+    private final int cleanupBatchSize;
+    private final int cleanupMaxBatches;
+    private final AtomicInteger claimBatchSizeGauge = new AtomicInteger();
+    private final AtomicLong pendingCountGauge = new AtomicLong();
+    private final AtomicLong oldestPendingAgeSecondsGauge = new AtomicLong();
     private Instant nextRecoveryAt = Instant.EPOCH;
 
     @Autowired
@@ -50,13 +55,16 @@ public class IngestionOutboxPublisher {
         this(repository, producer, meterRegistry,
                 properties.getOutbox().getDeliveryConcurrency(),
                 properties.getOutbox().getMaxAttempts(),
-                properties.getOutbox().getRetentionMs());
+                properties.getOutbox().getRetentionMs(),
+                properties.getOutbox().getCleanupBatchSize(),
+                properties.getOutbox().getCleanupMaxBatches());
     }
 
     public IngestionOutboxPublisher(IngestionOutboxRepository repository,
                                     KafkaEventProducer producer,
                                     MeterRegistry meterRegistry,
-                                    int concurrency, int maxAttempts, long retentionMs) {
+                                    int concurrency, int maxAttempts, long retentionMs,
+                                    int cleanupBatchSize, int cleanupMaxBatches) {
         this.repository = repository;
         this.producer = producer;
         this.meterRegistry = meterRegistry;
@@ -67,16 +75,22 @@ public class IngestionOutboxPublisher {
                 Thread.ofVirtual().name("ingestion-outbox-trigger-", 0).factory());
         this.maxAttempts = Math.max(1, maxAttempts);
         this.retentionMs = Math.max(Duration.ofMinutes(1).toMillis(), retentionMs);
+        this.cleanupBatchSize = Math.max(1, Math.min(10_000, cleanupBatchSize));
+        this.cleanupMaxBatches = Math.max(1, Math.min(100, cleanupMaxBatches));
         if (meterRegistry != null) {
-            io.micrometer.core.instrument.Gauge.builder("socp.ingestion.outbox.pending", pendingGauge,
-                    AtomicInteger::get).register(meterRegistry);
+            io.micrometer.core.instrument.Gauge.builder("socp.ingestion.outbox.claim.batch.size",
+                    claimBatchSizeGauge, AtomicInteger::get).register(meterRegistry);
+            io.micrometer.core.instrument.Gauge.builder("socp.ingestion.outbox.pending.count",
+                    pendingCountGauge, AtomicLong::get).register(meterRegistry);
+            io.micrometer.core.instrument.Gauge.builder("socp.ingestion.outbox.oldest.pending.age.seconds",
+                    oldestPendingAgeSecondsGauge, AtomicLong::get).register(meterRegistry);
         }
     }
 
     private final java.util.concurrent.atomic.AtomicBoolean activeTrigger = new java.util.concurrent.atomic.AtomicBoolean(false);
 
     IngestionOutboxPublisher(IngestionOutboxRepository repository, KafkaEventProducer producer) {
-        this(repository, producer, null, 1, DEFAULT_MAX_ATTEMPTS, DEFAULT_RETENTION_MS);
+        this(repository, producer, null, 1, DEFAULT_MAX_ATTEMPTS, DEFAULT_RETENTION_MS, 1_000, 10);
     }
 
     /** Triggers an immediate asynchronous ingestion outbox publication cycle on transaction commit. */
@@ -110,17 +124,9 @@ public class IngestionOutboxPublisher {
                 lifecycle("dead", exhausted);
             }
             List<IngestionOutboxEvent> pending =
-                    repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc("PENDING", now);
-            if (meterRegistry != null) {
-                for (IngestionOutboxEvent event : pending) {
-                    if (event.getCreatedAt() != null) {
-                        meterRegistry.timer("socp.ingestion.outbox.queue_age").record(
-                                Math.max(0, Duration.between(event.getCreatedAt(), now).toNanos()),
-                                java.util.concurrent.TimeUnit.NANOSECONDS);
-                    }
-                }
-                pendingGauge.set(pending.size());
-            }
+                    repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
+                            "PENDING", now);
+            updateBacklogMetrics(pending.size(), now);
             List<CompletableFuture<Void>> deliveries = pending.stream()
                     .map(event -> CompletableFuture.runAsync(
                             () -> TenantContext.runWith(event.getTenantId(), () -> deliver(event)),
@@ -129,6 +135,19 @@ public class IngestionOutboxPublisher {
             CompletableFuture.allOf(deliveries.toArray(CompletableFuture[]::new)).join();
         } catch (Exception failure) {
             log.warn("Ingestion outbox scan failed; next scan will retry: {}", failure.getMessage());
+        }
+    }
+
+    private void updateBacklogMetrics(int claimBatchSize, Instant now) {
+        if (meterRegistry == null) return;
+        claimBatchSizeGauge.set(claimBatchSize);
+        try {
+            pendingCountGauge.set(repository.countByStatus("PENDING"));
+            Instant oldest = repository.findOldestCreatedAtByStatus("PENDING");
+            oldestPendingAgeSecondsGauge.set(oldest == null
+                    ? 0 : Math.max(0, Duration.between(oldest, now).toSeconds()));
+        } catch (RuntimeException failure) {
+            log.warn("Ingestion outbox backlog metrics deferred: {}", failure.getMessage());
         }
     }
 
@@ -190,10 +209,17 @@ public class IngestionOutboxPublisher {
     @TenantSystemJob
     void cleanupPublished() {
         try {
-            int removed = repository.deletePublishedBefore(Instant.now().minusMillis(retentionMs));
-            if (removed > 0) {
-                log.info("Removed retained ingestion outbox rows count={}", removed);
-                lifecycle("cleaned", removed);
+            Instant cutoff = Instant.now().minusMillis(retentionMs);
+            int totalRemoved = 0;
+            for (int batch = 0; batch < cleanupMaxBatches; batch++) {
+                int removed = repository.deletePublishedBatchBefore(cutoff, cleanupBatchSize);
+                totalRemoved += removed;
+                if (removed < cleanupBatchSize) break;
+            }
+            if (totalRemoved > 0) {
+                log.info("Removed retained ingestion outbox rows count={} batchSize={} maxBatches={}",
+                        totalRemoved, cleanupBatchSize, cleanupMaxBatches);
+                lifecycle("cleaned", totalRemoved);
             }
         } catch (RuntimeException failure) {
             log.warn("Ingestion outbox retention cleanup deferred: {}", failure.getMessage());

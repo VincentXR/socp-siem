@@ -3,6 +3,7 @@ package com.socp.search.config.infrastructure.kafka;
 import com.socp.search.config.domain.IngestionOutboxEvent;
 import com.socp.search.config.persistence.repository.IngestionOutboxRepository;
 import com.socp.platform.tenant.context.TenantContext;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -11,6 +12,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -35,7 +37,7 @@ class IngestionOutboxPublisherTest {
         when(producer.isEnabled()).thenReturn(true);
         IngestionOutboxEvent event = pending(
                 "event-1", "default|user|alice", "{}", "00-trace-01");
-        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
                 org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class)))
                 .thenReturn(List.of(event));
         when(repository.claim(any(), any(Instant.class), anyInt())).thenReturn(1);
@@ -57,7 +59,7 @@ class IngestionOutboxPublisherTest {
         when(producer.isEnabled()).thenReturn(true);
         IngestionOutboxEvent event = pending(
                 "event-1", "route", "{}", null);
-        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
                 org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class)))
                 .thenReturn(List.of(event));
         when(repository.claim(any(), any(Instant.class), anyInt())).thenReturn(1);
@@ -77,7 +79,7 @@ class IngestionOutboxPublisherTest {
         KafkaEventProducer producer = mock(KafkaEventProducer.class);
         when(producer.isEnabled()).thenReturn(true);
         IngestionOutboxEvent event = pending("event-1", "route", "{}", null);
-        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
                 org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class)))
                 .thenReturn(List.of(event));
         when(repository.claim(any(), any(Instant.class), anyInt())).thenReturn(0);
@@ -98,7 +100,8 @@ class IngestionOutboxPublisherTest {
         publisher.publish();
 
         verify(repository, never()).recoverStale(any(), any());
-        verify(repository, never()).findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(any(), any());
+        verify(repository, never())
+                .findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(any(), any());
     }
 
     @Test
@@ -106,7 +109,7 @@ class IngestionOutboxPublisherTest {
         IngestionOutboxRepository repository = mock(IngestionOutboxRepository.class);
         KafkaEventProducer producer = mock(KafkaEventProducer.class);
         when(producer.isEnabled()).thenReturn(true);
-        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
                 org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class))).thenReturn(List.of());
         publisher = new IngestionOutboxPublisher(repository, producer);
 
@@ -122,11 +125,11 @@ class IngestionOutboxPublisherTest {
         KafkaEventProducer producer = mock(KafkaEventProducer.class);
         when(producer.isEnabled()).thenReturn(true);
         IngestionOutboxEvent event = pending("event-dead", "route", "{}", null);
-        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
                 org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class))).thenReturn(List.of(event));
         when(repository.claim(any(), any(Instant.class), org.mockito.ArgumentMatchers.eq(1))).thenReturn(1);
         when(producer.sendAndAwait(any(), any(), any())).thenReturn(false);
-        publisher = new IngestionOutboxPublisher(repository, producer, null, 1, 1, 60_000L);
+        publisher = new IngestionOutboxPublisher(repository, producer, null, 1, 1, 60_000L, 100, 2);
 
         publisher.publish();
 
@@ -145,7 +148,7 @@ class IngestionOutboxPublisherTest {
             systemScope.set(TenantContext.isSystemScope());
             return 0;
         });
-        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
                 org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class))).thenReturn(List.of());
         publisher = new IngestionOutboxPublisher(repository, producer);
 
@@ -164,7 +167,7 @@ class IngestionOutboxPublisherTest {
         IngestionOutboxEvent event = pending("event-async", "route", "{}", null);
         AtomicBoolean tenantScope = new AtomicBoolean();
         when(producer.isEnabled()).thenReturn(true);
-        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
                 org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class)))
                 .thenReturn(List.of(event));
         when(repository.claim(any(), any(Instant.class), anyInt())).thenAnswer(invocation -> {
@@ -181,6 +184,43 @@ class IngestionOutboxPublisherTest {
 
         verify(repository, org.mockito.Mockito.timeout(2_000)).markPublished(any(), any(Instant.class));
         org.junit.jupiter.api.Assertions.assertTrue(tenantScope.get());
+    }
+
+    @Test
+    void reportsClaimBatchSeparatelyFromTheTrueBacklogAndOldestAge() {
+        IngestionOutboxRepository repository = mock(IngestionOutboxRepository.class);
+        KafkaEventProducer producer = mock(KafkaEventProducer.class);
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        when(producer.isEnabled()).thenReturn(true);
+        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
+                org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class))).thenReturn(List.of());
+        when(repository.countByStatus("PENDING")).thenReturn(827L);
+        when(repository.findOldestCreatedAtByStatus("PENDING"))
+                .thenReturn(Instant.now().minusSeconds(120));
+        publisher = new IngestionOutboxPublisher(repository, producer, registry,
+                1, 12, 60_000L, 100, 2);
+
+        publisher.publish();
+
+        assertEquals(0.0, registry.get("socp.ingestion.outbox.claim.batch.size").gauge().value());
+        assertEquals(827.0, registry.get("socp.ingestion.outbox.pending.count").gauge().value());
+        double oldestAge = registry.get("socp.ingestion.outbox.oldest.pending.age.seconds").gauge().value();
+        org.junit.jupiter.api.Assertions.assertTrue(oldestAge >= 119 && oldestAge <= 121);
+    }
+
+    @Test
+    void cleanupUsesConfiguredBoundedBatches() {
+        IngestionOutboxRepository repository = mock(IngestionOutboxRepository.class);
+        KafkaEventProducer producer = mock(KafkaEventProducer.class);
+        when(repository.deletePublishedBatchBefore(any(Instant.class), org.mockito.ArgumentMatchers.eq(100)))
+                .thenReturn(100, 100, 100);
+        publisher = new IngestionOutboxPublisher(repository, producer, null,
+                1, 12, 60_000L, 100, 2);
+
+        publisher.cleanupPublished();
+
+        verify(repository, org.mockito.Mockito.times(2))
+                .deletePublishedBatchBefore(any(Instant.class), org.mockito.ArgumentMatchers.eq(100));
     }
 
     private static IngestionOutboxEvent pending(String eventId, String routingKey,
