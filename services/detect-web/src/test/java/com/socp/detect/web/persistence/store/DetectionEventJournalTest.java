@@ -21,6 +21,7 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -268,14 +269,15 @@ class DetectionEventJournalTest {
 
     @Test
     void cleanupDefersWhenRepositoryMaintenanceFails() {
-        when(repository.deleteCompletedBefore(anyString(), any(Instant.class)))
+        when(repository.deleteCompletedBatchBefore(anyString(), any(Instant.class), anyInt()))
                 .thenThrow(new RuntimeException("database unavailable"));
 
         journal.cleanupExpiredTerminalEvents();
 
-        verify(repository).deleteCompletedBefore(eq(DetectionEventStatus.COMPLETED.name()),
-                any(Instant.class));
-        verify(repository, never()).deleteDeadLetteredBefore(anyString(), any(Instant.class));
+        verify(repository).deleteCompletedBatchBefore(eq(DetectionEventStatus.COMPLETED.name()),
+                any(Instant.class), eq(1_000));
+        verify(repository, never()).deleteDeadLetteredBatchBefore(
+                anyString(), any(Instant.class), anyInt());
     }
 
     private static SecurityEvent event(String id, String tenant, Instant timestamp,

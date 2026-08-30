@@ -67,17 +67,21 @@ public interface DetectionEventRepository extends TenantScopedRepository<Detecti
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
-    @Query("delete from DetectionEventEntity e "
-            + "where e.status = :status and "
-            + "(e.completedAt < :before or (e.completedAt is null and e.occurredAt < :before))")
-    long deleteCompletedBefore(@Param("status") String status,
-                               @Param("before") Instant before);
+    @Query(value = "delete from t_detection_event where event_id in ("
+            + "select event_id from t_detection_event where status = :status and "
+            + "(completed_at < :before or (completed_at is null and occurred_at < :before)) "
+            + "order by coalesce(completed_at, occurred_at) asc limit :batchSize)", nativeQuery = true)
+    int deleteCompletedBatchBefore(@Param("status") String status,
+                                   @Param("before") Instant before,
+                                   @Param("batchSize") int batchSize);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
-    @Query("delete from DetectionEventEntity e "
-            + "where e.status = :status and "
-            + "(e.deadLetteredAt < :before or (e.deadLetteredAt is null and e.occurredAt < :before))")
-    long deleteDeadLetteredBefore(@Param("status") String status,
-                                  @Param("before") Instant before);
+    @Query(value = "delete from t_detection_event where event_id in ("
+            + "select event_id from t_detection_event where status = :status and "
+            + "(dead_lettered_at < :before or (dead_lettered_at is null and occurred_at < :before)) "
+            + "order by coalesce(dead_lettered_at, occurred_at) asc limit :batchSize)", nativeQuery = true)
+    int deleteDeadLetteredBatchBefore(@Param("status") String status,
+                                      @Param("before") Instant before,
+                                      @Param("batchSize") int batchSize);
 }

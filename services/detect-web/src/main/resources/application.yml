@@ -54,6 +54,8 @@ socp:
       completed-retention: ${SOCP_DETECT_STATE_COMPLETED_RETENTION:7d}
       dead-letter-retention: ${SOCP_DETECT_STATE_DEAD_LETTER_RETENTION:90d}
       replay-page-size: ${SOCP_DETECT_STATE_REPLAY_PAGE_SIZE:1000}
+      cleanup-batch-size: ${SOCP_DETECT_STATE_CLEANUP_BATCH_SIZE:1000}
+      cleanup-max-batches: ${SOCP_DETECT_STATE_CLEANUP_MAX_BATCHES:10}
       cleanup-interval-ms: ${SOCP_DETECT_STATE_CLEANUP_INTERVAL_MS:600000}
       cleanup-initial-delay-ms: ${SOCP_DETECT_STATE_CLEANUP_INITIAL_DELAY_MS:600000}
     alert-outbox:

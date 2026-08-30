@@ -19,7 +19,18 @@ Baseline: `6aae664` on 2026-08-31.
   - Validation: search-config reactor tests (109 tests, 6 opt-in container tests
     skipped), `SearchConfigPostgresMigrationTest` with `SOCP_TESTCONTAINERS=true`
     (1 test), `python build/verify-style.py`, and `git diff --check`.
-- [ ] P0-A-2 Detection Journal terminal cleanup.
+- [x] P0-A-2 Detection Journal terminal cleanup.
+  - COMPLETED and DEAD_LETTERED use independent terminal clocks and bounded,
+    configurable cleanup batches; PENDING is never a cleanup target.
+  - Legacy terminal rows without lifecycle timestamps retain the audited
+    `occurred_at` compatibility path documented by `build/detection-journal-audit.sql`.
+  - PostgreSQL 16 evidence upgrades 100,000 legacy rows from schema V4, verifies
+    missing terminal timestamps are auditable, deletes only bounded terminal
+    batches, and preserves all 1,000 old PENDING rows.
+  - Validation: detect-web reactor tests (105 tests, 1 opt-in container test
+    skipped), `DetectJournalPostgresMigrationTest` with
+    `SOCP_TESTCONTAINERS=true` (1 test), `python build/verify-style.py`, and
+    `git diff --check`.
 - [ ] P0-B-1 Typed SPL semantic validation.
 - [ ] P0-B-2 Local/OpenSearch execution parity.
 - [ ] P0-B-3 Real OpenSearch parity and tenant tests.

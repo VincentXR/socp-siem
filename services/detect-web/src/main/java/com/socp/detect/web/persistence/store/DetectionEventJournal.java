@@ -44,6 +44,8 @@ public class DetectionEventJournal implements DetectionStateStore {
     private final Duration completedRetention;
     private final Duration deadLetterRetention;
     private final int replayPageSize;
+    private final int cleanupBatchSize;
+    private final int cleanupMaxBatches;
 
     /** Spring constructor keeps replay and terminal-retention policies explicit. */
     @Autowired
@@ -51,7 +53,9 @@ public class DetectionEventJournal implements DetectionStateStore {
                                  @Value("${socp.detect.state.retention:24h}") String retention,
                                  @Value("${socp.detect.state.replay-page-size:1000}") int replayPageSize,
                                  @Value("${socp.detect.state.completed-retention:7d}") String completedRetention,
-                                 @Value("${socp.detect.state.dead-letter-retention:90d}") String deadLetterRetention) {
+                                 @Value("${socp.detect.state.dead-letter-retention:90d}") String deadLetterRetention,
+                                 @Value("${socp.detect.state.cleanup-batch-size:1000}") int cleanupBatchSize,
+                                 @Value("${socp.detect.state.cleanup-max-batches:10}") int cleanupMaxBatches) {
         this.repository = repository;
         this.retention = parsePositiveDuration(retention, Duration.ofHours(24));
         Duration configuredCompletedRetention = parsePositiveDuration(
@@ -63,6 +67,16 @@ public class DetectionEventJournal implements DetectionStateStore {
                 ? this.retention : configuredCompletedRetention;
         this.deadLetterRetention = parsePositiveDuration(deadLetterRetention, Duration.ofDays(90));
         this.replayPageSize = Math.max(100, Math.min(10_000, replayPageSize));
+        this.cleanupBatchSize = Math.max(1, Math.min(10_000, cleanupBatchSize));
+        this.cleanupMaxBatches = Math.max(1, Math.min(100, cleanupMaxBatches));
+    }
+
+    /** Compatibility constructor used by focused policy tests. */
+    public DetectionEventJournal(DetectionEventRepository repository, String retention,
+                                 int replayPageSize, String completedRetention,
+                                 String deadLetterRetention) {
+        this(repository, retention, replayPageSize, completedRetention, deadLetterRetention,
+                1_000, 10);
     }
 
     /** Compatibility constructor used by focused unit tests and local callers. */
@@ -370,10 +384,8 @@ public class DetectionEventJournal implements DetectionStateStore {
     public void cleanupExpiredTerminalEvents() {
         try {
             Instant now = Instant.now();
-            long completed = repository.deleteCompletedBefore(
-                    DetectionEventStatus.COMPLETED.name(), now.minus(completedRetention));
-            long deadLettered = repository.deleteDeadLetteredBefore(
-                    DetectionEventStatus.DEAD_LETTERED.name(), now.minus(deadLetterRetention));
+            long completed = deleteCompletedBatches(now.minus(completedRetention));
+            long deadLettered = deleteDeadLetteredBatches(now.minus(deadLetterRetention));
             if (completed > 0 || deadLettered > 0) {
                 log.info("Expired Detection journal rows removed completed={} deadLettered={}",
                         completed, deadLettered);
@@ -381,6 +393,28 @@ public class DetectionEventJournal implements DetectionStateStore {
         } catch (Exception failure) {
             log.warn("Detection journal retention cleanup deferred: {}", failure.getMessage());
         }
+    }
+
+    private long deleteCompletedBatches(Instant cutoff) {
+        long deleted = 0;
+        for (int batch = 0; batch < cleanupMaxBatches; batch++) {
+            int count = repository.deleteCompletedBatchBefore(
+                    DetectionEventStatus.COMPLETED.name(), cutoff, cleanupBatchSize);
+            deleted += count;
+            if (count < cleanupBatchSize) break;
+        }
+        return deleted;
+    }
+
+    private long deleteDeadLetteredBatches(Instant cutoff) {
+        long deleted = 0;
+        for (int batch = 0; batch < cleanupMaxBatches; batch++) {
+            int count = repository.deleteDeadLetteredBatchBefore(
+                    DetectionEventStatus.DEAD_LETTERED.name(), cutoff, cleanupBatchSize);
+            deleted += count;
+            if (count < cleanupBatchSize) break;
+        }
+        return deleted;
     }
 
     private List<SecurityEvent> readPages(PageReader reader, boolean sortByTimestamp) {

@@ -16,9 +16,12 @@ import org.mockito.ArgumentCaptor;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -49,16 +52,16 @@ class DetectionEventJournalReplayTest {
     @Test
     void retentionCleanupUsesIndependentCompletedAndDeadLetterPolicies() {
         DetectionEventRepository repository = mock(DetectionEventRepository.class);
-        when(repository.deleteCompletedBefore(anyString(), any(Instant.class))).thenReturn(5L);
-        when(repository.deleteDeadLetteredBefore(anyString(), any(Instant.class))).thenReturn(2L);
+        when(repository.deleteCompletedBatchBefore(anyString(), any(Instant.class), anyInt())).thenReturn(5);
+        when(repository.deleteDeadLetteredBatchBefore(anyString(), any(Instant.class), anyInt())).thenReturn(2);
 
         DetectionEventJournal journal = new DetectionEventJournal(repository, "24h", 100);
         journal.cleanupExpiredTerminalEvents();
 
-        verify(repository).deleteCompletedBefore(
-                eq(DetectionEventStatus.COMPLETED.name()), any(Instant.class));
-        verify(repository).deleteDeadLetteredBefore(
-                eq(DetectionEventStatus.DEAD_LETTERED.name()), any(Instant.class));
+        verify(repository).deleteCompletedBatchBefore(
+                eq(DetectionEventStatus.COMPLETED.name()), any(Instant.class), eq(1_000));
+        verify(repository).deleteDeadLetteredBatchBefore(
+                eq(DetectionEventStatus.DEAD_LETTERED.name()), any(Instant.class), eq(1_000));
     }
 
     @Test
@@ -70,10 +73,10 @@ class DetectionEventJournalReplayTest {
 
         ArgumentCaptor<Instant> completedCutoff = ArgumentCaptor.forClass(Instant.class);
         ArgumentCaptor<Instant> deadLetterCutoff = ArgumentCaptor.forClass(Instant.class);
-        verify(repository).deleteCompletedBefore(eq(DetectionEventStatus.COMPLETED.name()),
-                completedCutoff.capture());
-        verify(repository).deleteDeadLetteredBefore(eq(DetectionEventStatus.DEAD_LETTERED.name()),
-                deadLetterCutoff.capture());
+        verify(repository).deleteCompletedBatchBefore(eq(DetectionEventStatus.COMPLETED.name()),
+                completedCutoff.capture(), eq(1_000));
+        verify(repository).deleteDeadLetteredBatchBefore(eq(DetectionEventStatus.DEAD_LETTERED.name()),
+                deadLetterCutoff.capture(), eq(1_000));
         Instant now = Instant.now();
         assertEquals(Duration.ofDays(2).toSeconds(),
                 Duration.between(completedCutoff.getValue(), now).toSeconds(), 2);
@@ -94,15 +97,35 @@ class DetectionEventJournalReplayTest {
         DetectionEventRepository repository = mock(DetectionEventRepository.class);
         DetectionEventJournal journal = new DetectionEventJournal(repository, "7d", 100,
                 "1d", "30d");
-        when(repository.deleteCompletedBefore(anyString(), any(Instant.class))).thenReturn(0L);
+        when(repository.deleteCompletedBatchBefore(anyString(), any(Instant.class), anyInt())).thenReturn(0);
 
         journal.cleanupExpiredTerminalEvents();
 
         ArgumentCaptor<Instant> cutoff = ArgumentCaptor.forClass(Instant.class);
-        verify(repository).deleteCompletedBefore(eq(DetectionEventStatus.COMPLETED.name()),
-                cutoff.capture());
+        verify(repository).deleteCompletedBatchBefore(eq(DetectionEventStatus.COMPLETED.name()),
+                cutoff.capture(), eq(1_000));
         assertEquals(Duration.ofDays(7).toSeconds(),
                 Duration.between(cutoff.getValue(), Instant.now()).toSeconds(), 2);
+    }
+
+    @Test
+    void terminalCleanupIsBatchBoundedAndNeverTargetsPendingRows() {
+        DetectionEventRepository repository = mock(DetectionEventRepository.class);
+        when(repository.deleteCompletedBatchBefore(anyString(), any(Instant.class), eq(100)))
+                .thenReturn(100, 100, 100);
+        when(repository.deleteDeadLetteredBatchBefore(anyString(), any(Instant.class), eq(100)))
+                .thenReturn(0);
+        DetectionEventJournal journal = new DetectionEventJournal(repository, "24h", 100,
+                "7d", "90d", 100, 2);
+
+        journal.cleanupExpiredTerminalEvents();
+
+        verify(repository, times(2)).deleteCompletedBatchBefore(
+                eq(DetectionEventStatus.COMPLETED.name()), any(Instant.class), eq(100));
+        verify(repository, never()).deleteCompletedBatchBefore(
+                eq(DetectionEventStatus.PENDING.name()), any(Instant.class), anyInt());
+        verify(repository, never()).deleteDeadLetteredBatchBefore(
+                eq(DetectionEventStatus.PENDING.name()), any(Instant.class), anyInt());
     }
 
     private static List<DetectionEventEntity> rows(int start, int count) {
