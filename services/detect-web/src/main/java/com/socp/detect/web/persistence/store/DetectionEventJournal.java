@@ -9,6 +9,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.platform.tenant.persistence.TenantSystemJob;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -41,14 +42,34 @@ public class DetectionEventJournal implements DetectionStateStore {
 
     private final DetectionEventRepository repository;
     private final Duration retention;
+    private final Duration completedRetention;
+    private final Duration deadLetterRetention;
     private final int replayPageSize;
 
+    /** Spring constructor keeps replay and terminal-retention policies explicit. */
+    @Autowired
     public DetectionEventJournal(DetectionEventRepository repository,
                                  @Value("${socp.detect.state.retention:24h}") String retention,
-                                 @Value("${socp.detect.state.replay-page-size:1000}") int replayPageSize) {
+                                 @Value("${socp.detect.state.replay-page-size:1000}") int replayPageSize,
+                                 @Value("${socp.detect.state.completed-retention:7d}") String completedRetention,
+                                 @Value("${socp.detect.state.dead-letter-retention:90d}") String deadLetterRetention) {
         this.repository = repository;
-        this.retention = parseDuration(retention);
+        this.retention = parsePositiveDuration(retention, Duration.ofHours(24));
+        Duration configuredCompletedRetention = parsePositiveDuration(
+                completedRetention, Duration.ofDays(7));
+        // Completed rows are the source of truth for rebuilding the configured
+        // replay window. Never let maintenance delete that source earlier than
+        // the window it promises to recover.
+        this.completedRetention = configuredCompletedRetention.compareTo(this.retention) < 0
+                ? this.retention : configuredCompletedRetention;
+        this.deadLetterRetention = parsePositiveDuration(deadLetterRetention, Duration.ofDays(90));
         this.replayPageSize = Math.max(100, Math.min(10_000, replayPageSize));
+    }
+
+    /** Compatibility constructor used by focused unit tests and local callers. */
+    public DetectionEventJournal(DetectionEventRepository repository, String retention,
+                                 int replayPageSize) {
+        this(repository, retention, replayPageSize, "7d", "90d");
     }
 
     @Override
@@ -272,6 +293,9 @@ public class DetectionEventJournal implements DetectionStateStore {
      * Keep retention maintenance out of the per-event claim transaction.
      * PENDING rows are deliberately excluded: they represent work whose Kafka
      * offset cannot advance and must remain recoverable regardless of age.
+     * COMPLETED and DEAD_LETTERED rows have independent retention clocks. A
+     * terminal failure is retained longer because it is the durable evidence
+     * needed to explain why an input was not evaluated.
      */
     @Scheduled(
             fixedDelayString = "${socp.detect.state.cleanup-interval-ms:600000}",
@@ -279,11 +303,15 @@ public class DetectionEventJournal implements DetectionStateStore {
     @TenantSystemJob
     public void cleanupExpiredTerminalEvents() {
         try {
-            long deleted = repository.deleteTerminalBefore(
-                    Set.of(DetectionEventStatus.COMPLETED.name(),
-                            DetectionEventStatus.DEAD_LETTERED.name()),
-                    Instant.now().minus(retention));
-            if (deleted > 0) log.info("Expired Detection journal rows removed count={}", deleted);
+            Instant now = Instant.now();
+            long completed = repository.deleteCompletedBefore(
+                    DetectionEventStatus.COMPLETED.name(), now.minus(completedRetention));
+            long deadLettered = repository.deleteDeadLetteredBefore(
+                    DetectionEventStatus.DEAD_LETTERED.name(), now.minus(deadLetterRetention));
+            if (completed > 0 || deadLettered > 0) {
+                log.info("Expired Detection journal rows removed completed={} deadLettered={}",
+                        completed, deadLettered);
+            }
         } catch (Exception failure) {
             log.warn("Detection journal retention cleanup deferred: {}", failure.getMessage());
         }
@@ -365,16 +393,26 @@ public class DetectionEventJournal implements DetectionStateStore {
     }
 
     private static Duration parseDuration(String value) {
-        if (value == null || value.isBlank()) return Duration.ofHours(24);
+        return parseDuration(value, Duration.ofHours(24));
+    }
+
+    private static Duration parseDuration(String value, Duration fallback) {
+        if (value == null || value.isBlank()) return fallback;
         String s = value.trim().toLowerCase();
         try {
+            if (s.endsWith("d")) return Duration.ofDays(Long.parseLong(s.substring(0, s.length() - 1)));
             if (s.endsWith("h")) return Duration.ofHours(Long.parseLong(s.substring(0, s.length() - 1)));
             if (s.endsWith("m")) return Duration.ofMinutes(Long.parseLong(s.substring(0, s.length() - 1)));
             if (s.endsWith("s")) return Duration.ofSeconds(Long.parseLong(s.substring(0, s.length() - 1)));
             return Duration.ofSeconds(Long.parseLong(s));
-        } catch (NumberFormatException ex) {
-            return Duration.ofHours(24);
+        } catch (NumberFormatException | ArithmeticException ex) {
+            return fallback;
         }
+    }
+
+    private static Duration parsePositiveDuration(String value, Duration fallback) {
+        Duration parsed = parseDuration(value, fallback);
+        return parsed.isNegative() || parsed.isZero() ? fallback : parsed;
     }
 
     @FunctionalInterface

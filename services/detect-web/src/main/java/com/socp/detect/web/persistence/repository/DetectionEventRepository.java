@@ -43,10 +43,19 @@ public interface DetectionEventRepository extends TenantScopedRepository<Detecti
     List<DetectionEventEntity> findByTenantIdAndStatusAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
             String tenantId, String status, Instant after, Pageable pageable);
 
-    @Modifying
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
     @Query("delete from DetectionEventEntity e "
-            + "where e.status in :statuses and e.occurredAt < :before")
-    long deleteTerminalBefore(@Param("statuses") Set<String> statuses,
-                              @Param("before") Instant before);
+            + "where e.status = :status and "
+            + "(e.completedAt < :before or (e.completedAt is null and e.occurredAt < :before))")
+    long deleteCompletedBefore(@Param("status") String status,
+                               @Param("before") Instant before);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("delete from DetectionEventEntity e "
+            + "where e.status = :status and "
+            + "(e.deadLetteredAt < :before or (e.deadLetteredAt is null and e.occurredAt < :before))")
+    long deleteDeadLetteredBefore(@Param("status") String status,
+                                  @Param("before") Instant before);
 }

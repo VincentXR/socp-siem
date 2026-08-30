@@ -13,6 +13,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import org.mockito.ArgumentCaptor;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
@@ -45,17 +46,62 @@ class DetectionEventJournalReplayTest {
     }
 
     @Test
-    void retentionCleanupDeletesOnlyTerminalRowsOutsideTheClaimPath() {
+    void retentionCleanupUsesIndependentCompletedAndDeadLetterPolicies() {
         DetectionEventRepository repository = mock(DetectionEventRepository.class);
-        when(repository.deleteTerminalBefore(any(), any(Instant.class))).thenReturn(7L);
+        when(repository.deleteCompletedBefore(anyString(), any(Instant.class))).thenReturn(5L);
+        when(repository.deleteDeadLetteredBefore(anyString(), any(Instant.class))).thenReturn(2L);
 
         DetectionEventJournal journal = new DetectionEventJournal(repository, "24h", 100);
         journal.cleanupExpiredTerminalEvents();
 
-        verify(repository).deleteTerminalBefore(
-                eq(Set.of(DetectionEventStatus.COMPLETED.name(),
-                        DetectionEventStatus.DEAD_LETTERED.name())),
-                any(Instant.class));
+        verify(repository).deleteCompletedBefore(
+                eq(DetectionEventStatus.COMPLETED.name()), any(Instant.class));
+        verify(repository).deleteDeadLetteredBefore(
+                eq(DetectionEventStatus.DEAD_LETTERED.name()), any(Instant.class));
+    }
+
+    @Test
+    void retentionPoliciesAcceptDayUnits() {
+        DetectionEventRepository repository = mock(DetectionEventRepository.class);
+        DetectionEventJournal journal = new DetectionEventJournal(repository, "24h", 100,
+                "2d", "3d");
+        journal.cleanupExpiredTerminalEvents();
+
+        ArgumentCaptor<Instant> completedCutoff = ArgumentCaptor.forClass(Instant.class);
+        ArgumentCaptor<Instant> deadLetterCutoff = ArgumentCaptor.forClass(Instant.class);
+        verify(repository).deleteCompletedBefore(eq(DetectionEventStatus.COMPLETED.name()),
+                completedCutoff.capture());
+        verify(repository).deleteDeadLetteredBefore(eq(DetectionEventStatus.DEAD_LETTERED.name()),
+                deadLetterCutoff.capture());
+        Instant now = Instant.now();
+        assertEquals(Duration.ofDays(2).toSeconds(),
+                Duration.between(completedCutoff.getValue(), now).toSeconds(), 2);
+        assertEquals(Duration.ofDays(3).toSeconds(),
+                Duration.between(deadLetterCutoff.getValue(), now).toSeconds(), 2);
+    }
+
+    @Test
+    void nonPositiveReplayRetentionFallsBackToOneDay() {
+        DetectionEventJournal journal = new DetectionEventJournal(mock(DetectionEventRepository.class),
+                "-1d", 100);
+
+        assertEquals(Duration.ofHours(24), journal.retention());
+    }
+
+    @Test
+    void completedRetentionCannotUndercutReplayWindow() {
+        DetectionEventRepository repository = mock(DetectionEventRepository.class);
+        DetectionEventJournal journal = new DetectionEventJournal(repository, "7d", 100,
+                "1d", "30d");
+        when(repository.deleteCompletedBefore(anyString(), any(Instant.class))).thenReturn(0L);
+
+        journal.cleanupExpiredTerminalEvents();
+
+        ArgumentCaptor<Instant> cutoff = ArgumentCaptor.forClass(Instant.class);
+        verify(repository).deleteCompletedBefore(eq(DetectionEventStatus.COMPLETED.name()),
+                cutoff.capture());
+        assertEquals(Duration.ofDays(7).toSeconds(),
+                Duration.between(cutoff.getValue(), Instant.now()).toSeconds(), 2);
     }
 
     private static List<DetectionEventEntity> rows(int start, int count) {

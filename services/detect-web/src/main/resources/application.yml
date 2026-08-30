@@ -48,6 +48,11 @@ socp:
       cache-cleanup-interval-ms: ${SOCP_DETECT_WATCHLIST_CACHE_CLEANUP_INTERVAL_MS:60000}
     state:
       retention: ${SOCP_DETECT_STATE_RETENTION:24h}
+      # Replay retention is separate from cleanup retention. Completed rows
+      # support state rebuild; terminal DLQ rows are retained longer as failure
+      # evidence and are never deleted on the replay clock.
+      completed-retention: ${SOCP_DETECT_STATE_COMPLETED_RETENTION:7d}
+      dead-letter-retention: ${SOCP_DETECT_STATE_DEAD_LETTER_RETENTION:90d}
       replay-page-size: ${SOCP_DETECT_STATE_REPLAY_PAGE_SIZE:1000}
       cleanup-interval-ms: ${SOCP_DETECT_STATE_CLEANUP_INTERVAL_MS:600000}
       cleanup-initial-delay-ms: ${SOCP_DETECT_STATE_CLEANUP_INITIAL_DELAY_MS:600000}

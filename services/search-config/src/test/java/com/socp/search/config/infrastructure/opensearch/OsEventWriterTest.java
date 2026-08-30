@@ -63,6 +63,20 @@ class OsEventWriterTest {
         assertFalse(writer().writeEventsAndAwait(List.of(event())));
     }
 
+    @Test
+    void rejectsHttpSuccessWithAIncompleteItemsArray() throws Exception {
+        server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/_bulk", exchange -> {
+            byte[] response = "{\"errors\":false,\"items\":[]}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, response.length);
+            exchange.getResponseBody().write(response);
+            exchange.close();
+        });
+        server.start();
+
+        assertFalse(writer().writeEventsAndAwait(List.of(event())));
+    }
+
     private OsEventWriter writer() {
         OpenSearchProperties properties = new OpenSearchProperties();
         properties.setUrl("http://localhost:" + server.getAddress().getPort());

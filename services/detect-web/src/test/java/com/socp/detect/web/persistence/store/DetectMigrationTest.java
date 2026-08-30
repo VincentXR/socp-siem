@@ -27,5 +27,15 @@ class DetectMigrationTest {
             result.next();
             assertEquals(1, result.getInt(1));
         }
+        try (var connection = DriverManager.getConnection(url, "sa", "");
+             var statement = connection.prepareStatement(
+                     "SELECT COUNT(*) FROM INFORMATION_SCHEMA.INDEXES "
+                             + "WHERE INDEX_NAME IN "
+                             + "('IDX_DETECTION_EVENT_COMPLETED_RETENTION',"
+                             + "'IDX_DETECTION_EVENT_DEAD_LETTER_RETENTION')");
+             var result = statement.executeQuery()) {
+            result.next();
+            assertEquals(2, result.getInt(1));
+        }
     }
 }

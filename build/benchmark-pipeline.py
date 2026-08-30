@@ -23,11 +23,13 @@ import base64
 import json
 import os
 import platform
+from pathlib import Path
 import ssl
 import statistics
 import subprocess
 import sys
 import time
+import traceback
 import urllib.error
 import urllib.request
 import uuid
@@ -37,6 +39,13 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auth_client import login_token  # noqa: E402
+
+
+# The final correctness checks intentionally run after the workload has
+# drained.  Keep the assembled report in memory so a late assertion failure
+# can be written to the failure sidecar instead of losing the useful before /
+# after snapshots.
+LAST_BENCHMARK_CONTEXT = None
 
 
 def request(url, method="GET", body=None, headers=None, timeout=30):
@@ -133,7 +142,10 @@ def kafka_snapshot():
         from kafka.admin import KafkaAdminClient
         from kafka.structs import TopicPartition
 
-        group = os.environ.get("BENCH_GROUP", "socp-detect")
+        group = os.environ.get("BENCH_GROUP",
+                               os.environ.get("SOCP_KAFKA_GROUP_ID", "socp-detect"))
+        topic = os.environ.get("BENCH_TOPIC",
+                               os.environ.get("SOCP_KAFKA_TOPIC", "socp-events"))
         # Offset inspection must not join the live Detection group.  A
         # diagnostic member would trigger a rebalance and invalidate the very
         # benchmark being measured.
@@ -147,8 +159,8 @@ def kafka_snapshot():
             bootstrap_servers=os.environ.get("BENCH_KAFKA", "127.0.0.1:9092"),
             client_id="socp-benchmark-offset-inspector",
         )
-        partitions = consumer.partitions_for_topic("socp-events") or set()
-        tps = [TopicPartition("socp-events", p) for p in sorted(partitions)]
+        partitions = consumer.partitions_for_topic(topic) or set()
+        tps = [TopicPartition(topic, p) for p in sorted(partitions)]
         if not tps:
             return None
         consumer.assign(tps)
@@ -160,7 +172,7 @@ def kafka_snapshot():
             for offset in committed.values()
         )
         return {
-            "topic": "socp-events",
+            "topic": topic,
             "group": group,
             "partitions": len(tps),
             "endOffset": end_total,
@@ -312,8 +324,11 @@ def performance_metric_urls():
         "DETECTION_INSTANCE_URLS", "http://127.0.0.1:18082")
     detect = [url.strip().rstrip("/") + "/detect-web/actuator/prometheus"
               for url in raw_detect.split(",") if url.strip()]
+    search = os.environ.get("BENCH_SEARCH_URL") or os.environ.get(
+        "SOCP_SEARCH_URL", "http://127.0.0.1:18081")
+    search_url = search.strip().rstrip("/") + "/search-config/actuator/prometheus"
     alert = os.environ.get("BENCH_ALERT_URL", "http://127.0.0.1:18080").rstrip("/")
-    return detect + [alert + "/alert-web/actuator/prometheus"]
+    return detect + [search_url, alert + "/alert-web/actuator/prometheus"]
 
 
 def parse_prometheus_labels(raw):
@@ -339,7 +354,9 @@ def performance_snapshot():
                 continue
             sample, raw_value = line.rsplit(" ", 1)
             name, _, raw_labels = sample.partition("{")
-            if not (name.startswith("socp_detection_") or name.startswith("socp_alert_")):
+            if not (name.startswith("socp_detection_")
+                    or name.startswith("socp_alert_")
+                    or name.startswith("socp_opensearch_")):
                 continue
             labels = parse_prometheus_labels(raw_labels[:-1] if raw_labels else "")
             key = (name, tuple(sorted(labels.items())))
@@ -378,6 +395,7 @@ def summarize_performance_metrics(before, after, event_count, alert_count):
     delta = snapshot_delta(before, after)
     histograms = {}
     transactions = {}
+    indexer_records = {}
     for (name, labels_tuple), value in delta.items():
         labels = dict(labels_tuple)
         if name.endswith("_bucket") and "stage" in labels and "le" in labels:
@@ -389,6 +407,9 @@ def summarize_performance_metrics(before, after, event_count, alert_count):
             operation = labels.get("operation", "unknown")
             owner = "detection" if name.startswith("socp_detection_") else "alertWeb"
             transactions[f"{owner}.{scope}.{operation}"] = round(value, 3)
+        if name == "socp_opensearch_indexer_records_total":
+            stage = labels.get("stage", "unknown")
+            indexer_records[stage] = round(value, 3)
 
     stages = {}
     for (base, stage), buckets in histograms.items():
@@ -405,10 +426,39 @@ def summarize_performance_metrics(before, after, event_count, alert_count):
     outbox_tx = sum(value for key, value in transactions.items()
                     if key.startswith("detection.alert."))
     alert_web_tx = transactions.get("alertWeb.alert.create", 0.0)
+    consume = indexer_records.get("consume", 0.0)
+    write = indexer_records.get("write", 0.0)
+    failed = indexer_records.get("fail", 0.0)
+    dropped = indexer_records.get("drop", 0.0)
+    dlq = indexer_records.get("dlq", 0.0)
+    dlq_failed = indexer_records.get("dlq_failed", 0.0)
+    committed = indexer_records.get("commit", 0.0)
+    commit_failed = indexer_records.get("commit_failed", 0.0)
     return {
         "metricEndpoints": (after or {}).get("reachable", []),
         "stages": stages,
         "transactions": transactions,
+        "openSearchIndexer": {
+            "records": indexer_records,
+            "reconciliation": {
+                "consumed": consume,
+                "writeAcknowledged": write,
+                "writeFailed": failed,
+                "dropped": dropped,
+                "dlqAcknowledged": dlq,
+                "dlqFailed": dlq_failed,
+                "committed": committed,
+                "commitFailed": commit_failed,
+                "dispositionGap": round(consume - write - failed - dropped, 3),
+                # Every consumed record must either be part of a committed
+                # partition or remain visible as an unresolved gap.  The
+                # acknowledgement composition is kept separately so a
+                # failed write/DLQ cannot look healthy merely because commit,
+                # write, and DLQ are all zero.
+                "durableGap": round(consume - committed, 3),
+                "ackCompositionGap": round(committed - write - dlq, 3),
+            },
+        },
         "ratios": {
             "detectionDbTransactionsPerUniqueEvent": round(detection_tx / event_count, 3)
             if event_count else 0,
@@ -472,6 +522,10 @@ def run_alerts(gateway, token, run_id, expected, max_pages=10):
     prefix = f"benchmark-{run_id}-"
     matched = []
     size = 500
+    # Alert-heavy runs can legitimately produce more than the historical ten
+    # pages. Keep the run-scoped oracle complete instead of turning pagination
+    # into a false alert shortfall.
+    max_pages = max(max_pages, math.ceil(max(1, expected) / size) + 1)
     for page in range(1, max_pages + 1):
         status, body, _ = request(
             gateway + ("/alert-web/api/alarms?page=%d&size=%d"
@@ -540,6 +594,8 @@ def choose_ingest_task(gateway, token):
 
 
 def main():
+    global LAST_BENCHMARK_CONTEXT
+    LAST_BENCHMARK_CONTEXT = None
     parser = argparse.ArgumentParser(description="SOCP single-node ingest baseline")
     parser.add_argument("--count", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=100)
@@ -638,6 +694,7 @@ def main():
     detection_after, detection_drain_wait = wait_for_detection_drain(
         gateway, token, timeout=args.timeout)
     report = {
+        "status": "passed",
         "runId": run_id,
         "label": args.label,
         "recordedAt": datetime.now(timezone.utc).isoformat(),
@@ -732,13 +789,8 @@ def main():
                 "lagStable": lag_growth <= max(10, args.offered_eps * 0.1),
             }
 
-    print("SOCP %s baseline" % ("end-to-end" if args.mode == "e2e" else "bulk ingest"))
-    print(json.dumps(report, ensure_ascii=False, indent=2))
-    if args.output:
-        os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
-        with open(args.output, "w", encoding="utf-8") as output:
-            json.dump(report, output, ensure_ascii=False, indent=2)
-            output.write("\n")
+    LAST_BENCHMARK_CONTEXT = report
+
     if accepted + rejected != args.count:
         raise SystemExit("result count does not match requested event count")
     if args.mode == "e2e" and (alerts_after or 0) < (baseline_alerts or 0) + expected_alerts:
@@ -755,6 +807,65 @@ def main():
     if args.mode == "e2e" and completed < accepted:
         raise SystemExit(f"e2e incomplete: durable event metrics {completed} < accepted {accepted}")
 
+    # Write a passing report only after all correctness assertions have
+    # succeeded.  If one of the checks above raises, the outer handler writes
+    # the in-memory report to the separate .failed.json sidecar.
+    print("SOCP %s baseline" % ("end-to-end" if args.mode == "e2e" else "bulk ingest"))
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    if args.output:
+        os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
+        with open(args.output, "w", encoding="utf-8") as output:
+            json.dump(report, output, ensure_ascii=False, indent=2)
+            output.write("\n")
+
+
+def _failure_output_path(argv):
+    output = None
+    for index, value in enumerate(argv):
+        if value == "--output" and index + 1 < len(argv):
+            output = argv[index + 1]
+        elif value.startswith("--output="):
+            output = value.split("=", 1)[1]
+    if output:
+        target = Path(output)
+        return target.with_name(target.stem + ".failed" + target.suffix)
+    return Path(".cache") / "benchmark" / (
+        "failure-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + ".json")
+
+
+def write_failure_evidence(failure):
+    """Persist a failure report even when the workload aborts mid-run.
+
+    A successful benchmark already writes its full before/after snapshot.  A
+    transport timeout or alert shortfall used to lose all evidence because the
+    exception escaped before that final write.  The failed sidecar is kept
+    separate from the requested output so a later rerun cannot mistake it for
+    a successful baseline.
+    """
+    path = _failure_output_path(sys.argv[1:])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    report = {
+        "status": "failed",
+        "recordedAt": datetime.now(timezone.utc).isoformat(),
+        "argv": sys.argv[1:],
+        "machine": machine_profile(),
+        "failureType": failure.__class__.__name__,
+        "failure": str(failure),
+        "traceback": traceback.format_exc(),
+    }
+    if LAST_BENCHMARK_CONTEXT is not None:
+        report["partialReport"] = LAST_BENCHMARK_CONTEXT
+    path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print("benchmark failure evidence: %s" % path)
+
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except BaseException as failure:
+        try:
+            write_failure_evidence(failure)
+        except Exception as evidence_failure:
+            print("unable to write benchmark failure evidence: %s" % evidence_failure,
+                  file=sys.stderr)
+        raise

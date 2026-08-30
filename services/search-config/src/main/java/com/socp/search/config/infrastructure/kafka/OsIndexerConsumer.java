@@ -17,9 +17,9 @@ import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.WakeupException;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -55,22 +55,29 @@ public class OsIndexerConsumer {
 
     private final OsEventWriter osWriter;
     private final KafkaProperties kafkaProperties;
+    private final MeterRegistry meterRegistry;
     private volatile boolean running;
     private volatile KafkaConsumer<String, String> activeConsumer;
     private volatile KafkaProducer<String, String> dlqProducer;
     private Thread worker;
 
     public OsIndexerConsumer(OsEventWriter osWriter) {
-        this(osWriter, new KafkaProperties(), new OpenSearchIndexerProperties());
+        this(osWriter, new KafkaProperties(), new OpenSearchIndexerProperties(), null);
+    }
+
+    public OsIndexerConsumer(OsEventWriter osWriter, KafkaProperties kafkaProperties,
+                             OpenSearchIndexerProperties properties) {
+        this(osWriter, kafkaProperties, properties, null);
     }
 
     @Autowired
     public OsIndexerConsumer(OsEventWriter osWriter, KafkaProperties kafkaProperties,
-                             OpenSearchIndexerProperties properties) {
+                             OpenSearchIndexerProperties properties, MeterRegistry meterRegistry) {
         this.osWriter = osWriter;
         this.kafkaProperties = kafkaProperties;
         this.indexerEnabled = properties.isEnabled();
         this.retryBackoffMs = properties.getRetryBackoffMs();
+        this.meterRegistry = meterRegistry;
     }
 
     @PostConstruct
@@ -117,6 +124,7 @@ public class OsIndexerConsumer {
     /** Advances only successful partitions and rewinds failed partitions. */
     boolean processRecords(KafkaConsumer<String, String> consumer,
                            ConsumerRecords<String, String> records) {
+        recordMetric("consume", records.count());
         Map<TopicPartition, OffsetAndMetadata> completed = new HashMap<>();
         for (TopicPartition partition : records.partitions()) {
             List<ConsumerRecord<String, String>> partitionRecords = records.records(partition);
@@ -127,7 +135,17 @@ public class OsIndexerConsumer {
                 consumer.seek(partition, partitionRecords.getFirst().offset());
             }
         }
-        if (!completed.isEmpty()) consumer.commitSync(completed);
+        if (!completed.isEmpty()) {
+            long committedRecords = completed.keySet().stream()
+                    .mapToLong(partition -> records.records(partition).size()).sum();
+            try {
+                consumer.commitSync(completed);
+                recordMetric("commit", committedRecords);
+            } catch (RuntimeException commitFailure) {
+                recordMetric("commit_failed", committedRecords);
+                throw commitFailure;
+            }
+        }
         return completed.size() == records.partitions().size();
     }
 
@@ -153,14 +171,20 @@ public class OsIndexerConsumer {
                     Map<String, Object> value = MAPPER.readValue(record.value(), Map.class);
                     events.add(toEvent(value, record.key()));
                 } catch (Exception invalid) {
+                    recordMetric("drop", 1);
                     if (!sendToDlqAndAwait(record.key(), record.value())) {
+                        recordMetric("dlq_failed", 1);
                         log.warn("Invalid event DLQ write failed partition={} offset={}",
                                 record.partition(), record.offset());
                         return false;
                     }
+                    recordMetric("dlq", 1);
                 }
             }
-            return events.isEmpty() || osWriter.writeEventsAndAwait(events);
+            if (events.isEmpty()) return true;
+            boolean written = osWriter.writeEventsAndAwait(events);
+            recordMetric(written ? "write" : "fail", events.size());
+            return written;
         } finally {
             org.slf4j.MDC.remove("traceId");
         }
@@ -177,7 +201,8 @@ public class OsIndexerConsumer {
         }
     }
 
-    private boolean sendToDlqAndAwait(String eventId, String raw) {
+    /** Package-visible seam lets the DLQ acknowledgement contract be tested without a broker. */
+    boolean sendToDlqAndAwait(String eventId, String raw) {
         try {
             KafkaClientSupport.sendAndAwait(dlq(), kafkaProperties.getTopic() + "-dlq",
                     eventId, raw, Duration.ofSeconds(30));
@@ -210,16 +235,22 @@ public class OsIndexerConsumer {
             timestamp = Instant.parse(String.valueOf(value.getOrDefault("timestamp", timestamp)));
         } catch (Exception ignored) {
         }
-        String eventId = String.valueOf(value.getOrDefault("eventId", fallbackId)).trim();
+        Object eventIdValue = value.get("eventId");
+        String eventId = String.valueOf(eventIdValue == null ? fallbackId : eventIdValue).trim();
         if (eventId.isBlank() || "null".equalsIgnoreCase(eventId)) {
             throw new IllegalArgumentException("eventId is required for idempotent indexing");
+        }
+        Map<String, String> fields = stringMap(value.get("fields"));
+        String tenant = fields.get("tenant_id");
+        if (tenant == null || !com.socp.platform.tenant.context.TenantContext.isValid(tenant)) {
+            throw new IllegalArgumentException("tenant_id is required for idempotent indexing");
         }
         return new SearchEvent(eventId, timestamp,
                 String.valueOf(value.getOrDefault("source", "unknown")),
                 String.valueOf(value.getOrDefault("host", "unknown")),
                 String.valueOf(value.getOrDefault("severity", "INFO")),
                 String.valueOf(value.getOrDefault("msg", "")),
-                stringMap(value.get("fields")), stringMap(value.get("ecs")));
+                fields, stringMap(value.get("ecs")));
     }
 
     private static Map<String, String> stringMap(Object value) {
@@ -229,6 +260,13 @@ public class OsIndexerConsumer {
             if (key != null && item != null) result.put(String.valueOf(key), String.valueOf(item));
         });
         return Map.copyOf(result);
+    }
+
+    private void recordMetric(String stage, long count) {
+        if (meterRegistry != null && count > 0) {
+            meterRegistry.counter("socp.opensearch.indexer.records", "stage", stage)
+                    .increment(count);
+        }
     }
 
     @PreDestroy

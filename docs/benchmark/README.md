@@ -6,6 +6,17 @@ runs have two workload profiles: `realistic` keeps detection hits low, while
 `alert-heavy` stresses durable alert materialization. Generated raw reports
 belong under `.cache`; only sanitized evidence is published here.
 
+The indexer exposes the record reconciliation counter
+`socp_opensearch_indexer_records_total` with `stage` values `consume`, `write`,
+`fail`, `drop`, `dlq`, `dlq_failed`, `commit`, and `commit_failed`. The end-to-end report
+copies these deltas into `performanceMetrics.openSearchIndexer`. `write` and
+`commit` are counted only after the corresponding durable acknowledgement;
+`drop` is a malformed input and `dlq` means the DLQ broker write was
+acknowledged; `dlq_failed` means the input remains uncommitted. `durableGap`
+is `consume - commit`, while `ackCompositionGap` checks the write/DLQ
+composition. These are attempt counters, so retries can make `consume` exceed
+the final event count.
+
 ## Reproducible runs
 
 Start middleware and the core services and keep the JVM/middleware
@@ -80,6 +91,43 @@ python build/benchmark-pipeline.py --mode e2e --profile realistic --offered-eps 
 
 Repeat at 150 and 200 EPS. `steadyState.lagStable` verifies that lag does not
 grow continuously during the interval; final lag must still drain to zero.
+
+## Repeated 50k baseline
+
+Use the series runner to separate a warm-up result from a stable single-
+instance baseline. It keeps one JSON report plus stdout/stderr and per-round
+reports; a failed round also retains the benchmark's `.failed.json` sidecar.
+
+```bash
+python build/benchmark-series.py --rounds 3 --count 50000 --batch-size 500 \
+  --mode e2e --profile realistic --instances 1 --rules 25 \
+  --output .cache/benchmark/realistic-50k-1x-series.json
+```
+
+For the isolated ingestion baseline requested by the capacity plan, keep the
+same series shape but use `--mode bulk`; this measures the Detection HTTP
+boundary without alert materialization:
+
+```bash
+python build/benchmark-series.py --rounds 3 --count 50000 --batch-size 500 \
+  --mode bulk --profile realistic --instances 1 --rules 25 \
+  --output .cache/benchmark/bulk-50k-1x-series.json
+```
+
+`stableBaseline.throughputStable` is true only when every round passes and the
+slowest successful round stays within the configured `--tolerance` (15% by
+default) of the first successful round. Repeat with `--rounds 5` for a release
+candidate, and use `--profile alert-heavy` for the alert-heavy curve. Set
+`BENCH_TOPIC` when the Kafka topic is not `socp-events`; the lag probe now uses
+the same topic as the application.
+
+The same runner can be used with `--instances 1`, `2`, and `3` after starting
+the corresponding Detection topology (`SOCP_DETECT_CLUSTER_PORTS` controls
+the fixed launcher). It records scale-out reports but does not claim HA until
+the multi-instance chaos oracle also passes. The SQL files
+`build/ingestion-outbox-plan.sql` and `build/detection-journal-audit.sql` are
+read-only operator checks for PostgreSQL query plans and historical journal
+state; neither is run automatically by the benchmark.
 
 ## Reference benchmark results
 

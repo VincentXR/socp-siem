@@ -116,6 +116,16 @@ should be chosen as:
 longest enabled rule window + allowed lateness + safety margin
 ```
 
+Cleanup uses separate clocks rather than treating every terminal row as
+interchangeable. `COMPLETED` rows default to seven days and are eligible for
+state-replay retention cleanup; `DEAD_LETTERED` rows default to 90 days so the
+durable failure evidence outlives the normal replay window. Both are
+configurable with `SOCP_DETECT_STATE_COMPLETED_RETENTION` and
+`SOCP_DETECT_STATE_DEAD_LETTER_RETENTION`. The effective completed retention
+is never shorter than `SOCP_DETECT_STATE_RETENTION`, because those rows are
+the source of truth for replay. `PENDING` rows are never removed by retention
+maintenance.
+
 On a transient sink/database failure, the assigned partition's in-memory rule
 engine is rebuilt from completed journal rows before retrying the pending
 event. This prevents a failed attempt from leaving threshold/correlation state

@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -28,7 +29,8 @@ public interface AnalyzedRepository extends TenantScopedRepository<AnalyzedEntit
             + "where e.tenantId = :tenantId group by e.severity")
     List<Object[]> countBySeverity(@Param("tenantId") String tenantId);
 
-    @Modifying
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
     @Query("delete from AnalyzedEntity e where e.ts < :cutoff")
     int deleteBefore(@Param("cutoff") Instant cutoff);
 }

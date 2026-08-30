@@ -120,6 +120,13 @@ when `kafka-python` is installed. `BENCH_DETECTION_URLS` enables aggregation
 across all Detection instances. `--offered-eps` plus `--duration` runs the
 steady-state lag check. See the [benchmark contract](benchmark/README.md).
 
+For repeated baseline evidence, use `build/benchmark-series.py`; it runs the
+same workload three to five times, writes per-round reports and process logs,
+and fails unless throughput remains within the configured degradation
+tolerance. If a single round aborts, `build/benchmark-pipeline.py` writes a
+`.failed.json` sidecar containing the exception and traceback instead of
+silently losing the evidence.
+
 When local Compose ports differ from defaults, set `PIPELINE_OS` for
 `verify-pipeline.py` and `FAILURE_OS_URL` for `failure-tests.py`. Both accept
 the corresponding `*_OS_AUTH` variable. This keeps failure checks aligned
@@ -130,7 +137,9 @@ Detection content is versioned in
 Every entry carries owner, data-source, ATT&CK, positive, and negative
 metadata. The Java contract test executes the vectors; the Python validator
 provides a fast CI check. The state journal replay window defaults to 24 hours
-and is configurable with `SOCP_DETECT_STATE_RETENTION`.
+and is configurable with `SOCP_DETECT_STATE_RETENTION`. Terminal cleanup uses
+independent `SOCP_DETECT_STATE_COMPLETED_RETENTION` and
+`SOCP_DETECT_STATE_DEAD_LETTER_RETENTION` clocks; pending rows are retained.
 
 For multi-instance validation, use `bash build/detection-cluster.sh start`; it
 starts exactly three Detection instances against the shared PostgreSQL/Kafka

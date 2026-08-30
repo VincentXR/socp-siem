@@ -161,9 +161,9 @@ public class OsEventWriter {
             int code = response.status();
             if (code >= 200 && code < 300) {
                 String resp = response.bodyText();
-                int failed = countBulkErrors(resp);
+                int failed = countBulkFailures(resp, es.size());
                 if (failed != 0) {
-                    log.warn("OpenSearch bulk 写入 {}/{} 条失败（items error，HTTP {}）-> {} : {}",
+                    log.warn("OpenSearch bulk 写入 {}/{} 条失败（items/response validation，HTTP {}）-> {} : {}",
                     failed, es.size(), code, properties.getUrl(), firstError(resp));
                     return false;
                 }
@@ -181,18 +181,26 @@ public class OsEventWriter {
         }
     }
 
-    /** 统计 bulk 响应里 items[].index.error 出现的次数。 */
-    private static int countBulkErrors(String resp) {
+    /**
+     * Validate the complete bulk response, not only its top-level HTTP status.
+     * OpenSearch can return HTTP 200 with a partial/empty items array; treating
+     * that response as success would advance Kafka and permanently skip events.
+     */
+    private static int countBulkFailures(String resp, int expectedItems) {
         try {
             var root = MAPPER.readValue(resp, com.fasterxml.jackson.databind.JsonNode.class);
             var items = root.get("items");
-            if (root.path("errors").asBoolean(false) && (items == null || !items.isArray())) return -1;
-            if (items == null || !items.isArray()) return -1;
+            if (items == null || !items.isArray() || items.size() != expectedItems) return -1;
             int n = 0;
             for (var it : items) {
                 var idx = it.get("index");
-                if (idx != null && idx.has("error")) n++;
+                if (idx == null || idx.has("error")
+                        || !idx.has("status") || idx.get("status").asInt(0) < 200
+                        || idx.get("status").asInt(0) >= 300) {
+                    n++;
+                }
             }
+            if (root.path("errors").asBoolean(false) && n == 0) return 1;
             return n;
         } catch (Exception e) {
             return -1;
