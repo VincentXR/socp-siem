@@ -115,7 +115,8 @@ public class DetectEngineService {
 
     @PostConstruct
     public void start() {
-        engineFor("default");
+        com.socp.platform.tenant.context.TenantContext.runWith(
+                "default", () -> engineFor("default"));
     }
 
     @PreDestroy

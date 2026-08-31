@@ -108,6 +108,10 @@ Baseline: `6aae664` on 2026-08-31.
     PostgreSQL, no skips), `python build/verify-event-schema.py`,
     `python build/verify-style.py`, and `git diff --check`.
 - [ ] P0-D Current-commit stable performance baseline.
+  - [x] P0-D-0 Restore the benchmark topology startup invariant: initialize
+    the default Detection engine inside an explicit tenant scope. The focused
+    engine suite passes 12 tests, and all eight core services report healthy
+    with the rebuilt JAR.
 
 ## P1
 

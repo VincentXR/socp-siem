@@ -31,6 +31,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -56,6 +57,23 @@ class DetectEngineServiceTest {
 
     @Mock
     private DetectionPerformanceMetrics performanceMetrics;
+
+    @Test
+    void startupInitializesDefaultEngineInsideTenantScope() {
+        when(store.list("default")).thenAnswer(invocation -> {
+            assertEquals("default", TenantContext.require());
+            return List.of();
+        });
+
+        DetectEngineService service = new DetectEngineService(
+                store, new RecentAlertSink(10, null, null), forwarder, rulePublisher);
+        try {
+            service.start();
+            assertNull(TenantContext.get());
+        } finally {
+            service.stop();
+        }
+    }
 
     @Test
     void addingRuleReloadsEngineAndEvaluatesNewEvents() throws Exception {
