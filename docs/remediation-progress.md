@@ -124,6 +124,9 @@ Baseline: `6aae664` on 2026-08-31.
   - [x] P0-D-4 Generate deterministic RFC 2544 source addresses for benchmark
     events so the production OpenSearch IP mapping accepts the 50K workload;
     validate address type and uniqueness in CI.
+  - [x] P0-D-5 Resolve native listener PIDs when stopping services under Git
+    Bash on Windows. A real core start/stop cycle removed all eight listeners
+    instead of leaving stale JVMs and locked JARs.
 
 ## P1
 

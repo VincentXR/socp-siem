@@ -95,6 +95,14 @@ pid_on_port() {
 
 managed_pid() {
   local name="$1" port="$2" pid_file="$LOGDIR/$1.pid" pid=""
+  # Git Bash exposes the MSYS job id through $!, while taskkill expects the
+  # native Windows process id. Resolve the listener directly on Windows so a
+  # stale/wrapper pid file can never make `stop` report success while leaving
+  # the Java process and its JAR lock behind.
+  if [ "${OS:-}" = "Windows_NT" ]; then
+    pid_on_port "$port"
+    return 0
+  fi
   if [ -r "$pid_file" ]; then
     pid="$(sed -n '1{s/[^0-9].*//;p;}' "$pid_file")"
     if [ -n "$pid" ] && kill -0 "$pid" >/dev/null 2>&1; then
