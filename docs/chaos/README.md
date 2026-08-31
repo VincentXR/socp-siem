@@ -50,6 +50,7 @@ starting extra JVMs:
 Start the fixed cluster after building the backend and starting middleware:
 
 ```bash
+export SOCP_JWT_SECRET='<same secret used by the running stack>'
 bash build/detection-cluster.sh start
 DETECTION_INSTANCE_URLS=http://127.0.0.1:18082,http://127.0.0.1:28082,http://127.0.0.1:38082 \
   python build/chaos-pipeline.py --scenario multi_instance --count 30 \
@@ -57,6 +58,12 @@ DETECTION_INSTANCE_URLS=http://127.0.0.1:18082,http://127.0.0.1:28082,http://127
   --output .cache/chaos/local-multi-instance.json
 bash build/detection-cluster.sh stop
 ```
+
+Startup fails before changing the running topology if no JWT/JWK/issuer
+configuration is present. A successful start writes the commit, Kafka group,
+profile, database, topic partition count, ports, and native listener PIDs to
+`.cache/detection-cluster/manifest.env`; this machine-local file is ignored by
+Git.
 
 The script requires every partition to be assigned exactly once before the
 probe starts. It then stops the first instance, verifies the remaining two

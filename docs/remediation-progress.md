@@ -131,6 +131,12 @@ Baseline: `6aae664` on 2026-08-31.
 ## P1
 
 - [ ] P1-A Detection 1x/2x/3x, rebalance, and failover evidence.
+  - [x] P1-A-0 Harden the fixed Detection cluster launcher: fail before
+    changing the topology when security configuration is missing, clean up a
+    failed cold start, resolve native Windows listener PIDs, and write a local
+    commit/group/profile/database/topic/partition/instance manifest. A real
+    three-instance start recorded three native JVM listeners; stop released
+    all three ports, and the single-instance core topology was restored.
 - [ ] P1-B Sysmon-to-sandbox Golden Path.
 - [ ] P1-C Detection content single source of truth.
 - [ ] P1-D Code quality and architecture gates.
