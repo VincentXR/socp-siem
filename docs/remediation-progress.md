@@ -121,6 +121,9 @@ Baseline: `6aae664` on 2026-08-31.
   - [x] P0-D-3 Propagate the canonical event tenant into the asynchronous
     RuleEngine worker for evaluation and durable sinks, with an explicit
     closeable execution-scope contract and regression test.
+  - [x] P0-D-4 Generate deterministic RFC 2544 source addresses for benchmark
+    events so the production OpenSearch IP mapping accepts the 50K workload;
+    validate address type and uniqueness in CI.
 
 ## P1
 

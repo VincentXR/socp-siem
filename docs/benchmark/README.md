@@ -54,6 +54,9 @@ for offset/lag snapshots; its diagnostic client never joins the live consumer
 group.
 
 The generator namespaces synthetic entities and event ids with the run id.
+Synthetic source addresses come from the non-routable RFC 2544 benchmarking
+range and are unique within the 50K profiles, so they satisfy the production
+OpenSearch `ip` mapping without representing real infrastructure.
 Final alert correctness and latency are also filtered by the current
 `triggerEventId` prefix. A delayed alert from an older stateful evaluation is
 reported as `nonRunAlertsObserved`, not mixed into this run's percentiles.

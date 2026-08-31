@@ -126,6 +126,18 @@ def unwrap(body):
     return body
 
 
+def benchmark_ip(index):
+    """Return a deterministic RFC 2544 benchmarking address for one event."""
+    if index < 0:
+        raise ValueError("benchmark event index must be non-negative")
+    bounded = index % 131_072
+    return "198.%d.%d.%d" % (
+        18 + bounded // 65_536,
+        (bounded // 256) % 256,
+        bounded % 256,
+    )
+
+
 def event_lines(run_id, start, end, mode, profile, ingest_at, alert_every):
     expected_alerts = 0
     rows = []
@@ -138,9 +150,9 @@ def event_lines(run_id, start, end, mode, profile, ingest_at, alert_every):
             # AUTH-PRIVESC is a single-event pattern. Include the run id in
             # the synthetic entity so neither the five-minute suppressor nor
             # Alert Web idempotency can collide with an earlier benchmark.
-            # It intentionally is not a routable IP: this is a correctness
-            # oracle for generated events, not a network-address fixture.
-            src_ip = f"benchmark-{run_id}-{index}"
+            # Use the RFC 2544 benchmarking range so the workload remains
+            # synthetic while satisfying the production OpenSearch IP mapping.
+            src_ip = benchmark_ip(index)
             rows.append({
                 "eventId": f"benchmark-{run_id}-{index}",
                 "source": "auth" if should_alert else "system",

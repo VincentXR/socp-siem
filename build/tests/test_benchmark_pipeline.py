@@ -1,4 +1,5 @@
 import importlib.util
+import ipaddress
 import os
 from pathlib import Path
 import unittest
@@ -12,6 +13,12 @@ SPEC.loader.exec_module(benchmark_pipeline)
 
 
 class BenchmarkIdentityContractTest(unittest.TestCase):
+
+    def test_generated_source_ips_are_valid_and_unique_for_50k_profile(self):
+        addresses = [benchmark_pipeline.benchmark_ip(index) for index in range(50_000)]
+
+        self.assertEqual(50_000, len(set(addresses)))
+        self.assertTrue(all(ipaddress.ip_address(value).is_private for value in addresses))
 
     def test_e2e_uses_direct_registered_collector_boundary(self):
         environment = {
