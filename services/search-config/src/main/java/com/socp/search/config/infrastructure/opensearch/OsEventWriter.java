@@ -60,39 +60,12 @@ public class OsEventWriter {
      * Initializes the explicit Index Template in OpenSearch for socp-events-*
      * so that key security fields are properly mapped to keyword/date/text.
      */
-    public boolean ensureIndexTemplate() {
+    public synchronized boolean ensureIndexTemplate() {
         if (!properties.isEnabled() || templateInitialized) return true;
         HttpURLConnection c = null;
         try {
-            String templatePayload = """
-                    {
-                      "index_patterns": ["socp-events-*"],
-                      "template": {
-                        "settings": {
-                          "number_of_shards": 1,
-                          "number_of_replicas": 0
-                        },
-                        "mappings": {
-                          "properties": {
-                            "schemaVersion": { "type": "keyword" },
-                            "eventId": { "type": "keyword" },
-                            "tenantId": { "type": "keyword" },
-                            "timestamp": { "type": "date" },
-                            "@timestamp": { "type": "date" },
-                            "source": { "type": "keyword" },
-                            "host": { "type": "keyword" },
-                            "severity": { "type": "keyword" },
-                            "category": { "type": "keyword" },
-                            "msg": { "type": "text" },
-                            "fields": { "type": "object", "dynamic": true },
-                            "tags": { "type": "object", "dynamic": true }
-                          }
-                        }
-                      }
-                    }
-                    """;
-            var response = transport.exchange("PUT", "/_index_template/socp-events-template",
-                    "application/json", templatePayload.getBytes(StandardCharsets.UTF_8));
+            var response = transport.exchange("PUT", OpenSearchIndexTemplate.PATH,
+                    "application/json", OpenSearchIndexTemplate.payloadBytes());
             int code = response.status();
             if (code >= 200 && code < 300) {
                 log.info("OpenSearch index template initialized successfully: socp-events-template (HTTP {})", code);
@@ -128,6 +101,10 @@ public class OsEventWriter {
     private boolean doWrite(List<SearchEvent> es) {
         HttpURLConnection c = null;
         try {
+            if (!ensureIndexTemplate()) {
+                log.warn("OpenSearch index template is unavailable; bulk write was not attempted");
+                return false;
+            }
             StringBuilder sb = new StringBuilder(es.size() * 256);
             for (SearchEvent e : es) {
                 String index = "socp-events-" + INDEX_DATE.format(e.timestamp());

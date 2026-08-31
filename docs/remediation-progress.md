@@ -60,7 +60,20 @@ Baseline: `6aae664` on 2026-08-31.
   - Validation: search-config reactor tests (116 tests, 6 opt-in container tests
     skipped), `python build/verify-event-schema.py`,
     `python build/verify-style.py`, and `git diff --check`.
-- [ ] P0-B-3 Real OpenSearch parity and tenant tests.
+- [x] P0-B-3 Real OpenSearch parity and tenant tests.
+  - The writer and integration tests now install one shared production index
+    template with lowercase exact fields, literal message matching, typed
+    IP/integer security fields, and bounded dynamic keyword subfields.
+  - Bulk writes do not start until template installation succeeds, closing the
+    previous asynchronous mapping race.
+  - OpenSearch 2.11.1 tests use that production template and compare Local and
+    OpenSearch event IDs, order, totals, and stat rows across 11 filter and
+    aggregation queries. They also prove tenant isolation, stable three-page
+    traversal, final-page termination, and cross-query cursor rejection.
+  - Validation: search-config reactor with `SOCP_TESTCONTAINERS=true` (117 tests,
+    no skips), including six real OpenSearch tests and the PostgreSQL 16 upgrade
+    test; `python build/verify-event-schema.py`, `python build/verify-style.py`,
+    and `git diff --check`.
 - [ ] P0-C-1 Indexer per-item write and offset invariants.
 - [ ] P0-C-2 Indexer failure and reconciliation evidence.
 - [ ] P0-D Current-commit stable performance baseline.

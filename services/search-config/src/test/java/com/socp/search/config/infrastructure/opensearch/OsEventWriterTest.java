@@ -38,6 +38,7 @@ class OsEventWriterTest {
             exchange.getResponseBody().write(response);
             exchange.close();
         });
+        installTemplateEndpoint();
         server.start();
         OsEventWriter writer = writer();
 
@@ -57,6 +58,7 @@ class OsEventWriterTest {
             exchange.getResponseBody().write(response);
             exchange.close();
         });
+        installTemplateEndpoint();
         server.start();
 
         assertFalse(writer().writeEventsAndAwait(List.of(event())));
@@ -71,6 +73,7 @@ class OsEventWriterTest {
             exchange.getResponseBody().write(response);
             exchange.close();
         });
+        installTemplateEndpoint();
         server.start();
 
         assertFalse(writer().writeEventsAndAwait(List.of(event())));
@@ -83,6 +86,20 @@ class OsEventWriterTest {
         properties.setPassword("test");
         properties.setEnabled(true);
         return new OsEventWriter(properties);
+    }
+
+    private void installTemplateEndpoint() {
+        server.createContext(OpenSearchIndexTemplate.PATH, exchange -> {
+            String payload = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            boolean sharedContract = payload.equals(OpenSearchIndexTemplate.payload())
+                    && payload.contains("\"src_ip\": { \"type\": \"ip\" }")
+                    && payload.contains("\"exact\"")
+                    && payload.contains("socp_lowercase");
+            byte[] response = "{}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(sharedContract ? 200 : 400, response.length);
+            exchange.getResponseBody().write(response);
+            exchange.close();
+        });
     }
 
     private static SearchEvent event() {
