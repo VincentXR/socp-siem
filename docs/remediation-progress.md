@@ -115,6 +115,9 @@ Baseline: `6aae664` on 2026-08-31.
   - [x] P0-D-1 Make the series contract execute and retain an excluded warm-up,
     reject mixed-commit rounds and sustained monotonic throughput decline, and
     cover those gates with CI-run Python unit tests.
+  - [x] P0-D-2 Align E2E benchmark authentication with the direct registered
+    collector data-plane boundary while retaining user JWTs only for control-
+    plane reads; cover both request paths with CI-run Python unit tests.
 
 ## P1
 

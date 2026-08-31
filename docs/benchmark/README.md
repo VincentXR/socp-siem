@@ -43,6 +43,11 @@ python build/benchmark-pipeline.py --mode e2e --profile alert-heavy --count 1000
 For multi-instance measurement, set `BENCH_DETECTION_URLS` to comma-separated
 Detection base URLs and `BENCH_ALERT_URL` to the Alert Web base URL. All
 Detection processes must share the Kafka group and PostgreSQL state store.
+E2E ingest goes directly to the collector data-plane boundary rather than
+forwarding a user JWT through the gateway. Set `BENCH_INGEST_URL`,
+`BENCH_COLLECTOR_ID`, and `BENCH_COLLECTOR_TOKEN` to a credential registered in
+`SOCP_COLLECTOR_CREDENTIALS`; the legacy local ingest token is only a fallback
+for a development topology that explicitly permits it.
 Set `BENCH_PROMETHEUS_URL` for an optional external Prometheus snapshot and
 `BENCH_OS_URL` / `BENCH_CK_URL` for storage counters. Install `kafka-python`
 for offset/lag snapshots; its diagnostic client never joins the live consumer

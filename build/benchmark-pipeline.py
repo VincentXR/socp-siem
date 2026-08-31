@@ -90,6 +90,36 @@ def login(gateway):
     return login_token(gateway, user, password)
 
 
+def ingest_endpoint_and_headers(gateway, mode, user_token):
+    """Select the authenticated control-plane or collector data-plane boundary."""
+    if mode != "e2e":
+        return gateway + "/detect-web/api/v1/ingest/bulk", {
+            "Authorization": "Bearer " + user_token,
+            "Content-Type": "application/x-ndjson",
+        }
+    collector_token = (
+        os.environ.get("BENCH_COLLECTOR_TOKEN", "").strip()
+        or os.environ.get("PIPELINE_COLLECTOR_TOKEN", "").strip()
+        or os.environ.get("SOCP_INGEST_TOKEN", "").strip()
+        or os.environ.get("SOCP_VECTOR_TOKEN", "").strip()
+        or "dev-vector-token"
+    )
+    collector_id = (
+        os.environ.get("BENCH_COLLECTOR_ID", "").strip()
+        or os.environ.get("PIPELINE_COLLECTOR_ID", "").strip()
+        or "benchmark-pipeline"
+    )
+    endpoint = os.environ.get(
+        "BENCH_INGEST_URL",
+        "http://127.0.0.1:18081/search-config/api/v1/ingest",
+    ).strip()
+    return endpoint, {
+        "Authorization": "Bearer " + collector_token,
+        "X-SOCP-Collector": collector_id,
+        "Content-Type": "application/x-ndjson",
+    }
+
+
 def unwrap(body):
     if isinstance(body, dict) and "data" in body:
         return body["data"]
@@ -652,6 +682,8 @@ def main():
 
     gateway = args.gateway.rstrip("/")
     token = login(gateway)
+    ingest_target, ingest_headers = ingest_endpoint_and_headers(
+        gateway, args.mode, token)
     profile = machine_profile()
     stats_before = detect_stats(gateway, token)
     runtime_before = optional_prometheus_snapshot()
@@ -677,18 +709,11 @@ def main():
             if remaining > 0:
                 time.sleep(remaining)
         end = min(start + args.batch_size, args.count)
-        if args.mode == "e2e":
-            target = gateway + "/search-config/api/v1/ingest"
-            content_type = "application/x-ndjson"
-        else:
-            target = gateway + "/detect-web/api/v1/ingest/bulk"
-            content_type = "application/x-ndjson"
         batch_ingest_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         body, batch_expected_alerts = event_lines(
             run_id, start, end, args.mode, args.profile, batch_ingest_at, args.alert_every)
         status, body, latency = request(
-            target, "POST", body,
-            {"Authorization": "Bearer " + token, "Content-Type": content_type},
+            ingest_target, "POST", body, ingest_headers,
             timeout=60)
         latencies.append(latency)
         data = unwrap(body)

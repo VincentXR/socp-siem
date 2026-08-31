@@ -122,6 +122,9 @@ durable `Alert Web createdAt - triggerIngestedAt` latency, and Kafka offsets
 when `kafka-python` is installed. `BENCH_DETECTION_URLS` enables aggregation
 across all Detection instances. `--offered-eps` plus `--duration` runs the
 steady-state lag check. See the [benchmark contract](benchmark/README.md).
+E2E runs require the direct collector boundary variables `BENCH_INGEST_URL`,
+`BENCH_COLLECTOR_ID`, and `BENCH_COLLECTOR_TOKEN`; a user JWT is never reused as
+a collector credential.
 
 For repeated baseline evidence, use `build/benchmark-series.py`; it runs the
 same workload once as an excluded warm-up and then three to five measured
