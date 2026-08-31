@@ -100,4 +100,28 @@ class IngestEventNormalizerTest {
         assertEquals("MEDIUM", result.payload().get("severity"));
         assertEquals("MEDIUM", result.event().fields().get("severity"));
     }
+
+    @Test
+    void normalizesEverySeverityFamilyAndFallsBackSafely() {
+        ParserRegistry parsers = mock(ParserRegistry.class);
+        ReferenceSetStore references = mock(ReferenceSetStore.class);
+        when(references.matchedSets(anyString())).thenReturn(java.util.List.of());
+        IngestEventNormalizer normalizer = new IngestEventNormalizer(
+                mock(ParsePreviewService.class), mock(ParseRuleStore.class), references, parsers);
+        TenantContext.set("tenant-a");
+
+        Map<String, String> expected = Map.of(
+                "CRITICAL", "CRITICAL",
+                "ERROR", "HIGH",
+                "WARN", "MEDIUM",
+                "DEBUG", "LOW",
+                "INFO", "INFO",
+                "SEVERE-UNKNOWN", "INFO");
+        expected.forEach((input, output) -> {
+            when(parsers.parse(anyString(), anyString())).thenReturn(Map.of(
+                    CanonicalEvent.EVENT_MESSAGE, "event",
+                    CanonicalEvent.EVENT_SEVERITY, input));
+            assertEquals(output, normalizer.normalize("raw event", "collector-1").event().severity());
+        });
+    }
 }
