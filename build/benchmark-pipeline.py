@@ -405,7 +405,8 @@ def histogram_quantile(buckets, quantile):
     return previous_bound
 
 
-def summarize_performance_metrics(before, after, event_count, alert_count):
+def summarize_performance_metrics(before, after, event_count, alert_count,
+                                  committed_source_offsets=None):
     delta = snapshot_delta(before, after)
     histograms = {}
     transactions = {}
@@ -455,22 +456,28 @@ def summarize_performance_metrics(before, after, event_count, alert_count):
         "openSearchIndexer": {
             "records": indexer_records,
             "reconciliation": {
-                "consumed": consume,
-                "writeAcknowledged": write,
-                "writeFailed": failed,
-                "dropped": dropped,
-                "dlqAcknowledged": dlq,
-                "dlqFailed": dlq_failed,
-                "committed": committed,
-                "commitFailed": commit_failed,
-                "dispositionGap": round(consume - write - failed - dropped, 3),
-                # Every consumed record must either be part of a committed
-                # partition or remain visible as an unresolved gap.  The
-                # acknowledgement composition is kept separately so a
-                # failed write/DLQ cannot look healthy merely because commit,
-                # write, and DLQ are all zero.
-                "durableGap": round(consume - committed, 3),
-                "ackCompositionGap": round(committed - write - dlq, 3),
+                # These counters describe processing attempts. Retries can
+                # legitimately make them larger than the run's unique input.
+                "attemptCounters": {
+                    "consumed": consume,
+                    "writeAcknowledged": write,
+                    "writeFailed": failed,
+                    "dropped": dropped,
+                    "dlqAcknowledged": dlq,
+                    "dlqFailed": dlq_failed,
+                    "commitFailed": commit_failed,
+                },
+                # The Kafka group frontier is the authoritative unique source
+                # offset count for an isolated benchmark interval. The commit
+                # metric remains useful evidence but is not used to derive a
+                # loss gap from retry-inflated attempt counters.
+                "uniqueSourceOffsets": {
+                    "accepted": event_count,
+                    "committed": committed_source_offsets,
+                    "gap": (event_count - committed_source_offsets
+                            if committed_source_offsets is not None else None),
+                },
+                "commitAcknowledgedRecords": committed,
             },
         },
         "ratios": {
@@ -795,8 +802,17 @@ def main():
             "max": round(max(durable_latency), 2) if durable_latency else 0,
         }
         performance_after = performance_snapshot()
+        committed_source_offsets = None
+        if kafka_before is not None and kafka_after is not None \
+                and kafka_before.get("topic") == kafka_after.get("topic") \
+                and kafka_before.get("group") == kafka_after.get("group") \
+                and kafka_before.get("partitions") == kafka_after.get("partitions"):
+            committed_source_offsets = max(
+                0, kafka_after.get("committedOffset", 0)
+                - kafka_before.get("committedOffset", 0))
         report["performanceMetrics"] = summarize_performance_metrics(
-            performance_before, performance_after, accepted, report["runAlertsObserved"])
+            performance_before, performance_after, accepted,
+            report["runAlertsObserved"], committed_source_offsets)
         if args.offered_eps:
             lags = [sample["lag"] for sample in lag_during_load]
             lag_growth = (lags[-1] - lags[0]) if len(lags) >= 2 else 0

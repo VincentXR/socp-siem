@@ -1,5 +1,6 @@
 package com.socp.search.config.query;
 
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -14,6 +15,11 @@ public final class FieldCatalog {
 
     public static FieldCatalog standard() {
         return STANDARD;
+    }
+
+    /** Registered, non-dynamic fields used to validate storage mappings in CI. */
+    public Collection<FieldDescriptor> descriptors() {
+        return fields.values();
     }
 
     private static FieldCatalog createStandard() {

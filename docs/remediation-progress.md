@@ -74,7 +74,26 @@ Baseline: `6aae664` on 2026-08-31.
     no skips), including six real OpenSearch tests and the PostgreSQL 16 upgrade
     test; `python build/verify-event-schema.py`, `python build/verify-style.py`,
     and `git diff --check`.
-- [ ] P0-C-1 Indexer per-item write and offset invariants.
+- [x] P0-C-1 Indexer per-item write and offset invariants.
+  - Bulk writes return acknowledged IDs plus indexed retryable and permanent
+    failures; HTTP 400/422 mapping or schema rejections are permanent, while
+    408/429, 5xx, invalid responses, and transport failures remain retryable.
+  - Each Kafka partition commits only its contiguous safe prefix. Valid items
+    require an OpenSearch item acknowledgement, and permanent or malformed
+    items require a broker-acknowledged diagnostic DLQ envelope carrying the
+    original source identity and sanitized failure context.
+  - The production template is synchronously ready before the indexer creates
+    a Kafka consumer, and CI verifies every registered typed query path against
+    the production mapping contract.
+  - Partition/batch/offset/timing/retry logs and bounded-label counters cover
+    template readiness, partial bulk failures, DLQ failures, and commit
+    failures. Benchmark reports now separate retry-inflated attempt counters
+    from the Kafka group's unique committed-source-offset delta.
+  - Validation: search-config reactor with `SOCP_TESTCONTAINERS=true` (124
+    tests, no skips), including six real OpenSearch tests and PostgreSQL 16
+    tests; `python -m py_compile build/benchmark-pipeline.py`, benchmark
+    reconciliation shape assertion, `python build/verify-event-schema.py`,
+    `python build/verify-style.py`, and `git diff --check`.
 - [ ] P0-C-2 Indexer failure and reconciliation evidence.
 - [ ] P0-D Current-commit stable performance baseline.
 

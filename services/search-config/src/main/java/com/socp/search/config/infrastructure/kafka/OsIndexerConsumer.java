@@ -5,10 +5,12 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.socp.platform.client.kafka.KafkaClientSupport;
 import com.socp.search.config.config.KafkaProperties;
-import com.socp.search.config.domain.SearchEvent;
-import com.socp.search.config.infrastructure.opensearch.OsEventWriter;
 import com.socp.search.config.config.OpenSearchIndexerProperties;
+import com.socp.search.config.domain.SearchEvent;
+import com.socp.search.config.infrastructure.opensearch.BulkWriteResult;
+import com.socp.search.config.infrastructure.opensearch.OsEventWriter;
 import com.socp.search.config.schema.CanonicalEventSchema;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -18,7 +20,6 @@ import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.WakeupException;
-import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -39,7 +40,7 @@ import java.util.Map;
  * <p>Offsets advance independently per partition only after every valid event
  * in that partition's poll batch receives a successful OpenSearch bulk item
  * acknowledgement, or an invalid event receives a broker-acknowledged DLQ
- * record. Failed partitions seek back to the first polled offset. OpenSearch
+ * record. Failed partitions seek to their first unresolved offset. OpenSearch
  * uses tenantId plus eventId as document _id, so replay is idempotent and
  * tenant-scoped.</p>
  */
@@ -92,6 +93,12 @@ public class OsIndexerConsumer {
 
     private void runLoop() {
         while (running) {
+            if (!osWriter.ensureIndexTemplate()) {
+                recordMetric("template_not_ready", 1);
+                log.warn("OpenSearch indexer waiting for the production index template");
+                backoffAfterFailure();
+                continue;
+            }
             try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(consumerProperties())) {
                 activeConsumer = consumer;
                 consumer.subscribe(List.of(kafkaProperties.getTopic()));
@@ -127,18 +134,23 @@ public class OsIndexerConsumer {
                            ConsumerRecords<String, String> records) {
         recordMetric("consume", records.count());
         Map<TopicPartition, OffsetAndMetadata> completed = new HashMap<>();
+        long committedRecords = 0L;
+        boolean allCompleted = true;
         for (TopicPartition partition : records.partitions()) {
             List<ConsumerRecord<String, String>> partitionRecords = records.records(partition);
-            if (processPartition(partitionRecords)) {
-                long nextOffset = partitionRecords.getLast().offset() + 1;
-                completed.put(partition, new OffsetAndMetadata(nextOffset));
-            } else {
-                consumer.seek(partition, partitionRecords.getFirst().offset());
+            PartitionOutcome outcome = processPartitionOutcome(partitionRecords);
+            long firstOffset = partitionRecords.getFirst().offset();
+            if (outcome.nextOffset() > firstOffset) {
+                completed.put(partition, new OffsetAndMetadata(outcome.nextOffset()));
+                committedRecords += partitionRecords.stream()
+                        .filter(record -> record.offset() < outcome.nextOffset()).count();
+            }
+            if (!outcome.completed()) {
+                allCompleted = false;
+                consumer.seek(partition, outcome.nextOffset());
             }
         }
         if (!completed.isEmpty()) {
-            long committedRecords = completed.keySet().stream()
-                    .mapToLong(partition -> records.records(partition).size()).sum();
             try {
                 consumer.commitSync(completed);
                 recordMetric("commit", committedRecords);
@@ -147,7 +159,7 @@ public class OsIndexerConsumer {
                 throw commitFailure;
             }
         }
-        return completed.size() == records.partitions().size();
+        return allCompleted;
     }
 
     private void backoffAfterFailure() {
@@ -162,39 +174,98 @@ public class OsIndexerConsumer {
 
     /** Package-visible correctness seam used by focused tests. */
     boolean processPartition(List<ConsumerRecord<String, String>> records) {
+        return processPartitionOutcome(records).completed();
+    }
+
+    private PartitionOutcome processPartitionOutcome(List<ConsumerRecord<String, String>> records) {
         String traceId = traceId(records.getFirst());
         if (traceId != null) org.slf4j.MDC.put("traceId", traceId);
         try {
+            List<PreparedRecord> prepared = new ArrayList<>(records.size());
             List<SearchEvent> events = new ArrayList<>(records.size());
             for (ConsumerRecord<String, String> record : records) {
                 try {
                     @SuppressWarnings("unchecked")
                     Map<String, Object> value = MAPPER.readValue(record.value(), Map.class);
                     CanonicalEventSchema.requireSupported(value);
-                    events.add(toEvent(value, record.key()));
+                    SearchEvent event = toEvent(value, record.key());
+                    prepared.add(new PreparedRecord(record, event, events.size(), null));
+                    events.add(event);
                 } catch (Exception invalid) {
-                    recordMetric("drop", 1);
-                    if (invalid instanceof CanonicalEventSchema.UnsupportedSchemaVersionException) {
-                        recordMetric("schema_rejected", 1);
-                    } else if (invalid instanceof CanonicalEventSchema.SchemaValidationException) {
-                        recordMetric("schema_invalid", 1);
-                    }
-                    if (!sendToDlqAndAwait(record.key(), record.value())) {
-                        recordMetric("dlq_failed", 1);
-                        log.warn("Invalid event DLQ write failed partition={} offset={}",
-                                record.partition(), record.offset());
-                        return false;
-                    }
-                    recordMetric("dlq", 1);
+                    prepared.add(new PreparedRecord(record, null, -1, invalidRecord(record, invalid)));
                 }
             }
-            if (events.isEmpty()) return true;
-            boolean written = osWriter.writeEventsAndAwait(events);
-            recordMetric(written ? "write" : "fail", events.size());
-            return written;
+            BulkWriteResult result = events.isEmpty()
+                    ? BulkWriteResult.empty() : osWriter.writeEventsAndAwait(events);
+            recordBulkMetrics(result);
+            Map<Integer, BulkWriteResult.Failure> retryable = failuresByIndex(result.retryableFailures());
+            Map<Integer, BulkWriteResult.Failure> permanent = failuresByIndex(result.permanentFailures());
+            long nextOffset = records.getFirst().offset();
+            for (PreparedRecord item : prepared) {
+                if (item.invalid() != null) {
+                    recordMetric("drop", 1);
+                    recordMetric(item.invalid().reasonCode(), 1);
+                    if (!sendToDlqAndAwait(item.record(), item.invalid())) {
+                        recordMetric("dlq_failed", 1);
+                        return failedOutcome(records, nextOffset, item.record(), item.invalid().reasonCode(), result);
+                    }
+                    recordMetric("dlq", 1);
+                } else if (retryable.containsKey(item.bulkIndex())) {
+                    BulkWriteResult.Failure failure = retryable.get(item.bulkIndex());
+                    return failedOutcome(records, nextOffset, item.record(), failure.reasonCode(), result);
+                } else if (permanent.containsKey(item.bulkIndex())) {
+                    BulkWriteResult.Failure failure = permanent.get(item.bulkIndex());
+                    InvalidRecord invalid = new InvalidRecord(item.event().eventId(),
+                            item.event().tenantId(), item.event().schemaVersion(),
+                            failure.reasonCode(), failure.reason());
+                    recordMetric("drop", 1);
+                    recordMetric("permanent_failure", 1);
+                    if (!sendToDlqAndAwait(item.record(), invalid)) {
+                        recordMetric("dlq_failed", 1);
+                        return failedOutcome(records, nextOffset, item.record(), "dlq_failed", result);
+                    }
+                    recordMetric("dlq", 1);
+                } else if (!result.acknowledgedIds().contains(item.event().eventId())) {
+                    return failedOutcome(records, nextOffset, item.record(), "bulk_ack_missing", result);
+                }
+                nextOffset = item.record().offset() + 1;
+            }
+            log.info("OpenSearch indexer partition={} batchSize={} firstOffset={} lastOffset={} bulkTookMs={} status=complete",
+                    records.getFirst().partition(), records.size(), records.getFirst().offset(),
+                    records.getLast().offset(), result.tookMs());
+            return new PartitionOutcome(nextOffset, true);
         } finally {
             org.slf4j.MDC.remove("traceId");
         }
+    }
+
+    private PartitionOutcome failedOutcome(List<ConsumerRecord<String, String>> records, long nextOffset,
+                                           ConsumerRecord<String, String> failed,
+                                           String reasonCode, BulkWriteResult result) {
+        log.warn("OpenSearch indexer partition={} batchSize={} firstOffset={} lastOffset={} retryOffset={} bulkTookMs={} reason={}",
+                failed.partition(), records.size(), records.getFirst().offset(), records.getLast().offset(),
+                failed.offset(), result.tookMs(), reasonCode);
+        return new PartitionOutcome(nextOffset, false);
+    }
+
+    private void recordBulkMetrics(BulkWriteResult result) {
+        recordMetric("write", result.acknowledgedIds().size());
+        recordMetric("fail", result.retryableFailures().size());
+        if (!result.acknowledgedIds().isEmpty()
+                && (!result.retryableFailures().isEmpty() || !result.permanentFailures().isEmpty())) {
+            recordMetric("bulk_partial_failure", 1);
+        }
+        if (result.retryableFailures().stream()
+                .anyMatch(failure -> "template_not_ready".equals(failure.reasonCode()))) {
+            recordMetric("template_not_ready", 1);
+        }
+    }
+
+    private static Map<Integer, BulkWriteResult.Failure> failuresByIndex(
+            List<BulkWriteResult.Failure> failures) {
+        Map<Integer, BulkWriteResult.Failure> byIndex = new HashMap<>();
+        failures.forEach(failure -> byIndex.put(failure.itemIndex(), failure));
+        return byIndex;
     }
 
     private static String traceId(ConsumerRecord<String, String> record) {
@@ -208,16 +279,78 @@ public class OsIndexerConsumer {
         }
     }
 
-    /** Package-visible seam lets the DLQ acknowledgement contract be tested without a broker. */
-    boolean sendToDlqAndAwait(String eventId, String raw) {
+    private static InvalidRecord invalidRecord(ConsumerRecord<String, String> record, Exception failure) {
+        String reasonCode;
+        if (failure instanceof CanonicalEventSchema.UnsupportedSchemaVersionException) {
+            reasonCode = "schema_rejected";
+        } else if (failure instanceof CanonicalEventSchema.SchemaValidationException) {
+            reasonCode = "schema_invalid";
+        } else {
+            reasonCode = "invalid_payload";
+        }
+        String eventId = record.key();
+        String tenant = null;
+        String schemaVersion = "absent";
         try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> value = MAPPER.readValue(record.value(), Map.class);
+            if (value.get("eventId") != null) eventId = String.valueOf(value.get("eventId"));
+            if (value.get("tenantId") != null) tenant = String.valueOf(value.get("tenantId"));
+            if (value.get("schemaVersion") != null) schemaVersion = String.valueOf(value.get("schemaVersion"));
+            if (tenant == null && value.get("fields") instanceof Map<?, ?> fields
+                    && fields.get("tenant_id") != null) {
+                tenant = String.valueOf(fields.get("tenant_id"));
+            }
+        } catch (Exception ignored) {
+            // The original parse failure is the authoritative diagnostic.
+        }
+        return new InvalidRecord(eventId, tenant, schemaVersion, reasonCode,
+                cleanReason(failure.getMessage(), failure.getClass().getSimpleName()));
+    }
+
+    /** Package-visible seam lets the DLQ acknowledgement contract be tested without a broker. */
+    boolean sendToDlqAndAwait(ConsumerRecord<String, String> record, InvalidRecord failure) {
+        try {
+            String payload = dlqEnvelope(record, failure);
+            String dlqKey = failure.eventId() == null || failure.eventId().isBlank()
+                    ? record.topic() + "-" + record.partition() + "-" + record.offset()
+                    : failure.eventId();
             KafkaClientSupport.sendAndAwait(dlq(), kafkaProperties.getTopic() + "-dlq",
-                    eventId, raw, Duration.ofSeconds(30));
+                    dlqKey, payload, Duration.ofSeconds(30));
             return true;
-        } catch (RuntimeException failure) {
-            log.warn("DLQ durable write failed eventId={}: {}", eventId, failure.getMessage());
+        } catch (RuntimeException deliveryFailure) {
+            log.warn("DLQ durable write failed partition={} offset={}: {}",
+                    record.partition(), record.offset(), deliveryFailure.getMessage());
+            return false;
+        } catch (Exception serializationFailure) {
+            log.warn("DLQ envelope serialization failed partition={} offset={}: {}",
+                    record.partition(), record.offset(), serializationFailure.getMessage());
             return false;
         }
+    }
+
+    static String dlqEnvelope(ConsumerRecord<String, String> record,
+                              InvalidRecord failure) throws Exception {
+        Map<String, Object> envelope = new LinkedHashMap<>();
+        envelope.put("originalTopic", record.topic());
+        envelope.put("partition", record.partition());
+        envelope.put("offset", record.offset());
+        envelope.put("key", record.key());
+        envelope.put("eventId", failure.eventId());
+        envelope.put("tenant", failure.tenant());
+        envelope.put("schemaVersion", failure.schemaVersion());
+        envelope.put("reasonCode", failure.reasonCode());
+        envelope.put("reason", failure.reason());
+        envelope.put("originalPayload", record.value());
+        envelope.put("failedAt", Instant.now().toString());
+        return MAPPER.writeValueAsString(envelope);
+    }
+
+    private static String cleanReason(String reason, String fallback) {
+        String cleaned = reason == null ? "" : reason.replace('\r', ' ')
+                .replace('\n', ' ').replace('\t', ' ').trim();
+        if (cleaned.isBlank()) cleaned = fallback;
+        return cleaned.length() <= 500 ? cleaned : cleaned.substring(0, 500);
     }
 
     private KafkaProducer<String, String> dlq() {
@@ -287,6 +420,17 @@ public class OsIndexerConsumer {
             meterRegistry.counter("socp.opensearch.indexer.records", "stage", stage)
                     .increment(count);
         }
+    }
+
+    private record PreparedRecord(ConsumerRecord<String, String> record, SearchEvent event,
+                                  int bulkIndex, InvalidRecord invalid) {
+    }
+
+    record InvalidRecord(String eventId, String tenant, String schemaVersion,
+                         String reasonCode, String reason) {
+    }
+
+    private record PartitionOutcome(long nextOffset, boolean completed) {
     }
 
     @PreDestroy

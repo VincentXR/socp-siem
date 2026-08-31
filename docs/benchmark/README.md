@@ -12,10 +12,16 @@ The indexer exposes the record reconciliation counter
 copies these deltas into `performanceMetrics.openSearchIndexer`. `write` and
 `commit` are counted only after the corresponding durable acknowledgement;
 `drop` is a malformed input and `dlq` means the DLQ broker write was
-acknowledged; `dlq_failed` means the input remains uncommitted. `durableGap`
-is `consume - commit`, while `ackCompositionGap` checks the write/DLQ
-composition. These are attempt counters, so retries can make `consume` exceed
-the final event count.
+acknowledged; `dlq_failed` means the input remains uncommitted.
+
+`consume`, `write`, `fail`, `drop`, `dlq`, `dlq_failed`, and `commit_failed`
+are attempt counters: retries can make them exceed the run's unique input, so
+the report never derives a loss gap by subtracting them. The
+`uniqueSourceOffsets` section instead compares accepted events with the Kafka
+consumer group's committed-offset delta over the isolated run. The final data
+invariant is `accepted unique source offsets = indexed unique documents +
+broker-acknowledged DLQ source offsets`; the failure-evidence run measures the
+two right-hand terms by source identity (`topic`, `partition`, `offset`).
 
 ## Reproducible runs
 
