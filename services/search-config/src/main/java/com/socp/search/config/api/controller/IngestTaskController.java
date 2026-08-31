@@ -104,7 +104,7 @@ public class IngestTaskController {
         String collector = s.collectorTag();
         String host = s.env() == null || s.env().isBlank() ? "test-host" : s.env() + "-host";
         return """
-               {"collector":"%s","host":"%s","source":"auth","severity":"WARN",\
+               {"collector":"%s","host":"%s","source":"auth","severity":"HIGH",\
                "message":"Failed password for invalid user admin from 203.0.113.66 port 51234 ssh2",\
                "src_ip":"203.0.113.66","user":"admin"}"""
                 .formatted(collector, host);

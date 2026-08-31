@@ -81,4 +81,23 @@ class IngestEventNormalizerTest {
         assertEquals("tenant-a", result.payload().get("fields") instanceof Map<?, ?> fields
                 ? fields.get("tenant_id") : null);
     }
+
+    @Test
+    void normalizesVendorSeverityAliasesBeforeKafkaEnvelope() {
+        ParserRegistry parsers = mock(ParserRegistry.class);
+        ReferenceSetStore references = mock(ReferenceSetStore.class);
+        when(parsers.parse(anyString(), anyString())).thenReturn(Map.of(
+                CanonicalEvent.EVENT_MESSAGE, "failed password",
+                CanonicalEvent.EVENT_SEVERITY, "WARNING"));
+        when(references.matchedSets(anyString())).thenReturn(java.util.List.of());
+        IngestEventNormalizer normalizer = new IngestEventNormalizer(
+                mock(ParsePreviewService.class), mock(ParseRuleStore.class), references, parsers);
+        TenantContext.set("tenant-a");
+
+        var result = normalizer.normalize("raw event", "collector-1");
+
+        assertEquals("MEDIUM", result.event().severity());
+        assertEquals("MEDIUM", result.payload().get("severity"));
+        assertEquals("MEDIUM", result.event().fields().get("severity"));
+    }
 }

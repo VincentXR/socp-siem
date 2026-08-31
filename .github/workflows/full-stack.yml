@@ -163,7 +163,8 @@ jobs:
 
       - name: Collect commit-scoped full-stack evidence
         if: always()
-        run: python3 build/collect-evidence.py --output .cache/evidence \
+        run: |
+          python3 build/collect-evidence.py --output .cache/evidence \
           --benchmark .cache/chaos/dependency-matrix.json \
           --benchmark .cache/chaos/multi-instance.json
 

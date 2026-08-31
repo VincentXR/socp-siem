@@ -582,7 +582,7 @@ def scenario_detection_restart(token, count):
             "eventId": f"chaos-restart-{run_id}-{i}",
             "source": "auth",
             "host": f"chaos-restart-{run_id}",
-            "severity": "WARN",
+            "severity": "HIGH",
             "message": f"Failed password for invalid user root from 198.51.100.77 port {52000 + i} ssh2",
             "src_ip": "198.51.100.77",
             "user": "root",

@@ -538,7 +538,8 @@ jobs:
 
       - name: Collect pipeline evidence
         if: always()
-        run: python3 build/collect-evidence.py --output .cache/evidence \
+        run: |
+          python3 build/collect-evidence.py --output .cache/evidence \
           --benchmark .cache/chaos/duplicate-delivery.json \
           --benchmark .cache/chaos/detection-outbox-replay.json
 

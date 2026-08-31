@@ -61,8 +61,12 @@ public class IngestEventNormalizer {
         if ((source.isBlank() || "sshd".equalsIgnoreCase(source))
                 && "authentication".equalsIgnoreCase(category)) source = "auth";
         String host = pick(fields, "host", "hostname", "device", CanonicalEvent.HOST_NAME);
-        String severity = pick(fields, "severity", "level", CanonicalEvent.EVENT_SEVERITY);
-        if (severity.isBlank()) severity = "INFO";
+        // Keep the producer-side envelope inside the canonical severity
+        // vocabulary. Vendor parsers commonly emit WARN/WARNING, ERROR, or
+        // DEBUG; forwarding those values unchanged would make the Kafka
+        // event valid JSON but reject it at the OpenSearch schema boundary.
+        String severity = normalizeSeverity(pick(fields, "severity", "level", CanonicalEvent.EVENT_SEVERITY));
+        fields.put("severity", severity);
         String eventId = firstNonBlank(canonical.get("eventId"), canonical.get("event.id"),
                 canonical.get("id"), fields.get("eventId"), fields.get("event_id"));
         if (eventId == null) eventId = java.util.UUID.randomUUID().toString();
@@ -163,6 +167,18 @@ public class IngestEventNormalizer {
             if (!value.isBlank() && !"null".equalsIgnoreCase(value)) return value;
         }
         return null;
+    }
+
+    private static String normalizeSeverity(String value) {
+        String normalized = value == null ? "" : value.trim().toUpperCase(java.util.Locale.ROOT);
+        return switch (normalized) {
+            case "CRITICAL", "ALERT", "EMERGENCY" -> "CRITICAL";
+            case "HIGH", "ERROR", "ERR" -> "HIGH";
+            case "MEDIUM", "WARN", "WARNING", "NOTICE" -> "MEDIUM";
+            case "LOW", "DEBUG", "TRACE" -> "LOW";
+            case "INFO", "INFORMATIONAL", "INFORMATION" -> "INFO";
+            default -> "INFO";
+        };
     }
 
     private static Instant parseTimestamp(String value) {

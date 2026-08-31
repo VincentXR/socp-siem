@@ -162,7 +162,7 @@ def event_lines(run_id, count):
             "collector": COLLECTOR_ID,
             "host": host,
             "source": "auth",
-            "severity": "WARN",
+            "severity": "HIGH",
             "message": (
                 f"Failed password for invalid user root from {source_ip} "
                 f"port {52000 + index} ssh2"

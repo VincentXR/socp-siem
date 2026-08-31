@@ -172,7 +172,7 @@ uniq = str(int(time.time() * 1000))[-6:]
 attack_host = "ci-attack-%s" % uniq
 attack_ip = "10.9.%s.%s" % (uniq[:2], uniq[2:4])
 samples = [
-    '{"collector":"auth","host":"%s","source":"auth","severity":"WARN","message":"sudo: ciattacker : TTY=pts/9 ; USER=root ; COMMAND=/bin/sh","src_ip":"%s","user":"ciattacker"}'
+    '{"collector":"auth","host":"%s","source":"auth","severity":"HIGH","message":"sudo: ciattacker : TTY=pts/9 ; USER=root ; COMMAND=/bin/sh","src_ip":"%s","user":"ciattacker"}'
     % (attack_host, attack_ip),
 ]
 st, r = api("/search-config/api/v1/ingest/tasks/%s/test" % tid, {"sample": samples[0]}, "POST")
