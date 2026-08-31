@@ -33,15 +33,23 @@ public class SplEngine {
     /** Search result plus source provenance and page execution metadata. */
     public record QueryResult(int total, List<SearchEvent> events, Stat stat,
                               String source, boolean degraded, Instant freshness,
-                              String degradationReason, String nextCursor, long elapsedMs) {
+                              String degradationReason, String nextCursor, long elapsedMs,
+                              Long backendTookMs) {
         public QueryResult(int total, List<SearchEvent> events, Stat stat) {
-            this(total, events, stat, "unspecified", false, null, null, null, 0L);
+            this(total, events, stat, "unspecified", false, null, null, null, 0L, null);
         }
 
         public QueryResult(int total, List<SearchEvent> events, Stat stat,
                            String source, boolean degraded, Instant freshness,
                            String degradationReason) {
-            this(total, events, stat, source, degraded, freshness, degradationReason, null, 0L);
+            this(total, events, stat, source, degraded, freshness, degradationReason, null, 0L, null);
+        }
+
+        public QueryResult(int total, List<SearchEvent> events, Stat stat,
+                           String source, boolean degraded, Instant freshness,
+                           String degradationReason, String nextCursor, long elapsedMs) {
+            this(total, events, stat, source, degraded, freshness, degradationReason,
+                    nextCursor, elapsedMs, null);
         }
 
         public QueryResult {
@@ -49,29 +57,40 @@ public class SplEngine {
             source = source == null || source.isBlank() ? "unspecified" : source;
             if (total < 0) throw new IllegalArgumentException("total must not be negative");
             if (elapsedMs < 0) throw new IllegalArgumentException("elapsedMs must not be negative");
+            if (backendTookMs != null && backendTookMs < 0) {
+                throw new IllegalArgumentException("backendTookMs must not be negative");
+            }
         }
 
         public QueryResult withSource(String source, boolean degraded, Instant freshness,
                                       String degradationReason) {
             return new QueryResult(total, events, stat, source, degraded, freshness,
-                    degradationReason, nextCursor, elapsedMs);
+                    degradationReason, nextCursor, elapsedMs, backendTookMs);
         }
 
         public QueryResult withPageMetadata(String nextCursor, long elapsedMs) {
             return new QueryResult(total, events, stat, source, degraded, freshness,
-                    degradationReason, nextCursor, elapsedMs);
+                    degradationReason, nextCursor, elapsedMs, backendTookMs);
         }
 
         public QueryResult limitEvents(int limit) {
             if (limit < 1 || events.size() <= limit) return this;
             return new QueryResult(total, events.stream().limit(limit).toList(), stat,
                     source, degraded, freshness, degradationReason,
-                    LocalQueryExecutor.encodeCursor(events.get(limit - 1)), elapsedMs);
+                    nextCursor, elapsedMs, backendTookMs);
         }
 
-        public record Stat(String type, List<java.util.Map<String, Object>> rows) {
+        public record Stat(String type, List<java.util.Map<String, Object>> rows,
+                           boolean approximate, long sumOtherDocCount) {
+            public Stat(String type, List<java.util.Map<String, Object>> rows) {
+                this(type, rows, false, 0L);
+            }
+
             public Stat {
                 rows = List.copyOf(rows == null ? List.of() : rows);
+                if (sumOtherDocCount < 0) {
+                    throw new IllegalArgumentException("sumOtherDocCount must not be negative");
+                }
             }
         }
     }

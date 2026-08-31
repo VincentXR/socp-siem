@@ -5,9 +5,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.search.config.config.OpenSearchProperties;
 import com.socp.search.config.domain.SearchEvent;
-import com.socp.search.config.query.LocalQueryExecutor;
 import com.socp.search.config.query.OpenSearchQueryCompiler;
 import com.socp.search.config.query.PipelineCommand;
+import com.socp.search.config.query.QueryCursorCodec;
 import com.socp.search.config.query.SearchQueryAst;
 import com.socp.search.config.query.SplParser;
 import com.socp.search.config.service.SplEngine;
@@ -60,19 +60,26 @@ public class OsEventReader {
 
     /** Searches OpenSearch using the same AST semantics as the local executor. */
     public SplEngine.QueryResult search(String query, int size, String cursor) {
-        int pageSize = Math.max(1, Math.min(100_000, size));
+        long started = System.nanoTime();
+        int pageSize = Math.max(1, Math.min(5_000, size));
         SearchQueryAst ast = parser.parse(query).withPage(pageSize, cursor);
         if (!properties.isEnabled()) return null;
         try {
             String tenant = TenantContext.require();
-            byte[] request = compiler.compile(ast, tenant, pageSize).toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            int transportSize = Math.min(5_001, pageSize + 1);
+            byte[] request = compiler.compile(ast, tenant, transportSize).toString()
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8);
             var response = transport.exchange("POST", "/" + properties.getSearchIndex() + "/_search",
                     "application/json", request);
             if (!response.successful()) {
+                if (response.status() >= 400 && response.status() < 500 && response.status() != 429) {
+                    throw new com.socp.search.config.query.SplParseException(
+                            "OpenSearch rejected query: " + sanitizedError(response.body(), response.status()), 0);
+                }
                 log.warn("OpenSearch search failed HTTP {}; local execution remains an explicit fallback", response.status());
                 return null;
             }
-            SplEngine.QueryResult result = parse(response.body(), ast, pageSize);
+            SplEngine.QueryResult result = parse(response.body(), ast, pageSize, started);
             log.debug("OpenSearch search matched={} returned={} query={}", result.total(), result.events().size(), query);
             return result;
         } catch (com.socp.search.config.query.SplParseException syntax) {
@@ -83,27 +90,33 @@ public class OsEventReader {
         }
     }
 
-    private SplEngine.QueryResult parse(byte[] body, SearchQueryAst ast, int size) throws Exception {
-        long started = System.nanoTime();
+    private SplEngine.QueryResult parse(byte[] body, SearchQueryAst ast, int size, long started) throws Exception {
         JsonNode root = MAPPER.readTree(body);
         JsonNode hits = root.path("hits").path("hits");
         List<SearchEvent> events = new ArrayList<>();
-        String nextCursor = null;
+        List<List<Object>> sortValues = new ArrayList<>();
         for (JsonNode hit : hits) {
             JsonNode source = hit.path("_source");
             if (source.isMissingNode()) continue;
             SearchEvent event = toEvent(source);
             if (event != null) {
                 events.add(event);
-                nextCursor = cursorFromHit(hit, event);
+                sortValues.add(sortValues(hit, event));
             }
         }
         int total = root.path("hits").path("total").path("value").asInt(events.size());
-        if (total <= events.size()) nextCursor = null;
+        boolean hasMore = !ast.hasAggregation() && hits.size() > size && !events.isEmpty();
+        if (events.size() > size) {
+            events = new ArrayList<>(events.subList(0, size));
+            sortValues = new ArrayList<>(sortValues.subList(0, size));
+        }
+        String nextCursor = hasMore
+                ? QueryCursorCodec.encode(ast, sortValues.getLast()) : null;
         SplEngine.QueryResult.Stat stat = parseStat(root.path("aggregations"), ast);
         return new SplEngine.QueryResult(total, events, stat, "opensearch", false,
                 SplEngine.freshest(events), null, nextCursor,
-                (System.nanoTime() - started) / 1_000_000L);
+                (System.nanoTime() - started) / 1_000_000L,
+                root.has("took") ? root.path("took").asLong() : null);
     }
 
     private static SplEngine.QueryResult.Stat parseStat(JsonNode aggregations, SearchQueryAst ast) {
@@ -125,24 +138,43 @@ public class OsEventReader {
                 row.put("count", bucket.path("doc_count").asLong());
                 rows.add(row);
             }
-            return new SplEngine.QueryResult.Stat(type, rows);
+            long sumOtherDocCount = aggregations.path(name).path("sum_other_doc_count").asLong(0L);
+            return new SplEngine.QueryResult.Stat(type, rows,
+                    sumOtherDocCount > 0, sumOtherDocCount);
         }
         return null;
     }
 
-    private static String cursorFromHit(JsonNode hit, SearchEvent event) {
+    private static List<Object> sortValues(JsonNode hit, SearchEvent event) {
         JsonNode sort = hit.path("sort");
-        if (sort.isArray() && sort.size() >= 2 && !sort.get(0).isNull()) {
-            try {
-                Instant timestamp = Instant.parse(sort.get(0).asText());
-                String id = sort.get(1).asText();
-                int separator = id.indexOf('|');
-                if (separator >= 0) id = id.substring(separator + 1);
-                return LocalQueryExecutor.encodeCursor(new SearchEvent(id, timestamp, event.source(), event.host(),
-                        event.severity(), event.msg(), event.fields(), event.ecs()));
-            } catch (Exception ignored) { /* fall back to _source identity */ }
+        if (sort.isArray() && sort.size() == 2 && !sort.get(0).isNull() && !sort.get(1).isNull()) {
+            List<Object> values = new ArrayList<>(2);
+            for (JsonNode value : sort) {
+                if (value.isIntegralNumber()) values.add(value.longValue());
+                else if (value.isFloatingPointNumber()) values.add(value.doubleValue());
+                else values.add(value.asText());
+            }
+            return List.copyOf(values);
         }
-        return LocalQueryExecutor.encodeCursor(event);
+        return List.of(event.timestamp().toString(), event.eventId());
+    }
+
+    private static String sanitizedError(byte[] body, int status) {
+        String reason = "HTTP " + status;
+        try {
+            JsonNode error = MAPPER.readTree(body).path("error");
+            String candidate = error.path("reason").asText();
+            if (candidate.isBlank() && error.path("root_cause").isArray()
+                    && !error.path("root_cause").isEmpty()) {
+                candidate = error.path("root_cause").get(0).path("reason").asText();
+            }
+            if (!candidate.isBlank()) reason += " - " + candidate;
+        } catch (Exception ignored) {
+            // Keep only the status when OpenSearch did not return structured JSON.
+        }
+        reason = reason.replaceAll("[\\p{Cntrl}&&[^\\r\\n\\t]]", " ")
+                .replace('\r', ' ').replace('\n', ' ').replace('\t', ' ').trim();
+        return reason.length() <= 240 ? reason : reason.substring(0, 240);
     }
 
     private SearchEvent toEvent(JsonNode src) {

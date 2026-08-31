@@ -59,8 +59,10 @@ public record SearchEvent(
             case "severity" -> severity;
             case "msg" -> msg;
             default -> {
-                String v = fields.get(key);
-                yield v != null ? v : ecs.get(key);
+                String fieldsKey = key.startsWith("fields.") ? key.substring("fields.".length()) : key;
+                String ecsKey = key.startsWith("ecs.") ? key.substring("ecs.".length()) : key;
+                String v = fields == null ? null : fields.get(fieldsKey);
+                yield v != null || ecs == null ? v : ecs.get(ecsKey);
             }
         };
     }

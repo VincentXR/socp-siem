@@ -5,6 +5,7 @@ import java.util.Map;
 
 /** Single typed catalog used by SPL semantic validation and backend adapters. */
 public final class FieldCatalog {
+    private static final FieldCatalog STANDARD = createStandard();
     private final Map<String, FieldDescriptor> fields;
 
     public FieldCatalog(Map<String, FieldDescriptor> fields) {
@@ -12,17 +13,21 @@ public final class FieldCatalog {
     }
 
     public static FieldCatalog standard() {
+        return STANDARD;
+    }
+
+    private static FieldCatalog createStandard() {
         Map<String, FieldDescriptor> fields = new LinkedHashMap<>();
-        add(fields, keyword("eventId", "eventId", true, true));
-        add(fields, keyword("tenantId", "tenantId", false, true));
+        add(fields, keyword("eventId", "eventId", "eventId", false, true, true));
+        add(fields, keyword("tenantId", "tenantId", "tenantId", false, false, true));
         add(fields, new FieldDescriptor("timestamp", "timestamp", "timestamp",
                 FieldDescriptor.Type.DATE, false, true, true, false, false, true));
-        add(fields, keyword("source", "source", true, true));
-        add(fields, keyword("host", "host", true, true));
+        add(fields, keyword("source", "source", "source.ci", true, true, true));
+        add(fields, keyword("host", "host", "host.ci", true, true, true));
         add(fields, new FieldDescriptor("severity", "severity", "severity",
                 FieldDescriptor.Type.SEVERITY, true, true, false, true, false, true));
-        add(fields, keyword("category", "fields.category", true, true));
-        add(fields, new FieldDescriptor("msg", "msg", "msg.keyword",
+        add(fields, keyword("category", "fields.category", "fields.category.ci", true, true, true));
+        add(fields, new FieldDescriptor("msg", "msg", "msg.exact",
                 FieldDescriptor.Type.TEXT, true, false, false, false, true, true));
         add(fields, typedDynamic("src_ip", FieldDescriptor.Type.IP));
         add(fields, typedDynamic("dst_ip", FieldDescriptor.Type.IP));
@@ -45,10 +50,11 @@ public final class FieldCatalog {
                 false, false, false, false, false);
     }
 
-    private static FieldDescriptor keyword(String name, String path,
-                                           boolean sortable, boolean aggregatable) {
-        return new FieldDescriptor(name, path, path, FieldDescriptor.Type.KEYWORD,
-                true, false, sortable, aggregatable, false, true);
+    private static FieldDescriptor keyword(String name, String path, String exactPath,
+                                           boolean caseInsensitive, boolean sortable,
+                                           boolean aggregatable) {
+        return new FieldDescriptor(name, path, exactPath, FieldDescriptor.Type.KEYWORD,
+                caseInsensitive, false, sortable, aggregatable, false, true);
     }
 
     private static FieldDescriptor typedDynamic(String name, FieldDescriptor.Type type) {

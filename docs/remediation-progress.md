@@ -42,7 +42,24 @@ Baseline: `6aae664` on 2026-08-31.
   - Validation: search-config reactor tests (112 tests, 6 opt-in container tests
     skipped), `python build/verify-event-schema.py`,
     `python build/verify-style.py`, and `git diff --check`.
-- [ ] P0-B-2 Local/OpenSearch execution parity.
+- [x] P0-B-2 Local/OpenSearch execution parity.
+  - Local filtering and sorting now use catalog types for dates, integers, IPs,
+    severities, and case policy; default ordering is consistently
+    `timestamp DESC, eventId ASC`, and missing aggregation values are excluded.
+  - OpenSearch DSL uses structurally valid bool/match-all nodes, escaped literal
+    wildcard contains, object-form terms ordering, 1,000-bucket `count by`, and
+    non-empty timechart buckets. Truncated terms results expose
+    `sumOtherDocCount` and `approximate` metadata.
+  - Cursors carry the complete sort array, fixed sort specification, query
+    fingerprint, and integrity check. Query reuse or cursor modification is
+    rejected; a one-row lookahead prevents duplicate or spurious final pages.
+  - OpenSearch 4xx query errors no longer fall back, while 429, 5xx, and
+    transport failures remain explicit degraded candidates. End-to-end elapsed
+    time includes parse/compile/transport/response handling and backend `took`
+    is retained separately.
+  - Validation: search-config reactor tests (116 tests, 6 opt-in container tests
+    skipped), `python build/verify-event-schema.py`,
+    `python build/verify-style.py`, and `git diff --check`.
 - [ ] P0-B-3 Real OpenSearch parity and tenant tests.
 - [ ] P0-C-1 Indexer per-item write and offset invariants.
 - [ ] P0-C-2 Indexer failure and reconciliation evidence.

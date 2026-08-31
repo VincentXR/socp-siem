@@ -12,6 +12,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
@@ -28,11 +29,9 @@ class OsEventReaderTest {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", exchange -> {
             byte[] body = responseBody == null ? new byte[0] : responseBody.getBytes(StandardCharsets.UTF_8);
-            if (responseStatus >= 200 && responseStatus < 300) {
-                exchange.sendResponseHeaders(responseStatus, body.length);
+            exchange.sendResponseHeaders(responseStatus, body.length);
+            if (body.length > 0) {
                 exchange.getResponseBody().write(body);
-            } else {
-                exchange.sendResponseHeaders(responseStatus, -1);
             }
             exchange.close();
         });
@@ -64,8 +63,8 @@ class OsEventReaderTest {
     void parsesEventsStatsAndSearchAfterCursor() {
         responseStatus = 200;
         responseBody = """
-                {"hits":{"total":{"value":5},"hits":[
-                  {"_source":{"eventId":"e1","timestamp":"2026-08-01T00:00:00Z","source":"auth","host":"h1","severity":"HIGH","msg":"failed","fields":{"src_ip":"10.0.0.1"},"ecs":{"event.code":"login"}},"sort":["2026-08-01T00:00:00Z","tenant-a|e1"]},
+                {"took":7,"hits":{"total":{"value":5},"hits":[
+                  {"_source":{"eventId":"e1","timestamp":"2026-08-01T00:00:00Z","source":"auth","host":"h1","severity":"HIGH","msg":"failed","fields":{"src_ip":"10.0.0.1"},"ecs":{"event.code":"login"}},"sort":["2026-08-01T00:00:00Z","e1"]},
                   {"_source":{"eventId":"e2","timestamp":"not-a-time","source":"web","host":"h2","severity":"INFO","msg":"bad"}},
                   {"_source":{"eventId":"e3","timestamp":"2026-08-02T00:00:00Z","source":"web","host":"h3","severity":"LOW","msg":"ok","fields":{"src_ip":"10.0.0.2"}},"sort":["2026-08-02T00:00:00Z","e3"]},
                   {"_source":{"timestamp":"2026-08-03T00:00:00Z","source":"auth","host":"h4","severity":"INFO","msg":"generated id"}},
@@ -77,15 +76,18 @@ class OsEventReaderTest {
 
         assertNotNull(result);
         assertThat(result.total()).isEqualTo(5);
-        assertThat(result.events()).hasSize(3);
+        assertThat(result.events()).hasSize(2);
         assertThat(result.events().get(0).eventId()).isEqualTo("e1");
         assertThat(result.events().get(1).eventId()).isEqualTo("e3");
-        assertThat(result.events().get(2).eventId()).isNotBlank();
+        assertThat(result.backendTookMs()).isEqualTo(7L);
+        assertThat(result.elapsedMs()).isGreaterThanOrEqualTo(0L);
         assertThat(result.stat().type()).isEqualTo("top");
         assertThat(result.stat().rows()).containsExactly(
                 java.util.Map.of("key", "10.0.0.1", "count", 3L),
                 java.util.Map.of("key", "10.0.0.2", "count", 2L));
-        assertThat(result.nextCursor()).isNotBlank();
+        assertThat(result.nextCursor()).as("terminal aggregations are not cursor-paged").isNull();
+        var page = TenantContext.callWith("tenant-a", () -> reader.search("*", 2));
+        assertThat(page.nextCursor()).isNotBlank();
     }
 
     @Test
@@ -105,5 +107,22 @@ class OsEventReaderTest {
         responseBody = "not-json";
         assertNull(TenantContext.callWith("tenant-a", () -> reader.search("*", 10)));
         assertNull(TenantContext.get(), "TenantContext.callWith must restore the caller scope");
+    }
+
+    @Test
+    void exposesCleanClientErrorsButFallsBackForRetryableFailures() {
+        responseStatus = 400;
+        responseBody = "{\"error\":{\"reason\":\"failed to build query\nwith details\"}}";
+
+        assertThatThrownBy(() -> TenantContext.callWith("tenant-a", () -> reader.search("*", 10)))
+                .isInstanceOf(com.socp.search.config.query.SplParseException.class)
+                .hasMessageContaining("HTTP 400", "failed to build query")
+                .hasMessageNotContaining("\n");
+
+        responseStatus = 429;
+        responseBody = "{}";
+        assertNull(TenantContext.callWith("tenant-a", () -> reader.search("*", 10)));
+        responseStatus = 503;
+        assertNull(TenantContext.callWith("tenant-a", () -> reader.search("*", 10)));
     }
 }

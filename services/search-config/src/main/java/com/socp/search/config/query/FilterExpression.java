@@ -3,7 +3,6 @@ package com.socp.search.config.query;
 import com.socp.search.config.domain.SearchEvent;
 
 import java.util.List;
-import java.util.Locale;
 import java.util.Objects;
 
 /** The storage-independent filter portion of the supported SPL grammar. */
@@ -43,51 +42,7 @@ public sealed interface FilterExpression
 
         @Override
         public boolean matches(SearchEvent event) {
-            if (event == null) return false;
-            String actual = event.get(field);
-            if (actual == null) return operator == Operator.NE;
-            String expected = value;
-            return switch (operator) {
-                case EQ -> actual.equalsIgnoreCase(expected);
-                case NE -> !actual.equalsIgnoreCase(expected);
-                case CONTAINS -> actual.toLowerCase(Locale.ROOT)
-                        .contains(expected.toLowerCase(Locale.ROOT));
-                case GE, GT, LE, LT -> compare(actual, expected, operator);
-            };
-        }
-
-        private static boolean compare(String actual, String expected, Operator operator) {
-            Integer actualSeverity = severity(actual);
-            Integer expectedSeverity = severity(expected);
-            if (actualSeverity != null && expectedSeverity != null) {
-                return compareNumbers(actualSeverity, expectedSeverity, operator);
-            }
-            try {
-                return compareNumbers(Double.parseDouble(actual), Double.parseDouble(expected), operator);
-            } catch (NumberFormatException ignored) {
-                return false;
-            }
-        }
-
-        private static boolean compareNumbers(double actual, double expected, Operator operator) {
-            return switch (operator) {
-                case GE -> actual >= expected;
-                case GT -> actual > expected;
-                case LE -> actual <= expected;
-                case LT -> actual < expected;
-                default -> false;
-            };
-        }
-
-        private static Integer severity(String value) {
-            return switch (value.toUpperCase(Locale.ROOT)) {
-                case "INFO" -> 1;
-                case "LOW" -> 2;
-                case "MEDIUM" -> 3;
-                case "HIGH" -> 4;
-                case "CRITICAL" -> 5;
-                default -> null;
-            };
+            return TypedFieldValues.matches(this, event);
         }
     }
 

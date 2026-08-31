@@ -15,6 +15,7 @@ public final class OpenSearchQueryCompiler {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final List<String> SEVERITIES = List.of("INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL");
     private static final QuerySemanticAnalyzer SEMANTIC_ANALYZER = QuerySemanticAnalyzer.standard();
+    private static final FieldCatalog FIELD_CATALOG = FieldCatalog.standard();
 
     public ObjectNode compile(SearchQueryAst ast, String tenantId) {
         return compile(ast, tenantId, ast == null ? 200 : ast.pageSize());
@@ -24,7 +25,11 @@ public final class OpenSearchQueryCompiler {
         if (ast == null) throw new IllegalArgumentException("query AST is required");
         if (!TenantContext.isValid(tenantId)) throw new IllegalArgumentException("valid tenant is required");
         SEMANTIC_ANALYZER.analyze(ast);
-        int size = Math.max(1, Math.min(100_000, requestedSize));
+        int size = Math.max(1, Math.min(QuerySemanticAnalyzer.MAX_RESULT_LIMIT + 1, requestedSize));
+        for (PipelineCommand command : ast.pipeline()) {
+            if (command instanceof PipelineCommand.Head head) size = Math.min(size, head.limit());
+            else if (command instanceof PipelineCommand.Limit limit) size = Math.min(size, limit.limit());
+        }
         ObjectNode root = MAPPER.createObjectNode();
         root.put("size", size);
         root.put("track_total_hits", true);
@@ -40,20 +45,20 @@ public final class OpenSearchQueryCompiler {
         addAggregations(root, ast);
 
         if (ast.cursor() != null && !ast.cursor().isBlank()) {
-            LocalQueryExecutor.Cursor cursor = LocalQueryExecutor.decodeCursor(ast.cursor());
+            QueryCursorCodec.Cursor cursor = QueryCursorCodec.decode(ast.cursor(), ast);
             ArrayNode after = root.putArray("search_after");
-            after.add(cursor.timestamp().toString());
-            after.add(tenantId + "|" + cursor.eventId());
+            cursor.sortValues().forEach(value -> after.addPOJO(value));
         }
         return root;
     }
 
     private static ObjectNode tenantFilter(String tenantId) {
-        ObjectNode scope = MAPPER.createObjectNode().putObject("bool");
-        ArrayNode should = scope.putArray("should");
+        ObjectNode scope = MAPPER.createObjectNode();
+        ObjectNode bool = scope.putObject("bool");
+        ArrayNode should = bool.putArray("should");
         should.addObject().putObject("term").put("tenantId", tenantId);
         should.addObject().putObject("term").put("fields.tenant_id.keyword", tenantId);
-        scope.put("minimum_should_match", 1);
+        bool.put("minimum_should_match", 1);
         return scope;
     }
 
@@ -65,11 +70,11 @@ public final class OpenSearchQueryCompiler {
                 .reduce((first, second) -> second).orElse(null);
         if (explicit == null) {
             sort.addObject().putObject("timestamp").put("order", "desc");
-            sort.addObject().putObject("_id").put("order", "asc");
+            sort.addObject().putObject("eventId").put("order", "asc");
         } else {
-            ObjectNode field = sort.addObject().putObject(fieldPath(explicit.field(), false));
+            ObjectNode field = sort.addObject().putObject(fieldPath(explicit.field(), true));
             field.put("order", explicit.order() == PipelineCommand.SortOrder.DESC ? "desc" : "asc");
-            sort.addObject().putObject("_id").put("order", "asc");
+            sort.addObject().putObject("eventId").put("order", "asc");
         }
     }
 
@@ -81,19 +86,19 @@ public final class OpenSearchQueryCompiler {
                 aggs.putObject("top").putObject("terms")
                         .put("field", fieldPath(top.field(), true))
                         .put("size", top.limit())
-                        .put("order", "_count");
+                        .putObject("order").put("_count", "desc");
             } else if (command instanceof PipelineCommand.CountBy countBy) {
                 if (aggs == null) aggs = root.putObject("aggs");
                 aggs.putObject("count_by").putObject("terms")
                         .put("field", fieldPath(countBy.field(), true))
-                        .put("size", 10_000)
-                        .put("order", "_count");
+                        .put("size", QuerySemanticAnalyzer.MAX_AGGREGATION_BUCKETS)
+                        .putObject("order").put("_count", "desc");
             } else if (command instanceof PipelineCommand.Timechart) {
                 if (aggs == null) aggs = root.putObject("aggs");
                 aggs.putObject("timechart").putObject("date_histogram")
                         .put("field", "timestamp")
                         .put("calendar_interval", "day")
-                        .put("min_doc_count", 0)
+                        .put("min_doc_count", 1)
                         .put("format", "yyyy-MM-dd");
             }
         }
@@ -101,42 +106,47 @@ public final class OpenSearchQueryCompiler {
 
     private static ObjectNode filter(FilterExpression expression) {
         if (expression == null || expression instanceof FilterExpression.MatchAll) {
-            return MAPPER.createObjectNode().putObject("match_all");
+            ObjectNode root = MAPPER.createObjectNode();
+            root.putObject("match_all");
+            return root;
         }
         if (expression instanceof FilterExpression.Comparison comparison) return comparison(comparison);
         if (expression instanceof FilterExpression.And and) {
-            ObjectNode bool = MAPPER.createObjectNode().putObject("bool");
+            ObjectNode root = MAPPER.createObjectNode();
+            ObjectNode bool = root.putObject("bool");
             ArrayNode must = bool.putArray("must");
             and.terms().forEach(term -> must.add(filter(term)));
-            return bool;
+            return root;
         }
         FilterExpression.Or or = (FilterExpression.Or) expression;
-        ObjectNode bool = MAPPER.createObjectNode().putObject("bool");
+        ObjectNode root = MAPPER.createObjectNode();
+        ObjectNode bool = root.putObject("bool");
         ArrayNode should = bool.putArray("should");
         or.terms().forEach(term -> should.add(filter(term)));
         bool.put("minimum_should_match", 1);
-        return bool;
+        return root;
     }
 
     private static ObjectNode comparison(FilterExpression.Comparison comparison) {
-        String field = fieldPath(comparison.field(), comparison.operator() == FilterExpression.Operator.EQ
+        FieldDescriptor descriptor = FIELD_CATALOG.resolve(comparison.field());
+        boolean exact = comparison.operator() == FilterExpression.Operator.EQ
                 || comparison.operator() == FilterExpression.Operator.NE
-                || comparison.operator() == FilterExpression.Operator.CONTAINS);
-        String value = comparison.value();
+                || comparison.operator() == FilterExpression.Operator.CONTAINS;
+        String field = exact ? descriptor.exactPath() : descriptor.searchPath();
+        String value = TypedFieldValues.normalizedLiteral(descriptor, comparison.value());
         return switch (comparison.operator()) {
-            case EQ -> {
-                ObjectNode root = MAPPER.createObjectNode();
-                root.putObject("term").put(field, value);
-                yield root;
-            }
+            case EQ -> term(field, value, descriptor.caseInsensitive());
             case NE -> {
-                ObjectNode bool = MAPPER.createObjectNode().putObject("bool");
-                bool.putArray("must_not").addObject().putObject("term").put(field, value);
-                yield bool;
+                ObjectNode root = MAPPER.createObjectNode();
+                ObjectNode bool = root.putObject("bool");
+                bool.putArray("must_not").add(term(field, value, descriptor.caseInsensitive()));
+                yield root;
             }
             case CONTAINS -> {
                 ObjectNode root = MAPPER.createObjectNode();
-                root.putObject("match").put(field, value);
+                ObjectNode wildcard = root.putObject("wildcard").putObject(field);
+                wildcard.put("value", "*" + escapeWildcard(value) + "*");
+                wildcard.put("case_insensitive", descriptor.caseInsensitive());
                 yield root;
             }
             case GE, GT, LE, LT -> {
@@ -147,6 +157,18 @@ public final class OpenSearchQueryCompiler {
                 yield root;
             }
         };
+    }
+
+    private static ObjectNode term(String field, String value, boolean caseInsensitive) {
+        ObjectNode root = MAPPER.createObjectNode();
+        ObjectNode term = root.putObject("term").putObject(field);
+        term.put("value", value);
+        if (caseInsensitive) term.put("case_insensitive", true);
+        return root;
+    }
+
+    private static String escapeWildcard(String value) {
+        return value.replace("\\", "\\\\").replace("*", "\\*").replace("?", "\\?");
     }
 
     private static ObjectNode severityRange(FilterExpression.Comparison comparison) {
@@ -195,22 +217,7 @@ public final class OpenSearchQueryCompiler {
 
     /** Resolves user-visible SPL field names to the explicit event mapping. */
     public static String fieldPath(String field, boolean exact) {
-        if (field == null || !field.matches("[A-Za-z_][A-Za-z0-9_.-]*")) {
-            throw new IllegalArgumentException("invalid query field: " + field);
-        }
-        String path;
-        if (field.equals("eventId") || field.equals("timestamp") || field.equals("source")
-                || field.equals("host") || field.equals("severity") || field.equals("msg")
-                || field.startsWith("ecs.")) path = field;
-        else path = "fields." + field;
-        // The canonical event mapping declares these fields as keyword values
-        // directly (there is no implicit `.keyword` multi-field). Dynamic
-        // fields under `fields` may still be mapped as text with a keyword
-        // sub-field, hence the suffix is only added for those paths.
-        if (!exact || path.equals("timestamp") || path.equals("msg")
-                || path.equals("eventId") || path.equals("source")
-                || path.equals("host") || path.equals("severity")
-                || path.startsWith("ecs.")) return path;
-        return path.endsWith(".keyword") ? path : path + ".keyword";
+        FieldDescriptor descriptor = FIELD_CATALOG.resolve(field);
+        return exact ? descriptor.exactPath() : descriptor.searchPath();
     }
 }

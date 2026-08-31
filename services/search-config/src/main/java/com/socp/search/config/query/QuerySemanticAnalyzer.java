@@ -77,8 +77,14 @@ public final class QuerySemanticAnalyzer {
         if (aggregations == 1 && !isAggregation(pipeline.getLast())) {
             fail("an aggregation must be the final pipeline command", 0);
         }
-        if (cursor != null && !cursor.isBlank() && (aggregations > 0 || sorts > 0)) {
-            fail("cursor paging does not support aggregation or explicit sort", 0);
+        if (cursor != null && !cursor.isBlank() && (aggregations > 0 || sorts > 0 || limits > 0)) {
+            fail("cursor paging does not support aggregation, explicit sort, head, or limit", 0);
+        }
+
+        int sortIndex = indexOf(pipeline, PipelineCommand.Sort.class);
+        int limitIndex = firstLimitIndex(pipeline);
+        if (sortIndex >= 0 && limitIndex >= 0 && sortIndex > limitIndex) {
+            fail("sort must appear before head or limit", 0);
         }
 
         for (PipelineCommand command : pipeline) {
@@ -110,6 +116,21 @@ public final class QuerySemanticAnalyzer {
     private static boolean isAggregation(PipelineCommand command) {
         return command instanceof PipelineCommand.Top || command instanceof PipelineCommand.CountBy
                 || command instanceof PipelineCommand.Timechart;
+    }
+
+    private static int indexOf(List<PipelineCommand> pipeline, Class<?> type) {
+        for (int i = 0; i < pipeline.size(); i++) {
+            if (type.isInstance(pipeline.get(i))) return i;
+        }
+        return -1;
+    }
+
+    private static int firstLimitIndex(List<PipelineCommand> pipeline) {
+        for (int i = 0; i < pipeline.size(); i++) {
+            if (pipeline.get(i) instanceof PipelineCommand.Head
+                    || pipeline.get(i) instanceof PipelineCommand.Limit) return i;
+        }
+        return -1;
     }
 
     private static void validateTypedLiteral(FieldDescriptor field, String value, int position) {

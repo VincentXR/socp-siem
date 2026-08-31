@@ -5,6 +5,7 @@ import com.socp.search.config.service.SplEngine;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -65,11 +66,16 @@ class SplQuerySemanticsTest {
     void compilerAlwaysAddsTenantFilterAndUsesTypedDsl() {
         SearchQueryAst ast = parser.parse("source=auth severity>=HIGH | count by src_ip");
 
-        String dsl = compiler.compile(ast, "tenant-a").toString();
+        var compiled = compiler.compile(ast, "tenant-a");
+        String dsl = compiled.toString();
 
         assertThat(dsl).contains("tenantId", "fields.tenant_id.keyword", "\"severity\"", "count_by", "terms");
         assertThat(dsl).doesNotContain("query_string");
         assertThat(dsl).contains("tenant-a");
+        assertThat(compiled.path("query").path("bool").path("filter").get(0).has("bool")).isTrue();
+        assertThat(compiled.path("query").path("bool").path("must").has("bool")).isTrue();
+        assertThat(compiler.compile(parser.parse("*"), "tenant-a")
+                .path("query").path("bool").path("must").has("match_all")).isTrue();
     }
 
     @Test
@@ -102,8 +108,8 @@ class SplQuerySemanticsTest {
         SplEngine.QueryResult pageOne = executor.execute(first, events);
         SplEngine.QueryResult pageTwo = executor.execute(first.withPage(2, pageOne.nextCursor()), events);
 
-        assertThat(pageOne.events()).extracting(SearchEvent::eventId).containsExactly("3", "2");
-        assertThat(pageTwo.events()).extracting(SearchEvent::eventId).containsExactly("1");
+        assertThat(pageOne.events()).extracting(SearchEvent::eventId).containsExactly("1", "2");
+        assertThat(pageTwo.events()).extracting(SearchEvent::eventId).containsExactly("3");
     }
 
     @Test
@@ -121,9 +127,9 @@ class SplQuerySemanticsTest {
 
     @Test
     void fieldMappingKeepsCanonicalKeywordFieldsUntouched() {
-        assertThat(OpenSearchQueryCompiler.fieldPath("source", true)).isEqualTo("source");
+        assertThat(OpenSearchQueryCompiler.fieldPath("source", true)).isEqualTo("source.ci");
         assertThat(OpenSearchQueryCompiler.fieldPath("severity", true)).isEqualTo("severity");
-        assertThat(OpenSearchQueryCompiler.fieldPath("src_ip", true)).isEqualTo("fields.src_ip.keyword");
+        assertThat(OpenSearchQueryCompiler.fieldPath("src_ip", true)).isEqualTo("fields.src_ip");
     }
 
     @Test
@@ -151,11 +157,17 @@ class SplQuerySemanticsTest {
                         + "severity<HIGH | sort source asc | head 4")
                 .withPage(0 + 20, null);
         String dsl = compiler.compile(ast, "tenant-a", 20).toString();
-        assertThat(dsl).contains("must_not", "match", "range").doesNotContain("query_string");
+        assertThat(dsl).contains("must_not", "wildcard", "range").doesNotContain("query_string");
         assertThat(compiler.compile(parser.parse("* | top src_ip 3"), "tenant-a").toString())
-                .contains("top");
+                .contains("top", "\"order\":{\"_count\":\"desc\"}");
+        assertThat(compiler.compile(parser.parse("* | count by source"), "tenant-a").toString())
+                .contains("\"size\":1000", "source.ci");
+        assertThat(compiler.compile(parser.parse("* | timechart"), "tenant-a").toString())
+                .contains("\"min_doc_count\":1");
 
-        SearchQueryAst cursorQuery = parser.parse("*").withPage(10, LocalQueryExecutor.encodeCursor(event("cursor", "10.0.0.1", "INFO")));
+        SearchQueryAst cursorBase = parser.parse("*");
+        SearchQueryAst cursorQuery = cursorBase.withPage(10,
+                QueryCursorCodec.encode(cursorBase, event("cursor", "10.0.0.1", "INFO")));
         assertThat(compiler.compile(cursorQuery, "tenant-a").path("search_after")).isNotEmpty();
         assertThatCode(() -> compiler.compile(parser.parse("*"), "tenant-a", 1))
                 .doesNotThrowAnyException();
@@ -204,7 +216,8 @@ class SplQuerySemanticsTest {
         assertThatThrownBy(() -> compiler.compile(parser.parse("*").withPage(5_001, null), "tenant-a"))
                 .isInstanceOf(SplSemanticException.class)
                 .hasMessageContaining("page size");
-        String cursor = LocalQueryExecutor.encodeCursor(event("cursor", "10.0.0.1", "INFO"));
+        SearchQueryAst cursorBase = parser.parse("*");
+        String cursor = QueryCursorCodec.encode(cursorBase, event("cursor", "10.0.0.1", "INFO"));
         assertThatThrownBy(() -> executor.execute(
                 parser.parse("* | sort timestamp").withPage(10, cursor), List.of()))
                 .isInstanceOf(SplSemanticException.class)
@@ -234,8 +247,70 @@ class SplQuerySemanticsTest {
         assertThat(executor.execute(parser.parse("*"), null).events()).isEmpty();
         assertThatCode(() -> executor.execute(parser.parse("*"), events).events())
                 .doesNotThrowAnyException();
-        assertThatThrownBy(() -> LocalQueryExecutor.decodeCursor("not-a-cursor"))
+        assertThatThrownBy(() -> QueryCursorCodec.decode("not-a-cursor", parser.parse("*")))
                 .isInstanceOf(SplParseException.class);
+    }
+
+    @Test
+    void alignsTypedFiltersCasePolicyMissingBucketsAndDefaultSort() {
+        List<SearchEvent> events = List.of(
+                new SearchEvent("B", Instant.parse("2026-08-02T00:00:00Z"), "AUTH", "h1", "HIGH",
+                        "User *BLOCKED?", Map.of("src_ip", "10.0.0.10", "count", "10"), Map.of()),
+                new SearchEvent("A", Instant.parse("2026-08-02T00:00:00Z"), "auth", "h2", "LOW",
+                        "allowed", Map.of("src_ip", "10.0.0.2", "count", "2"), Map.of()),
+                new SearchEvent("C", Instant.parse("2026-08-01T00:00:00Z"), "dns", "h3", "CRITICAL",
+                        "blocked", Map.of(), Map.of()));
+
+        assertThat(executor.execute(parser.parse("source=auth"), events).events())
+                .extracting(SearchEvent::eventId).containsExactly("A", "B");
+        assertThat(executor.execute(parser.parse("eventId=a"), events).events()).isEmpty();
+        assertThat(executor.execute(parser.parse("msg contains \"*blocked?\""), events).events())
+                .extracting(SearchEvent::eventId).containsExactly("B");
+        assertThat(executor.execute(parser.parse("timestamp>=2026-08-02T00:00:00Z"), events).events())
+                .extracting(SearchEvent::eventId).containsExactly("A", "B");
+        assertThat(executor.execute(parser.parse("count>2"), events).events())
+                .extracting(SearchEvent::eventId).containsExactly("B");
+        assertThat(executor.execute(parser.parse("src_ip>10.0.0.2"), events).events())
+                .extracting(SearchEvent::eventId).containsExactly("B");
+        assertThat(executor.execute(parser.parse("severity>=HIGH"), events).events())
+                .extracting(SearchEvent::eventId).containsExactly("B", "C");
+        assertThat(executor.execute(parser.parse("* | count by src_ip"), events).stat().rows())
+                .extracting(row -> row.get("key")).doesNotContain("null");
+
+        String containsDsl = compiler.compile(parser.parse("msg contains \"*blocked?\""), "tenant-a").toString();
+        assertThat(containsDsl).contains("msg.exact", "case_insensitive", "\\\\*blocked\\\\?");
+        assertThat(compiler.compile(parser.parse("*"), "tenant-a").path("sort").toString())
+                .contains("timestamp", "eventId").doesNotContain("_id");
+    }
+
+    @Test
+    void bindsCursorToQueryAndRejectsTampering() {
+        SearchQueryAst sourceQuery = parser.parse("source=auth");
+        String cursor = QueryCursorCodec.encode(sourceQuery, event("cursor", "10.0.0.1", "INFO"));
+
+        assertThatThrownBy(() -> executor.execute(
+                parser.parse("source=dns").withPage(10, cursor), List.of()))
+                .isInstanceOf(SplParseException.class)
+                .hasMessageContaining("cursor");
+        String tampered = cursor.substring(0, cursor.length() - 1)
+                + (cursor.endsWith("A") ? "B" : "A");
+        assertThatThrownBy(() -> QueryCursorCodec.decode(tampered, sourceQuery))
+                .isInstanceOf(SplParseException.class);
+    }
+
+    @Test
+    void countByCapsBucketsAndReportsTruncation() {
+        List<SearchEvent> events = new ArrayList<>();
+        for (int i = 0; i < 1_005; i++) {
+            events.add(new SearchEvent("e-" + i, Instant.parse("2026-08-01T00:00:00Z"),
+                    "s-" + i, "host", "INFO", "event", Map.of(), Map.of()));
+        }
+
+        SplEngine.QueryResult.Stat stat = executor.execute(parser.parse("* | count by source"), events).stat();
+
+        assertThat(stat.rows()).hasSize(1_000);
+        assertThat(stat.approximate()).isTrue();
+        assertThat(stat.sumOtherDocCount()).isEqualTo(5);
     }
 
     private static SearchEvent event(String id, String ip, String severity) {
