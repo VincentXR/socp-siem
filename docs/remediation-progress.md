@@ -94,7 +94,19 @@ Baseline: `6aae664` on 2026-08-31.
     tests; `python -m py_compile build/benchmark-pipeline.py`, benchmark
     reconciliation shape assertion, `python build/verify-event-schema.py`,
     `python build/verify-style.py`, and `git diff --check`.
-- [ ] P0-C-2 Indexer failure and reconciliation evidence.
+- [x] P0-C-2 Indexer failure and reconciliation evidence.
+  - A real Kafka/OpenSearch/DLQ test reconciles three committed source offsets
+    as two unique indexed documents plus one broker-acknowledged permanent
+    failure envelope, while asserting the corresponding bounded-label metrics.
+  - Fault tests cover write-acknowledged-before-commit replay, DLQ broker
+    unavailability, a real proxy-generated OpenSearch 503, and a real Kafka
+    commit failure after OpenSearch acknowledgement.
+  - The failure suite is part of the opt-in CI integration job rather than an
+    advisory local-only test.
+  - Validation: focused `OsIndexerFailureContainerTest` (5 tests, no skips),
+    exact CI integration selection (17 tests across Kafka, OpenSearch, and
+    PostgreSQL, no skips), `python build/verify-event-schema.py`,
+    `python build/verify-style.py`, and `git diff --check`.
 - [ ] P0-D Current-commit stable performance baseline.
 
 ## P1

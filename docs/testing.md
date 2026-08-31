@@ -95,12 +95,15 @@ python build/benchmark-pipeline.py --mode e2e --profile realistic --count 100 --
   --output .cache/benchmark/e2e-100.json
 ```
 
-The opt-in Testcontainers contract suite is in `platform/socp-test`. It proves
-the PostgreSQL uniqueness boundary, Kafka commit/replay semantics, ClickHouse
-logical uniqueness under duplicate inserts, and OpenSearch deterministic IDs
-plus partial bulk failure. Set `SOCP_TESTCONTAINERS=true` when Docker is
-available; CI enables it, while local runs without Docker skip only these
-integration tests.
+The opt-in Testcontainers contract suite is in `platform/socp-test`, with the
+Kafka-to-OpenSearch failure suite owned by `services/search-config`. Together
+they prove the PostgreSQL uniqueness boundary, Kafka commit/replay semantics,
+ClickHouse logical uniqueness under duplicate inserts, OpenSearch deterministic
+IDs and partial bulk failure, DLQ acknowledgement boundaries, retryable 503,
+and commit failure after write acknowledgement. Set `SOCP_TESTCONTAINERS=true`
+when Docker is available; CI enables it, while local runs without Docker skip
+only these integration tests. See [the failure matrix](chaos/README.md) for the
+focused indexer command and reconciliation formula.
 
 The pipeline check confirms canonical event acceptance, Kafka delivery,
 Detection, PostgreSQL alert persistence, OpenSearch indexing, ClickHouse

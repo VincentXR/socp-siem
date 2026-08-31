@@ -84,6 +84,36 @@ Additional scenarios should record a before/after snapshot and an observable
 invariant. A restart alone is not a chaos test unless loss, duplication, lag,
 or downstream recovery is checked.
 
+## Kafka-to-OpenSearch indexer failure evidence
+
+The indexer's destructive failure boundaries run as a Docker-backed JUnit
+suite so the exact Kafka offsets, OpenSearch item responses, DLQ records, and
+commit outcome are asserted in one process:
+
+```bash
+SOCP_TESTCONTAINERS=true bash build/mvnw.sh -pl services/search-config -am test \
+  -Dsurefire.failIfNoSpecifiedTests=false -Dtest=OsIndexerFailureContainerTest
+```
+
+`OsIndexerFailureContainerTest` proves all of the following against Kafka
+7.6.1 and OpenSearch 2.11.1:
+
+- a real mixed bulk response indexes two valid documents, sends the mapping
+  rejection to a broker-acknowledged diagnostic DLQ, commits three source
+  offsets, and satisfies `3 = 2 indexed unique docs + 1 DLQ source offset`;
+- closing after the OpenSearch acknowledgement but before commit causes Kafka
+  replay, while the tenant-scoped stable document ID keeps one unique document;
+- an unavailable DLQ broker leaves the rejected source offset uncommitted;
+- a real broker shutdown after the write acknowledgement increments
+  `commit_failed`, records no commit success, and leaves the indexed document
+  available for replay;
+- an Nginx fault proxy in front of the real OpenSearch node returns HTTP 503,
+  which remains retryable and never becomes a permanent DLQ disposition.
+
+This suite is failure-semantic evidence, not a throughput or availability
+claim. Random topic/group suffixes and isolated daily indices prevent historic
+test data from being mistaken for loss or duplication.
+
 ## Sanitized reference result
 
 The 2026-08-20 local verification used six partitions and three Detection

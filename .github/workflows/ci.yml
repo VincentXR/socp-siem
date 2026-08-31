@@ -176,7 +176,7 @@ jobs:
           -pl platform/socp-test,platform/socp-tenant,services/incident-web,services/search-config
           -am test
           -Dsurefire.failIfNoSpecifiedTests=false
-          -Dtest=MiddlewareSemanticsContainerTest,ContainerIdempotencyContractTest,TenantRlsPostgresTest,CaseTimelinePostgresTest,OsEventReaderOpenSearchContainerTest
+          -Dtest=MiddlewareSemanticsContainerTest,ContainerIdempotencyContractTest,TenantRlsPostgresTest,CaseTimelinePostgresTest,OsEventReaderOpenSearchContainerTest,OsIndexerFailureContainerTest
 
       - name: Upload middleware test reports
         if: always()
