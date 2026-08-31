@@ -100,9 +100,10 @@ grow continuously during the interval; final lag must still drain to zero.
 
 ## Repeated 50k baseline
 
-Use the series runner to separate a warm-up result from a stable single-
-instance baseline. It keeps one JSON report plus stdout/stderr and per-round
-reports; a failed round also retains the benchmark's `.failed.json` sidecar.
+Use the series runner to separate an excluded 5K-event warm-up result from a
+stable single-instance baseline. It keeps one JSON report plus stdout/stderr,
+the warm-up report, and per-round reports; a failed run also retains the
+benchmark's `.failed.json` sidecar. `--warmup-count` changes the warm-up size.
 
 ```bash
 python build/benchmark-series.py --rounds 3 --count 50000 --batch-size 500 \
@@ -120,10 +121,11 @@ python build/benchmark-series.py --rounds 3 --count 50000 --batch-size 500 \
   --output .cache/benchmark/bulk-50k-1x-series.json
 ```
 
-`stableBaseline.throughputStable` is true only when every round passes and the
-slowest successful round stays within the configured `--tolerance` (15% by
-default) of the first successful round. Repeat with `--rounds 5` for a release
-candidate, and use `--profile alert-heavy` for the alert-heavy curve. Set
+`stableBaseline.throughputStable` is true only when every round passes on one
+commit, the slowest successful round stays within the configured `--tolerance`
+(15% by default) of the first successful round, and throughput does not decline
+monotonically across three or more rounds. Repeat with `--rounds 5` for a
+release candidate, and use `--profile alert-heavy` for the alert-heavy curve. Set
 `BENCH_TOPIC` when the Kafka topic is not `socp-events`; the lag probe now uses
 the same topic as the application.
 

@@ -58,13 +58,19 @@ def round_output(base: Path, number: int) -> Path:
     return base.with_name(f"{base.stem}.round{number}{base.suffix or '.json'}")
 
 
-def run_round(args: argparse.Namespace, number: int, output: Path) -> dict:
+def warmup_output(base: Path) -> Path:
+    return base.with_name(f"{base.stem}.warmup{base.suffix or '.json'}")
+
+
+def run_round(args: argparse.Namespace, number: int | str, output: Path,
+              event_count: int | None = None) -> dict:
+    requested = args.count if event_count is None else event_count
     command = [
         sys.executable,
         str(ROOT / "build" / "benchmark-pipeline.py"),
         "--mode", args.mode,
         "--profile", args.profile,
-        "--count", str(args.count),
+        "--count", str(requested),
         "--batch-size", str(args.batch_size),
         "--alert-every", str(args.alert_every),
         "--instances", str(args.instances),
@@ -133,8 +139,19 @@ def build_series_report(args: argparse.Namespace, rounds: list[dict]) -> dict:
     minimum = min(values, default=0.0)
     maximum_drop = max(0.0, (first - minimum) / first) if first else 1.0
     tolerance = max(0.0, min(0.9, args.tolerance))
-    return {
-        "status": "passed" if len(successful) == len(rounds) else "failed",
+    monotonic_decline = len(values) >= 3 and all(
+        later < earlier for earlier, later in zip(values, values[1:]))
+    commits = {
+        item.get("machine", {}).get("gitCommit")
+        for item in rounds
+        if item.get("machine", {}).get("gitCommit")
+    }
+    commit_consistent = len(commits) == 1
+    throughput_stable = bool(values) and len(successful) == len(rounds) \
+        and maximum_drop <= tolerance and not monotonic_decline \
+        and commit_consistent
+    report = {
+        "status": "passed" if throughput_stable else "failed",
         "recordedAt": datetime.now(timezone.utc).isoformat(),
         "mode": args.mode,
         "profile": args.profile,
@@ -144,6 +161,8 @@ def build_series_report(args: argparse.Namespace, rounds: list[dict]) -> dict:
         "roundsCompleted": len(rounds),
         "instances": args.instances,
         "rules": args.rules,
+        "gitCommits": sorted(commits),
+        "commitConsistent": commit_consistent,
         "tolerance": tolerance,
         "roundReports": rounds,
         "stableBaseline": {
@@ -158,18 +177,22 @@ def build_series_report(args: argparse.Namespace, rounds: list[dict]) -> dict:
                 "median": round(statistics.median(values), 3) if values else 0,
             },
             "maxRelativeDropFromFirst": round(maximum_drop, 4),
-            "throughputStable": bool(values) and len(successful) == len(rounds)
-                                and maximum_drop <= tolerance,
+            "sustainedMonotonicDecline": monotonic_decline,
+            "throughputStable": throughput_stable,
             "acceptance": "all rounds pass and minimum throughput stays within "
-                          f"{tolerance:.0%} of the first successful round",
+                          f"{tolerance:.0%} of the first successful round, with "
+                          "one commit and no sustained monotonic decline",
         },
     }
+    return report
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="SOCP repeated benchmark baseline")
     parser.add_argument("--rounds", type=int, default=3,
                         help="number of identical rounds (3-5 recommended)")
+    parser.add_argument("--warmup-count", type=int, default=5_000,
+                        help="events in the excluded warm-up run")
     parser.add_argument("--count", type=int, default=50_000)
     parser.add_argument("--batch-size", type=int, default=500)
     parser.add_argument("--mode", choices=("bulk", "e2e"), default="e2e")
@@ -187,8 +210,9 @@ def main() -> int:
     args = parser.parse_args()
     if not 1 <= args.rounds <= 10:
         parser.error("--rounds must be between 1 and 10")
-    if args.count <= 0 or args.batch_size <= 0 or args.alert_every <= 0:
-        parser.error("--count, --batch-size, and --alert-every must be positive")
+    if args.count <= 0 or args.warmup_count <= 0 or args.batch_size <= 0 \
+            or args.alert_every <= 0:
+        parser.error("--count, --warmup-count, --batch-size, and --alert-every must be positive")
     if args.instances <= 0:
         parser.error("--instances must be positive")
 
@@ -200,6 +224,10 @@ def main() -> int:
     args.rules = effective_rules
 
     final_path = Path(args.output)
+    warmup_path = warmup_output(final_path)
+    warmup = run_round(args, "warmup", warmup_path, args.warmup_count)
+    print("warm-up: status=%s throughput=%.2f eps" % (
+        warmup.get("status", "failed"), throughput(warmup, args.mode)))
     rounds: list[dict] = []
     for number in range(1, args.rounds + 1):
         report_path = round_output(final_path, number)
@@ -210,6 +238,14 @@ def main() -> int:
             throughput(report, args.mode)))
 
     report = build_series_report(args, rounds)
+    report["warmup"] = {
+        "requestedEvents": args.warmup_count,
+        "excludedFromStableBaseline": True,
+        "report": warmup,
+    }
+    if warmup.get("status") != "passed":
+        report["status"] = "failed"
+        report["stableBaseline"]["throughputStable"] = False
     final_path.parent.mkdir(parents=True, exist_ok=True)
     final_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n",
                           encoding="utf-8")

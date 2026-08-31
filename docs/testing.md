@@ -124,9 +124,10 @@ across all Detection instances. `--offered-eps` plus `--duration` runs the
 steady-state lag check. See the [benchmark contract](benchmark/README.md).
 
 For repeated baseline evidence, use `build/benchmark-series.py`; it runs the
-same workload three to five times, writes per-round reports and process logs,
-and fails unless throughput remains within the configured degradation
-tolerance. If a single round aborts, `build/benchmark-pipeline.py` writes a
+same workload once as an excluded warm-up and then three to five measured
+times, writes per-run reports and process logs, and fails unless every round
+uses one commit, throughput remains within the configured degradation
+tolerance, and no sustained monotonic decline is present. If a single round aborts, `build/benchmark-pipeline.py` writes a
 `.failed.json` sidecar containing the exception and traceback instead of
 silently losing the evidence.
 
