@@ -4,6 +4,7 @@ import com.socp.rule.config.Rules;
 import com.socp.rule.engine.AlertSink;
 import com.socp.rule.engine.EventAlertSink;
 import com.socp.rule.engine.RuleEngine;
+import com.socp.rule.engine.RuleExecutionScope;
 import com.socp.rule.engine.Suppressor;
 import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
@@ -16,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -187,6 +189,36 @@ class RuleEngineTest {
                     .get(3, TimeUnit.SECONDS);
             assertEquals(1, results.size());
             assertTrue(results.get(0).isEmpty());
+        }
+    }
+
+    @Test
+    void asynchronousWorkerInstallsAndClosesEventExecutionScope() throws Exception {
+        ThreadLocal<String> context = new ThreadLocal<>();
+        AtomicBoolean closed = new AtomicBoolean();
+        EventAlertSink sink = new EventAlertSink() {
+            @Override
+            public void publish(SecurityEvent event, List<Alert> alerts) {
+                assertEquals(event.id(), context.get());
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        RuleExecutionScope scope = event -> {
+            context.set(event.id());
+            return () -> {
+                context.remove();
+                closed.set(true);
+            };
+        };
+        try (RuleEngine engine = new RuleEngine(
+                Rules.defaultRules(), List.of(sink), null, null, scope)) {
+            engine.start();
+            engine.ingestAndAwait(ev("system", "heartbeat", "10.0.0.101", null))
+                    .get(3, TimeUnit.SECONDS);
+            assertTrue(closed.get());
         }
     }
 

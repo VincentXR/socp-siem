@@ -139,7 +139,13 @@ public class DetectEngineService {
                 .filter(spec -> spec.enabled)
                 .map(RuleSpec::toRule)
                 .toList();
-        RuleEngine engine = new RuleEngine(rules, List.of(sink), suppressor, processingObserver);
+        RuleEngine engine = new RuleEngine(
+                rules, List.of(sink), suppressor, processingObserver,
+                event -> {
+                    var tenantScope = com.socp.platform.tenant.context.TenantContext.open(
+                            event.requireTenantId());
+                    return tenantScope::close;
+                });
         try {
             // The journal itself clamps this to its configured retention. 24h
             // covers the bundled UEBA baselines while keeping restart bounded.

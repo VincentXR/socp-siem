@@ -39,6 +39,7 @@ public final class RuleEngine implements AutoCloseable {
     private final List<AlertSink> sinks;
     private final Suppressor suppressor;
     private final RuleProcessingObserver observer;
+    private final RuleExecutionScope executionScope;
     private final BlockingQueue<WorkItem> queue = new ArrayBlockingQueue<>(100_000);
     private final ReentrantReadWriteLock lifecycle = new ReentrantReadWriteLock();
     private volatile boolean running = true;
@@ -66,10 +67,16 @@ public final class RuleEngine implements AutoCloseable {
 
     public RuleEngine(List<Rule> rules, List<AlertSink> sinks, Suppressor suppressor,
                       RuleProcessingObserver observer) {
+        this(rules, sinks, suppressor, observer, RuleExecutionScope.NOOP);
+    }
+
+    public RuleEngine(List<Rule> rules, List<AlertSink> sinks, Suppressor suppressor,
+                      RuleProcessingObserver observer, RuleExecutionScope executionScope) {
         this.rulesRef = new AtomicReference<>(List.copyOf(rules));
         this.sinks = List.copyOf(sinks);
         this.suppressor = suppressor;
         this.observer = observer == null ? RuleProcessingObserver.NOOP : observer;
+        this.executionScope = executionScope == null ? RuleExecutionScope.NOOP : executionScope;
     }
 
     public void start() {
@@ -122,6 +129,12 @@ public final class RuleEngine implements AutoCloseable {
 
     private void process(WorkItem item) {
         SecurityEvent event = item.event();
+        try (RuleExecutionScope.Scope ignored = executionScope.open(event)) {
+            processInScope(item, event);
+        }
+    }
+
+    private void processInScope(WorkItem item, SecurityEvent event) {
         eventCount.incrementAndGet();
         List<Rule> rules = rulesRef.get();
         for (Rule rule : rules) rule.accept(event);

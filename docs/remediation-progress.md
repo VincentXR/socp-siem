@@ -118,6 +118,9 @@ Baseline: `6aae664` on 2026-08-31.
   - [x] P0-D-2 Align E2E benchmark authentication with the direct registered
     collector data-plane boundary while retaining user JWTs only for control-
     plane reads; cover both request paths with CI-run Python unit tests.
+  - [x] P0-D-3 Propagate the canonical event tenant into the asynchronous
+    RuleEngine worker for evaluation and durable sinks, with an explicit
+    closeable execution-scope contract and regression test.
 
 ## P1
 
