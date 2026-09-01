@@ -12,6 +12,8 @@ import re
 import sys
 from pathlib import Path
 
+from runtime_topology import load_topology
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCKERFILE = ROOT / "deploy" / "docker" / "Dockerfile.jvm"
@@ -30,8 +32,21 @@ REQUIRED_K8S = {
 }
 
 
+def runtime_unit_membership() -> dict[str, str]:
+    membership: dict[str, str] = {}
+    for unit in load_topology().get("units", []):
+        if not isinstance(unit, dict):
+            continue
+        name = unit.get("name")
+        for member in unit.get("members", []):
+            if isinstance(name, str) and isinstance(member, str):
+                membership[member] = name
+    return membership
+
+
 def main() -> int:
     errors: list[str] = []
+    target_units = runtime_unit_membership()
     if not DOCKERFILE.is_file():
         errors.append("missing deploy/docker/Dockerfile.jvm")
     else:
@@ -72,6 +87,26 @@ def main() -> int:
             for label, pattern in checks.items():
                 if not re.search(pattern, text):
                     errors.append(f"{path.relative_to(ROOT)} lacks {label}")
+            workload = path.stem
+            expected_unit = target_units.get(workload)
+            actual_units = re.findall(
+                r"^\s*socp\.io/runtime-unit:\s*([a-z0-9-]+)\s*$",
+                text,
+                re.MULTILINE,
+            )
+            if expected_unit is None:
+                errors.append(f"{path.relative_to(ROOT)} is not assigned to a target runtime unit")
+            elif actual_units != [expected_unit, expected_unit]:
+                errors.append(
+                    f"{path.relative_to(ROOT)} must declare socp.io/runtime-unit="
+                    f"{expected_unit} on Deployment and Pod metadata"
+                )
+            selector = re.search(r"^  selector:\s*$([\s\S]*?)^  template:\s*$",
+                                 text, re.MULTILINE)
+            if selector and "socp.io/runtime-unit" in selector.group(1):
+                errors.append(
+                    f"{path.relative_to(ROOT)} runtime-unit must not change the immutable selector"
+                )
             if path.name in {"search-config.yaml", "detect-web.yaml", "alert-web.yaml"}:
                 if "SOCP_HEALTH_REQUIRED_ENDPOINTS" not in text:
                     errors.append(f"{path.relative_to(ROOT)} lacks dependency-aware readiness configuration")
@@ -125,7 +160,10 @@ def main() -> int:
         for error in errors:
             print(f"[FAIL] {error}", file=sys.stderr)
         return 1
-    print("Production deployment contract passed (digest images, non-root pods, probes, resources)")
+    print(
+        "Production deployment contract passed "
+        "(runtime units, digest images, non-root pods, probes, resources)"
+    )
     return 0
 
 

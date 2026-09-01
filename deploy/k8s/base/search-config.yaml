@@ -3,9 +3,10 @@ kind: Deployment
 metadata:
   name: search-config
   namespace: socp-system
-  labels: &search-labels
+  labels:
     app.kubernetes.io/name: search-config
     app.kubernetes.io/part-of: socp-siem
+    socp.io/runtime-unit: ingest-search
 spec:
   replicas: 2
   revisionHistoryLimit: 5
@@ -15,10 +16,15 @@ spec:
       maxUnavailable: 0
       maxSurge: 1
   selector:
-    matchLabels: *search-labels
+    matchLabels:
+      app.kubernetes.io/name: search-config
+      app.kubernetes.io/part-of: socp-siem
   template:
     metadata:
-      labels: *search-labels
+      labels:
+        app.kubernetes.io/name: search-config
+        app.kubernetes.io/part-of: socp-siem
+        socp.io/runtime-unit: ingest-search
     spec:
       serviceAccountName: socp-service
       terminationGracePeriodSeconds: 45

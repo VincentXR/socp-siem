@@ -167,6 +167,17 @@ build/                    startup, verification, benchmark, chaos, demos
 docs/                     architecture, operating guides, tests, and ADRs
 ```
 
+The 17 executable service modules currently run as 15 compatibility
+processes, while the reviewed target is six deployment units. Verify that
+these two views have not drifted with:
+
+```bash
+python build/runtime-topology.py --check
+```
+
+The command validates `build/runtime-topology.json`; it does not claim that
+the aggregate applications have already replaced the current launchers.
+
 ## Documentation
 
 - [Architecture](docs/architecture.md)

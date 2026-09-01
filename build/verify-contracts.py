@@ -7,6 +7,8 @@ from pathlib import Path
 import re
 import sys
 
+from runtime_topology import topology_report
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -65,12 +67,18 @@ def main() -> int:
     if health_names != set(services):
         errors.append(f"frontend health registry drift: missing={sorted(set(services) - health_names)} extra={sorted(health_names - set(services))}")
 
+    runtime = topology_report()
+    errors.extend(f"runtime topology: {error}" for error in runtime["errors"])
+
     if errors:
         print("Contract gate failed:", file=sys.stderr)
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         return 1
-    print(f"Contract gate passed: {len(modules)} modules, {len(services)} default processes, {len(route_ids)} gateway routes")
+    print(
+        f"Contract gate passed: {len(modules)} modules, {len(services)} default processes, "
+        f"{runtime['targetDeploymentUnits']} target units, {len(route_ids)} gateway routes"
+    )
     return 0
 
 

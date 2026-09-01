@@ -58,6 +58,25 @@ explicitly for compatibility, but are not part of the default process set.
 Their simulator flags are disabled by the production overlays; production
 collection must come from Agent/Falco/CMDB inputs.
 
+Code-module ownership is deliberately separate from the target runtime shape.
+The executable contract in `build/runtime-topology.json` assigns every current
+default service exactly once to one of six target units:
+
+| Target unit | Current module ownership |
+|---|---|
+| `gateway-ui` | `api-gateway`, `frontend/apps/workbench` |
+| `ingest-search` | `search-config` |
+| `detection` | `detect-web`, `detect-model` |
+| `alert-incident` | `alert-web`, `incident-web` |
+| `response-integration` | `soar-web`, `notify-web`, `asset-web`, `hips-web`, `threat-web`, `attack-web` |
+| `report-ai` | `report-web`, `ai-assistant`, `soc-base` |
+
+`asset-collect` and `hips-collect` are compatibility launchers, not target
+deployment members. Run `python build/runtime-topology.py --check` to verify
+that module, process, compatibility, and target-unit registries still agree.
+The six-unit shape remains a target contract until aggregate applications pass
+the context, API, failure, and capacity gates required by ADR 0004.
+
 ## Platform modules
 
 - `socp-auth`: HMAC/JWKS JWT validation, tenant claim extraction,
@@ -73,7 +92,8 @@ collection must come from Agent/Falco/CMDB inputs.
 - `socp-starter`: explicit servlet-side auto-configuration for the platform
   modules and generated OpenAPI metadata; business applications scan only
   their own domain package.
-- `socp-bom` and `socp-test`: dependency management and shared test support.
+- Root `socp-parent` and `socp-test`: dependency management and shared test
+  support. There is no separately published `socp-bom` module.
 
 ## Middleware and event topics
 

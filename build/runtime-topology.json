@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "status": "contract-only-until-aggregate-apps-pass-integration-tests",
+  "frontend": "frontend/apps/workbench",
+  "compatibilityModules": [
+    "asset-collect",
+    "hips-collect"
+  ],
+  "units": [
+    {
+      "name": "gateway-ui",
+      "members": [
+        "api-gateway",
+        "frontend/apps/workbench"
+      ]
+    },
+    {
+      "name": "ingest-search",
+      "members": [
+        "search-config"
+      ]
+    },
+    {
+      "name": "detection",
+      "members": [
+        "detect-web",
+        "detect-model"
+      ]
+    },
+    {
+      "name": "alert-incident",
+      "members": [
+        "alert-web",
+        "incident-web"
+      ]
+    },
+    {
+      "name": "response-integration",
+      "members": [
+        "soar-web",
+        "notify-web",
+        "asset-web",
+        "hips-web",
+        "threat-web",
+        "attack-web"
+      ]
+    },
+    {
+      "name": "report-ai",
+      "members": [
+        "report-web",
+        "ai-assistant",
+        "soc-base"
+      ]
+    }
+  ]
+}

@@ -3,9 +3,10 @@ kind: Deployment
 metadata:
   name: detect-web
   namespace: socp-system
-  labels: &detect-labels
+  labels:
     app.kubernetes.io/name: detect-web
     app.kubernetes.io/part-of: socp-siem
+    socp.io/runtime-unit: detection
 spec:
   replicas: 3
   revisionHistoryLimit: 5
@@ -15,10 +16,15 @@ spec:
       maxUnavailable: 0
       maxSurge: 1
   selector:
-    matchLabels: *detect-labels
+    matchLabels:
+      app.kubernetes.io/name: detect-web
+      app.kubernetes.io/part-of: socp-siem
   template:
     metadata:
-      labels: *detect-labels
+      labels:
+        app.kubernetes.io/name: detect-web
+        app.kubernetes.io/part-of: socp-siem
+        socp.io/runtime-unit: detection
     spec:
       serviceAccountName: socp-service
       terminationGracePeriodSeconds: 45

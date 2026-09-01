@@ -3,9 +3,10 @@ kind: Deployment
 metadata:
   name: alert-web
   namespace: socp-system
-  labels: &alert-labels
+  labels:
     app.kubernetes.io/name: alert-web
     app.kubernetes.io/part-of: socp-siem
+    socp.io/runtime-unit: alert-incident
 spec:
   replicas: 2
   revisionHistoryLimit: 5
@@ -15,10 +16,15 @@ spec:
       maxUnavailable: 0
       maxSurge: 1
   selector:
-    matchLabels: *alert-labels
+    matchLabels:
+      app.kubernetes.io/name: alert-web
+      app.kubernetes.io/part-of: socp-siem
   template:
     metadata:
-      labels: *alert-labels
+      labels:
+        app.kubernetes.io/name: alert-web
+        app.kubernetes.io/part-of: socp-siem
+        socp.io/runtime-unit: alert-incident
     spec:
       serviceAccountName: socp-service
       terminationGracePeriodSeconds: 45

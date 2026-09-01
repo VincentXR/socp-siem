@@ -66,12 +66,14 @@ or disaster recovery by themselves.
 
 ## Capacity and service grouping
 
-Keep Maven/bounded-context boundaries for ownership and testing, but deploy
-thin control planes in reviewed groups (typically 5–7 JVMs) and keep Gateway,
-Search, Detection, Alert, and reporting/event consumers independently
-scalable. Size Kafka partitions, PostgreSQL pools, ClickHouse parts, and
-OpenSearch shards from measured load; do not infer production capacity from
-the single-node benchmark.
+Keep Maven/bounded-context boundaries for ownership and testing. The reviewed
+target is the six-unit contract in `build/runtime-topology.json`; it is not a
+claim that the current 15-process compatibility topology has already been
+collapsed. Keep Gateway, Search, Detection, Alert, and reporting/event
+consumers independently scalable. Promote an aggregate only after the ADR 0004
+context, transaction, failure, and capacity evidence passes. Size Kafka
+partitions, PostgreSQL pools, ClickHouse parts, and OpenSearch shards from
+measured load; do not infer production capacity from the single-node benchmark.
 
 Real notification/SOAR connectors require vendor sandbox acceptance, timeout
 and idempotency tests, credential rotation, and an operator approval policy

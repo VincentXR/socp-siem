@@ -5,6 +5,11 @@
 API contracts. Images remain digest-addressed; a release process must replace
 the `REPLACE_WITH_RELEASE_DIGEST` placeholders and apply signed manifests.
 
+Every core Deployment carries `socp.io/runtime-unit`, validated against
+`build/runtime-topology.json`. The labels describe ownership in the six-unit
+target; they do not imply that the other members of `alert-incident` or the
+remaining target units are already present in this minimal event-plane base.
+
 The base includes default-deny network policy, non-root/read-only pods,
 dependency-aware probes, preferred zone anti-affinity, CPU-based HPA and
 Prometheus SLO rules. Middleware (Kafka,

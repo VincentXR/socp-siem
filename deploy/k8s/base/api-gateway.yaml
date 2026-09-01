@@ -3,9 +3,10 @@ kind: Deployment
 metadata:
   name: api-gateway
   namespace: socp-system
-  labels: &gateway-labels
+  labels:
     app.kubernetes.io/name: api-gateway
     app.kubernetes.io/part-of: socp-siem
+    socp.io/runtime-unit: gateway-ui
 spec:
   replicas: 2
   revisionHistoryLimit: 5
@@ -15,10 +16,15 @@ spec:
       maxUnavailable: 0
       maxSurge: 1
   selector:
-    matchLabels: *gateway-labels
+    matchLabels:
+      app.kubernetes.io/name: api-gateway
+      app.kubernetes.io/part-of: socp-siem
   template:
     metadata:
-      labels: *gateway-labels
+      labels:
+        app.kubernetes.io/name: api-gateway
+        app.kubernetes.io/part-of: socp-siem
+        socp.io/runtime-unit: gateway-ui
     spec:
       serviceAccountName: socp-service
       terminationGracePeriodSeconds: 30
