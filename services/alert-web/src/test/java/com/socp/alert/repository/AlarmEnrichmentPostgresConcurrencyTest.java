@@ -13,6 +13,8 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -57,6 +59,7 @@ class AlarmEnrichmentPostgresConcurrencyTest {
     }
 
     @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     void staleEntityCommitPreservesEnrichmentAndBothLogicalUpdates() throws Exception {
         String alarmId = inTransaction(() -> {
             TenantContext.set("tenant-a");
@@ -104,7 +107,11 @@ class AlarmEnrichmentPostgresConcurrencyTest {
         assertThat(reloaded.getTiHits()).contains("203.0.113.10");
         assertThat(reloaded.getRiskScore()).isEqualTo(87);
         assertThat(reloaded.getRiskLevel()).isEqualTo("CRITICAL");
-        assertThat(repository.count()).isEqualTo(1);
+        long tenantAlarmCount = inTransaction(() -> {
+            TenantContext.set("tenant-a");
+            return repository.findByTenantId("tenant-a").size();
+        });
+        assertThat(tenantAlarmCount).isEqualTo(1);
     }
 
     private <T> T inTransaction(java.util.concurrent.Callable<T> action) {
