@@ -54,6 +54,18 @@ public class AlertPerformanceMetrics {
                 "outcome", outcome).increment(count);
     }
 
+    /** Records one bounded drain window without creating per-row metric cardinality. */
+    public void outboxDrain(String outbox, int rounds, long durationNanos) {
+        registry.summary("socp.alert.outbox.drain.rounds", "outbox", outbox)
+                .record(Math.max(0, rounds));
+        Timer.builder("socp.alert.outbox.drain.duration")
+                .tag("outbox", outbox)
+                .maximumExpectedValue(Duration.ofMinutes(1))
+                .publishPercentileHistogram()
+                .register(registry)
+                .record(Math.max(0L, durationNanos), TimeUnit.NANOSECONDS);
+    }
+
     private void record(String stage, Duration duration) {
         if (duration == null) return;
         recordNanos(stage, Math.max(0L, duration.toNanos()));

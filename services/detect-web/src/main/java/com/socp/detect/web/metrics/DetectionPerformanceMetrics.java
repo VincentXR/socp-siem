@@ -147,6 +147,17 @@ public class DetectionPerformanceMetrics implements RuleProcessingObserver {
                 "outcome", outcome).increment(count);
     }
 
+    public void outboxDrain(String outbox, int rounds, long durationNanos) {
+        registry.summary("socp.detection.outbox.drain.rounds", "outbox", outbox)
+                .record(Math.max(0, rounds));
+        Timer.builder("socp.detection.outbox.drain.duration")
+                .tag("outbox", outbox)
+                .maximumExpectedValue(Duration.ofMinutes(1))
+                .publishPercentileHistogram()
+                .register(registry)
+                .record(Math.max(0L, durationNanos), TimeUnit.NANOSECONDS);
+    }
+
     @Scheduled(fixedDelayString = "${socp.detect.metrics.timing-cleanup-interval-ms:60000}")
     void cleanupAbandonedTimings() {
         long cutoff = System.nanoTime() - Duration.ofMinutes(10).toNanos();

@@ -12,6 +12,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.client.http.ServiceCall;
 import com.socp.platform.client.service.ThreatClient;
 import com.socp.platform.tenant.context.TenantContext;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,20 +44,27 @@ public class AlarmEnrichmentService {
     private final ThreatClient threatClient;
     private final int concurrency;
     private final int queueCapacity;
+    private final MeterRegistry meterRegistry;
     private volatile ExecutorService executor;
 
     @Autowired
     public AlarmEnrichmentService(AlarmRepository repository, ThreatClient threatClient,
-                                  AlertEnrichmentProperties properties) {
-        this(repository, threatClient, properties.getConcurrency(), properties.getQueueCapacity());
+                                  AlertEnrichmentProperties properties, MeterRegistry meterRegistry) {
+        this(repository, threatClient, properties.getConcurrency(), properties.getQueueCapacity(), meterRegistry);
     }
 
     public AlarmEnrichmentService(AlarmRepository repository, ThreatClient threatClient,
                                   int concurrency, int queueCapacity) {
+        this(repository, threatClient, concurrency, queueCapacity, null);
+    }
+
+    AlarmEnrichmentService(AlarmRepository repository, ThreatClient threatClient,
+                           int concurrency, int queueCapacity, MeterRegistry meterRegistry) {
         this.repository = repository;
         this.threatClient = threatClient;
         this.concurrency = Math.max(1, Math.min(32, concurrency));
         this.queueCapacity = Math.max(100, Math.min(100_000, queueCapacity));
+        this.meterRegistry = meterRegistry;
     }
 
     void scheduleAfterCommit(Alarm alarm) {
@@ -98,20 +106,44 @@ public class AlarmEnrichmentService {
 
     void enrich(Alarm alarm) {
         List<String> candidates = candidates(alarm);
-        if (candidates.isEmpty()) return;
+        if (candidates.isEmpty()) {
+            enrichment("skipped");
+            return;
+        }
         ServiceCall call = threatClient.matchIocs(json(candidates));
         if (call == null || !call.ok()) {
             log.warn("Threat enrichment unavailable alarmId={} reason={}", alarm.getId(),
                     call == null ? "no service result" : call.failureReason());
+            enrichment("failure");
             return;
         }
         ThreatHits hits = threatHits(call.body());
-        if (hits == null) return;
-        alarm.setTiHits(hits.json());
-        var risk = score(alarm, hits.count());
-        alarm.setRiskScore(risk.score());
-        alarm.setRiskLevel(risk.level());
-        repository.save(alarm);
+        if (hits == null) {
+            enrichment("failure");
+            return;
+        }
+
+        // Do not merge the detached Alarm captured by the creating transaction.
+        // A concurrent workflow may have changed status or other analyst-owned
+        // fields after commit. Re-read for scoring, then patch only the three
+        // enrichment columns in one database statement.
+        Alarm latest = repository.findByTenantIdAndId(alarm.getTenantId(), alarm.getId()).orElse(null);
+        if (latest == null) {
+            log.warn("Threat enrichment target no longer exists alarmId={} tenant={}",
+                    alarm.getId(), alarm.getTenantId());
+            enrichment("failure");
+            return;
+        }
+        var risk = score(latest, hits.count());
+        int updated = repository.updateEnrichment(latest.getTenantId(), latest.getId(),
+                hits.json(), risk.score(), risk.level());
+        if (updated != 1) {
+            log.warn("Threat enrichment target changed before update alarmId={} tenant={}",
+                    latest.getId(), latest.getTenantId());
+            enrichment("failure");
+            return;
+        }
+        enrichment("success");
     }
 
     private void submit(Alarm alarm) {
@@ -122,10 +154,18 @@ public class AlarmEnrichmentService {
                 } catch (RuntimeException failure) {
                     log.warn("Threat enrichment failed alarmId={} entity={} reason={}",
                             alarm.getId(), alarm.getEntity(), failure.toString());
+                    enrichment("failure");
                 }
             }));
         } catch (java.util.concurrent.RejectedExecutionException saturated) {
             log.warn("Threat enrichment queue is full; skipping optional enrichment alarmId={}", alarm.getId());
+            enrichment("queue_rejected");
+        }
+    }
+
+    private void enrichment(String outcome) {
+        if (meterRegistry != null) {
+            meterRegistry.counter("socp.alert.enrichment", "outcome", outcome).increment();
         }
     }
 

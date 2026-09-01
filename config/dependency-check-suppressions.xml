@@ -8,8 +8,8 @@
             implementation. The project pins the latest stable Kotlin line (2.4.10)
             and must re-evaluate this narrow suppression when Kotlin 2.4.20 is GA.
         ]]></notes>
-        <cve>CVE-2026-53914</cve>
         <packageUrl regex="true">^pkg:maven/org\.jetbrains\.kotlin/kotlin-(stdlib|stdlib-common|stdlib-jdk7|stdlib-jdk8)@.*$</packageUrl>
+        <cve>CVE-2026-53914</cve>
     </suppress>
     <suppress>
         <notes><![CDATA[
@@ -18,7 +18,7 @@
             artifacts have no JavaScript baggage parser; this is a CPE mapping
             false positive and is limited to these two Java package URLs.
         ]]></notes>
-        <cve>CVE-2026-54285</cve>
         <packageUrl regex="true">^pkg:maven/io\.opentelemetry/opentelemetry-(api|sdk)@.*$</packageUrl>
+        <cve>CVE-2026-54285</cve>
     </suppress>
 </suppressions>

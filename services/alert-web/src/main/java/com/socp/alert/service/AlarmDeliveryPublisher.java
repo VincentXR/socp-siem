@@ -38,6 +38,8 @@ public class AlarmDeliveryPublisher {
     private static final int MAX_ERROR_LENGTH = 1024;
     private static final int DEFAULT_MAX_ATTEMPTS = 12;
     private static final long DEFAULT_RETENTION_MS = Duration.ofDays(30).toMillis();
+    private static final int DEFAULT_MAX_DRAIN_ROUNDS = 64;
+    private static final long DEFAULT_MAX_DRAIN_DURATION_MS = 2_000L;
 
     private final AlarmDeliveryRepository repository;
     private final CkReporter ckReporter;
@@ -49,6 +51,8 @@ public class AlarmDeliveryPublisher {
     private final ExecutorService triggerExecutor;
     private final int maxAttempts;
     private final long retentionMs;
+    private final int maxDrainRounds;
+    private final long maxDrainDurationNanos;
     private Instant nextRecoveryAt = Instant.EPOCH;
 
     @Autowired
@@ -57,13 +61,24 @@ public class AlarmDeliveryPublisher {
                                   SoarClient soarClient, AlertPerformanceMetrics performanceMetrics,
                                   AlertDeliveryProperties properties) {
         this(repository, ckReporter, notifyClient, incidentClient, soarClient, performanceMetrics,
-                properties.getConcurrency(), properties.getMaxAttempts(), properties.getRetentionMs());
+                properties.getConcurrency(), properties.getMaxAttempts(), properties.getRetentionMs(),
+                properties.getMaxDrainRounds(), properties.getMaxDrainDurationMs());
     }
 
     public AlarmDeliveryPublisher(AlarmDeliveryRepository repository, CkReporter ckReporter,
                                   NotifyClient notifyClient, IncidentClient incidentClient,
                                   SoarClient soarClient, AlertPerformanceMetrics performanceMetrics,
                                   int concurrency, int maxAttempts, long retentionMs) {
+        this(repository, ckReporter, notifyClient, incidentClient, soarClient, performanceMetrics,
+                concurrency, maxAttempts, retentionMs,
+                DEFAULT_MAX_DRAIN_ROUNDS, DEFAULT_MAX_DRAIN_DURATION_MS);
+    }
+
+    public AlarmDeliveryPublisher(AlarmDeliveryRepository repository, CkReporter ckReporter,
+                                  NotifyClient notifyClient, IncidentClient incidentClient,
+                                  SoarClient soarClient, AlertPerformanceMetrics performanceMetrics,
+                                  int concurrency, int maxAttempts, long retentionMs,
+                                  int maxDrainRounds, long maxDrainDurationMs) {
         this.repository = repository;
         this.ckReporter = ckReporter;
         this.notifyClient = notifyClient;
@@ -77,6 +92,9 @@ public class AlarmDeliveryPublisher {
                 Thread.ofVirtual().name("alarm-delivery-trigger-", 0).factory());
         this.maxAttempts = Math.max(1, maxAttempts);
         this.retentionMs = Math.max(Duration.ofMinutes(1).toMillis(), retentionMs);
+        this.maxDrainRounds = Math.max(1, Math.min(1_000, maxDrainRounds));
+        this.maxDrainDurationNanos = Duration.ofMillis(
+                Math.max(10L, Math.min(60_000L, maxDrainDurationMs))).toNanos();
     }
 
     private final java.util.concurrent.atomic.AtomicBoolean activeTrigger = new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -106,6 +124,8 @@ public class AlarmDeliveryPublisher {
             initialDelayString = "${socp.alert.delivery.initial-delay-ms:1000}")
     @TenantSystemJob
     public void publish() {
+        long started = System.nanoTime();
+        int rounds = 0;
         try {
             Instant now = Instant.now();
             recoverStaleIfDue(now);
@@ -114,14 +134,24 @@ public class AlarmDeliveryPublisher {
                 log.error("Alarm deliveries moved to DEAD after retry limit count={}", exhausted);
                 lifecycle("dead", exhausted);
             }
-            List<AlarmDelivery> pending = repository
-                    .findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc("PENDING", now);
-            List<CompletableFuture<Void>> work = pending.stream()
-                    .map(delivery -> CompletableFuture.runAsync(() -> deliver(delivery), executor))
-                    .toList();
-            CompletableFuture.allOf(work.toArray(CompletableFuture[]::new)).join();
+            while (rounds < maxDrainRounds && System.nanoTime() - started < maxDrainDurationNanos) {
+                now = Instant.now();
+                List<AlarmDelivery> pending = repository
+                        .findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc("PENDING", now);
+                if (pending.isEmpty()) break;
+                rounds++;
+                List<CompletableFuture<Void>> work = pending.stream()
+                        .map(delivery -> CompletableFuture.runAsync(() -> deliver(delivery), executor))
+                        .toList();
+                CompletableFuture.allOf(work.toArray(CompletableFuture[]::new)).join();
+                if (pending.size() < 100) break;
+            }
         } catch (RuntimeException failure) {
             log.warn("Alarm delivery scan failed; next scan will retry: {}", failure.getMessage());
+        } finally {
+            if (performanceMetrics != null) {
+                performanceMetrics.outboxDrain("alarm_delivery", rounds, System.nanoTime() - started);
+            }
         }
     }
 

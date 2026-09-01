@@ -233,6 +233,23 @@ class AlarmDeliveryPublisherTest {
         assertDoesNotThrow(() -> publisher.cleanupDelivered());
     }
 
+    @Test
+    void drainsMoreThanThreeDeliveryBatchesWithinOneWindow() {
+        AlarmDelivery delivery = delivery(AlarmDeliveryDestination.NOTIFY);
+        List<AlarmDelivery> fullBatch = java.util.Collections.nCopies(100, delivery);
+        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+                eq("PENDING"), any(Instant.class)))
+                .willReturn(fullBatch, fullBatch, fullBatch, fullBatch, List.of());
+        publisher = new AlarmDeliveryPublisher(repository, ckReporter, notifyClient, incidentClient, soarClient,
+                null, 1, 12, 60_000L, 8, 10_000L);
+
+        publisher.publish();
+
+        verify(repository, org.mockito.Mockito.times(5))
+                .findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+                        eq("PENDING"), any(Instant.class));
+    }
+
     private static AlarmDelivery delivery(AlarmDeliveryDestination destination) {
         AlarmDelivery delivery = new AlarmDelivery();
         delivery.setId("delivery-" + destination.name().toLowerCase());

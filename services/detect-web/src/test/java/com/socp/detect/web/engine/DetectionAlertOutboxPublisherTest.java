@@ -229,6 +229,54 @@ class DetectionAlertOutboxPublisherTest {
         }
     }
 
+    @Test
+    void drainsMoreThanThreePendingBatchesWithinOneWindow() {
+        DetectionAlertOutboxEntity event = event("alert-backlog");
+        List<DetectionAlertOutboxEntity> fullBatch = java.util.Collections.nCopies(100, event);
+        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+                eq("PENDING"), any(Instant.class)))
+                .willReturn(fullBatch, fullBatch, fullBatch, List.of(event));
+        DetectionAlertOutboxPublisher publisher = new DetectionAlertOutboxPublisher(
+                repository, alertClient, alarmProducer, null, 1, 12, 60_000L, 8, 10_000L);
+        try {
+            publisher.publishDue();
+        } finally {
+            publisher.stopDeliveryExecutor();
+        }
+
+        verify(repository, org.mockito.Mockito.times(4))
+                .findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+                        eq("PENDING"), any(Instant.class));
+    }
+
+    @Test
+    void pendingBacklogCannotStarveTheDeliveredStage() {
+        DetectionAlertOutboxEntity pending = event("pending-backlog");
+        DetectionAlertOutboxEntity delivered = event("delivered-backlog");
+        delivered.setStatus("DELIVERED");
+        delivered.setDeliveredAt(Instant.now());
+        List<DetectionAlertOutboxEntity> fullBatch = java.util.Collections.nCopies(100, pending);
+        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+                eq("PENDING"), any(Instant.class))).willReturn(fullBatch);
+        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+                eq("DELIVERED"), any(Instant.class))).willReturn(List.of(delivered));
+        given(repository.claim(eq("pending-backlog"), eq("PENDING"),
+                any(Instant.class), eq(12))).willReturn(0);
+        given(repository.claim(eq("delivered-backlog"), eq("DELIVERED"),
+                any(Instant.class), eq(12))).willReturn(1);
+        given(alarmProducer.sendAndAwait(any(), eq("delivered-backlog"))).willReturn(true);
+        DetectionAlertOutboxPublisher publisher = new DetectionAlertOutboxPublisher(
+                repository, alertClient, alarmProducer, null, 1, 12, 60_000L, 8, 10_000L);
+        try {
+            publisher.publishDue();
+        } finally {
+            publisher.stopDeliveryExecutor();
+        }
+
+        verify(alarmProducer).sendAndAwait(any(), eq("delivered-backlog"));
+        assertEquals("PUBLISHED", delivered.getStatus());
+    }
+
     private DetectionAlertOutboxPublisher publisher() {
         return new DetectionAlertOutboxPublisher(repository, alertClient, alarmProducer);
     }

@@ -84,7 +84,7 @@ class GatewayFilterTest {
                 MockServerHttpRequest.get("/api/v1/alarms")
                         .header("Authorization", "Bearer analyst-token")
                         .header("X-Tenant-Id", "attacker-tenant")
-                        .header("X-Trace-Id", "trace-forwarded")
+                        .header("X-Trace-Id", "0123456789abcdef0123456789abcdef")
                         .header(ServiceRequestSignature.SERVICE_HEADER, "forged-service")
                         .header(ServiceRequestSignature.SIGNATURE_HEADER, "forged-signature")
                         .build());
@@ -94,7 +94,8 @@ class GatewayFilterTest {
         ArgumentCaptor<ServerWebExchange> forwarded = ArgumentCaptor.forClass(ServerWebExchange.class);
         verify(chain).filter(forwarded.capture());
         assertEquals("tenant-a", forwarded.getValue().getRequest().getHeaders().getFirst("X-Tenant-Id"));
-        assertEquals("trace-forwarded", forwarded.getValue().getRequest().getHeaders().getFirst("X-Trace-Id"));
+        assertEquals("0123456789abcdef0123456789abcdef",
+                forwarded.getValue().getRequest().getHeaders().getFirst("X-Trace-Id"));
         assertEquals("Bearer analyst-token",
                 forwarded.getValue().getRequest().getHeaders().getFirst("Authorization"));
         assertEquals("analyst-user",
@@ -105,6 +106,41 @@ class GatewayFilterTest {
                 .getFirst(ServiceRequestSignature.SERVICE_HEADER));
         assertEquals(null, forwarded.getValue().getRequest().getHeaders()
                 .getFirst(ServiceRequestSignature.SIGNATURE_HEADER));
+    }
+
+    @Test
+    void replacesInvalidLegacyTraceIdsWithW3cTraceIds() {
+        GatewayFilter filter = new GatewayFilter(jwtValidator);
+        given(chain.filter(org.mockito.ArgumentMatchers.any())).willReturn(Mono.empty());
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.get("/auth/login")
+                        .header("X-Trace-Id", "0123456789abcdef")
+                        .build());
+
+        filter.filter(exchange, chain).block(Duration.ofSeconds(1));
+
+        ArgumentCaptor<ServerWebExchange> forwarded = ArgumentCaptor.forClass(ServerWebExchange.class);
+        verify(chain).filter(forwarded.capture());
+        String traceId = forwarded.getValue().getRequest().getHeaders().getFirst("X-Trace-Id");
+        org.assertj.core.api.Assertions.assertThat(traceId).matches("[0-9a-f]{32}");
+    }
+
+    @Test
+    void replacesTheForbiddenAllZeroW3cTraceId() {
+        GatewayFilter filter = new GatewayFilter(jwtValidator);
+        given(chain.filter(org.mockito.ArgumentMatchers.any())).willReturn(Mono.empty());
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.get("/auth/login")
+                        .header("X-Trace-Id", "00000000000000000000000000000000")
+                        .build());
+
+        filter.filter(exchange, chain).block(Duration.ofSeconds(1));
+
+        ArgumentCaptor<ServerWebExchange> forwarded = ArgumentCaptor.forClass(ServerWebExchange.class);
+        verify(chain).filter(forwarded.capture());
+        org.assertj.core.api.Assertions.assertThat(
+                forwarded.getValue().getRequest().getHeaders().getFirst("X-Trace-Id"))
+                .matches("(?!0{32})[0-9a-f]{32}");
     }
 
     @Test

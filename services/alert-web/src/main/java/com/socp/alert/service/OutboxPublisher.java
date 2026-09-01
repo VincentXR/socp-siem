@@ -39,6 +39,8 @@ public class OutboxPublisher {
     private static final Logger log = LoggerFactory.getLogger(OutboxPublisher.class);
     private static final int DEFAULT_MAX_ATTEMPTS = 12;
     private static final long DEFAULT_RETENTION_MS = Duration.ofDays(30).toMillis();
+    private static final int DEFAULT_MAX_DRAIN_ROUNDS = 64;
+    private static final long DEFAULT_MAX_DRAIN_DURATION_MS = 2_000L;
     private static final int MAX_ERROR_LENGTH = 1024;
 
     private final OutboxRepository outboxRepo;
@@ -48,6 +50,8 @@ public class OutboxPublisher {
     private final ExecutorService triggerExecutor;
     private final int maxAttempts;
     private final long retentionMs;
+    private final int maxDrainRounds;
+    private final long maxDrainDurationNanos;
     private Instant nextRecoveryAt = Instant.EPOCH;
 
     @Autowired
@@ -55,12 +59,21 @@ public class OutboxPublisher {
                            AlertPerformanceMetrics performanceMetrics,
                            AlertOutboxProperties properties) {
         this(outboxRepo, kafkaPublisher, performanceMetrics,
-                properties.getDeliveryConcurrency(), properties.getMaxAttempts(), properties.getRetentionMs());
+                properties.getDeliveryConcurrency(), properties.getMaxAttempts(), properties.getRetentionMs(),
+                properties.getMaxDrainRounds(), properties.getMaxDrainDurationMs());
     }
 
     public OutboxPublisher(OutboxRepository outboxRepo, AlertKafkaPublisher kafkaPublisher,
                            AlertPerformanceMetrics performanceMetrics,
                            int concurrency, int maxAttempts, long retentionMs) {
+        this(outboxRepo, kafkaPublisher, performanceMetrics, concurrency, maxAttempts, retentionMs,
+                DEFAULT_MAX_DRAIN_ROUNDS, DEFAULT_MAX_DRAIN_DURATION_MS);
+    }
+
+    public OutboxPublisher(OutboxRepository outboxRepo, AlertKafkaPublisher kafkaPublisher,
+                           AlertPerformanceMetrics performanceMetrics,
+                           int concurrency, int maxAttempts, long retentionMs,
+                           int maxDrainRounds, long maxDrainDurationMs) {
         this.outboxRepo = outboxRepo;
         this.kafkaPublisher = kafkaPublisher;
         this.performanceMetrics = performanceMetrics;
@@ -71,6 +84,9 @@ public class OutboxPublisher {
                 Thread.ofVirtual().name("alert-outbox-trigger-", 0).factory());
         this.maxAttempts = Math.max(1, maxAttempts);
         this.retentionMs = Math.max(Duration.ofMinutes(1).toMillis(), retentionMs);
+        this.maxDrainRounds = Math.max(1, Math.min(1_000, maxDrainRounds));
+        this.maxDrainDurationNanos = Duration.ofMillis(
+                Math.max(10L, Math.min(60_000L, maxDrainDurationMs))).toNanos();
     }
 
     private final java.util.concurrent.atomic.AtomicBoolean activeTrigger = new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -101,6 +117,8 @@ public class OutboxPublisher {
             initialDelayString = "${socp.alert.outbox.initial-delay-ms:1000}")
     @TenantSystemJob
     public void publish() {
+        long started = System.nanoTime();
+        int rounds = 0;
         try {
             Instant now = Instant.now();
             int recovered = recoverStaleIfDue(now);
@@ -113,21 +131,30 @@ public class OutboxPublisher {
                 log.error("Alert outbox rows moved to DEAD after retry limit count={}", exhausted);
                 lifecycle("dead", exhausted);
             }
-            List<OutboxEvent> pending = outboxRepo
-                    .findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc("PENDING", now);
-            if (pending.isEmpty()) return;
-            if (!kafkaPublisher.isAvailable()) {
-                log.warn("Kafka unavailable; Alert outbox remains pending count={}", pending.size());
-                return;
+            while (rounds < maxDrainRounds && System.nanoTime() - started < maxDrainDurationNanos) {
+                now = Instant.now();
+                List<OutboxEvent> pending = outboxRepo
+                        .findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc("PENDING", now);
+                if (pending.isEmpty()) break;
+                if (!kafkaPublisher.isAvailable()) {
+                    log.warn("Kafka unavailable; Alert outbox remains pending count={}", pending.size());
+                    break;
+                }
+                rounds++;
+                List<CompletableFuture<Void>> deliveries = pending.stream()
+                        .map(event -> CompletableFuture.runAsync(
+                                () -> TenantContext.runWith(event.getTenantId(), () -> deliver(event)),
+                                deliveryExecutor))
+                        .toList();
+                CompletableFuture.allOf(deliveries.toArray(CompletableFuture[]::new)).join();
+                if (pending.size() < 100) break;
             }
-            List<CompletableFuture<Void>> deliveries = pending.stream()
-                    .map(event -> CompletableFuture.runAsync(
-                            () -> TenantContext.runWith(event.getTenantId(), () -> deliver(event)),
-                            deliveryExecutor))
-                    .toList();
-            CompletableFuture.allOf(deliveries.toArray(CompletableFuture[]::new)).join();
         } catch (Exception failure) {
             log.warn("Alert outbox scan failed; next scan will retry: {}", failure.getMessage());
+        } finally {
+            if (performanceMetrics != null) {
+                performanceMetrics.outboxDrain("alarm_event", rounds, System.nanoTime() - started);
+            }
         }
     }
 

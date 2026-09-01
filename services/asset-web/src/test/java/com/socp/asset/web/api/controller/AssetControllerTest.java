@@ -141,4 +141,21 @@ class AssetControllerTest {
 
         verify(store).save(any(Asset.class));
     }
+
+    @Test
+    void statsNormalizesNullAndBlankDimensionsToUnknown() throws Exception {
+        java.time.Instant createdAt = java.time.Instant.now();
+        given(store.list()).willReturn(List.of(
+                new Asset("a-1", "one", null, "10.0.0.1", "", " ", "HIGH", createdAt),
+                new Asset("a-2", "two", "SERVER", "10.0.0.2", "", "sec", null, createdAt),
+                new Asset("a-3", "three", " SERVER ", "10.0.0.3", "", "sec", " ", createdAt)));
+
+        mvc.perform(get("/api/v1/assets/stats").header(HttpHeaders.AUTHORIZATION, BEARER))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.total").value(3))
+                .andExpect(jsonPath("$.byType.UNKNOWN").value(1))
+                .andExpect(jsonPath("$.byType.SERVER").value(2))
+                .andExpect(jsonPath("$.byOwner.UNKNOWN").value(1))
+                .andExpect(jsonPath("$.byCriticality.UNKNOWN").value(2));
+    }
 }

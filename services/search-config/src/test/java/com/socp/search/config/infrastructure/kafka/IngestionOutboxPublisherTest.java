@@ -209,6 +209,26 @@ class IngestionOutboxPublisherTest {
     }
 
     @Test
+    void drainsMoreThanThreeClaimBatchesWithinOneWindow() {
+        IngestionOutboxRepository repository = mock(IngestionOutboxRepository.class);
+        KafkaEventProducer producer = mock(KafkaEventProducer.class);
+        when(producer.isEnabled()).thenReturn(true);
+        IngestionOutboxEvent event = pending("backlog", "route", "{}", null);
+        List<IngestionOutboxEvent> fullBatch = java.util.Collections.nCopies(200, event);
+        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
+                org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class)))
+                .thenReturn(fullBatch, fullBatch, fullBatch, fullBatch, List.of());
+        publisher = new IngestionOutboxPublisher(repository, producer, null,
+                1, 12, 60_000L, 100, 2, 8, 10_000L);
+
+        publisher.publish();
+
+        verify(repository, org.mockito.Mockito.times(5))
+                .findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
+                        org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class));
+    }
+
+    @Test
     void cleanupUsesConfiguredBoundedBatches() {
         IngestionOutboxRepository repository = mock(IngestionOutboxRepository.class);
         KafkaEventProducer producer = mock(KafkaEventProducer.class);

@@ -17,7 +17,7 @@ spec:
           annotations:
             summary: SOCP detection consumer lag is high
         - alert: SocpOutboxOldestAge
-          expr: max(socp_ingestion_outbox_queue_age_seconds) > 300
+          expr: max(socp_ingestion_outbox_oldest_pending_age_seconds) > 300
           for: 10m
           labels:
             severity: warning

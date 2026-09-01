@@ -28,6 +28,7 @@ import java.util.Set;
 import java.util.Arrays;
 import java.util.stream.Collectors;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 /** Authenticates north-bound traffic and forwards only trusted identity headers. */
 @Component
@@ -36,6 +37,7 @@ public class GatewayFilter implements GlobalFilter, Ordered {
     private static final Logger log = LoggerFactory.getLogger(GatewayFilter.class);
     private static final String BEARER = "Bearer ";
     private static final Set<String> ROLES = Set.of("admin", "analyst", "viewer");
+    private static final Pattern W3C_TRACE_ID = Pattern.compile("(?!0{32})[0-9a-f]{32}");
     private final JwtValidator jwtValidator;
     private final Set<String> allowedOrigins;
 
@@ -55,9 +57,9 @@ public class GatewayFilter implements GlobalFilter, Ordered {
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
         String incomingTrace = exchange.getRequest().getHeaders().getFirst("X-Trace-Id");
-        String traceId = incomingTrace == null || incomingTrace.isBlank()
-                ? UUID.randomUUID().toString().replace("-", "").substring(0, 16)
-                : incomingTrace;
+        String traceId = incomingTrace != null && W3C_TRACE_ID.matcher(incomingTrace).matches()
+                ? incomingTrace
+                : UUID.randomUUID().toString().replace("-", "");
         exchange.getResponse().beforeCommit(() -> {
             exchange.getResponse().getHeaders().set("X-Trace-Id", traceId);
             return Mono.empty();

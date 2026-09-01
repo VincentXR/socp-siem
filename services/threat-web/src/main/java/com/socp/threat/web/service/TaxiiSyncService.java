@@ -1,5 +1,6 @@
 package com.socp.threat.web.service;
 
+import com.socp.platform.client.http.ExternalEndpointPolicy;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.threat.web.domain.Ioc;
 import com.socp.threat.web.persistence.entity.TaxiiCheckpointEntity;
@@ -18,10 +19,13 @@ import java.util.Map;
 public class TaxiiSyncService {
     private final IocStore store;
     private final TaxiiCheckpointRepository checkpoints;
+    private final ExternalEndpointPolicy endpointPolicy;
 
-    public TaxiiSyncService(IocStore store, TaxiiCheckpointRepository checkpoints) {
+    public TaxiiSyncService(IocStore store, TaxiiCheckpointRepository checkpoints,
+                            ExternalEndpointPolicy endpointPolicy) {
         this.store = store;
         this.checkpoints = checkpoints;
+        this.endpointPolicy = endpointPolicy;
     }
 
     public Map<String, Object> sync(String feed, URI collection, String authorization,
@@ -34,7 +38,7 @@ public class TaxiiSyncService {
             throw new IllegalArgumentException("TAXII collection URL is invalid");
         }
         String tenant = TenantContext.require();
-        TaxiiClient client = new TaxiiClient(Duration.ofSeconds(10), allowHttp);
+        TaxiiClient client = new TaxiiClient(Duration.ofSeconds(10), allowHttp, endpointPolicy);
         TaxiiCheckpointEntity checkpoint = checkpoints.findByTenantIdAndFeed(tenant, normalizedFeed)
                 .orElseGet(TaxiiCheckpointEntity::new);
         if (checkpoint.getCheckpointId() == null) {

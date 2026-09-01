@@ -14,6 +14,10 @@ class TraceIdFilterTest {
         assertThat(TraceIdFilter.parseTraceId("00-0123456789ABCDEF0123456789ABCDEF-0123456789abcdef-01"))
                 .isEqualTo("0123456789abcdef0123456789abcdef");
         assertThat(TraceIdFilter.parseTraceId("invalid")).isNull();
+        assertThat(TraceIdFilter.parseTraceId(
+                "00-00000000000000000000000000000000-0123456789abcdef-01")).isNull();
+        assertThat(TraceIdFilter.parseTraceId(
+                "00-0123456789abcdef0123456789abcdef-0000000000000000-01")).isNull();
         assertThat(TraceIdFilter.parseTraceId(null)).isNull();
     }
 
@@ -42,12 +46,28 @@ class TraceIdFilterTest {
     void generatedIdentifiersHaveProtocolLengths() {
         assertThat(TraceIdFilter.newTraceId()).matches("[0-9a-f]{32}");
         assertThat(TraceIdFilter.newSpanId()).matches("[0-9a-f]{16}");
-        assertThat(TraceIdFilter.legacyTraceId()).matches("[0-9a-f]{16}");
         MDC.put("traceId", "abc");
         try {
-            assertThat(TraceIdFilter.buildTraceparent()).matches("00-[0-9a-f]{32}-[0-9a-f]{16}-01");
+            assertThat(TraceIdFilter.buildTraceparent()).isNull();
         } finally {
             MDC.clear();
         }
+    }
+
+    @Test
+    void invalidLegacyHeaderCannotCreateAnInvalidTraceparent() throws Exception {
+        MockEnvironment environment = new MockEnvironment()
+                .withProperty("socp.obs.tracing.enabled", "false");
+        TraceIdFilter filter = new TraceIdFilter(environment);
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/health");
+        request.addHeader(TraceIdFilter.HEADER, "0123456789abcdef");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, (req, res) ->
+                assertThat(MDC.get("traceId")).matches("[0-9a-f]{32}"));
+
+        assertThat(response.getHeader(TraceIdFilter.HEADER)).matches("[0-9a-f]{32}");
+        assertThat(response.getHeader(TraceIdFilter.TRACEPARENT))
+                .matches("00-[0-9a-f]{32}-[0-9a-f]{16}-01");
     }
 }

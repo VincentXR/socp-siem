@@ -1,5 +1,7 @@
 package com.socp.threat.web.service;
 
+import com.socp.platform.client.config.SocpClientProperties;
+import com.socp.platform.client.http.ExternalEndpointPolicy;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.threat.web.domain.Ioc;
 import com.socp.threat.web.persistence.entity.TaxiiCheckpointEntity;
@@ -47,7 +49,7 @@ class TaxiiSyncServiceTest {
         given(checkpoints.findByTenantIdAndFeed("tenant-a", "feed-a")).willReturn(Optional.empty());
         given(checkpoints.save(any(TaxiiCheckpointEntity.class))).willAnswer(invocation -> invocation.getArgument(0));
 
-        var result = new TaxiiSyncService(store, checkpoints).sync("feed-a", endpoint(), null, true);
+        var result = service().sync("feed-a", endpoint(), null, true);
 
         assertThat(result).containsEntry("tenant", "tenant-a").containsEntry("imported", 1);
         ArgumentCaptor<TaxiiCheckpointEntity> captor = ArgumentCaptor.forClass(TaxiiCheckpointEntity.class);
@@ -69,7 +71,7 @@ class TaxiiSyncServiceTest {
         given(checkpoints.findByTenantIdAndFeed("tenant-a", "feed-a")).willReturn(Optional.of(existing));
         given(checkpoints.save(any(TaxiiCheckpointEntity.class))).willAnswer(invocation -> invocation.getArgument(0));
 
-        assertThatThrownBy(() -> new TaxiiSyncService(store, checkpoints)
+        assertThatThrownBy(() -> service()
                 .sync("feed-a", endpoint(), null, true))
                 .isInstanceOf(RuntimeException.class);
 
@@ -81,7 +83,7 @@ class TaxiiSyncServiceTest {
     @Test
     void rejectsUnsafeFeedNamesAndMissingCollection() {
         TenantContext.set("tenant-a");
-        TaxiiSyncService service = new TaxiiSyncService(store, checkpoints);
+        TaxiiSyncService service = service();
         assertThatThrownBy(() -> service.sync("feed|injection", URI.create("https://taxii.example/collection"), null, false))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> service.sync("feed-a", null, null, false))
@@ -90,6 +92,14 @@ class TaxiiSyncServiceTest {
 
     private URI endpoint() {
         return URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/collection");
+    }
+
+    private TaxiiSyncService service() {
+        SocpClientProperties properties = new SocpClientProperties();
+        properties.setExternalAllowedHosts(List.of("127.0.0.1", "taxii.example"));
+        properties.setExternalHttpsOnly(false);
+        properties.setExternalAllowPrivateNetworks(true);
+        return new TaxiiSyncService(store, checkpoints, new ExternalEndpointPolicy(properties));
     }
 
     private static HttpServer server(String body) throws Exception {

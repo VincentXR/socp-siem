@@ -1,5 +1,7 @@
 package com.socp.threat.web.service;
 
+import com.socp.platform.client.config.SocpClientProperties;
+import com.socp.platform.client.http.ExternalEndpointPolicy;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
@@ -38,7 +40,7 @@ class TaxiiClientTest {
         server.start();
         URI collection = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/collection");
 
-        List<String> pages = new TaxiiClient(Duration.ofSeconds(3), true)
+        List<String> pages = new TaxiiClient(Duration.ofSeconds(3), true, localPolicy("127.0.0.1"))
                 .fetchCollection(collection, "Bearer test-token");
 
         assertThat(pages).hasSize(2).allMatch(body -> body.contains("indicator--"));
@@ -47,7 +49,10 @@ class TaxiiClientTest {
 
     @Test
     void rejectsNonHttpsCollectionWhenHttpEscapeHatchIsDisabled() {
-        assertThatThrownBy(() -> new TaxiiClient(Duration.ofSeconds(1), false)
+        SocpClientProperties properties = new SocpClientProperties();
+        properties.setExternalAllowedHosts(List.of("127.0.0.1"));
+        assertThatThrownBy(() -> new TaxiiClient(Duration.ofSeconds(1), false,
+                new ExternalEndpointPolicy(properties))
                 .fetchCollection(URI.create("http://127.0.0.1:8080/collection"), null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("HTTPS");
@@ -61,10 +66,36 @@ class TaxiiClientTest {
         server.start();
         URI collection = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/collection");
 
-        assertThatThrownBy(() -> new TaxiiClient(Duration.ofSeconds(3), true)
+        SocpClientProperties properties = new SocpClientProperties();
+        properties.setExternalAllowedHosts(List.of("127.0.0.1", "localhost"));
+        properties.setExternalHttpsOnly(false);
+        properties.setExternalAllowPrivateNetworks(true);
+        assertThatThrownBy(() -> new TaxiiClient(Duration.ofSeconds(3), true,
+                new ExternalEndpointPolicy(properties))
                 .fetchCollection(collection, null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("configured host");
+    }
+
+    @Test
+    void rejectsAllowlistedHostsThatResolveToPrivateAddresses() {
+        SocpClientProperties properties = new SocpClientProperties();
+        properties.setExternalAllowedHosts(List.of("127.0.0.1"));
+        properties.setExternalHttpsOnly(false);
+
+        assertThatThrownBy(() -> new TaxiiClient(Duration.ofSeconds(1), true,
+                new ExternalEndpointPolicy(properties))
+                .fetchCollection(URI.create("http://127.0.0.1:8080/collection"), null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("private or reserved");
+    }
+
+    private static ExternalEndpointPolicy localPolicy(String... hosts) {
+        SocpClientProperties properties = new SocpClientProperties();
+        properties.setExternalAllowedHosts(List.of(hosts));
+        properties.setExternalHttpsOnly(false);
+        properties.setExternalAllowPrivateNetworks(true);
+        return new ExternalEndpointPolicy(properties);
     }
 
     private static void respond(HttpExchange exchange, String body) throws IOException {

@@ -10,7 +10,9 @@ import com.socp.alert.domain.Severity;
 import org.springframework.data.domain.Pageable;
 import com.socp.platform.tenant.persistence.TenantScopedRepository;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
@@ -24,6 +26,26 @@ public interface AlarmRepository extends TenantScopedRepository<Alarm, String>, 
     Optional<Alarm> findByTenantIdAndId(String tenantId, String id);
 
     Optional<Alarm> findByTenantIdAndSourceAlertId(String tenantId, String sourceAlertId);
+
+    /**
+     * Applies asynchronous TI enrichment without merging a detached Alarm and
+     * overwriting fields changed concurrently by an analyst or another flow.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("""
+           update Alarm a
+              set a.tiHits = :tiHits,
+                  a.riskScore = :riskScore,
+                  a.riskLevel = :riskLevel
+            where a.tenantId = :tenant
+              and a.id = :id
+           """)
+    int updateEnrichment(@Param("tenant") String tenant,
+                         @Param("id") String id,
+                         @Param("tiHits") String tiHits,
+                         @Param("riskScore") Integer riskScore,
+                         @Param("riskLevel") String riskLevel);
 
     /** Same tenant/rule/entity candidates used by alert investigation drill-down. */
     @Query("""

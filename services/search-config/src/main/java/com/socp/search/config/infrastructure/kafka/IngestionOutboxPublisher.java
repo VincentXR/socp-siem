@@ -31,6 +31,8 @@ public class IngestionOutboxPublisher {
     private static final Logger log = LoggerFactory.getLogger(IngestionOutboxPublisher.class);
     private static final int DEFAULT_MAX_ATTEMPTS = 12;
     private static final long DEFAULT_RETENTION_MS = Duration.ofDays(30).toMillis();
+    private static final int DEFAULT_MAX_DRAIN_ROUNDS = 64;
+    private static final long DEFAULT_MAX_DRAIN_DURATION_MS = 2_000L;
     private static final int MAX_ERROR_LENGTH = 1024;
 
     private final IngestionOutboxRepository repository;
@@ -42,9 +44,13 @@ public class IngestionOutboxPublisher {
     private final long retentionMs;
     private final int cleanupBatchSize;
     private final int cleanupMaxBatches;
+    private final int maxDrainRounds;
+    private final long maxDrainDurationNanos;
     private final AtomicInteger claimBatchSizeGauge = new AtomicInteger();
     private final AtomicLong pendingCountGauge = new AtomicLong();
     private final AtomicLong oldestPendingAgeSecondsGauge = new AtomicLong();
+    private final AtomicInteger drainRoundsGauge = new AtomicInteger();
+    private final AtomicLong drainDurationMsGauge = new AtomicLong();
     private Instant nextRecoveryAt = Instant.EPOCH;
 
     @Autowired
@@ -57,7 +63,9 @@ public class IngestionOutboxPublisher {
                 properties.getOutbox().getMaxAttempts(),
                 properties.getOutbox().getRetentionMs(),
                 properties.getOutbox().getCleanupBatchSize(),
-                properties.getOutbox().getCleanupMaxBatches());
+                properties.getOutbox().getCleanupMaxBatches(),
+                properties.getOutbox().getMaxDrainRounds(),
+                properties.getOutbox().getMaxDrainDurationMs());
     }
 
     public IngestionOutboxPublisher(IngestionOutboxRepository repository,
@@ -65,6 +73,17 @@ public class IngestionOutboxPublisher {
                                     MeterRegistry meterRegistry,
                                     int concurrency, int maxAttempts, long retentionMs,
                                     int cleanupBatchSize, int cleanupMaxBatches) {
+        this(repository, producer, meterRegistry, concurrency, maxAttempts, retentionMs,
+                cleanupBatchSize, cleanupMaxBatches,
+                DEFAULT_MAX_DRAIN_ROUNDS, DEFAULT_MAX_DRAIN_DURATION_MS);
+    }
+
+    public IngestionOutboxPublisher(IngestionOutboxRepository repository,
+                                    KafkaEventProducer producer,
+                                    MeterRegistry meterRegistry,
+                                    int concurrency, int maxAttempts, long retentionMs,
+                                    int cleanupBatchSize, int cleanupMaxBatches,
+                                    int maxDrainRounds, long maxDrainDurationMs) {
         this.repository = repository;
         this.producer = producer;
         this.meterRegistry = meterRegistry;
@@ -77,6 +96,9 @@ public class IngestionOutboxPublisher {
         this.retentionMs = Math.max(Duration.ofMinutes(1).toMillis(), retentionMs);
         this.cleanupBatchSize = Math.max(1, Math.min(10_000, cleanupBatchSize));
         this.cleanupMaxBatches = Math.max(1, Math.min(100, cleanupMaxBatches));
+        this.maxDrainRounds = Math.max(1, Math.min(1_000, maxDrainRounds));
+        this.maxDrainDurationNanos = Duration.ofMillis(
+                Math.max(10L, Math.min(60_000L, maxDrainDurationMs))).toNanos();
         if (meterRegistry != null) {
             io.micrometer.core.instrument.Gauge.builder("socp.ingestion.outbox.claim.batch.size",
                     claimBatchSizeGauge, AtomicInteger::get).register(meterRegistry);
@@ -84,6 +106,10 @@ public class IngestionOutboxPublisher {
                     pendingCountGauge, AtomicLong::get).register(meterRegistry);
             io.micrometer.core.instrument.Gauge.builder("socp.ingestion.outbox.oldest.pending.age.seconds",
                     oldestPendingAgeSecondsGauge, AtomicLong::get).register(meterRegistry);
+            io.micrometer.core.instrument.Gauge.builder("socp.ingestion.outbox.drain.rounds",
+                    drainRoundsGauge, AtomicInteger::get).register(meterRegistry);
+            io.micrometer.core.instrument.Gauge.builder("socp.ingestion.outbox.drain.duration.milliseconds",
+                    drainDurationMsGauge, AtomicLong::get).register(meterRegistry);
         }
     }
 
@@ -114,6 +140,9 @@ public class IngestionOutboxPublisher {
     @TenantSystemJob
     public void publish() {
         if (!producer.isEnabled()) return;
+        long started = System.nanoTime();
+        int rounds = 0;
+        int lastBatchSize = 0;
         try {
             Instant now = Instant.now();
             int recovered = recoverStaleIfDue(now);
@@ -123,19 +152,34 @@ public class IngestionOutboxPublisher {
                 log.error("Ingestion outbox rows moved to DEAD after retry limit count={}", exhausted);
                 lifecycle("dead", exhausted);
             }
-            List<IngestionOutboxEvent> pending =
-                    repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
-                            "PENDING", now);
-            updateBacklogMetrics(pending.size(), now);
-            List<CompletableFuture<Void>> deliveries = pending.stream()
-                    .map(event -> CompletableFuture.runAsync(
-                            () -> TenantContext.runWith(event.getTenantId(), () -> deliver(event)),
-                            executor))
-                    .toList();
-            CompletableFuture.allOf(deliveries.toArray(CompletableFuture[]::new)).join();
+            while (rounds < maxDrainRounds && System.nanoTime() - started < maxDrainDurationNanos) {
+                now = Instant.now();
+                List<IngestionOutboxEvent> pending =
+                        repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
+                                "PENDING", now);
+                lastBatchSize = pending.size();
+                if (pending.isEmpty()) break;
+                rounds++;
+                List<CompletableFuture<Void>> deliveries = pending.stream()
+                        .map(event -> CompletableFuture.runAsync(
+                                () -> TenantContext.runWith(event.getTenantId(), () -> deliver(event)),
+                                executor))
+                        .toList();
+                CompletableFuture.allOf(deliveries.toArray(CompletableFuture[]::new)).join();
+                if (pending.size() < 200) break;
+            }
+            updateBacklogMetrics(lastBatchSize, Instant.now());
         } catch (Exception failure) {
             log.warn("Ingestion outbox scan failed; next scan will retry: {}", failure.getMessage());
+        } finally {
+            recordDrain(rounds, System.nanoTime() - started);
         }
+    }
+
+    private void recordDrain(int rounds, long durationNanos) {
+        if (meterRegistry == null) return;
+        drainRoundsGauge.set(rounds);
+        drainDurationMsGauge.set(Math.max(0L, Duration.ofNanos(durationNanos).toMillis()));
     }
 
     private void updateBacklogMetrics(int claimBatchSize, Instant now) {

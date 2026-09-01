@@ -109,8 +109,12 @@ public class AssetController {
     }
 
     private static Map<String, Object> countBy(List<Asset> all, java.util.function.Function<Asset, String> f) {
-        return all.stream().collect(Collectors.groupingBy(f, Collectors.counting()))
+        return all.stream().collect(Collectors.groupingBy(asset -> bucket(f.apply(asset)), Collectors.counting()))
                 .entrySet().stream().collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (a, b) -> a, LinkedHashMap::new));
+    }
+
+    private static String bucket(String value) {
+        return value == null || value.isBlank() ? "UNKNOWN" : value.trim();
     }
 
     private static boolean blank(String value) {

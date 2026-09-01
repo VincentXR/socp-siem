@@ -1,5 +1,7 @@
 package com.socp.threat.web.service;
 
+import com.socp.platform.client.http.ExternalEndpointPolicy;
+
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -15,10 +17,12 @@ public final class TaxiiClient {
     private final HttpClient http;
     private final Duration timeout;
     private final boolean allowHttp;
+    private final ExternalEndpointPolicy endpointPolicy;
 
-    public TaxiiClient(Duration timeout, boolean allowHttp) {
+    public TaxiiClient(Duration timeout, boolean allowHttp, ExternalEndpointPolicy endpointPolicy) {
         this.timeout = timeout == null ? Duration.ofSeconds(10) : timeout;
         this.allowHttp = allowHttp;
+        this.endpointPolicy = java.util.Objects.requireNonNull(endpointPolicy, "endpointPolicy");
         this.http = HttpClient.newBuilder().connectTimeout(this.timeout).build();
     }
 
@@ -64,6 +68,8 @@ public final class TaxiiClient {
     }
 
     private void validateNext(URI candidate, URI origin) {
+        String rejection = endpointPolicy.validate(candidate.toString());
+        if (rejection != null) throw invalid("TAXII endpoint rejected: " + rejection);
         String scheme = candidate.getScheme();
         if (!("https".equalsIgnoreCase(scheme)
                 || (allowHttp && "http".equalsIgnoreCase(scheme)))) {

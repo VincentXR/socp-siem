@@ -48,6 +48,8 @@ public class DetectionAlertOutboxPublisher {
     private static final TypeReference<Map<String, Object>> MAP = new TypeReference<>() {};
     private static final int DEFAULT_MAX_ATTEMPTS = 12;
     private static final long DEFAULT_RETENTION_MS = Duration.ofDays(30).toMillis();
+    private static final int DEFAULT_MAX_DRAIN_ROUNDS = 64;
+    private static final long DEFAULT_MAX_DRAIN_DURATION_MS = 2_000L;
 
     private final DetectionAlertOutboxRepository repository;
     private final AlertClient alertClient;
@@ -57,6 +59,8 @@ public class DetectionAlertOutboxPublisher {
     private final Semaphore deliveryPermits;
     private final int maxAttempts;
     private final long retentionMs;
+    private final int maxDrainRounds;
+    private final long maxDrainDurationNanos;
 
     @org.springframework.beans.factory.annotation.Autowired
     public DetectionAlertOutboxPublisher(DetectionAlertOutboxRepository repository,
@@ -66,7 +70,10 @@ public class DetectionAlertOutboxPublisher {
                                          @Value("${socp.detect.alert-outbox.delivery-concurrency:2}")
                                          int deliveryConcurrency,
                                          @Value("${socp.detect.alert-outbox.max-attempts:12}") int maxAttempts,
-                                         @Value("${socp.detect.alert-outbox.retention-ms:2592000000}") long retentionMs) {
+                                         @Value("${socp.detect.alert-outbox.retention-ms:2592000000}") long retentionMs,
+                                         @Value("${socp.detect.alert-outbox.max-drain-rounds:64}") int maxDrainRounds,
+                                         @Value("${socp.detect.alert-outbox.max-drain-duration-ms:2000}")
+                                         long maxDrainDurationMs) {
         this.repository = repository;
         this.alertClient = alertClient;
         this.alarmProducer = alarmProducer;
@@ -77,6 +84,21 @@ public class DetectionAlertOutboxPublisher {
         this.deliveryPermits = new Semaphore(concurrency);
         this.maxAttempts = Math.max(1, maxAttempts);
         this.retentionMs = Math.max(Duration.ofMinutes(1).toMillis(), retentionMs);
+        // Two delivery stages share one window; reserve at least one round for each.
+        this.maxDrainRounds = Math.max(2, Math.min(1_000, maxDrainRounds));
+        this.maxDrainDurationNanos = Duration.ofMillis(
+                Math.max(10L, Math.min(60_000L, maxDrainDurationMs))).toNanos();
+    }
+
+    public DetectionAlertOutboxPublisher(DetectionAlertOutboxRepository repository,
+                                         AlertClient alertClient,
+                                         AlarmKafkaProducer alarmProducer,
+                                         DetectionPerformanceMetrics performanceMetrics,
+                                         int deliveryConcurrency,
+                                         int maxAttempts,
+                                         long retentionMs) {
+        this(repository, alertClient, alarmProducer, performanceMetrics, deliveryConcurrency,
+                maxAttempts, retentionMs, DEFAULT_MAX_DRAIN_ROUNDS, DEFAULT_MAX_DRAIN_DURATION_MS);
     }
 
     DetectionAlertOutboxPublisher(DetectionAlertOutboxRepository repository,
@@ -92,15 +114,8 @@ public class DetectionAlertOutboxPublisher {
     public DetectionAlertOutboxPublisher(DetectionAlertOutboxRepository repository,
                                          AlertClient alertClient,
                                          AlarmKafkaProducer alarmProducer) {
-        this.repository = repository;
-        this.alertClient = alertClient;
-        this.alarmProducer = alarmProducer;
-        this.performanceMetrics = null;
-        this.deliveryExecutor = Executors.newThreadPerTaskExecutor(
-                Thread.ofVirtual().name("detection-alert-delivery-test-", 0).factory());
-        this.deliveryPermits = new Semaphore(1);
-        this.maxAttempts = DEFAULT_MAX_ATTEMPTS;
-        this.retentionMs = DEFAULT_RETENTION_MS;
+        this(repository, alertClient, alarmProducer, null, 1,
+                DEFAULT_MAX_ATTEMPTS, DEFAULT_RETENTION_MS);
     }
 
     private final java.util.concurrent.atomic.AtomicBoolean activeTrigger = new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -124,6 +139,8 @@ public class DetectionAlertOutboxPublisher {
             initialDelayString = "${socp.detect.alert-outbox.initial-delay-ms:1000}")
     @TenantSystemJob
     public void publishDue() {
+        long started = System.nanoTime();
+        int rounds = 0;
         try {
             recoverStaleClaims();
             int exhausted = repository.markExhausted(maxAttempts, "retry limit reached", Instant.now());
@@ -131,45 +148,59 @@ public class DetectionAlertOutboxPublisher {
                 log.error("Detection alert outbox rows moved to DEAD after retry limit count={}", exhausted);
                 lifecycle("dead", exhausted);
             }
-            publishStage("PENDING");
-            publishStage("DELIVERED");
+            int pendingRoundBudget = (maxDrainRounds + 1) / 2;
+            long pendingDeadline = started + maxDrainDurationNanos / 2;
+            long overallDeadline = started + maxDrainDurationNanos;
+            rounds += publishStage("PENDING", pendingRoundBudget, pendingDeadline);
+            rounds += publishStage("DELIVERED", maxDrainRounds - rounds, overallDeadline);
         } catch (Exception ex) {
             log.warn("Detection alert outbox scan failed; next scan will retry: {}", ex.getMessage());
+        } finally {
+            if (performanceMetrics != null) {
+                performanceMetrics.outboxDrain("alert_delivery", rounds, System.nanoTime() - started);
+            }
         }
     }
 
-    private void publishStage(String stage) {
-        List<DetectionAlertOutboxEntity> due = repository
-                .findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(stage, Instant.now());
-        List<CompletableFuture<Void>> deliveries = new ArrayList<>();
-        for (DetectionAlertOutboxEntity event : due) {
-            if (!claim(event, stage)) continue;
-            deliveries.add(CompletableFuture.runAsync(() -> {
-                try (TenantContext.Scope ignored = TenantContext.open(event.getTenantId())) {
-                    boolean acquired = false;
-                    try {
-                        deliveryPermits.acquire();
-                        acquired = true;
-                        if ("PENDING".equals(stage)) {
-                            Instant claimedAt = performanceMetrics == null
-                                    ? Instant.now() : performanceMetrics.outboxClaimed(event);
-                            deliverAndPublish(event, claimedAt);
-                        } else {
-                            if (performanceMetrics != null) {
-                                performanceMetrics.outboxStateTransaction("original_claim");
+    private int publishStage(String stage, int remainingRounds, long deadlineNanos) {
+        int rounds = 0;
+        while (rounds < remainingRounds && System.nanoTime() < deadlineNanos) {
+            List<DetectionAlertOutboxEntity> due = repository
+                    .findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(stage, Instant.now());
+            if (due.isEmpty()) break;
+            rounds++;
+            List<CompletableFuture<Void>> deliveries = new ArrayList<>();
+            for (DetectionAlertOutboxEntity event : due) {
+                if (!claim(event, stage)) continue;
+                deliveries.add(CompletableFuture.runAsync(() -> {
+                    try (TenantContext.Scope ignored = TenantContext.open(event.getTenantId())) {
+                        boolean acquired = false;
+                        try {
+                            deliveryPermits.acquire();
+                            acquired = true;
+                            if ("PENDING".equals(stage)) {
+                                Instant claimedAt = performanceMetrics == null
+                                        ? Instant.now() : performanceMetrics.outboxClaimed(event);
+                                deliverAndPublish(event, claimedAt);
+                            } else {
+                                if (performanceMetrics != null) {
+                                    performanceMetrics.outboxStateTransaction("original_claim");
+                                }
+                                publishOriginalAlarm(event);
                             }
-                            publishOriginalAlarm(event);
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            fail(event, "delivery interrupted", stage);
+                        } finally {
+                            if (acquired) deliveryPermits.release();
                         }
-                    } catch (InterruptedException interrupted) {
-                        Thread.currentThread().interrupt();
-                        fail(event, "delivery interrupted", stage);
-                    } finally {
-                        if (acquired) deliveryPermits.release();
                     }
-                }
-            }, deliveryExecutor));
+                }, deliveryExecutor));
+            }
+            CompletableFuture.allOf(deliveries.toArray(CompletableFuture[]::new)).join();
+            if (due.size() < 100) break;
         }
-        CompletableFuture.allOf(deliveries.toArray(CompletableFuture[]::new)).join();
+        return rounds;
     }
 
     private boolean claim(DetectionAlertOutboxEntity event, String expectedStage) {

@@ -206,6 +206,24 @@ class OutboxPublisherTest {
         assertEquals(true, tenantScope.get());
     }
 
+    @Test
+    void drainsMoreThanThreeBatchesWithinOneWindow() {
+        OutboxEvent event = event("alarm-backlog");
+        List<OutboxEvent> fullBatch = java.util.Collections.nCopies(100, event);
+        given(kafkaPublisher.isAvailable()).willReturn(true);
+        given(outboxRepository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+                eq("PENDING"), any(Instant.class)))
+                .willReturn(fullBatch, fullBatch, fullBatch, fullBatch, List.of());
+        publisher = new OutboxPublisher(outboxRepository, kafkaPublisher, null,
+                1, 12, 60_000L, 8, 10_000L);
+
+        publisher.publish();
+
+        verify(outboxRepository, org.mockito.Mockito.times(5))
+                .findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+                        eq("PENDING"), any(Instant.class));
+    }
+
     private static OutboxEvent event(String id) {
         OutboxEvent event = new OutboxEvent();
         event.setId(id);

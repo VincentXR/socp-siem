@@ -21,7 +21,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 import java.security.SecureRandom;
 import java.util.HexFormat;
-import java.util.UUID;
+import java.util.regex.Pattern;
 
 /**
  * 全链路 traceId（2026-08-10 OTel 完整版）：
@@ -41,6 +41,9 @@ public class TraceIdFilter extends OncePerRequestFilter {
     public static final String TRACEPARENT = "traceparent";
 
     private static final SecureRandom RANDOM = new SecureRandom();
+    private static final Pattern TRACEPARENT_PATTERN = Pattern.compile(
+            "^(?![fF]{2})([0-9a-fA-F]{2})-([0-9a-fA-F]{32})-([0-9a-fA-F]{16})-([0-9a-fA-F]{2})$");
+    private static final Pattern TRACE_ID_PATTERN = Pattern.compile("[0-9a-fA-F]{32}");
 
     private final org.springframework.core.env.Environment env;
 
@@ -51,40 +54,48 @@ public class TraceIdFilter extends OncePerRequestFilter {
     /** 解析 W3C traceparent，返回 32-hex trace-id；格式非法返回 null。 */
     public static String parseTraceId(String traceparent) {
         if (traceparent == null) return null;
-        String[] parts = traceparent.trim().split("-");
-        if (parts.length < 2) return null;
-        String tid = parts[1];
-        if (tid.length() == 32 && tid.matches("[0-9a-fA-F]{32}")) {
-            return tid.toLowerCase();
-        }
-        return null;
+        var match = TRACEPARENT_PATTERN.matcher(traceparent.trim());
+        if (!match.matches() || allZero(match.group(2)) || allZero(match.group(3))) return null;
+        return match.group(2).toLowerCase(java.util.Locale.ROOT);
     }
 
     /** 生成新 span-id（16 hex）。 */
     public static String newSpanId() {
         byte[] b = new byte[8];
-        RANDOM.nextBytes(b);
-        return HexFormat.of().formatHex(b);
+        String value;
+        do {
+            RANDOM.nextBytes(b);
+            value = HexFormat.of().formatHex(b);
+        } while (allZero(value));
+        return value;
     }
 
     /** 生成新 trace-id（32 hex）。 */
     public static String newTraceId() {
         byte[] b = new byte[16];
-        RANDOM.nextBytes(b);
-        return HexFormat.of().formatHex(b);
+        String value;
+        do {
+            RANDOM.nextBytes(b);
+            value = HexFormat.of().formatHex(b);
+        } while (allZero(value));
+        return value;
     }
 
     /** 从 MDC 构建出站 traceparent（沿用当前 traceId + 新 span-id）；无 traceId 返回 null。 */
     public static String buildTraceparent() {
-        String traceId = MDC.get("traceId");
-        if (traceId == null || traceId.isBlank()) return null;
-        String tid = traceId.length() == 32 ? traceId : String.format("%0" + (32 - traceId.length()) + "d", 0) + traceId;
+        String tid = normalizeTraceId(MDC.get("traceId"));
+        if (tid == null) return null;
         return "00-" + tid + "-" + newSpanId() + "-01";
     }
 
-    /** 旧 UUID/16hex 生成逻辑兼容。 */
-    public static String legacyTraceId() {
-        return UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+    /** Accepts only protocol-valid W3C trace identifiers. */
+    private static String normalizeTraceId(String value) {
+        if (value == null || !TRACE_ID_PATTERN.matcher(value).matches() || allZero(value)) return null;
+        return value.toLowerCase(java.util.Locale.ROOT);
+    }
+
+    private static boolean allZero(String value) {
+        return value.chars().allMatch(ch -> ch == '0');
     }
 
     // ---- OTel propagation ----
@@ -170,9 +181,7 @@ public class TraceIdFilter extends OncePerRequestFilter {
         }
         if (traceId == null) {
             String legacy = req.getHeader(HEADER);
-            if (legacy != null && !legacy.isBlank()) {
-                traceId = legacy;
-            }
+            traceId = normalizeTraceId(legacy);
         }
         if (traceId == null) {
             traceId = newTraceId();

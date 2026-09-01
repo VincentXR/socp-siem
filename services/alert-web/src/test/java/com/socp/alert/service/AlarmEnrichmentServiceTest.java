@@ -13,6 +13,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import java.util.Optional;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -72,15 +74,22 @@ class AlarmEnrichmentServiceTest {
                 null, 1, false, 1));
         when(repository.countRecentByEntity(anyString(), anyString(), org.mockito.ArgumentMatchers.any()))
                 .thenReturn(2L);
+        when(repository.findByTenantIdAndId("tenant-a", "alarm-tenant-a"))
+                .thenReturn(Optional.of(alarm));
+        when(repository.updateEnrichment(anyString(), anyString(), anyString(),
+                org.mockito.ArgumentMatchers.anyInt(), anyString())).thenReturn(1);
 
         service.enrich(alarm);
 
         verify(threatClient).matchIocs(org.mockito.ArgumentMatchers.argThat(json ->
                 json.contains("203.0.113.10") && json.contains("evil.example.com")));
-        verify(repository).save(alarm);
-        assertThat(alarm.getTiHits()).contains("203.0.113.10");
-        assertThat(alarm.getRiskScore()).isNotNull();
-        assertThat(alarm.getRiskLevel()).isNotBlank();
+        verify(repository).updateEnrichment(
+                org.mockito.ArgumentMatchers.eq("tenant-a"),
+                org.mockito.ArgumentMatchers.eq("alarm-tenant-a"),
+                org.mockito.ArgumentMatchers.contains("203.0.113.10"),
+                org.mockito.ArgumentMatchers.anyInt(),
+                org.mockito.ArgumentMatchers.anyString());
+        verify(repository, never()).save(alarm);
     }
 
     @Test
@@ -107,6 +116,35 @@ class AlarmEnrichmentServiceTest {
         service.enrich(alarm);
 
         verify(repository, org.mockito.Mockito.never()).save(alarm);
+    }
+
+    @Test
+    void patchesOnlyEnrichmentFieldsOnTheLatestAlarm() {
+        AlarmRepository repository = mock(AlarmRepository.class);
+        ThreatClient threatClient = mock(ThreatClient.class);
+        service = new AlarmEnrichmentService(repository, threatClient, 1, 100);
+        Alarm stale = new Alarm("R-1", "IOC", Severity.HIGH, "1.2.3.4", "1.2.3.4");
+        stale.setId("alarm-3");
+        stale.setTenantId("tenant-a");
+        stale.setStatus("OPEN");
+        Alarm latest = new Alarm("R-1", "IOC", Severity.HIGH, "1.2.3.4", "1.2.3.4");
+        latest.setId("alarm-3");
+        latest.setTenantId("tenant-a");
+        latest.setStatus("CLOSED");
+        when(threatClient.matchIocs(anyString())).thenReturn(new ServiceCall(
+                SocpService.THREAT, "http://threat", true, 200,
+                "{\"hits\":[{\"ioc\":\"1.2.3.4\"}]}", null, 1, false, 1));
+        when(repository.findByTenantIdAndId("tenant-a", "alarm-3")).thenReturn(Optional.of(latest));
+        when(repository.updateEnrichment(anyString(), anyString(), anyString(),
+                org.mockito.ArgumentMatchers.anyInt(), anyString())).thenReturn(1);
+
+        service.enrich(stale);
+
+        verify(repository).updateEnrichment(org.mockito.ArgumentMatchers.eq("tenant-a"),
+                org.mockito.ArgumentMatchers.eq("alarm-3"), anyString(),
+                org.mockito.ArgumentMatchers.anyInt(), anyString());
+        assertThat(latest.getStatus()).isEqualTo("CLOSED");
+        verify(repository, never()).save(org.mockito.ArgumentMatchers.any(Alarm.class));
     }
 
     @Test
