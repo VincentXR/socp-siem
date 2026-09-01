@@ -21,8 +21,14 @@ public interface IngestionOutboxRepository extends TenantScopedRepository<Ingest
 
     long countByStatus(String status);
 
+    List<IngestionOutboxEvent> findTop100ByTenantIdAndStatusOrderByUpdatedAtAsc(
+            String tenantId, String status);
+
     @Query("select min(e.createdAt) from IngestionOutboxEvent e where e.status = :status")
     Instant findOldestCreatedAtByStatus(@Param("status") String status);
+
+    @Query("select min(e.updatedAt) from IngestionOutboxEvent e where e.status = :status")
+    Instant findOldestUpdatedAtByStatus(@Param("status") String status);
 
     @Modifying
     @Transactional
@@ -69,8 +75,18 @@ public interface IngestionOutboxRepository extends TenantScopedRepository<Ingest
     @Modifying
     @Transactional
     @Query("update IngestionOutboxEvent e set e.status = 'PENDING', e.attempts = 0, e.nextAttemptAt = :now, "
-            + "e.claimedAt = null, e.lastError = null, e.updatedAt = :now where e.id = :id and e.status = 'DEAD'")
-    int requeueDead(@Param("id") String id, @Param("now") Instant now);
+            + "e.claimedAt = null, e.lastError = null, e.updatedAt = :now where e.id = :id "
+            + "and e.tenantId = :tenantId and e.status = 'DEAD'")
+    int requeueDead(@Param("id") String id, @Param("tenantId") String tenantId,
+                    @Param("now") Instant now);
+
+    @Modifying
+    @Transactional
+    @Query("update IngestionOutboxEvent e set e.status = 'DISCARDED', e.claimedAt = null, "
+            + "e.lastError = :reason, e.updatedAt = :now where e.id = :id "
+            + "and e.tenantId = :tenantId and e.status = 'DEAD'")
+    int discardDead(@Param("id") String id, @Param("tenantId") String tenantId,
+                    @Param("reason") String reason, @Param("now") Instant now);
 
     @Modifying
     @Transactional
@@ -78,5 +94,13 @@ public interface IngestionOutboxRepository extends TenantScopedRepository<Ingest
             + "select id from t_ingestion_outbox where status = 'PUBLISHED' and published_at < :cutoff "
             + "order by published_at asc limit :batchSize)", nativeQuery = true)
     int deletePublishedBatchBefore(@Param("cutoff") Instant cutoff,
+                                   @Param("batchSize") int batchSize);
+
+    @Modifying
+    @Transactional
+    @Query(value = "delete from t_ingestion_outbox where id in ("
+            + "select id from t_ingestion_outbox where status = 'DISCARDED' and updated_at < :cutoff "
+            + "order by updated_at asc limit :batchSize)", nativeQuery = true)
+    int deleteDiscardedBatchBefore(@Param("cutoff") Instant cutoff,
                                    @Param("batchSize") int batchSize);
 }

@@ -19,6 +19,16 @@ public interface AlarmDeliveryRepository extends TenantScopedRepository<AlarmDel
     List<AlarmDelivery> findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
             String status, Instant nextAttemptAt);
 
+    List<AlarmDelivery> findTop100ByTenantIdAndStatusOrderByUpdatedAtAsc(String tenantId, String status);
+
+    long countByStatus(String status);
+
+    @Query("select min(d.createdAt) from AlarmDelivery d where d.status = :status")
+    Instant findOldestCreatedAtByStatus(@Param("status") String status);
+
+    @Query("select min(d.updatedAt) from AlarmDelivery d where d.status = :status")
+    Instant findOldestUpdatedAtByStatus(@Param("status") String status);
+
     Optional<AlarmDelivery> findByIdAndTenantId(String id, String tenantId);
 
     List<AlarmDelivery> findByTenantIdAndIdIn(String tenantId, Iterable<String> ids);
@@ -80,6 +90,19 @@ public interface AlarmDeliveryRepository extends TenantScopedRepository<AlarmDel
 
     @Modifying
     @Transactional
+    @Query("update AlarmDelivery d set d.status = 'DISCARDED', d.claimedAt = null, "
+            + "d.lastError = :reason, d.updatedAt = :now where d.id = :id "
+            + "and d.tenantId = :tenantId and d.status = 'DEAD'")
+    int discardDead(@Param("id") String id, @Param("tenantId") String tenantId,
+                    @Param("reason") String reason, @Param("now") Instant now);
+
+    @Modifying
+    @Transactional
     @Query("delete from AlarmDelivery d where d.status = 'DELIVERED' and d.deliveredAt < :cutoff")
     int deleteDeliveredBefore(@Param("cutoff") Instant cutoff);
+
+    @Modifying
+    @Transactional
+    @Query("delete from AlarmDelivery d where d.status = 'DISCARDED' and d.updatedAt < :cutoff")
+    int deleteDiscardedBefore(@Param("cutoff") Instant cutoff);
 }

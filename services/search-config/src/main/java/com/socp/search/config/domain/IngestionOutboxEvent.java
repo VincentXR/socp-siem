@@ -32,7 +32,7 @@ public class IngestionOutboxEvent extends BaseEntity {
     @Column(nullable = false, length = 32)
     private String status;
 
-    /** PENDING / PROCESSING / PUBLISHED / DEAD. */
+    /** PENDING / PROCESSING / PUBLISHED / DEAD / DISCARDED. */
     @Column(nullable = false)
     private int attempts;
 

@@ -37,7 +37,7 @@ public class DetectionAlertOutboxEntity {
     @Column(nullable = false, columnDefinition = "TEXT")
     private String payload;
 
-    /** PENDING / PROCESSING / DELIVERED / PUBLISHED / DEAD. */
+    /** PENDING / PROCESSING / DELIVERED / PUBLISHED / DEAD / DISCARDED. */
     @Column(nullable = false, length = 16)
     private String status;
 

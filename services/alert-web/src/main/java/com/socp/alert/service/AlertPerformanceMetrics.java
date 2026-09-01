@@ -2,18 +2,22 @@ package com.socp.alert.service;
 
 
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.Timer;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /** Alert Web side of the T6 (request received) to T7 (DB committed) contract. */
 @Component
 public class AlertPerformanceMetrics {
 
     private final MeterRegistry registry;
+    private final ConcurrentHashMap<String, AtomicLong> backlogGauges = new ConcurrentHashMap<>();
 
     public AlertPerformanceMetrics(MeterRegistry registry) {
         this.registry = registry;
@@ -64,6 +68,33 @@ public class AlertPerformanceMetrics {
                 .publishPercentileHistogram()
                 .register(registry)
                 .record(Math.max(0L, durationNanos), TimeUnit.NANOSECONDS);
+    }
+
+    /** Current-state gauges complement lifecycle counters, which never decrease on replay. */
+    public void outboxBacklog(String outbox, long pendingCount, Instant oldestPending,
+                              long deadCount, Instant oldestDead) {
+        Instant now = Instant.now();
+        gauge("socp.alert.outbox.pending.count", outbox).set(Math.max(0L, pendingCount));
+        gauge("socp.alert.outbox.oldest.pending.age.seconds", outbox)
+                .set(ageSeconds(oldestPending, now));
+        gauge("socp.alert.outbox.dead.count", outbox).set(Math.max(0L, deadCount));
+        gauge("socp.alert.outbox.oldest.dead.age.seconds", outbox)
+                .set(ageSeconds(oldestDead, now));
+    }
+
+    private AtomicLong gauge(String name, String outbox) {
+        String key = name + ':' + outbox;
+        return backlogGauges.computeIfAbsent(key, ignored -> {
+            AtomicLong value = new AtomicLong();
+            Gauge.builder(name, value, AtomicLong::get)
+                    .tag("outbox", outbox)
+                    .register(registry);
+            return value;
+        });
+    }
+
+    private static long ageSeconds(Instant value, Instant now) {
+        return value == null ? 0L : Math.max(0L, Duration.between(value, now).toSeconds());
     }
 
     private void record(String stage, Duration duration) {

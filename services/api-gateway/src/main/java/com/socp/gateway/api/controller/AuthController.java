@@ -157,10 +157,10 @@ public class AuthController {
 
     @GetMapping("/session")
     public Map<String, Object> session(
-            @RequestHeader(value = "X-Socp-User", defaultValue = "socp-user") String username,
-            @RequestHeader(value = "X-Socp-Role", defaultValue = "analyst") String role,
-            @RequestHeader(value = "X-Tenant-Id", defaultValue = "default") String tenant,
-            @RequestHeader(value = "X-Socp-Locale", defaultValue = DEFAULT_LOCALE) String locale) {
+            @RequestHeader("X-Socp-User") String username,
+            @RequestHeader("X-Socp-Role") String role,
+            @RequestHeader("X-Tenant-Id") String tenant,
+            @RequestHeader("X-Socp-Locale") String locale) {
         return Map.of("username", username, "role", supportedRole(role), "tenant", tenant,
                 "locale", resolveLocale(username, locale));
     }

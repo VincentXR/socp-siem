@@ -36,7 +36,7 @@ public class OutboxEvent {
     @Column(columnDefinition = "TEXT")
     private String payload;
 
-    /** PENDING / PROCESSING / PUBLISHED / DEAD */
+    /** PENDING / PROCESSING / PUBLISHED / DEAD / DISCARDED. */
     private String status;
 
     /** Number of broker delivery attempts, including a stale claimed attempt. */

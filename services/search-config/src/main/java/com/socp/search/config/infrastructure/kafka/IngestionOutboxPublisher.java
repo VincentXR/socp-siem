@@ -33,6 +33,7 @@ public class IngestionOutboxPublisher {
     private static final long DEFAULT_RETENTION_MS = Duration.ofDays(30).toMillis();
     private static final int DEFAULT_MAX_DRAIN_ROUNDS = 64;
     private static final long DEFAULT_MAX_DRAIN_DURATION_MS = 2_000L;
+    private static final Duration DISCARDED_RETENTION = Duration.ofDays(30);
     private static final int MAX_ERROR_LENGTH = 1024;
 
     private final IngestionOutboxRepository repository;
@@ -49,6 +50,8 @@ public class IngestionOutboxPublisher {
     private final AtomicInteger claimBatchSizeGauge = new AtomicInteger();
     private final AtomicLong pendingCountGauge = new AtomicLong();
     private final AtomicLong oldestPendingAgeSecondsGauge = new AtomicLong();
+    private final AtomicLong deadCountGauge = new AtomicLong();
+    private final AtomicLong oldestDeadAgeSecondsGauge = new AtomicLong();
     private final AtomicInteger drainRoundsGauge = new AtomicInteger();
     private final AtomicLong drainDurationMsGauge = new AtomicLong();
     private Instant nextRecoveryAt = Instant.EPOCH;
@@ -106,6 +109,10 @@ public class IngestionOutboxPublisher {
                     pendingCountGauge, AtomicLong::get).register(meterRegistry);
             io.micrometer.core.instrument.Gauge.builder("socp.ingestion.outbox.oldest.pending.age.seconds",
                     oldestPendingAgeSecondsGauge, AtomicLong::get).register(meterRegistry);
+            io.micrometer.core.instrument.Gauge.builder("socp.ingestion.outbox.dead.count",
+                    deadCountGauge, AtomicLong::get).register(meterRegistry);
+            io.micrometer.core.instrument.Gauge.builder("socp.ingestion.outbox.oldest.dead.age.seconds",
+                    oldestDeadAgeSecondsGauge, AtomicLong::get).register(meterRegistry);
             io.micrometer.core.instrument.Gauge.builder("socp.ingestion.outbox.drain.rounds",
                     drainRoundsGauge, AtomicInteger::get).register(meterRegistry);
             io.micrometer.core.instrument.Gauge.builder("socp.ingestion.outbox.drain.duration.milliseconds",
@@ -139,7 +146,10 @@ public class IngestionOutboxPublisher {
             initialDelayString = "${socp.ingest.outbox.initial-delay-ms:1000}")
     @TenantSystemJob
     public void publish() {
-        if (!producer.isEnabled()) return;
+        if (!producer.isEnabled()) {
+            updateBacklogMetrics(0, Instant.now());
+            return;
+        }
         long started = System.nanoTime();
         int rounds = 0;
         int lastBatchSize = 0;
@@ -168,10 +178,10 @@ public class IngestionOutboxPublisher {
                 CompletableFuture.allOf(deliveries.toArray(CompletableFuture[]::new)).join();
                 if (pending.size() < 200) break;
             }
-            updateBacklogMetrics(lastBatchSize, Instant.now());
         } catch (Exception failure) {
             log.warn("Ingestion outbox scan failed; next scan will retry: {}", failure.getMessage());
         } finally {
+            updateBacklogMetrics(lastBatchSize, Instant.now());
             recordDrain(rounds, System.nanoTime() - started);
         }
     }
@@ -190,6 +200,10 @@ public class IngestionOutboxPublisher {
             Instant oldest = repository.findOldestCreatedAtByStatus("PENDING");
             oldestPendingAgeSecondsGauge.set(oldest == null
                     ? 0 : Math.max(0, Duration.between(oldest, now).toSeconds()));
+            deadCountGauge.set(repository.countByStatus("DEAD"));
+            Instant oldestDead = repository.findOldestUpdatedAtByStatus("DEAD");
+            oldestDeadAgeSecondsGauge.set(oldestDead == null
+                    ? 0 : Math.max(0, Duration.between(oldestDead, now).toSeconds()));
         } catch (RuntimeException failure) {
             log.warn("Ingestion outbox backlog metrics deferred: {}", failure.getMessage());
         }
@@ -264,6 +278,17 @@ public class IngestionOutboxPublisher {
                 log.info("Removed retained ingestion outbox rows count={} batchSize={} maxBatches={}",
                         totalRemoved, cleanupBatchSize, cleanupMaxBatches);
                 lifecycle("cleaned", totalRemoved);
+            }
+            Instant discardedCutoff = Instant.now().minus(DISCARDED_RETENTION);
+            int discardedRemoved = 0;
+            for (int batch = 0; batch < cleanupMaxBatches; batch++) {
+                int removed = repository.deleteDiscardedBatchBefore(discardedCutoff, cleanupBatchSize);
+                discardedRemoved += removed;
+                if (removed < cleanupBatchSize) break;
+            }
+            if (discardedRemoved > 0) {
+                log.info("Removed explicitly discarded ingestion outbox rows count={}", discardedRemoved);
+                lifecycle("discarded_cleaned", discardedRemoved);
             }
         } catch (RuntimeException failure) {
             log.warn("Ingestion outbox retention cleanup deferred: {}", failure.getMessage());

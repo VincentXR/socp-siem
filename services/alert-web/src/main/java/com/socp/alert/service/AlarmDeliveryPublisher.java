@@ -38,6 +38,7 @@ public class AlarmDeliveryPublisher {
     private static final int MAX_ERROR_LENGTH = 1024;
     private static final int DEFAULT_MAX_ATTEMPTS = 12;
     private static final long DEFAULT_RETENTION_MS = Duration.ofDays(30).toMillis();
+    private static final Duration DISCARDED_RETENTION = Duration.ofDays(30);
     private static final int DEFAULT_MAX_DRAIN_ROUNDS = 64;
     private static final long DEFAULT_MAX_DRAIN_DURATION_MS = 2_000L;
 
@@ -151,7 +152,20 @@ public class AlarmDeliveryPublisher {
         } finally {
             if (performanceMetrics != null) {
                 performanceMetrics.outboxDrain("alarm_delivery", rounds, System.nanoTime() - started);
+                refreshBacklog();
             }
+        }
+    }
+
+    private void refreshBacklog() {
+        try {
+            performanceMetrics.outboxBacklog("alarm_delivery",
+                    repository.countByStatus("PENDING"),
+                    repository.findOldestCreatedAtByStatus("PENDING"),
+                    repository.countByStatus("DEAD"),
+                    repository.findOldestUpdatedAtByStatus("DEAD"));
+        } catch (RuntimeException failure) {
+            log.warn("Alarm delivery backlog metrics deferred: {}", failure.getMessage());
         }
     }
 
@@ -246,6 +260,11 @@ public class AlarmDeliveryPublisher {
             if (removed > 0) {
                 log.info("Removed retained alarm delivery rows count={}", removed);
                 lifecycle("cleaned", removed);
+            }
+            int discarded = repository.deleteDiscardedBefore(Instant.now().minus(DISCARDED_RETENTION));
+            if (discarded > 0) {
+                log.info("Removed explicitly discarded alarm delivery rows count={}", discarded);
+                lifecycle("discarded_cleaned", discarded);
             }
         } catch (RuntimeException failure) {
             log.warn("Alarm delivery retention cleanup deferred: {}", failure.getMessage());

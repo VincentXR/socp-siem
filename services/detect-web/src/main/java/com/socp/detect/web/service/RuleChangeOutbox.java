@@ -11,7 +11,7 @@ import java.time.Instant;
 @Table(name = "t_rule_change_outbox")
 public class RuleChangeOutbox {
 
-    /** PENDING / PROCESSING / PUBLISHED / DEAD. */
+    /** PENDING / PROCESSING / PUBLISHED / DEAD / DISCARDED. */
 
     @Id
     @Column(length = 36)

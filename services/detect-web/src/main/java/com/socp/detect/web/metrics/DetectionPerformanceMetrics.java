@@ -7,6 +7,7 @@ import com.socp.platform.client.http.ServiceCall;
 import com.socp.rule.engine.RuleProcessingObserver;
 import com.socp.rule.model.SecurityEvent;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.Timer;
 import org.springframework.stereotype.Component;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -17,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Performance-closure measurements for the event path (all events) and the
@@ -33,6 +35,7 @@ public class DetectionPerformanceMetrics implements RuleProcessingObserver {
     private final MeterRegistry registry;
     private final Map<String, EventTiming> events = new ConcurrentHashMap<>();
     private final Map<String, AlertTiming> alerts = new ConcurrentHashMap<>();
+    private final Map<String, AtomicLong> backlogGauges = new ConcurrentHashMap<>();
 
     public DetectionPerformanceMetrics(MeterRegistry registry) {
         this.registry = registry;
@@ -156,6 +159,32 @@ public class DetectionPerformanceMetrics implements RuleProcessingObserver {
                 .publishPercentileHistogram()
                 .register(registry)
                 .record(Math.max(0L, durationNanos), TimeUnit.NANOSECONDS);
+    }
+
+    public void outboxBacklog(String outbox, long pendingCount, Instant oldestPending,
+                              long deadCount, Instant oldestDead) {
+        Instant now = Instant.now();
+        gauge("socp.detection.outbox.pending.count", outbox).set(Math.max(0L, pendingCount));
+        gauge("socp.detection.outbox.oldest.pending.age.seconds", outbox)
+                .set(ageSeconds(oldestPending, now));
+        gauge("socp.detection.outbox.dead.count", outbox).set(Math.max(0L, deadCount));
+        gauge("socp.detection.outbox.oldest.dead.age.seconds", outbox)
+                .set(ageSeconds(oldestDead, now));
+    }
+
+    private AtomicLong gauge(String name, String outbox) {
+        String key = name + ':' + outbox;
+        return backlogGauges.computeIfAbsent(key, ignored -> {
+            AtomicLong value = new AtomicLong();
+            Gauge.builder(name, value, AtomicLong::get)
+                    .tag("outbox", outbox)
+                    .register(registry);
+            return value;
+        });
+    }
+
+    private static long ageSeconds(Instant value, Instant now) {
+        return value == null ? 0L : Math.max(0L, Duration.between(value, now).toSeconds());
     }
 
     @Scheduled(fixedDelayString = "${socp.detect.metrics.timing-cleanup-interval-ms:60000}")

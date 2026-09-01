@@ -48,6 +48,7 @@ public class DetectionAlertOutboxPublisher {
     private static final TypeReference<Map<String, Object>> MAP = new TypeReference<>() {};
     private static final int DEFAULT_MAX_ATTEMPTS = 12;
     private static final long DEFAULT_RETENTION_MS = Duration.ofDays(30).toMillis();
+    private static final Duration DISCARDED_RETENTION = Duration.ofDays(30);
     private static final int DEFAULT_MAX_DRAIN_ROUNDS = 64;
     private static final long DEFAULT_MAX_DRAIN_DURATION_MS = 2_000L;
 
@@ -158,8 +159,28 @@ public class DetectionAlertOutboxPublisher {
         } finally {
             if (performanceMetrics != null) {
                 performanceMetrics.outboxDrain("alert_delivery", rounds, System.nanoTime() - started);
+                refreshBacklog();
             }
         }
+    }
+
+    private void refreshBacklog() {
+        try {
+            performanceMetrics.outboxBacklog("alert_delivery",
+                    repository.countByStatus("PENDING") + repository.countByStatus("DELIVERED"),
+                    oldest(repository.findOldestCreatedAtByStatus("PENDING"),
+                            repository.findOldestCreatedAtByStatus("DELIVERED")),
+                    repository.countByStatus("DEAD"),
+                    repository.findOldestUpdatedAtByStatus("DEAD"));
+        } catch (RuntimeException failure) {
+            log.warn("Detection alert outbox backlog metrics deferred: {}", failure.getMessage());
+        }
+    }
+
+    private static Instant oldest(Instant first, Instant second) {
+        if (first == null) return second;
+        if (second == null) return first;
+        return first.isBefore(second) ? first : second;
     }
 
     private int publishStage(String stage, int remainingRounds, long deadlineNanos) {
@@ -326,6 +347,11 @@ public class DetectionAlertOutboxPublisher {
             if (removed > 0) {
                 log.info("Removed retained Detection alert outbox rows count={}", removed);
                 lifecycle("cleaned", removed);
+            }
+            int discarded = repository.deleteDiscardedBefore(Instant.now().minus(DISCARDED_RETENTION));
+            if (discarded > 0) {
+                log.info("Removed explicitly discarded Detection alert outbox rows count={}", discarded);
+                lifecycle("discarded_cleaned", discarded);
             }
         } catch (RuntimeException failure) {
             log.warn("Detection alert outbox retention cleanup deferred: {}", failure.getMessage());

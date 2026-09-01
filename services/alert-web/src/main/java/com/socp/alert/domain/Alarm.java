@@ -10,6 +10,7 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.DynamicUpdate;
 
 import java.time.Instant;
 
@@ -18,6 +19,7 @@ import java.time.Instant;
  * 继承 BaseEntity 自动带 tenantId（多租户 SDK 级隔离）。
  */
 @Entity
+@DynamicUpdate
 @Table(name = "t_alarm", uniqueConstraints = {
         @jakarta.persistence.UniqueConstraint(name = "uq_alarm_tenant_source_alert",
                 columnNames = {"tenant_id", "source_alert_id"})

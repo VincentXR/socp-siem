@@ -174,10 +174,10 @@ jobs:
       - name: Run real middleware contracts
         run: >-
           bash build/mvnw.sh
-          -pl platform/socp-test,platform/socp-tenant,services/incident-web,services/search-config
+          -pl platform/socp-test,platform/socp-tenant,services/incident-web,services/search-config,services/alert-web
           -am test
           -Dsurefire.failIfNoSpecifiedTests=false
-          -Dtest=MiddlewareSemanticsContainerTest,ContainerIdempotencyContractTest,TenantRlsPostgresTest,CaseTimelinePostgresTest,OsEventReaderOpenSearchContainerTest,OsIndexerFailureContainerTest
+          -Dtest=MiddlewareSemanticsContainerTest,ContainerIdempotencyContractTest,TenantRlsPostgresTest,CaseTimelinePostgresTest,AlarmEnrichmentPostgresConcurrencyTest,OsEventReaderOpenSearchContainerTest,OsIndexerFailureContainerTest
 
       - name: Upload middleware test reports
         if: always()
@@ -188,6 +188,7 @@ jobs:
             platform/socp-test/target/surefire-reports/
             platform/socp-tenant/target/surefire-reports/
             services/incident-web/target/surefire-reports/
+            services/alert-web/target/surefire-reports/
             services/search-config/target/surefire-reports/
           if-no-files-found: ignore
 
@@ -311,6 +312,11 @@ jobs:
       SOCP_JWT_SECRET: ci-test-jwt-secret-0123456789abcdef0123456789abcdef
       SOCP_LOGIN_SECRET: ci-test-jwt-secret-0123456789abcdef0123456789abcdef
       SOCP_SECURITY_SERVICE_SECRET: ci-test-service-secret-0123456789abcdef
+      SOCP_SECURITY_METRICS_TOKEN: ci-test-metrics-token-0123456789abcdef
+      SOCP_SECURITY_ALLOW_PROD_HMAC: "true"
+      SOCP_PG_PASSWORD: ci-test-pg-password-0123456789abcdef
+      SOCP_CK_PASSWORD: ci-test-ck-password-0123456789abcdef
+      SOCP_MINIO_SECRET: ci-test-minio-secret-0123456789abcdef
       SOCP_AUTH_USERS: '{"admin":"admin123","demo":"demo123","viewer":"viewer123"}'
       SOCP_AUTH_ROLES: '{"admin":"admin","demo":"analyst","viewer":"viewer"}'
       SOCP_COLLECTOR_CREDENTIALS: "ci-chaos|default|ci-chaos-collector-secret"
@@ -326,14 +332,14 @@ jobs:
       PIPELINE_OS: http://localhost:9200
       PIPELINE_OS_AUTH: "admin:"
       PIPELINE_CK: http://localhost:8123
-      PIPELINE_CK_AUTH: "default:socp"
+      PIPELINE_CK_AUTH: "default:ci-test-ck-password-0123456789abcdef"
       PIPELINE_KAFKA: localhost:9092
     services:
       postgres:
         image: postgres:18
         env:
           POSTGRES_USER: socp
-          POSTGRES_PASSWORD: socp
+          POSTGRES_PASSWORD: ci-test-pg-password-0123456789abcdef
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U socp"
@@ -377,10 +383,10 @@ jobs:
         image: clickhouse/clickhouse-server:24.3
         env:
           CLICKHOUSE_USER: default
-          CLICKHOUSE_PASSWORD: socp
+          CLICKHOUSE_PASSWORD: ci-test-ck-password-0123456789abcdef
         ports: ["8123:8123"]
         options: >-
-          --health-cmd "clickhouse-client --user default --password socp -q 'SELECT 1'"
+          --health-cmd "clickhouse-client --user default --password ci-test-ck-password-0123456789abcdef -q 'SELECT 1'"
           --health-interval 5s --health-timeout 5s --health-retries 15
     steps:
       - uses: actions/checkout@v4
@@ -401,7 +407,7 @@ jobs:
           ck_container="$(docker ps --filter 'ancestor=clickhouse/clickhouse-server:24.3' --format '{{.ID}}' | head -n 1)"
           test -n "$ck_container"
           docker exec -i "$ck_container" clickhouse-client \
-            --user default --password socp --multiquery \
+            --user default --password "$SOCP_CK_PASSWORD" --multiquery \
             < infra/init-sql/clickhouse/init.sql
 
       - name: Set up JDK 21
@@ -430,6 +436,25 @@ jobs:
 
       - name: Install kafka-python (pipeline probe)
         run: pip install kafka-python==3.0.10
+
+      - name: Boot core JARs with production-like contexts
+        env:
+          SOCP_AUTH_COOKIE_SECURE: "true"
+          SOCP_RATELIMIT_BACKEND: redis
+          SOCP_RATELIMIT_FAIL_CLOSED: "true"
+          SOCP_AUDIT_SINK: kafka
+          SOCP_AUDIT_FAIL_CLOSED: "true"
+          SOCP_TENANT_RLS_ENABLED: "true"
+          SOCP_OPENSEARCH_ENABLED: "false"
+          SOCP_OPENSEARCH_USERNAME: ci-prod-smoke
+          SOCP_OPENSEARCH_PASSWORD: ci-prod-smoke-password-0123456789abcdef
+          SOCP_OPENSEARCH_INSECURE_SKIP_VERIFY: "false"
+          SOCP_MINIO_ENABLED: "false"
+          SOCP_INGEST_TOKEN: ci-chaos-collector-secret
+          SOCP_VECTOR_TOKEN: ci-chaos-collector-secret
+        run: >-
+          python3 build/verify-prod-boot.py --services
+          search-config detect-web alert-web report-web api-gateway
 
       - name: Start pipeline services
         run: |

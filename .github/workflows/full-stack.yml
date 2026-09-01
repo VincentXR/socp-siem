@@ -17,6 +17,12 @@ jobs:
       SOCP_JWT_SECRET: ci-full-stack-jwt-secret-0123456789abcdef0123456789abcdef
       SOCP_LOGIN_SECRET: ci-full-stack-jwt-secret-0123456789abcdef0123456789abcdef
       SOCP_SECURITY_SERVICE_SECRET: ci-full-stack-service-secret-0123456789abcdef
+      SOCP_SECURITY_METRICS_TOKEN: ci-full-stack-metrics-token-0123456789abcdef
+      SOCP_SECURITY_ALLOW_PROD_HMAC: "true"
+      SOCP_PG_PASSWORD: ci-full-stack-pg-password-0123456789abcdef
+      SOCP_CK_PASSWORD: ci-full-stack-ck-password-0123456789abcdef
+      SOCP_MINIO_SECRET: ci-full-stack-minio-secret-0123456789abcdef
+      SOCP_OPENSEARCH_PASSWORD: ci-full-stack-os-password-0123456789abcdef
       SOCP_RUNTIME_PROFILES: dev,pg
       SOCP_RATELIMIT_BACKEND: redis
       SOCP_RATELIMIT_FAIL_CLOSED: "true"
@@ -47,9 +53,9 @@ jobs:
       PIPELINE_COLLECTOR_ID: ci-chaos
       PIPELINE_COLLECTOR_TOKEN: ci-chaos-collector-secret
       PIPELINE_OS: https://localhost:9200
-      PIPELINE_OS_AUTH: "admin:Socp!Sec2026xK"
+      PIPELINE_OS_AUTH: "admin:ci-full-stack-os-password-0123456789abcdef"
       PIPELINE_CK: http://localhost:8123
-      PIPELINE_CK_AUTH: "default:socp"
+      PIPELINE_CK_AUTH: "default:ci-full-stack-ck-password-0123456789abcdef"
       PIPELINE_KAFKA: localhost:9092
     steps:
       - uses: actions/checkout@v4
@@ -82,6 +88,25 @@ jobs:
 
       - name: Build backend
         run: bash build/mvnw.sh -DskipTests package
+
+      - name: Boot every packaged service with a production-like context
+        env:
+          SOCP_AUTH_COOKIE_SECURE: "true"
+          SOCP_TENANT_RLS_ENABLED: "true"
+          SOCP_AUDIT_SINK: kafka
+          SOCP_AUDIT_FAIL_CLOSED: "true"
+          SOCP_OPENSEARCH_ENABLED: "false"
+          SOCP_OPENSEARCH_USERNAME: ci-prod-smoke
+          SOCP_OPENSEARCH_INSECURE_SKIP_VERIFY: "false"
+          SOCP_INGEST_TOKEN: ci-chaos-collector-secret
+          SOCP_VECTOR_TOKEN: ci-chaos-collector-secret
+          SOCP_ASSET_COLLECT_DB_URL: jdbc:postgresql://localhost:5432/asset_collect
+          SOCP_ASSET_COLLECT_DB_USERNAME: socp
+          SOCP_ASSET_COLLECT_DB_PASSWORD: ci-full-stack-pg-password-0123456789abcdef
+          SOCP_HIPS_COLLECT_DB_URL: jdbc:postgresql://localhost:5432/hips_collect
+          SOCP_HIPS_COLLECT_DB_USERNAME: socp
+          SOCP_HIPS_COLLECT_DB_PASSWORD: ci-full-stack-pg-password-0123456789abcdef
+        run: python3 build/verify-prod-boot.py
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile

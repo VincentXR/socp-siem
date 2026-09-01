@@ -18,6 +18,17 @@ public interface RuleChangeOutboxRepository extends TenantScopedRepository<RuleC
     List<RuleChangeOutbox> findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
             String status, Instant nextAttemptAt);
 
+    List<RuleChangeOutbox> findTop100ByTenantIdAndStatusOrderByUpdatedAtAsc(
+            String tenantId, String status);
+
+    long countByStatus(String status);
+
+    @Query("select min(o.createdAt) from RuleChangeOutbox o where o.status = :status")
+    Instant findOldestCreatedAtByStatus(@Param("status") String status);
+
+    @Query("select min(o.updatedAt) from RuleChangeOutbox o where o.status = :status")
+    Instant findOldestUpdatedAtByStatus(@Param("status") String status);
+
     @Modifying
     @Transactional
     @Query("update RuleChangeOutbox o set o.status = 'PROCESSING', o.claimedAt = :now, "
@@ -67,11 +78,25 @@ public interface RuleChangeOutboxRepository extends TenantScopedRepository<RuleC
     @Transactional
     @Query("update RuleChangeOutbox o set o.status = 'PENDING', o.attempts = 0, o.nextAttemptAt = :now, "
             + "o.claimedAt = null, o.lastError = null, o.updatedAt = :now "
-            + "where o.id = :id and o.status = 'DEAD'")
-    int requeueDead(@Param("id") String id, @Param("now") Instant now);
+            + "where o.id = :id and o.tenantId = :tenantId and o.status = 'DEAD'")
+    int requeueDead(@Param("id") String id, @Param("tenantId") String tenantId,
+                    @Param("now") Instant now);
+
+    @Modifying
+    @Transactional
+    @Query("update RuleChangeOutbox o set o.status = 'DISCARDED', o.claimedAt = null, "
+            + "o.lastError = :reason, o.updatedAt = :now where o.id = :id "
+            + "and o.tenantId = :tenantId and o.status = 'DEAD'")
+    int discardDead(@Param("id") String id, @Param("tenantId") String tenantId,
+                    @Param("reason") String reason, @Param("now") Instant now);
 
     @Modifying
     @Transactional
     @Query("delete from RuleChangeOutbox o where o.status = 'PUBLISHED' and o.publishedAt < :cutoff")
     int deletePublishedBefore(@Param("cutoff") Instant cutoff);
+
+    @Modifying
+    @Transactional
+    @Query("delete from RuleChangeOutbox o where o.status = 'DISCARDED' and o.updatedAt < :cutoff")
+    int deleteDiscardedBefore(@Param("cutoff") Instant cutoff);
 }

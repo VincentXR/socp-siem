@@ -63,7 +63,7 @@ services:
     container_name: socp-postgres
     environment:
       POSTGRES_USER: socp
-      POSTGRES_PASSWORD: socp
+      POSTGRES_PASSWORD: ${SOCP_PG_PASSWORD:-socp}
       POSTGRES_DB: socp
     ports:
       - "5432:5432"
@@ -140,7 +140,7 @@ services:
     container_name: socp-opensearch
     environment:
       discovery.type: single-node
-      OPENSEARCH_INITIAL_ADMIN_PASSWORD: "Socp!Sec2026xK"
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: ${SOCP_OPENSEARCH_PASSWORD:-Socp!Sec2026xK}
       bootstrap.memory_lock: "false"
       ES_JAVA_OPTS: "-Xms512m -Xmx512m"
     ports:
@@ -208,7 +208,7 @@ services:
     environment:
       # 25.x 镜像默认启用认证，显式固定密码（业务代码 socp.ck.url 使用）
       CLICKHOUSE_USER: default
-      CLICKHOUSE_PASSWORD: socp
+      CLICKHOUSE_PASSWORD: ${SOCP_CK_PASSWORD:-socp}
     ports:
       - "8123:8123"    # HTTP 接口
       # 端口冲突修正：原为 "9000:9000"，与 MinIO 的 S3 API 宿主端口 9000 冲突，
@@ -239,7 +239,7 @@ services:
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
       MINIO_ROOT_USER: socp
-      MINIO_ROOT_PASSWORD: Socp@2026
+      MINIO_ROOT_PASSWORD: ${SOCP_MINIO_SECRET:-Socp@2026}
     ports:
       # MinIO 保留标准端口；ClickHouse 已让出宿主 9000（改为 9010），两者不再冲突。
       - "9000:9000"    # S3 API

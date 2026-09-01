@@ -33,6 +33,7 @@ public class RuleChangePublisher {
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     private static final int DEFAULT_MAX_ATTEMPTS = 12;
     private static final long DEFAULT_RETENTION_MS = Duration.ofDays(30).toMillis();
+    private static final Duration DISCARDED_RETENTION = Duration.ofDays(30);
 
     private final RuleChangeOutboxRepository repository;
     private final DetectionPerformanceMetrics performanceMetrics;
@@ -88,7 +89,10 @@ public class RuleChangePublisher {
             initialDelayString = "${socp.kafka.rule-publish-initial-delay-ms:500}")
     @TenantSystemJob
     public void flush() {
-        if (!enabled) return;
+        if (!enabled) {
+            refreshBacklog();
+            return;
+        }
         try {
             Instant now = Instant.now();
             recoverStaleIfDue(now);
@@ -102,6 +106,21 @@ public class RuleChangePublisher {
             for (RuleChangeOutbox row : pending) deliver(row);
         } catch (RuntimeException failure) {
             log.warn("Rule-change outbox scan failed; next scan will retry: {}", failure.getMessage());
+        } finally {
+            refreshBacklog();
+        }
+    }
+
+    private void refreshBacklog() {
+        if (performanceMetrics == null) return;
+        try {
+            performanceMetrics.outboxBacklog("rule_change",
+                    repository.countByStatus("PENDING"),
+                    repository.findOldestCreatedAtByStatus("PENDING"),
+                    repository.countByStatus("DEAD"),
+                    repository.findOldestUpdatedAtByStatus("DEAD"));
+        } catch (RuntimeException failure) {
+            log.warn("Rule-change outbox backlog metrics deferred: {}", failure.getMessage());
         }
     }
 
@@ -171,6 +190,11 @@ public class RuleChangePublisher {
             if (removed > 0) {
                 log.info("Removed retained rule-change outbox rows count={}", removed);
                 lifecycle("cleaned", removed);
+            }
+            int discarded = repository.deleteDiscardedBefore(Instant.now().minus(DISCARDED_RETENTION));
+            if (discarded > 0) {
+                log.info("Removed explicitly discarded rule-change outbox rows count={}", discarded);
+                lifecycle("discarded_cleaned", discarded);
             }
         } catch (RuntimeException failure) {
             log.warn("Rule-change outbox retention cleanup deferred: {}", failure.getMessage());

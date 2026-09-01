@@ -197,6 +197,9 @@ class IngestionOutboxPublisherTest {
         when(repository.countByStatus("PENDING")).thenReturn(827L);
         when(repository.findOldestCreatedAtByStatus("PENDING"))
                 .thenReturn(Instant.now().minusSeconds(120));
+        when(repository.countByStatus("DEAD")).thenReturn(3L);
+        when(repository.findOldestUpdatedAtByStatus("DEAD"))
+                .thenReturn(Instant.now().minusSeconds(300));
         publisher = new IngestionOutboxPublisher(repository, producer, registry,
                 1, 12, 60_000L, 100, 2);
 
@@ -206,6 +209,28 @@ class IngestionOutboxPublisherTest {
         assertEquals(827.0, registry.get("socp.ingestion.outbox.pending.count").gauge().value());
         double oldestAge = registry.get("socp.ingestion.outbox.oldest.pending.age.seconds").gauge().value();
         org.junit.jupiter.api.Assertions.assertTrue(oldestAge >= 119 && oldestAge <= 121);
+        assertEquals(3.0, registry.get("socp.ingestion.outbox.dead.count").gauge().value());
+        double oldestDeadAge = registry.get("socp.ingestion.outbox.oldest.dead.age.seconds").gauge().value();
+        org.junit.jupiter.api.Assertions.assertTrue(oldestDeadAge >= 299 && oldestDeadAge <= 301);
+    }
+
+    @Test
+    void refreshesBacklogMetricsWhenScanFails() {
+        IngestionOutboxRepository repository = mock(IngestionOutboxRepository.class);
+        KafkaEventProducer producer = mock(KafkaEventProducer.class);
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        when(producer.isEnabled()).thenReturn(true);
+        when(repository.markExhausted(anyInt(), anyString(), any(Instant.class)))
+                .thenThrow(new IllegalStateException("database unavailable"));
+        when(repository.countByStatus("PENDING")).thenReturn(11L);
+        when(repository.countByStatus("DEAD")).thenReturn(2L);
+        publisher = new IngestionOutboxPublisher(repository, producer, registry,
+                1, 12, 60_000L, 100, 2);
+
+        publisher.publish();
+
+        assertEquals(11.0, registry.get("socp.ingestion.outbox.pending.count").gauge().value());
+        assertEquals(2.0, registry.get("socp.ingestion.outbox.dead.count").gauge().value());
     }
 
     @Test

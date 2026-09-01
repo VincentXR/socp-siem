@@ -10,16 +10,29 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 
 /** Repository for the durable Detection -> Alert Web hand-off. */
 public interface DetectionAlertOutboxRepository extends TenantScopedRepository<DetectionAlertOutboxEntity, String> {
     List<DetectionAlertOutboxEntity> findByTenantId(String tenantId);
     boolean existsByAlertIdAndTenantId(String alertId, String tenantId);
+    Optional<DetectionAlertOutboxEntity> findByAlertIdAndTenantId(String alertId, String tenantId);
 
     List<DetectionAlertOutboxEntity> findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
             String status, Instant now);
 
     List<DetectionAlertOutboxEntity> findByStatusAndUpdatedAtBefore(String status, Instant cutoff);
+
+    List<DetectionAlertOutboxEntity> findTop100ByTenantIdAndStatusOrderByUpdatedAtAsc(
+            String tenantId, String status);
+
+    long countByStatus(String status);
+
+    @Query("select min(e.createdAt) from DetectionAlertOutboxEntity e where e.status = :status")
+    Instant findOldestCreatedAtByStatus(@Param("status") String status);
+
+    @Query("select min(e.updatedAt) from DetectionAlertOutboxEntity e where e.status = :status")
+    Instant findOldestUpdatedAtByStatus(@Param("status") String status);
 
     @Modifying
     @Transactional
@@ -42,13 +55,28 @@ public interface DetectionAlertOutboxRepository extends TenantScopedRepository<D
 
     @Modifying
     @Transactional
-    @Query("update DetectionAlertOutboxEntity e set e.status = 'PENDING', e.attempts = 0, "
+    @Query("update DetectionAlertOutboxEntity e set e.status = "
+            + "case when e.deliveredAt is null then 'PENDING' else 'DELIVERED' end, e.attempts = 0, "
             + "e.nextAttemptAt = :now, e.lastError = null, e.updatedAt = :now "
-            + "where e.alertId = :alertId and e.status = 'DEAD'")
-    int requeueDead(@Param("alertId") String alertId, @Param("now") Instant now);
+            + "where e.alertId = :alertId and e.tenantId = :tenantId and e.status = 'DEAD'")
+    int requeueDead(@Param("alertId") String alertId, @Param("tenantId") String tenantId,
+                    @Param("now") Instant now);
+
+    @Modifying
+    @Transactional
+    @Query("update DetectionAlertOutboxEntity e set e.status = 'DISCARDED', "
+            + "e.lastError = :reason, e.updatedAt = :now where e.alertId = :alertId "
+            + "and e.tenantId = :tenantId and e.status = 'DEAD'")
+    int discardDead(@Param("alertId") String alertId, @Param("tenantId") String tenantId,
+                    @Param("reason") String reason, @Param("now") Instant now);
 
     @Modifying
     @Transactional
     @Query("delete from DetectionAlertOutboxEntity e where e.status = 'PUBLISHED' and e.publishedAt < :cutoff")
     int deletePublishedBefore(@Param("cutoff") Instant cutoff);
+
+    @Modifying
+    @Transactional
+    @Query("delete from DetectionAlertOutboxEntity e where e.status = 'DISCARDED' and e.updatedAt < :cutoff")
+    int deleteDiscardedBefore(@Param("cutoff") Instant cutoff);
 }

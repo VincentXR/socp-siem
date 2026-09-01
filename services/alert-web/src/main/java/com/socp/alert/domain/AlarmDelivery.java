@@ -16,7 +16,7 @@ import java.time.Instant;
 })
 public class AlarmDelivery {
 
-    /** PENDING / PROCESSING / DELIVERED / DEAD. DEAD rows require an explicit replay. */
+    /** PENDING / PROCESSING / DELIVERED / DEAD / DISCARDED. */
 
     @Id
     @Column(length = 36)

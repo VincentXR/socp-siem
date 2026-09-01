@@ -23,6 +23,41 @@ spec:
             severity: warning
           annotations:
             summary: SOCP ingestion outbox has an old pending row
+        - alert: SocpAlertOutboxOldestAge
+          expr: max(socp_alert_outbox_oldest_pending_age_seconds) > 300
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: SOCP Alert outbox has an old pending row
+        - alert: SocpDetectionOutboxOldestAge
+          expr: max(socp_detection_outbox_oldest_pending_age_seconds) > 300
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: SOCP Detection outbox has an old pending row
+        - alert: SocpIngestionOutboxDead
+          expr: max(socp_ingestion_outbox_dead_count) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: SOCP ingestion outbox requires operator action
+        - alert: SocpAlertOutboxDead
+          expr: max(socp_alert_outbox_dead_count) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: SOCP Alert outbox requires operator action
+        - alert: SocpDetectionOutboxDead
+          expr: max(socp_detection_outbox_dead_count) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: SOCP Detection outbox requires operator action
         - alert: SocpDeadLetterGrowth
           expr: increase(socp_opensearch_indexer_records_total{stage="dlq"}[15m]) > 0
           for: 5m

@@ -39,6 +39,7 @@ public class OutboxPublisher {
     private static final Logger log = LoggerFactory.getLogger(OutboxPublisher.class);
     private static final int DEFAULT_MAX_ATTEMPTS = 12;
     private static final long DEFAULT_RETENTION_MS = Duration.ofDays(30).toMillis();
+    private static final Duration DISCARDED_RETENTION = Duration.ofDays(30);
     private static final int DEFAULT_MAX_DRAIN_ROUNDS = 64;
     private static final long DEFAULT_MAX_DRAIN_DURATION_MS = 2_000L;
     private static final int MAX_ERROR_LENGTH = 1024;
@@ -154,7 +155,20 @@ public class OutboxPublisher {
         } finally {
             if (performanceMetrics != null) {
                 performanceMetrics.outboxDrain("alarm_event", rounds, System.nanoTime() - started);
+                refreshBacklog();
             }
+        }
+    }
+
+    private void refreshBacklog() {
+        try {
+            performanceMetrics.outboxBacklog("alarm_event",
+                    outboxRepo.countByStatus("PENDING"),
+                    outboxRepo.findOldestCreatedAtByStatus("PENDING"),
+                    outboxRepo.countByStatus("DEAD"),
+                    outboxRepo.findOldestUpdatedAtByStatus("DEAD"));
+        } catch (RuntimeException failure) {
+            log.warn("Alert outbox backlog metrics deferred: {}", failure.getMessage());
         }
     }
 
@@ -220,6 +234,11 @@ public class OutboxPublisher {
             if (removed > 0) {
                 log.info("Removed retained Alert outbox rows count={}", removed);
                 lifecycle("cleaned", removed);
+            }
+            int discarded = outboxRepo.deleteDiscardedBefore(Instant.now().minus(DISCARDED_RETENTION));
+            if (discarded > 0) {
+                log.info("Removed explicitly discarded Alert outbox rows count={}", discarded);
+                lifecycle("discarded_cleaned", discarded);
             }
         } catch (RuntimeException failure) {
             log.warn("Alert outbox retention cleanup deferred: {}", failure.getMessage());
