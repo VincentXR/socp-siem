@@ -4,7 +4,7 @@ import com.socp.platform.data.outbox.OutboxRetryPolicy;
 
 import com.socp.alert.config.AlertOutboxProperties;
 import com.socp.alert.domain.OutboxEvent;
-import com.socp.alert.repository.OutboxRepository;
+import com.socp.alert.persistence.repository.OutboxRepository;
 
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.platform.tenant.persistence.TenantSystemJob;

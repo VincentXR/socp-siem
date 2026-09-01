@@ -42,7 +42,10 @@ class RuntimeTopologyTest(unittest.TestCase):
     def test_compatibility_launcher_cannot_become_a_target_member(self):
         modules, services = current_registry()
         topology = copy.deepcopy(load_topology())
-        topology["units"][1]["members"].append("asset-collect")
+        compatibility = "synthetic-compatibility-launcher"
+        modules.append(compatibility)
+        topology["compatibilityModules"].append(compatibility)
+        topology["units"][1]["members"].append(compatibility)
 
         errors = validate_topology(topology, modules, services)
 

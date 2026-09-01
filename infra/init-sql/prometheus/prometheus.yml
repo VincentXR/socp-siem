@@ -3,7 +3,7 @@
 # ⚠️ 现状说明（重要）
 #   1) 端口→服务映射已按 build/run-all.sh 的 BACKENDS 数组校准（此前的注释映射全部是错的）。
 #
-#   2) `micrometer-registry-prometheus` 是 **17 个服务的编译依赖**，且各服务的
+#   2) `micrometer-registry-prometheus` 是 **15 个服务的编译依赖**，且各服务的
 #      `management.endpoints.web.exposure.include` 已含 `prometheus`：
 #      - api-gateway（18092）无 context-path，走根路径 `/actuator/prometheus`；
 #      - 其余 16 个业务服务有 `server.servlet.context-path: /{服务名}`，

@@ -23,7 +23,7 @@
 #    已知可能偏旧：Temporal(建议升 1.24+)、Keycloak(建议 27/28)、ClickHouse(建议 26.x LTS)。
 #  - PostgreSQL 的 Apache AGE 扩展需带 AGE 的镜像（如 bitnine/age:PG18 或自构建），
 #    标准 postgres:18 不含 AGE；init-sql/02_age.sql 为可选，按需启用。
-#  - 仓库保留 17 个可执行服务模块；默认运行 15 个进程，asset/hips 采集入口已并入各自的 Web 服务。
+#  - 仓库包含 15 个可执行服务模块；asset/hips 采集入口已并入各自的 Web 服务。
 #  - 宿主端口冲突约定：避开 8080（旧 SIEM 控制台占用）；ClickHouse 原生口让位给 MinIO，见下。
 
 networks:
@@ -317,7 +317,7 @@ services:
     mem_limit: 768m
 
   # ── 可观测栈（Prometheus + Grafana + Loki + Jaeger，P18） ─
-  # 17 个服务均编译并暴露 Micrometer Prometheus 指标；Prometheus 配置按
+  # 15 个服务均编译并暴露 Micrometer Prometheus 指标；Prometheus 配置按
   # gateway/context-path 分开抓取。OTel trace 上报通过 SOCP_TRACING_ENABLED
   # 开关控制，开启时由 extra profile 提供 Jaeger OTLP 接收端。
   prometheus:

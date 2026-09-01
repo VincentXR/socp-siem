@@ -40,9 +40,7 @@ tests and artifact checks are under `frontend/apps/workbench/scripts`.
 | `attack-web` | 18095 | ATT&CK catalog and detection coverage | H2 |
 | `notify-web` | 18096 | Notification channels and delivery records | H2 |
 | `asset-web` | 18085 | Asset inventory, imports, and asset collection ingress | H2 |
-| `asset-collect` | 18091 | Optional standalone compatibility launcher for asset collection | Durable H2 locally; PostgreSQL in production |
 | `hips-web` | 18087 | Endpoint registration, heartbeat state, and event ingress | H2 |
-| `hips-collect` | 18093 | Optional standalone compatibility launcher for endpoint collection | Durable H2 locally; PostgreSQL in production |
 | `ai-assistant` | 18088 | Keyword-backed security knowledge assistant | H2 |
 
 The services with `application-integration.yml` import their
@@ -53,10 +51,8 @@ production profile rejects H2.
 The default `full` deployment runs 15 JVMs. Asset and endpoint collection
 ingress are hosted by `asset-web` and `hips-web`; the gateway rewrites the
 legacy `/asset-collect/**` and `/hips-collect/**` paths so agents do not need to
-change URLs. The two collector modules remain buildable and can be launched
-explicitly for compatibility, but are not part of the default process set.
-Their simulator flags are disabled by the production overlays; production
-collection must come from Agent/Falco/CMDB inputs.
+change URLs. The duplicate standalone collector modules are retired.
+Production collection must come from managed Agent/Falco/CMDB inputs.
 
 Code-module ownership is deliberately separate from the target runtime shape.
 The executable contract in `build/runtime-topology.json` assigns every current
@@ -71,9 +67,8 @@ default service exactly once to one of six target units:
 | `response-integration` | `soar-web`, `notify-web`, `asset-web`, `hips-web`, `threat-web`, `attack-web` |
 | `report-ai` | `report-web`, `ai-assistant`, `soc-base` |
 
-`asset-collect` and `hips-collect` are compatibility launchers, not target
-deployment members. Run `python build/runtime-topology.py --check` to verify
-that module, process, compatibility, and target-unit registries still agree.
+Run `python build/runtime-topology.py --check` to verify that module, process,
+compatibility, and target-unit registries still agree.
 The six-unit shape remains a target contract until aggregate applications pass
 the context, API, failure, and capacity gates required by ADR 0004.
 

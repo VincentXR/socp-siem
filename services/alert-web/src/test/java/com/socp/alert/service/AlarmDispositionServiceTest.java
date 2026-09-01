@@ -1,7 +1,7 @@
 package com.socp.alert.service;
 
 import com.socp.alert.persistence.entity.DispositionEntity;
-import com.socp.alert.repository.DispositionRepository;
+import com.socp.alert.persistence.repository.DispositionRepository;
 
 
 import com.socp.platform.tenant.context.TenantContext;

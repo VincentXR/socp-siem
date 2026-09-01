@@ -3,9 +3,9 @@ package com.socp.alert.service;
 import com.socp.alert.domain.Alarm;
 import com.socp.alert.domain.OutboxEvent;
 import com.socp.alert.domain.OutboxReplayResult;
-import com.socp.alert.repository.AlarmDeliveryRepository;
-import com.socp.alert.repository.AlarmRepository;
-import com.socp.alert.repository.OutboxRepository;
+import com.socp.alert.persistence.repository.AlarmDeliveryRepository;
+import com.socp.alert.persistence.repository.AlarmRepository;
+import com.socp.alert.persistence.repository.OutboxRepository;
 
 
 import com.socp.platform.data.outbox.DeadOutboxRecord;

@@ -6,7 +6,7 @@ import com.socp.alert.config.AlertDeliveryProperties;
 import com.socp.alert.domain.Alarm;
 import com.socp.alert.domain.AlarmDelivery;
 import com.socp.alert.domain.AlarmDeliveryDestination;
-import com.socp.alert.repository.AlarmDeliveryRepository;
+import com.socp.alert.persistence.repository.AlarmDeliveryRepository;
 
 
 import com.socp.platform.client.service.IncidentClient;

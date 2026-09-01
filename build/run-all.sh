@@ -4,7 +4,7 @@
 # 用法（在仓库任意位置执行都可以，路径全部从脚本自身推导）：
 #   bash build/run-all.sh doctor    # 环境自检：java / maven / pnpm / jar / 端口
 #   bash build/run-all.sh start     # 默认启动完整后端 + 前端
-#   bash build/run-all.sh start ui  # 启动全部业务页面依赖（不含采集器）+ 前端
+#   bash build/run-all.sh start ui  # 启动全部业务页面依赖 + 前端
 #   bash build/run-all.sh start core # 只启动核心事件链 + 前端（低资源）
 #   bash build/run-all.sh stop      # 停止全部
 #   bash build/run-all.sh status    # 探活完整后端
@@ -126,7 +126,9 @@ kill_pid() {
 # doctor：冷启动前的环境自检（缺什么一次说清，别让人一个个撞）
 # ---------------------------------------------------------------------------
 doctor() {
-  local fatal=0
+  local fatal=0 module_count service_count
+  module_count="$(awk '{print NF}' <<< "$SOCP_MODULE_NAMES")"
+  service_count="$(awk '{print NF}' <<< "$SOCP_SERVICE_NAMES")"
   echo "=== 仓库根 ==="
   echo "  $ROOT"
   [ -f "$ROOT/pom.xml" ] || { echo "  ❌ 这里没有 pom.xml，脚本可能被移出仓库了"; fatal=1; }
@@ -148,7 +150,7 @@ doctor() {
     [ -f "$(jar_of "$name")" ] || { missing=$((missing + 1)); echo "  ❌ 缺 jar: $name"; }
   done
   if [ "$missing" -eq 0 ]; then
-    echo "  ✅ 17/17 模块 jar 就绪（默认部署 15 个进程）"
+    echo "  ✅ $module_count/$module_count 模块 jar 就绪"
   else
     echo "  → 执行 bash build/mvnw.sh -DskipTests package 生成"
   fi
@@ -163,7 +165,7 @@ doctor() {
       echo "  ⚠️  :$port 已被 PID=$pid 占用（$name）→ 可用 SOCP_PORT_$(printf '%s' "$name" | tr 'a-z-' 'A-Z_')=<新端口> 改开"
     fi
   done
-  [ "$busy" -eq 0 ] && echo "  ✅ 15 个默认部署端口均空闲"
+  [ "$busy" -eq 0 ] && echo "  ✅ $service_count 个默认部署端口均空闲"
 
   echo
   [ "$fatal" -eq 0 ] && echo "自检通过，可以 bash build/run-all.sh start" || echo "存在致命问题，请先处理上面的 ❌"
@@ -309,9 +311,6 @@ stop_one_service() {
 stop_all() {
   echo "=== 停止后端 ==="
   stop_backend full
-  # Also stop optional standalone compatibility collectors if they were started explicitly.
-  stop_one_service asset-collect
-  stop_one_service hips-collect
   echo "=== 停止前端 ==="
   local pid
   pid="$(pid_on_port "$FRONTEND_PORT")"

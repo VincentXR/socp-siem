@@ -45,7 +45,7 @@ class PortsEnvConsistencyTest {
             if (FRONTEND_KEY.equals(key)) continue;
             fromEnv.put(key.toLowerCase().replace('_', '-'), Integer.parseInt(m.group(2)));
         }
-        assertTrue(fromEnv.size() >= 17,
+        assertTrue(fromEnv.size() >= SocpService.values().length,
                 "ports.env 解析到的服务端口过少（" + fromEnv.size() + "），格式可能被改动");
 
         for (SocpService svc : SocpService.values()) {

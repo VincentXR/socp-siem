@@ -1,7 +1,7 @@
 package com.socp.alert.service;
 
 import com.socp.alert.domain.AlarmDelivery;
-import com.socp.alert.repository.AlarmDeliveryRepository;
+import com.socp.alert.persistence.repository.AlarmDeliveryRepository;
 
 
 import org.junit.jupiter.api.Test;

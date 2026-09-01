@@ -82,16 +82,14 @@
         <module>platform/socp-client</module>
         <module>platform/socp-starter</module>
 
-        <!-- 17 个业务服务 -->
+        <!-- 15 个业务服务 -->
         <module>services/soc-base</module>
         <module>services/asset-web</module>
-        <module>services/asset-collect</module>
         <module>services/alert-web</module>
         <module>services/search-config</module>
         <module>services/detect-web</module>
         <module>services/detect-model</module>
         <module>services/hips-web</module>
-        <module>services/hips-collect</module>
         <module>services/soar-web</module>
         <module>services/report-web</module>
         <module>services/ai-assistant</module>

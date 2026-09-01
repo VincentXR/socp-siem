@@ -10,9 +10,9 @@ ingest-search, detection, alert-incident, response-integration and report-ai.
 `build/runtime-topology.json` is the machine-readable source of truth for that
 target. `build/verify-contracts.py` rejects duplicate assignments, missing
 default services, unknown modules, or compatibility launchers placed into a
-target unit. `asset-collect` and `hips-collect` remain buildable compatibility
-launchers but are intentionally outside the target topology because their
-ingress endpoints are already owned by `asset-web` and `hips-web`.
+target unit. The former `asset-collect` and `hips-collect` launchers have been
+retired because their ingress endpoints are owned by `asset-web` and
+`hips-web`. Gateway rewrites preserve both legacy URL prefixes.
 
 The migration is deliberately additive. Each aggregate application must keep
 the existing context paths and platform contracts, and may call a remote

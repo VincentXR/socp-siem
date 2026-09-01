@@ -2,10 +2,7 @@
   "schemaVersion": 1,
   "status": "contract-only-until-aggregate-apps-pass-integration-tests",
   "frontend": "frontend/apps/workbench",
-  "compatibilityModules": [
-    "asset-collect",
-    "hips-collect"
-  ],
+  "compatibilityModules": [],
   "units": [
     {
       "name": "gateway-ui",

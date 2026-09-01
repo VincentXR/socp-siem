@@ -3,7 +3,7 @@ package com.socp.alert.service;
 import com.socp.alert.domain.Alarm;
 import com.socp.alert.domain.AlarmRiskLevelCount;
 import com.socp.alert.domain.AlarmSeverityCount;
-import com.socp.alert.repository.AlarmRepository;
+import com.socp.alert.persistence.repository.AlarmRepository;
 
 
 import org.springframework.data.domain.PageRequest;

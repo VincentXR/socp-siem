@@ -1,7 +1,7 @@
 package com.socp.alert.service;
 
 import com.socp.alert.persistence.entity.AlarmFeedbackEntity;
-import com.socp.alert.repository.AlarmFeedbackRepository;
+import com.socp.alert.persistence.repository.AlarmFeedbackRepository;
 import com.socp.platform.error.exception.ApiException;
 import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.AfterEach;

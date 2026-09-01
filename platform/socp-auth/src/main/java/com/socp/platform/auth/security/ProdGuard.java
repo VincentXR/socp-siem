@@ -123,10 +123,7 @@ public class ProdGuard {
             violations.add("socp.temporal.enabled=false（生产禁止 SOAR 回退进程内执行器）");
         }
 
-        for (String simulationProperty : List.of(
-                "socp.soar.simulation-enabled",
-                "socp.asset-collect.simulation-enabled",
-                "socp.hips-collect.simulation-enabled")) {
+        for (String simulationProperty : List.of("socp.soar.simulation-enabled")) {
             if ("true".equalsIgnoreCase(env.getProperty(simulationProperty, "false"))) {
                 violations.add(simulationProperty + "=true (production forbids simulated actions and collectors)");
             }

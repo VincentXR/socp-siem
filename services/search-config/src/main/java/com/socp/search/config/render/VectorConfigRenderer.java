@@ -115,7 +115,7 @@ public class VectorConfigRenderer {
             case WINDOWS_EVENT -> b.append(agentNote(id, "Windows 事件日志",
                     "Winlogbeat / Windows 事件转发将日志推送到 SEARCH ingest（或先入 Kafka）"));
             case AGENT -> b.append(agentNote(id, "端点 Agent",
-                    "HIPS/Falco Agent 通过 gRPC/WebSocket 推送运行时事件到 hips-collect，再转发 SEARCH"));
+                    "HIPS/Falco Agent 通过托管采集入口推送运行时事件，再转发 SEARCH"));
             case HTTP_API -> b.append(agentNote(id, "HTTP/API 推送",
                     "第三方平台 Webhook / SIEM API 直接 POST 到 SEARCH ingest"));
             case DATABASE -> b.append(agentNote(id, "数据库日志",

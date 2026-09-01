@@ -35,7 +35,7 @@
         </dependency>
 
         <!-- Resource Server：为后续接 Keycloak 做 @PreAuthorize / SecurityFilterChain 预留。
-             【必须 optional】否则会传递到全部 17 个服务 → 引入 spring-security-core
+             【必须 optional】否则会传递到全部 15 个服务 → 引入 spring-security-core
              → 触发 Boot 的 SecurityAutoConfiguration → 所有接口被 HTTP Basic 兜底锁死，
              当前无 Keycloak 的本地切片会整体不可用。启用时在具体服务里显式引入并配 SecurityFilterChain。 -->
         <dependency>

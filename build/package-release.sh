@@ -3,7 +3,7 @@
 # SOCP 发布包打包脚本：把可运行产物打成一个 tar.gz，解压即用。
 #
 # 内容：
-#   - 17 个后端 fat jar（services/*/target/*.jar）
+#   - 注册表中的全部后端 fat jar（services/*/target/*.jar）
 #   - workbench 前端生产产物（frontend/apps/workbench/dist）
 #   - 启停/验证脚本（run-all.sh 已动态定位 ROOT，可直接运行）
 #   - docs/ 文档 + FROZEN.md + RELEASE.md 使用说明
@@ -14,15 +14,20 @@
 # 产物：dist/socp-siem-YYYYMMDD-HHMM.tar.gz
 # ============================================================
 set -uo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TS=$(date +%Y%m%d-%H%M)
-OUT="$ROOT/dist"
+OUT="$REPO_ROOT/dist"
 PKG="$OUT/socp-siem-$TS"
 PKGNAME="socp-siem-$TS"
 
+# The executable module registry is the release manifest. Iterating it avoids
+# accidentally packaging stale jars left under retired module directories.
+source "$REPO_ROOT/build/ports.env"
+EXPECTED_JARS=$(awk '{print NF}' <<< "$SOCP_MODULE_NAMES")
+
 if [ "${1:-}" = "--build" ]; then
   echo "=== 全量构建 ==="
-  bash "$ROOT/socp/build/mvnw.sh" -DskipTests package || { echo "构建失败"; exit 1; }
+  bash "$REPO_ROOT/build/mvnw.sh" -DskipTests package || { echo "构建失败"; exit 1; }
 fi
 
 echo "=== 收集产物 ==="
@@ -30,18 +35,23 @@ rm -rf "$PKG"; mkdir -p "$PKG/socp"
 
 # 1) 后端 jar
 JARS=0
-for jar in "$ROOT"/socp/services/*/target/*-1.0.0-SNAPSHOT.jar; do
-  [ -f "$jar" ] || continue
-  rel="${jar#"$ROOT"/}"
-  mkdir -p "$PKG/$(dirname "$rel")"
-  cp "$jar" "$PKG/$rel"
+for module in $SOCP_MODULE_NAMES; do
+  jar="$REPO_ROOT/services/$module/target/$module-1.0.0-SNAPSHOT.jar"
+  [ -f "$jar" ] || { echo "  [错误] 缺少 jar: $module"; continue; }
+  rel="services/$module/target/$(basename "$jar")"
+  mkdir -p "$PKG/socp/$(dirname "$rel")"
+  cp "$jar" "$PKG/socp/$rel"
   JARS=$((JARS+1))
 done
 echo "  后端 jar: $JARS 个"
-if [ "$JARS" -lt 17 ]; then echo "  [警告] 少于 17 个 jar（缺 $(expr 17 - $JARS)），请先构建"; fi
+if [ "$JARS" -ne "$EXPECTED_JARS" ]; then
+  echo "  [错误] 期望 $EXPECTED_JARS 个注册模块，实际仅找到 $JARS 个；请先完成全量构建"
+  rm -rf "$PKG"
+  exit 1
+fi
 
 # 2) 前端产物
-DIST="$ROOT/socp/frontend/apps/workbench/dist"
+DIST="$REPO_ROOT/frontend/apps/workbench/dist"
 if [ -d "$DIST" ] && [ -f "$DIST/index.html" ]; then
   mkdir -p "$PKG/socp/frontend/apps/workbench"
   cp -r "$DIST" "$PKG/socp/frontend/apps/workbench/"
@@ -51,12 +61,12 @@ else
 fi
 
 # 3) 脚本
-for f in auth_client.py run-all.sh wait_health.py verify-full.py verify-slice.py verify-pipeline.py mvnw.sh; do
-  [ -f "$ROOT/socp/build/$f" ] && { mkdir -p "$PKG/socp/build"; cp "$ROOT/socp/build/$f" "$PKG/socp/build/"; }
+for f in auth_client.py ports.env ports.py run-all.sh toolchain.sh wait_health.py verify-full.py verify-slice.py verify-pipeline.py; do
+  [ -f "$REPO_ROOT/build/$f" ] && { mkdir -p "$PKG/socp/build"; cp "$REPO_ROOT/build/$f" "$PKG/socp/build/"; }
 done
 # 4) 文档与声明
-[ -d "$ROOT/socp/docs" ] && cp -r "$ROOT/socp/docs" "$PKG/socp/docs"
-[ -f "$ROOT/FROZEN.md" ] && cp "$ROOT/FROZEN.md" "$PKG/"
+[ -d "$REPO_ROOT/docs" ] && cp -r "$REPO_ROOT/docs" "$PKG/socp/docs"
+[ -f "$REPO_ROOT/FROZEN.md" ] && cp "$REPO_ROOT/FROZEN.md" "$PKG/"
 
 # 5) 生成使用说明
 cat > "$PKG/RELEASE.md" <<'EOF'
@@ -92,7 +102,7 @@ asset-web 18085 · soc-base 18086 · hips-web 18087 · ai-assistant 18088 · det
 api-gateway 18092 · threat-web 18094 · attack-web 18095 ·
 notify-web 18096 · incident-web 18097
 
-兼容模块 asset-collect 18091 与 hips-collect 18093 仍随包发布，可用 start-service 显式启动。
+旧 `/asset-collect/**` 与 `/hips-collect/**` URL 由网关转发到对应领域服务，不再发布独立采集进程。
 EOF
 
 echo "=== 打包 ==="

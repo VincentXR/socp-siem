@@ -131,8 +131,6 @@ def main() -> int:
         "SOCP_ALLOW_GLOBAL_INGEST_TOKEN": "false",
         "SOCP_DEMO_DATA_ENABLED": "false",
         "SOCP_SOAR_SIMULATION_ENABLED": "false",
-        "SOCP_ASSET_COLLECT_SIMULATION_ENABLED": "false",
-        "SOCP_HIPS_COLLECT_SIMULATION_ENABLED": "false",
         "SOCP_TEMPORAL_ENABLED": "true",
     }
     for key, value in safe_defaults.items():

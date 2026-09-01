@@ -52,7 +52,7 @@ public class EndpointController {
         return store.heartbeat(id);
     }
 
-    /** 接收 hips-collect 上报的运行时检测事件（Falco 模拟），暂存 + 刷新对应端点心跳。 */
+    /** 接收 Agent/Falco 上报的运行时检测事件，暂存并刷新对应端点心跳。 */
     @RequireRole({"admin", "analyst"})
     @PostMapping("/events")
     public Map<String, Object> ingestEvent(@Valid @RequestBody EndpointEventRequest request) {

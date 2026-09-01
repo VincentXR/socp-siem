@@ -13,10 +13,10 @@ import com.socp.alert.domain.Severity;
 import com.socp.alert.api.request.CreateAlarmRequest;
 import com.socp.alert.api.response.AlarmEvidenceResponse;
 import com.socp.alert.persistence.entity.AlarmBatchIdempotency;
-import com.socp.alert.repository.AlarmEvidenceRepository;
-import com.socp.alert.repository.AlarmBatchIdempotencyRepository;
-import com.socp.alert.repository.AlarmRepository;
-import com.socp.alert.repository.OutboxRepository;
+import com.socp.alert.persistence.repository.AlarmEvidenceRepository;
+import com.socp.alert.persistence.repository.AlarmBatchIdempotencyRepository;
+import com.socp.alert.persistence.repository.AlarmRepository;
+import com.socp.alert.persistence.repository.OutboxRepository;
 
 
 import org.springframework.beans.factory.annotation.Autowired;

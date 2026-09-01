@@ -76,7 +76,7 @@ public class AssetController {
         return store.save(new Asset(id, req.name(), req.type(), req.ip(), req.os(), req.owner(), req.criticality(), existing.createdAt()));
     }
 
-    /** 采集服务（asset-collect）上报新资产——按 name 去重，已存在则更新。 */
+    /** 托管采集器经兼容入口上报新资产——按 name 去重，已存在则更新。 */
     @RequireRole({"admin", "analyst"})
     @PostMapping("/collect")
     public Map<String, Object> collect(@Valid @RequestBody AssetCollectionRequest request) {

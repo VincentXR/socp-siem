@@ -2,7 +2,7 @@ package com.socp.alert.service;
 
 import com.socp.alert.domain.AlarmDelivery;
 import com.socp.alert.domain.AlarmDeliveryDestination;
-import com.socp.alert.repository.AlarmDeliveryRepository;
+import com.socp.alert.persistence.repository.AlarmDeliveryRepository;
 
 
 import com.socp.platform.tenant.context.TenantContext;

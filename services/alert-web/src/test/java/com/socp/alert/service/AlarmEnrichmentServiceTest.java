@@ -2,7 +2,7 @@ package com.socp.alert.service;
 
 import com.socp.alert.domain.Alarm;
 import com.socp.alert.domain.Severity;
-import com.socp.alert.repository.AlarmRepository;
+import com.socp.alert.persistence.repository.AlarmRepository;
 
 
 import com.socp.platform.client.http.ServiceCall;

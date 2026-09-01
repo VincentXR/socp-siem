@@ -5,7 +5,7 @@ import com.socp.alert.domain.AlarmRiskLevelCount;
 import com.socp.alert.domain.AlarmRuleCount;
 import com.socp.alert.domain.AlarmSeverityCount;
 import com.socp.alert.domain.Severity;
-import com.socp.alert.repository.AlarmRepository;
+import com.socp.alert.persistence.repository.AlarmRepository;
 
 
 import com.socp.platform.tenant.context.TenantContext;

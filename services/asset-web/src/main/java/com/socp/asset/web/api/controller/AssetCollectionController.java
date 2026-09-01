@@ -28,8 +28,7 @@ import java.util.UUID;
  * Asset collection ingress hosted by the asset domain deployment.
  *
  * <p>The legacy {@code /asset-collect/**} gateway route is rewritten to this
- * controller, so collection does not require a dedicated JVM. The standalone
- * {@code asset-collect} module remains available as a compatibility launcher.</p>
+ * controller, so collection does not require a dedicated JVM.</p>
  */
 @RestController
 @RequestMapping("/api/v1")

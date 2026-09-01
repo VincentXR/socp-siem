@@ -94,7 +94,7 @@ Useful profiles:
 ```bash
 bash build/run-all.sh start core   # Golden Demo and core event path
 bash build/run-all.sh start ui     # Workbench business pages
-bash build/run-all.sh start full   # All backend services and collectors
+bash build/run-all.sh start full   # All backend services
 bash build/run-all.sh status
 bash build/run-all.sh stop
 ```
@@ -167,8 +167,8 @@ build/                    startup, verification, benchmark, chaos, demos
 docs/                     architecture, operating guides, tests, and ADRs
 ```
 
-The 17 executable service modules currently run as 15 compatibility
-processes, while the reviewed target is six deployment units. Verify that
+The 15 executable service modules currently run as 15 processes, while the
+reviewed target is six deployment units. Verify that
 these two views have not drifted with:
 
 ```bash

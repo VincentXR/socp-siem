@@ -52,9 +52,9 @@ def main() -> int:
     downstream = set(services) - {"api-gateway"}
     if not downstream.issubset(route_ids):
         errors.append(f"gateway misses default routes: {sorted(downstream - route_ids)}")
-    allowed_compatibility = {"asset-collect", "hips-collect"}
-    if route_ids - downstream != allowed_compatibility:
-        errors.append(f"unexpected compatibility routes: {sorted(route_ids - downstream)}")
+    legacy_route_ids = {"asset-collect", "hips-collect"}
+    if route_ids - downstream != legacy_route_ids:
+        errors.append(f"unexpected legacy routes: {sorted(route_ids - downstream)}")
     for legacy, owner in (("asset-collect", "asset-web"), ("hips-collect", "hips-web")):
         expected = f"RewritePath=/{legacy}/?(?<segment>.*), /{owner}/$\\{{segment}}"
         if expected not in gateway:

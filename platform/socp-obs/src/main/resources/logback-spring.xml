@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  全局日志格式（socp-obs 提供，随依赖进入全部 17 个服务的 classpath）。
+  全局日志格式（socp-obs 提供，随依赖进入全部 15 个服务的 classpath）。
 
   为什么放在这里：Boot 启动时会在 classpath 根查找 logback-spring.xml，socp-obs 是所有服务
-  的共同依赖，因此一份配置即可统一 17 个服务的日志格式，不必每个服务复制一遍。
+  的共同依赖，因此一份配置即可统一 15 个服务的日志格式，不必每个服务复制一遍。
   某个服务需要定制时，在自己的 src/main/resources 下放同名文件即可覆盖（本模块的 jar 排在类路径后面）。
 
   %X{traceId} 取自 MDC，由 TraceIdFilter 在请求入口写入（缺失时 defaultValue 打 "-"，

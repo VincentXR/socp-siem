@@ -55,10 +55,8 @@ def check_java(errors: list[str]) -> tuple[int, int]:
                 errors.append(f"{path.relative_to(ROOT)}: Response must be under api/response")
             if service_source and filename.endswith("Entity.java") and "/persistence/entity" not in "/" + normalized:
                 errors.append(f"{path.relative_to(ROOT)}: Entity must be under persistence/entity")
-            if service_source and filename.endswith("Repository.java") and not (
-                "/persistence/repository" in "/" + normalized or "/repository" in "/" + normalized
-            ):
-                errors.append(f"{path.relative_to(ROOT)}: Repository must be under a repository package")
+            if service_source and filename.endswith("Repository.java") and "/persistence/repository" not in "/" + normalized:
+                errors.append(f"{path.relative_to(ROOT)}: Repository must be under persistence/repository")
             if service_source and filename.endswith("Properties.java") and "/config" not in "/" + normalized:
                 errors.append(f"{path.relative_to(ROOT)}: Properties must be under config")
             flat_api = service_source and package.endswith(".api")

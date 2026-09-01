@@ -72,7 +72,7 @@ enforces JDK/Maven policy and high-confidence SpotBugs findings.
 gaps, unmarked destructive statements, missing Flyway wiring, and tenant JPA
 entities without a `tenant_id` migration. `build/verify-contracts.py` keeps the
 Maven service modules, default process list, target runtime-unit assignment,
-compatibility launchers, unique ports, gateway routes,
+unique ports, gateway routes,
 legacy collector rewrites, and frontend health registry aligned.
 
 ## Integration checks

@@ -13,7 +13,6 @@ CI stack is not a production HA, capacity, or external-integration claim.
 | Assets/HIPS/threat/ATT&CK | CRUD/import/tenant tests | Role-gated mutation and ingest identity where applicable | PostgreSQL-backed state | CMDB, endpoint agents, feeds and content lifecycle remain operator-owned |
 | Reports | Query/archive tests | Tenant-scoped report paths | ClickHouse/object-store adapters | Retention, object-lock, restore and report SLO are deployment-owned |
 | AI assistant | Versioned dataset executes the real evidence composer; citations and human approval are evaluated | Evidence is treated as untrusted; no automatic containment | Deterministic fallback and bounded tool/timeout budgets | LLM model/vendor quality, privacy and safety acceptance remain deployment-owned |
-| Compatibility collectors | Local/demo tests | Production guard rejects simulation | Not a production runtime | Replace with managed collectors/agents |
 
 ## Release interpretation
 
