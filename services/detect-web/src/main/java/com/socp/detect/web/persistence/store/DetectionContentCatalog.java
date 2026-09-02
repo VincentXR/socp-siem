@@ -72,6 +72,13 @@ public final class DetectionContentCatalog {
         if (List.of("threshold", "correlation", "correlation-set", "baseline", "rare").contains(type)) {
             copyIfMissing(spec, "routingField", spec.get("keyField"));
         }
+        // The lifecycle status is authoritative for the executable engine.
+        // Expose the derived legacy flag as well so older API clients (and
+        // the workbench rule table) can render and operate on packaged rules
+        // that predate the explicit status field.
+        if (!spec.containsKey("enabled")) {
+            spec.put("enabled", "ACTIVE".equalsIgnoreCase(String.valueOf(spec.get("status"))));
+        }
         return spec;
     }
 

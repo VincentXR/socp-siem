@@ -50,8 +50,10 @@ class DetectionContentCatalogTest {
             }
             @SuppressWarnings("unchecked")
             Map<String, Object> spec = (Map<String, Object>) item.get("spec");
-            assertTrue(DetectionContentCatalog.validateSpec(
-                    DetectionContentCatalog.enrich(spec)).isEmpty(), String.valueOf(item.get("id")));
+            Map<String, Object> enriched = DetectionContentCatalog.enrich(spec);
+            assertTrue(DetectionContentCatalog.validateSpec(enriched).isEmpty(), String.valueOf(item.get("id")));
+            assertEquals("ACTIVE".equalsIgnoreCase(String.valueOf(enriched.get("status"))),
+                    enriched.get("enabled"), String.valueOf(item.get("id")) + " lifecycle projection");
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> tests = (List<Map<String, Object>>) item.get("tests");
             assertTrue(tests.stream().anyMatch(t -> Boolean.TRUE.equals(t.get("expectAlert"))));

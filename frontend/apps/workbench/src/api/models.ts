@@ -163,7 +163,8 @@ export interface RuleCondition { field: string; op: string; value: string }
 export interface RuleSpec {
   id: string; name: string; type: string; severity: string; message?: string
   enabled: boolean; status?: string; window?: string; keyField?: string; routingField?: string; threshold?: number
-  match?: RuleCondition[]; steps?: RuleCondition[][]; mitre?: string
+  valueField?: string; warmup?: number; baselineWindows?: number; sigma?: number; minCount?: number
+  match?: RuleCondition[]; matchAny?: RuleCondition[][]; steps?: RuleCondition[][]; mitre?: string; version?: string
 }
 export interface GasStats {
   rules: number; eventCount: number; alertCount: number; dropCount: number

@@ -50,7 +50,7 @@ const COND_FIELDS = ['source', 'host', 'msg', 'severity', 'src_ip', 'dst_ip', 'u
 const COND_OPS = ['eq', 'ne', 'contains', 'startswith', 'endswith', 'regex', 'gt', 'gte', 'lt', 'lte', 'ge']
 
 async function loadRules() {
-  rules.value = await listRules()
+  rules.value = (await listRules()).map(normalizeRuleSpec).filter((rule): rule is RuleSpec => rule !== null)
   gasStat.value = await gasStats()
 }
 async function doIngest() {
@@ -96,26 +96,43 @@ async function saveRule() {
     await loadRules()
   } catch (error) { ingestResult.value = t('detect.saveFailed', { message: error instanceof Error ? error.message : String(error) }) }
 }
+function ruleUpdateSpec(rule: RuleSpec, enabled: boolean, status: string): Partial<RuleSpec> {
+  return {
+    name: rule.name, type: rule.type, severity: rule.severity, message: rule.message,
+    enabled, status, window: rule.window, keyField: rule.keyField, routingField: rule.routingField,
+    threshold: rule.threshold, valueField: rule.valueField, warmup: rule.warmup,
+    baselineWindows: rule.baselineWindows, sigma: rule.sigma, minCount: rule.minCount,
+    match: rule.match, matchAny: rule.matchAny, steps: rule.steps, mitre: rule.mitre, version: rule.version,
+  }
+}
 async function removeRule(id: string) {
   if (!confirm(t('detect.deleteRuleConfirm'))) return
   await deleteGasRule(id)
   await loadRules()
 }
 async function toggleRule(rule: RuleSpec) {
-  if (rule.enabled) await updateGasRule(String(rule.id), { enabled: false, status: 'DISABLED' })
+  if (rule.enabled) await updateGasRule(String(rule.id), ruleUpdateSpec(rule, false, 'DISABLED'))
   else await activateGasRule(String(rule.id))
   await loadRules()
 }
-function isRuleSpec(row: unknown): row is RuleSpec {
-  if (!row || typeof row !== 'object') return false
+function normalizeRuleSpec(row: unknown): RuleSpec | null {
+  if (!row || typeof row !== 'object') return null
   const candidate = row as Partial<RuleSpec>
-  return typeof candidate.id === 'string' && typeof candidate.name === 'string'
-    && typeof candidate.type === 'string' && typeof candidate.severity === 'string'
-    && typeof candidate.enabled === 'boolean'
+  if (candidate.id == null || String(candidate.id).trim() === ''
+    || candidate.name == null || String(candidate.name).trim() === '') return null
+  const status = String(candidate.status ?? '').toUpperCase()
+  return {
+    ...candidate,
+    id: String(candidate.id),
+    name: String(candidate.name),
+    type: String(candidate.type ?? 'pattern'),
+    severity: String(candidate.severity ?? 'HIGH'),
+    enabled: typeof candidate.enabled === 'boolean' ? candidate.enabled : status === 'ACTIVE' || status === '',
+  } as RuleSpec
 }
-function openRuleEditorRow(row: unknown) { if (isRuleSpec(row)) openRuleEditor(row) }
-function toggleRuleRow(row: unknown) { if (isRuleSpec(row)) void toggleRule(row) }
-function removeRuleRow(row: unknown) { if (isRuleSpec(row)) void removeRule(row.id) }
+function openRuleEditorRow(row: unknown) { const rule = normalizeRuleSpec(row); if (rule) openRuleEditor(rule) }
+function toggleRuleRow(row: unknown) { const rule = normalizeRuleSpec(row); if (rule) void toggleRule(rule) }
+function removeRuleRow(row: unknown) { const rule = normalizeRuleSpec(row); if (rule) void removeRule(rule.id) }
 
 onMounted(loadRules)
 </script>
