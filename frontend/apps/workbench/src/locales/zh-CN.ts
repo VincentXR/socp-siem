@@ -280,6 +280,8 @@ export const zhCN = {
     queryPlaceholder: '输入 SPL 检索语句，例如：status=500 | stats count() by src_ip',
     timeRange: '时间范围',
     runQuery: '执行检索',
+    queryLimitHint: '单次检索最多返回 500 条；可用下方分页继续浏览。',
+    exportLimitHint: '单次导出最多 5,000 条；如需更多请缩小查询范围。',
     histogram: '事件时间分布直方图',
     results: '检索结果',
     rawLog: '原始日志',

@@ -282,6 +282,8 @@ export const enUS: LocaleMessages = {
     queryPlaceholder: 'Enter SPL query, e.g. status=500 | stats count() by src_ip',
     timeRange: 'Time Range',
     runQuery: 'Run Search',
+    queryLimitHint: 'Each search returns at most 500 rows; use the pagination below to browse more.',
+    exportLimitHint: 'Each export contains at most 5,000 rows; narrow the query for more.',
     histogram: 'Event Distribution Histogram',
     results: 'Search Results',
     rawLog: 'Raw Log',

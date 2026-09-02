@@ -6,6 +6,7 @@ import 'element-plus/es/components/input/style/css.mjs'
 import 'element-plus/es/components/select/style/css.mjs'
 import 'element-plus/es/components/table/style/css.mjs'
 import 'element-plus/es/components/tag/style/css.mjs'
+import 'element-plus/es/components/tooltip/style/css.mjs'
 import ElAlert from 'element-plus/es/components/alert/index.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElCard from 'element-plus/es/components/card/index.mjs'
@@ -13,6 +14,7 @@ import ElInput from 'element-plus/es/components/input/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
+import ElTooltip from 'element-plus/es/components/tooltip/index.mjs'
 import { computed, onMounted, ref } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import SevBadge from '../components/SevBadge.vue'
@@ -121,9 +123,15 @@ const browseLimitVisible = computed(() => Boolean(result.value && result.value.t
     <el-card shadow="never" class="search-toolbar">
       <div class="search-query-row">
         <el-input v-model="query" :placeholder="t('search.queryPlaceholder')" clearable @keyup.enter="search" />
-        <el-button type="primary" :loading="loading" @click="search">{{ t('search.runQuery') }}</el-button>
-        <el-button size="small" @click="exportSearch(query, 'json')">{{ t('common.exportJson') }}</el-button>
-        <el-button size="small" @click="exportSearch(query, 'csv')">{{ t('common.exportCsv') }}</el-button>
+        <el-tooltip :content="t('search.queryLimitHint')" placement="top">
+          <el-button type="primary" :loading="loading" @click="search">{{ t('search.runQuery') }}</el-button>
+        </el-tooltip>
+        <el-tooltip :content="t('search.exportLimitHint')" placement="top">
+          <el-button size="small" @click="exportSearch(query, 'json')">{{ t('common.exportJson') }}</el-button>
+        </el-tooltip>
+        <el-tooltip :content="t('search.exportLimitHint')" placement="top">
+          <el-button size="small" @click="exportSearch(query, 'csv')">{{ t('common.exportCsv') }}</el-button>
+        </el-tooltip>
       </div>
       <div class="search-examples">
         <el-tag v-for="example in examples" :key="example" size="small" @click="runExample(example)">{{ example }}</el-tag>
