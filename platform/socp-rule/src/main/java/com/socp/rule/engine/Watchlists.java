@@ -130,6 +130,9 @@ public final class Watchlists {
     public static void clear() {
         TEMPLATES.clear();
         stateStore.clear();
+        // Tests may install a Mockito-backed durable store. Restore the
+        // process-local default so a following test cannot observe that mock.
+        stateStore = new InMemoryStateStore();
     }
 
     private static String normalizeTenant(String tenantId) {

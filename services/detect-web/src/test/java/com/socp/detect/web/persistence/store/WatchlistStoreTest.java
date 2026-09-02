@@ -71,4 +71,14 @@ class WatchlistStoreTest {
         assertThat(store.delete("custom")).isTrue();
         verify(persistent).delete("tenant-watchlist", "custom");
     }
+
+    @Test
+    void clearRestoresTheInMemoryStoreForTheFollowingTest() {
+        Watchlists.put("tenant-watchlist", "custom", List.of("admin"));
+
+        Watchlists.clear();
+        Watchlists.put("tenant-watchlist", "after-clear", List.of("value"));
+
+        assertThat(Watchlists.contains("tenant-watchlist", "after-clear", "value")).isTrue();
+    }
 }

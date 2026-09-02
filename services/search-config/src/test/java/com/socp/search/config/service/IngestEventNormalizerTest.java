@@ -18,7 +18,10 @@ import java.util.Optional;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -167,5 +170,34 @@ class IngestEventNormalizerTest {
         assertEquals(source.id(), result.event().fields().get("source_id"));
         assertEquals("nginx-rule", result.event().fields().get("parse_rule_id"));
         assertEquals("collector-1", result.collector());
+    }
+
+    @Test
+    void preservesPipelineErrorsAndCountsFlatAndEcsFieldsForSparseDetection() {
+        TenantContext.set("tenant-a");
+        ParserRegistry parsers = mock(ParserRegistry.class);
+        ReferenceSetStore references = mock(ReferenceSetStore.class);
+        IngestSourceResolver sourceResolver = mock(IngestSourceResolver.class);
+        ParsePipelineResolver pipeline = mock(ParsePipelineResolver.class);
+        IngestSourceContext context = new IngestSourceContext(
+                "collector-1", "source-1", ParseFormat.AUTO, List.of(), true);
+        when(parsers.parse(anyString(), any(ParseFormat.class), isNull())).thenReturn(Map.of(
+                CanonicalEvent.EVENT_MESSAGE, "raw",
+                CanonicalEvent.EVENT_ACTION, "login",
+                "custom_field", "value"));
+        when(sourceResolver.resolve(anyString(), anyString())).thenReturn(context);
+        when(pipeline.apply(any(IngestSourceContext.class), anyString(), anyString(), anyBoolean()))
+                .thenReturn(new ParsePipelineResolver.Result(
+                        false, null, Map.of(), "invalid parse rule"));
+        when(references.matchedSets(anyString())).thenReturn(List.of());
+
+        IngestEventNormalizer normalizer = new IngestEventNormalizer(
+                references, parsers, sourceResolver, pipeline);
+
+        var result = normalizer.normalize("raw", "collector-1");
+
+        assertEquals("invalid parse rule", result.event().ecs().get("parse.error"));
+        assertEquals("login", result.event().fields().get("action"));
+        assertEquals("value", result.event().fields().get("custom_field"));
     }
 }

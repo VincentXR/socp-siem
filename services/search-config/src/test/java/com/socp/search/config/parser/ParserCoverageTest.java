@@ -1,5 +1,6 @@
 package com.socp.search.config.parser;
 
+import com.socp.search.config.domain.ParseFormat;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
@@ -158,5 +159,36 @@ class ParserCoverageTest {
         assertEquals("ordinary unstructured message", fallback.get(CanonicalEvent.EVENT_MESSAGE));
         Map<String, String> parseError = registry.parse("{broken", "json");
         assertTrue(parseError.containsKey("parse.error"));
+    }
+
+    @Test
+    void parserRegistryHandlesFixedFormatsAndJsonEnvelopes() {
+        ParserRegistry registry = new ParserRegistry();
+
+        assertEquals(Map.of(), registry.parse(" ", ParseFormat.JSON, null));
+        assertEquals("source-1", registry.parse(
+                "{\"source_id\":\"source-1\"}", ParseFormat.SYSLOG, null)
+                .get("source_id"));
+
+        Map<String, String> unmatchedEnvelope = registry.parse(
+                "{\"message\":\"not syslog\"}", ParseFormat.SYSLOG, null);
+        assertEquals("not syslog", unmatchedEnvelope.get(CanonicalEvent.EVENT_MESSAGE));
+
+        Map<String, String> directSyslog = registry.parse(
+                "<34>Oct 11 22:14:15 host sshd[123]: failed", ParseFormat.SYSLOG, null);
+        assertEquals("host", directSyslog.get(CanonicalEvent.HOST_NAME));
+
+        Map<String, String> nestedJson = registry.parse(
+                "{\"message\":\"{\\\"action\\\":\\\"login\\\"}\"}",
+                ParseFormat.JSON, null);
+        assertEquals("login", nestedJson.get(CanonicalEvent.EVENT_ACTION));
+
+        Map<String, String> plainJsonEnvelope = registry.parse(
+                "{\"message\":\"plain text\"}", ParseFormat.JSON, null);
+        assertEquals("plain text", plainJsonEnvelope.get(CanonicalEvent.EVENT_MESSAGE));
+
+        Map<String, String> emptyNestedJson = registry.parse(
+                "{\"message\":\"{}\"}", ParseFormat.JSON, null);
+        assertEquals("{}", emptyNestedJson.get(CanonicalEvent.EVENT_MESSAGE));
     }
 }
