@@ -12,6 +12,7 @@ import java.util.Locale;
 
 /** Compiles the storage-independent query AST to a tenant-scoped OpenSearch DSL body. */
 public final class OpenSearchQueryCompiler {
+    private static final int MAX_TIMELINE_BUCKETS = 180;
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final List<String> SEVERITIES = List.of("INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL");
     private static final QuerySemanticAnalyzer SEMANTIC_ANALYZER = QuerySemanticAnalyzer.standard();
@@ -22,6 +23,16 @@ public final class OpenSearchQueryCompiler {
     }
 
     public ObjectNode compile(SearchQueryAst ast, String tenantId, int requestedSize) {
+        return compile(ast, tenantId, requestedSize, false);
+    }
+
+    /**
+     * Compiles a page query and optionally adds a bounded daily histogram. The
+     * histogram is deliberately opt-in because it scans all matching documents,
+     * while ordinary cursor pages only need the requested hits.
+     */
+    public ObjectNode compile(SearchQueryAst ast, String tenantId, int requestedSize,
+                              boolean includeTimeline) {
         if (ast == null) throw new IllegalArgumentException("query AST is required");
         if (!TenantContext.isValid(tenantId)) throw new IllegalArgumentException("valid tenant is required");
         SEMANTIC_ANALYZER.analyze(ast);
@@ -42,7 +53,7 @@ public final class OpenSearchQueryCompiler {
         // but never let a user-provided filter replace this mandatory scope.
         filters.add(tenantFilter(tenantId));
         bool.set("must", filter(ast.filter()));
-        addAggregations(root, ast);
+        addAggregations(root, ast, includeTimeline);
 
         if (ast.cursor() != null && !ast.cursor().isBlank()) {
             QueryCursorCodec.Cursor cursor = QueryCursorCodec.decode(ast.cursor(), ast);
@@ -78,8 +89,24 @@ public final class OpenSearchQueryCompiler {
         }
     }
 
-    private static void addAggregations(ObjectNode root, SearchQueryAst ast) {
+    private static void addAggregations(ObjectNode root, SearchQueryAst ast, boolean includeTimeline) {
         ObjectNode aggs = null;
+        if (includeTimeline) {
+            aggs = root.putObject("aggs");
+            ObjectNode timeline = aggs.putObject("timeline");
+            timeline.putObject("date_histogram")
+                    .put("field", "timestamp")
+                    .put("calendar_interval", "day")
+                    .put("min_doc_count", 1)
+                    .put("format", "yyyy-MM-dd");
+            ObjectNode sort = timeline.putObject("aggs")
+                    .putObject("keep_recent")
+                    .putObject("bucket_sort");
+            sort.putArray("sort").addObject().putObject("_key").put("order", "desc");
+            // Request one sentinel bucket so the reader can tell whether the
+            // bounded chart omitted older days and expose that fact to clients.
+            sort.put("size", MAX_TIMELINE_BUCKETS + 1);
+        }
         for (PipelineCommand command : ast.pipeline()) {
             if (command instanceof PipelineCommand.Top top) {
                 if (aggs == null) aggs = root.putObject("aggs");

@@ -34,26 +34,37 @@ public class SplEngine {
     public record QueryResult(int total, List<SearchEvent> events, Stat stat,
                               String source, boolean degraded, Instant freshness,
                               String degradationReason, String nextCursor, long elapsedMs,
-                              Long backendTookMs) {
+                              Long backendTookMs, List<java.util.Map<String, Object>> timeline,
+                              boolean timelineApproximate) {
         public QueryResult(int total, List<SearchEvent> events, Stat stat) {
-            this(total, events, stat, "unspecified", false, null, null, null, 0L, null);
+            this(total, events, stat, "unspecified", false, null, null, null, 0L, null, List.of(), false);
         }
 
         public QueryResult(int total, List<SearchEvent> events, Stat stat,
                            String source, boolean degraded, Instant freshness,
                            String degradationReason) {
-            this(total, events, stat, source, degraded, freshness, degradationReason, null, 0L, null);
+            this(total, events, stat, source, degraded, freshness, degradationReason,
+                    null, 0L, null, List.of(), false);
         }
 
         public QueryResult(int total, List<SearchEvent> events, Stat stat,
                            String source, boolean degraded, Instant freshness,
                            String degradationReason, String nextCursor, long elapsedMs) {
             this(total, events, stat, source, degraded, freshness, degradationReason,
-                    nextCursor, elapsedMs, null);
+                    nextCursor, elapsedMs, null, List.of(), false);
+        }
+
+        public QueryResult(int total, List<SearchEvent> events, Stat stat,
+                           String source, boolean degraded, Instant freshness,
+                           String degradationReason, String nextCursor, long elapsedMs,
+                           Long backendTookMs) {
+            this(total, events, stat, source, degraded, freshness, degradationReason,
+                    nextCursor, elapsedMs, backendTookMs, List.of(), false);
         }
 
         public QueryResult {
             events = List.copyOf(events == null ? List.of() : events);
+            timeline = copyTimeline(timeline);
             source = source == null || source.isBlank() ? "unspecified" : source;
             if (total < 0) throw new IllegalArgumentException("total must not be negative");
             if (elapsedMs < 0) throw new IllegalArgumentException("elapsedMs must not be negative");
@@ -65,19 +76,34 @@ public class SplEngine {
         public QueryResult withSource(String source, boolean degraded, Instant freshness,
                                       String degradationReason) {
             return new QueryResult(total, events, stat, source, degraded, freshness,
-                    degradationReason, nextCursor, elapsedMs, backendTookMs);
+                    degradationReason, nextCursor, elapsedMs, backendTookMs,
+                    timeline, timelineApproximate);
         }
 
         public QueryResult withPageMetadata(String nextCursor, long elapsedMs) {
             return new QueryResult(total, events, stat, source, degraded, freshness,
-                    degradationReason, nextCursor, elapsedMs, backendTookMs);
+                    degradationReason, nextCursor, elapsedMs, backendTookMs,
+                    timeline, timelineApproximate);
+        }
+
+        public QueryResult withTimeline(List<java.util.Map<String, Object>> timeline,
+                                        boolean timelineApproximate) {
+            return new QueryResult(total, events, stat, source, degraded, freshness,
+                    degradationReason, nextCursor, elapsedMs, backendTookMs,
+                    timeline, timelineApproximate);
         }
 
         public QueryResult limitEvents(int limit) {
             if (limit < 1 || events.size() <= limit) return this;
             return new QueryResult(total, events.stream().limit(limit).toList(), stat,
                     source, degraded, freshness, degradationReason,
-                    nextCursor, elapsedMs, backendTookMs);
+                    nextCursor, elapsedMs, backendTookMs, timeline, timelineApproximate);
+        }
+
+        private static List<java.util.Map<String, Object>> copyTimeline(
+                List<java.util.Map<String, Object>> rows) {
+            if (rows == null || rows.isEmpty()) return List.of();
+            return rows.stream().map(row -> java.util.Map.copyOf(row == null ? java.util.Map.of() : row)).toList();
         }
 
         public record Stat(String type, List<java.util.Map<String, Object>> rows,
@@ -106,6 +132,10 @@ public class SplEngine {
 
     public QueryResult execute(SearchQueryAst ast, List<SearchEvent> corpus) {
         return localExecutor.execute(ast, corpus);
+    }
+
+    public QueryResult execute(SearchQueryAst ast, List<SearchEvent> corpus, boolean includeTimeline) {
+        return localExecutor.execute(ast, corpus, includeTimeline);
     }
 
     /** Shared deterministic freshness helper for source adapters. */

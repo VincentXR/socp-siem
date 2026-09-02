@@ -110,6 +110,27 @@ class OsEventReaderTest {
     }
 
     @Test
+    void parsesOptionalTimelineAggregation() {
+        responseStatus = 200;
+        responseBody = """
+                {"took":3,"hits":{"total":{"value":2},"hits":[
+                  {"_source":{"eventId":"e1","timestamp":"2026-08-01T00:00:00Z","source":"auth","host":"h","severity":"INFO","msg":"one"}},
+                  {"_source":{"eventId":"e2","timestamp":"2026-08-02T00:00:00Z","source":"auth","host":"h","severity":"INFO","msg":"two"}}
+                ]},"aggregations":{"timeline":{"buckets":[
+                  {"key_as_string":"2026-08-01","doc_count":1},
+                  {"key_as_string":"2026-08-02","doc_count":1}
+                ]}}}
+                """;
+
+        var result = TenantContext.callWith("tenant-a", () -> reader.search("*", 10, null, true));
+
+        assertThat(result.timeline()).containsExactly(
+                java.util.Map.of("key", "2026-08-01", "count", 1L),
+                java.util.Map.of("key", "2026-08-02", "count", 1L));
+        assertThat(result.timelineApproximate()).isFalse();
+    }
+
+    @Test
     void exposesCleanClientErrorsButFallsBackForRetryableFailures() {
         responseStatus = 400;
         responseBody = "{\"error\":{\"reason\":\"failed to build query\nwith details\"}}";

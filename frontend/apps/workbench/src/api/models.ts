@@ -151,6 +151,8 @@ export interface SearchResult {
   total: number
   events: SearchEvent[]
   stat: { type: string; rows: Array<{ key: string; count: number }> } | null
+  timeline?: Array<{ key: string; count: number }>
+  timelineApproximate?: boolean
   source: SearchSource
   degraded: boolean
   freshness: string | null

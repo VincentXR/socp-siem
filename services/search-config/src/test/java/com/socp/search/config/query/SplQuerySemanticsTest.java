@@ -126,6 +126,23 @@ class SplQuerySemanticsTest {
     }
 
     @Test
+    void localExecutorProducesAFullResultTimelineWithBoundedBuckets() {
+        List<SearchEvent> events = new ArrayList<>();
+        for (int i = 0; i < 181; i++) {
+            events.add(eventAt("timeline-" + i,
+                    Instant.parse("2026-01-01T00:00:00Z").plusSeconds(i * 86_400L).toString()));
+        }
+
+        SplEngine.QueryResult result = executor.execute(parser.parse("*").withPage(1, null), events, true);
+
+        assertThat(result.events()).hasSize(1);
+        assertThat(result.timeline()).hasSize(180);
+        assertThat(result.timelineApproximate()).isTrue();
+        assertThat(result.timeline().getFirst()).containsEntry("key", "2026-01-02");
+        assertThat(result.timeline().getLast()).containsEntry("key", "2026-06-30");
+    }
+
+    @Test
     void fieldMappingKeepsCanonicalKeywordFieldsUntouched() {
         assertThat(OpenSearchQueryCompiler.fieldPath("source", true)).isEqualTo("source.ci");
         assertThat(OpenSearchQueryCompiler.fieldPath("severity", true)).isEqualTo("severity");
@@ -164,6 +181,8 @@ class SplQuerySemanticsTest {
                 .contains("\"size\":1000", "source.ci");
         assertThat(compiler.compile(parser.parse("* | timechart"), "tenant-a").toString())
                 .contains("\"min_doc_count\":1");
+        assertThat(compiler.compile(parser.parse("*"), "tenant-a", 10, true).toString())
+                .contains("timeline", "date_histogram", "bucket_sort", "\"size\":181");
 
         SearchQueryAst cursorBase = parser.parse("*");
         SearchQueryAst cursorQuery = cursorBase.withPage(10,

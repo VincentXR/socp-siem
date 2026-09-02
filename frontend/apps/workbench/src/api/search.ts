@@ -26,10 +26,10 @@ export const deleteCategory = (id: string) => del(`/search-config/api/v1/meta/ca
 export const listFields = () => get<FieldDef[]>('/search-config/api/v1/meta/fields')
 export const createField = (f: Partial<FieldDef>) => post<FieldDef>('/search-config/api/v1/meta/fields', f)
 export const deleteField = (id: string) => del(`/search-config/api/v1/meta/fields/${encodeURIComponent(id)}`)
-export type SearchRequestOptions = ApiRequestOptions & { cursor?: string | null; limit?: number }
+export type SearchRequestOptions = ApiRequestOptions & { cursor?: string | null; limit?: number; timeline?: boolean }
 export const splSearch = (q: string, options: SearchRequestOptions = {}) => {
-  const { cursor, limit, ...requestOptions } = options
-  return get<SearchResult>(withQuery('/search-config/api/v1/search', { q, cursor, limit }), requestOptions)
+  const { cursor, limit, timeline, ...requestOptions } = options
+  return get<SearchResult>(withQuery('/search-config/api/v1/search', { q, cursor, limit, timeline }), requestOptions)
 }
 export const exportSearch = (q: string, format = 'json', options: Pick<SearchRequestOptions, 'cursor' | 'limit'> = {}) =>
   downloadFile(withQuery('/search-config/api/v1/search/export', { q, format, ...options }), `search.${format}`)

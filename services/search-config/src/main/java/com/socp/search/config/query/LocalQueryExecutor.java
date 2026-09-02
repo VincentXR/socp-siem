@@ -15,10 +15,20 @@ import java.util.stream.Collectors;
 
 /** Executes the same AST used by the OpenSearch compiler against the bounded local cache. */
 public final class LocalQueryExecutor {
+    private static final int MAX_TIMELINE_BUCKETS = 180;
     private static final QuerySemanticAnalyzer SEMANTIC_ANALYZER = QuerySemanticAnalyzer.standard();
     private static final FieldCatalog FIELD_CATALOG = FieldCatalog.standard();
 
     public SplEngine.QueryResult execute(SearchQueryAst ast, List<SearchEvent> corpus) {
+        return execute(ast, corpus, false);
+    }
+
+    /**
+     * Executes a page and, when requested, computes a bounded histogram from the
+     * complete matched set before cursor pagination is applied.
+     */
+    public SplEngine.QueryResult execute(SearchQueryAst ast, List<SearchEvent> corpus,
+                                        boolean includeTimeline) {
         long started = System.nanoTime();
         SEMANTIC_ANALYZER.analyze(ast);
         List<SearchEvent> matched = (corpus == null ? List.<SearchEvent>of() : corpus).stream()
@@ -51,8 +61,10 @@ public final class LocalQueryExecutor {
         List<SearchEvent> page = working.stream().limit(ast.pageSize()).toList();
         String nextCursor = hasMore && !page.isEmpty()
                 ? QueryCursorCodec.encode(ast, page.getLast()) : null;
+        Timeline timeline = includeTimeline ? timeline(matched) : Timeline.empty();
         return new SplEngine.QueryResult(total, page, stat, "local-cache", false,
-                freshest(page), null, nextCursor, elapsedMs(started), null);
+                freshest(page), null, nextCursor, elapsedMs(started), null,
+                timeline.rows(), timeline.approximate());
     }
 
     private static List<SearchEvent> afterCursor(List<SearchEvent> events, SearchQueryAst ast) {
@@ -91,6 +103,17 @@ public final class LocalQueryExecutor {
         return new SplEngine.QueryResult.Stat("timechart", rows);
     }
 
+    private static Timeline timeline(List<SearchEvent> events) {
+        Map<String, Long> values = events.stream().filter(event -> event.timestamp() != null)
+                .collect(Collectors.groupingBy(event -> LocalDate.ofInstant(event.timestamp(), ZoneOffset.UTC).toString(),
+                        Collectors.counting()));
+        List<Map<String, Object>> rows = values.entrySet().stream().sorted(Map.Entry.comparingByKey())
+                .map(entry -> row(entry.getKey(), entry.getValue())).toList();
+        boolean approximate = rows.size() > MAX_TIMELINE_BUCKETS;
+        if (approximate) rows = rows.subList(rows.size() - MAX_TIMELINE_BUCKETS, rows.size());
+        return new Timeline(rows, approximate);
+    }
+
     private static Map<String, Object> row(String key, long count) {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("key", key);
@@ -105,5 +128,11 @@ public final class LocalQueryExecutor {
 
     private static long elapsedMs(long started) {
         return (System.nanoTime() - started) / 1_000_000L;
+    }
+
+    private record Timeline(List<Map<String, Object>> rows, boolean approximate) {
+        private static Timeline empty() {
+            return new Timeline(List.of(), false);
+        }
     }
 }

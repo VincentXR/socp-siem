@@ -31,6 +31,7 @@ const currentPage = ref(1)
 const pageSize = ref(50)
 const pageCursors = ref<Array<string | null>>([null])
 const pageSizes = [25, 50, 100]
+const MAX_BROWSE_ROWS = 10_000
 const examples = [
   'source=auth severity=HIGH',
   'msg contains "blocked" | top src_ip 5',
@@ -40,13 +41,27 @@ const examples = [
   'bytes>=1000 | head 10',
 ]
 const maxStatCount = computed(() => Math.max(1, ...(result.value?.stat?.rows.map(row => Number(row.count)) ?? [1])))
+const timelineRows = computed(() => result.value?.timeline ?? [])
+const maxTimelineCount = computed(() => Math.max(1, ...timelineRows.value.map(row => Number(row.count))))
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('search-events')
 
 async function fetchPage(page: number, pageCursor: string | null) {
   loading.value = true
   error.value = ''
   try {
-    result.value = await splSearch(query.value, { cursor: pageCursor, limit: pageSize.value })
+    const previousResult = result.value
+    const nextResult = await splSearch(query.value, {
+      cursor: pageCursor,
+      limit: pageSize.value,
+      timeline: page === 1,
+    })
+    // The histogram describes the complete query, so retain the first page's
+    // aggregation while navigating subsequent cursor pages.
+    if (page > 1 && !nextResult.timeline?.length && previousResult?.timeline?.length) {
+      nextResult.timeline = previousResult.timeline
+      nextResult.timelineApproximate = previousResult.timelineApproximate
+    }
+    result.value = nextResult
     currentPage.value = page
     pageCursors.value[page - 1] = pageCursor
     if (result.value.nextCursor) pageCursors.value[page] = result.value.nextCursor
@@ -72,7 +87,7 @@ async function previousPage() {
 
 async function nextPage() {
   const nextCursor = result.value?.nextCursor
-  if (!nextCursor || loading.value) return
+  if (!nextCursor || loading.value || currentPage.value >= maxBrowsePages.value) return
   pageCursors.value[currentPage.value] = nextCursor
   await fetchPage(currentPage.value + 1, nextCursor)
 }
@@ -91,8 +106,13 @@ onMounted(() => {
   search()
 })
 
-const pageCount = computed(() => Math.max(1, Math.ceil((result.value?.total ?? 0) / pageSize.value)))
+const maxBrowsePages = computed(() => Math.ceil(MAX_BROWSE_ROWS / pageSize.value))
+const pageCount = computed(() => Math.max(1, Math.min(
+  Math.ceil((result.value?.total ?? 0) / pageSize.value),
+  maxBrowsePages.value,
+)))
 const showPagination = computed(() => Boolean(result.value && (result.value.nextCursor || currentPage.value > 1)))
+const browseLimitVisible = computed(() => Boolean(result.value && result.value.total > MAX_BROWSE_ROWS))
 </script>
 
 <template>
@@ -117,15 +137,34 @@ const showPagination = computed(() => Boolean(result.value && (result.value.next
         :title="t('search.degradedTo', { source: result.source })"
         :description="result.degradationReason || (t('search.localCacheOnly'))"
         :closable="false" show-icon class="search-error" />
+      <el-alert v-if="browseLimitVisible" type="info"
+        :title="t('search.browseLimit')" :closable="false" show-icon class="search-error" />
       <el-card shadow="never" class="search-result-card">
         <template #header>
           <div class="search-result-head">
-          <span>{{ t('search.matchedEvents', { count: result.total }) }}</span>
-          <span class="search-result-meta">
-            {{ result.source }} · {{ result.elapsedMs ?? 0 }} ms
-          </span>
+            <span>{{ t('search.matchedEvents', { count: result.total }) }}</span>
+            <span class="search-result-meta">
+              {{ result.source }} · {{ result.elapsedMs ?? 0 }} ms
+            </span>
           </div>
         </template>
+        <div v-if="timelineRows.length" class="search-timeline">
+          <div class="search-timeline-head">
+            <span>{{ t('search.histogram') }}</span>
+            <span class="search-timeline-hint">
+              {{ result.timelineApproximate ? t('search.timelineLimited') : t('search.timelineHint') }}
+            </span>
+          </div>
+          <div class="search-timeline-chart" role="img" :aria-label="t('search.histogram')">
+            <div v-for="row in timelineRows" :key="row.key" class="search-timeline-bar">
+              <div class="search-timeline-track">
+                <span class="search-timeline-value">{{ row.count }}</span>
+                <i :style="{ height: `${Math.max(8, (Number(row.count) / maxTimelineCount) * 100)}%` }" />
+              </div>
+              <span class="search-timeline-label">{{ String(row.key).slice(0, 10) }}</span>
+            </div>
+          </div>
+        </div>
         <el-table class="search-events-table" :data="result.events" size="small" border allow-drag-last-column max-height="560" @header-dragend="onHeaderDragEnd">
           <el-table-column prop="timestamp" column-key="timestamp" :label="t('common.timestamp')" :width="columnWidth('timestamp', 150)" sortable><template #default="{ row }">{{ row.timestamp.slice(0, 19).replace('T', ' ') }}</template></el-table-column>
           <el-table-column prop="source" column-key="source" :label="t('common.source')" :width="columnWidth('source', 90)" sortable />
@@ -141,7 +180,7 @@ const showPagination = computed(() => Boolean(result.value && (result.value.next
               <el-option v-for="size in pageSizes" :key="size" :label="String(size)" :value="size" />
             </el-select>
             <el-button size="small" :disabled="currentPage <= 1 || loading" @click="previousPage">{{ t('common.previousPage') }}</el-button>
-            <el-button size="small" :disabled="!result.nextCursor || loading" @click="nextPage">{{ t('common.nextPage') }}</el-button>
+            <el-button size="small" :disabled="!result.nextCursor || currentPage >= maxBrowsePages || loading" @click="nextPage">{{ t('common.nextPage') }}</el-button>
           </div>
         </div>
       </el-card>

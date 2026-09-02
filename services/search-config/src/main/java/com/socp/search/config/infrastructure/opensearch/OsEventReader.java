@@ -28,6 +28,7 @@ import java.util.UUID;
 public class OsEventReader {
     private static final Logger log = LoggerFactory.getLogger(OsEventReader.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final int MAX_TIMELINE_BUCKETS = 180;
 
     private final OpenSearchProperties properties;
     private final OpenSearchHttpTransport transport;
@@ -55,11 +56,17 @@ public class OsEventReader {
 
     /** Backwards-compatible first page. */
     public SplEngine.QueryResult search(String query, int size) {
-        return search(query, size, null);
+        return search(query, size, null, false);
     }
 
     /** Searches OpenSearch using the same AST semantics as the local executor. */
     public SplEngine.QueryResult search(String query, int size, String cursor) {
+        return search(query, size, cursor, false);
+    }
+
+    /** Searches a page and optionally requests a bounded full-result histogram. */
+    public SplEngine.QueryResult search(String query, int size, String cursor,
+                                        boolean includeTimeline) {
         long started = System.nanoTime();
         int pageSize = Math.max(1, Math.min(5_000, size));
         SearchQueryAst ast = parser.parse(query).withPage(pageSize, cursor);
@@ -67,7 +74,7 @@ public class OsEventReader {
         try {
             String tenant = TenantContext.require();
             int transportSize = Math.min(5_001, pageSize + 1);
-            byte[] request = compiler.compile(ast, tenant, transportSize).toString()
+            byte[] request = compiler.compile(ast, tenant, transportSize, includeTimeline).toString()
                     .getBytes(java.nio.charset.StandardCharsets.UTF_8);
             var response = transport.exchange("POST", "/" + properties.getSearchIndex() + "/_search",
                     "application/json", request);
@@ -79,7 +86,7 @@ public class OsEventReader {
                 log.warn("OpenSearch search failed HTTP {}; local execution remains an explicit fallback", response.status());
                 return null;
             }
-            SplEngine.QueryResult result = parse(response.body(), ast, pageSize, started);
+            SplEngine.QueryResult result = parse(response.body(), ast, pageSize, started, includeTimeline);
             log.debug("OpenSearch search matched={} returned={} query={}", result.total(), result.events().size(), query);
             return result;
         } catch (com.socp.search.config.query.SplParseException syntax) {
@@ -90,7 +97,8 @@ public class OsEventReader {
         }
     }
 
-    private SplEngine.QueryResult parse(byte[] body, SearchQueryAst ast, int size, long started) throws Exception {
+    private SplEngine.QueryResult parse(byte[] body, SearchQueryAst ast, int size, long started,
+                                        boolean includeTimeline) throws Exception {
         JsonNode root = MAPPER.readTree(body);
         JsonNode hits = root.path("hits").path("hits");
         List<SearchEvent> events = new ArrayList<>();
@@ -113,10 +121,31 @@ public class OsEventReader {
         String nextCursor = hasMore
                 ? QueryCursorCodec.encode(ast, sortValues.getLast()) : null;
         SplEngine.QueryResult.Stat stat = parseStat(root.path("aggregations"), ast);
+        Timeline timeline = includeTimeline ? parseTimeline(root.path("aggregations")) : Timeline.empty();
         return new SplEngine.QueryResult(total, events, stat, "opensearch", false,
                 SplEngine.freshest(events), null, nextCursor,
                 (System.nanoTime() - started) / 1_000_000L,
-                root.has("took") ? root.path("took").asLong() : null);
+                root.has("took") ? root.path("took").asLong() : null,
+                timeline.rows(), timeline.approximate());
+    }
+
+    private static Timeline parseTimeline(JsonNode aggregations) {
+        JsonNode buckets = aggregations == null ? null : aggregations.path("timeline").path("buckets");
+        if (buckets == null || !buckets.isArray() || buckets.isEmpty()) return Timeline.empty();
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (JsonNode bucket : buckets) {
+            String key = bucket.path("key_as_string").isMissingNode()
+                    ? bucket.path("key").asText() : bucket.path("key_as_string").asText();
+            if (key.isBlank()) continue;
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("key", key);
+            row.put("count", bucket.path("doc_count").asLong());
+            rows.add(row);
+        }
+        rows.sort(java.util.Comparator.comparing(row -> String.valueOf(row.get("key"))));
+        boolean approximate = rows.size() > MAX_TIMELINE_BUCKETS;
+        if (approximate) rows = rows.subList(rows.size() - MAX_TIMELINE_BUCKETS, rows.size());
+        return new Timeline(rows, approximate);
     }
 
     private static SplEngine.QueryResult.Stat parseStat(JsonNode aggregations, SearchQueryAst ast) {
@@ -198,5 +227,11 @@ public class OsEventReader {
             node.fields().forEachRemaining(entry -> result.put(entry.getKey(), entry.getValue().asText()));
         }
         return result;
+    }
+
+    private record Timeline(List<Map<String, Object>> rows, boolean approximate) {
+        private static Timeline empty() {
+            return new Timeline(List.of(), false);
+        }
     }
 }

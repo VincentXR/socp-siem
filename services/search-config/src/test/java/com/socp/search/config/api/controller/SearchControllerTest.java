@@ -83,6 +83,21 @@ class SearchControllerTest {
                 .isEqualTo(400);
     }
 
+    @Test
+    void forwardsOptionalTimelineAnalyticsToTheAuthoritativeReader() {
+        SearchStore store = mock(SearchStore.class);
+        OsEventReader reader = mock(OsEventReader.class);
+        SplEngine.QueryResult expected = new SplEngine.QueryResult(1, List.of(event("e-1", "2026-08-23T11:00:00Z")),
+                null, "opensearch", false, null, null, null, 1L, null,
+                List.of(Map.of("key", "2026-08-23", "count", 1L)), false);
+        given(reader.search("source=auth", 200, null, true)).willReturn(expected);
+
+        SplEngine.QueryResult result = new SearchController(new SplEngine(), store, reader)
+                .searchHttp("source=auth", null, null, true);
+
+        assertThat(result.timeline()).containsExactly(Map.of("key", "2026-08-23", "count", 1L));
+    }
+
     private static SearchEvent event(String id, String timestamp) {
         return new SearchEvent(id, Instant.parse(timestamp), "auth", "host-1", "HIGH", "failed login",
                 Map.of("tenant_id", "default"), Map.of());

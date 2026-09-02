@@ -44,15 +44,21 @@ public class SearchController {
 
     /** Java/source-compatible convenience used by unit tests and internal callers. */
     public SplEngine.QueryResult search(String q) {
-        return resolveSafely(q, SEARCH_LIMIT, null);
+        return resolveSafely(q, SEARCH_LIMIT, null, false);
     }
 
     @GetMapping
     public SplEngine.QueryResult searchHttp(
             @RequestParam(value = "q", defaultValue = "") String q,
             @RequestParam(value = "limit", required = false) Integer limit,
-            @RequestParam(value = "cursor", required = false) String cursor) {
-        return resolveSafely(q, bounded(limit, SEARCH_LIMIT, SEARCH_MAX_LIMIT), cursor);
+            @RequestParam(value = "cursor", required = false) String cursor,
+            @RequestParam(value = "timeline", defaultValue = "false") boolean timeline) {
+        return resolveSafely(q, bounded(limit, SEARCH_LIMIT, SEARCH_MAX_LIMIT), cursor, timeline);
+    }
+
+    /** Java/source-compatible overload for callers that do not request analytics. */
+    public SplEngine.QueryResult searchHttp(String q, Integer limit, String cursor) {
+        return searchHttp(q, limit, cursor, false);
     }
 
     /** Export follows the same source-selection policy as interactive search. */
@@ -62,7 +68,7 @@ public class SearchController {
             @RequestParam(defaultValue = "json") String format,
             @RequestParam(value = "limit", required = false) Integer limit,
             @RequestParam(value = "cursor", required = false) String cursor) {
-        SplEngine.QueryResult result = resolveSafely(q, bounded(limit, EXPORT_LIMIT, EXPORT_LIMIT), cursor);
+        SplEngine.QueryResult result = resolveSafely(q, bounded(limit, EXPORT_LIMIT, EXPORT_LIMIT), cursor, false);
         String filename;
         String contentType;
         String body;
@@ -86,17 +92,22 @@ public class SearchController {
         return response.contentType(MediaType.parseMediaType(contentType)).body(body);
     }
 
-    private SplEngine.QueryResult resolveSafely(String q, int limit, String cursor) {
+    private SplEngine.QueryResult resolveSafely(String q, int limit, String cursor, boolean includeTimeline) {
         try {
-            return resolve(q, limit, cursor);
+            return resolve(q, limit, cursor, includeTimeline);
         } catch (SplParseException syntax) {
             throw ApiException.badRequest(syntax.getMessage());
         }
     }
 
-    private SplEngine.QueryResult resolve(String q, int limit, String cursor) {
-        SplEngine.QueryResult authoritative = cursor == null || cursor.isBlank()
-                ? osReader.search(q, limit) : osReader.search(q, limit, cursor);
+    private SplEngine.QueryResult resolve(String q, int limit, String cursor, boolean includeTimeline) {
+        SplEngine.QueryResult authoritative;
+        if (includeTimeline) {
+            authoritative = osReader.search(q, limit, cursor, true);
+        } else {
+            authoritative = cursor == null || cursor.isBlank()
+                    ? osReader.search(q, limit) : osReader.search(q, limit, cursor);
+        }
         if (authoritative != null) {
             return authoritative.limitEvents(limit).withSource("opensearch", false,
                     freshest(authoritative.events()), null);
@@ -113,7 +124,8 @@ public class SearchController {
             throw ApiException.of(503,
                     "Search is unavailable: OpenSearch did not return a result and the local cache is unavailable");
         }
-        SplEngine.QueryResult fallback = engine.execute(engine.parse(q).withPage(limit, cursor), localEvents);
+        SplEngine.QueryResult fallback = engine.execute(engine.parse(q).withPage(limit, cursor), localEvents,
+                includeTimeline);
         return fallback.withSource("local-cache", true, freshest(fallback.events()),
                 "OpenSearch did not return a result; data is limited to the local cache");
     }
