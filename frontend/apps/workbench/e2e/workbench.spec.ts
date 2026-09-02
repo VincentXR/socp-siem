@@ -1,6 +1,19 @@
 import { expect, test, type Page } from '@playwright/test'
 
-const MOCKED_BACKEND_PATH = /\/(?:api|auth|alert-web|search-config|detect-web|soar-web|report-web|asset-web|soc-base|hips-web|ai-assistant|detect-model|asset-collect|hips-collect|threat-web|attack-web|notify-web|incident-web|actuator)(?:\/|$)/
+const WORKBENCH_ORIGIN = 'http://127.0.0.1:4173'
+const MOCKED_BACKEND_PATH = /^\/(?:api|auth|alert-web|search-config|detect-web|soar-web|report-web|asset-web|soc-base|hips-web|ai-assistant|detect-model|asset-collect|hips-collect|threat-web|attack-web|notify-web|incident-web|actuator)(?:\/|$)/
+
+function isMockedBackendUrl(url: URL): boolean {
+  return url.origin === WORKBENCH_ORIGIN && MOCKED_BACKEND_PATH.test(url.pathname)
+}
+
+function isAuthSessionUrl(url: URL): boolean {
+  return url.origin === WORKBENCH_ORIGIN && url.pathname === '/auth/session'
+}
+
+function isAuthLoginUrl(url: URL): boolean {
+  return url.origin === WORKBENCH_ORIGIN && url.pathname === '/auth/login'
+}
 
 /**
  * Register before the endpoint mocks so Playwright's newest-first route
@@ -12,7 +25,7 @@ async function installNetworkGuard(page: Page): Promise<string[]> {
   await page.route('**/*', async route => {
     const request = route.request()
     const url = new URL(request.url())
-    if (url.origin === 'http://127.0.0.1:4173' && MOCKED_BACKEND_PATH.test(url.pathname)) {
+    if (isMockedBackendUrl(url)) {
       unexpected.push(`${request.method()} ${url.pathname}`)
       await route.abort()
       return
@@ -23,9 +36,9 @@ async function installNetworkGuard(page: Page): Promise<string[]> {
 }
 
 async function mockSession(page: Page, role: 'viewer' | 'analyst' = 'analyst') {
-  await page.route(MOCKED_BACKEND_PATH,
+  await page.route(isMockedBackendUrl,
     route => route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }))
-  await page.route('**/auth/session', route => route.fulfill({
+  await page.route(isAuthSessionUrl, route => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({ username: `${role}-user`, role, tenant: 'default' }),
@@ -34,10 +47,10 @@ async function mockSession(page: Page, role: 'viewer' | 'analyst' = 'analyst') {
 
 test('login creates a session-backed workbench without exposing a bearer token', async ({ page }) => {
   const unexpected = await installNetworkGuard(page)
-  await page.route(MOCKED_BACKEND_PATH,
+  await page.route(isMockedBackendUrl,
     route => route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }))
-  await page.route('**/auth/session', route => route.fulfill({ status: 401, body: '{}' }))
-  await page.route('**/auth/login', async route => {
+  await page.route(isAuthSessionUrl, route => route.fulfill({ status: 401, body: '{}' }))
+  await page.route(isAuthLoginUrl, async route => {
     const body = route.request().postDataJSON()
     expect(body).toEqual({ username: 'analyst', password: 'secret' })
     await route.fulfill({
