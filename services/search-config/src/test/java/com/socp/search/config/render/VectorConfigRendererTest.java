@@ -39,6 +39,7 @@ class VectorConfigRendererTest {
 
         assertTrue(toml.contains("[sources.src_"), "应包含 file source 块");
         assertTrue(toml.contains("type = \"file\""), "应为 file 源");
+        assertTrue(toml.contains(".source_id = \"" + src.id() + "\""), "应透传稳定 source_id");
         assertTrue(toml.contains("include = [\"/var/log/auth.log\"]"), "路径应透传");
         assertTrue(toml.contains("read_from = \"beginning\""), "FILE 源应有读取模式");
         assertTrue(toml.contains("[transforms.t_"), "每源应有独立 transform");

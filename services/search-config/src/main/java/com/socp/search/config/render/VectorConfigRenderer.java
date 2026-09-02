@@ -165,13 +165,14 @@ public class VectorConfigRenderer {
                 .ingested_at = format_timestamp!(now(), format: "%%+")
 
                 # SEARCH 解析标注（ingest 侧按此选择解析方式；Vector 不解析正文）
+                .source_id = "%s"
                 .collector_tag = "%s"
                 .parse_format = "%s"
                 .parse_rule_ids = %s
 
                 if exists(.port) { del(.port) }
                 '''
-                """.formatted(tName, srcId, tag, fmt, rules);
+                """.formatted(tName, srcId, s.id(), tag, fmt, rules);
     }
 
     private String sinkBlock(String uri, String authToken, List<String> transformInputs) {

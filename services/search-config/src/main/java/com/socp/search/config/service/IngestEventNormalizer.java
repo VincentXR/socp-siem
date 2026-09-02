@@ -8,6 +8,7 @@ import com.socp.search.config.domain.SearchEvent;
 import com.socp.search.config.persistence.store.ParseRuleStore;
 import com.socp.search.config.persistence.store.ReferenceSetStore;
 import com.socp.search.config.schema.CanonicalEventSchema;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -20,29 +21,61 @@ import java.util.Map;
 @Component
 public class IngestEventNormalizer {
 
-    private final ParsePreviewService preview;
-    private final ParseRuleStore parseRules;
     private final ReferenceSetStore referenceSets;
     private final ParserRegistry parsers;
+    private final IngestSourceResolver sourceResolver;
+    private final ParsePipelineResolver pipelineResolver;
 
-    public IngestEventNormalizer(ParsePreviewService preview, ParseRuleStore parseRules,
-                                 ReferenceSetStore referenceSets, ParserRegistry parsers) {
-        this.preview = preview;
-        this.parseRules = parseRules;
+    @Autowired
+    public IngestEventNormalizer(ReferenceSetStore referenceSets,
+                                 ParserRegistry parsers, IngestSourceResolver sourceResolver,
+                                 ParsePipelineResolver pipelineResolver) {
         this.referenceSets = referenceSets;
         this.parsers = parsers;
+        this.sourceResolver = sourceResolver;
+        this.pipelineResolver = pipelineResolver;
+    }
+
+    /** Source-compatible constructor for tests that exercise only normalization. */
+    public IngestEventNormalizer(ParsePreviewService preview, ParseRuleStore parseRules,
+                                 ReferenceSetStore referenceSets, ParserRegistry parsers) {
+        this(referenceSets, parsers, null, null);
     }
 
     NormalizedEvent normalize(String line, String collectorHint) {
-        Map<String, String> canonical = parsers.parse(line, collectorHint);
+        IngestSourceContext sourceContext = sourceResolver == null
+                ? null : sourceResolver.resolve(line, collectorHint);
+        Map<String, String> parsed = sourceContext == null
+                ? parsers.parse(line, collectorHint)
+                : parsers.parse(line, sourceContext.format(), null);
+        Map<String, String> canonical = new LinkedHashMap<>(parsed == null ? Map.of() : parsed);
+        if (sourceContext != null && sourceContext.resolved()
+                && sourceContext.sourceId() != null && !sourceContext.sourceId().isBlank()) {
+            canonical.putIfAbsent("source_id", sourceContext.sourceId());
+        }
+        String rawLog = canonical.getOrDefault(CanonicalEvent.EVENT_MESSAGE, line);
+
+        if (pipelineResolver != null && sourceContext != null) {
+            ParsePipelineResolver.Result parsedByRule = pipelineResolver.apply(
+                    sourceContext, line, rawLog, isSparseBase(canonical));
+            if (parsedByRule.matched()) {
+                canonical.putAll(parsedByRule.fields());
+                if (parsedByRule.ruleId() != null && !parsedByRule.ruleId().isBlank()) {
+                    canonical.put("parse_rule_id", parsedByRule.ruleId());
+                }
+                rawLog = canonical.getOrDefault(CanonicalEvent.EVENT_MESSAGE, rawLog);
+            }
+            if (parsedByRule.error() != null && !parsedByRule.error().isBlank()) {
+                canonical.put("parse.error", parsedByRule.error());
+            }
+        }
+
         Map<String, Object> fields = new LinkedHashMap<>();
         Map<String, String> ecs = new LinkedHashMap<>();
         canonical.forEach((key, value) -> {
             if (key.contains(".")) ecs.put(key, value);
             else fields.put(key, value);
         });
-        String rawLog = canonical.getOrDefault(CanonicalEvent.EVENT_MESSAGE, line);
-        applyFallbackParseRule(rawLog, fields, ecs);
         bridge(fields, canonical);
         // A collector identity obtained from the authenticated request is
         // authoritative. Never let an untrusted body field relabel the
@@ -98,19 +131,21 @@ public class IngestEventNormalizer {
         return new NormalizedEvent(event, payload, collector(fields, collectorHint));
     }
 
-    @SuppressWarnings("unchecked")
-    private void applyFallbackParseRule(String rawLog, Map<String, Object> fields,
-                                        Map<String, String> ecs) {
-        if (fields.size() > 1 || ecs.size() > 1) return;
-        for (var rule : parseRules.list()) {
-            Map<String, Object> result = preview.preview(rule.id(), null, null, rawLog);
-            if (!Boolean.TRUE.equals(result.get("matched"))) continue;
-            Object extracted = result.get("fields");
-            if (extracted instanceof Map<?, ?> values) {
-                values.forEach((key, value) -> fields.put(String.valueOf(key), value));
-            }
-            return;
+    private static boolean isSparseBase(Map<String, String> canonical) {
+        int fields = 0;
+        int ecs = 0;
+        for (String key : canonical.keySet()) {
+            if (isTransportMetadata(key)) continue;
+            if (CanonicalEvent.EVENT_MESSAGE.equals(key)) continue;
+            if (key.contains(".")) ecs++;
+            else fields++;
         }
+        return fields <= 1 && ecs <= 1;
+    }
+
+    private static boolean isTransportMetadata(String key) {
+        return "source_id".equals(key) || "collector_tag".equals(key)
+                || "parse_format".equals(key) || "parse_rule_ids".equals(key);
     }
 
     private void enrich(Map<String, Object> fields) {

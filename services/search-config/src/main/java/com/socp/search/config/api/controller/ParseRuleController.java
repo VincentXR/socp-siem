@@ -5,8 +5,13 @@ import com.socp.search.config.domain.ParseRule;
 import com.socp.search.config.api.request.ParseRuleRequest;
 import com.socp.search.config.api.request.PreviewRequest;
 import com.socp.search.config.service.ParsePreviewService;
+import com.socp.search.config.service.ParseRuleExecutor;
+import com.socp.search.config.parser.ParserRegistry;
 import com.socp.search.config.persistence.store.ParseRuleStore;
 import jakarta.validation.Valid;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -28,10 +33,19 @@ public class ParseRuleController {
 
     private final ParseRuleStore store;
     private final ParsePreviewService preview;
+    private final ParseRuleExecutor executor;
 
-    public ParseRuleController(ParseRuleStore store, ParsePreviewService preview) {
+    @Autowired
+    public ParseRuleController(ParseRuleStore store, ParsePreviewService preview,
+                               ParseRuleExecutor executor) {
         this.store = store;
         this.preview = preview;
+        this.executor = executor;
+    }
+
+    /** Source-compatible constructor for lightweight controller tests. */
+    public ParseRuleController(ParseRuleStore store, ParsePreviewService preview) {
+        this(store, preview, new ParseRuleExecutor(new ParserRegistry()));
     }
 
     @GetMapping
@@ -42,7 +56,14 @@ public class ParseRuleController {
     @RequireRole({"admin", "analyst"})
     @PostMapping
     public ParseRule create(@Valid @RequestBody ParseRuleRequest rule) {
-        return store.save(rule.toDomain());
+        ParseRule domain = rule.toDomain();
+        try {
+            executor.compile(domain);
+        } catch (IllegalArgumentException invalid) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "invalid parse rule: " + invalid.getMessage(), invalid);
+        }
+        return store.save(domain);
     }
 
     @RequireRole({"admin", "analyst"})

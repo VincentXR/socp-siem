@@ -604,6 +604,8 @@ export const enUS: LocaleMessages = {
     outputDetail: 'Output: {value}',
     createdDetail: 'Created: {value}',
     boundRules: 'Bound parse rules:',
+    filterRules: 'Filter rules',
+    filterRulesPlaceholder: '[{"type":"rename","from":"user","to":"user.name"}]',
     autoDetect: 'Auto-detect',
     recentError: 'Recent error ({time}):',
     testTitle: 'Connectivity Test · {name}',

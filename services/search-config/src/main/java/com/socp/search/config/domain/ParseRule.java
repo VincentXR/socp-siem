@@ -7,7 +7,10 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
 import java.time.Instant;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -34,6 +37,7 @@ public record ParseRule(
         @Valid @Size(max = 1000) List<@Valid FieldMapping> mapping,
         /** 命中后强制设置的字段：{field, value} */
         @Valid @Size(max = 1000) List<@Valid FieldMapping> setFields,
+        @Size(max = 100) List<Map<String, Object>> filters,
         boolean enabled,
         @Min(0) @Max(100000)
         int order,
@@ -45,20 +49,50 @@ public record ParseRule(
             @Size(max = 4096) String value) {
     }
 
+    /** Normalize older persisted rules that do not contain the optional filters field. */
+    public ParseRule {
+        mapping = mapping == null ? List.of() : List.copyOf(mapping);
+        setFields = setFields == null ? List.of() : List.copyOf(setFields);
+        filters = copyFilters(filters);
+    }
+
     public static ParseRule create(String name, String sourceId, String format,
                                    String pattern, List<FieldMapping> mapping,
                                    List<FieldMapping> setFields, boolean enabled, int order) {
         return createWithId(UUID.randomUUID().toString(), name, sourceId, format,
-                pattern, mapping, setFields, enabled, order);
+                pattern, mapping, setFields, List.of(), enabled, order);
+    }
+
+    public static ParseRule create(String name, String sourceId, String format,
+                                   String pattern, List<FieldMapping> mapping,
+                                   List<FieldMapping> setFields, List<Map<String, Object>> filters,
+                                   boolean enabled, int order) {
+        return createWithId(UUID.randomUUID().toString(), name, sourceId, format,
+                pattern, mapping, setFields, filters, enabled, order);
     }
 
     /** 显式指定 id（种子规则用固定 id 便于被日志源/预览引用） */
     public static ParseRule createWithId(String id, String name, String sourceId, String format,
                                          String pattern, List<FieldMapping> mapping,
                                          List<FieldMapping> setFields, boolean enabled, int order) {
+        return createWithId(id, name, sourceId, format, pattern, mapping, setFields,
+                List.of(), enabled, order);
+    }
+
+    public static ParseRule createWithId(String id, String name, String sourceId, String format,
+                                         String pattern, List<FieldMapping> mapping,
+                                         List<FieldMapping> setFields, List<Map<String, Object>> filters,
+                                         boolean enabled, int order) {
         return new ParseRule(id, name, sourceId, format, pattern,
                 mapping == null ? List.of() : List.copyOf(mapping),
                 setFields == null ? List.of() : List.copyOf(setFields),
-                enabled, order, Instant.now());
+                filters, enabled, order, Instant.now());
+    }
+
+    private static List<Map<String, Object>> copyFilters(List<Map<String, Object>> values) {
+        if (values == null || values.isEmpty()) return List.of();
+        return values.stream()
+                .map(value -> Collections.unmodifiableMap(new LinkedHashMap<>(value == null ? Map.of() : value)))
+                .toList();
     }
 }

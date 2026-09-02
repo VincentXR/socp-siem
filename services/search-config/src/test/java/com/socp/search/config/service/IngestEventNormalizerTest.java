@@ -3,12 +3,19 @@ package com.socp.search.config.service;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.search.config.parser.CanonicalEvent;
 import com.socp.search.config.parser.ParserRegistry;
+import com.socp.search.config.domain.LogSource;
+import com.socp.search.config.domain.ParseFormat;
+import com.socp.search.config.domain.ParseRule;
+import com.socp.search.config.domain.SourceType;
+import com.socp.search.config.persistence.store.LogSourceStore;
 import com.socp.search.config.persistence.store.ParseRuleStore;
 import com.socp.search.config.persistence.store.ReferenceSetStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
+import java.util.Optional;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -123,5 +130,42 @@ class IngestEventNormalizerTest {
                     CanonicalEvent.EVENT_SEVERITY, input));
             assertEquals(output, normalizer.normalize("raw event", "collector-1").event().severity());
         });
+    }
+
+    @Test
+    void appliesOnlyRulesBoundToTheResolvedLogSource() {
+        TenantContext.set("tenant-a");
+        ReferenceSetStore references = mock(ReferenceSetStore.class);
+        when(references.matchedSets(anyString())).thenReturn(List.of());
+
+        LogSource source = LogSource.createFull("nginx", SourceType.FILE, ParseFormat.AUTO,
+                "/var/log/nginx/access.log", null, null, "prod", true,
+                "beginning", null, null, List.of("nginx-rule"), null,
+                null, "utf-8", "event_time", "UTC", List.of(), 1, null, null);
+        LogSourceStore sources = mock(LogSourceStore.class);
+        when(sources.revision()).thenReturn(1L);
+        when(sources.get("collector-1")).thenReturn(Optional.empty());
+        when(sources.get(source.id())).thenReturn(Optional.of(source));
+
+        ParseRule rule = ParseRule.createWithId("nginx-rule", "Nginx access", source.id(),
+                "REGEX", "user=(?<user>\\S+) src=(?<srcip>\\S+)", List.of(), List.of(), true, 1);
+        ParseRuleStore rules = mock(ParseRuleStore.class);
+        when(rules.revision()).thenReturn(1L);
+        when(rules.get("nginx-rule")).thenReturn(rule);
+
+        IngestEventNormalizer normalizer = new IngestEventNormalizer(
+                references, new ParserRegistry(), new IngestSourceResolver(sources),
+                new ParsePipelineResolver(rules, new ParseRuleExecutor(new ParserRegistry())));
+
+        String envelope = "{\"source_id\":\"" + source.id()
+                + "\",\"collector_tag\":\"" + source.collectorTag()
+                + "\",\"parse_format\":\"auto\",\"message\":\"user=ADMIN src=203.0.113.10\"}";
+        var result = normalizer.normalize(envelope, "collector-1");
+
+        assertEquals("ADMIN", result.event().fields().get("user"));
+        assertEquals("203.0.113.10", result.event().fields().get("src_ip"));
+        assertEquals(source.id(), result.event().fields().get("source_id"));
+        assertEquals("nginx-rule", result.event().fields().get("parse_rule_id"));
+        assertEquals("collector-1", result.collector());
     }
 }

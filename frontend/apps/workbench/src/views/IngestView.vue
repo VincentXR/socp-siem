@@ -42,9 +42,9 @@ const sources = ref<LogSource[]>([])
 const outputs = ref<SinkTarget[]>([])
 const parseRules = ref<ParseRule[]>([])
 const logCategories = ref<LogCategory[]>([])
-const newSource = ref({ name: '', type: 'FILE', format: 'AUTO', path: '', address: '', topic: '', env: 'local', readFrom: 'beginning', multiline: '', protocol: 'tcp', charset: 'utf-8', timezone: 'Asia/Shanghai', tags: '', frequency: 1, categoryId: '', groupId: '', enabled: true })
+const newSource = ref({ name: '', type: 'FILE', format: 'AUTO', path: '', address: '', topic: '', env: 'local', readFrom: 'beginning', multiline: '', protocol: 'tcp', charset: 'utf-8', timezone: 'Asia/Shanghai', tags: '', frequency: 1, categoryId: '', groupId: '', parseRuleIds: [] as string[], enabled: true })
 const newOutput = ref({ name: '', type: 'GLS_INGEST', uri: '', authToken: '', enabled: true })
-const newRule = ref({ name: '', format: 'REGEX', pattern: '', sourceId: '', enabled: true, order: 10 })
+const newRule = ref({ name: '', format: 'REGEX', pattern: '', sourceId: '', filters: '', enabled: true, order: 10 })
 const previewLine = ref('Aug 07 01:00:00 web01 sshd[123]: Failed password for admin from 10.0.0.99 port 55006 ssh2')
 const previewRuleId = ref('')
 const previewResult = ref<{ matched: boolean; fields: Record<string, string>; error?: string } | null>(null)
@@ -93,7 +93,7 @@ function onIngestTab(key: string | number) {
 
 function openCreateSource() {
   editingSourceId.value = null
-  newSource.value = { name: '', type: 'FILE', format: 'AUTO', path: '', address: '', topic: '', env: 'local', readFrom: 'beginning', multiline: '', protocol: 'tcp', charset: 'utf-8', timezone: 'Asia/Shanghai', tags: '', frequency: 1, categoryId: '', groupId: '', enabled: true }
+  newSource.value = { name: '', type: 'FILE', format: 'AUTO', path: '', address: '', topic: '', env: 'local', readFrom: 'beginning', multiline: '', protocol: 'tcp', charset: 'utf-8', timezone: 'Asia/Shanghai', tags: '', frequency: 1, categoryId: '', groupId: '', parseRuleIds: [], enabled: true }
   showSourceDialog.value = true
 }
 function openEditSource(source: LogSource) {
@@ -103,7 +103,8 @@ function openEditSource(source: LogSource) {
     path: source.path || '', address: source.address || '', topic: source.topic || '', env: source.env || 'local',
     readFrom: source.readFrom || 'beginning', multiline: source.multiline || '', protocol: source.protocol || 'tcp',
     charset: source.charset || 'utf-8', timezone: source.timezone || 'Asia/Shanghai', tags: (source.tags || []).join(','),
-    frequency: source.frequency || 1, categoryId: source.categoryId || '', groupId: source.groupId || '', enabled: source.enabled,
+    frequency: source.frequency || 1, categoryId: source.categoryId || '', groupId: source.groupId || '',
+    parseRuleIds: [...(source.parseRuleIds || [])], enabled: source.enabled,
   }
   showSourceDialog.value = true
 }
@@ -114,6 +115,7 @@ async function saveSource() {
     protocol: newSource.value.protocol, charset: newSource.value.charset, timezone: newSource.value.timezone,
     frequency: Number(newSource.value.frequency) || 1, groupId: newSource.value.groupId || null,
     categoryId: newSource.value.categoryId || null,
+    parseRuleIds: newSource.value.parseRuleIds,
   }
   if (newSource.value.multiline.trim()) source.multiline = newSource.value.multiline.trim()
   if (newSource.value.tags.trim()) source.tags = newSource.value.tags.split(/[,\uFF0C\s]+/).filter(Boolean)
@@ -145,14 +147,25 @@ async function removeOutput(id: string) {
   await loadOutputs()
 }
 async function addParseRule() {
+  let filters: Array<Record<string, unknown>> = []
+  if (newRule.value.filters.trim()) {
+    try {
+      const parsed = JSON.parse(newRule.value.filters)
+      if (!Array.isArray(parsed)) throw new Error('filters must be a JSON array')
+      filters = parsed as Array<Record<string, unknown>>
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : String(error))
+      return
+    }
+  }
   await createParseRule({
     name: newRule.value.name, format: newRule.value.format,
     pattern: newRule.value.format === 'REGEX' ? newRule.value.pattern : null,
     sourceId: newRule.value.sourceId || null, enabled: newRule.value.enabled, order: newRule.value.order,
-    mapping: [], setFields: [],
+    mapping: [], setFields: [], filters,
   } as Partial<ParseRule>)
   showRuleDialog.value = false
-  newRule.value = { name: '', format: 'REGEX', pattern: '', sourceId: '', enabled: true, order: 10 }
+  newRule.value = { name: '', format: 'REGEX', pattern: '', sourceId: '', filters: '', enabled: true, order: 10 }
   await loadParseRules()
 }
 async function removeParseRule(id: string) {
@@ -224,7 +237,7 @@ onMounted(async () => {
       <el-tab-pane :label="t('ingest.sourcesTab')" name="sources">
         <div class="add-bar"><el-button type="primary" @click="openCreateSource">+ {{ t('ingest.addSource') }}</el-button><el-button @click="loadSources">{{ t('ingest.refresh') }}</el-button><el-button type="primary" plain @click="doRender">{{ t('ingest.renderConfig') }}</el-button><span class="hint">{{ t('ingest.sourceHint') }}</span></div>
         <el-dialog v-model="showSourceDialog" :title="editingSourceId ? t('ingest.editSource') : t('ingest.addSource')" width="640px">
-          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px"><el-input v-model="newSource.name" :placeholder="t('ingest.sourceNamePlaceholder')" /><el-select v-model="newSource.type" :placeholder="t('ingest.ingestMethodPlaceholder')"><el-option v-for="type in SOURCE_TYPES" :key="type" :label="type" :value="type" /></el-select><el-select v-model="newSource.format" :placeholder="t('ingest.parseFormatPlaceholder')"><el-option v-for="format in PARSE_FORMATS" :key="format" :label="format" :value="format" /></el-select><el-select v-model="newSource.categoryId" :placeholder="t('ingest.categoryPlaceholder')" clearable><el-option v-for="category in logCategories" :key="category.id" :label="category.code + ' ' + category.name" :value="category.id" /></el-select><el-input v-model="newSource.env" :placeholder="t('ingest.environmentPlaceholder')" /></div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px"><el-input v-model="newSource.name" :placeholder="t('ingest.sourceNamePlaceholder')" /><el-select v-model="newSource.type" :placeholder="t('ingest.ingestMethodPlaceholder')"><el-option v-for="type in SOURCE_TYPES" :key="type" :label="type" :value="type" /></el-select><el-select v-model="newSource.format" :placeholder="t('ingest.parseFormatPlaceholder')"><el-option v-for="format in PARSE_FORMATS" :key="format" :label="format" :value="format" /></el-select><el-select v-model="newSource.parseRuleIds" multiple collapse-tags :placeholder="t('ingest.boundRules')"><el-option v-for="rule in parseRules" :key="rule.id" :label="rule.name" :value="rule.id" /></el-select><el-select v-model="newSource.categoryId" :placeholder="t('ingest.categoryPlaceholder')" clearable><el-option v-for="category in logCategories" :key="category.id" :label="category.code + ' ' + category.name" :value="category.id" /></el-select><el-input v-model="newSource.env" :placeholder="t('ingest.environmentPlaceholder')" /></div>
           <div v-if="newSource.type === 'FILE'" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:10px"><el-input v-model="newSource.path" :placeholder="t('ingest.filePathPlaceholder')" /><el-select v-model="newSource.readFrom"><el-option :label="t('ingest.readFromBeginning')" value="beginning" /><el-option :label="t('ingest.readFromEnd')" value="end" /></el-select><el-input v-model.number="newSource.frequency" :placeholder="t('ingest.frequencyPlaceholder')" /></div>
           <div v-else-if="newSource.type === 'SOCKET' || newSource.type === 'SYSLOG'" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:10px"><el-input v-model="newSource.address" :placeholder="t('ingest.listenAddressPlaceholder')" /><el-select v-model="newSource.protocol" :placeholder="t('ingest.protocol')"><el-option label="UDP" value="udp" /><el-option label="TCP" value="tcp" /><el-option label="TLS" value="tls" /></el-select></div>
           <div v-else-if="newSource.type === 'KAFKA'" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:10px"><el-input v-model="newSource.topic" :placeholder="t('ingest.topicPlaceholder')" /><el-input v-model="newSource.groupId" :placeholder="t('ingest.groupIdPlaceholder')" /></div>
@@ -248,6 +261,6 @@ onMounted(async () => {
       </el-tab-pane>
     </el-tabs>
     <el-dialog v-model="showRender" title="vector.toml" width="720px"><el-button size="small" type="primary" @click="copyRender">{{ t('common.copy') }}</el-button><pre style="background:var(--ns-bg-subtle);border:1px solid var(--ns-border);border-radius:6px;padding:12px;font-size:12px;overflow:auto;max-height:440px;margin-top:10px">{{ renderText }}</pre></el-dialog>
-    <el-dialog v-model="showRuleDialog" :title="t('ingest.addParseRule')" width="560px"><el-form label-width="90px"><el-form-item :label="t('common.name')"><el-input v-model="newRule.name" placeholder="SSHD" /></el-form-item><el-form-item :label="t('ingest.parseFormat')"><el-select v-model="newRule.format" style="width:200px"><el-option v-for="format in ['REGEX', 'JSON', 'KV', 'SYSLOG', 'CEF', 'LEEF']" :key="format" :label="format" :value="format" /></el-select></el-form-item><el-form-item v-if="newRule.format === 'REGEX'" :label="t('ingest.patternDescription')"><el-input v-model="newRule.pattern" type="textarea" :rows="3" :placeholder="t('ingest.patternPlaceholder')" /></el-form-item><el-form-item :label="t('ingest.sourceScopePlaceholder')"><el-input v-model="newRule.sourceId" :placeholder="t('ingest.sourceScopePlaceholder')" /></el-form-item><el-form-item :label="t('common.enabled')"><el-switch v-model="newRule.enabled" /></el-form-item></el-form><template #footer><el-button @click="showRuleDialog = false">{{ t('common.cancel') }}</el-button><el-button type="primary" @click="addParseRule">{{ t('common.save') }}</el-button></template></el-dialog>
+    <el-dialog v-model="showRuleDialog" :title="t('ingest.addParseRule')" width="560px"><el-form label-width="90px"><el-form-item :label="t('common.name')"><el-input v-model="newRule.name" placeholder="SSHD" /></el-form-item><el-form-item :label="t('ingest.parseFormat')"><el-select v-model="newRule.format" style="width:200px"><el-option v-for="format in ['REGEX', 'JSON', 'KV', 'SYSLOG', 'CEF', 'LEEF', 'AUTO']" :key="format" :label="format" :value="format" /></el-select></el-form-item><el-form-item v-if="newRule.format === 'REGEX'" :label="t('ingest.patternDescription')"><el-input v-model="newRule.pattern" type="textarea" :rows="3" :placeholder="t('ingest.patternPlaceholder')" /></el-form-item><el-form-item :label="t('ingest.sourceScopePlaceholder')"><el-input v-model="newRule.sourceId" :placeholder="t('ingest.sourceScopePlaceholder')" /></el-form-item><el-form-item :label="t('ingest.filterRules')"><el-input v-model="newRule.filters" type="textarea" :rows="4" :placeholder="t('ingest.filterRulesPlaceholder')" /></el-form-item><el-form-item :label="t('common.enabled')"><el-switch v-model="newRule.enabled" /></el-form-item></el-form><template #footer><el-button @click="showRuleDialog = false">{{ t('common.cancel') }}</el-button><el-button type="primary" @click="addParseRule">{{ t('common.save') }}</el-button></template></el-dialog>
   </div>
 </template>

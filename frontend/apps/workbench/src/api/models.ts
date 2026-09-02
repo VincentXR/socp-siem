@@ -139,6 +139,7 @@ export interface ParseRule {
   pattern: string | null
   mapping: Array<{ group: string; field: string | null; value: string | null }>
   setFields: Array<{ group: string; field: string | null; value: string | null }>
+  filters?: Array<Record<string, unknown>>
   enabled: boolean; order: number
 }
 export interface SinkTarget { id: string; name: string; type: string; uri: string; authToken: string | null; enabled: boolean }

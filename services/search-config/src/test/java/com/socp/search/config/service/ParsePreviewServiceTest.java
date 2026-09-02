@@ -1,6 +1,7 @@
 package com.socp.search.config.service;
 
 import com.socp.search.config.persistence.store.ParseRuleStore;
+import com.socp.search.config.domain.ParseRule;
 import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -26,7 +27,8 @@ class ParsePreviewServiceTest {
         TenantContext.clear();
     }
 
-    private final ParsePreviewService service = new ParsePreviewService(new ParseRuleStore());
+    private final ParseRuleStore store = new ParseRuleStore();
+    private final ParsePreviewService service = new ParsePreviewService(store);
 
     @Test
     void regexNamedGroupsExtractFields() {
@@ -64,5 +66,24 @@ class ParsePreviewServiceTest {
         Map<String, Object> jf = (Map<String, Object>) json.get("fields");
         assertEquals("admin", jf.get("user"));
         assertEquals("1.2.3.4", jf.get("meta.ip"), "JSON 嵌套展平");
+    }
+
+    @Test
+    void previewUsesLiveFilterPipeline() {
+        store.save(ParseRule.createWithId(
+                "preview-filter", "Preview filter", null, "KV", null, java.util.List.of(),
+                java.util.List.of(), java.util.List.of(
+                        Map.of("type", "lowercase", "field", "user"),
+                        Map.of("type", "set", "field", "event.category", "value", "authentication")),
+                true, 1));
+
+        Map<String, Object> result = service.preview("preview-filter", null, null,
+                "user=ADMIN action=login");
+
+        assertTrue((Boolean) result.get("matched"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> fields = (Map<String, Object>) result.get("fields");
+        assertEquals("admin", fields.get("user"));
+        assertEquals("authentication", fields.get("category"));
     }
 }

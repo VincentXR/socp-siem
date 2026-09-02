@@ -7,6 +7,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 解析规则存储——进程内；生产替换为 PG search.t_parse_rule，接口不变。
@@ -16,6 +17,7 @@ public class ParseRuleStore {
 
     private final TenantCatalog<ParseRule> catalog;
     private boolean seeding = true;
+    private final AtomicLong revision = new AtomicLong();
 
     public ParseRuleStore() {
         this(null, null);
@@ -65,9 +67,12 @@ public class ParseRuleStore {
     public ParseRule save(ParseRule r) {
         if (seeding) {
             catalog.registerTemplate(r);
+            revision.incrementAndGet();
             return r;
         }
-        return catalog.save(r);
+        ParseRule saved = catalog.save(r);
+        revision.incrementAndGet();
+        return saved;
     }
 
     public ParseRule get(String id) {
@@ -75,6 +80,13 @@ public class ParseRuleStore {
     }
 
     public boolean delete(String id) {
-        return catalog.delete(id);
+        boolean deleted = catalog.delete(id);
+        if (deleted) revision.incrementAndGet();
+        return deleted;
+    }
+
+    /** Cheap in-memory change token used by the compiled parser-pipeline cache. */
+    public long revision() {
+        return revision.get();
     }
 }

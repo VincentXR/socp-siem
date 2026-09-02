@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Optional;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 日志源存储——本地切片用 H2 文件库（重启不丢）；生产由独立 search 库 PG 承载。
@@ -25,6 +26,7 @@ import java.util.UUID;
 public class LogSourceStore {
 
     private final LogSourceRepository repo;
+    private final AtomicLong revision = new AtomicLong();
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public LogSourceStore(LogSourceRepository repo) {
@@ -33,11 +35,20 @@ public class LogSourceStore {
 
     public synchronized LogSource save(LogSource src) {
         repo.save(toEntity(src));
+        revision.incrementAndGet();
         return src;
     }
 
     public Optional<LogSource> get(String id) {
         return repo.findByTenantIdAndSourceId(tenant(), id).map(LogSourceStore::fromEntity);
+    }
+
+    /** Resolve the stable tag emitted by the rendered Vector transform. */
+    public Optional<LogSource> findByCollectorTag(String collectorTag) {
+        if (collectorTag == null || collectorTag.isBlank()) return Optional.empty();
+        return list().stream()
+                .filter(source -> collectorTag.equals(source.collectorTag()))
+                .findFirst();
     }
 
     public List<LogSource> list() {
@@ -54,9 +65,15 @@ public class LogSourceStore {
         Optional<LogSourceEntity> entity = repo.findByTenantIdAndSourceId(tenant(), id);
         if (entity.isPresent()) {
             repo.delete(entity.get());
+            revision.incrementAndGet();
             return true;
         }
         return false;
+    }
+
+    /** Cheap in-memory change token used by the source-context cache. */
+    public long revision() {
+        return revision.get();
     }
 
     // ---- 互转 ----

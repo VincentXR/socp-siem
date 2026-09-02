@@ -39,6 +39,9 @@ before marking that row published. Detection and indexing consume the same
 stream independently, so search indexing does not block detection and either
 consumer can process Kafka backlog after recovery.
 
+Source-bound parsing, the supported filter subset, and the exact Vector
+envelope are documented in [ingestion parsing](ingestion-parsing.md).
+
 Detection does not call Alert Web directly from the rule-engine worker. It
 materializes the alert payload and source identity in
 `t_detection_alert_outbox`. The scheduled publisher retries the HTTP hand-off

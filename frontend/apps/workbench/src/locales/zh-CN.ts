@@ -602,6 +602,8 @@ export const zhCN = {
     outputDetail: '输出：{value}',
     createdDetail: '创建：{value}',
     boundRules: '绑定解析规则：',
+    filterRules: 'Filter 规则',
+    filterRulesPlaceholder: '[{"type":"rename","from":"user","to":"user.name"}]',
     autoDetect: '自动识别',
     recentError: '最近错误（{time}）：',
     testTitle: '连通性自测 · {name}',

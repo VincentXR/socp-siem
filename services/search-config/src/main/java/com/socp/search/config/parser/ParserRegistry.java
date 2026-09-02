@@ -1,5 +1,6 @@
 package com.socp.search.config.parser;
 
+import com.socp.search.config.domain.ParseFormat;
 import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
@@ -85,6 +86,66 @@ public class ParserRegistry {
         }
         // 兜底：原文进 event.message
         return Map.of(CanonicalEvent.EVENT_MESSAGE, raw.trim());
+    }
+
+    /**
+     * Parses with a persisted source format. Unlike the legacy AUTO method, a
+     * fixed format must not silently fall back to event.message; a
+     * source-bound rule uses an empty result to distinguish "did not match"
+     * from a successful parse.
+     *
+     * <p>Vector transports source metadata in a JSON envelope. For a fixed
+     * format the envelope is unwrapped first and the embedded message is sent
+     * through the selected parser, while the envelope fields are retained.</p>
+     */
+    public Map<String, String> parse(String raw, ParseFormat format, String vendorHint) {
+        if (raw == null || raw.isBlank()) {
+            return Map.of();
+        }
+        ParseFormat selected = format == null ? ParseFormat.AUTO : format;
+        if (selected == ParseFormat.AUTO) {
+            return parse(raw, vendorHint);
+        }
+
+        EventParser parser = byVendor.get(selected.name().toLowerCase());
+        if (parser == null) {
+            return Map.of();
+        }
+
+        if (selected == ParseFormat.JSON) {
+            Map<String, String> parsed = safeParse(parser, raw);
+            return parsed == null ? Map.of() : mergeEmbeddedJson(parsed);
+        }
+
+        if (raw.stripLeading().startsWith("{")) {
+            Map<String, String> envelope = safeParse(new JsonParser(), raw);
+            if (envelope != null) {
+                String message = envelope.get(CanonicalEvent.EVENT_MESSAGE);
+                if (message == null || message.isBlank()) {
+                    return envelope;
+                }
+                Map<String, String> nested = safeParse(parser, message);
+                if (nested != null) {
+                    Map<String, String> merged = new LinkedHashMap<>(envelope);
+                    merged.putAll(nested);
+                    return merged;
+                }
+                return envelope;
+            }
+        }
+
+        Map<String, String> direct = safeParse(parser, raw);
+        return direct == null ? Map.of() : direct;
+    }
+
+    private Map<String, String> mergeEmbeddedJson(Map<String, String> envelope) {
+        String message = envelope.get(CanonicalEvent.EVENT_MESSAGE);
+        if (message == null || !message.stripLeading().startsWith("{")) return envelope;
+        Map<String, String> nested = safeParse(new JsonParser(), message);
+        if (nested == null || nested.isEmpty()) return envelope;
+        Map<String, String> merged = new LinkedHashMap<>(envelope);
+        merged.putAll(nested);
+        return merged;
     }
 
     private Map<String, String> parseEmbeddedSshd(Map<String, String> envelope) {
