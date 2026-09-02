@@ -69,8 +69,8 @@ const attackMatrix = computed(() => {
 })
 
 function techStyle(technique: { covered: boolean; count: number }) {
-  if (technique.count > 0) return 'background:#f56c6c;color:#fff;border-color:#f56c6c'
-  if (technique.covered) return 'background:var(--ns-success);color:#fff;border-color:transparent'
+  if (technique.count > 0) return 'background:var(--ns-danger);color:var(--ns-on-danger);border-color:var(--ns-danger)'
+  if (technique.covered) return 'background:var(--ns-success);color:var(--ns-on-success);border-color:transparent'
   return 'background:var(--ns-bg-inset);color:var(--ns-text-3);border-color:var(--ns-border)'
 }
 
@@ -110,14 +110,14 @@ onMounted(loadAttack)
     </PageHeader>
     <el-card shadow="never" style="margin-bottom:14px">
       <div style="display:flex;gap:20px;align-items:center;flex-wrap:wrap">
-        <div><div style="font-size:12px;color:#909399">{{ t('attack.detectionCoverage') }}</div><div style="font-size:30px;font-weight:700;color:#409eff">{{ attackCov ? attackCov.coverage : t('time.notAvailable') }}%</div></div>
-        <div><div style="font-size:12px;color:#909399">{{ t('attack.coveredTotal') }}</div><div style="font-size:18px;font-weight:600">{{ attackCov ? attackCov.coveredTechniques : t('time.notAvailable') }} / {{ attackCov ? attackCov.totalTechniques : t('time.notAvailable') }}</div></div>
+        <div><div style="font-size:12px;color:var(--ns-text-3)">{{ t('attack.detectionCoverage') }}</div><div style="font-size:30px;font-weight:700;color:var(--ns-accent-fg)">{{ attackCov ? attackCov.coverage : t('time.notAvailable') }}%</div></div>
+        <div><div style="font-size:12px;color:var(--ns-text-3)">{{ t('attack.coveredTotal') }}</div><div style="font-size:18px;font-weight:600">{{ attackCov ? attackCov.coveredTechniques : t('time.notAvailable') }} / {{ attackCov ? attackCov.totalTechniques : t('time.notAvailable') }}</div></div>
         <el-select v-model="attackTech" :placeholder="t('attack.allTactics')" clearable style="width:170px" @change="loadAttack">
           <el-option v-for="tactic in tactics" :key="tactic.id" :label="tactic.name" :value="tactic.id" />
         </el-select>
       </div>
       <div v-if="attackCov && attackCov.uncovered.length" style="margin-top:10px">
-        <span style="color:#909399;font-size:12px">{{ t('attack.uncoveredLabel') }}</span>
+        <span style="color:var(--ns-text-3);font-size:12px">{{ t('attack.uncoveredLabel') }}</span>
         <el-tag v-for="technique in attackCov.uncovered.slice(0, 24)" :key="technique" size="small" type="info" style="margin:2px">{{ technique }}</el-tag>
       </div>
     </el-card>

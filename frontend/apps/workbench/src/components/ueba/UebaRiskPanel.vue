@@ -39,7 +39,15 @@ let renderToken = 0
 const { t, d } = useI18n()
 
 function sevColor(severity: string) {
-  return { CRITICAL: '#f56c6c', HIGH: '#e63946', MEDIUM: '#e6a23c', LOW: '#909399', INFO: '#909399' }[severity] ?? '#909399'
+  const variables: Record<string, string> = {
+    CRITICAL: '--ns-danger', HIGH: '--ns-danger', MEDIUM: '--ns-warning', LOW: '--ns-info', INFO: '--ns-info',
+  }
+  const fallback: Record<string, string> = {
+    CRITICAL: '#dc2626', HIGH: '#dc2626', MEDIUM: '#b45309', LOW: '#667085', INFO: '#667085',
+  }
+  const key = String(severity || 'INFO').toUpperCase()
+  return getComputedStyle(document.documentElement).getPropertyValue(variables[key] ?? '--ns-info').trim()
+    || fallback[key] || fallback.INFO
 }
 
 function renderRiskBar() {
@@ -80,10 +88,10 @@ onUnmounted(() => {
 <template>
   <div>
     <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
-      <span style="font-size:13px;color:#909399">Top N</span>
+      <span style="font-size:13px;color:var(--ns-text-3)">Top N</span>
       <el-input-number :model-value="riskLimit" :min="5" :max="100" :step="5" size="small" @change="onLimitChange" />
       <el-button size="small" @click="emit('refresh')">{{ t('common.refresh') }}</el-button>
-      <span style="font-size:12px;color:#909399">
+      <span style="font-size:12px;color:var(--ns-text-3)">
         {{ t('ueba.scoreFormula', { hours: summary?.halfLifeHours ?? 6 }) }}
       </span>
     </div>
@@ -99,7 +107,7 @@ onUnmounted(() => {
           <template #header>{{ t('ueba.entityDetails') }}</template>
           <el-table :data="entities" size="small" border height="340" @row-click="emit('select', $event)">
             <el-table-column :label="t('ueba.riskScore')" width="80">
-              <template #default="{ row }"><span class="risk-pill" :style="{ background: sevColor(row.level) }">{{ row.risk }}</span></template>
+              <template #default="{ row }"><span class="risk-pill" :class="`risk-${String(row.level || 'INFO').toLowerCase()}`">{{ row.risk }}</span></template>
             </el-table-column>
             <el-table-column :label="t('ueba.entity')" min-width="150" show-overflow-tooltip>
               <template #default="{ row }">
@@ -114,7 +122,7 @@ onUnmounted(() => {
             <el-table-column :label="t('ueba.primaryTactic')" min-width="140" show-overflow-tooltip>
               <template #default="{ row }">
                 <el-tag v-for="m in row.mitre.slice(0, 3)" :key="m.technique" size="small" style="margin-right:4px">{{ m.technique }}×{{ m.count }}</el-tag>
-                <span v-if="!row.mitre.length" style="color:#c0c4cc">{{ t('time.notAvailable') }}</span>
+                <span v-if="!row.mitre.length" style="color:var(--ns-text-3)">{{ t('time.notAvailable') }}</span>
               </template>
             </el-table-column>
             <el-table-column :label="t('ueba.recentActivity')" width="150" show-overflow-tooltip>

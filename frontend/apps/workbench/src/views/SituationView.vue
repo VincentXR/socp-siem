@@ -68,13 +68,22 @@ const sitStats = computed<AlarmStats | null>(() => situationQuery.data.value?.st
 const sitEngine = computed<GasStats | null>(() => situationQuery.data.value?.engine ?? null)
 const sitIngest = computed<IngestSummary | null>(() => situationQuery.data.value?.ingest ?? null)
 
+function cssToken(variable: string, fallback: string) {
+  if (typeof document === 'undefined') return fallback
+  const value = getComputedStyle(document.documentElement).getPropertyValue(variable).trim()
+  return value || fallback
+}
 function sevColor(severity: string) {
-  return { CRITICAL: '#fb7185', HIGH: '#ef4444', MEDIUM: '#f59e0b', LOW: '#94a3b8', INFO: '#64748b' }[severity] ?? '#64748b'
+  if (severity === 'CRITICAL' || severity === 'HIGH') return cssToken('--ns-danger', '#dc2626')
+  if (severity === 'MEDIUM') return cssToken('--ns-warning', '#a16207')
+  return cssToken('--ns-info', '#667085')
 }
 function tc(light: string, dark: string) { return props.theme === 'dark' ? dark : light }
 const feedView = computed(() => liveSevFilter.value ? liveFeed.value.filter(alert => alert.severity === liveSevFilter.value) : liveFeed.value)
 const queuePct = computed(() => Math.round((sitEngine.value?.queueLoad ?? 0) * 1000) / 10)
-const queueColor = computed(() => queuePct.value > 70 ? '#fb7185' : queuePct.value > 30 ? '#f59e0b' : '#22c55e')
+const queueColor = computed(() => queuePct.value > 70
+  ? cssToken('--ns-danger', '#dc2626')
+  : queuePct.value > 30 ? cssToken('--ns-warning', '#a16207') : cssToken('--ns-success', '#15803d'))
 
 function openAlertStream() {
   try {
@@ -125,7 +134,7 @@ function renderSitCharts() {
       if (!chartGauge.value || chartGauge.value.isDisposed()) chartGauge.value = echarts.init(gaugeEl.value, 'socp')
       chartGauge.value.setOption({
         series: [{ type: 'gauge', min: 0, max: 100, radius: '92%', center: ['50%', '58%'], startAngle: 210, endAngle: -30, splitNumber: 5,
-          axisLine: { lineStyle: { width: 14, color: [[0.2, '#67c23a'], [0.4, '#95d475'], [0.65, '#e6a23c'], [0.85, '#f89898'], [1, '#f56c6c']] } },
+          axisLine: { lineStyle: { width: 14, color: [[0.2, cssToken('--ns-success', '#15803d')], [0.4, cssToken('--ns-success', '#15803d')], [0.65, cssToken('--ns-warning', '#a16207')], [0.85, cssToken('--ns-danger', '#dc2626')], [1, cssToken('--ns-danger', '#dc2626')]] } },
           pointer: { width: 4, length: '62%' }, axisTick: { distance: -14, length: 4, lineStyle: { color: 'transparent' } },
           splitLine: { distance: -14, length: 14, lineStyle: { color: 'transparent', width: 2 } },
           axisLabel: { distance: 16, fontSize: 10, color: tc('#818b98', '#9198a1') },
@@ -140,7 +149,7 @@ function renderSitCharts() {
     }
     if (epsEl.value) {
       if (!chartEps.value || chartEps.value.isDisposed()) chartEps.value = echarts.init(epsEl.value, 'socp')
-      chartEps.value.setOption({ grid: { left: 34, right: 10, top: 18, bottom: 20 }, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', show: false, data: epsHistory.value.map((_, index) => index) }, yAxis: { type: 'value', axisLabel: { fontSize: 10 }, splitLine: { lineStyle: { type: 'dashed' } } }, series: [{ type: 'line', smooth: true, showSymbol: false, data: epsHistory.value, lineStyle: { color: '#67c23a', width: 2 }, areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(103,194,58,.35)' }, { offset: 1, color: 'rgba(103,194,58,.02)' }]) } }] })
+      chartEps.value.setOption({ grid: { left: 34, right: 10, top: 18, bottom: 20 }, tooltip: { trigger: 'axis' }, xAxis: { type: 'category', show: false, data: epsHistory.value.map((_, index) => index) }, yAxis: { type: 'value', axisLabel: { fontSize: 10 }, splitLine: { lineStyle: { type: 'dashed' } } }, series: [{ type: 'line', smooth: true, showSymbol: false, data: epsHistory.value, lineStyle: { color: cssToken('--ns-success', '#15803d'), width: 2 }, areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: tc('rgba(21,128,61,.28)', 'rgba(63,185,80,.35)') }, { offset: 1, color: 'rgba(0,0,0,0)' }]) } }] })
     }
   }, 80)
 }
@@ -189,23 +198,23 @@ onUnmounted(() => {
               <div class="k-num">{{ sitEngine?.eventCount ?? 0 }}</div><div class="k-label">{{ t('situation.engineEvents') }}</div>
             </div>
             <div class="sit-kpi">
-              <div class="k-num" style="color:#f56c6c">{{ sitEngine?.alertCount ?? 0 }}</div><div class="k-label">{{ t('situation.ruleAlerts') }}</div>
+              <div class="k-num" style="color:var(--ns-danger)">{{ sitEngine?.alertCount ?? 0 }}</div><div class="k-label">{{ t('situation.ruleAlerts') }}</div>
             </div>
             <div class="sit-kpi">
-              <div class="k-num" style="color:#e6a23c">{{ sitEngine?.suppressedCount ?? 0 }}</div><div class="k-label">{{ t('situation.suppressedDedup') }}</div>
+              <div class="k-num" style="color:var(--ns-warning)">{{ sitEngine?.suppressedCount ?? 0 }}</div><div class="k-label">{{ t('situation.suppressedDedup') }}</div>
             </div>
             <div class="sit-kpi">
-              <div class="k-num" :style="{ color: (sitEngine?.dropCount ?? 0) > 0 ? '#f56c6c' : '#67c23a' }">{{ sitEngine?.dropCount ?? 0 }}</div>
+              <div class="k-num" :style="{ color: (sitEngine?.dropCount ?? 0) > 0 ? 'var(--ns-danger)' : 'var(--ns-success)' }">{{ sitEngine?.dropCount ?? 0 }}</div>
               <div class="k-label">{{ t('situation.backpressureDrops') }}</div>
             </div>
             <div class="sit-kpi">
-              <div class="k-num" style="color:#409eff">{{ sitIngest?.eps1m ?? 0 }}</div><div class="k-label">{{ t('situation.ingestEps') }}</div>
+              <div class="k-num" style="color:var(--ns-accent-fg)">{{ sitIngest?.eps1m ?? 0 }}</div><div class="k-label">{{ t('situation.ingestEps') }}</div>
             </div>
             <div class="sit-kpi">
               <div class="k-num">{{ queuePct }}%</div>
               <div class="k-label">{{ t('situation.queueLevel') }}</div>
               <el-progress :percentage="Math.min(100, queuePct)" :show-text="false" :stroke-width="4"
-                :color="queuePct > 70 ? '#f56c6c' : queuePct > 30 ? '#e6a23c' : '#67c23a'" style="margin-top:4px" />
+                :color="queueColor" style="margin-top:4px" />
             </div>
           </div>
 
@@ -214,9 +223,9 @@ onUnmounted(() => {
               <el-card shadow="never" class="sit-card">
                 <template #header>{{ t('situation.threatScore') }}（0–100）</template>
                 <div ref="gaugeEl" style="height:180px"></div>
-                <div style="text-align:center;font-size:12px;color:#909399">
-                  {{ t('situation.sevenDayAlarms') }} <b style="color:#303133">{{ sitStats?.total ?? 0 }}</b>
-                  · {{ t('situation.highRisk') }} <b style="color:#f56c6c">{{ (sitStats?.byRiskLevel?.CRITICAL ?? 0) + (sitStats?.byRiskLevel?.HIGH ?? 0) }}</b>
+                <div style="text-align:center;font-size:12px;color:var(--ns-text-3)">
+                  {{ t('situation.sevenDayAlarms') }} <b style="color:var(--ns-text)">{{ sitStats?.total ?? 0 }}</b>
+                  · {{ t('situation.highRisk') }} <b style="color:var(--ns-danger)">{{ (sitStats?.byRiskLevel?.CRITICAL ?? 0) + (sitStats?.byRiskLevel?.HIGH ?? 0) }}</b>
                 </div>
               </el-card>
             </el-col>
@@ -252,7 +261,7 @@ onUnmounted(() => {
                     </el-select>
                     <el-button size="small" @click="toggleLive">{{ liveOn ? t('situation.pause') : t('situation.resume') }}</el-button>
                     <el-button size="small" @click="loadSituation">{{ t('common.refresh') }}</el-button>
-                    <span style="margin-left:auto;font-size:12px;color:#909399">{{ t('situation.eventCount', { count: feedView.length }) }}</span>
+                    <span style="margin-left:auto;font-size:12px;color:var(--ns-text-3)">{{ t('situation.eventCount', { count: feedView.length }) }}</span>
                   </div>
                 </template>
                 <div class="feed">
@@ -278,7 +287,7 @@ onUnmounted(() => {
                 <el-table :data="sitStats?.topRisk ?? []" size="small" height="368">
                   <el-table-column :label="t('situation.score')" width="86">
                     <template #default="{ row }">
-                      <span class="risk-pill" :style="{ background: sevColor(row.riskLevel) }">{{ row.riskScore }}</span>
+                      <span class="risk-pill" :class="`risk-${String(row.riskLevel || 'INFO').toLowerCase()}`">{{ row.riskScore }}</span>
                     </template>
                   </el-table-column>
                   <el-table-column prop="ruleName" :label="t('common.rule')" min-width="150" show-overflow-tooltip />

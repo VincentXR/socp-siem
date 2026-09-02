@@ -151,11 +151,11 @@ onMounted(loadTi)
     </PageHeader>
     <div class="page-metrics ti-metrics">
       <el-card shadow="never" :body-style="{ padding: '12px 18px' }">
-        <div style="font-size:12px;color:#909399">{{ t('threat.total') }}</div>
+        <div style="font-size:12px;color:var(--ns-text-3)">{{ t('threat.total') }}</div>
         <div style="font-size:22px;font-weight:700">{{ tiStat.total ?? 0 }}</div>
       </el-card>
       <el-card v-for="(count, kind) in (tiStat.byType || {})" :key="kind" shadow="never" :body-style="{ padding: '12px 18px' }">
-        <div style="font-size:12px;color:#909399">{{ kind }}</div>
+        <div style="font-size:12px;color:var(--ns-text-3)">{{ kind }}</div>
         <div style="font-size:22px;font-weight:700">{{ count }}</div>
       </el-card>
     </div>

@@ -78,7 +78,7 @@ onMounted(async () => {
 
 <template>
   <el-config-provider :locale="elLocale">
-    <div v-if="isOffline" class="fixed top-0 left-0 w-full z-50 bg-amber-500 text-white text-xs py-1 text-center font-medium shadow">
+    <div v-if="isOffline" class="socp-offline-banner">
       {{ t('app.offlineBanner') }}
     </div>
     <LoginView v-if="!isAuthed" @done="onLoginDone" />

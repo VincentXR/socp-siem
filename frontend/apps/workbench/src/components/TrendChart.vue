@@ -20,11 +20,18 @@ let chart: ECharts | null = null
 let renderToken = 0
 let themeObserver: MutationObserver | null = null
 
+function cssColor(variable: string, fallback: string): string {
+  const value = getComputedStyle(document.documentElement).getPropertyValue(variable).trim()
+  return value || fallback
+}
+
 function themeColor(key: string): string {
-  const dark = document.documentElement.classList.contains('dark')
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark'
   const map: Record<string, string> = {
     label: dark ? '#e6edf3' : '#1f2328',
     axis: dark ? '#8b949e' : '#57606a',
+    accent: cssColor('--ns-accent', dark ? '#60a5fa' : '#2563eb'),
+    success: cssColor('--ns-success', dark ? '#3fb950' : '#15803d'),
   }
   return map[key] ?? '#57606a'
 }
@@ -36,7 +43,7 @@ async function render() {
   const echarts = await loadEcharts()
   if (token !== renderToken || !el.value) return
   if (!chart || chart.isDisposed()) chart = echarts.init(el.value, 'socp')
-  const dark = document.documentElement.classList.contains('dark')
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark'
   const days = Object.keys(d).sort()
   const vals = days.map((k) => d[k])
   if (props.variant === 'situation') {
@@ -47,8 +54,8 @@ async function render() {
       yAxis: { type: 'value', axisLabel: { fontSize: 10 } },
       series: [{
         type: 'line', smooth: true, showSymbol: false, data: vals,
-        lineStyle: { color: '#409eff', width: 2 },
-        areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(64,158,255,.35)' }, { offset: 1, color: 'rgba(64,158,255,.02)' }]) },
+        lineStyle: { color: themeColor('accent'), width: 2 },
+        areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: dark ? 'rgba(96,165,250,.35)' : 'rgba(37,99,235,.24)' }, { offset: 1, color: 'rgba(0,0,0,0)' }]) },
       }],
     }, true)
     return
@@ -86,8 +93,8 @@ async function render() {
       },
       markPoint: {
         data: [{ type: 'max', name: translate('common.peak') }],
-        symbolSize: 44, label: { fontSize: 10, color: '#fff', formatter: '{c}' },
-        itemStyle: { color: dark ? '#3fb950' : '#1a7f37' },
+        symbolSize: 44, label: { fontSize: 10, color: cssColor('--ns-on-success', '#fff'), formatter: '{c}' },
+        itemStyle: { color: themeColor('success') },
       },
     }],
   }, true)
@@ -95,9 +102,9 @@ async function render() {
 
 onMounted(() => {
   void render()
-  // 主题切换时重绘（监听 html.dark class）
+  // 主题切换时重绘（监听 html[data-theme]）
   themeObserver = new MutationObserver(() => { void render() })
-  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
 })
 
 watch(() => props.data, () => { void render() }, { deep: true })

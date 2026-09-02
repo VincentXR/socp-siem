@@ -25,7 +25,7 @@ import { useI18n } from '../composables/useI18n'
 const { t } = useI18n()
 
 const pendingQuery = typeof window === 'undefined' ? null : window.sessionStorage.getItem('socp.search.query')
-const query = ref(pendingQuery || 'source=auth severity=HIGH')
+const query = ref(pendingQuery || '*')
 const result = ref<SearchResult | null>(null)
 const loading = ref(false)
 const error = ref('')
@@ -34,6 +34,19 @@ const pageSize = ref(50)
 const pageCursors = ref<Array<string | null>>([null])
 const pageSizes = [25, 50, 100]
 const MAX_BROWSE_ROWS = 10_000
+type TimeRangeKey = '15m' | '30m' | '1h' | '6h' | '24h' | 'all'
+const timeRangeOptions: Array<{ key: TimeRangeKey; label: string; durationMs?: number }> = [
+  { key: '15m', label: 'search.timeRanges.last15Minutes', durationMs: 15 * 60_000 },
+  { key: '30m', label: 'search.timeRanges.last30Minutes', durationMs: 30 * 60_000 },
+  { key: '1h', label: 'search.timeRanges.lastHour', durationMs: 60 * 60_000 },
+  { key: '6h', label: 'search.timeRanges.last6Hours', durationMs: 6 * 60 * 60_000 },
+  { key: '24h', label: 'search.timeRanges.last24Hours', durationMs: 24 * 60 * 60_000 },
+  { key: 'all', label: 'search.timeRanges.all' },
+]
+const selectedTimeRange = ref<TimeRangeKey>('30m')
+const activeTimeRange = ref<TimeRangeKey>('30m')
+const activeQuery = ref('')
+let requestSequence = 0
 const examples = [
   'source=auth severity=HIGH',
   'msg contains "blocked" | top src_ip 5',
@@ -47,16 +60,59 @@ const timelineRows = computed(() => result.value?.timeline ?? [])
 const maxTimelineCount = computed(() => Math.max(1, ...timelineRows.value.map(row => Number(row.count))))
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('search-events')
 
+function splitPipeline(rawQuery: string): { filter: string; pipeline: string } {
+  let quote: string | null = null
+  let escaped = false
+  let depth = 0
+  for (let index = 0; index < rawQuery.length; index += 1) {
+    const character = rawQuery[index]
+    if (quote) {
+      if (escaped) escaped = false
+      else if (character === '\\') escaped = true
+      else if (character === quote) quote = null
+      continue
+    }
+    if (character === '"' || character === "'") {
+      quote = character
+    } else if (character === '(') {
+      depth += 1
+    } else if (character === ')') {
+      depth = Math.max(0, depth - 1)
+    } else if (character === '|' && depth === 0) {
+      return { filter: rawQuery.slice(0, index), pipeline: rawQuery.slice(index).trim() }
+    }
+  }
+  return { filter: rawQuery, pipeline: '' }
+}
+
+function buildScopedQuery(rawQuery: string, range: TimeRangeKey, endAt = Date.now()): string {
+  const normalized = rawQuery.trim() || '*'
+  const option = timeRangeOptions.find(candidate => candidate.key === range)
+  if (!option?.durationMs) return normalized
+  const { filter, pipeline } = splitPipeline(normalized)
+  const from = new Date(endAt - option.durationMs).toISOString()
+  const to = new Date(endAt).toISOString()
+  const scopedFilter = `(${filter.trim() || '*'}) AND timestamp>=${from} AND timestamp<=${to}`
+  return pipeline ? `${scopedFilter} ${pipeline}` : scopedFilter
+}
+
+const activeTimeRangeLabel = computed(() => {
+  const option = timeRangeOptions.find(candidate => candidate.key === activeTimeRange.value) ?? timeRangeOptions[1]
+  return t(option.label)
+})
+
 async function fetchPage(page: number, pageCursor: string | null) {
+  const sequence = requestSequence
   loading.value = true
   error.value = ''
   try {
     const previousResult = result.value
-    const nextResult = await splSearch(query.value, {
+    const nextResult = await splSearch(activeQuery.value || buildScopedQuery(query.value, activeTimeRange.value), {
       cursor: pageCursor,
       limit: pageSize.value,
       timeline: page === 1,
     })
+    if (sequence !== requestSequence) return
     // The histogram describes the complete query, so retain the first page's
     // aggregation while navigating subsequent cursor pages.
     if (page > 1 && !nextResult.timeline?.length && previousResult?.timeline?.length) {
@@ -68,14 +124,18 @@ async function fetchPage(page: number, pageCursor: string | null) {
     pageCursors.value[page - 1] = pageCursor
     if (result.value.nextCursor) pageCursors.value[page] = result.value.nextCursor
   } catch (err) {
+    if (sequence !== requestSequence) return
     if (page === 1) result.value = null
     error.value = `${t('search.failed')}${err instanceof Error ? err.message : String(err)}`
   } finally {
-    loading.value = false
+    if (sequence === requestSequence) loading.value = false
   }
 }
 
 async function search() {
+  requestSequence += 1
+  activeTimeRange.value = selectedTimeRange.value
+  activeQuery.value = buildScopedQuery(query.value, activeTimeRange.value)
   currentPage.value = 1
   pageCursors.value = [null]
   result.value = null
@@ -100,12 +160,22 @@ async function changePageSize() {
 
 function runExample(example: string) {
   query.value = example
-  search()
+  void search()
+}
+
+function setTimeRange(range: TimeRangeKey) {
+  selectedTimeRange.value = range
+  void search()
+}
+
+function exportCurrent(format: 'json' | 'csv') {
+  const scoped = activeQuery.value || buildScopedQuery(query.value, selectedTimeRange.value)
+  void exportSearch(scoped, format)
 }
 
 onMounted(() => {
   if (pendingQuery) window.sessionStorage.removeItem('socp.search.query')
-  search()
+  void search()
 })
 
 const maxBrowsePages = computed(() => Math.ceil(MAX_BROWSE_ROWS / pageSize.value))
@@ -127,11 +197,25 @@ const browseLimitVisible = computed(() => Boolean(result.value && result.value.t
           <el-button type="primary" :loading="loading" @click="search">{{ t('search.runQuery') }}</el-button>
         </el-tooltip>
         <el-tooltip :content="t('search.exportLimitHint')" placement="top">
-          <el-button size="small" @click="exportSearch(query, 'json')">{{ t('common.exportJson') }}</el-button>
+          <el-button size="small" @click="exportCurrent('json')">{{ t('common.exportJson') }}</el-button>
         </el-tooltip>
         <el-tooltip :content="t('search.exportLimitHint')" placement="top">
-          <el-button size="small" @click="exportSearch(query, 'csv')">{{ t('common.exportCsv') }}</el-button>
+          <el-button size="small" @click="exportCurrent('csv')">{{ t('common.exportCsv') }}</el-button>
         </el-tooltip>
+      </div>
+      <div class="search-time-filter" role="group" :aria-label="t('search.timeRange')">
+        <span class="search-time-filter-label">{{ t('search.timeRange') }}</span>
+        <div class="search-time-filter-buttons">
+          <el-button
+            v-for="option in timeRangeOptions"
+            :key="option.key"
+            size="small"
+            :type="selectedTimeRange === option.key ? 'primary' : ''"
+            :aria-pressed="selectedTimeRange === option.key"
+            @click="setTimeRange(option.key)"
+          >{{ t(option.label) }}</el-button>
+        </div>
+        <span class="search-time-filter-applied">{{ t('search.timeRangeApplied', { range: activeTimeRangeLabel }) }}</span>
       </div>
       <div class="search-examples">
         <el-tag v-for="example in examples" :key="example" size="small" @click="runExample(example)">{{ example }}</el-tag>
@@ -160,6 +244,7 @@ const browseLimitVisible = computed(() => Boolean(result.value && result.value.t
           <div class="search-timeline-head">
             <span>{{ t('search.histogram') }}</span>
             <span class="search-timeline-hint">
+              {{ t('search.timeRangeApplied', { range: activeTimeRangeLabel }) }} ·
               {{ result.timelineApproximate ? t('search.timelineLimited') : t('search.timelineHint') }}
             </span>
           </div>

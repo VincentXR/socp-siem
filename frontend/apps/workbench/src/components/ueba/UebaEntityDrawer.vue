@@ -19,9 +19,6 @@ defineProps<{ modelValue: boolean; entity: RiskEntity | null }>()
 const emit = defineEmits<{ 'update:modelValue': [value: boolean]; 'go-alarms': [] }>()
 const { t, d } = useI18n()
 
-function riskColor(level: string) {
-  return { CRITICAL: '#f56c6c', HIGH: '#e63946', MEDIUM: '#e6a23c', LOW: '#909399', INFO: '#909399' }[level] ?? '#909399'
-}
 function formatTime(value: string | null) { return value ? d(value, 'dateTime') : t('time.notAvailable') }
 </script>
 
@@ -29,10 +26,10 @@ function formatTime(value: string | null) { return value ? d(value, 'dateTime') 
   <el-drawer :model-value="modelValue" size="480px" :title="entity?.entity ?? t('ueba.entityProfile')" @update:model-value="emit('update:modelValue', $event)">
     <div v-if="entity">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
-        <span class="risk-pill lg" :style="{ background: riskColor(entity.level) }">{{ entity.risk }}</span>
+        <span class="risk-pill lg" :class="`risk-${String(entity.level || 'INFO').toLowerCase()}`">{{ entity.risk }}</span>
         <div>
           <div style="font-weight:600" class="mono">{{ entity.entity }}</div>
-          <div style="font-size:12px;color:#909399">{{ t('severities.' + entity.level) || entity.level }} · {{ t('ueba.alertCount', { count: entity.alerts }) }}</div>
+          <div style="font-size:12px;color:var(--ns-text-3)">{{ t('severities.' + entity.level) || entity.level }} · {{ t('ueba.alertCount', { count: entity.alerts }) }}</div>
         </div>
         <el-tag v-if="entity.critical" type="danger" effect="dark" style="margin-left:auto">{{ t('ueba.coreAsset') }}</el-tag>
       </div>

@@ -116,7 +116,7 @@ function getStatusLabel(status: string): string {
               <div class="ov-risk-name">{{ risk.ruleName }}</div>
               <div class="ov-risk-entity mono">{{ risk.entity }}</div>
             </div>
-            <span class="ov-risk-score mono" :style="{ background: sevColor(risk.severity) }">{{ risk.riskScore ?? '—' }}</span>
+            <span class="ov-risk-score mono" :class="`risk-${String(risk.severity || 'INFO').toLowerCase()}`">{{ risk.riskScore ?? '—' }}</span>
           </div>
         </div>
         <EmptyState v-else :title="t('overview.noHighRiskAlarms')" :description="t('overview.noUrgentRiskItems')" />

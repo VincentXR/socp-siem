@@ -3,18 +3,37 @@
 import { severityColor } from '@socp/library'
 import { formatDate, formatNumber, translate } from '../i18n'
 
+function cssToken(variable: string, fallback: string): string {
+  if (typeof document === 'undefined') return fallback
+  const value = getComputedStyle(document.documentElement).getPropertyValue(variable).trim()
+  return value || fallback
+}
+
+function severityToken(level: string): { background: string; foreground: string } {
+  const normalized = (level || '').toLowerCase()
+  if (normalized === 'critical' || normalized === 'high') {
+    return { background: cssToken('--ns-danger', '#dc2626'), foreground: cssToken('--ns-on-danger', '#fff') }
+  }
+  if (normalized === 'medium') {
+    return { background: cssToken('--ns-warning', '#a16207'), foreground: cssToken('--ns-on-warning', '#fff') }
+  }
+  return { background: cssToken('--ns-info', '#667085'), foreground: cssToken('--ns-on-info', '#fff') }
+}
+
 export function sevColor(s: string): string {
-  return severityColor(s)
+  return severityToken(s).background || severityColor(s)
 }
 
 export function sevBg(s: string): string {
-  const c = sevColor(s)
-  return `background:${c};color:#fff;border-radius:4px;padding:0 8px;font-size:12px;font-weight:600;display:inline-block;line-height:20px`
+  const colors = severityToken(s)
+  return `background:${colors.background};color:${colors.foreground};border-radius:4px;padding:0 8px;font-size:12px;font-weight:600;display:inline-block;line-height:20px`
 }
 
 export function riskColor(level: string): string {
-  const map: Record<string, string> = { critical: '#f56c6c', high: '#e63946', medium: '#e6a23c', low: '#909399' }
-  return map[(level || '').toLowerCase()] ?? '#909399'
+  const normalized = (level || '').toLowerCase()
+  if (normalized === 'critical' || normalized === 'high') return cssToken('--ns-danger', '#dc2626')
+  if (normalized === 'medium') return cssToken('--ns-warning', '#a16207')
+  return cssToken('--ns-info', '#667085')
 }
 
 export function relTime(iso?: string): string {
@@ -45,7 +64,7 @@ export function fmtBytes(n: number): string {
 }
 
 export function themeColor(key: string): string {
-  const dark = document.documentElement.classList.contains('dark')
+  const dark = typeof document !== 'undefined' && document.documentElement.getAttribute('data-theme') === 'dark'
   const map: Record<string, string> = {
     label: dark ? '#e6edf3' : '#1f2328',
     axis: dark ? '#8b949e' : '#57606a',

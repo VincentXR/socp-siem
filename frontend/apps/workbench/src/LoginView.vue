@@ -139,7 +139,7 @@ function oidcLogin() {
 .brand-mark {
   width: 34px; height: 34px; border-radius: 8px;
   display: flex; align-items: center; justify-content: center;
-  background: var(--ns-accent); color: #fff;
+  background: var(--ns-accent); color: var(--ns-on-accent);
 }
 .brand-name { font-size: 16px; font-weight: 600; color: var(--ns-text); letter-spacing: .3px; }
 
@@ -176,7 +176,7 @@ function oidcLogin() {
   width: 100%; height: 44px; margin-top: 6px;
   border: none; border-radius: 7px;
   font-size: 14px; font-weight: 600;
-  color: #fff;
+  color: var(--ns-on-accent);
   background: var(--ns-accent);
   cursor: pointer;
   transition: background .12s ease;
@@ -185,7 +185,7 @@ function oidcLogin() {
 .submit:disabled { opacity: .6; cursor: default; }
 .spinner {
   display: inline-block; width: 15px; height: 15px;
-  border: 2px solid rgba(255, 255, 255, .4); border-top-color: #fff;
+  border: 2px solid color-mix(in srgb, var(--ns-on-accent) 40%, transparent); border-top-color: var(--ns-on-accent);
   border-radius: 50%;
   animation: spin .7s linear infinite;
 }

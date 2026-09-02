@@ -87,7 +87,7 @@ function submitAppend(name: string) {
           </template>
           <div class="wl-values">
             <el-tag v-for="value in watchlist.values" :key="value" size="small" style="margin:2px" class="mono">{{ value }}</el-tag>
-            <span v-if="!watchlist.values.length" style="color:#c0c4cc;font-size:12px">{{ t('ueba.emptyWatchlist') }}</span>
+            <span v-if="!watchlist.values.length" style="color:var(--ns-text-3);font-size:12px">{{ t('ueba.emptyWatchlist') }}</span>
           </div>
           <div style="display:flex;gap:6px;margin-top:10px">
             <el-input v-model="appendValues[watchlist.name]" size="small" :placeholder="t('ueba.appendValue')" @keyup.enter="submitAppend(watchlist.name)" />

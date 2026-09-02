@@ -18,6 +18,7 @@ import { loadEcharts } from '../lib/echarts'
 import { useRequest } from '../composables/useRequest'
 import { archiveReport, dailyReport, downloadArchivedReport, listArchive, trend7d, type ReportSummary, type ReportTrend } from '../api'
 import { useI18n } from '../composables/useI18n'
+import { sevColor } from '../lib/ui'
 
 const props = defineProps<{ theme: 'light' | 'dark' }>()
 const { t, n, locale } = useI18n()
@@ -61,7 +62,7 @@ async function renderCharts() {
       title: { text: t('report.alarmSeverityDistribution'), textStyle: { fontSize: 14, color: tc('#1f2328', '#e6edf3') } }, tooltip: {},
       xAxis: { type: 'category', data: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'] }, yAxis: { type: 'value' },
       series: [{ type: 'bar', data: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].map(k => report.value?.bySeverity[k] ?? 0),
-        itemStyle: { color: (p: { dataIndex: number }) => ['#f56c6c', '#e63946', '#e6a23c', '#909399'][p.dataIndex] } }],
+        itemStyle: { color: (p: { dataIndex: number }) => sevColor(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'][p.dataIndex]) } }],
     })
   }
   if (lineEl.value && trend.value) {
@@ -139,9 +140,9 @@ onUnmounted(() => {
       :description="report.degradationReason || t('report.degradedDescription')" show-icon :closable="false" style="margin-bottom:12px" />
     <el-row :gutter="12" style="margin-bottom:14px" v-if="report">
       <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ report.total }}</div><div class="label">{{ t('report.todayAlarms') }}</div></div></el-card></el-col>
-      <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#f56c6c">{{ report.bySeverity.CRITICAL ?? 0 }}</div><div class="label">CRITICAL</div></div></el-card></el-col>
-      <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#e63946">{{ report.bySeverity.HIGH ?? 0 }}</div><div class="label">HIGH</div></div></el-card></el-col>
-      <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#e6a23c">{{ report.bySeverity.MEDIUM ?? 0 }}</div><div class="label">MEDIUM</div></div></el-card></el-col>
+      <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-danger)">{{ report.bySeverity.CRITICAL ?? 0 }}</div><div class="label">CRITICAL</div></div></el-card></el-col>
+      <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-danger)">{{ report.bySeverity.HIGH ?? 0 }}</div><div class="label">HIGH</div></div></el-card></el-col>
+      <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-warning)">{{ report.bySeverity.MEDIUM ?? 0 }}</div><div class="label">MEDIUM</div></div></el-card></el-col>
     </el-row>
     <el-row :gutter="12">
       <el-col :span="12"><el-card shadow="never"><div ref="barEl" style="height:300px" /></el-card></el-col>

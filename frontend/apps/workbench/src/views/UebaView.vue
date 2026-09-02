@@ -74,10 +74,10 @@ onMounted(loadUeba)
   <div class="page-pad view-enter">
     <el-row :gutter="12" style="margin-bottom:14px">
       <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num">{{ riskSummary?.entities ?? 0 }}</div><div class="label">{{ t('ueba.entityCount') }}</div></div></el-card></el-col>
-      <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#f56c6c">{{ riskSummary?.maxRisk ?? 0 }}</div><div class="label">{{ t('ueba.maxRisk') }}</div></div></el-card></el-col>
-      <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#e6a23c">{{ (riskSummary?.byLevel?.CRITICAL ?? 0) + (riskSummary?.byLevel?.HIGH ?? 0) }}</div><div class="label">{{ t('ueba.highRiskEntities') }}</div></div></el-card></el-col>
+      <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-danger)">{{ riskSummary?.maxRisk ?? 0 }}</div><div class="label">{{ t('ueba.maxRisk') }}</div></div></el-card></el-col>
+      <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-warning)">{{ (riskSummary?.byLevel?.CRITICAL ?? 0) + (riskSummary?.byLevel?.HIGH ?? 0) }}</div><div class="label">{{ t('ueba.highRiskEntities') }}</div></div></el-card></el-col>
       <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num">{{ riskSummary?.halfLifeHours ?? 0 }}h</div><div class="label">{{ t('ueba.halfLife') }}</div></div></el-card></el-col>
-      <el-col :span="4"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:#409eff">{{ watchlists.length }}</div><div class="label">{{ t('ueba.watchlists') }}</div></div></el-card></el-col>
+      <el-col :span="4"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-accent-fg)">{{ watchlists.length }}</div><div class="label">{{ t('ueba.watchlists') }}</div></div></el-card></el-col>
     </el-row>
 
     <el-tabs v-model="uebaTab">

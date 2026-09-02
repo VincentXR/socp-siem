@@ -31,7 +31,8 @@ const breakdownLabel: Record<string, string> = {
   frequency: 'ueba.recentEntityAlerts', asset: 'ueba.assetCriticality',
 }
 function riskColor(level: string) {
-  return { CRITICAL: '#f56c6c', HIGH: '#e63946', MEDIUM: '#e6a23c', LOW: '#909399', INFO: '#909399' }[level] ?? '#909399'
+  const key = String(level || 'INFO').toUpperCase()
+  return { CRITICAL: 'var(--ns-danger)', HIGH: 'var(--ns-danger)', MEDIUM: 'var(--ns-warning)', LOW: 'var(--ns-info)', INFO: 'var(--ns-info)' }[key] ?? 'var(--ns-info)'
 }
 </script>
 
@@ -62,7 +63,7 @@ function riskColor(level: string) {
           <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:16px">
             <span style="font-size:44px;font-weight:700" :style="{ color: riskColor(result.level) }">{{ result.score }}</span>
             <SevBadge :value="result.level" />
-            <span style="font-size:12px;color:#909399">{{ t('ueba.scoreCap') }}</span>
+            <span style="font-size:12px;color:var(--ns-text-3)">{{ t('ueba.scoreCap') }}</span>
           </div>
           <div v-for="(value, key) in result.breakdown" :key="key" class="bd-row">
             <span class="bd-label">{{ breakdownLabel[key] ? t(breakdownLabel[key]) : key }}</span>

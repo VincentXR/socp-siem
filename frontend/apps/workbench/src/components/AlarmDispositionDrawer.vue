@@ -122,21 +122,21 @@ function openEvidenceSearch() {
         <el-descriptions-item :label="t('alarms.occurredAt')">{{ props.alarm.occurredAt }}</el-descriptions-item>
         <el-descriptions-item :label="t('common.message')" :span="2">{{ props.alarm.message }}</el-descriptions-item>
         <el-descriptions-item :label="t('drawer.mitre')" :span="2">
-          <a v-if="props.alarm.mitre" :href="`https://attack.mitre.org/techniques/${String(props.alarm.mitre).replace('-', '/')}/`" target="_blank" style="color:#409eff;font-weight:600">{{ props.alarm.mitre }}</a>
-          <span v-else style="color:#909399">—</span>
+          <a v-if="props.alarm.mitre" :href="`https://attack.mitre.org/techniques/${String(props.alarm.mitre).replace('-', '/')}/`" target="_blank" style="color:var(--ns-accent-fg);font-weight:600">{{ props.alarm.mitre }}</a>
+          <span v-else style="color:var(--ns-text-3)">—</span>
         </el-descriptions-item>
         <el-descriptions-item :label="t('drawer.tiHits')" :span="2">
           <span v-if="tiHits.length">
             <el-tag v-for="(hit, index) in tiHits" :key="index" size="small" type="danger" style="margin-right:6px;margin-bottom:4px">{{ hit.type }} · {{ hit.value }}</el-tag>
           </span>
-          <span v-else style="color:#909399">—</span>
+          <span v-else style="color:var(--ns-text-3)">—</span>
         </el-descriptions-item>
       </el-descriptions>
 
       <el-divider content-position="left">{{ t('drawer.evidence') }}</el-divider>
       <el-alert v-if="evidenceError" :title="evidenceError" type="error" :closable="false" />
       <template v-else-if="evidence && evidence.items.length">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;font-size:12px;color:#909399">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;font-size:12px;color:var(--ns-text-3)">
           <span>{{ t('drawer.evidenceCount', { count: evidence.total }) }}</span>
           <div v-if="evidence.query" style="display:flex;align-items:center;gap:6px">
           <span class="mono" style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="evidence.query">{{ t('drawer.eventIdDrillDown') }}</span>
@@ -144,12 +144,12 @@ function openEvidenceSearch() {
           </div>
         </div>
         <div v-for="item in evidence.items" :key="item.id" style="border:1px solid var(--el-border-color-lighter);border-radius:6px;padding:8px 10px;margin-bottom:8px;background:var(--ns-bg-subtle)">
-          <div style="display:flex;gap:8px;align-items:center;font-size:12px;color:#909399;margin-bottom:4px">
+          <div style="display:flex;gap:8px;align-items:center;font-size:12px;color:var(--ns-text-3);margin-bottom:4px">
             <span>{{ item.timestamp || '-' }}</span><span>{{ item.source || '-' }}</span><span>{{ item.host || '-' }}</span>
             <SevBadge v-if="item.severity" :value="item.severity" />
           </div>
           <div class="mono" style="white-space:pre-wrap;word-break:break-word;font-size:12px">{{ item.raw || '-' }}</div>
-          <div v-if="item.eventId" style="margin-top:5px;color:#909399;font-size:11px">eventId: {{ item.eventId }}</div>
+          <div v-if="item.eventId" style="margin-top:5px;color:var(--ns-text-3);font-size:11px">eventId: {{ item.eventId }}</div>
         </div>
       </template>
       <el-empty v-else :description="t('drawer.noEvidence')" :image-size="50" />
@@ -166,7 +166,7 @@ function openEvidenceSearch() {
       <el-divider content-position="left">{{ t('drawer.notesTitle') }}</el-divider>
       <div v-if="disposition && disposition.notes.length">
         <div v-for="(note, index) in disposition.notes" :key="index" style="background:var(--ns-bg-subtle);border-radius:6px;padding:8px 12px;margin-bottom:8px">
-          <div style="font-size:12px;color:#909399">{{ note.author }} · {{ note.at }}</div><div style="margin-top:2px">{{ note.content }}</div>
+          <div style="font-size:12px;color:var(--ns-text-3)">{{ note.author }} · {{ note.at }}</div><div style="margin-top:2px">{{ note.content }}</div>
         </div>
       </div>
       <el-empty v-else :description="t('drawer.noNotes')" :image-size="50" />
@@ -177,7 +177,7 @@ function openEvidenceSearch() {
       <el-divider content-position="left">{{ t('drawer.relatedCase') }}</el-divider>
       <el-card v-if="relatedCase" shadow="never" style="margin-bottom:10px">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-          <div><div style="font-weight:600">{{ relatedCase.title }}</div><div style="font-size:12px;color:#909399;margin-top:2px">{{ relatedCase.id }} · {{ relatedCase.status }} · {{ relatedCase.entity }} · {{ relatedCase.alarmIds.length }} alarms</div></div>
+          <div><div style="font-weight:600">{{ relatedCase.title }}</div><div style="font-size:12px;color:var(--ns-text-3);margin-top:2px">{{ relatedCase.id }} · {{ relatedCase.status }} · {{ relatedCase.entity }} · {{ relatedCase.alarmIds.length }} alarms</div></div>
           <el-button link type="primary" size="small" @click="drawerVisible = false; props.goCase()">{{ t('drawer.goToCase') }}</el-button>
         </div>
       </el-card>

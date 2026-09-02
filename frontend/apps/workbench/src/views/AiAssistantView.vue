@@ -81,7 +81,7 @@ async function appendToIncident() {
   <div class="page-pad view-enter">
     <PageHeader :title="t('ai.title')" :description="t('ai.description')" />
     <el-card shadow="never" class="ai-panel">
-      <div class="ai-ask-row flex gap-3 items-center">
+      <div class="ai-ask-row">
         <el-input
           v-model="question"
           clearable
@@ -92,85 +92,85 @@ async function appendToIncident() {
         <el-button v-if="result || question" @click="clear">{{ t('ai.resetBtn') }}</el-button>
       </div>
 
-      <div class="ai-quick-prompts my-3 flex flex-wrap gap-2 items-center text-xs">
-        <span class="text-gray-400 font-medium">{{ t('ai.quickPromptLabel') }}</span>
+      <div class="ai-quick-prompts">
+        <span class="ai-quick-label">{{ t('ai.quickPromptLabel') }}</span>
         <el-tag
           v-for="(prompt, idx) in quickPrompts"
           :key="idx"
           size="small"
           effect="plain"
-          class="cursor-pointer hover:opacity-80 transition-opacity"
+          class="ai-quick-tag"
           @click="ask(prompt)"
         >
           {{ prompt }}
         </el-tag>
       </div>
 
-      <div v-if="result" class="ai-result mt-4 p-4 rounded bg-gray-50 dark:bg-gray-800 border border-gray-100 dark:border-gray-700">
-        <div class="ai-result-question font-semibold text-base mb-2 text-primary">{{ t('ai.investigation.questionPrefix') }}{{ result.question }}</div>
-        <div class="ai-result-answer whitespace-pre-wrap leading-relaxed text-sm text-gray-700 dark:text-gray-200">{{ result.answer }}</div>
-        <div v-if="result.suggestion" class="ai-result-suggestion mt-3 p-2.5 rounded bg-blue-50/70 dark:bg-blue-950/40 text-blue-800 dark:text-blue-200 text-xs leading-normal">
-          <span class="font-semibold">{{ t('ai.suggestionTitle') }}</span>{{ result.suggestion }}
+      <div v-if="result" class="ai-result">
+        <div class="ai-result-question">{{ t('ai.investigation.questionPrefix') }}{{ result.question }}</div>
+        <div class="ai-result-answer">{{ result.answer }}</div>
+        <div v-if="result.suggestion" class="ai-result-suggestion">
+          <span class="ai-emphasis">{{ t('ai.suggestionTitle') }}</span>{{ result.suggestion }}
         </div>
-        <div class="ai-result-meta mt-3 flex items-center gap-2 text-xs text-gray-400">
+        <div class="ai-result-meta">
           <el-tag size="small" effect="plain">{{ result.source }}</el-tag>
           <span>{{ t('ai.elapsed', { ms: result.elapsedMs }) }}</span>
         </div>
       </div>
-      <div v-else class="ai-hint text-gray-400 text-xs py-4 text-center">{{ t('ai.hint') }}</div>
+      <div v-else class="ai-hint">{{ t('ai.hint') }}</div>
     </el-card>
 
-    <el-card shadow="never" class="ai-panel mt-4">
-      <div class="flex items-center justify-between gap-3 mb-2">
+    <el-card shadow="never" class="ai-panel ai-investigation-panel">
+      <div class="ai-investigation-head">
         <div>
-          <h3 class="font-semibold text-base">{{ t('ai.investigation.agentTitle') }}</h3>
-          <p class="text-xs text-gray-400 mt-1">{{ t('ai.investigation.evidenceFirstDescription') }}</p>
+          <h3 class="ai-investigation-title">{{ t('ai.investigation.agentTitle') }}</h3>
+          <p class="ai-muted ai-investigation-description">{{ t('ai.investigation.evidenceFirstDescription') }}</p>
         </div>
         <el-tag size="small" type="warning" effect="plain">{{ t('ai.investigation.approvalRequired') }}</el-tag>
       </div>
-      <div class="ai-ask-row flex gap-3 items-center">
+      <div class="ai-ask-row">
         <el-input v-model="alertId" clearable :placeholder="t('ai.investigation.alertId')" @keyup.enter="investigate" />
         <el-button type="primary" :loading="investigationLoading" @click="investigate">{{ t('ai.investigation.investigate') }}</el-button>
       </div>
-      <div v-if="investigationError" class="text-xs text-red-500 mt-2">{{ investigationError }}</div>
-      <div v-if="investigation" class="ai-result mt-4 p-4 rounded bg-gray-50 dark:bg-gray-800 border border-gray-100 dark:border-gray-700">
-        <div class="flex items-center gap-2 mb-3">
+      <div v-if="investigationError" class="ai-error">{{ investigationError }}</div>
+      <div v-if="investigation" class="ai-result">
+        <div class="ai-investigation-meta">
           <el-tag size="small" :type="investigation.status === 'COMPLETED' ? 'success' : 'warning'">{{ investigation.status }}</el-tag>
-          <span class="text-xs text-gray-400">{{ investigation.investigationId }}</span>
+          <span class="ai-muted">{{ investigation.investigationId }}</span>
           <el-tag v-if="investigation.duplicate" size="small" effect="plain">{{ t('ai.investigation.replayedReceipt') }}</el-tag>
         </div>
-        <div class="text-sm leading-relaxed whitespace-pre-wrap">{{ investigation.analysis }}</div>
-        <div class="mt-4">
-          <div class="font-semibold text-sm mb-2">{{ t('ai.investigation.evidenceTimeline') }}</div>
-          <div v-for="item in investigation.timeline" :key="`${item.timestamp}-${item.citation}`" class="text-xs border-l-2 border-blue-300 pl-3 mb-2">
-            <span class="text-gray-400">{{ item.timestamp }}</span> · <span class="font-medium">{{ item.type }}</span> · {{ item.message }}
-            <span class="text-blue-500 ml-1">[{{ item.citation }}]</span>
+        <div class="ai-analysis">{{ investigation.analysis }}</div>
+        <div class="ai-section">
+          <div class="ai-section-title">{{ t('ai.investigation.evidenceTimeline') }}</div>
+          <div v-for="item in investigation.timeline" :key="`${item.timestamp}-${item.citation}`" class="ai-timeline-item">
+            <span class="ai-muted">{{ item.timestamp }}</span> · <span class="ai-timeline-type">{{ item.type }}</span> · {{ item.message }}
+            <span class="ai-citation">[{{ item.citation }}]</span>
           </div>
         </div>
-        <div class="mt-4">
-          <div class="font-semibold text-sm mb-2">{{ t('ai.investigation.recommendedSpl') }}</div>
-          <code class="block text-xs p-2 rounded bg-gray-100 dark:bg-gray-900 whitespace-pre-wrap">{{ investigation.recommendedSpl }}</code>
+        <div class="ai-section">
+          <div class="ai-section-title">{{ t('ai.investigation.recommendedSpl') }}</div>
+          <code class="ai-result-code">{{ investigation.recommendedSpl }}</code>
         </div>
-        <div v-if="investigation.hypotheses?.length" class="mt-4">
-          <div class="font-semibold text-sm mb-2">{{ t('ai.investigation.hypotheses') }}</div>
-          <div v-for="hypothesis in investigation.hypotheses" :key="hypothesis.hypothesis" class="text-xs mb-2">
-            <span class="font-medium">{{ hypothesis.hypothesis }}</span> · {{ Math.round(hypothesis.confidence * 100) }}%
+        <div v-if="investigation.hypotheses?.length" class="ai-section">
+          <div class="ai-section-title">{{ t('ai.investigation.hypotheses') }}</div>
+          <div v-for="hypothesis in investigation.hypotheses" :key="hypothesis.hypothesis" class="ai-list-item">
+            <span class="ai-item-type">{{ hypothesis.hypothesis }}</span> · {{ Math.round(hypothesis.confidence * 100) }}%
           </div>
         </div>
-        <div v-if="investigation.nextActions?.length" class="mt-4">
-          <div class="font-semibold text-sm mb-2">{{ t('ai.investigation.nextActions') }}</div>
-          <div v-for="action in investigation.nextActions" :key="`${action.type}-${action.description}`" class="text-xs mb-2">
-            <span class="font-medium">{{ action.type }}</span> · {{ action.description }}
-            <span v-if="action.status" class="text-gray-400"> ({{ action.status }})</span>
+        <div v-if="investigation.nextActions?.length" class="ai-section">
+          <div class="ai-section-title">{{ t('ai.investigation.nextActions') }}</div>
+          <div v-for="action in investigation.nextActions" :key="`${action.type}-${action.description}`" class="ai-list-item">
+            <span class="ai-item-type">{{ action.type }}</span> · {{ action.description }}
+            <span v-if="action.status" class="ai-muted"> ({{ action.status }})</span>
           </div>
         </div>
-        <div class="mt-4 flex items-center gap-2">
+        <div class="ai-append-row">
           <el-button type="success" plain :loading="appendLoading" :disabled="investigation.summaryAppended" @click="appendToIncident">
             {{ investigation.summaryAppended ? t('ai.investigation.appendedToIncident') : t('ai.investigation.appendSummaryToIncident') }}
           </el-button>
-          <span v-if="investigation.incidentId" class="text-xs text-gray-400">{{ investigation.incidentId }}</span>
+          <span v-if="investigation.incidentId" class="ai-muted">{{ investigation.incidentId }}</span>
         </div>
-        <div v-if="investigation.citations?.length" class="mt-3 text-xs text-gray-400">
+        <div v-if="investigation.citations?.length" class="ai-citations ai-muted">
           {{ t('ai.investigation.citations') }}{{ investigation.citations.map(citation => citation.id).join(', ') }}
         </div>
       </div>
