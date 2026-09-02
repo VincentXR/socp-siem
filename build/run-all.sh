@@ -210,6 +210,26 @@ start_service() {
     echo "  [跳过] $name（jar 不存在，先跑 bash build/mvnw.sh -DskipTests package）"
     return 0
   fi
+  # Never launch a partially written/skinny artifact.  On Windows a running
+  # java -jar keeps the target file locked; a concurrent Maven repackage can
+  # fail after replacing it with the thin jar, which otherwise leaves the
+  # service listening but unable to render error responses (the browser only
+  # sees a request timeout).  Check the executable Spring Boot layout before
+  # starting and give an actionable recovery message.
+  local jar_tool
+  jar_tool="$(dirname "$java")/jar"
+  if [ ! -x "$jar_tool" ]; then
+    jar_tool="$(command -v jar 2>/dev/null || true)"
+  fi
+  if [ -n "$jar_tool" ]; then
+    if ! "$jar_tool" tf "$jar" 2>/dev/null | grep -q '^BOOT-INF/'; then
+      echo "  [跳过] $name（不是可执行 Spring Boot fat jar；请先停止服务后重新 package）"
+      return 0
+    fi
+  elif ! jar tf "$jar" 2>/dev/null | grep -q '^BOOT-INF/'; then
+    echo "  [跳过] $name（不是可执行 Spring Boot fat jar；请先停止服务后重新 package）"
+    return 0
+  fi
   existing="$(pid_on_port "$port")"
   if [ -n "$existing" ]; then
     echo "  [已运行] $name :$port PID=$existing"

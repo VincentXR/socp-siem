@@ -299,7 +299,7 @@ class SplQuerySemanticsTest {
         String containsDsl = compiler.compile(parser.parse("msg contains \"*blocked?\""), "tenant-a").toString();
         assertThat(containsDsl).contains("msg.exact", "case_insensitive", "\\\\*blocked\\\\?");
         assertThat(compiler.compile(parser.parse("*"), "tenant-a").path("sort").toString())
-                .contains("timestamp", "eventId").doesNotContain("_id");
+                .contains("timestamp", "_id").doesNotContain("eventId");
     }
 
     @Test
@@ -315,6 +315,20 @@ class SplQuerySemanticsTest {
                 + (cursor.endsWith("A") ? "B" : "A");
         assertThatThrownBy(() -> QueryCursorCodec.decode(tampered, sourceQuery))
                 .isInstanceOf(SplParseException.class);
+    }
+
+    @Test
+    void keepsLegacyCursorsPageableAfterPhysicalIdSortMigration() {
+        SearchQueryAst sourceQuery = parser.parse("*");
+        String legacy = QueryCursorCodec.encode(sourceQuery, event("cursor", "10.0.0.1", "INFO"));
+        assertThat(compiler.compile(sourceQuery.withPage(10, legacy), "tenant-a")
+                .path("search_after").get(1).asText()).isEqualTo("tenant-a|cursor");
+
+        String physical = QueryCursorCodec.encode(sourceQuery,
+                List.of("2026-08-01T00:00:00Z", "tenant-a|cursor"));
+        QueryCursorCodec.Cursor decoded = QueryCursorCodec.decode(physical, sourceQuery);
+        assertThat(decoded.tieBreaker()).isEqualTo("tenant-a|cursor");
+        assertThat(decoded.eventId()).isEqualTo("cursor");
     }
 
     @Test

@@ -15,7 +15,10 @@ import java.util.List;
 
 /** Opaque, integrity-checked cursor bound to the fixed sort contract and query fingerprint. */
 public final class QueryCursorCodec {
-    public static final String DEFAULT_SORT_SPEC = "timestamp:desc,eventId:asc";
+    /** Physical OpenSearch sort contract used by cursor pages. */
+    public static final String DEFAULT_SORT_SPEC = "timestamp:desc,_id:asc";
+    /** Cursors issued before mixed-index sorting was hardened. */
+    public static final String LEGACY_SORT_SPEC = "timestamp:desc,eventId:asc";
     private static final String DOMAIN = "socp-search-cursor-v1\n";
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -24,16 +27,24 @@ public final class QueryCursorCodec {
 
     public static String encode(SearchQueryAst ast, SearchEvent event) {
         if (event == null || event.timestamp() == null || event.eventId() == null) return null;
-        return encode(ast, List.of(event.timestamp().toString(), event.eventId()));
+        // Local execution sorts by the logical event id.  Keep that cursor
+        // explicitly on the legacy contract; the OpenSearch adapter can
+        // translate it to the tenant-scoped physical _id when needed.
+        return encode(ast, List.of(event.timestamp().toString(), event.eventId()), LEGACY_SORT_SPEC);
     }
 
     public static String encode(SearchQueryAst ast, List<?> sortValues) {
+        return encode(ast, sortValues, DEFAULT_SORT_SPEC);
+    }
+
+    private static String encode(SearchQueryAst ast, List<?> sortValues, String sortSpec) {
         if (ast == null || sortValues == null || sortValues.size() != 2) return null;
+        if (!DEFAULT_SORT_SPEC.equals(sortSpec) && !LEGACY_SORT_SPEC.equals(sortSpec)) return null;
         try {
             ObjectNode payload = MAPPER.createObjectNode();
             payload.put("version", 1);
             payload.put("query", fingerprint(ast));
-            payload.put("sortSpec", DEFAULT_SORT_SPEC);
+            payload.put("sortSpec", sortSpec);
             ArrayNode values = payload.putArray("sort");
             sortValues.forEach(value -> values.addPOJO(value));
             byte[] bytes = MAPPER.writeValueAsBytes(payload);
@@ -55,8 +66,9 @@ public final class QueryCursorCodec {
                 throw new IllegalArgumentException();
             }
             JsonNode root = MAPPER.readTree(payload);
+            String sortSpec = root.path("sortSpec").asText();
             if (root.path("version").asInt() != 1
-                    || !DEFAULT_SORT_SPEC.equals(root.path("sortSpec").asText())
+                    || (!DEFAULT_SORT_SPEC.equals(sortSpec) && !LEGACY_SORT_SPEC.equals(sortSpec))
                     || !fingerprint(ast).equals(root.path("query").asText())) {
                 throw new IllegalArgumentException();
             }
@@ -69,7 +81,7 @@ public final class QueryCursorCodec {
                 else if (value.isTextual()) values.add(value.textValue());
                 else throw new IllegalArgumentException();
             }
-            Cursor cursor = new Cursor(List.copyOf(values), DEFAULT_SORT_SPEC, root.path("query").asText());
+            Cursor cursor = new Cursor(List.copyOf(values), sortSpec, root.path("query").asText());
             cursor.timestamp();
             if (cursor.eventId().isBlank()) throw new IllegalArgumentException();
             return cursor;
@@ -128,8 +140,21 @@ public final class QueryCursorCodec {
                     ? Instant.ofEpochMilli(number.longValue()) : Instant.parse(String.valueOf(value));
         }
 
-        public String eventId() {
+        /** Raw second sort value, suitable for OpenSearch search_after. */
+        public String tieBreaker() {
             return String.valueOf(sortValues.get(1));
+        }
+
+        /**
+         * Logical event id used by the local executor.  OpenSearch uses the
+         * writer's tenant-scoped document id (tenant|eventId) as the physical
+         * tie-breaker; strip only that writer-owned prefix when present.
+         */
+        public String eventId() {
+            String value = tieBreaker();
+            if (LEGACY_SORT_SPEC.equals(sortSpec)) return value;
+            int separator = value.indexOf('|');
+            return separator >= 0 ? value.substring(separator + 1) : value;
         }
     }
 }

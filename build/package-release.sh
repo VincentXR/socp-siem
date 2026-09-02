@@ -31,6 +31,13 @@ if [ "${1:-}" = "--build" ]; then
 fi
 
 echo "=== 收集产物 ==="
+# A release must never contain the thin jar left behind when a Windows
+# repackage is interrupted by a running service.  Check existing artifacts
+# even when the caller intentionally skips the full build.
+python "$REPO_ROOT/build/verify-jars.py" || {
+  echo "build artifacts are incomplete; stop running services and rebuild before packaging";
+  exit 1;
+}
 rm -rf "$PKG"; mkdir -p "$PKG/socp"
 
 # 1) 后端 jar

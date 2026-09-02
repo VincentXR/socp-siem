@@ -58,7 +58,17 @@ public final class OpenSearchQueryCompiler {
         if (ast.cursor() != null && !ast.cursor().isBlank()) {
             QueryCursorCodec.Cursor cursor = QueryCursorCodec.decode(ast.cursor(), ast);
             ArrayNode after = root.putArray("search_after");
-            cursor.sortValues().forEach(value -> after.addPOJO(value));
+            for (int index = 0; index < cursor.sortValues().size(); index++) {
+                Object value = cursor.sortValues().get(index);
+                // A cursor issued by an older node contains the logical event
+                // id, while the hardened physical sort uses tenant|eventId.
+                // Translate it at the boundary so rolling upgrades do not
+                // repeat the first page or silently skip rows.
+                if (index == 1 && QueryCursorCodec.LEGACY_SORT_SPEC.equals(cursor.sortSpec())) {
+                    value = tenantId + "|" + value;
+                }
+                after.addPOJO(value);
+            }
         }
         return root;
     }
@@ -80,12 +90,19 @@ public final class OpenSearchQueryCompiler {
                 .map(PipelineCommand.Sort.class::cast)
                 .reduce((first, second) -> second).orElse(null);
         if (explicit == null) {
-            sort.addObject().putObject("timestamp").put("order", "desc");
-            sort.addObject().putObject("eventId").put("order", "asc");
+            sort.addObject().putObject("timestamp")
+                    .put("order", "desc")
+                    .put("unmapped_type", "date");
+            // eventId was mapped as text in early indices and as keyword in
+            // later indices.  Sorting that field across the wildcard index
+            // therefore makes OpenSearch reject an otherwise valid query.
+            // The writer owns a tenant-scoped stable document _id, which is
+            // always sortable and remains deterministic across both schemas.
+            sort.addObject().putObject("_id").put("order", "asc");
         } else {
             ObjectNode field = sort.addObject().putObject(fieldPath(explicit.field(), true));
             field.put("order", explicit.order() == PipelineCommand.SortOrder.DESC ? "desc" : "asc");
-            sort.addObject().putObject("eventId").put("order", "asc");
+            sort.addObject().putObject("_id").put("order", "asc");
         }
     }
 
