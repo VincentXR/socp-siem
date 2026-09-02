@@ -478,6 +478,15 @@ body {
 }
 .el-select__wrapper { background: var(--ns-input-bg) !important; box-shadow: 0 0 0 1px var(--ns-border-strong) inset !important; }
 .el-select-dropdown, .el-popper { background: var(--ns-surface) !important; border: 1px solid var(--ns-border-strong) !important; box-shadow: var(--ns-shadow-lg) !important; }
+.el-popper.is-dark[role='tooltip'] {
+  background: var(--ns-text) !important;
+  border-color: var(--ns-text) !important;
+  color: var(--ns-bg) !important;
+}
+.el-popper.is-dark[role='tooltip'] > .el-popper__arrow::before {
+  background: var(--ns-text) !important;
+  border-color: var(--ns-text) !important;
+}
 .el-select-dropdown__item { color: var(--ns-text-2); }
 .el-select-dropdown__item.is-hovering, .el-select-dropdown__item:hover { background: var(--ns-hover) !important; color: var(--ns-text); }
 .el-select-dropdown__item.is-selected { color: var(--ns-accent-fg); }
