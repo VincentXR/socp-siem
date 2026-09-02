@@ -33,6 +33,11 @@ public class AlertWindowAggregator {
     @Value("${socp.detect.model.window-max-tenants:1000}")
     private int maxTenants = 1000;
 
+    @Value("${socp.detect.model.window-max-dimensions:10000}")
+    private int maxDimensions = 10_000;
+
+    private static final String OVERFLOW = "OTHER";
+
     private static final class TenantWindow {
         private final Deque<WindowBucket> ring = new ArrayDeque<>();
         private WindowBucket current;
@@ -50,10 +55,10 @@ public class AlertWindowAggregator {
             this(key, new LinkedHashMap<>(), new LinkedHashMap<>(), new LinkedHashMap<>(), 0);
         }
 
-        private WindowBucket inc(String rule, String entity, String severity) {
-            byRule.merge(rule == null ? "UNKNOWN" : rule, 1L, Long::sum);
-            byEntity.merge(entity == null ? "UNKNOWN" : entity, 1L, Long::sum);
-            bySeverity.merge(severity == null ? "INFO" : severity, 1L, Long::sum);
+        private WindowBucket inc(String rule, String entity, String severity, int maxDimensions) {
+            incrementBounded(byRule, rule == null ? "UNKNOWN" : rule, 1L, maxDimensions);
+            incrementBounded(byEntity, entity == null ? "UNKNOWN" : entity, 1L, maxDimensions);
+            incrementBounded(bySeverity, severity == null ? "INFO" : severity, 1L, maxDimensions);
             return new WindowBucket(key, byRule, byEntity, bySeverity, total + 1);
         }
     }
@@ -66,7 +71,7 @@ public class AlertWindowAggregator {
         TenantWindow window = window(tenantId);
         synchronized (window) {
             roll(window);
-            window.current = window.current.inc(ruleId, entity, severity);
+            window.current = window.current.inc(ruleId, entity, severity, maxDimensions);
             window.ring.pollLast();
             window.ring.addLast(window.current);
         }
@@ -85,9 +90,9 @@ public class AlertWindowAggregator {
             Map<String, Long> bySeverity = new LinkedHashMap<>();
             long total = 0;
             for (WindowBucket bucket : window.ring) {
-                bucket.byRule().forEach((key, value) -> byRule.merge(key, value, Long::sum));
-                bucket.byEntity().forEach((key, value) -> byEntity.merge(key, value, Long::sum));
-                bucket.bySeverity().forEach((key, value) -> bySeverity.merge(key, value, Long::sum));
+                bucket.byRule().forEach((key, value) -> incrementBounded(byRule, key, value, maxDimensions));
+                bucket.byEntity().forEach((key, value) -> incrementBounded(byEntity, key, value, maxDimensions));
+                bucket.bySeverity().forEach((key, value) -> incrementBounded(bySeverity, key, value, maxDimensions));
                 total += bucket.total();
             }
             Map<String, Object> result = new LinkedHashMap<>();
@@ -183,6 +188,16 @@ public class AlertWindowAggregator {
                 .limit(limit)
                 .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue,
                         (left, right) -> left, LinkedHashMap::new));
+    }
+
+    /** Keep one overflow bucket so untrusted rule/entity values cannot grow a window forever. */
+    private static void incrementBounded(Map<String, Long> target, String key, long amount, int configuredLimit) {
+        int limit = Math.max(2, configuredLimit);
+        String normalized = key == null || key.isBlank() ? "UNKNOWN" : key;
+        if (!target.containsKey(normalized) && target.size() >= limit - 1) {
+            normalized = OVERFLOW;
+        }
+        target.merge(normalized, amount, Long::sum);
     }
 
     private static long nowBucketKey() {

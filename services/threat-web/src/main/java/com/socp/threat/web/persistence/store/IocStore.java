@@ -31,6 +31,11 @@ public class IocStore {
     private final IocRepository repo;
     private final boolean demoDataEnabled;
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final int DEFAULT_MAX_CACHE_ENTRIES = 100_000;
+    private final Map<String, Ioc> cache = new java.util.concurrent.ConcurrentHashMap<>();
+
+    @Value("${socp.threat.ioc.cache-max-entries:100000}")
+    private int maxCacheEntries = DEFAULT_MAX_CACHE_ENTRIES;
 
     public IocStore(IocRepository repo) {
         this(repo, true);
@@ -59,8 +64,6 @@ public class IocStore {
         });
     }
 
-    private final Map<String, Ioc> cache = new java.util.concurrent.ConcurrentHashMap<>();
-
     public synchronized Ioc add(Ioc ioc) {
         String tenant = tenant();
         IocEntity entity = ioc.externalId() == null || ioc.externalId().isBlank()
@@ -81,7 +84,7 @@ public class IocStore {
         if (previousValue != null && !previousValue.equalsIgnoreCase(persisted.value())) {
             cache.remove(cacheKey(tenant, previousValue));
         }
-        cache.put(cacheKey(tenant, persisted.value()), persisted);
+        cachePut(cacheKey(tenant, persisted.value()), persisted);
         return persisted;
     }
 
@@ -119,7 +122,7 @@ public class IocStore {
         Ioc found = repo.findByTenantIdAndValue(tenant(), normalized)
                 .map(IocStore::fromEntity).orElse(null);
         if (found != null && found.isActiveAt(Instant.now())) {
-            cache.put(key, found);
+            cachePut(key, found);
             return found;
         }
         return null;
@@ -152,7 +155,7 @@ public class IocStore {
                 Ioc ioc = fromEntity(entity);
                 if (!ioc.isActiveAt(Instant.now())) continue;
                 String normalizedVal = entity.getValue().toLowerCase(Locale.ROOT);
-                cache.put(cacheKey(tenant, normalizedVal), ioc);
+                cachePut(cacheKey(tenant, normalizedVal), ioc);
                 for (String originalVal : values) {
                     if (originalVal != null && originalVal.trim().equalsIgnoreCase(normalizedVal)) {
                         out.put(originalVal, ioc);
@@ -192,6 +195,29 @@ public class IocStore {
         repo.deleteByExpirationBeforeAndRevokedFalse(now);
         repo.deleteByValidUntilBeforeAndRevokedFalse(now);
         cache.entrySet().removeIf(entry -> !entry.getValue().isActiveAt(now));
+        trimCacheToLimit();
+    }
+
+    int cachedEntries() {
+        return cache.size();
+    }
+
+    private void cachePut(String key, Ioc value) {
+        if (key == null || value == null) return;
+        cache.put(key, value);
+        trimCacheToLimit();
+    }
+
+    private void trimCacheToLimit() {
+        int limit = Math.max(1, maxCacheEntries);
+        int excess = cache.size() - limit;
+        if (excess <= 0) return;
+        var iterator = cache.keySet().iterator();
+        while (excess > 0 && iterator.hasNext()) {
+            String key = iterator.next();
+            iterator.remove();
+            excess--;
+        }
     }
 
     private static String tenant() {

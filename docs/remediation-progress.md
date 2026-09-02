@@ -7,6 +7,21 @@ items; use the linked validation notes when continuing the remediation.
 
 Baseline: `6aae664` on 2026-08-31.
 
+## Personal-project hardening (2026-09-02)
+
+- [x] Bound the remaining process-local high-cardinality state: JWT
+  revocations now expire and enforce a hard cap; IOC lookup cache entries and
+  rule suppression keys are bounded; detection window dimensions aggregate
+  overflow values into `OTHER`.
+  - Configuration: `SOCP_THREAT_IOC_CACHE_MAX_ENTRIES` and
+    `SOCP_DETECT_MODEL_WINDOW_MAX_DIMENSIONS`.
+  - Validation: full Maven test suite, `python build/verify-style.py`,
+    `python build/verify-contracts.py`, and `git diff --check`.
+
+This checkpoint intentionally does not claim the performance, multi-instance
+failover, Golden Path, or production-operations evidence listed below. Those
+remain separate work when the project needs production-grade guarantees.
+
 ## P0
 
 - [x] P0-A-1 Ingestion Outbox polling and retention hardening.

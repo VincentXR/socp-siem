@@ -16,8 +16,12 @@ import org.slf4j.LoggerFactory;
 import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.util.Map;
 import java.util.LinkedHashSet;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * JWT 校验器：验签 + 过期（exp/nbf）+ 可选 issuer 精确匹配。
@@ -70,18 +74,37 @@ public class JwtValidator {
         return devBypass;
     }
 
-    private static final java.util.Set<String> REVOKED_JTIS = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /**
+     * Revocations are process-local by design, but must have a bounded lifetime
+     * so logout-heavy traffic cannot retain one entry for every token ever
+     * revoked.
+     */
+    private static final long DEFAULT_REVOCATION_TTL_MS = 24 * 60 * 60 * 1000L;
+    private static final int MAX_REVOKED_JTIS = 100_000;
+    private static final int CLEANUP_INTERVAL = 256;
+    private static final Map<String, Long> REVOKED_JTIS = new ConcurrentHashMap<>();
+    private static final AtomicInteger REVOCATION_OPERATIONS = new AtomicInteger();
 
     /** Actively revoke a JWT by its JTI (e.g. upon logout or security incident). */
     public static void revoke(String jti) {
-        if (jti != null && !jti.isBlank()) {
-            REVOKED_JTIS.add(jti.trim());
-        }
+        revoke(jti, Instant.now().plusMillis(DEFAULT_REVOCATION_TTL_MS));
+    }
+
+    /** Revoke a JWT until the supplied expiry, capped by the local safety TTL. */
+    public static void revoke(String jti, Instant expiresAt) {
+        if (jti == null || jti.isBlank()) return;
+        long now = System.currentTimeMillis();
+        long requested = expiresAt == null ? Long.MAX_VALUE : expiresAt.toEpochMilli();
+        long expiry = Math.min(requested, now + DEFAULT_REVOCATION_TTL_MS);
+        if (expiry <= now) return;
+        REVOKED_JTIS.put(jti.trim(), expiry);
+        cleanupRevocations(now, true);
     }
 
     /** Clear revoked JTI cache (e.g. for testing). */
     public static void clearRevoked() {
         REVOKED_JTIS.clear();
+        REVOCATION_OPERATIONS.set(0);
     }
 
     /**
@@ -100,9 +123,13 @@ public class JwtValidator {
         try {
             JWTClaimsSet claims = processor.process(token.trim(), null);
             String jti = claims.getJWTID();
-            if (jti != null && REVOKED_JTIS.contains(jti)) {
+            long now = System.currentTimeMillis();
+            cleanupRevocations(now, false);
+            Long revokedUntil = jti == null ? null : REVOKED_JTIS.get(jti);
+            if (revokedUntil != null && revokedUntil > now) {
                 throw new JwtValidationException("令牌已被吊销 (revoked)");
             }
+            if (revokedUntil != null) REVOKED_JTIS.remove(jti, revokedUntil);
             return claims;
         } catch (JwtValidationException e) {
             throw e;
@@ -110,6 +137,20 @@ public class JwtValidator {
             // 不把底层异常细节回给客户端调用方之外的地方；message 已足够定位（签名/过期/issuer）
             throw new JwtValidationException("JWT 校验失败: " + e.getMessage(), e);
         }
+    }
+
+    private static void cleanupRevocations(long now, boolean force) {
+        if (!force && REVOCATION_OPERATIONS.incrementAndGet() % CLEANUP_INTERVAL != 0
+                && REVOKED_JTIS.size() <= MAX_REVOKED_JTIS) {
+            return;
+        }
+        REVOKED_JTIS.entrySet().removeIf(entry -> entry.getValue() <= now);
+        int excess = REVOKED_JTIS.size() - MAX_REVOKED_JTIS;
+        if (excess <= 0) return;
+        REVOKED_JTIS.entrySet().stream()
+                .sorted(Map.Entry.comparingByValue())
+                .limit(excess)
+                .forEach(entry -> REVOKED_JTIS.remove(entry.getKey(), entry.getValue()));
     }
 
     /** Extract an explicit tenant claim; client identity is never treated as a tenant. */

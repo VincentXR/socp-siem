@@ -6,8 +6,10 @@ import com.nimbusds.jose.crypto.MACSigner;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.AfterEach;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.Date;
 import java.util.List;
 
@@ -18,6 +20,11 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 class JwtValidatorTest {
 
     private static final String SECRET = "test-jwt-secret-that-is-at-least-32-bytes-long";
+
+    @AfterEach
+    void clearRevocations() {
+        JwtValidator.clearRevoked();
+    }
 
     @Test
     void configuredAudienceAcceptsMatchingTokenAudience() throws Exception {
@@ -62,6 +69,22 @@ class JwtValidatorTest {
         assertNull(validator.extractTenant(claims));
     }
 
+    @Test
+    void revokedJtiIsRejectedUntilItsBoundedExpiry() throws Exception {
+        SocpSecurityProperties properties = signedProperties("socp-api");
+        JwtValidator validator = new JwtValidator(properties);
+        String jti = "revoked-jti";
+        String signed = token(List.of("socp-api"), jti);
+
+        JwtValidator.revoke(jti, Instant.now().plusSeconds(60));
+        assertThrows(JwtValidationException.class, () -> validator.validate(signed));
+
+        JwtValidator.clearRevoked();
+        JwtValidator.revoke(jti, Instant.now().minusSeconds(1));
+        // An already expired revocation is ignored and does not poison future validation.
+        assertDoesNotThrow(() -> validator.validate(signed));
+    }
+
     private static SocpSecurityProperties signedProperties(String audience) {
         SocpSecurityProperties properties = new SocpSecurityProperties();
         properties.setJwtSecret(SECRET);
@@ -71,9 +94,14 @@ class JwtValidatorTest {
     }
 
     private static String token(List<String> audience) throws Exception {
+        return token(audience, null);
+    }
+
+    private static String token(List<String> audience, String jti) throws Exception {
         JWTClaimsSet.Builder claims = new JWTClaimsSet.Builder()
                 .subject("user-1")
                 .expirationTime(new Date(System.currentTimeMillis() + 60_000));
+        if (jti != null) claims.jwtID(jti);
         if (audience != null) {
             claims.audience(audience);
         }

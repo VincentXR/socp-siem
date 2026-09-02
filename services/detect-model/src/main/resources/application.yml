@@ -44,6 +44,7 @@ socp:
       cleanup-initial-delay-ms: ${SOCP_DETECT_MODEL_CLEANUP_INITIAL_DELAY_MS:60000}
       window-idle-ttl-ms: ${SOCP_DETECT_MODEL_WINDOW_IDLE_TTL_MS:1800000}
       window-max-tenants: ${SOCP_DETECT_MODEL_WINDOW_MAX_TENANTS:1000}
+      window-max-dimensions: ${SOCP_DETECT_MODEL_WINDOW_MAX_DIMENSIONS:10000}
       rule-state-idle-ttl-ms: ${SOCP_DETECT_MODEL_RULE_STATE_IDLE_TTL_MS:1800000}
       rule-state-max-tenants: ${SOCP_DETECT_MODEL_RULE_STATE_MAX_TENANTS:1000}
       rule-state-cleanup-interval-ms: ${SOCP_DETECT_MODEL_RULE_STATE_CLEANUP_INTERVAL_MS:60000}

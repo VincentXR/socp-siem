@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.Instant;
 import java.util.List;
@@ -106,6 +107,22 @@ class IocStoreTest {
 
         assertThat(store.match("203.0.113.9")).isNull();
         assertThat(store.match("203.0.113.10")).isNull();
+    }
+
+    @Test
+    void boundsInMemoryCacheCardinality() {
+        TenantContext.set("tenant-cache");
+        when(repository.findByTenantIdAndValueIn(eq("tenant-cache"), anyList()))
+                .thenReturn(List.of(
+                        entity("ioc-a", "DOMAIN", "a.example"),
+                        entity("ioc-b", "DOMAIN", "b.example"),
+                        entity("ioc-c", "DOMAIN", "c.example")));
+        IocStore store = new IocStore(repository, false);
+        ReflectionTestUtils.setField(store, "maxCacheEntries", 2);
+
+        store.matchAll(List.of("a.example", "b.example", "c.example"));
+
+        assertThat(store.cachedEntries()).isLessThanOrEqualTo(2);
     }
 
     @Test
