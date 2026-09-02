@@ -45,7 +45,7 @@ export default defineConfig({
       //
       // 生产构建不走 vite proxy：前端与网关同源部署（Nginx / 网关直接托管静态资源）。
       // ---------------------------------------------------------------------
-      '^/(alert-web|search-config|detect-web|soar-web|report-web|asset-web|soc-base|hips-web|ai-assistant|detect-model|asset-collect|hips-collect|threat-web|attack-web|notify-web|incident-web|auth|actuator)(/|$)': {
+      '^/(api|alert-web|search-config|detect-web|soar-web|report-web|asset-web|soc-base|hips-web|ai-assistant|detect-model|asset-collect|hips-collect|threat-web|attack-web|notify-web|incident-web|auth|actuator)(/|$)': {
         target: process.env.SOCP_GATEWAY_URL ?? 'http://localhost:18092',
         changeOrigin: true,
       },

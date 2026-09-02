@@ -28,16 +28,15 @@ const activeLabel = computed(() => {
 })
 
 const { theme, initTheme, toggleTheme } = useTheme()
-const overview = useOverview(isAuthed)
-const { alarms, refreshOverview, loadOverviewStats } = overview
+const overviewEnabled = computed(() => isAuthed.value && activeMenu.value === 'overview')
+const overview = useOverview(overviewEnabled)
+const { alarms } = overview
 const alarmQuery = useAlarmQuery()
 
 const isOffline = ref(typeof navigator !== 'undefined' ? !navigator.onLine : false)
 
 function onLoginDone(user: string, role: string) {
   auth.onLoginDone(user, role)
-  void refreshOverview()
-  void loadOverviewStats()
 }
 
 function onMenuChange(key: string) {
@@ -57,7 +56,6 @@ provide(WORKBENCH_STATE, {
 })
 
 watch(activeMenu, key => {
-  if (key === 'overview') void refreshOverview()
   if (key === 'alarms') void alarmQuery.loadAlarmPage()
 })
 
@@ -70,13 +68,11 @@ watch(menuGroups, groups => {
 onMounted(async () => {
   initTheme()
   if (typeof window !== 'undefined') {
-    window.addEventListener('online', () => { isOffline.value = false; void refreshOverview() })
+    window.addEventListener('online', () => { isOffline.value = false })
     window.addEventListener('offline', () => { isOffline.value = true })
   }
   if (!await auth.initAuth()) return
   onMenuChange(activeMenu.value)
-  void refreshOverview()
-  void loadOverviewStats()
 })
 </script>
 

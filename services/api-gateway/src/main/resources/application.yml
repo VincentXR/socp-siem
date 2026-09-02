@@ -100,6 +100,11 @@ socp:
     dev-bypass: ${SOCP_DEV_BYPASS:false}
     metrics-token: ${SOCP_SECURITY_METRICS_TOKEN:socp-demo-metrics-token}
     service-secret: ${SOCP_SECURITY_SERVICE_SECRET:}
+  health:
+    # Downstream probes are gateway-owned and cached; browsers never fan out
+    # to every service on their own.
+    cache-ms: ${SOCP_GATEWAY_HEALTH_CACHE_MS:30000}
+    probe-timeout-ms: ${SOCP_GATEWAY_HEALTH_PROBE_TIMEOUT_MS:1000}
   auth:
     # 本地账号表由 application-dev.yml 提供（仅 dev profile）；生产请接 Keycloak/OIDC 或外部身份源。
     login-secret: ${SOCP_LOGIN_SECRET}

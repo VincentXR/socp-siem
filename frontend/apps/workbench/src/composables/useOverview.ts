@@ -1,6 +1,6 @@
 import { computed, type Ref } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
-import { alarmStats, checkHealth, HEALTH_TARGETS, listAlarmsPaged } from '../api'
+import { alarmStats, getHealthSnapshot, listAlarmsPaged } from '../api'
 
 export function useOverview(enabled: Ref<boolean>) {
   const alarmsQuery = useQuery({
@@ -16,15 +16,11 @@ export function useOverview(enabled: Ref<boolean>) {
 
   const healthQuery = useQuery({
     queryKey: ['overview', 'health'],
-    queryFn: async ({ signal }) => {
-      const results = await Promise.all(HEALTH_TARGETS.map(target => checkHealth(target.path, { signal, timeoutMs: 3_000 })))
-      const map: Record<string, 'up' | 'down'> = {}
-      HEALTH_TARGETS.forEach((target, index) => { map[target.name] = results[index] })
-      return map
-    },
+    queryFn: ({ signal }) => getHealthSnapshot({ signal, timeoutMs: 5_000 }),
     enabled,
-    refetchInterval: 10_000,
+    refetchInterval: 30_000,
     refetchIntervalInBackground: false,
+    refetchOnWindowFocus: false,
   })
 
   const statsQuery = useQuery({
@@ -36,7 +32,7 @@ export function useOverview(enabled: Ref<boolean>) {
   })
 
   const alarms = computed(() => alarmsQuery.data.value?.items ?? [])
-  const healths = computed(() => healthQuery.data.value ?? {})
+  const healths = computed(() => healthQuery.data.value?.services ?? {})
   const sitStats = computed(() => statsQuery.data.value ?? null)
   const recentAlarms = computed(() => {
     const since = Date.now() - 7 * 24 * 60 * 60 * 1000

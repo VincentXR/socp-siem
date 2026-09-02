@@ -32,6 +32,10 @@ class AuthSessionApplicationTest {
                 .exchange()
                 .expectStatus().isUnauthorized();
 
+        client.get().uri("/api/v1/system/health")
+                .exchange()
+                .expectStatus().isUnauthorized();
+
         client.get().uri("/auth/session")
                 .headers(headers -> {
                     headers.set("X-Socp-User", "attacker");

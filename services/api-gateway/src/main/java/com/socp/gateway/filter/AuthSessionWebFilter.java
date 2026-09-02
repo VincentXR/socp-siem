@@ -7,15 +7,18 @@ import org.springframework.web.server.WebFilter;
 import org.springframework.web.server.WebFilterChain;
 import reactor.core.publisher.Mono;
 
+import java.util.Set;
+
 /**
- * Applies the gateway authentication contract to local authentication
- * endpoints that are handled by WebFlux controllers instead of gateway
- * routes. GlobalFilter instances only run for matched gateway routes.
+ * Applies the gateway authentication contract to local endpoints handled by
+ * WebFlux controllers instead of gateway routes. GlobalFilter instances only
+ * run for matched gateway routes.
  */
 @Component
 public class AuthSessionWebFilter implements WebFilter, Ordered {
 
-    private static final String SESSION_PATH = "/auth/session";
+    private static final Set<String> LOCAL_AUTHENTICATED_PATHS = Set.of(
+            "/auth/session", "/api/v1/system/health");
 
     private final GatewayFilter gatewayFilter;
 
@@ -25,7 +28,7 @@ public class AuthSessionWebFilter implements WebFilter, Ordered {
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
-        if (!SESSION_PATH.equals(exchange.getRequest().getPath().value())) {
+        if (!LOCAL_AUTHENTICATED_PATHS.contains(exchange.getRequest().getPath().value())) {
             return chain.filter(exchange);
         }
         return gatewayFilter.filter(exchange, chain::filter);

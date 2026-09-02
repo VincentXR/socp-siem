@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 
-const MOCKED_BACKEND_PATH = /\/(?:auth|alert-web|search-config|detect-web|soar-web|report-web|asset-web|soc-base|hips-web|ai-assistant|detect-model|asset-collect|hips-collect|threat-web|attack-web|notify-web|incident-web|actuator)(?:\/|$)/
+const MOCKED_BACKEND_PATH = /\/(?:api|auth|alert-web|search-config|detect-web|soar-web|report-web|asset-web|soc-base|hips-web|ai-assistant|detect-model|asset-collect|hips-collect|threat-web|attack-web|notify-web|incident-web|actuator)(?:\/|$)/
 
 /**
  * Register before the endpoint mocks so Playwright's newest-first route

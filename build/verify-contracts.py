@@ -63,7 +63,7 @@ def main() -> int:
     health_registry = (
         ROOT / "frontend/apps/workbench/src/api/health.ts"
     ).read_text(encoding="utf-8")
-    health_names = set(re.findall(r"\{ name: '([a-z0-9-]+)', path:", health_registry))
+    health_names = set(re.findall(r"\{ name: '([a-z0-9-]+)' \}", health_registry))
     if health_names != set(services):
         errors.append(f"frontend health registry drift: missing={sorted(set(services) - health_names)} extra={sorted(health_names - set(services))}")
 
