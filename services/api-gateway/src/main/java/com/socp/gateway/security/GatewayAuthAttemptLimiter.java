@@ -11,6 +11,7 @@ import reactor.core.publisher.Mono;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Duration;
+import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
@@ -33,6 +34,8 @@ public class GatewayAuthAttemptLimiter implements AuthAttemptLimiter {
     private final int loginPermits;
     private final int servicePermits;
     private final int windowSeconds;
+    @Value("${socp.ratelimit.local-max-entries:10000}")
+    private int localMaxEntries = 10_000;
     private final ConcurrentHashMap<String, Window> local = new ConcurrentHashMap<>();
 
     public GatewayAuthAttemptLimiter(
@@ -93,11 +96,21 @@ public class GatewayAuthAttemptLimiter implements AuthAttemptLimiter {
             }
             return new Window(current.count + 1, current.expiresAtNanos);
         });
-        if (local.size() > 10_000) {
-            local.entrySet().removeIf(entry -> now >= entry.getValue().expiresAtNanos);
-        }
+        cleanupLocal(now);
         long retry = Math.max(1, Duration.ofNanos(Math.max(0, result.expiresAtNanos - now)).toSeconds());
         return result.count <= permits ? Decision.permit() : Decision.reject(retry);
+    }
+
+    private void cleanupLocal(long now) {
+        int limit = Math.max(1, Math.min(1_000_000, localMaxEntries));
+        if (local.size() <= limit) return;
+        local.entrySet().removeIf(entry -> now >= entry.getValue().expiresAtNanos);
+        int excess = local.size() - limit;
+        if (excess <= 0) return;
+        local.entrySet().stream()
+                .sorted(Comparator.comparingLong(entry -> entry.getValue().expiresAtNanos))
+                .limit(excess)
+                .forEach(entry -> local.remove(entry.getKey(), entry.getValue()));
     }
 
     private static String key(String kind, String address, String identity) {

@@ -51,6 +51,8 @@ public class DetectionAlertOutboxPublisher {
     private static final Duration DISCARDED_RETENTION = Duration.ofDays(30);
     private static final int DEFAULT_MAX_DRAIN_ROUNDS = 64;
     private static final long DEFAULT_MAX_DRAIN_DURATION_MS = 2_000L;
+    private static final int DEFAULT_CLEANUP_BATCH_SIZE = 1_000;
+    private static final int DEFAULT_CLEANUP_MAX_BATCHES = 10;
 
     private final DetectionAlertOutboxRepository repository;
     private final AlertClient alertClient;
@@ -62,6 +64,8 @@ public class DetectionAlertOutboxPublisher {
     private final long retentionMs;
     private final int maxDrainRounds;
     private final long maxDrainDurationNanos;
+    private final int cleanupBatchSize;
+    private final int cleanupMaxBatches;
 
     @org.springframework.beans.factory.annotation.Autowired
     public DetectionAlertOutboxPublisher(DetectionAlertOutboxRepository repository,
@@ -74,7 +78,9 @@ public class DetectionAlertOutboxPublisher {
                                          @Value("${socp.detect.alert-outbox.retention-ms:2592000000}") long retentionMs,
                                          @Value("${socp.detect.alert-outbox.max-drain-rounds:64}") int maxDrainRounds,
                                          @Value("${socp.detect.alert-outbox.max-drain-duration-ms:2000}")
-                                         long maxDrainDurationMs) {
+                                         long maxDrainDurationMs,
+                                         @Value("${socp.detect.alert-outbox.cleanup-batch-size:1000}") int cleanupBatchSize,
+                                         @Value("${socp.detect.alert-outbox.cleanup-max-batches:10}") int cleanupMaxBatches) {
         this.repository = repository;
         this.alertClient = alertClient;
         this.alarmProducer = alarmProducer;
@@ -89,6 +95,8 @@ public class DetectionAlertOutboxPublisher {
         this.maxDrainRounds = Math.max(2, Math.min(1_000, maxDrainRounds));
         this.maxDrainDurationNanos = Duration.ofMillis(
                 Math.max(10L, Math.min(60_000L, maxDrainDurationMs))).toNanos();
+        this.cleanupBatchSize = Math.max(1, Math.min(10_000, cleanupBatchSize));
+        this.cleanupMaxBatches = Math.max(1, Math.min(100, cleanupMaxBatches));
     }
 
     public DetectionAlertOutboxPublisher(DetectionAlertOutboxRepository repository,
@@ -99,7 +107,22 @@ public class DetectionAlertOutboxPublisher {
                                          int maxAttempts,
                                          long retentionMs) {
         this(repository, alertClient, alarmProducer, performanceMetrics, deliveryConcurrency,
-                maxAttempts, retentionMs, DEFAULT_MAX_DRAIN_ROUNDS, DEFAULT_MAX_DRAIN_DURATION_MS);
+                maxAttempts, retentionMs, DEFAULT_MAX_DRAIN_ROUNDS, DEFAULT_MAX_DRAIN_DURATION_MS,
+                DEFAULT_CLEANUP_BATCH_SIZE, DEFAULT_CLEANUP_MAX_BATCHES);
+    }
+
+    public DetectionAlertOutboxPublisher(DetectionAlertOutboxRepository repository,
+                                         AlertClient alertClient,
+                                         AlarmKafkaProducer alarmProducer,
+                                         DetectionPerformanceMetrics performanceMetrics,
+                                         int deliveryConcurrency,
+                                         int maxAttempts,
+                                         long retentionMs,
+                                         int maxDrainRounds,
+                                         long maxDrainDurationMs) {
+        this(repository, alertClient, alarmProducer, performanceMetrics, deliveryConcurrency,
+                maxAttempts, retentionMs, maxDrainRounds, maxDrainDurationMs,
+                DEFAULT_CLEANUP_BATCH_SIZE, DEFAULT_CLEANUP_MAX_BATCHES);
     }
 
     DetectionAlertOutboxPublisher(DetectionAlertOutboxRepository repository,
@@ -343,12 +366,24 @@ public class DetectionAlertOutboxPublisher {
     @TenantSystemJob
     void cleanupPublished() {
         try {
-            int removed = repository.deletePublishedBefore(Instant.now().minusMillis(retentionMs));
+            int removed = 0;
+            Instant cutoff = Instant.now().minusMillis(retentionMs);
+            for (int batch = 0; batch < cleanupMaxBatches; batch++) {
+                int deleted = repository.deletePublishedBatchBefore(cutoff, cleanupBatchSize);
+                removed += deleted;
+                if (deleted < cleanupBatchSize) break;
+            }
             if (removed > 0) {
                 log.info("Removed retained Detection alert outbox rows count={}", removed);
                 lifecycle("cleaned", removed);
             }
-            int discarded = repository.deleteDiscardedBefore(Instant.now().minus(DISCARDED_RETENTION));
+            int discarded = 0;
+            Instant discardedCutoff = Instant.now().minus(DISCARDED_RETENTION);
+            for (int batch = 0; batch < cleanupMaxBatches; batch++) {
+                int deleted = repository.deleteDiscardedBatchBefore(discardedCutoff, cleanupBatchSize);
+                discarded += deleted;
+                if (deleted < cleanupBatchSize) break;
+            }
             if (discarded > 0) {
                 log.info("Removed explicitly discarded Detection alert outbox rows count={}", discarded);
                 lifecycle("discarded_cleaned", discarded);

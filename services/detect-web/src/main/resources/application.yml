@@ -69,6 +69,10 @@ socp:
       delivery-concurrency: ${SOCP_DETECT_ALERT_OUTBOX_CONCURRENCY:2}
       max-attempts: ${SOCP_DETECT_ALERT_OUTBOX_MAX_ATTEMPTS:12}
       retention-ms: ${SOCP_DETECT_ALERT_OUTBOX_RETENTION_MS:2592000000}
+      max-drain-rounds: ${SOCP_DETECT_ALERT_OUTBOX_MAX_DRAIN_ROUNDS:64}
+      max-drain-duration-ms: ${SOCP_DETECT_ALERT_OUTBOX_MAX_DRAIN_DURATION_MS:2000}
+      cleanup-batch-size: ${SOCP_DETECT_ALERT_OUTBOX_CLEANUP_BATCH_SIZE:1000}
+      cleanup-max-batches: ${SOCP_DETECT_ALERT_OUTBOX_CLEANUP_MAX_BATCHES:10}
       cleanup-interval-ms: ${SOCP_DETECT_ALERT_OUTBOX_CLEANUP_INTERVAL_MS:3600000}
       cleanup-initial-delay-ms: ${SOCP_DETECT_ALERT_OUTBOX_CLEANUP_INITIAL_DELAY_MS:60000}
   kafka:
@@ -76,6 +80,10 @@ socp:
     rule-outbox:
       max-attempts: ${SOCP_RULE_CHANGE_OUTBOX_MAX_ATTEMPTS:12}
       retention-ms: ${SOCP_RULE_CHANGE_OUTBOX_RETENTION_MS:2592000000}
+      max-drain-rounds: ${SOCP_RULE_CHANGE_OUTBOX_MAX_DRAIN_ROUNDS:64}
+      max-drain-duration-ms: ${SOCP_RULE_CHANGE_OUTBOX_MAX_DRAIN_DURATION_MS:2000}
+      cleanup-batch-size: ${SOCP_RULE_CHANGE_OUTBOX_CLEANUP_BATCH_SIZE:1000}
+      cleanup-max-batches: ${SOCP_RULE_CHANGE_OUTBOX_CLEANUP_MAX_BATCHES:10}
       cleanup-interval-ms: ${SOCP_RULE_CHANGE_OUTBOX_CLEANUP_INTERVAL_MS:3600000}
       cleanup-initial-delay-ms: ${SOCP_RULE_CHANGE_OUTBOX_CLEANUP_INITIAL_DELAY_MS:60000}
 

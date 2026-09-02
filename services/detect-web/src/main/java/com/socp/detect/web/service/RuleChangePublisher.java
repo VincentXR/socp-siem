@@ -34,6 +34,10 @@ public class RuleChangePublisher {
     private static final int DEFAULT_MAX_ATTEMPTS = 12;
     private static final long DEFAULT_RETENTION_MS = Duration.ofDays(30).toMillis();
     private static final Duration DISCARDED_RETENTION = Duration.ofDays(30);
+    private static final int DEFAULT_MAX_DRAIN_ROUNDS = 64;
+    private static final long DEFAULT_MAX_DRAIN_DURATION_MS = 2_000L;
+    private static final int DEFAULT_CLEANUP_BATCH_SIZE = 1_000;
+    private static final int DEFAULT_CLEANUP_MAX_BATCHES = 10;
 
     private final RuleChangeOutboxRepository repository;
     private final DetectionPerformanceMetrics performanceMetrics;
@@ -45,13 +49,25 @@ public class RuleChangePublisher {
     private String topic;
 
     @Value("${socp.kafka.enabled:true}")
-    private boolean enabled;
+    private boolean enabled = true;
 
     @Value("${socp.kafka.rule-outbox.max-attempts:12}")
     private int maxAttempts = DEFAULT_MAX_ATTEMPTS;
 
     @Value("${socp.kafka.rule-outbox.retention-ms:2592000000}")
     private long retentionMs = DEFAULT_RETENTION_MS;
+
+    @Value("${socp.kafka.rule-outbox.max-drain-rounds:64}")
+    private int maxDrainRounds = DEFAULT_MAX_DRAIN_ROUNDS;
+
+    @Value("${socp.kafka.rule-outbox.max-drain-duration-ms:2000}")
+    private long maxDrainDurationMs = DEFAULT_MAX_DRAIN_DURATION_MS;
+
+    @Value("${socp.kafka.rule-outbox.cleanup-batch-size:1000}")
+    private int cleanupBatchSize = DEFAULT_CLEANUP_BATCH_SIZE;
+
+    @Value("${socp.kafka.rule-outbox.cleanup-max-batches:10}")
+    private int cleanupMaxBatches = DEFAULT_CLEANUP_MAX_BATCHES;
 
     private volatile KafkaProducer<String, String> producer;
     private Instant nextRecoveryAt = Instant.EPOCH;
@@ -101,9 +117,17 @@ public class RuleChangePublisher {
                 log.error("Rule-change outbox rows moved to DEAD after retry limit count={}", exhausted);
                 lifecycle("dead", exhausted);
             }
-            List<RuleChangeOutbox> pending = repository
-                    .findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc("PENDING", now);
-            for (RuleChangeOutbox row : pending) deliver(row);
+            int rounds = 0;
+            long deadline = System.nanoTime() + Duration.ofMillis(effectiveDrainDurationMs()).toNanos();
+            int roundLimit = effectiveMaxDrainRounds();
+            while (rounds < roundLimit && System.nanoTime() < deadline) {
+                List<RuleChangeOutbox> pending = repository
+                        .findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc("PENDING", Instant.now());
+                if (pending.isEmpty()) break;
+                rounds++;
+                for (RuleChangeOutbox row : pending) deliver(row);
+                if (pending.size() < 100) break;
+            }
         } catch (RuntimeException failure) {
             log.warn("Rule-change outbox scan failed; next scan will retry: {}", failure.getMessage());
         } finally {
@@ -186,12 +210,26 @@ public class RuleChangePublisher {
     void cleanupPublished() {
         try {
             long safeRetention = Math.max(Duration.ofMinutes(1).toMillis(), retentionMs);
-            int removed = repository.deletePublishedBefore(Instant.now().minusMillis(safeRetention));
+            int removed = 0;
+            Instant cutoff = Instant.now().minusMillis(safeRetention);
+            int batchSize = effectiveCleanupBatchSize();
+            for (int batch = 0; batch < effectiveCleanupMaxBatches(); batch++) {
+                int deleted = repository.deletePublishedBatchBefore(cutoff, batchSize);
+                removed += deleted;
+                if (deleted < batchSize) break;
+            }
             if (removed > 0) {
-                log.info("Removed retained rule-change outbox rows count={}", removed);
+                log.info("Removed retained rule-change outbox rows count={} batchSize={} maxBatches={}",
+                        removed, batchSize, effectiveCleanupMaxBatches());
                 lifecycle("cleaned", removed);
             }
-            int discarded = repository.deleteDiscardedBefore(Instant.now().minus(DISCARDED_RETENTION));
+            int discarded = 0;
+            Instant discardedCutoff = Instant.now().minus(DISCARDED_RETENTION);
+            for (int batch = 0; batch < effectiveCleanupMaxBatches(); batch++) {
+                int deleted = repository.deleteDiscardedBatchBefore(discardedCutoff, batchSize);
+                discarded += deleted;
+                if (deleted < batchSize) break;
+            }
             if (discarded > 0) {
                 log.info("Removed explicitly discarded rule-change outbox rows count={}", discarded);
                 lifecycle("discarded_cleaned", discarded);
@@ -203,6 +241,22 @@ public class RuleChangePublisher {
 
     private int effectiveMaxAttempts() {
         return Math.max(1, maxAttempts);
+    }
+
+    private int effectiveMaxDrainRounds() {
+        return Math.max(1, Math.min(1_000, maxDrainRounds));
+    }
+
+    private long effectiveDrainDurationMs() {
+        return Math.max(10L, Math.min(60_000L, maxDrainDurationMs));
+    }
+
+    private int effectiveCleanupBatchSize() {
+        return Math.max(1, Math.min(10_000, cleanupBatchSize));
+    }
+
+    private int effectiveCleanupMaxBatches() {
+        return Math.max(1, Math.min(100, cleanupMaxBatches));
     }
 
     private void lifecycle(String outcome, int count) {

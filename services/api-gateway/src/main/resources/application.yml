@@ -117,6 +117,7 @@ socp:
   ratelimit:
     backend: ${SOCP_RATELIMIT_BACKEND:memory}
     fail-closed: ${SOCP_RATELIMIT_FAIL_CLOSED:false}
+    local-max-entries: ${SOCP_RATELIMIT_LOCAL_MAX_ENTRIES:10000}
 
   # Keycloak OIDC 登录（PKCE 授权码，2026-08-12）：Keycloak 只作身份源，
   # 网关回调后统一签发 HS256 session token，业务服务保持 HMAC 验签零改动。

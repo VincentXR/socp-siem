@@ -5,3 +5,9 @@ spring:
 socp:
   ai:
     maturity: preview
+    llm:
+      # Production must opt in to concrete HTTPS providers and never call
+      # RFC1918/link-local addresses through the LLM integration.
+      allowed-hosts: ${SOCP_AI_LLM_ALLOWED_HOSTS:}
+      https-only: ${SOCP_AI_LLM_HTTPS_ONLY:true}
+      allow-private-networks: ${SOCP_AI_LLM_ALLOW_PRIVATE_NETWORKS:false}

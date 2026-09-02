@@ -5,6 +5,7 @@ import org.springframework.stereotype.Component;
 
 import java.net.InetAddress;
 import java.net.URI;
+import java.util.List;
 import java.util.Locale;
 
 /** Shared egress policy for user-configured Notify and SOAR HTTP connectors. */
@@ -19,6 +20,13 @@ public class ExternalEndpointPolicy {
 
     /** Returns a rejection reason, or {@code null} when the endpoint is safe to call. */
     public String validate(String rawUrl) {
+        return validate(rawUrl, properties.getExternalAllowedHosts(),
+                properties.isExternalHttpsOnly(), properties.isExternalAllowPrivateNetworks());
+    }
+
+    /** Validate another configured egress class with the same trust-boundary rules. */
+    public String validate(String rawUrl, List<String> allowedHosts,
+                           boolean httpsOnly, boolean allowPrivateNetworks) {
         if (rawUrl == null || rawUrl.isBlank()) return "external endpoint is empty";
         final URI uri;
         try {
@@ -30,7 +38,7 @@ public class ExternalEndpointPolicy {
         if (scheme == null || (!scheme.equalsIgnoreCase("http") && !scheme.equalsIgnoreCase("https"))) {
             return "external endpoint must use HTTP or HTTPS";
         }
-        if (properties.isExternalHttpsOnly() && !scheme.equalsIgnoreCase("https")) {
+        if (httpsOnly && !scheme.equalsIgnoreCase("https")) {
             return "external endpoint must use HTTPS";
         }
         if (uri.getUserInfo() != null || uri.getFragment() != null) {
@@ -38,7 +46,7 @@ public class ExternalEndpointPolicy {
         }
         String host = normalizeHost(uri.getHost());
         if (host == null) return "external endpoint host is empty or invalid";
-        if (!allowed(host)) return "external endpoint host is not allowlisted: " + host;
+        if (!allowed(host, allowedHosts)) return "external endpoint host is not allowlisted: " + host;
 
         final InetAddress[] addresses;
         try {
@@ -48,15 +56,15 @@ public class ExternalEndpointPolicy {
         }
         if (addresses.length == 0) return "external endpoint host has no resolved addresses: " + host;
         for (InetAddress address : addresses) {
-            if (isBlocked(address) && !properties.isExternalAllowPrivateNetworks()) {
+            if (isBlocked(address) && !allowPrivateNetworks) {
                 return "external endpoint resolves to a private or reserved address: " + address.getHostAddress();
             }
         }
         return null;
     }
 
-    private boolean allowed(String host) {
-        return properties.getExternalAllowedHosts().stream()
+    private static boolean allowed(String host, List<String> allowedHosts) {
+        return (allowedHosts == null ? List.<String>of() : allowedHosts).stream()
                 .map(String::trim)
                 .filter(value -> !value.isBlank())
                 .map(value -> value.toLowerCase(Locale.ROOT))

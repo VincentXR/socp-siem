@@ -41,6 +41,8 @@ public class AlarmDeliveryPublisher {
     private static final Duration DISCARDED_RETENTION = Duration.ofDays(30);
     private static final int DEFAULT_MAX_DRAIN_ROUNDS = 64;
     private static final long DEFAULT_MAX_DRAIN_DURATION_MS = 2_000L;
+    private static final int DEFAULT_CLEANUP_BATCH_SIZE = 1_000;
+    private static final int DEFAULT_CLEANUP_MAX_BATCHES = 10;
 
     private final AlarmDeliveryRepository repository;
     private final CkReporter ckReporter;
@@ -54,6 +56,8 @@ public class AlarmDeliveryPublisher {
     private final long retentionMs;
     private final int maxDrainRounds;
     private final long maxDrainDurationNanos;
+    private final int cleanupBatchSize;
+    private final int cleanupMaxBatches;
     private Instant nextRecoveryAt = Instant.EPOCH;
 
     @Autowired
@@ -63,7 +67,8 @@ public class AlarmDeliveryPublisher {
                                   AlertDeliveryProperties properties) {
         this(repository, ckReporter, notifyClient, incidentClient, soarClient, performanceMetrics,
                 properties.getConcurrency(), properties.getMaxAttempts(), properties.getRetentionMs(),
-                properties.getMaxDrainRounds(), properties.getMaxDrainDurationMs());
+                properties.getMaxDrainRounds(), properties.getMaxDrainDurationMs(),
+                properties.getCleanupBatchSize(), properties.getCleanupMaxBatches());
     }
 
     public AlarmDeliveryPublisher(AlarmDeliveryRepository repository, CkReporter ckReporter,
@@ -72,7 +77,8 @@ public class AlarmDeliveryPublisher {
                                   int concurrency, int maxAttempts, long retentionMs) {
         this(repository, ckReporter, notifyClient, incidentClient, soarClient, performanceMetrics,
                 concurrency, maxAttempts, retentionMs,
-                DEFAULT_MAX_DRAIN_ROUNDS, DEFAULT_MAX_DRAIN_DURATION_MS);
+                DEFAULT_MAX_DRAIN_ROUNDS, DEFAULT_MAX_DRAIN_DURATION_MS,
+                DEFAULT_CLEANUP_BATCH_SIZE, DEFAULT_CLEANUP_MAX_BATCHES);
     }
 
     public AlarmDeliveryPublisher(AlarmDeliveryRepository repository, CkReporter ckReporter,
@@ -80,6 +86,18 @@ public class AlarmDeliveryPublisher {
                                   SoarClient soarClient, AlertPerformanceMetrics performanceMetrics,
                                   int concurrency, int maxAttempts, long retentionMs,
                                   int maxDrainRounds, long maxDrainDurationMs) {
+        this(repository, ckReporter, notifyClient, incidentClient, soarClient, performanceMetrics,
+                concurrency, maxAttempts, retentionMs,
+                maxDrainRounds, maxDrainDurationMs,
+                DEFAULT_CLEANUP_BATCH_SIZE, DEFAULT_CLEANUP_MAX_BATCHES);
+    }
+
+    public AlarmDeliveryPublisher(AlarmDeliveryRepository repository, CkReporter ckReporter,
+                                  NotifyClient notifyClient, IncidentClient incidentClient,
+                                  SoarClient soarClient, AlertPerformanceMetrics performanceMetrics,
+                                  int concurrency, int maxAttempts, long retentionMs,
+                                  int maxDrainRounds, long maxDrainDurationMs,
+                                  int cleanupBatchSize, int cleanupMaxBatches) {
         this.repository = repository;
         this.ckReporter = ckReporter;
         this.notifyClient = notifyClient;
@@ -96,6 +114,8 @@ public class AlarmDeliveryPublisher {
         this.maxDrainRounds = Math.max(1, Math.min(1_000, maxDrainRounds));
         this.maxDrainDurationNanos = Duration.ofMillis(
                 Math.max(10L, Math.min(60_000L, maxDrainDurationMs))).toNanos();
+        this.cleanupBatchSize = Math.max(1, Math.min(10_000, cleanupBatchSize));
+        this.cleanupMaxBatches = Math.max(1, Math.min(100, cleanupMaxBatches));
     }
 
     private final java.util.concurrent.atomic.AtomicBoolean activeTrigger = new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -256,12 +276,24 @@ public class AlarmDeliveryPublisher {
     @TenantSystemJob
     void cleanupDelivered() {
         try {
-            int removed = repository.deleteDeliveredBefore(Instant.now().minusMillis(retentionMs));
+            int removed = 0;
+            Instant cutoff = Instant.now().minusMillis(retentionMs);
+            for (int batch = 0; batch < cleanupMaxBatches; batch++) {
+                int deleted = repository.deleteDeliveredBatchBefore(cutoff, cleanupBatchSize);
+                removed += deleted;
+                if (deleted < cleanupBatchSize) break;
+            }
             if (removed > 0) {
                 log.info("Removed retained alarm delivery rows count={}", removed);
                 lifecycle("cleaned", removed);
             }
-            int discarded = repository.deleteDiscardedBefore(Instant.now().minus(DISCARDED_RETENTION));
+            int discarded = 0;
+            Instant discardedCutoff = Instant.now().minus(DISCARDED_RETENTION);
+            for (int batch = 0; batch < cleanupMaxBatches; batch++) {
+                int deleted = repository.deleteDiscardedBatchBefore(discardedCutoff, cleanupBatchSize);
+                discarded += deleted;
+                if (deleted < cleanupBatchSize) break;
+            }
             if (discarded > 0) {
                 log.info("Removed explicitly discarded alarm delivery rows count={}", discarded);
                 lifecycle("discarded_cleaned", discarded);

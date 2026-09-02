@@ -1,8 +1,6 @@
 package com.socp.alert.persistence.repository;
 
 import com.socp.alert.domain.OutboxEvent;
-
-
 import com.socp.platform.tenant.persistence.TenantScopedRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -92,11 +90,17 @@ public interface OutboxRepository extends TenantScopedRepository<OutboxEvent, St
 
     @Modifying
     @Transactional
-    @Query("delete from OutboxEvent e where e.status = 'PUBLISHED' and e.publishedAt < :cutoff")
-    int deletePublishedBefore(@Param("cutoff") Instant cutoff);
+    @Query(value = "delete from outbox_event where id in ("
+            + "select id from outbox_event where status = 'PUBLISHED' and published_at < :cutoff "
+            + "order by published_at asc limit :batchSize)", nativeQuery = true)
+    int deletePublishedBatchBefore(@Param("cutoff") Instant cutoff,
+                                   @Param("batchSize") int batchSize);
 
     @Modifying
     @Transactional
-    @Query("delete from OutboxEvent e where e.status = 'DISCARDED' and e.updatedAt < :cutoff")
-    int deleteDiscardedBefore(@Param("cutoff") Instant cutoff);
+    @Query(value = "delete from outbox_event where id in ("
+            + "select id from outbox_event where status = 'DISCARDED' and updated_at < :cutoff "
+            + "order by updated_at asc limit :batchSize)", nativeQuery = true)
+    int deleteDiscardedBatchBefore(@Param("cutoff") Instant cutoff,
+                                   @Param("batchSize") int batchSize);
 }

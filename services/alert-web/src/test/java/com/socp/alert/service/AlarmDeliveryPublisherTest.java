@@ -223,13 +223,13 @@ class AlarmDeliveryPublisherTest {
     void cleanupRemovesExpiredRowsAndSwallowsStorageFailures() {
         publisher = new AlarmDeliveryPublisher(repository, ckReporter, notifyClient, incidentClient, soarClient,
                 null, 1, 12, 60_000L);
-        given(repository.deleteDeliveredBefore(any(Instant.class))).willReturn(2);
+        given(repository.deleteDeliveredBatchBefore(any(Instant.class), anyInt())).willReturn(2);
 
         assertDoesNotThrow(() -> publisher.cleanupDelivered());
-        verify(repository).deleteDeliveredBefore(any(Instant.class));
+        verify(repository).deleteDeliveredBatchBefore(any(Instant.class), anyInt());
 
         doThrow(new IllegalStateException("database unavailable"))
-                .when(repository).deleteDeliveredBefore(any(Instant.class));
+                .when(repository).deleteDeliveredBatchBefore(any(Instant.class), anyInt());
         assertDoesNotThrow(() -> publisher.cleanupDelivered());
     }
 

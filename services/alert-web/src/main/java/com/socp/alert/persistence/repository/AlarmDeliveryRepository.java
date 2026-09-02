@@ -1,8 +1,6 @@
 package com.socp.alert.persistence.repository;
 
 import com.socp.alert.domain.AlarmDelivery;
-
-
 import com.socp.platform.tenant.persistence.TenantScopedRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -98,11 +96,17 @@ public interface AlarmDeliveryRepository extends TenantScopedRepository<AlarmDel
 
     @Modifying
     @Transactional
-    @Query("delete from AlarmDelivery d where d.status = 'DELIVERED' and d.deliveredAt < :cutoff")
-    int deleteDeliveredBefore(@Param("cutoff") Instant cutoff);
+    @Query(value = "delete from alarm_delivery where id in ("
+            + "select id from alarm_delivery where status = 'DELIVERED' and delivered_at < :cutoff "
+            + "order by delivered_at asc limit :batchSize)", nativeQuery = true)
+    int deleteDeliveredBatchBefore(@Param("cutoff") Instant cutoff,
+                                   @Param("batchSize") int batchSize);
 
     @Modifying
     @Transactional
-    @Query("delete from AlarmDelivery d where d.status = 'DISCARDED' and d.updatedAt < :cutoff")
-    int deleteDiscardedBefore(@Param("cutoff") Instant cutoff);
+    @Query(value = "delete from alarm_delivery where id in ("
+            + "select id from alarm_delivery where status = 'DISCARDED' and updated_at < :cutoff "
+            + "order by updated_at asc limit :batchSize)", nativeQuery = true)
+    int deleteDiscardedBatchBefore(@Param("cutoff") Instant cutoff,
+                                   @Param("batchSize") int batchSize);
 }

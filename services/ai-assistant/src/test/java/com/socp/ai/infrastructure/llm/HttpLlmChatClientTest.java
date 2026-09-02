@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -35,6 +36,9 @@ class HttpLlmChatClientTest {
         LlmProperties properties = new LlmProperties();
         properties.setEnabled(true);
         properties.setBaseUrl("http://localhost:" + server.getAddress().getPort() + "/");
+        properties.setAllowedHosts(List.of("localhost"));
+        properties.setHttpsOnly(false);
+        properties.setAllowPrivateNetworks(true);
         properties.setApiKey("test-key");
         properties.setModel("test-model");
 
@@ -57,6 +61,9 @@ class HttpLlmChatClientTest {
         LlmProperties properties = new LlmProperties();
         properties.setEnabled(true);
         properties.setBaseUrl("http://localhost:" + server.getAddress().getPort());
+        properties.setAllowedHosts(List.of("localhost"));
+        properties.setHttpsOnly(false);
+        properties.setAllowPrivateNetworks(true);
         assertThat(new HttpLlmChatClient(properties).chat("question")).isEmpty();
     }
 

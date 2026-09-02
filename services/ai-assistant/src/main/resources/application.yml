@@ -40,6 +40,9 @@ socp:
     llm:
       enabled: ${SOCP_AI_LLM_ENABLED:false}
       base-url: ${SOCP_AI_LLM_BASE_URL:http://localhost:11434}
+      allowed-hosts: ${SOCP_AI_LLM_ALLOWED_HOSTS:localhost}
+      https-only: ${SOCP_AI_LLM_HTTPS_ONLY:false}
+      allow-private-networks: ${SOCP_AI_LLM_ALLOW_PRIVATE_NETWORKS:true}
       api-key: ${SOCP_AI_LLM_API_KEY:}
       model: ${SOCP_AI_LLM_MODEL:qwen2.5:7b}
       timeout-ms: ${SOCP_AI_LLM_TIMEOUT_MS:10000}

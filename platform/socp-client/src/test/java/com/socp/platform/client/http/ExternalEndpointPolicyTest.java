@@ -37,4 +37,13 @@ class ExternalEndpointPolicyTest {
         assertThat(new ExternalEndpointPolicy(properties).validate("https://user:pass@example.com/hook"))
                 .contains("userinfo");
     }
+
+    @Test
+    void appliesTheSameRulesToASeparateConnectorConfiguration() {
+        SocpClientProperties properties = new SocpClientProperties();
+        ExternalEndpointPolicy policy = new ExternalEndpointPolicy(properties);
+
+        assertThat(policy.validate("http://localhost:8080/hook", List.of("localhost"),
+                false, false)).contains("private or reserved");
+    }
 }

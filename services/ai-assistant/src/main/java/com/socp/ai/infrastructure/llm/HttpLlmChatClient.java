@@ -1,10 +1,13 @@
 package com.socp.ai.infrastructure.llm;
 
 import com.socp.ai.config.LlmProperties;
+import com.socp.platform.client.config.SocpClientProperties;
+import com.socp.platform.client.http.ExternalEndpointPolicy;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.net.URI;
@@ -36,13 +39,22 @@ public class HttpLlmChatClient implements LlmChatClient {
             """;
 
     private final LlmProperties properties;
+    private final ExternalEndpointPolicy endpointPolicy;
     private final HttpClient httpClient;
 
-    public HttpLlmChatClient(LlmProperties properties) {
+    @Autowired
+    public HttpLlmChatClient(LlmProperties properties, ExternalEndpointPolicy endpointPolicy) {
         this.properties = properties;
+        this.endpointPolicy = endpointPolicy;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofMillis(properties.getTimeoutMs()))
+                .followRedirects(HttpClient.Redirect.NEVER)
                 .build();
+    }
+
+    /** Source-compatible constructor for isolated callers and unit tests. */
+    public HttpLlmChatClient(LlmProperties properties) {
+        this(properties, new ExternalEndpointPolicy(new SocpClientProperties()));
     }
 
     @Override
@@ -57,6 +69,12 @@ public class HttpLlmChatClient implements LlmChatClient {
         }
         try {
             String url = normalizeBaseUrl(properties.getBaseUrl()) + "/v1/chat/completions";
+            String policyError = endpointPolicy.validate(url, properties.getAllowedHosts(),
+                    properties.isHttpsOnly(), properties.isAllowPrivateNetworks());
+            if (policyError != null) {
+                log.warn("LLM endpoint blocked by outbound policy: {}", policyError);
+                return Optional.empty();
+            }
             var requestBody = Map.of(
                     "model", properties.getModel(),
                     "messages", List.of(
