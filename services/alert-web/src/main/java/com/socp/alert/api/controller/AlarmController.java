@@ -64,6 +64,7 @@ public class AlarmController {
                 ? null : performanceMetrics.requestReceived(req.detectionOutboxClaimedAt());
         Alarm a = new Alarm(req.ruleId(), req.ruleName(), req.severity(), req.message(), req.entity(),
                 req.mitre(), null);
+        a.setTitle(req.title());
         a.setSourceAlertId(req.sourceAlertId());
         // 采集侧可能延迟上报，尊重入参的事件发生时间；缺省才用服务端 now（Alarm 字段默认值）
         if (req.occurredAt() != null) {
@@ -205,9 +206,10 @@ public class AlarmController {
     }
 
     private static String toCsv(List<Alarm> alarms) {
-        StringBuilder sb = new StringBuilder("id,ruleId,ruleName,severity,entity,mitre,riskScore,status,occurredAt,message\n");
+        StringBuilder sb = new StringBuilder("id,ruleId,title,ruleName,severity,entity,mitre,riskScore,status,occurredAt,message\n");
         for (Alarm a : alarms) {
-            sb.append(csv(a.getId())).append(',').append(csv(a.getRuleId())).append(',').append(csv(a.getRuleName()))
+            sb.append(csv(a.getId())).append(',').append(csv(a.getRuleId())).append(',').append(csv(a.getTitle()))
+                    .append(',').append(csv(a.getRuleName()))
                     .append(',').append(a.getSeverity()).append(',').append(csv(a.getEntity()))
                     .append(',').append(csv(a.getMitre())).append(',').append(a.getRiskScore() == null ? "" : a.getRiskScore())
                     .append(',').append(a.getStatus()).append(',').append(a.getOccurredAt())

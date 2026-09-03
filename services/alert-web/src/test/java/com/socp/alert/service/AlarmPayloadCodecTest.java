@@ -20,6 +20,7 @@ class AlarmPayloadCodecTest {
         Alarm alarm = new Alarm("R-1", "Brute Force", Severity.HIGH,
                 "failed login from 203.0.113.10", "203.0.113.10", "T1110", "[{\"ioc\":\"203.0.113.10\"}]");
         alarm.setId("alarm-1");
+        alarm.setTitle("Admin login anomaly");
         alarm.setTenantId("tenant-a");
         alarm.setRiskScore(82);
         alarm.setRiskLevel("HIGH");
@@ -42,6 +43,7 @@ class AlarmPayloadCodecTest {
         assertThat(decoded.getId()).isEqualTo("alarm-1");
         assertThat(decoded.getTenantId()).isEqualTo("tenant-a");
         assertThat(decoded.getSeverity()).isEqualTo(Severity.HIGH);
+        assertThat(decoded.getTitle()).isEqualTo("Admin login anomaly");
         assertThat(decoded.getRiskScore()).isEqualTo(82);
         assertThat(decoded.getProcessingLatencyMs()).isEqualTo(1000L);
         assertThat(decoded.getOccurredAt()).isEqualTo(alarm.getOccurredAt());

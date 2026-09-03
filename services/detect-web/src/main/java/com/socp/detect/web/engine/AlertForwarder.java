@@ -116,6 +116,7 @@ public class AlertForwarder {
             payload.put("sourceAlertId", alert.id());
             payload.put("ruleId", alert.ruleId());
             payload.put("ruleName", alert.ruleName());
+            payload.put("title", alert.title());
             payload.put("severity", alert.severity().name());
             payload.put("message", alert.message());
             payload.put("entity", alert.entity());

@@ -35,10 +35,13 @@ public class Alarm extends BaseEntity {
     @Column(name = "rule_name")
     private String ruleName;
 
+    @Column(length = 512)
+    private String title;
+
     @Enumerated(EnumType.STRING)
     private Severity severity;
 
-    @Column(length = 1024)
+    @Column(length = 4096)
     private String message;
 
     /** 关联实体：源 IP / 主机 / 用户 */
@@ -89,6 +92,7 @@ public class Alarm extends BaseEntity {
     public Alarm(String ruleId, String ruleName, Severity severity, String message, String entity) {
         this.ruleId = ruleId;
         this.ruleName = ruleName;
+        this.title = ruleName;
         this.severity = severity;
         this.message = message;
         this.entity = entity;
@@ -100,6 +104,7 @@ public class Alarm extends BaseEntity {
                  String mitre, String tiHits) {
         this.ruleId = ruleId;
         this.ruleName = ruleName;
+        this.title = ruleName;
         this.severity = severity;
         this.message = message;
         this.entity = entity;
@@ -129,6 +134,14 @@ public class Alarm extends BaseEntity {
 
     public void setRuleName(String ruleName) {
         this.ruleName = ruleName;
+    }
+
+    public String getTitle() {
+        return title == null || title.isBlank() ? ruleName : title;
+    }
+
+    public void setTitle(String title) {
+        this.title = title;
     }
 
     public Severity getSeverity() {

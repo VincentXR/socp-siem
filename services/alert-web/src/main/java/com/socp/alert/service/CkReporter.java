@@ -65,6 +65,7 @@ public class CkReporter {
             values.put("severity", alarm.getSeverity() == null ? "" : alarm.getSeverity().name());
             values.put("rule_id", alarm.getRuleId());
             values.put("rule_name", alarm.getRuleName());
+            values.put("title", alarm.getTitle());
             values.put("entity", alarm.getEntity());
             values.put("row_version", 1L);
             String row = MAPPER.writeValueAsString(values);

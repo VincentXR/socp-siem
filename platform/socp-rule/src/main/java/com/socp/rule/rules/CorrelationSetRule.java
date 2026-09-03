@@ -24,6 +24,7 @@ public final class CorrelationSetRule extends AbstractRule implements StatefulRu
     private final List<Predicate<SecurityEvent>> conds;
     private final Duration window;
     private final Severity severity;
+    private final String titleTemplate;
     private final String messageTemplate;
 
     private static final class State {
@@ -38,12 +39,21 @@ public final class CorrelationSetRule extends AbstractRule implements StatefulRu
                               Function<SecurityEvent, String> keyOf,
                               List<Predicate<SecurityEvent>> conds,
                               Duration window, Severity severity, String messageTemplate) {
+        this(id, name, keyOf, conds, window, severity, name, messageTemplate);
+    }
+
+    public CorrelationSetRule(String id, String name,
+                              Function<SecurityEvent, String> keyOf,
+                              List<Predicate<SecurityEvent>> conds,
+                              Duration window, Severity severity,
+                              String titleTemplate, String messageTemplate) {
         super(id, name);
         if (conds.isEmpty()) throw new IllegalArgumentException("correlation-set requires a condition");
         this.keyOf = keyOf;
         this.conds = List.copyOf(conds);
         this.window = window;
         this.severity = severity;
+        this.titleTemplate = titleTemplate;
         this.messageTemplate = messageTemplate;
     }
 
@@ -69,10 +79,14 @@ public final class CorrelationSetRule extends AbstractRule implements StatefulRu
             }
 
             if (st.bits.cardinality() == conds.size()) {
-                String msg = messageTemplate
-                        .replace("{key}", key)
-                        .replace("{count}", String.valueOf(conds.size()));
-                emit(new Alert(id, name, severity, msg, key, new ArrayList<>(st.evidence.values())));
+                Map<String, Object> context = Map.of(
+                        "key", key,
+                        "count", conds.size(),
+                        "window", window.toSeconds() + "s");
+                String title = AlertTemplateRenderer.render(titleTemplate, event, context);
+                String msg = AlertTemplateRenderer.render(messageTemplate, event, context);
+                emit(new Alert(id, name, severity, title, msg, key,
+                        new ArrayList<>(st.evidence.values())));
                 st.bits.clear();
                 st.evidence.clear();
                 st.firstTs = null;

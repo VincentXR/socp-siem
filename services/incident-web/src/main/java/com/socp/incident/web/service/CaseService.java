@@ -53,7 +53,8 @@ public class CaseService {
         String entity = str(alarm, "entity");
         String alarmId = str(alarm, "id");
         String ruleId = str(alarm, "ruleId");
-        String title = str(alarm, "ruleName");
+        String title = str(alarm, "title");
+        if (title.isBlank()) title = str(alarm, "ruleName");
         String severity = str(alarm, "severity");
         String message = str(alarm, "message");
         String mitre = str(alarm, "mitre");

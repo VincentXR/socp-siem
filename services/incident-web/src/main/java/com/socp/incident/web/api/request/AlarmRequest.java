@@ -15,11 +15,13 @@ public record AlarmRequest(
         @Size(max = 256) String entity,
         @Size(max = 4096) String message,
         @Size(max = 128) String mitre,
-        @Size(max = 64) String occurredAt) {
+        @Size(max = 64) String occurredAt,
+        @Size(max = 512) String title) {
 
     public Map<String, Object> asMap() {
         Map<String, Object> out = new LinkedHashMap<>();
         put(out, "id", id); put(out, "ruleId", ruleId); put(out, "ruleName", ruleName);
+        put(out, "title", title);
         put(out, "severity", severity); put(out, "entity", entity); put(out, "message", message);
         put(out, "mitre", mitre); put(out, "occurredAt", occurredAt);
         return out;

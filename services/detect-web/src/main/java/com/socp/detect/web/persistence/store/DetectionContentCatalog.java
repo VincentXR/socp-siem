@@ -79,6 +79,7 @@ public final class DetectionContentCatalog {
         if (!spec.containsKey("enabled")) {
             spec.put("enabled", "ACTIVE".equalsIgnoreCase(String.valueOf(spec.get("status"))));
         }
+        enrichAlert(spec);
         return spec;
     }
 
@@ -133,6 +134,9 @@ public final class DetectionContentCatalog {
         }
         validateConditions(errors, spec.get("match"), "match");
         validateConditionGroups(errors, spec.get("matchAny"), "matchAny");
+        validateConditions(errors, spec.containsKey("whitelist") ? spec.get("whitelist") : spec.get("allowlist"),
+                "whitelist");
+        validateAlert(errors, spec.get("alert"));
         if (spec.get("steps") instanceof List<?> steps) {
             for (int i = 0; i < steps.size(); i++) {
                 Object step = steps.get(i);
@@ -186,6 +190,38 @@ public final class DetectionContentCatalog {
                 }
             }
         }
+    }
+
+    private static void validateAlert(List<String> errors, Object raw) {
+        if (raw == null) return;
+        if (!(raw instanceof Map<?, ?> alert)) {
+            errors.add("alert must be an object");
+            return;
+        }
+        validateAlertField(errors, alert, "title", 512);
+        validateAlertField(errors, alert, "description", 4096);
+        validateAlertField(errors, alert, "body", 4096);
+    }
+
+    private static void validateAlertField(List<String> errors, Map<?, ?> alert, String field, int maxLength) {
+        Object value = alert.get(field);
+        if (value != null && String.valueOf(value).length() > maxLength) {
+            errors.add("alert." + field + " exceeds " + maxLength + " characters");
+        }
+    }
+
+    private static void enrichAlert(Map<String, Object> spec) {
+        Map<String, Object> alert = new LinkedHashMap<>();
+        Object raw = spec.get("alert");
+        if (raw instanceof Map<?, ?> existing) {
+            existing.forEach((key, value) -> alert.put(String.valueOf(key), value));
+        }
+        copyIfMissing(alert, "title", spec.get("alertTitle"));
+        copyIfMissing(alert, "title", spec.get("name"));
+        copyIfMissing(alert, "description", spec.get("alertDescription"));
+        copyIfMissing(alert, "description", spec.get("message"));
+        copyIfMissing(alert, "description", spec.get("name"));
+        if (!alert.isEmpty()) spec.put("alert", alert);
     }
 
     private static void copyIfMissing(Map<String, Object> target, String key, Object value) {

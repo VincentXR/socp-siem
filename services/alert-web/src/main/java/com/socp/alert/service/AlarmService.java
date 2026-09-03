@@ -196,6 +196,7 @@ public class AlarmService {
         if (req == null) throw com.socp.platform.error.exception.ApiException.badRequest("alarm item is required");
         Alarm alarm = new Alarm(req.ruleId(), req.ruleName(), req.severity(), req.message(), req.entity(),
                 req.mitre(), null);
+        alarm.setTitle(req.title());
         alarm.setSourceAlertId(req.sourceAlertId());
         if (req.occurredAt() != null) alarm.setOccurredAt(req.occurredAt());
         alarm.setRiskScore(req.riskScore());

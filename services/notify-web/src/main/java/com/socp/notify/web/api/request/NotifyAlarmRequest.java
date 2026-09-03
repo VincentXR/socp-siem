@@ -17,6 +17,8 @@ public class NotifyAlarmRequest {
     private String ruleId;
     @Size(max = 256)
     private String ruleName;
+    @Size(max = 512)
+    private String title;
     @Pattern(regexp = "CRITICAL|HIGH|MEDIUM|LOW|INFO")
     @Size(max = 32)
     private String severity;
@@ -36,6 +38,8 @@ public class NotifyAlarmRequest {
     public void setRuleId(String ruleId) { this.ruleId = ruleId; }
     public String getRuleName() { return ruleName; }
     public void setRuleName(String ruleName) { this.ruleName = ruleName; }
+    public String getTitle() { return title; }
+    public void setTitle(String title) { this.title = title; }
     public String getSeverity() { return severity; }
     public void setSeverity(String severity) { this.severity = severity; }
     public String getEntity() { return entity; }
@@ -60,6 +64,7 @@ public class NotifyAlarmRequest {
         put(out, "id", id);
         put(out, "ruleId", ruleId);
         put(out, "ruleName", ruleName);
+        put(out, "title", title);
         put(out, "severity", severity);
         put(out, "entity", entity);
         put(out, "message", message);

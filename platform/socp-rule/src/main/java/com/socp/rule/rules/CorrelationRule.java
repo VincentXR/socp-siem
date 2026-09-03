@@ -27,6 +27,7 @@ public final class CorrelationRule extends AbstractRule implements StatefulRule 
     private final List<Predicate<SecurityEvent>> steps;
     private final Duration window;
     private final Severity severity;
+    private final String titleTemplate;
     private final String messageTemplate;
 
     private static final class State {
@@ -42,12 +43,21 @@ public final class CorrelationRule extends AbstractRule implements StatefulRule 
                            Function<SecurityEvent, String> keyOf,
                            List<Predicate<SecurityEvent>> steps,
                            Duration window, Severity severity, String messageTemplate) {
+        this(id, name, keyOf, steps, window, severity, name, messageTemplate);
+    }
+
+    public CorrelationRule(String id, String name,
+                           Function<SecurityEvent, String> keyOf,
+                           List<Predicate<SecurityEvent>> steps,
+                           Duration window, Severity severity,
+                           String titleTemplate, String messageTemplate) {
         super(id, name);
         if (steps.isEmpty()) throw new IllegalArgumentException("关联规则至少需要一个步骤");
         this.keyOf = keyOf;
         this.steps = List.copyOf(steps);
         this.window = window;
         this.severity = severity;
+        this.titleTemplate = titleTemplate;
         this.messageTemplate = messageTemplate;
     }
 
@@ -88,10 +98,13 @@ public final class CorrelationRule extends AbstractRule implements StatefulRule 
             st.lastTs = event.timestamp();
 
             if (st.step == steps.size()) {
-                String msg = messageTemplate
-                        .replace("{key}", key)
-                        .replace("{count}", String.valueOf(steps.size()));
-                emit(new Alert(id, name, severity, msg, key, new ArrayList<>(st.evidence)));
+                Map<String, Object> context = Map.of(
+                        "key", key,
+                        "count", steps.size(),
+                        "window", window.toSeconds() + "s");
+                String title = AlertTemplateRenderer.render(titleTemplate, event, context);
+                String msg = AlertTemplateRenderer.render(messageTemplate, event, context);
+                emit(new Alert(id, name, severity, title, msg, key, new ArrayList<>(st.evidence)));
                 reset(st);
             }
         }

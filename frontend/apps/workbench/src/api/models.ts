@@ -2,6 +2,7 @@ export interface Alarm {
   id: string
   ruleId: string
   ruleName: string
+  title?: string
   severity: string
   message: string
   entity: string
@@ -165,9 +166,10 @@ export interface SearchResult {
 export interface RuleCondition { field: string; op: string; value: string }
 export interface RuleSpec {
   id: string; name: string; type: string; severity: string; message?: string
+  alert?: { title?: string; description?: string }
   enabled: boolean; status?: string; window?: string; keyField?: string; routingField?: string; threshold?: number
   valueField?: string; warmup?: number; baselineWindows?: number; sigma?: number; minCount?: number
-  match?: RuleCondition[]; matchAny?: RuleCondition[][]; steps?: RuleCondition[][]; mitre?: string; version?: string
+  match?: RuleCondition[]; matchAny?: RuleCondition[][]; whitelist?: RuleCondition[]; steps?: RuleCondition[][]; mitre?: string; version?: string
 }
 export interface GasStats {
   rules: number; eventCount: number; alertCount: number; dropCount: number
@@ -175,7 +177,7 @@ export interface GasStats {
 }
 export interface GasAlert {
   id: string; timestamp: string; ruleId: string; ruleName: string
-  severity: string; message: string; entity: string; evidence?: unknown[]
+  title?: string; severity: string; message: string; entity: string; evidence?: unknown[]
 }
 export interface DetectionIngestResult { accepted: boolean; queueLoad: number; error?: string }
 export interface DetectionIngestEvent {
@@ -249,5 +251,5 @@ export interface AlarmStats {
   total: number; bySeverity: Record<string, number>; trend7d: Record<string, number>
   topRules: Array<{ ruleId: string; count: number }>; byRiskLevel: Record<string, number>
   avgRisk: number
-  topRisk: Array<{ id: string; ruleName: string; entity: string; severity: string; mitre: string | null; riskScore: number; riskLevel: string }>
+  topRisk: Array<{ id: string; title?: string; ruleName: string; entity: string; severity: string; mitre: string | null; riskScore: number; riskLevel: string }>
 }

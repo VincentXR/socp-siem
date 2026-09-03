@@ -18,12 +18,32 @@ public record Alert(
         Severity severity,
         String message,
         String entity,
-        List<SecurityEvent> evidence
+        List<SecurityEvent> evidence,
+        String title
 ) {
+    public Alert {
+        evidence = evidence == null ? List.of() : List.copyOf(evidence);
+        title = title == null || title.isBlank() ? ruleName : title;
+    }
+
+    /** Backwards-compatible constructor for callers using the original alert shape. */
+    public Alert(String id, Instant timestamp, String ruleId, String ruleName,
+                 Severity severity, String message, String entity,
+                 List<SecurityEvent> evidence) {
+        this(id, timestamp, ruleId, ruleName, severity, message, entity, evidence, ruleName);
+    }
+
     public Alert(String ruleId, String ruleName, Severity severity,
                  String message, String entity, List<SecurityEvent> evidence) {
         this(stableId(ruleId, entity, evidence), alertTimestamp(evidence), ruleId, ruleName,
-                severity, message, entity, evidence == null ? List.of() : List.copyOf(evidence));
+                severity, message, entity, evidence, ruleName);
+    }
+
+    public Alert(String ruleId, String ruleName, Severity severity,
+                 String title, String message, String entity,
+                 List<SecurityEvent> evidence) {
+        this(stableId(ruleId, entity, evidence), alertTimestamp(evidence), ruleId, ruleName,
+                severity, message, entity, evidence, title);
     }
 
     /**
@@ -35,10 +55,17 @@ public record Alert(
     public static Alert withUnorderedEvidence(String ruleId, String ruleName,
                                               Severity severity, String message,
                                               String entity, List<SecurityEvent> evidence) {
+        return withUnorderedEvidence(ruleId, ruleName, severity, ruleName, message, entity, evidence);
+    }
+
+    public static Alert withUnorderedEvidence(String ruleId, String ruleName,
+                                              Severity severity, String title,
+                                              String message, String entity,
+                                              List<SecurityEvent> evidence) {
         List<SecurityEvent> safeEvidence = evidence == null ? List.of() : List.copyOf(evidence);
         return new Alert(stableId(ruleId, entity, safeEvidence, true),
                 alertTimestamp(safeEvidence), ruleId, ruleName, severity, message,
-                entity, safeEvidence);
+                entity, safeEvidence, title);
     }
 
     /**

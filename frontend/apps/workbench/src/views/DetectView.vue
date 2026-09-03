@@ -28,7 +28,7 @@ import PageHeader from '../components/PageHeader.vue'
 import SevBadge from '../components/SevBadge.vue'
 import {
   activateGasRule, createGasRule, deleteGasRule, gasIngest, gasStats, listRules, SEVERITIES, updateGasRule,
-  type GasStats, type RuleSpec,
+  type GasStats, type RuleCondition, type RuleSpec,
 } from '../api'
 import { useI18n } from '../composables/useI18n'
 
@@ -42,12 +42,20 @@ const ingestResult = ref('')
 const showRuleEditor = ref(false)
 const ruleEditingId = ref<string | null>(null)
 const ruleForm = ref({
-  id: '', name: '', type: 'pattern', severity: 'HIGH', message: '', keyField: 'src_ip', threshold: 5, window: '60s', enabled: true,
-  match: [{ field: 'msg', op: 'contains', value: '' }],
-  steps: [] as Array<Array<{ field: string; op: string; value: string }>>,
+  id: '', name: '', type: 'pattern', severity: 'HIGH', alertTitle: '', alertDescription: '', message: '', keyField: 'src_ip', threshold: 5, window: '60s', enabled: true,
+  match: [{ field: 'msg', op: 'contains', value: '' }] as RuleCondition[],
+  whitelist: [] as RuleCondition[],
+  steps: [] as RuleCondition[][],
 })
-const COND_FIELDS = ['source', 'host', 'msg', 'severity', 'src_ip', 'dst_ip', 'user', 'action', 'http_method', 'url', 'bytes']
-const COND_OPS = ['eq', 'ne', 'contains', 'startswith', 'endswith', 'regex', 'gt', 'gte', 'lt', 'lte', 'ge']
+const COND_OPS = ['eq', 'ne', 'contains', 'startswith', 'endswith', 'regex', 'gt', 'gte', 'lt', 'lte', 'ge', 'gtsev', 'inlist', 'notinlist']
+
+function emptyCondition(): RuleCondition {
+  return { field: 'msg', op: 'contains', value: '' }
+}
+
+function cloneConditions(conditions: RuleCondition[] | undefined): RuleCondition[] {
+  return conditions?.length ? JSON.parse(JSON.stringify(conditions)) as RuleCondition[] : [emptyCondition()]
+}
 
 async function loadRules() {
   rules.value = (await listRules()).map(normalizeRuleSpec).filter((rule): rule is RuleSpec => rule !== null)
@@ -64,30 +72,42 @@ function openRuleEditor(rule?: RuleSpec) {
     ruleEditingId.value = String(rule.id)
     ruleForm.value = {
       id: String(rule.id), name: String(rule.name ?? ''), type: String(rule.type ?? 'pattern'), severity: String(rule.severity ?? 'HIGH'),
-      message: String(rule.message ?? ''), keyField: String(rule.keyField ?? 'src_ip'), threshold: Number(rule.threshold ?? 5),
+      alertTitle: String(rule.alert?.title ?? rule.name ?? ''),
+      alertDescription: String(rule.alert?.description ?? rule.message ?? ''),
+      message: String(rule.message ?? rule.alert?.description ?? ''), keyField: String(rule.keyField ?? 'src_ip'), threshold: Number(rule.threshold ?? 5),
       window: String(rule.window ?? '60s'), enabled: Boolean(rule.enabled ?? true),
-      match: (rule.match as Array<{ field: string; op: string; value: string }> | undefined)?.length ? JSON.parse(JSON.stringify(rule.match)) : [{ field: 'msg', op: 'contains', value: '' }],
+      match: cloneConditions(rule.match),
+      whitelist: rule.whitelist ? JSON.parse(JSON.stringify(rule.whitelist)) : [],
       steps: rule.steps ? JSON.parse(JSON.stringify(rule.steps)) : [],
     }
   } else {
     ruleEditingId.value = null
-    ruleForm.value = { id: '', name: '', type: 'pattern', severity: 'HIGH', message: '', keyField: 'src_ip', threshold: 5, window: '60s', enabled: true, match: [{ field: 'msg', op: 'contains', value: '' }], steps: [] }
+    ruleForm.value = { id: '', name: '', type: 'pattern', severity: 'HIGH', alertTitle: '', alertDescription: '', message: '', keyField: 'src_ip', threshold: 5, window: '60s', enabled: true, match: [emptyCondition()], whitelist: [], steps: [] }
   }
   showRuleEditor.value = true
 }
 async function saveRule() {
   if (!ruleForm.value.name.trim()) return
-  const spec: Partial<RuleSpec> = { name: ruleForm.value.name, type: ruleForm.value.type, severity: ruleForm.value.severity, message: ruleForm.value.message, enabled: ruleForm.value.enabled, window: ruleForm.value.window }
+  const alertTitle = ruleForm.value.alertTitle.trim() || ruleForm.value.name.trim()
+  const alertDescription = ruleForm.value.alertDescription.trim() || ruleForm.value.message.trim() || ruleForm.value.name.trim()
+  const spec: Partial<RuleSpec> = {
+    name: ruleForm.value.name, type: ruleForm.value.type, severity: ruleForm.value.severity,
+    message: alertDescription, alert: { title: alertTitle, description: alertDescription },
+    enabled: ruleForm.value.enabled, window: ruleForm.value.window,
+    whitelist: ruleForm.value.whitelist.filter(condition => condition.field.trim() && condition.value.trim()),
+  }
   if (ruleEditingId.value) spec.id = ruleEditingId.value
   if (ruleForm.value.type === 'threshold') {
     spec.keyField = ruleForm.value.keyField
     spec.threshold = ruleForm.value.threshold
-    spec.match = ruleForm.value.match.filter(condition => condition.value !== '')
+    spec.match = ruleForm.value.match.filter(condition => condition.field.trim() && condition.value.trim())
   } else if (ruleForm.value.type === 'pattern') {
-    spec.match = ruleForm.value.match.filter(condition => condition.value !== '')
+    spec.match = ruleForm.value.match.filter(condition => condition.field.trim() && condition.value.trim())
   } else {
     spec.keyField = ruleForm.value.keyField
-    spec.steps = ruleForm.value.steps.filter(step => step.some(condition => condition.value !== ''))
+    spec.steps = ruleForm.value.steps
+      .map(step => step.filter(condition => condition.field.trim() && condition.value.trim()))
+      .filter(step => step.length)
   }
   try {
     if (ruleEditingId.value) await updateGasRule(ruleEditingId.value, spec)
@@ -102,7 +122,8 @@ function ruleUpdateSpec(rule: RuleSpec, enabled: boolean, status: string): Parti
     enabled, status, window: rule.window, keyField: rule.keyField, routingField: rule.routingField,
     threshold: rule.threshold, valueField: rule.valueField, warmup: rule.warmup,
     baselineWindows: rule.baselineWindows, sigma: rule.sigma, minCount: rule.minCount,
-    match: rule.match, matchAny: rule.matchAny, steps: rule.steps, mitre: rule.mitre, version: rule.version,
+    match: rule.match, matchAny: rule.matchAny, whitelist: rule.whitelist, steps: rule.steps, mitre: rule.mitre, version: rule.version,
+    alert: rule.alert,
   }
 }
 async function removeRule(id: string) {
@@ -148,8 +169,122 @@ onMounted(loadRules)
     </el-row>
     <el-card shadow="never" style="margin-bottom:14px"><template #header>{{ t('detect.simulateIngestion') }}</template><div style="display:flex;gap:10px;align-items:center"><el-select v-model="ingestSource" style="width:120px"><el-option label="auth" value="auth" /><el-option label="web" value="web" /><el-option label="firewall" value="firewall" /></el-select><el-input v-model="ingestMsg" :placeholder="t('detect.ingestPlaceholder')" style="width:360px" /><el-button type="primary" @click="doIngest">{{ t('detect.ingest') }}</el-button><span v-if="ingestResult" class="mono" style="font-size:12px;color:var(--ns-success)">{{ ingestResult }}</span></div></el-card>
     <el-card shadow="never"><template #header><div style="display:flex;justify-content:space-between;align-items:center"><span>{{ t('detect.rules') }}</span><el-button type="primary" size="small" @click="openRuleEditor()">{{ t('detect.createRule') }}</el-button></div></template>
-      <el-table :data="rules" size="small" border><el-table-column prop="id" label="ID" width="150" show-overflow-tooltip /><el-table-column prop="name" :label="t('common.name')" min-width="150" show-overflow-tooltip /><el-table-column prop="type" :label="t('common.type')" width="90" /><el-table-column prop="severity" :label="t('common.severity')" width="85"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column><el-table-column :label="t('detect.matchingConditions')" min-width="220" show-overflow-tooltip><template #default="{ row }">{{ (row.match || []).map((condition: { field: string; op: string; value: string }) => `${condition.field} ${condition.op} ${condition.value}`).join(' AND ') || (row.steps || []).length + ' ' + t('common.steps') || '-' }}</template></el-table-column><el-table-column :label="t('common.enable')" width="70"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.enabled') : t('common.disabled') }}</el-tag></template></el-table-column><el-table-column :label="t('common.actions')" width="170"><template #default="{ row }"><el-button link type="primary" size="small" @click="openRuleEditorRow(row)">{{ t('common.edit') }}</el-button><el-button link size="small" @click="toggleRuleRow(row)">{{ row.enabled ? t('common.disable') : t('common.enable') }}</el-button><el-button link type="danger" size="small" @click="removeRuleRow(row)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table>
+      <el-table :data="rules" size="small" border>
+        <el-table-column prop="id" label="ID" width="150" show-overflow-tooltip />
+        <el-table-column prop="name" :label="t('common.name')" min-width="150" show-overflow-tooltip />
+        <el-table-column :label="t('detect.editor.alertTitle')" min-width="180" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.alert?.title || row.name }}</template>
+        </el-table-column>
+        <el-table-column prop="type" :label="t('common.type')" width="90" />
+        <el-table-column prop="severity" :label="t('common.severity')" width="85">
+          <template #default="{ row }"><SevBadge :value="row.severity" /></template>
+        </el-table-column>
+        <el-table-column :label="t('detect.matchingConditions')" min-width="240" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span>{{ (row.match || []).map((condition: RuleCondition) => `${condition.field} ${condition.op} ${condition.value}`).join(' AND ') || ((row.steps || []).length ? (row.steps || []).length + ' ' + t('common.steps') : '-') }}</span>
+            <span v-if="row.whitelist?.length" style="color:var(--ns-text-3)"> · {{ t('detect.editor.whitelist') }}: {{ row.whitelist.length }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('common.enable')" width="70">
+          <template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.enabled') : t('common.disabled') }}</el-tag></template>
+        </el-table-column>
+        <el-table-column :label="t('common.actions')" width="170">
+          <template #default="{ row }">
+            <el-button link type="primary" size="small" @click="openRuleEditorRow(row)">{{ t('common.edit') }}</el-button>
+            <el-button link size="small" @click="toggleRuleRow(row)">{{ row.enabled ? t('common.disable') : t('common.enable') }}</el-button>
+            <el-button link type="danger" size="small" @click="removeRuleRow(row)">{{ t('common.delete') }}</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
     </el-card>
-    <el-dialog v-model="showRuleEditor" :title="ruleEditingId ? (t('detect.editor.editRule')) : t('detect.createRule')" width="640px"><el-form label-width="90px"><el-form-item :label="t('common.name')"><el-input v-model="ruleForm.name" :placeholder="t('detect.editor.namePlaceholder')" /></el-form-item><el-form-item :label="t('common.type')"><el-radio-group v-model="ruleForm.type"><el-radio value="pattern">{{ t('detect.editor.pattern') }}</el-radio><el-radio value="threshold">{{ t('detect.editor.thresholdMode') }}</el-radio><el-radio value="correlation">{{ t('detect.editor.correlation') }}</el-radio></el-radio-group></el-form-item><el-form-item :label="t('common.severity')"><el-select v-model="ruleForm.severity" style="width:160px"><el-option v-for="severity in SEVERITIES" :key="severity" :label="t('severities.' + severity) || severity" :value="severity" /></el-select></el-form-item><el-form-item :label="t('detect.editor.alertMessage')"><el-input v-model="ruleForm.message" :placeholder="t('detect.editor.alertMessagePlaceholder')" /></el-form-item><el-form-item :label="t('detect.editor.window')"><el-input v-model="ruleForm.window" :placeholder="t('detect.editor.windowPlaceholder')" style="width:120px" /></el-form-item><template v-if="ruleForm.type === 'threshold'"><el-form-item :label="t('detect.editor.keyField')"><el-select v-model="ruleForm.keyField" style="width:160px"><el-option v-for="field in COND_FIELDS" :key="field" :label="field" :value="field" /></el-select></el-form-item><el-form-item :label="t('detect.threshold')"><el-input v-model.number="ruleForm.threshold" type="number" style="width:120px" /></el-form-item></template><template v-if="ruleForm.type === 'correlation'"><el-form-item :label="t('detect.editor.correlationKey')"><el-select v-model="ruleForm.keyField" style="width:160px"><el-option v-for="field in COND_FIELDS" :key="field" :label="field" :value="field" /></el-select></el-form-item><el-form-item :label="t('detect.editor.steps')"><div v-for="(step, stepIndex) in ruleForm.steps" :key="stepIndex" style="border:1px solid var(--ns-border);border-radius:6px;padding:8px;margin-bottom:8px"><div style="font-size:12px;color:var(--ns-text-3);margin-bottom:4px">{{ t('detect.step') }} {{ stepIndex + 1 }}</div><div v-for="(condition, conditionIndex) in step" :key="conditionIndex" style="display:flex;gap:6px;margin-bottom:4px"><el-select v-model="condition.field" size="small" style="width:110px"><el-option v-for="field in COND_FIELDS" :key="field" :label="field" :value="field" /></el-select><el-select v-model="condition.op" size="small" style="width:100px"><el-option v-for="op in COND_OPS" :key="op" :label="op" :value="op" /></el-select><el-input v-model="condition.value" size="small" :placeholder="t('detect.editor.valuePlaceholder')" style="flex:1" /><el-button size="small" type="danger" link @click="step.splice(conditionIndex, 1)">x</el-button></div><el-button size="small" link type="primary" @click="ruleForm.steps[stepIndex].push({ field: 'msg', op: 'contains', value: '' })">{{ t('detect.addCondition') }}</el-button><el-button v-if="ruleForm.steps.length > 1" size="small" link type="danger" @click="ruleForm.steps.splice(stepIndex, 1)">{{ t('detect.deleteStep') }}</el-button></div><el-button size="small" type="primary" plain @click="ruleForm.steps.push([{ field: 'msg', op: 'contains', value: '' }])">{{ t('detect.addStep') }}</el-button></el-form-item></template><el-form-item v-else :label="t('detect.editor.conditions')"><div v-for="(condition, conditionIndex) in ruleForm.match" :key="conditionIndex" style="display:flex;gap:6px;margin-bottom:4px;width:100%"><el-select v-model="condition.field" size="small" style="width:110px"><el-option v-for="field in COND_FIELDS" :key="field" :label="field" :value="field" /></el-select><el-select v-model="condition.op" size="small" style="width:110px"><el-option v-for="op in COND_OPS" :key="op" :label="op" :value="op" /></el-select><el-input v-model="condition.value" size="small" :placeholder="t('detect.editor.valueAnd')" style="flex:1" /><el-button size="small" type="danger" link @click="ruleForm.match.splice(conditionIndex, 1)">x</el-button></div><el-button size="small" type="primary" plain @click="ruleForm.match.push({ field: 'msg', op: 'contains', value: '' })">{{ t('detect.addCondition') }}</el-button></el-form-item><el-form-item :label="t('common.enable')"><el-switch v-model="ruleForm.enabled" /></el-form-item></el-form><template #footer><el-button @click="showRuleEditor = false">{{ t('common.cancel') }}</el-button><el-button type="primary" @click="saveRule">{{ t('common.save') }}</el-button></template></el-dialog>
+    <el-dialog v-model="showRuleEditor" :title="ruleEditingId ? t('detect.editor.editRule') : t('detect.createRule')" width="700px">
+      <el-form label-width="100px">
+        <el-form-item :label="t('common.name')">
+          <el-input v-model="ruleForm.name" :placeholder="t('detect.editor.namePlaceholder')" />
+        </el-form-item>
+        <el-form-item :label="t('common.type')">
+          <el-radio-group v-model="ruleForm.type">
+            <el-radio value="pattern">{{ t('detect.editor.pattern') }}</el-radio>
+            <el-radio value="threshold">{{ t('detect.editor.thresholdMode') }}</el-radio>
+            <el-radio value="correlation">{{ t('detect.editor.correlation') }}</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item :label="t('common.severity')">
+          <el-select v-model="ruleForm.severity" style="width:160px">
+            <el-option v-for="severity in SEVERITIES" :key="severity" :label="t('severities.' + severity) || severity" :value="severity" />
+          </el-select>
+        </el-form-item>
+        <el-form-item :label="t('detect.editor.alertTitle')">
+          <el-input v-model="ruleForm.alertTitle" :placeholder="t('detect.editor.alertTitlePlaceholder')" />
+        </el-form-item>
+        <el-form-item :label="t('detect.editor.alertDescription')">
+          <el-input v-model="ruleForm.alertDescription" type="textarea" :rows="3" :placeholder="t('detect.editor.alertDescriptionPlaceholder')" />
+        </el-form-item>
+        <el-form-item :label="t('detect.editor.window')">
+          <el-input v-model="ruleForm.window" :placeholder="t('detect.editor.windowPlaceholder')" style="width:160px" />
+        </el-form-item>
+        <template v-if="ruleForm.type === 'threshold'">
+          <el-form-item :label="t('detect.editor.keyField')">
+            <el-input v-model="ruleForm.keyField" :placeholder="t('detect.editor.fieldPlaceholder')" style="width:220px" />
+          </el-form-item>
+          <el-form-item :label="t('detect.threshold')">
+            <el-input v-model.number="ruleForm.threshold" type="number" style="width:120px" />
+          </el-form-item>
+        </template>
+        <template v-if="ruleForm.type === 'correlation'">
+          <el-form-item :label="t('detect.editor.correlationKey')">
+            <el-input v-model="ruleForm.keyField" :placeholder="t('detect.editor.fieldPlaceholder')" style="width:220px" />
+          </el-form-item>
+          <el-form-item :label="t('detect.editor.steps')">
+            <div v-for="(step, stepIndex) in ruleForm.steps" :key="stepIndex" style="border:1px solid var(--ns-border);border-radius:6px;padding:8px;margin-bottom:8px;width:100%">
+              <div style="font-size:12px;color:var(--ns-text-3);margin-bottom:4px">{{ t('detect.step') }} {{ stepIndex + 1 }}</div>
+              <div v-for="(condition, conditionIndex) in step" :key="conditionIndex" style="display:flex;gap:6px;margin-bottom:4px">
+                <el-input v-model="condition.field" size="small" :placeholder="t('detect.editor.fieldPlaceholder')" style="width:150px" />
+                <el-select v-model="condition.op" size="small" style="width:110px">
+                  <el-option v-for="op in COND_OPS" :key="op" :label="op" :value="op" />
+                </el-select>
+                <el-input v-model="condition.value" size="small" :placeholder="t('detect.editor.valuePlaceholder')" style="flex:1" />
+                <el-button size="small" type="danger" link @click="step.splice(conditionIndex, 1)">x</el-button>
+              </div>
+              <el-button size="small" link type="primary" @click="step.push(emptyCondition())">{{ t('detect.addCondition') }}</el-button>
+              <el-button v-if="ruleForm.steps.length > 1" size="small" link type="danger" @click="ruleForm.steps.splice(stepIndex, 1)">{{ t('detect.deleteStep') }}</el-button>
+            </div>
+            <el-button size="small" type="primary" plain @click="ruleForm.steps.push([emptyCondition()])">{{ t('detect.addStep') }}</el-button>
+          </el-form-item>
+        </template>
+        <el-form-item v-else :label="t('detect.editor.conditions')">
+          <div v-for="(condition, conditionIndex) in ruleForm.match" :key="conditionIndex" style="display:flex;gap:6px;margin-bottom:4px;width:100%">
+            <el-input v-model="condition.field" size="small" :placeholder="t('detect.editor.fieldPlaceholder')" style="width:150px" />
+            <el-select v-model="condition.op" size="small" style="width:110px">
+              <el-option v-for="op in COND_OPS" :key="op" :label="op" :value="op" />
+            </el-select>
+            <el-input v-model="condition.value" size="small" :placeholder="t('detect.editor.valueAnd')" style="flex:1" />
+            <el-button size="small" type="danger" link @click="ruleForm.match.splice(conditionIndex, 1)">x</el-button>
+          </div>
+          <el-button size="small" type="primary" plain @click="ruleForm.match.push(emptyCondition())">{{ t('detect.addCondition') }}</el-button>
+        </el-form-item>
+        <el-form-item :label="t('detect.editor.whitelist')">
+          <div style="width:100%">
+            <div v-if="!ruleForm.whitelist.length" style="font-size:12px;color:var(--ns-text-3);margin-bottom:6px">{{ t('detect.editor.whitelistHint') }}</div>
+            <div v-for="(condition, conditionIndex) in ruleForm.whitelist" :key="conditionIndex" style="display:flex;gap:6px;margin-bottom:4px">
+              <el-input v-model="condition.field" size="small" :placeholder="t('detect.editor.fieldPlaceholder')" style="width:150px" />
+              <el-select v-model="condition.op" size="small" style="width:110px">
+                <el-option v-for="op in COND_OPS" :key="op" :label="op" :value="op" />
+              </el-select>
+              <el-input v-model="condition.value" size="small" :placeholder="t('detect.editor.whitelistValuePlaceholder')" style="flex:1" />
+              <el-button size="small" type="danger" link @click="ruleForm.whitelist.splice(conditionIndex, 1)">x</el-button>
+            </div>
+            <el-button size="small" type="primary" plain @click="ruleForm.whitelist.push({ field: 'src_ip', op: 'inlist', value: '' })">{{ t('detect.editor.addWhitelist') }}</el-button>
+          </div>
+        </el-form-item>
+        <el-form-item :label="t('common.enable')">
+          <el-switch v-model="ruleForm.enabled" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showRuleEditor = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" @click="saveRule">{{ t('common.save') }}</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>

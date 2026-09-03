@@ -97,6 +97,7 @@ public class AlarmStatisticsService {
     private static Map<String, Object> riskView(Alarm alarm) {
         Map<String, Object> view = new LinkedHashMap<>();
         view.put("id", alarm.getId());
+        view.put("title", alarm.getTitle());
         view.put("ruleName", alarm.getRuleName());
         view.put("entity", alarm.getEntity());
         view.put("severity", alarm.getSeverity() == null ? null : alarm.getSeverity().name());

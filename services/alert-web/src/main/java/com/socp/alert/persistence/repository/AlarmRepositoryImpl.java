@@ -83,6 +83,7 @@ public class AlarmRepositoryImpl implements AlarmRepositoryCustom {
             String pattern = "%" + escapeLike(query.text().toLowerCase(Locale.ROOT)) + "%";
             predicates.add(cb.or(
                     cb.like(cb.lower(root.<String>get("entity")), pattern, '\\'),
+                    cb.like(cb.lower(root.<String>get("title")), pattern, '\\'),
                     cb.like(cb.lower(root.<String>get("ruleName")), pattern, '\\'),
                     cb.like(cb.lower(root.<String>get("message")), pattern, '\\')));
         }

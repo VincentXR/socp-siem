@@ -113,10 +113,11 @@ function openEvidenceSearch() {
 </script>
 
 <template>
-  <el-drawer v-model="drawerVisible" :title="`${t('drawer.title')} · ${props.alarm?.ruleName ?? ''}`" size="480px">
+  <el-drawer v-model="drawerVisible" :title="`${t('drawer.title')} · ${props.alarm?.title || props.alarm?.ruleName || ''}`" size="480px">
     <template v-if="props.alarm">
       <el-descriptions :column="2" size="small" border style="margin-bottom:14px">
         <el-descriptions-item :label="t('drawer.ruleId')">{{ props.alarm.ruleId }}</el-descriptions-item>
+        <el-descriptions-item :label="t('alarms.alertTitle')" :span="2">{{ props.alarm.title || props.alarm.ruleName || props.alarm.ruleId }}</el-descriptions-item>
         <el-descriptions-item :label="t('common.severity')"><SevBadge :value="props.alarm.severity" /></el-descriptions-item>
         <el-descriptions-item :label="t('common.entity')">{{ props.alarm.entity }}</el-descriptions-item>
         <el-descriptions-item :label="t('alarms.occurredAt')">{{ props.alarm.occurredAt }}</el-descriptions-item>

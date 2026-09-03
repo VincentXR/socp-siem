@@ -1,6 +1,7 @@
 package com.socp.rule;
 
 import com.socp.rule.config.RuleSpec;
+import com.socp.rule.engine.Watchlists;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.rule.rules.Rule;
@@ -117,5 +118,31 @@ class RuleSpecTest {
                 """));
         assertEquals("host", spec.routingField);
         assertEquals("host", spec.toMap().get("routingField"));
+    }
+
+    @Test
+    void alertTemplatesRenderAndWhitelistSkipsMatchingEvents() {
+        String watchlist = "rule-spec-test-" + System.nanoTime();
+        Watchlists.put(watchlist, List.of("10.0.0.1"));
+        try {
+            RuleSpec spec = new RuleSpec(Json.parseObject("""
+                    {"id":"P-WL","name":"Suspicious login","type":"pattern","severity":"HIGH",
+                     "alert":{"title":"Login from {{event.src_ip}}","description":"Host {{event.host}} matched {{event.msg}}"},
+                     "match":[{"field":"msg","op":"contains","value":"login"}],
+                     "whitelist":[{"field":"src_ip","op":"inlist","value":"%s"}]}
+                    """.formatted(watchlist)));
+            Rule rule = spec.toRule();
+
+            rule.accept(ev("auth", "login accepted", "10.0.0.1"));
+            assertTrue(rule.drain().isEmpty(), "watchlisted source must be excluded");
+
+            rule.accept(ev("auth", "login accepted", "10.0.0.2"));
+            var alert = rule.drain().getFirst();
+            assertEquals("Login from 10.0.0.2", alert.title());
+            assertEquals("Host h1 matched login accepted", alert.message());
+            assertEquals(watchlist, spec.whitelist.getFirst().get("value"));
+        } finally {
+            Watchlists.delete(watchlist);
+        }
     }
 }

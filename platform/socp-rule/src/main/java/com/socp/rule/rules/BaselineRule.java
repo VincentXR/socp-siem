@@ -44,6 +44,7 @@ public final class BaselineRule extends AbstractRule implements StatefulRule {
     private final double sigma;         // 触发倍数 k
     private final int minCount;         // 绝对下限，过滤低频噪声
     private final Severity severity;
+    private final String titleTemplate;
     private final String messageTemplate;
 
     private final RuleStateMap<State> states = new RuleStateMap<>();
@@ -62,6 +63,17 @@ public final class BaselineRule extends AbstractRule implements StatefulRule {
                         Duration window, int baselineWindows, int warmup,
                         double sigma, int minCount,
                         Severity severity, String messageTemplate) {
+        this(id, name, matcher, keyOf, window, baselineWindows, warmup,
+                sigma, minCount, severity, name, messageTemplate);
+    }
+
+    public BaselineRule(String id, String name,
+                        Predicate<SecurityEvent> matcher,
+                        Function<SecurityEvent, String> keyOf,
+                        Duration window, int baselineWindows, int warmup,
+                        double sigma, int minCount,
+                        Severity severity, String titleTemplate,
+                        String messageTemplate) {
         super(id, name);
         this.matcher = matcher;
         this.keyOf = keyOf;
@@ -71,6 +83,7 @@ public final class BaselineRule extends AbstractRule implements StatefulRule {
         this.sigma = sigma <= 0 ? 3.0 : sigma;
         this.minCount = Math.max(1, minCount);
         this.severity = severity;
+        this.titleTemplate = titleTemplate;
         this.messageTemplate = messageTemplate;
     }
 
@@ -105,15 +118,17 @@ public final class BaselineRule extends AbstractRule implements StatefulRule {
             if (st.count <= trigger) return;
 
             double z = (st.count - mean) / sd;
-            String msg = messageTemplate
-                    .replace("{key}", key)
-                    .replace("{count}", String.valueOf(st.count))
-                    .replace("{baseline}", String.format("%.1f", mean))
-                    .replace("{stddev}", String.format("%.1f", sd))
-                    .replace("{sigma}", String.format("%.1f", sigma))
-                    .replace("{z}", String.format("%.1f", z))
-                    .replace("{window}", bucketSeconds + "s");
-            emit(new Alert(id, name, severity, msg, key, new ArrayList<>(st.evidence)));
+            Map<String, Object> context = Map.of(
+                    "key", key,
+                    "count", st.count,
+                    "baseline", String.format("%.1f", mean),
+                    "stddev", String.format("%.1f", sd),
+                    "sigma", String.format("%.1f", sigma),
+                    "z", String.format("%.1f", z),
+                    "window", bucketSeconds + "s");
+            String title = AlertTemplateRenderer.render(titleTemplate, event, context);
+            String msg = AlertTemplateRenderer.render(messageTemplate, event, context);
+            emit(new Alert(id, name, severity, title, msg, key, new ArrayList<>(st.evidence)));
             st.alerted = true;
         }
     }

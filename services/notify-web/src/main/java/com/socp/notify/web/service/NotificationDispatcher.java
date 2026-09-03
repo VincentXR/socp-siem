@@ -184,7 +184,11 @@ public class NotificationDispatcher {
     private static String imText(Map<String, Object> alarm) {
         String severity = String.valueOf(alarm.getOrDefault("severity", "-"));
         String mitre = alarm.get("mitre") == null ? "" : " [" + alarm.get("mitre") + "]";
-        return "[" + severity + "] " + alarm.getOrDefault("ruleName", alarm.getOrDefault("ruleId", "Alarm")) + mitre
+        Object title = alarm.get("title");
+        if (title == null || String.valueOf(title).isBlank()) {
+            title = alarm.getOrDefault("ruleName", alarm.getOrDefault("ruleId", "Alarm"));
+        }
+        return "[" + severity + "] " + title + mitre
                 + "\nEntity: " + alarm.getOrDefault("entity", "-")
                 + "\nDetail: " + alarm.getOrDefault("message", "-")
                 + "\nTime: " + alarm.getOrDefault("occurredAt", "-")

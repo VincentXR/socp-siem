@@ -34,6 +34,8 @@ public final class RuleSpec {
     public final String type;
     public final Severity severity;
     public final String message;
+    public final String alertTitle;
+    public final String alertDescription;
     public final String mitre;        // 关联的 MITRE ATT&CK 技术 ID（如 T1110），可空
     public final String keyField;     // 阈值/关联的分组字段
     /**
@@ -52,6 +54,8 @@ public final class RuleSpec {
     public final List<Map<String, String>> match;             // pattern / threshold 的匹配条件
     /** Alternative condition groups (OR semantics), used by lossless Sigma imports. */
     public final List<List<Map<String, String>>> matchAny;
+    /** Rule-level exclusions: any matching condition suppresses this rule. */
+    public final List<Map<String, String>> whitelist;
     public final List<List<Map<String, String>>> steps;       // correlation 的有序步骤
 
     // ---- UEBA 参数（baseline / rare 专用） ----
@@ -67,7 +71,12 @@ public final class RuleSpec {
         this.name = str(m, "name");
         this.type = str(m, "type").toLowerCase();
         this.severity = Severity.valueOf(str(m, "severity").toUpperCase());
-        this.message = str(m, "message");
+        Map<String, Object> alert = objectMap(m.get("alert"));
+        String legacyMessage = str(m, "message");
+        this.alertTitle = firstNonBlank(str(alert, "title"), str(m, "alertTitle"), this.name);
+        this.alertDescription = firstNonBlank(str(alert, "description"), str(alert, "body"),
+                str(m, "alertDescription"), legacyMessage, this.name);
+        this.message = this.alertDescription;
         this.mitre = str(m, "mitre");
         Object kf = m.get("keyField");
         this.keyField = kf == null ? null : String.valueOf(kf);
@@ -92,6 +101,8 @@ public final class RuleSpec {
                 ? "ACTIVE".equals(this.status) : enB;
         this.match = parseConds((List<Object>) m.getOrDefault("match", List.of()));
         this.matchAny = parseSteps((List<Object>) m.getOrDefault("matchAny", List.of()));
+        Object rawWhitelist = m.containsKey("whitelist") ? m.get("whitelist") : m.get("allowlist");
+        this.whitelist = parseConds(asList(rawWhitelist));
         this.steps = parseSteps((List<Object>) m.getOrDefault("steps", List.of()));
 
         Object vf = m.get("valueField");
@@ -108,34 +119,36 @@ public final class RuleSpec {
 
     /** 把描述转换为可执行的 Rule 实例 */
     public Rule toRule() {
+        Predicate<SecurityEvent> nonWhitelisted = nonWhitelisted();
         return switch (type) {
             case "threshold" -> new ThresholdRule(
-                    id, name, matcher(), keyExtractor(),
-                    threshold, window, severity, message);
-            case "pattern" -> new PatternRule(id, name, matcher(), severity, message);
+                    id, name, matcher(nonWhitelisted), keyExtractor(),
+                    threshold, window, severity, alertTitle, alertDescription);
+            case "pattern" -> new PatternRule(id, name, matcher(nonWhitelisted), severity,
+                    alertTitle, alertDescription);
             case "correlation" -> new CorrelationRule(
                     id, name, keyExtractor(),
-                    steps.stream().map(this::and).toList(),
-                    window, severity, message);
+                    steps.stream().map(conds -> and(conds).and(nonWhitelisted)).toList(),
+                    window, severity, alertTitle, alertDescription);
             case "correlation-set" -> new CorrelationSetRule(
                     id, name, keyExtractor(),
-                    steps.stream().map(this::and).toList(),
-                    window, severity, message);
+                    steps.stream().map(conds -> and(conds).and(nonWhitelisted)).toList(),
+                    window, severity, alertTitle, alertDescription);
             // UEBA：与实体自身历史水位比较的离群检测
             case "baseline" -> new BaselineRule(
-                    id, name, matcher(), keyExtractor(),
+                    id, name, matcher(nonWhitelisted), keyExtractor(),
                     window,
                     baselineWindows == null ? 12 : baselineWindows,
                     warmup == null ? 4 : warmup,
                     sigma == null ? 3.0 : sigma,
                     minCount == null ? 5 : minCount,
-                    severity, message);
+                    severity, alertTitle, alertDescription);
             // UEBA：该实体从未出现过的取值
             case "rare" -> new RareValueRule(
-                    id, name, matcher(), keyExtractor(),
+                    id, name, matcher(nonWhitelisted), keyExtractor(),
                     fieldExtractor(valueField), valueField,
                     warmup == null ? 20 : warmup,
-                    severity, message);
+                    severity, alertTitle, alertDescription);
             default -> throw new IllegalArgumentException("未知规则类型: " + type);
         };
     }
@@ -159,6 +172,10 @@ public final class RuleSpec {
         out.put("type", type);
         out.put("severity", severity.name());
         out.put("message", message);
+        Map<String, Object> alert = new LinkedHashMap<>();
+        alert.put("title", alertTitle);
+        alert.put("description", alertDescription);
+        out.put("alert", alert);
         if (mitre != null && !mitre.isBlank()) out.put("mitre", mitre);
         if (keyField != null) out.put("keyField", keyField);
         if (routingField != null) out.put("routingField", routingField);
@@ -173,6 +190,7 @@ public final class RuleSpec {
         if (minCount != null) out.put("minCount", minCount);
         if (!match.isEmpty()) out.put("match", match);
         if (!matchAny.isEmpty()) out.put("matchAny", matchAny);
+        if (!whitelist.isEmpty()) out.put("whitelist", whitelist);
         if (!steps.isEmpty()) out.put("steps", steps);
         return out;
     }
@@ -184,13 +202,24 @@ public final class RuleSpec {
     }
 
     /** Required conditions are ANDed; matchAny groups are ORed as one expression. */
-    private Predicate<SecurityEvent> matcher() {
+    private Predicate<SecurityEvent> matcher(Predicate<SecurityEvent> nonWhitelisted) {
         Predicate<SecurityEvent> required = and(match);
-        if (matchAny.isEmpty()) return required;
-        Predicate<SecurityEvent> alternatives = e -> matchAny.stream()
-                .map(this::and)
-                .anyMatch(predicate -> predicate.test(e));
-        return required.and(alternatives);
+        Predicate<SecurityEvent> matched = required;
+        if (!matchAny.isEmpty()) {
+            Predicate<SecurityEvent> alternatives = e -> matchAny.stream()
+                    .map(this::and)
+                    .anyMatch(predicate -> predicate.test(e));
+            matched = required.and(alternatives);
+        }
+        return matched.and(nonWhitelisted);
+    }
+
+    private Predicate<SecurityEvent> nonWhitelisted() {
+        if (whitelist.isEmpty()) return e -> true;
+        List<Predicate<SecurityEvent>> exclusions = whitelist.stream()
+                .map(this::toPredicate)
+                .toList();
+        return event -> exclusions.stream().noneMatch(predicate -> predicate.test(event));
     }
 
     private Predicate<SecurityEvent> toPredicate(Map<String, String> c) {
@@ -231,7 +260,7 @@ public final class RuleSpec {
             case "host" -> e.host();
             case "severity" -> e.severity().name();
             case "raw" -> e.raw();
-            default -> e.fields().get(field);
+            default -> e.fields() == null ? null : e.fields().get(field);
         };
     }
 
@@ -279,6 +308,24 @@ public final class RuleSpec {
         List<List<Map<String, String>>> out = new ArrayList<>();
         for (var o : list) out.add(parseConds((List<Object>) o));
         return out;
+    }
+
+    private static List<Object> asList(Object raw) {
+        return raw instanceof List<?> list ? new ArrayList<>(list) : List.of();
+    }
+
+    private static Map<String, Object> objectMap(Object raw) {
+        if (!(raw instanceof Map<?, ?> map)) return Map.of();
+        Map<String, Object> out = new LinkedHashMap<>();
+        map.forEach((key, value) -> out.put(String.valueOf(key), value));
+        return out;
+    }
+
+    private static String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) return value;
+        }
+        return "";
     }
 
     private static String str(Map<String, Object> m, String k) {

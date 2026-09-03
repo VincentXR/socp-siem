@@ -28,6 +28,7 @@ public final class ThresholdRule extends AbstractRule implements StatefulRule {
     private final int threshold;
     private final Duration window;
     private final Severity severity;
+    private final String titleTemplate;
     private final String messageTemplate;
 
     // 每个实体维护一个时间戳窗口的事件队列
@@ -38,12 +39,22 @@ public final class ThresholdRule extends AbstractRule implements StatefulRule {
                          Function<SecurityEvent, String> keyOf,
                          int threshold, Duration window,
                          Severity severity, String messageTemplate) {
+        this(id, name, matcher, keyOf, threshold, window, severity, name, messageTemplate);
+    }
+
+    public ThresholdRule(String id, String name,
+                         Predicate<SecurityEvent> matcher,
+                         Function<SecurityEvent, String> keyOf,
+                         int threshold, Duration window,
+                         Severity severity, String titleTemplate,
+                         String messageTemplate) {
         super(id, name);
         this.matcher = matcher;
         this.keyOf = keyOf;
         this.threshold = threshold;
         this.window = window;
         this.severity = severity;
+        this.titleTemplate = titleTemplate;
         this.messageTemplate = messageTemplate;
     }
 
@@ -68,11 +79,13 @@ public final class ThresholdRule extends AbstractRule implements StatefulRule {
             }
             if (q.size() >= threshold) {
                 List<SecurityEvent> evidence = new ArrayList<>(q);
-                String msg = messageTemplate
-                        .replace("{key}", key)
-                        .replace("{count}", String.valueOf(q.size()))
-                        .replace("{window}", window.toSeconds() + "s");
-                emit(Alert.withUnorderedEvidence(id, name, severity, msg, key, evidence));
+                Map<String, Object> context = Map.of(
+                        "key", key,
+                        "count", q.size(),
+                        "window", window.toSeconds() + "s");
+                String title = AlertTemplateRenderer.render(titleTemplate, event, context);
+                String msg = AlertTemplateRenderer.render(messageTemplate, event, context);
+                emit(Alert.withUnorderedEvidence(id, name, severity, title, msg, key, evidence));
                 q.clear(); // 清空，避免短时间内重复刷屏告警
             }
         }

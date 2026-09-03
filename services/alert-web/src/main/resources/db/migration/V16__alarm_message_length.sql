@@ -1,0 +1,2 @@
+ALTER TABLE t_alarm
+    ALTER COLUMN message TYPE VARCHAR(4096);

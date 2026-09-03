@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS alert_agg.alarm_detail
     severity LowCardinality(String),
     rule_id String,
     rule_name String,
+    title String,
     entity String,
     -- Deterministic version makes retries converge during ReplacingMergeTree merges.
     -- The application deliberately keeps the same version for the same alarm.
@@ -52,6 +53,9 @@ ORDER BY (tenant_id, alarm_id);
 -- need the stable alarm key as well. Reports use it to collapse redeliveries.
 ALTER TABLE alert_agg.alarm_detail
     ADD COLUMN IF NOT EXISTS alarm_id String AFTER tenant_id;
+
+ALTER TABLE alert_agg.alarm_detail
+    ADD COLUMN IF NOT EXISTS title String AFTER rule_name;
 
 ALTER TABLE alert_agg.alarm_detail
     ADD COLUMN IF NOT EXISTS row_version UInt64 DEFAULT 1;

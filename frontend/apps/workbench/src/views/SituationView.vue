@@ -95,7 +95,7 @@ function openAlertStream() {
           mergeFeed([{
             id: value.id ?? `sse-${value.ruleId}-${value.timestamp}`,
             timestamp: value.timestamp ?? new Date().toISOString(),
-            ruleId: value.ruleId, ruleName: value.ruleName ?? '', severity: value.severity ?? 'INFO',
+            ruleId: value.ruleId, ruleName: value.ruleName ?? '', title: value.title ?? value.ruleName ?? '', severity: value.severity ?? 'INFO',
             message: value.message ?? '', entity: value.entity ?? '',
           }])
           void loadSituation()
@@ -271,7 +271,7 @@ onUnmounted(() => {
                     <div class="feed-body">
                       <div class="feed-top">
                         <SevBadge :value="a.severity" />
-                        <span class="feed-rule">{{ a.ruleName }}</span>
+                        <span class="feed-rule">{{ a.title || a.ruleName }}</span>
                         <span class="feed-entity mono">{{ a.entity }}</span>
                         <span class="feed-time mono">{{ d(a.timestamp, 'time') }}</span>
                       </div>

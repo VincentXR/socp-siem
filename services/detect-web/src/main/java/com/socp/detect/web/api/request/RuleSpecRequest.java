@@ -36,7 +36,9 @@ public record RuleSpecRequest(
         @Size(max = 64) String contentVersion,
         @Size(max = 128) List<@Valid RuleConditionRequest> match,
         @Size(max = 128) List<@Size(max = 128) @Valid List<@Valid RuleConditionRequest>> matchAny,
-        @Size(max = 64) List<@Size(max = 128) @Valid List<@Valid RuleConditionRequest>> steps) {
+        @Size(max = 64) List<@Size(max = 128) @Valid List<@Valid RuleConditionRequest>> steps,
+        @Valid AlertTemplateRequest alert,
+        @Size(max = 128) List<@Valid RuleConditionRequest> whitelist) {
 
     public Map<String, Object> asMap() {
         Map<String, Object> out = new LinkedHashMap<>();
@@ -47,16 +49,29 @@ public record RuleSpecRequest(
         put(out, "sigma", sigma); put(out, "minCount", minCount); put(out, "mitre", mitre);
         put(out, "version", version); put(out, "status", status); put(out, "owner", owner);
         put(out, "contentPack", contentPack); put(out, "contentVersion", contentVersion);
+        if (alert != null) {
+            Map<String, Object> template = new LinkedHashMap<>();
+            put(template, "title", alert.title());
+            put(template, "description", alert.description());
+            if (!template.isEmpty()) out.put("alert", template);
+        }
         if (match != null) out.put("match", match.stream().map(RuleConditionRequest::asMap).toList());
         if (matchAny != null) out.put("matchAny", matchAny.stream()
                 .map(group -> group.stream().map(RuleConditionRequest::asMap).toList()).toList());
         if (steps != null) out.put("steps", steps.stream()
                 .map(step -> step.stream().map(RuleConditionRequest::asMap).toList()).toList());
+        if (whitelist != null) out.put("whitelist", whitelist.stream()
+                .map(RuleConditionRequest::asMap).toList());
         return out;
     }
 
     private static void put(Map<String, Object> out, String key, Object value) {
         if (value != null) out.put(key, value);
+    }
+
+    public record AlertTemplateRequest(
+            @Size(max = 512) String title,
+            @Size(max = 4096) String description) {
     }
 
     public record RuleConditionRequest(

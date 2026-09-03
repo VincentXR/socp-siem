@@ -67,7 +67,7 @@ public interface AlarmRepository extends TenantScopedRepository<Alarm, String>, 
     @Query("""
            select a from Alarm a
            where a.tenantId = :tenant
-             and (a.entity like %:q% or a.ruleName like %:q% or a.message like %:q%)
+             and (a.entity like %:q% or a.title like %:q% or a.ruleName like %:q% or a.message like %:q%)
            """)
     List<Alarm> search(String tenant, String q);
 

@@ -33,6 +33,7 @@ final class AlarmPayloadCodec {
         payload.put("tenantId", alarm.getTenantId());
         payload.put("ruleId", alarm.getRuleId());
         payload.put("ruleName", alarm.getRuleName());
+        payload.put("title", alarm.getTitle());
         payload.put("severity", alarm.getSeverity() == null ? null : alarm.getSeverity().name());
         payload.put("message", alarm.getMessage());
         payload.put("entity", alarm.getEntity());
@@ -63,6 +64,7 @@ final class AlarmPayloadCodec {
         alarm.setTenantId(tenant);
         alarm.setRuleId(text(values.get("ruleId")));
         alarm.setRuleName(text(values.get("ruleName")));
+        alarm.setTitle(text(values.get("title")));
         try {
             alarm.setSeverity(values.get("severity") == null ? null
                     : Severity.valueOf(String.valueOf(values.get("severity")).toUpperCase()));

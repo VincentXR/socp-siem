@@ -39,6 +39,7 @@ public final class RareValueRule extends AbstractRule implements StatefulRule {
     private final String valueField;
     private final int warmup;   // 学习期观察次数，达到后才开始告警
     private final Severity severity;
+    private final String titleTemplate;
     private final String messageTemplate;
 
     private final RuleStateMap<State> states = new RuleStateMap<>();
@@ -54,6 +55,16 @@ public final class RareValueRule extends AbstractRule implements StatefulRule {
                          Function<SecurityEvent, String> valueOf,
                          String valueField, int warmup,
                          Severity severity, String messageTemplate) {
+        this(id, name, matcher, keyOf, valueOf, valueField, warmup, severity, name, messageTemplate);
+    }
+
+    public RareValueRule(String id, String name,
+                         Predicate<SecurityEvent> matcher,
+                         Function<SecurityEvent, String> keyOf,
+                         Function<SecurityEvent, String> valueOf,
+                         String valueField, int warmup,
+                         Severity severity, String titleTemplate,
+                         String messageTemplate) {
         super(id, name);
         this.matcher = matcher;
         this.keyOf = keyOf;
@@ -61,6 +72,7 @@ public final class RareValueRule extends AbstractRule implements StatefulRule {
         this.valueField = valueField;
         this.warmup = Math.max(1, warmup);
         this.severity = severity;
+        this.titleTemplate = titleTemplate;
         this.messageTemplate = messageTemplate;
     }
 
@@ -86,13 +98,15 @@ public final class RareValueRule extends AbstractRule implements StatefulRule {
             // 学习期内只记忆不告警
             if (st.observed <= warmup) return;
 
-            String msg = messageTemplate
-                    .replace("{key}", key)
-                    .replace("{value}", value)
-                    .replace("{field}", valueField == null ? "?" : valueField)
-                    .replace("{known}", String.valueOf(st.seen.size() - 1))
-                    .replace("{observed}", String.valueOf(st.observed));
-            emit(new Alert(id, name, severity, msg, key, List.of(event)));
+            Map<String, Object> context = Map.of(
+                    "key", key,
+                    "value", value,
+                    "field", valueField == null ? "?" : valueField,
+                    "known", st.seen.size() - 1,
+                    "observed", st.observed);
+            String title = AlertTemplateRenderer.render(titleTemplate, event, context);
+            String msg = AlertTemplateRenderer.render(messageTemplate, event, context);
+            emit(new Alert(id, name, severity, title, msg, key, List.of(event)));
         }
     }
 
