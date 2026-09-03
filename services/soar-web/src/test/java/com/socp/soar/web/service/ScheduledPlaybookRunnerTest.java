@@ -7,6 +7,7 @@ import com.socp.soar.web.domain.PlaybookStatus;
 import com.socp.soar.web.persistence.store.PlaybookStore;
 import com.socp.soar.web.persistence.store.ScheduledPlaybookRunStore;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -39,6 +40,13 @@ class ScheduledPlaybookRunnerTest {
     private PlaybookExecutor executor;
     @Mock
     private ScheduledPlaybookRunStore runStore;
+
+    @BeforeEach
+    void clearTenantBeforeEach() {
+        // The scheduler must not inherit a tenant left by another test or a
+        // Spring test context. Each test establishes its own caller scope.
+        TenantContext.clear();
+    }
 
     @AfterEach
     void clearTenant() {

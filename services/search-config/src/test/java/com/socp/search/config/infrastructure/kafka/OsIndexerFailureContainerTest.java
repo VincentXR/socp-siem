@@ -81,6 +81,7 @@ class OsIndexerFailureContainerTest {
                 eventJson("mixed-good-2-" + suffix, "2026-09-01T00:00:02Z", "10.0.0.2"));
         SimpleMeterRegistry metrics = new SimpleMeterRegistry();
         KafkaProperties kafka = kafkaProperties(KAFKA.getBootstrapServers(), topic);
+        createStrictRawIpMapping("socp-events-2026.09.01");
         OsIndexerConsumer indexer = new OsIndexerConsumer(realWriter(), kafka,
                 new OpenSearchIndexerProperties(), metrics);
 
@@ -158,6 +159,7 @@ class OsIndexerFailureContainerTest {
                 eventJson("dlq-down-" + suffix, "2026-09-03T00:00:00Z", "invalid-ip"));
         SimpleMeterRegistry metrics = new SimpleMeterRegistry();
         KafkaProperties unavailableDlq = kafkaProperties("127.0.0.1:1", topic);
+        createStrictRawIpMapping("socp-events-2026.09.03");
         OsIndexerConsumer indexer = new OsIndexerConsumer(realWriter(), unavailableDlq,
                 new OpenSearchIndexerProperties(), metrics);
 
@@ -336,6 +338,18 @@ class OsIndexerFailureContainerTest {
 
     private static void refresh(String index) throws Exception {
         request("/" + index + "/_refresh", "POST", "", 200);
+    }
+
+    /**
+     * The production writer deliberately moves malformed src_ip values to
+     * src_ip_raw. Keep this failure test meaningful by making that fallback
+     * field strict in an already-created index, which models a stale/bad
+     * mapping that still requires DLQ handling.
+     */
+    private static void createStrictRawIpMapping(String index) throws Exception {
+        String mapping = "{\"mappings\":{\"properties\":{"
+                + "\"fields\":{\"properties\":{\"src_ip_raw\":{\"type\":\"ip\"}}}}}}";
+        request("/" + index, "PUT", mapping, 200, 201);
     }
 
     private static long count(String index) throws Exception {
