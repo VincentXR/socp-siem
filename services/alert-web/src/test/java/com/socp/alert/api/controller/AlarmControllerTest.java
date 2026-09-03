@@ -103,6 +103,19 @@ class AlarmControllerTest {
     }
 
     @Test
+    void legacyUnpagedQueryIsStillBounded() throws Exception {
+        Alarm alarm = new Alarm("AUTH-BRUTE", "SSH brute force", Severity.HIGH,
+                "failed login", "203.0.113.10");
+        given(service.page(null, null, null, null, "occurredAt", "descending", 1, 20))
+                .willReturn(new PageImpl<>(List.of(alarm)));
+
+        mvc.perform(get("/api/alarms"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].ruleId").value("AUTH-BRUTE"));
+    }
+
+    @Test
     void evidenceEndpointReturnsCapturedEvents() throws Exception {
         given(service.evidence("alarm-1")).willReturn(new AlarmEvidenceResponse(
                 "alarm-1", 1, true, "eventId=evt-1",

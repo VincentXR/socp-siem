@@ -131,22 +131,11 @@ public class AlarmController {
                     "size", sz));
         }
 
-        List<Alarm> all = service.query(severity, rule, status, q, sort, order);
-        if (page == null && size == null) {
-            return ApiResult.ok(all);
-        }
-        if (page == null) {
-            // 只传 size：按大小切片返回 List（保持旧契约）
-            int to = Math.min(sz, all.size());
-            return ApiResult.ok(all.subList(0, to));
-        }
-        int from = Math.min((pg - 1) * sz, all.size());
-        int to = Math.min(from + sz, all.size());
-        return ApiResult.ok(Map.of(
-                "items", all.subList(from, to),
-                "total", all.size(),
-                "page", pg,
-                "size", sz));
+        // Keep the legacy array response for callers that omit pagination, but
+        // never materialize the entire tenant alarm table in the JVM. Older
+        // versions called service.query() here, which made a large tenant turn
+        // a harmless refresh into an OutOfMemoryError.
+        return ApiResult.ok(service.page(severity, rule, status, q, sort, order, 1, sz).getContent());
     }
 
     /** 下钻单条告警 */

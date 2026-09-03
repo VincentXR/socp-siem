@@ -30,6 +30,7 @@ import sys
 import time
 import urllib.request
 import urllib.error
+from urllib.parse import quote
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auth_client import login_token  # noqa: E402
@@ -170,7 +171,9 @@ tid = items[0]["id"]
 # host/src_ip 带随机后缀：规避 Suppressor（同规则+同实体 5 分钟抑制）与告警归并，保证每次运行可独立验证。
 uniq = str(int(time.time() * 1000))[-6:]
 attack_host = "ci-attack-%s" % uniq
-attack_ip = "10.9.%s.%s" % (uniq[:2], uniq[2:4])
+# Keep the happy-path probe a valid IP even when a random octet starts with 0.
+# Malformed typed values are covered separately by the OpenSearch writer test.
+attack_ip = "10.9.%d.%d" % (int(uniq[:2]), int(uniq[2:4]))
 samples = [
     '{"collector":"auth","host":"%s","source":"auth","severity":"HIGH","message":"sudo: ciattacker : TTY=pts/9 ; USER=root ; COMMAND=/bin/sh","src_ip":"%s","user":"ciattacker"}'
     % (attack_host, attack_ip),
@@ -205,12 +208,17 @@ def os_grew():
     except Exception:
         pass
     try:
-        n = os_get("/socp-events-*/_count").get("count", 0)
-        return n if n > os_total else None
+        # A global count can be changed by another collector. Verify the
+        # unique event produced by this run instead of accepting unrelated data.
+        query = quote('host:"%s"' % attack_host, safe="")
+        result = os_get("/socp-events-*/_search?size=1&q=" + query)
+        total = result.get("hits", {}).get("total", {})
+        n = total.get("value", 0) if isinstance(total, dict) else int(total or 0)
+        return n if n > 0 else None
     except Exception:
         return None
 new_os = wait_for(os_grew, timeout=40)
-check("OpenSearch 出现 raw event", new_os is not None, f"{os_total} -> {new_os}")
+check("OpenSearch 出现本次 raw event", new_os is not None, f"host={attack_host}")
 
 # ---- 5. 检测命中 → PG alert（经 alert-web API 验证） ----
 print("\n== 5. 检测命中 → 告警持久化（PG t_alarm，API 查询验证） ==")

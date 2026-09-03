@@ -79,11 +79,11 @@ public final class OpenSearchIndexTemplate {
                       "dynamic": true,
                       "properties": {
                         "tenant_id": { "type": "keyword" },
-                        "src_ip": { "type": "ip" },
-                        "dst_ip": { "type": "ip" },
-                        "http_status": { "type": "integer" },
-                        "count": { "type": "long" },
-                        "bytes": { "type": "long" },
+                        "src_ip": { "type": "ip", "ignore_malformed": true },
+                        "dst_ip": { "type": "ip", "ignore_malformed": true },
+                        "http_status": { "type": "integer", "ignore_malformed": true },
+                        "count": { "type": "long", "ignore_malformed": true },
+                        "bytes": { "type": "long", "ignore_malformed": true },
                         "category": {
                           "type": "keyword",
                           "fields": { "ci": { "type": "keyword", "normalizer": "socp_lowercase" } }

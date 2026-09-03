@@ -68,6 +68,33 @@ class OsEventWriterTest {
     }
 
     @Test
+    void keepsMalformedTypedFieldsFromRejectingTheRawEventProjection() throws Exception {
+        AtomicReference<String> request = new AtomicReference<>();
+        server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/_bulk", exchange -> {
+            request.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            byte[] response = "{\"errors\":false,\"items\":[{\"index\":{\"status\":201}}]}"
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, response.length);
+            exchange.getResponseBody().write(response);
+            exchange.close();
+        });
+        installTemplateEndpoint();
+        server.start();
+
+        var result = writer().writeEventsAndAwait(List.of(new SearchEvent(
+                "event-invalid-ip", Instant.parse("2026-08-20T23:59:59Z"),
+                "auth", "host-1", "HIGH", "failed",
+                Map.of("tenant_id", "tenant-a", "src_ip", "10.9.03.12", "bytes", "not-a-number"), Map.of())));
+
+        assertTrue(result.fullyAcknowledged(1));
+        assertThat(request.get()).contains("\"src_ip_raw\":\"10.9.03.12\"")
+                .contains("\"bytes_raw\":\"not-a-number\"")
+                .contains("\"parse_warning\":\"invalid_ip:src_ip,invalid_long:bytes\"")
+                .doesNotContain("\"src_ip\":\"10.9.03.12\"");
+    }
+
+    @Test
     void rejectsHttpSuccessWithAIncompleteItemsArray() throws Exception {
         server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/_bulk", exchange -> {
@@ -167,7 +194,8 @@ class OsEventWriterTest {
         server.createContext(OpenSearchIndexTemplate.PATH, exchange -> {
             String payload = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             boolean sharedContract = payload.equals(OpenSearchIndexTemplate.payload())
-                    && payload.contains("\"src_ip\": { \"type\": \"ip\" }")
+                    && payload.contains("\"src_ip\": { \"type\": \"ip\", \"ignore_malformed\": true }")
+                    && payload.contains("\"bytes\": { \"type\": \"long\", \"ignore_malformed\": true }")
                     && payload.contains("\"exact\"")
                     && payload.contains("socp_lowercase");
             byte[] response = "{}".getBytes(StandardCharsets.UTF_8);

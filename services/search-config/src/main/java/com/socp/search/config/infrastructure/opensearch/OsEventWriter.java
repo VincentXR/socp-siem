@@ -10,9 +10,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.net.Inet6Address;
+import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.LinkedHashMap;
 import java.util.List;
 
 /**
@@ -106,8 +109,11 @@ public class OsEventWriter {
                 return BulkWriteResult.retryAll(es, "template_not_ready",
                         "OpenSearch index template is not ready", null, elapsedMs(started));
             }
+            List<SearchEvent> indexEvents = es.stream()
+                    .map(OsEventWriter::prepareForIndex)
+                    .toList();
             StringBuilder sb = new StringBuilder(es.size() * 256);
-            for (SearchEvent e : es) {
+            for (SearchEvent e : indexEvents) {
                 String index = "socp-events-" + INDEX_DATE.format(e.timestamp());
                 // Tenant-scoped stable ID turns redelivery into an idempotent
                 // overwrite without allowing equal source IDs to collide.
@@ -154,6 +160,112 @@ public class OsEventWriter {
             log.warn("OpenSearch write failed; Kafka offset remains uncommitted: {}", e.toString());
             return BulkWriteResult.retryAll(es, "bulk_transport_failure",
                     e.getClass().getSimpleName(), null, elapsedMs(started));
+        }
+    }
+
+    /**
+     * Keep a malformed typed value from rejecting the complete raw event.
+     *
+     * <p>The canonical event sent through Kafka is deliberately left untouched:
+     * Detection may still need the original string to evaluate a rule. The
+     * OpenSearch projection is the typed boundary, so invalid IP literals are
+     * moved to a searchable {@code *_raw} field and annotated instead of
+     * poisoning the whole bulk item. This is also needed for daily indices
+     * created before the template's {@code ignore_malformed} guard was added.</p>
+     */
+    private static SearchEvent prepareForIndex(SearchEvent event) {
+        if (event == null || event.fields() == null || event.fields().isEmpty()) return event;
+        java.util.Map<String, String> fields = null;
+        String warnings = event.fields().get("parse_warning");
+        for (String key : List.of("src_ip", "dst_ip", "http_status", "count", "bytes")) {
+            String value = event.fields().get(key);
+            if (value == null) continue;
+            String trimmed = value.trim();
+            String warning = typedFieldWarning(key, trimmed);
+            if (warning == null) {
+                if (!trimmed.equals(value)) {
+                    if (fields == null) fields = new LinkedHashMap<>(event.fields());
+                    fields.put(key, trimmed);
+                }
+                continue;
+            }
+            if (fields == null) fields = new LinkedHashMap<>(event.fields());
+            fields.remove(key);
+            fields.putIfAbsent(key + "_raw", value);
+            warnings = appendWarning(warnings, warning + ":" + key);
+        }
+        if (fields == null) return event;
+        if (warnings != null && !warnings.isBlank()) fields.put("parse_warning", warnings);
+        log.debug("OpenSearch projection moved malformed typed fields eventId={} warning={}",
+                event.eventId(), warnings);
+        return new SearchEvent(event.eventId(), event.timestamp(), event.source(), event.host(),
+                event.severity(), event.msg(), java.util.Map.copyOf(fields),
+                event.ecs() == null ? java.util.Map.of() : event.ecs());
+    }
+
+    private static String appendWarning(String existing, String warning) {
+        if (existing == null || existing.isBlank()) return warning;
+        if (List.of(existing.split(",")).contains(warning)) return existing;
+        return existing + "," + warning;
+    }
+
+    private static boolean isIpLiteral(String value) {
+        if (value == null || value.isBlank()) return false;
+        if (value.indexOf(':') >= 0) {
+            if (value.indexOf('%') >= 0) return false;
+            for (int i = 0; i < value.length(); i++) {
+                char c = value.charAt(i);
+                if (!(c == ':' || c == '.' || c >= '0' && c <= '9'
+                        || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F')) return false;
+            }
+            try {
+                return InetAddress.getByName(value) instanceof Inet6Address;
+            } catch (Exception invalid) {
+                return false;
+            }
+        }
+        String[] octets = value.split("\\.", -1);
+        if (octets.length != 4) return false;
+        for (String octet : octets) {
+            if (octet.isEmpty() || (octet.length() > 1 && octet.charAt(0) == '0')
+                    || octet.length() > 3) return false;
+            int number = 0;
+            for (int i = 0; i < octet.length(); i++) {
+                char c = octet.charAt(i);
+                if (c < '0' || c > '9') return false;
+                number = number * 10 + c - '0';
+            }
+            if (number > 255) return false;
+        }
+        return true;
+    }
+
+    private static String typedFieldWarning(String key, String value) {
+        return switch (key) {
+            case "src_ip", "dst_ip" -> isIpLiteral(value) ? null : "invalid_ip";
+            case "http_status" -> isInteger(value) ? null : "invalid_integer";
+            case "count", "bytes" -> isLong(value) ? null : "invalid_long";
+            default -> null;
+        };
+    }
+
+    private static boolean isInteger(String value) {
+        if (value == null || value.isBlank()) return false;
+        try {
+            Integer.parseInt(value);
+            return true;
+        } catch (NumberFormatException invalid) {
+            return false;
+        }
+    }
+
+    private static boolean isLong(String value) {
+        if (value == null || value.isBlank()) return false;
+        try {
+            Long.parseLong(value);
+            return true;
+        } catch (NumberFormatException invalid) {
+            return false;
         }
     }
 
