@@ -1,0 +1,24 @@
+groups:
+  - name: socp-soar
+    rules:
+      - alert: SoarDispatchBacklogGrowing
+        expr: soar_dispatch_backlog > 100
+        for: 5m
+        labels: {severity: warning, service: soar-web}
+        annotations:
+          summary: SOAR dispatch backlog is high
+          description: Temporal or the dispatch worker may be unavailable; inspect queued runs before requeueing.
+      - alert: SoarSignalBacklogGrowing
+        expr: soar_signal_backlog > 50
+        for: 5m
+        labels: {severity: warning, service: soar-web}
+        annotations:
+          summary: SOAR approval/manual signal backlog is high
+          description: Check Temporal connectivity and signal worker errors.
+      - alert: SoarUnknownActionResults
+        expr: increase(soar_action_unknown_total[15m]) > 0
+        for: 1m
+        labels: {severity: critical, service: soar-web}
+        annotations:
+          summary: SOAR action result is unknown
+          description: Reconcile the remote system and resolve with evidence; do not blindly retry.

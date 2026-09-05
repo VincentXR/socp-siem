@@ -1,0 +1,22 @@
+{
+  "id": "high-risk-ioc",
+  "version": 1,
+  "name": "High-risk IOC triage",
+  "description": "Extract an indicator, enrich it, open a case and notify the response team.",
+  "eventTypes": ["alert.created"],
+  "requiredConnectors": ["socp.threat-intel", "socp.asset", "socp.incident", "socp.notify"],
+  "risk": "MEDIUM",
+  "attackTags": ["TA0011", "T1595"],
+  "testSample": {"eventId": "sample-alert-1", "eventType": "alert.created"},
+  "definition": {
+    "schemaVersion": "soar.playbook/v2", "entryNodeId": "start",
+    "nodes": [
+      {"id":"start","type":"START","name":"Start"},
+      {"id":"lookup","type":"ACTION","name":"Lookup IOC","actionRef":"socp.threat-intel/lookup-ioc@1"},
+      {"id":"case","type":"ACTION","name":"Create incident","actionRef":"socp.incident/create@1"},
+      {"id":"notify","type":"ACTION","name":"Notify","actionRef":"socp.notify/send-channel@1"},
+      {"id":"end","type":"END","name":"Done","outcome":"SUCCEEDED"}
+    ],
+    "edges": [{"from":"start","to":"lookup"},{"from":"lookup","to":"case"},{"from":"case","to":"notify"},{"from":"notify","to":"end"}]
+  }
+}

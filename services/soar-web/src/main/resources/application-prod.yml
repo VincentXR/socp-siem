@@ -8,3 +8,14 @@ socp:
   soar:
     # Never allow a dry-run connector to be exposed as a successful execution.
     simulation-enabled: false
+    maturity: production
+    # Single-path evaluation (design §8.1): V2 automation rules only; the legacy
+    # executor is a compatibility layer and must not double-fire on one alarm.
+    v2-evaluation-enabled: ${SOCP_SOAR_V2_EVALUATION_ENABLED:true}
+
+  temporal:
+    enabled: ${SOCP_TEMPORAL_ENABLED:true}
+    # Production must provide an explicit Temporal endpoint; localhost is a
+    # development convenience and is intentionally not a production default.
+    target: ${SOCP_TEMPORAL_TARGET}
+    namespace: ${SOCP_TEMPORAL_NAMESPACE:default}

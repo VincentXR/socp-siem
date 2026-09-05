@@ -1,0 +1,21 @@
+{
+  "id": "unknown-remote-result",
+  "version": 1,
+  "name": "Unknown remote action result",
+  "description": "Escalate an indeterminate remote response to a human before continuing.",
+  "eventTypes": ["alert.created", "manual.requested"],
+  "requiredConnectors": ["endpoint", "socp.incident"],
+  "risk": "HIGH",
+  "attackTags": ["T response"],
+  "testSample": {"eventId": "sample-unknown-1", "eventType": "alert.created"},
+  "definition": {
+    "schemaVersion": "soar.playbook/v2", "entryNodeId": "start",
+    "nodes": [
+      {"id":"start","type":"START","name":"Start"},
+      {"id":"remote","type":"ACTION","name":"Contain host","actionRef":"endpoint/isolate-host@1","connectionRef":"endpoint-connection","retry":{"maxAttempts":2,"backoffSeconds":2}},
+      {"id":"review","type":"MANUAL_TASK","name":"Resolve unknown","formSchema":{"type":"object","required":["resolution"],"properties":{"resolution":{"type":"string","enum":["succeeded","not_executed"]}}}},
+      {"id":"end","type":"END","name":"Done","outcome":"SUCCEEDED"}
+    ],
+    "edges": [{"from":"start","to":"remote"},{"from":"remote","port":"unknown","to":"review"},{"from":"remote","port":"success","to":"end"},{"from":"review","to":"end"}]
+  }
+}

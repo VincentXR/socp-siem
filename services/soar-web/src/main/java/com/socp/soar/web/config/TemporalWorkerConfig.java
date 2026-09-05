@@ -1,6 +1,9 @@
 package com.socp.soar.web.config;
 import com.socp.soar.web.temporal.PlaybookActivity;
 import com.socp.soar.web.temporal.PlaybookWorkflowImpl;
+import com.socp.soar.web.temporal.v2.SoarV2Activity;
+import com.socp.soar.web.temporal.v2.SoarV2Workflow;
+import com.socp.soar.web.temporal.v2.SoarV2WorkflowImpl;
 import io.temporal.client.WorkflowClient;
 import io.temporal.client.WorkflowClientOptions;
 import io.temporal.serviceclient.WorkflowServiceStubs;
@@ -13,11 +16,11 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * Temporal Worker 装配（双模式）。
+ * Temporal Worker 装配（持久运行模式）。
  *
  * <p>WorkflowClient 懒连接（连不上不抛错）；WorkerFactory.start() 即使服务端不可达
  * 也只是轮询线程空转，不阻塞 Spring 启动。真正的可用性判定在 {@link TemporalExecutor#isAvailable()}。
- * 开关：socp.temporal.enabled=false 时不装配（完全进程内）。
+ * 开关：socp.temporal.enabled=false 时不启动 Worker；V2 运行仍保持持久化 QUEUED，不走进程内降级。
  */
 @Configuration
 public class TemporalWorkerConfig {
@@ -37,6 +40,7 @@ public class TemporalWorkerConfig {
 
     @Bean(destroyMethod = "shutdown")
     public WorkerFactory workerFactory(WorkflowClient client, PlaybookActivity activity,
+                                       SoarV2Activity v2Activity,
                                        TemporalProperties properties) {
         if (!properties.isEnabled()) {
             log.info("socp.temporal.enabled=false，跳过 Temporal Worker");
@@ -46,12 +50,15 @@ public class TemporalWorkerConfig {
         Worker worker = factory.newWorker(com.socp.soar.web.temporal.PlaybookWorkflow.TASK_QUEUE);
         worker.registerWorkflowImplementationTypes(PlaybookWorkflowImpl.class);
         worker.registerActivitiesImplementations(activity);
+        Worker v2Worker = factory.newWorker(SoarV2Workflow.TASK_QUEUE);
+        v2Worker.registerWorkflowImplementationTypes(SoarV2WorkflowImpl.class);
+        v2Worker.registerActivitiesImplementations(v2Activity);
         try {
             factory.start();
             log.info("Temporal Worker 已启动（taskQueue={}）", com.socp.soar.web.temporal.PlaybookWorkflow.TASK_QUEUE);
         } catch (Exception e) {
-            // 连不上 Temporal 不崩溃：回退进程内执行器（双模式铁律）
-            log.warn("Temporal Worker 启动失败（回退进程内执行器）: {}", e.getMessage());
+            // Keep the worker bean alive so the durable dispatcher can retry later.
+            log.warn("Temporal Worker start failed; V2 runs remain queued: {}", e.getMessage());
         }
         return factory;
     }

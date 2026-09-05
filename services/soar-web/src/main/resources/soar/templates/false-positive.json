@@ -1,0 +1,23 @@
+{
+  "id": "false-positive",
+  "version": 1,
+  "name": "False-positive closeout",
+  "description": "Tag and annotate an alert when the benign condition is confirmed.",
+  "eventTypes": ["alert.created", "alert.updated"],
+  "requiredConnectors": ["socp.alert"],
+  "risk": "LOW",
+  "attackTags": ["T1070"],
+  "testSample": {"eventId": "sample-benign-1", "eventType": "alert.created"},
+  "definition": {
+    "schemaVersion": "soar.playbook/v2", "entryNodeId": "start",
+    "nodes": [
+      {"id":"start","type":"START","name":"Start"},
+      {"id":"condition","type":"CONDITION","name":"Benign?","expression":"data.alert.isBenign == true"},
+      {"id":"note","type":"ACTION","name":"Add note","actionRef":"socp.alert/add-note@1"},
+      {"id":"tag","type":"ACTION","name":"Add tag","actionRef":"socp.alert/add-tag@1"},
+      {"id":"clean","type":"END","name":"Closed","outcome":"SUCCEEDED"},
+      {"id":"other","type":"END","name":"Continue investigation","outcome":"SUPPRESSED"}
+    ],
+    "edges": [{"from":"start","to":"condition"},{"from":"condition","port":"true","to":"note"},{"from":"note","to":"tag"},{"from":"tag","to":"clean"},{"from":"condition","port":"false","to":"other"}]
+  }
+}

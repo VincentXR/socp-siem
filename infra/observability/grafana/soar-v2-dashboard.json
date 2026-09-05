@@ -1,0 +1,15 @@
+{
+  "title": "SOCP SOAR 2.0",
+  "schemaVersion": 39,
+  "version": 1,
+  "tags": ["socp", "soar"],
+  "timezone": "utc",
+  "panels": [
+    {"type": "timeseries", "title": "Dispatch backlog", "targets": [{"expr": "soar_dispatch_backlog", "legendFormat": "dispatch"}]},
+    {"type": "timeseries", "title": "Signal backlog", "targets": [{"expr": "soar_signal_backlog", "legendFormat": "signal"}]},
+    {"type": "timeseries", "title": "Active runs", "targets": [{"expr": "soar_runs_active", "legendFormat": "active"}]},
+    {"type": "stat", "title": "Unknown action results", "targets": [{"expr": "increase(soar_action_unknown_total[15m])", "legendFormat": "unknown"}]},
+    {"type": "stat", "title": "Suppressed triggers", "targets": [{"expr": "increase(soar_trigger_suppressed_total[15m])", "legendFormat": "suppressed"}]},
+    {"type": "stat", "title": "Redactions", "targets": [{"expr": "increase(soar_redactions_total[15m])", "legendFormat": "redactions"}]}
+  ]
+}

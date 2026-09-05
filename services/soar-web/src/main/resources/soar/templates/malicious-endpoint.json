@@ -1,0 +1,22 @@
+{
+  "id": "malicious-endpoint",
+  "version": 1,
+  "name": "Malicious endpoint containment",
+  "description": "Require approval before isolating a suspicious endpoint and recording the result.",
+  "eventTypes": ["alert.created", "entity.selected"],
+  "requiredConnectors": ["socp.asset", "endpoint", "socp.incident"],
+  "risk": "HIGH",
+  "attackTags": ["T isolate", "T1562"],
+  "testSample": {"eventId": "sample-endpoint-1", "eventType": "alert.created"},
+  "definition": {
+    "schemaVersion": "soar.playbook/v2", "entryNodeId": "start",
+    "nodes": [
+      {"id":"start","type":"START","name":"Start"},
+      {"id":"approval","type":"APPROVAL","name":"Approve containment"},
+      {"id":"isolate","type":"ACTION","name":"Isolate host","actionRef":"endpoint/isolate-host@1","connectionRef":"endpoint-connection"},
+      {"id":"end","type":"END","name":"Contained","outcome":"SUCCEEDED"},
+      {"id":"rejected","type":"END","name":"Rejected","outcome":"SUPPRESSED"}
+    ],
+    "edges": [{"from":"start","to":"approval"},{"from":"approval","port":"approved","to":"isolate"},{"from":"approval","port":"rejected","to":"rejected"},{"from":"isolate","to":"end"}]
+  }
+}
