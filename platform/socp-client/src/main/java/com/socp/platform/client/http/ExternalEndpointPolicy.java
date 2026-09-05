@@ -44,6 +44,9 @@ public class ExternalEndpointPolicy {
         if (uri.getUserInfo() != null || uri.getFragment() != null) {
             return "external endpoint must not contain userinfo or a fragment";
         }
+        if (containsCredentialQuery(uri.getRawQuery())) {
+            return "external endpoint must not contain credentials in the query";
+        }
         String host = normalizeHost(uri.getHost());
         if (host == null) return "external endpoint host is empty or invalid";
         if (!allowed(host, allowedHosts)) return "external endpoint host is not allowlisted: " + host;
@@ -78,6 +81,11 @@ public class ExternalEndpointPolicy {
         String host = rawHost.toLowerCase(Locale.ROOT);
         while (host.endsWith(".")) host = host.substring(0, host.length() - 1);
         return host.isBlank() ? null : host;
+    }
+
+    private static boolean containsCredentialQuery(String query) {
+        return query != null && query.matches(
+                "(?i).*(^|&)(?:secret|token|password|authorization|api[_-]?key|credential|cookie)[^=]*=.*");
     }
 
     private static boolean isBlocked(InetAddress address) {

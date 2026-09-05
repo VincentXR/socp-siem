@@ -19,6 +19,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.Map;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -89,14 +91,52 @@ public class SocpHttpClient {
         return post(target, apiPath, json, JSON, props.getRequestTimeoutMs());
     }
 
+    /** POST JSON with activity/request headers (for example Idempotency-Key). */
+    public ServiceCall postJson(SocpService target, String apiPath, String json,
+                                Map<String, String> headers) {
+        return post(target, apiPath, json, JSON, props.getRequestTimeoutMs(), headers);
+    }
+
     /** POST JSON，自定义超时。 */
     public ServiceCall postJson(SocpService target, String apiPath, String json, int timeoutMs) {
         return post(target, apiPath, json, JSON, timeoutMs);
     }
 
+    /** POST JSON with both a timeout and activity/request headers. */
+    public ServiceCall postJson(SocpService target, String apiPath, String json,
+                                int timeoutMs, Map<String, String> headers) {
+        return post(target, apiPath, json, JSON, timeoutMs, headers);
+    }
+
+    public ServiceCall putJson(SocpService target, String apiPath, String json) {
+        return put(target, apiPath, json, JSON, props.getRequestTimeoutMs());
+    }
+
+    /** PUT JSON with activity/request headers (for example Idempotency-Key). */
+    public ServiceCall putJson(SocpService target, String apiPath, String json,
+                               Map<String, String> headers) {
+        return put(target, apiPath, json, JSON, props.getRequestTimeoutMs(), headers);
+    }
+
+    public ServiceCall put(SocpService target, String apiPath, String body, String contentType, int timeoutMs) {
+        return execute("PUT", target, endpoints.url(target, apiPath), body, contentType, timeoutMs, Map.of());
+    }
+
+    public ServiceCall put(SocpService target, String apiPath, String body, String contentType,
+                           int timeoutMs, Map<String, String> headers) {
+        return execute("PUT", target, endpoints.url(target, apiPath), body, contentType, timeoutMs,
+                headers == null ? Map.of() : headers);
+    }
+
     /** POST 任意 content-type（例如批量摄取的 NDJSON）。 */
     public ServiceCall post(SocpService target, String apiPath, String body, String contentType, int timeoutMs) {
-        return execute("POST", target, endpoints.url(target, apiPath), body, contentType, timeoutMs);
+        return execute("POST", target, endpoints.url(target, apiPath), body, contentType, timeoutMs, Map.of());
+    }
+
+    public ServiceCall post(SocpService target, String apiPath, String body, String contentType,
+                            int timeoutMs, Map<String, String> headers) {
+        return execute("POST", target, endpoints.url(target, apiPath), body, contentType, timeoutMs,
+                headers == null ? Map.of() : headers);
     }
 
     /** GET 内部服务。 */
@@ -106,7 +146,7 @@ public class SocpHttpClient {
 
     /** GET 内部服务，自定义超时。 */
     public ServiceCall get(SocpService target, String apiPath, int timeoutMs) {
-        return execute("GET", target, endpoints.url(target, apiPath), null, null, timeoutMs);
+        return execute("GET", target, endpoints.url(target, apiPath), null, null, timeoutMs, Map.of());
     }
 
     /**
@@ -116,14 +156,29 @@ public class SocpHttpClient {
      * {@code external}；其余（超时 / 状态码检查 / 日志 / 指标）与内部调用完全一致。
      */
     public ServiceCall postExternal(String absoluteUrl, String body, String contentType, int timeoutMs) {
-        String policyError = externalEndpointPolicy.validate(absoluteUrl);
+        return postExternal(absoluteUrl, body, contentType, timeoutMs, Map.of());
+    }
+
+    /** POST to an approved external endpoint with activity-scoped headers. */
+    public ServiceCall postExternal(String absoluteUrl, String body, String contentType, int timeoutMs,
+                                    Map<String, String> headers) {
+        return postExternal(absoluteUrl, body, contentType, timeoutMs, headers,
+                props.getExternalAllowedHosts());
+    }
+
+    /** POST to an approved external endpoint using a connection-level host allowlist. */
+    public ServiceCall postExternal(String absoluteUrl, String body, String contentType, int timeoutMs,
+                                    Map<String, String> headers, List<String> allowedHosts) {
+        String policyError = externalEndpointPolicy.validate(absoluteUrl, allowedHosts,
+                props.isExternalHttpsOnly(), props.isExternalAllowPrivateNetworks());
         if (policyError != null) {
             ServiceCall denied = new ServiceCall(null, absoluteUrl, false, -1, "",
                     "External endpoint blocked: " + policyError, 0, false, 0);
             record(denied);
             return denied;
         }
-        return execute("POST", null, absoluteUrl, body, contentType == null ? JSON : contentType, timeoutMs);
+        return execute("POST", null, absoluteUrl, body, contentType == null ? JSON : contentType, timeoutMs,
+                headers == null ? Map.of() : headers);
     }
 
     /** 解析服务地址（少数场景需要自己拼 URL，例如 SSE 长连接）。 */
@@ -134,7 +189,8 @@ public class SocpHttpClient {
     // ------------------------------------------------------------------ 核心实现
 
     private ServiceCall execute(String method, SocpService target, String url,
-                                String body, String contentType, int timeoutMs) {
+                                String body, String contentType, int timeoutMs,
+                                Map<String, String> headers) {
         long start = System.nanoTime();
         int attempts = 0;
         int status = -1;
@@ -146,7 +202,7 @@ public class SocpHttpClient {
         while (attempts < max) {
             attempts++;
             try {
-                HttpRequest req = build(method, target, url, body, contentType, timeoutMs);
+                HttpRequest req = build(method, target, url, body, contentType, timeoutMs, headers);
                 HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
                 status = resp.statusCode();
                 respBody = resp.body() == null ? "" : resp.body();
@@ -186,7 +242,8 @@ public class SocpHttpClient {
     }
 
     private HttpRequest build(String method, SocpService target, String url,
-                              String body, String contentType, int timeoutMs) {
+                              String body, String contentType, int timeoutMs,
+                              Map<String, String> headers) {
         URI uri = URI.create(url);
         HttpRequest.Builder b = HttpRequest.newBuilder(uri)
                 .timeout(Duration.ofMillis(timeoutMs > 0 ? timeoutMs : props.getRequestTimeoutMs()));
@@ -196,6 +253,11 @@ public class SocpHttpClient {
                     .header("X-Tenant-Id", tenant);
             requestSigner.sign(b, method, uri, tenant);
         }
+        if (headers != null) {
+            headers.forEach((key, value) -> {
+                if (key != null && !key.isBlank() && value != null && !value.isBlank()) b.header(key, value);
+            });
+        }
         String traceparent = TraceIdFilter.buildTraceparent();
         if (traceparent != null) {
             b.header("traceparent", traceparent);
@@ -204,7 +266,8 @@ public class SocpHttpClient {
             b.GET();
         } else {
             b.header("Content-Type", contentType == null ? JSON : contentType);
-            b.POST(HttpRequest.BodyPublishers.ofString(body == null ? "" : body));
+            if ("PUT".equals(method)) b.PUT(HttpRequest.BodyPublishers.ofString(body == null ? "" : body));
+            else b.POST(HttpRequest.BodyPublishers.ofString(body == null ? "" : body));
         }
         return b.build();
     }
@@ -237,7 +300,8 @@ public class SocpHttpClient {
 
         if (call.ok()) {
             if (log.isDebugEnabled()) {
-                log.debug("服务间调用成功 target={} url={} status={} cost={}ms", targetLabel, call.url(), call.status(), call.durationMs());
+                log.debug("服务间调用成功 target={} url={} status={} cost={}ms", targetLabel,
+                        safeUrlForLog(call), call.status(), call.durationMs());
             }
             return;
         }
@@ -245,15 +309,43 @@ public class SocpHttpClient {
         // 关键：失败必须留痕，且要带够定位信息（这正是原来 catch(Exception ignored) 缺失的部分）
         log.warn("服务间调用失败 target={} url={} status={} attempts={} cost={}ms tenant={} traceId={} retryable={} error={} body={}",
                 targetLabel,
-                call.url(),
+                safeUrlForLog(call),
                 call.status() < 0 ? "-" : call.status(),
                 call.attempts(),
                 call.durationMs(),
                 tenantForLog(),
                 MDC.get("traceId"),
                 call.retryable(),
-                call.error() == null ? "-" : call.error(),
-                truncate(call.body()));
+                call.error() == null ? "-" : redactForLog(call.error()),
+                safeBodyForLog(call.body()));
+    }
+
+    /** Do not put bearer tokens, API keys or arbitrary query credentials into logs. */
+    private String safeUrlForLog(ServiceCall call) {
+        if (call == null || call.url() == null) return "-";
+        try {
+            URI uri = URI.create(call.url());
+            if (call.target() == null) {
+                return new URI(uri.getScheme(), uri.getUserInfo(), uri.getHost(), uri.getPort(),
+                        uri.getPath(), null, null).toString();
+            }
+            return call.url();
+        } catch (Exception ignored) {
+            return "[INVALID_URL]";
+        }
+    }
+
+    private String safeBodyForLog(String body) {
+        if (body == null || body.isBlank()) return "-";
+        return truncate(redactForLog(body));
+    }
+
+    private static String redactForLog(String value) {
+        if (value == null) return "-";
+        return value.replaceAll("(?i)(bearer\\s+)[^\\s,;]+", "$1[REDACTED]")
+                .replaceAll("(?i)(\\\"(?:secret|token|password|authorization|api[_-]?key|cookie)[^\\\"]*\\\"\\s*:\\s*\\\")[^\\\"]*(\\\")", "$1[REDACTED]$2")
+                .replaceAll("(?i)((?:secret|token|password|authorization|api[_-]?key)\\s*[:=]\\s*)[^\\s,;]+",
+                        "$1[REDACTED]");
     }
 
     private String truncate(String s) {

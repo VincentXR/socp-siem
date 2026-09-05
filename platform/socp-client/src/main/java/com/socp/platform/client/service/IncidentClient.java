@@ -5,6 +5,8 @@ import com.socp.platform.client.http.ServiceCall;
 import com.socp.platform.client.http.SocpHttpClient;
 import org.springframework.stereotype.Component;
 
+import java.util.Map;
+
 /** 案件服务（incident-web）客户端：由告警自动建案 / 归并。 */
 @Component
 public class IncidentClient {
@@ -18,6 +20,13 @@ public class IncidentClient {
     /** 由告警建案（{@code POST /incident-web/api/v1/incidents/from-alarm}），同实体会归并到已有案件。 */
     public ServiceCall createFromAlarm(String alarmJson) {
         return http.postJson(SocpService.INCIDENT, "/api/v1/incidents/from-alarm", alarmJson);
+    }
+
+    /** Create/merge a case with a stable request key for SOAR replay safety. */
+    public ServiceCall createFromAlarm(String alarmJson, String idempotencyKey) {
+        Map<String, String> headers = idempotencyKey == null || idempotencyKey.isBlank()
+                ? Map.of() : Map.of("Idempotency-Key", idempotencyKey);
+        return http.postJson(SocpService.INCIDENT, "/api/v1/incidents/from-alarm", alarmJson, headers);
     }
 
     /** List the current tenant's cases for investigation correlation. */
@@ -38,6 +47,12 @@ public class IncidentClient {
             query += "&idempotencyKey=" + encode(idempotencyKey);
         }
         return http.postJson(SocpService.INCIDENT, "/api/v1/incidents/" + id + "/notes" + query, "{}");
+    }
+
+    public ServiceCall setStatus(String caseId, String status, String assignee) {
+        String query = "?status=" + encode(status);
+        if (assignee != null && !assignee.isBlank()) query += "&assignee=" + encode(assignee);
+        return http.postJson(SocpService.INCIDENT, "/api/v1/incidents/" + encode(caseId) + "/status" + query, "{}");
     }
 
     private static String encode(String value) {
