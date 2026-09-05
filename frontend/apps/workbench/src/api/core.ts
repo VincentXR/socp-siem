@@ -105,6 +105,13 @@ export async function put<T>(path: string, data?: unknown, options?: ApiRequestO
   }, options)
 }
 
+export async function patch<T>(path: string, data?: unknown, options?: ApiRequestOptions): Promise<T> {
+  return requestJson<T>(path, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: data === undefined ? undefined : JSON.stringify(data),
+  }, options)
+}
+
 export async function del<T>(path: string, options?: ApiRequestOptions): Promise<T> {
   return requestJson<T>(path, { method: 'DELETE' }, options)
 }
