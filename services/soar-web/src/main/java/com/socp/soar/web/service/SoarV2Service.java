@@ -145,7 +145,6 @@ public class SoarV2Service {
         playbook.setOwner(actor);
         playbook.setTagsJson(write(tags == null ? List.of() : tags));
         playbook.setStatus("ACTIVE");
-        playbook.setRowVersion(0L);
         playbook.setCreatedAt(now);
         playbook.setUpdatedAt(now);
         playbooks.save(playbook);
@@ -164,7 +163,6 @@ public class SoarV2Service {
         draft.setCreatedBy(actor);
         draft.setCreatedAt(now);
         draft.setUpdatedAt(now);
-        draft.setRowVersion(0L);
         versions.save(draft);
         return playbookView(playbook, draft);
     }
@@ -314,7 +312,6 @@ public class SoarV2Service {
         draft.setCreatedBy(actor());
         draft.setCreatedAt(now);
         draft.setUpdatedAt(now);
-        draft.setRowVersion(0L);
         versions.save(draft);
         return versionView(draft);
     }
@@ -583,7 +580,6 @@ public class SoarV2Service {
         run.setRequestedBy(actor());
         run.setCreatedAt(now);
         run.setUpdatedAt(now);
-        run.setRowVersion(0L);
         DefinitionValidationResult risk = checked;
         boolean approvalRequired = risk.highRiskActionCount() > 0;
         ApprovalContext approvalContext = approvalRequired
@@ -600,7 +596,6 @@ public class SoarV2Service {
         outbox.setNextAttemptAt(now);
         outbox.setCreatedAt(now);
         outbox.setUpdatedAt(now);
-        outbox.setRowVersion(0L);
         dispatches.save(outbox);
         if (approvalRequired) {
             SoarApprovalEntity approval = new SoarApprovalEntity();
@@ -1355,7 +1350,6 @@ public class SoarV2Service {
                     created.setId(UUID.randomUUID().toString()); created.setTenantId(run.getTenantId());
                     created.setRunId(run.getId()); created.setSignalType(type); created.setSignalKey(signalKey);
                     created.setAttempts(0);
-                    created.setRowVersion(0L);
                     created.setCreatedAt(now); return created;
                 });
         signal.setPayloadJson(write(payload)); signal.setStatus("PENDING");
@@ -1431,12 +1425,12 @@ public class SoarV2Service {
         ApprovalContext approvalContext = approvalRequired
                 ? buildApprovalContext(sourceVersion.getDefinitionJson(), clone.getInputJson())
                 : ApprovalContext.empty(clone.getInputJson());
-        clone.setCreatedAt(now); clone.setUpdatedAt(now); clone.setRowVersion(0L);
+        clone.setCreatedAt(now); clone.setUpdatedAt(now);
         runs.save(clone);
         SoarDispatchOutboxEntity outbox = new SoarDispatchOutboxEntity();
         outbox.setId(UUID.randomUUID().toString()); outbox.setTenantId(tenant); outbox.setRunId(runId);
         outbox.setStatus(approvalRequired ? "HOLD" : "PENDING"); outbox.setAttempts(0); outbox.setNextAttemptAt(now);
-        outbox.setCreatedAt(now); outbox.setUpdatedAt(now); outbox.setRowVersion(0L); dispatches.save(outbox);
+        outbox.setCreatedAt(now); outbox.setUpdatedAt(now); dispatches.save(outbox);
         if (approvalRequired) {
             SoarApprovalEntity approval = new SoarApprovalEntity();
             approval.setId(UUID.randomUUID().toString()); approval.setTenantId(tenant); approval.setRunId(runId);

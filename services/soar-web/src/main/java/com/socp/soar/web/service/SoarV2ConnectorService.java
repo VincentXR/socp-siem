@@ -104,7 +104,6 @@ public class SoarV2ConnectorService {
         row.setCreatedBy("operator");
         row.setCreatedAt(now);
         row.setUpdatedAt(now);
-        row.setRowVersion(0L);
         connectors.save(row);
         return view(row);
     }

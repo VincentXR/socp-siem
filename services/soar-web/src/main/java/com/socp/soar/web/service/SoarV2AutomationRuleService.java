@@ -105,7 +105,6 @@ public class SoarV2AutomationRuleService {
         row.setValidUntil(instant(policy, "validUntil"));
         row.setCreatedAt(now);
         row.setUpdatedAt(now);
-        row.setRowVersion(0L);
         rules.save(row);
         return view(row);
     }

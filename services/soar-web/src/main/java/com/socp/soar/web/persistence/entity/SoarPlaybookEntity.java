@@ -1,6 +1,8 @@
 package com.socp.soar.web.persistence.entity;
 
 import jakarta.persistence.Column;
+import org.springframework.data.domain.Persistable;
+import jakarta.persistence.Transient;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
@@ -11,7 +13,7 @@ import java.time.Instant;
 /** SOAR 2.0 playbook metadata. Runtime logic lives in immutable version rows. */
 @Entity
 @Table(name = "t_soar_playbook")
-public class SoarPlaybookEntity {
+public class SoarPlaybookEntity implements Persistable<String> {
     @Id
     @Column(length = 64)
     private String id;
@@ -61,4 +63,10 @@ public class SoarPlaybookEntity {
     public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
+    @Override
+    @Transient
+    public boolean isNew() {
+        return rowVersion == null;
+    }
+
 }

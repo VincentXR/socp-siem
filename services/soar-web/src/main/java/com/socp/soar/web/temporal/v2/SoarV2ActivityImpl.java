@@ -252,7 +252,6 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
             row.setStartedAt(started);
             row.setCompletedAt(Instant.now());
             row.setUpdatedAt(Instant.now());
-            if (row.getRowVersion() == null) row.setRowVersion(0L);
             nodeRuns.save(row);
             appendEvent(request.tenantId(), request.runId(), "NODE_" + status,
                     request.nodeId() + " completed", row.getId());
@@ -675,7 +674,7 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
                 try { task.setDueAt(dueAt == null || dueAt.isBlank() ? Instant.now().plusSeconds(86400) : Instant.parse(dueAt)); }
                 catch (Exception ignored) { task.setDueAt(Instant.now().plusSeconds(86400)); }
                 task.setStatus("PENDING"); task.setCreatedAt(Instant.now()); task.setUpdatedAt(Instant.now());
-                task.setRowVersion(0L); manualTasks.save(task);
+                manualTasks.save(task);
             }
             appendEvent(tenantId, runId, "RUN_WAITING_INPUT", "Workflow reached manual task: " + nodeId, null);
             return null;
@@ -718,7 +717,7 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
             row.setErrorMessage(redactFreeText(result.errorMessage(), 2048));
             if (row.getStartedAt() == null) row.setStartedAt(Instant.now());
             row.setCompletedAt(Instant.now()); row.setUpdatedAt(Instant.now());
-            if (row.getRowVersion() == null) row.setRowVersion(0L); nodeRuns.save(row);
+            nodeRuns.save(row);
             appendEvent(request.tenantId(), request.runId(), "NODE_" + result.status(),
                     request.nodeId() + " completed", row.getId());
             return null;

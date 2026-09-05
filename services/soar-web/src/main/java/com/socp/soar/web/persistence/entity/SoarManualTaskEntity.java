@@ -1,6 +1,8 @@
 package com.socp.soar.web.persistence.entity;
 
 import jakarta.persistence.Column;
+import org.springframework.data.domain.Persistable;
+import jakarta.persistence.Transient;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
@@ -12,7 +14,7 @@ import java.time.Instant;
 @Entity
 @Table(name = "t_soar_manual_task", uniqueConstraints = @UniqueConstraint(
         name = "uq_soar_manual_task_node", columnNames = {"tenant_id", "run_id", "node_id"}))
-public class SoarManualTaskEntity {
+public class SoarManualTaskEntity implements Persistable<String> {
     @Id @Column(length = 64) private String id;
     @Column(name = "tenant_id", nullable = false, length = 64) private String tenantId;
     @Column(name = "run_id", nullable = false, length = 64) private String runId;
@@ -57,4 +59,10 @@ public class SoarManualTaskEntity {
     public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
     public Long getRowVersion() { return rowVersion; }
     public void setRowVersion(Long rowVersion) { this.rowVersion = rowVersion; }
+    @Override
+    @Transient
+    public boolean isNew() {
+        return rowVersion == null;
+    }
+
 }
