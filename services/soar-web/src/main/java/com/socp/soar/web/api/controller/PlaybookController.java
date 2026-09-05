@@ -36,6 +36,8 @@ public class PlaybookController {
     private final AlarmEvaluationService evaluationService;
     @Autowired(required = false)
     private ApprovalService approvalService;
+    @Autowired(required = false)
+    private com.socp.soar.web.config.SoarRuntimeProperties runtimeProperties;
 
     public PlaybookController(PlaybookStore store, com.socp.soar.web.service.PlaybookExecutor executor,
                               AlarmEvaluationService evaluationService) {
@@ -52,6 +54,7 @@ public class PlaybookController {
     @RequireRole({"admin", "analyst"})
     @PostMapping
     public Playbook create(@Valid @RequestBody CreatePlaybookRequest req) {
+        requireLegacyMutation();
         Playbook pb = Playbook.create(req.name(), req.trigger(), req.actions(), req.enabled());
         return store.save(pb);
     }
@@ -64,12 +67,14 @@ public class PlaybookController {
     @RequireRole({"admin", "analyst"})
     @DeleteMapping("/{id}")
     public Map<String, Object> delete(@PathVariable String id) {
+        requireLegacyMutation();
         return Map.of("removed", store.delete(id));
     }
 
     @RequireRole({"admin", "analyst"})
     @PostMapping("/{id}/toggle")
     public Playbook toggle(@PathVariable String id) {
+        requireLegacyMutation();
         return store.toggle(id);
     }
 
@@ -90,6 +95,7 @@ public class PlaybookController {
     @PostMapping("/{id}/execute")
     public Map<String, Object> execute(@PathVariable String id,
                                        @RequestBody(required = false) PlaybookExecutionRequest request) {
+        requireLegacyMutation();
         Map<String, Object> context = request == null ? Map.of() : request.context();
         validateMap(context, "context");
         if (approvalService != null && approvalService.requiresApproval(id)) {
@@ -111,6 +117,7 @@ public class PlaybookController {
     @PostMapping("/approvals/{approvalId}/approve")
     public Map<String, Object> approve(@PathVariable String approvalId,
                                        @RequestBody(required = false) Map<String, Object> body) {
+        requireLegacyMutation();
         if (approvalService == null) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
                 "approval service is unavailable");
         String approver = body == null ? "operator" : String.valueOf(body.getOrDefault("approver", "operator"));
@@ -122,6 +129,7 @@ public class PlaybookController {
     @com.socp.platform.auth.security.RequirePermission("soar:execute")
     @PostMapping("/approvals/{approvalId}/execute")
     public Map<String, Object> executeApproved(@PathVariable String approvalId) {
+        requireLegacyMutation();
         if (approvalService == null) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
                 "approval service is unavailable");
         return approvalService.execute(approvalId);
@@ -132,6 +140,13 @@ public class PlaybookController {
     @GetMapping("/executions")
     public List<Map<String, Object>> executions() {
         return executor.executions();
+    }
+
+    private void requireLegacyMutation() {
+        if (runtimeProperties != null && !runtimeProperties.isLegacyMutationEnabled()) {
+            throw new ResponseStatusException(HttpStatus.GONE,
+                    "legacy V1 playbook mutation is disabled; use the /api/v2 playbook and approval API");
+        }
     }
 
     private static void validateMap(Map<String, Object> body, String name) {
