@@ -202,12 +202,29 @@ public class SoarDefinitionValidator {
                             "actionRef is not registered in the SOAR action catalog"));
                 }
                 validateActionContract(node, id, path, actionRef, errors);
-                if (isHighRiskAction(actionRef)) highRisk++;
+                String actionRisk = actionRiskLevel(actionRef);
+                if ("CRITICAL".equalsIgnoreCase(actionRisk)) {
+                    // Design 10.1: CRITICAL auto-execute is forbidden and P0
+                    // has no execution path for it at all (P1 adds a two
+                    // non-initiator approval policy).  Fail publication rather
+                    // than letting a version ship that the runtime would run
+                    // with a single approver.
+                    errors.add(DefinitionIssue.error("ACTION_RISK_CRITICAL_FORBIDDEN", id,
+                            path + "/actionRef",
+                            "CRITICAL actions are disabled in this release; no P0 execution path exists"));
+                } else if ("HIGH".equalsIgnoreCase(actionRisk)) {
+                    highRisk++;
+                }
                 JsonNode retry = node.has("retry") ? node.get("retry")
                         : (node.has("retryPolicy") ? node.get("retryPolicy") : node.path("config").get("retry"));
                 if (containsSensitiveKey(node.get("parameters")) || containsSensitiveKey(node.get("target"))) {
                     errors.add(DefinitionIssue.error("ACTION_SECRET_INLINE_FORBIDDEN", id,
                             path, "action parameters/target cannot contain secret, token, password or authorization values; use a connection secretRef"));
+                }
+                if (containsCredentialValue(node.get("parameters")) || containsCredentialValue(node.get("target"))) {
+                    errors.add(DefinitionIssue.error("ACTION_EMBEDDED_CREDENTIAL_FORBIDDEN", id,
+                            path, "action parameters/target cannot embed credentials (user:pass@ URLs, private keys or bearer/token values)" +
+                                    " beyond a secretRef reference"));
                 }
                 if (retry != null && !retry.isObject()) {
                     errors.add(DefinitionIssue.error("ACTION_RETRY_POLICY_INVALID", id,
@@ -589,6 +606,8 @@ public class SoarDefinitionValidator {
             warnings.add(DefinitionIssue.warning("HIGH_RISK_ACTIONS_PRESENT", null, "/nodes",
                     highRisk + " high-risk action(s) require runtime approval policy"));
         }
+        validateApprovalCoverage(types, nodeDefinitions, edges, warnings);
+        validateCompensationRisk(types, nodeDefinitions, warnings);
         return result(errors, warnings, schemaVersion, hash, types.size(), actionCount, highRisk);
     }
 
@@ -1025,6 +1044,112 @@ public class SoarDefinitionValidator {
             errors.add(DefinitionIssue.error("ACTION_PARAMETERS_INVALID", nodeId,
                     path + "/parameters", "ACTION parameters must be an object"));
         }
+    }
+
+    private String actionRiskLevel(String actionRef) {
+        if (actionRef != null && !actionRef.isBlank() && connectorRegistry != null) {
+            ActionDescriptor action = connectorRegistry.actionDescriptor(actionRef).orElse(null);
+            if (action != null && action.riskLevel() != null && !action.riskLevel().isBlank()) {
+                return action.riskLevel();
+            }
+        }
+        // Name-based inference only as a hermetic-test fallback when no
+        // runtime registry is wired.  Production always uses the registry.
+        return looksHighRisk(actionRef) ? "HIGH" : "";
+    }
+
+    /**
+     * High-risk actions are covered when an APPROVAL gate either controls the
+     * action explicitly (actionRef on the gate) or sits directly on the
+     * approved edge into the action.  Enforcement itself happens at dispatch
+     * (run-level pre-approval when any high-risk action exists); this static
+     * pass warns authors whose high-risk action is not reachable through a
+     * gate so they can add an explicit per-node gate where policy demands it.
+     */
+    private void validateApprovalCoverage(Map<String, SoarNodeType> types,
+                                          Map<String, JsonNode> nodes, JsonNode edges,
+                                          List<DefinitionIssue> warnings) {
+        if (edges == null || !edges.isArray()) return;
+        Set<String> controlledActionRefs = new HashSet<>();
+        Set<String> controlledTargets = new HashSet<>();
+        for (JsonNode edge : edges) {
+            String from = text(edge, "from");
+            String to = text(edge, "to");
+            if (!types.containsKey(from) || !types.containsKey(to)) continue;
+            SoarNodeType type = types.get(from);
+            String port = text(edge, "port");
+            if (port.isBlank()) port = text(edge, "when");
+            if (type == SoarNodeType.APPROVAL && ("approved".equalsIgnoreCase(port)
+                    || "success".equalsIgnoreCase(port) || port.isBlank())) {
+                controlledTargets.add(to);
+                JsonNode targetNode = nodes.get(to);
+                if (targetNode != null && types.get(to) == SoarNodeType.ACTION) {
+                    String actionRef = text(targetNode, "actionRef");
+                    if (!actionRef.isBlank()) controlledActionRefs.add(actionRef);
+                }
+            }
+        }
+        for (Map.Entry<String, JsonNode> entry : nodes.entrySet()) {
+            JsonNode node = entry.getValue();
+            if (types.get(entry.getKey()) != SoarNodeType.ACTION) continue;
+            String actionRef = text(node, "actionRef");
+            if (actionRef.isBlank()) continue;
+            if (!"HIGH".equalsIgnoreCase(actionRiskLevel(actionRef))) continue;
+            boolean covered = controlledActionRefs.contains(actionRef)
+                    || controlledTargets.contains(entry.getKey());
+            if (!covered) {
+                warnings.add(DefinitionIssue.warning(
+                        "HIGH_RISK_APPROVAL_GATE_RECOMMENDED", entry.getKey(),
+                        "/nodes/" + entry.getKey(),
+                        "high-risk action is not reachable through an explicit APPROVAL gate; it relies on the run-level pre-approval policy"));
+            }
+        }
+    }
+
+    /** Compensation runs automatically after a failure, so it must not itself
+     * introduce an unapproved high-risk side effect.  The run-level approval
+     * policy still applies to the whole version; this is an authoring warning,
+     * not a hard block, because reversible HIGH compensations (for example
+     * releasing a host after a failed isolate) are legitimate. */
+    private void validateCompensationRisk(Map<String, SoarNodeType> types,
+                                          Map<String, JsonNode> nodes,
+                                          List<DefinitionIssue> warnings) {
+        if (connectorRegistry == null) return;
+        for (Map.Entry<String, JsonNode> entry : nodes.entrySet()) {
+            JsonNode node = entry.getValue();
+            if (types.get(entry.getKey()) != SoarNodeType.ACTION) continue;
+            String compensationRef = text(node, "compensationRef");
+            if (compensationRef.isBlank()) continue;
+            String risk = actionRiskLevel(compensationRef);
+            if ("HIGH".equalsIgnoreCase(risk) || "CRITICAL".equalsIgnoreCase(risk)) {
+                warnings.add(DefinitionIssue.warning("COMPENSATION_HIGH_RISK", entry.getKey(),
+                        "/nodes/" + entry.getKey() + "/compensationRef",
+                        "compensation action " + compensationRef + " is " + risk
+                                + "; ensure the run-level approval policy covers it before relying on COMPENSATE_THEN_FAIL"));
+            }
+        }
+    }
+
+    private static boolean containsCredentialValue(JsonNode value) {
+        if (value == null || value.isNull()) return false;
+        if (value.isObject()) {
+            var fields = value.fields();
+            while (fields.hasNext()) {
+                var field = fields.next();
+                if (containsCredentialValue(field.getValue())) return true;
+            }
+        } else if (value.isArray()) {
+            for (JsonNode item : value) if (containsCredentialValue(item)) return true;
+        } else if (value.isTextual()) {
+            String text = value.asText();
+            if (text == null || text.length() > 4096) return false;
+            if (text.matches("(?i)^[a-z][a-z0-9+.-]*://[^\\s:/?#]+:[^\\s@/]+@.*")) return true;
+            if (text.contains("-----BEGIN") && text.contains("PRIVATE KEY")) return true;
+            if (text.matches("(?i)^(bearer|token|apikey|api[-_]?key|authorization|secret)\\s*[:=]\\s*\\S+$")) return true;
+            if (text.matches("(?i)^[A-Za-z0-9_\\-]{40,}$") && (text.toLowerCase(java.util.Locale.ROOT).startsWith("ghp_")
+                    || text.toLowerCase(java.util.Locale.ROOT).startsWith("sk-"))) return true;
+        }
+        return false;
     }
 
     private boolean hasNonIdempotentSideEffect(String actionRef) {
