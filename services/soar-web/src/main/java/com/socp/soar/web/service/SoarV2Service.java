@@ -326,6 +326,7 @@ public class SoarV2Service {
     }
 
     @Transactional(readOnly = true)
+    @AuditOperation(action = "SOAR_V2_EXPORT_PLAYBOOK", target = "t_soar_playbook_version")
     public Map<String, Object> exportVersion(String playbookId, int versionNo) {
         Map<String, Object> exported = versionView(version(playbookId, versionNo));
         exported.put("format", "soar.playbook/v2");
@@ -1173,7 +1174,7 @@ public class SoarV2Service {
             }
         }
         if (sameAsRunRequester || sameAsApprovalRequester || sameAsRecentEditor) {
-            throw error(HttpStatus.FORBIDDEN, "SOAR_SELF_APPROVAL_FORBIDDEN",
+            throw error(HttpStatus.FORBIDDEN, "SOAR_SELF_APPROVAL_DENIED",
                     "the requester or recent playbook editor cannot approve their own high-risk run");
         }
         if (!approvalPolicyAllows(approval)) {

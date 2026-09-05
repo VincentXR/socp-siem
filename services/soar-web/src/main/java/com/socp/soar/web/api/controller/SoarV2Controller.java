@@ -533,13 +533,13 @@ public class SoarV2Controller {
     }
 
     @PostMapping("/automation-rules/{id}/enable")
-    @RequirePermission("soar:edit")
+    @RequirePermission("soar:publish")
     public ApiResult<Map<String, Object>> enableAutomationRule(@PathVariable String id) {
         return ApiResult.ok(automationRules.setEnabled(id, true));
     }
 
     @PostMapping("/automation-rules/{id}/disable")
-    @RequirePermission("soar:edit")
+    @RequirePermission("soar:publish")
     public ApiResult<Map<String, Object>> disableAutomationRule(@PathVariable String id) {
         return ApiResult.ok(automationRules.setEnabled(id, false));
     }
