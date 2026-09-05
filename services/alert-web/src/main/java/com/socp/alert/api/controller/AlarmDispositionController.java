@@ -3,6 +3,7 @@ package com.socp.alert.api.controller;
 import com.socp.alert.api.request.AlarmAssignmentRequest;
 import com.socp.alert.api.request.AlarmNoteRequest;
 import com.socp.alert.api.request.AlarmStatusRequest;
+import com.socp.alert.api.request.AlarmTagRequest;
 import com.socp.alert.service.AlarmDispositionService;
 import com.socp.alert.service.AlarmService;
 
@@ -14,6 +15,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.socp.platform.auth.security.RequireRole;
@@ -62,9 +64,19 @@ public class AlarmDispositionController {
     @RequireRole({"admin", "analyst"})
     @RequirePermission("alarm:triage")
     @PostMapping("/notes")
-    public AlarmDispositionService.Disposition addNote(@PathVariable String id, @Valid @RequestBody AlarmNoteRequest body) {
+    public AlarmDispositionService.Disposition addNote(@PathVariable String id, @Valid @RequestBody AlarmNoteRequest body,
+                                                       @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
         alarmService.get(id);
         String author = body.author() == null || body.author().isBlank() ? "operator" : body.author();
-        return disp.addNote(id, author, body.content());
+        return disp.addNote(id, author, body.content(), idempotencyKey);
+    }
+
+    @RequireRole({"admin", "analyst"})
+    @RequirePermission("alarm:triage")
+    @PostMapping("/tags")
+    public AlarmDispositionService.Disposition addTag(@PathVariable String id,
+                                                       @Valid @RequestBody AlarmTagRequest body) {
+        alarmService.get(id);
+        return disp.addTag(id, body.tag());
     }
 }

@@ -86,6 +86,23 @@ class AlarmDispositionServiceTest {
                 () -> service.batchUpdate(List.of("alarm-1"), null, " ", null));
     }
 
+    @Test
+    void connectorNoteRetryIsDurablySetOnce() {
+        DispositionRepository repository = mock(DispositionRepository.class);
+        DispositionEntity stored = entity("alarm-1", "OPEN", "alice");
+        stored.setNoteKeys("[]");
+        when(repository.findForUpdate("alarm-1", "default")).thenReturn(Optional.of(stored));
+        when(repository.findByAlarmIdAndTenantId("alarm-1", "default")).thenReturn(Optional.of(stored));
+        when(repository.save(any(DispositionEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        AlarmDispositionService service = new AlarmDispositionService(repository);
+
+        service.addNote("alarm-1", "soar", "IOC enriched", "run-1:node-1");
+        service.addNote("alarm-1", "soar", "IOC enriched", "run-1:node-1");
+
+        assertEquals(1, service.get("alarm-1").notes().size());
+        verify(repository, org.mockito.Mockito.times(1)).save(any(DispositionEntity.class));
+    }
+
     private static DispositionEntity entity(String alarmId, String status, String assignee) {
         DispositionEntity entity = new DispositionEntity();
         entity.setAlarmId(alarmId);

@@ -32,6 +32,14 @@ public class DispositionEntity extends BaseEntity {
     @Column(columnDefinition = "TEXT")
     private String notes;
 
+    /** Idempotent disposition tags stored as a JSON string array. */
+    @Column(columnDefinition = "TEXT")
+    private String tags;
+
+    /** Stable keys for connector-originated notes; bounded by the service. */
+    @Column(name = "note_keys", columnDefinition = "TEXT")
+    private String noteKeys;
+
     public String getId() {
         return id;
     }
@@ -70,5 +78,21 @@ public class DispositionEntity extends BaseEntity {
 
     public void setNotes(String notes) {
         this.notes = notes;
+    }
+
+    public String getTags() {
+        return tags;
+    }
+
+    public void setTags(String tags) {
+        this.tags = tags;
+    }
+
+    public String getNoteKeys() {
+        return noteKeys;
+    }
+
+    public void setNoteKeys(String noteKeys) {
+        this.noteKeys = noteKeys;
     }
 }
