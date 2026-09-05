@@ -284,6 +284,12 @@ public class SoarV2ConnectorService {
             value.put("idempotency", action.idempotency());
             value.put("requiresConnection", action.requiresConnection());
             value.put("requiredPermissions", action.requiredPermissions());
+            value.put("requestTimeoutSeconds", action.requestTimeoutSeconds());
+            value.put("retryCap", action.retryCap());
+            value.put("payloadCapBytes", action.payloadCapBytes());
+            value.put("sensitiveOutputFields", action.sensitiveOutputFields());
+            value.put("supportsReconcile", action.supportsReconcile());
+            value.put("supportsCompensate", action.supportsCompensate());
             value.put("inputSchema", action.inputSchema());
             value.put("outputSchema", action.outputSchema());
             return value;

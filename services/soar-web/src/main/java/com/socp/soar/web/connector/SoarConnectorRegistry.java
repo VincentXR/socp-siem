@@ -106,6 +106,19 @@ public class SoarConnectorRegistry {
                 .findFirst().map(ignore -> connector.descriptor());
     }
 
+    /** Returns the concrete {@link ActionDescriptor} for an action ref, or
+     * empty when the ref is unknown. */
+    public Optional<ActionDescriptor> actionDescriptor(String actionRef) {
+        String canonical = canonicalRef(actionRef);
+        String[] parsed = parseRef(canonical);
+        if (parsed == null) return Optional.empty();
+        SoarConnector connector = connectors.get(parsed[0]);
+        if (connector == null) return Optional.empty();
+        return connector.descriptor().actions().stream()
+                .filter(action -> action.id().equals(parsed[1]))
+                .findFirst();
+    }
+
     /** Returns the stable built-in spelling used for execution and policy checks. */
     public String canonicalActionRef(String actionRef) {
         return canonicalRef(actionRef);
