@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Collection;
 import java.time.Instant;
 import jakarta.persistence.LockModeType;
+import org.springframework.data.jpa.repository.Modifying;
 
 public interface SoarRunRepository extends TenantScopedRepository<SoarRunEntity, String> {
     Optional<SoarRunEntity> findByTenantIdAndId(String tenantId, String id);
@@ -49,4 +50,9 @@ public interface SoarRunRepository extends TenantScopedRepository<SoarRunEntity,
     long countByTenantIdAndStatus(String tenantId, String status);
     /** System-scope aggregate used only for low-cardinality metrics/health. */
     long countByStatus(String status);
+
+    /** System-scope retention purge; call only from SoarRunRetentionWorker. */
+    @Modifying
+    @Query("delete from SoarRunEntity r where r.id in :ids")
+    int deleteByIds(@Param("ids") Collection<String> ids);
 }

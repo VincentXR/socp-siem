@@ -5,9 +5,11 @@ import com.socp.soar.web.persistence.entity.SoarActionAttemptEntity;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Collection;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import jakarta.persistence.LockModeType;
@@ -26,4 +28,9 @@ public interface SoarActionAttemptRepository extends TenantScopedRepository<Soar
     Optional<SoarActionAttemptEntity> findByTenantIdAndNodeRunIdAndAttemptNoForUpdate(
             @Param("tenantId") String tenantId, @Param("nodeRunId") String nodeRunId,
             @Param("attemptNo") int attemptNo);
+
+    /** System-scope retention purge; call only from SoarRunRetentionWorker. */
+    @Modifying
+    @Query("delete from SoarActionAttemptEntity a where a.nodeRunId in :nodeRunIds")
+    int deleteByNodeRunIdIn(@Param("nodeRunIds") Collection<String> nodeRunIds);
 }
