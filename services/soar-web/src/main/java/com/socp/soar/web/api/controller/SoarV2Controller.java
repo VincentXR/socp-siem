@@ -162,8 +162,16 @@ public class SoarV2Controller {
 
     @GetMapping("/playbooks/{id}/versions/{version}")
     @RequirePermission("soar:view")
-    public ApiResult<Map<String, Object>> version(@PathVariable String id, @PathVariable int version) {
-        return ApiResult.ok(service.getVersion(id, version));
+    public ApiResult<Map<String, Object>> version(@PathVariable String id, @PathVariable int version,
+                                                  jakarta.servlet.http.HttpServletResponse response) {
+        ApiResult<Map<String, Object>> result = ApiResult.ok(service.getVersion(id, version));
+        applyEtag(response, result.data());
+        return result;
+    }
+
+    /** Convenience overload for direct handler tests; MVC uses the response variant. */
+    public ApiResult<Map<String, Object>> version(String id, int version) {
+        return version(id, version, null);
     }
 
     @GetMapping("/playbooks/{id}/versions/{version}/export")
@@ -175,10 +183,57 @@ public class SoarV2Controller {
     @PutMapping("/playbooks/{id}/versions/{version}")
     @RequirePermission("soar:edit")
     public ApiResult<Map<String, Object>> saveDraft(@PathVariable String id, @PathVariable int version,
-                                                    @Valid @RequestBody SaveV2VersionRequest request) {
-        JsonNode definition = request.definition();
-        return ApiResult.ok(service.saveDraft(id, version, definition.toString(),
-                request.layout() == null ? "{}" : request.layout().toString(), request.rowVersion()));
+                                                    @Valid @RequestBody SaveV2VersionRequest request,
+                                                    @org.springframework.web.bind.annotation.RequestHeader(
+                                                            value = "If-Match", required = false) String ifMatch,
+                                                    jakarta.servlet.http.HttpServletResponse response) {
+        try {
+            Long expectedRowVersion = request.rowVersion();
+            if (expectedRowVersion == null && ifMatch != null && !ifMatch.isBlank()) {
+                expectedRowVersion = parseIfMatch(ifMatch);
+            }
+            ApiResult<Map<String, Object>> result = ApiResult.ok(service.saveDraft(id, version,
+                    request.definition().toString(),
+                    request.layout() == null ? "{}" : request.layout().toString(), expectedRowVersion));
+            applyEtag(response, result.data());
+            return result;
+        } catch (org.springframework.web.server.ResponseStatusException conflict) {
+            if (ifMatch != null && !ifMatch.isBlank()
+                    && conflict.getStatusCode().value() == HttpStatus.CONFLICT.value()) {
+                // RFC 7232: a mismatched precondition is 412, not 409
+                throw new org.springframework.web.server.ResponseStatusException(
+                        HttpStatus.PRECONDITION_FAILED, conflict.getReason(), conflict.getCause());
+            }
+            throw conflict;
+        }
+    }
+
+    /** Convenience overload for direct handler tests; MVC uses the header variant. */
+    public ApiResult<Map<String, Object>> saveDraft(String id, int version, SaveV2VersionRequest request) {
+        return saveDraft(id, version, request, null, null);
+    }
+
+    /** Accepts a bare number or an opaque-tag like `"3"` / `W/"3"`. */
+    private static Long parseIfMatch(String header) {
+        if (header == null) return null;
+        String value = header.trim();
+        if (value.startsWith("W/\"")) value = value.substring(3, Math.max(3, value.length() - 1));
+        else if (value.startsWith("\"")) value = value.substring(1, Math.max(1, value.length() - 1));
+        try {
+            long parsed = Long.parseLong(value);
+            return parsed < 0 ? null : parsed;
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    /** Weak ETag over the version rowVersion so clients can build If-Match. */
+    private static void applyEtag(jakarta.servlet.http.HttpServletResponse response, Map<String, Object> data) {
+        if (response == null || data == null) return;
+        Object rowVersion = data.get("rowVersion");
+        if (rowVersion instanceof Number number) {
+            response.setHeader("ETag", "W/\"" + number.longValue() + "\"");
+        }
     }
 
     @PostMapping("/playbooks/{id}/versions/{version}/validate")
