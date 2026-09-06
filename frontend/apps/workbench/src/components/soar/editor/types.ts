@@ -141,7 +141,7 @@ export interface FlowNodeData {
   raw: EditorNode
   /** Uppercased registry key (may not be a supported SoarNodeType). */
   nodeType: string
-  /** True iff the type is not in the five creation types. */
+  /** True iff the type is not in the creation-capable registry set. */
   unsupported: boolean
   tone: NodeTone
   /** Source handles resolved for this instance (registry set or dynamic). */

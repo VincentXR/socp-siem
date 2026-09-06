@@ -130,6 +130,39 @@ function approvalTagsValue(field: string): string {
   return tagsOf(approvalConfig(), field)
 }
 
+/* ---------- generic nested config/limits editing (FOREACH / PARALLEL) ---------- */
+function nestedOf(area: 'config' | 'limits'): Record<string, unknown> {
+  const node = props.node
+  const value = node?.[area]
+  return value && typeof value === 'object' ? value as Record<string, unknown> : {}
+}
+
+function updateNested(area: 'config' | 'limits', field: string, value: string): void {
+  const node = props.node
+  if (!node) return
+  const current = { ...nestedOf(area) }
+  if (value.trim()) current[field] = value
+  else delete current[field]
+  node[area] = current
+  props.flow.touchAfterNodeEdit()
+}
+
+function updateNestedNumber(area: 'config' | 'limits', field: string, raw: string, min: number, max: number): void {
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < min || parsed > max) return
+  updateNested(area, field, String(parsed))
+}
+
+function nestedNumberValue(area: 'config' | 'limits', field: string, fallback: number): string {
+  const value = nestedOf(area)[field]
+  return typeof value === 'number' && Number.isFinite(value) ? String(value) : String(fallback)
+}
+
+function nestedTextValue(area: 'config' | 'limits', field: string): string {
+  const value = nestedOf(area)[field]
+  return typeof value === 'string' ? value : ''
+}
+
 /* ---------- JSON editors ---------- */
 const nodeConfigText = ref('{}')
 const parametersText = ref('{}')
@@ -390,6 +423,42 @@ function connectionRefKnown(): boolean {
           <label>approverGroups<input :value="approvalTagsValue('approverGroups')" placeholder="comma separated" @input="updateApprovalTags('approverGroups', ($event.target as HTMLInputElement).value)" /></label>
         </div>
       </template>
+
+      <!-- FOREACH -->
+      <template v-if="nodeType === 'FOREACH'">
+        <label>
+          itemsPath
+          <input :value="nestedTextValue('config', 'itemsPath')" placeholder="vars.items" @input="updateNested('config', 'itemsPath', ($event.target as HTMLInputElement).value)" />
+        </label>
+        <label>
+          itemVariable
+          <input :value="nestedTextValue('config', 'itemVariable')" placeholder="vars.item" @input="updateNested('config', 'itemVariable', ($event.target as HTMLInputElement).value)" />
+        </label>
+        <div class="soar-flow-retry-grid">
+          <label>concurrency<input type="number" min="1" max="10" :value="nestedNumberValue('limits', 'concurrency', 1)" @input="updateNestedNumber('limits', 'concurrency', ($event.target as HTMLInputElement).value, 1, 10)" /></label>
+          <label>maxItems<input type="number" min="1" max="100" :value="nestedNumberValue('limits', 'maxItems', 100)" @input="updateNestedNumber('limits', 'maxItems', ($event.target as HTMLInputElement).value, 1, 100)" /></label>
+        </div>
+      </template>
+
+      <!-- PARALLEL -->
+      <label v-if="nodeType === 'PARALLEL'">
+        maxParallelism
+        <input type="number" min="1" max="10" :value="nestedNumberValue('limits', 'maxParallelism', 2)" @input="updateNestedNumber('limits', 'maxParallelism', ($event.target as HTMLInputElement).value, 1, 10)" />
+      </label>
+
+      <!-- JOIN -->
+      <label v-if="nodeType === 'JOIN'">
+        strategy
+        <select :value="scalar(node, 'strategy') || 'ALL_SUCCESS'" @change="updateScalar('strategy', ($event.target as HTMLSelectElement).value)">
+          <option v-for="strategy in ['ALL_SUCCESS', 'ALL_DONE', 'ANY_SUCCESS']" :key="strategy" :value="strategy">{{ strategy }}</option>
+        </select>
+      </label>
+
+      <!-- SUB_PLAYBOOK -->
+      <label v-if="nodeType === 'SUB_PLAYBOOK'">
+        playbookVersionId
+        <input :value="scalar(node, 'playbookVersionId')" placeholder="published version id" @input="updateScalar('playbookVersionId', ($event.target as HTMLInputElement).value)" />
+      </label>
 
       <!-- Generic secondary fields for read-only types (raw display only) -->
       <template v-if="unsupported">

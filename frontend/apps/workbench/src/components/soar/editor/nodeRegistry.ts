@@ -1,11 +1,13 @@
 /**
  * Node registry for the SOAR V2 graph editor.
  *
- * Keyed by every SoarNodeType (13 values). Only START, ACTION, CONDITION,
- * APPROVAL and END are creation-allowed; every other type is shown in the
- * palette as a disabled "Coming soon" entry and can never be dropped onto the
- * canvas. Existing definitions that contain unsupported types still render as
- * read-only generic cards.
+ * Keyed by every SoarNodeType (13 values). Creation-capable types are
+ * START, ACTION, CONDITION, APPROVAL, END, PARALLEL, JOIN, FOREACH and
+ * SUB_PLAYBOOK (the last four are backed by the V2 engine's child-workflow
+ * fan-out and are covered by workflow-level evidence tests). SWITCH, DELAY,
+ * MANUAL_TASK and SET_VARIABLE remain palette "Coming soon" entries that can
+ * never be dropped onto the canvas. Existing definitions that contain
+ * unsupported types still render as read-only generic cards.
  */
 import type { EditorNode, PortSpec, SoarNodeType, SoarNodeTypeMeta } from './types'
 
@@ -18,16 +20,22 @@ const TRUE_PORT: PortSpec = { token: 'true', labelKey: 'soar.port.true', label: 
 const FALSE_PORT: PortSpec = { token: 'false', labelKey: 'soar.port.false', label: 'false' }
 const APPROVED_PORT: PortSpec = { token: 'approved', labelKey: 'soar.port.approved', label: 'approved' }
 const REJECTED_PORT: PortSpec = { token: 'rejected', labelKey: 'soar.port.rejected', label: 'rejected' }
+const BODY_PORT: PortSpec = { token: 'body', labelKey: 'soar.port.body', label: 'body' }
+const DONE_PORT: PortSpec = { token: 'done', labelKey: 'soar.port.done', label: 'done' }
 
-export const CREATION_TYPES: readonly SoarNodeType[] = ['START', 'ACTION', 'CONDITION', 'APPROVAL', 'END']
+export const CREATION_TYPES: readonly SoarNodeType[] = [
+  'START', 'ACTION', 'CONDITION', 'APPROVAL', 'END',
+  'PARALLEL', 'JOIN', 'FOREACH', 'SUB_PLAYBOOK',
+]
 
 export function isCreationType(type: string): boolean {
   return CREATION_TYPES.includes(type as SoarNodeType)
 }
 
 /**
- * Palette iteration order: the five creation-capable types first, then the
- * coming-soon group in the order the current editor lists them.
+ * Palette iteration order: the nine creation-capable types first, then the
+ * coming-soon group (SWITCH, DELAY, MANUAL_TASK, SET_VARIABLE) in the order
+ * the current editor lists them.
  */
 export const NODE_TYPE_ORDER: readonly SoarNodeType[] = [
   'START', 'ACTION', 'CONDITION', 'APPROVAL', 'END',
@@ -121,11 +129,11 @@ export const SOAR_NODE_REGISTRY: Record<SoarNodeType, SoarNodeTypeMeta> = {
     description: 'Fan-out to branches',
     descriptionKey: 'soar.nodeTypeDesc.PARALLEL',
     tone: 'control',
-    creationAllowed: false,
-    comingSoon: true,
-    sourcePorts: [DEFAULT_PORT],
+    creationAllowed: true,
+    comingSoon: false,
+    sourcePorts: [DEFAULT_PORT, SUCCESS_PORT, FAILURE_PORT],
     acceptsTarget: true,
-    defaultCreate: (id) => ({ id, type: 'PARALLEL' }),
+    defaultCreate: (id) => ({ id, type: 'PARALLEL', name: 'Parallel', limits: { maxParallelism: 2 } }),
   },
   JOIN: {
     type: 'JOIN',
@@ -134,11 +142,11 @@ export const SOAR_NODE_REGISTRY: Record<SoarNodeType, SoarNodeTypeMeta> = {
     description: 'Deterministic fan-in',
     descriptionKey: 'soar.nodeTypeDesc.JOIN',
     tone: 'control',
-    creationAllowed: false,
-    comingSoon: true,
-    sourcePorts: [DEFAULT_PORT],
+    creationAllowed: true,
+    comingSoon: false,
+    sourcePorts: [DEFAULT_PORT, SUCCESS_PORT, FAILURE_PORT, ERROR_PORT],
     acceptsTarget: true,
-    defaultCreate: (id) => ({ id, type: 'JOIN' }),
+    defaultCreate: (id) => ({ id, type: 'JOIN', name: 'Join', strategy: 'ALL_SUCCESS' }),
   },
   FOREACH: {
     type: 'FOREACH',
@@ -147,11 +155,17 @@ export const SOAR_NODE_REGISTRY: Record<SoarNodeType, SoarNodeTypeMeta> = {
     description: 'Bounded collection loop',
     descriptionKey: 'soar.nodeTypeDesc.FOREACH',
     tone: 'control',
-    creationAllowed: false,
-    comingSoon: true,
-    sourcePorts: [DEFAULT_PORT],
+    creationAllowed: true,
+    comingSoon: false,
+    sourcePorts: [DEFAULT_PORT, BODY_PORT, DONE_PORT],
     acceptsTarget: true,
-    defaultCreate: (id) => ({ id, type: 'FOREACH' }),
+    defaultCreate: (id) => ({
+      id,
+      type: 'FOREACH',
+      name: 'For each',
+      config: { itemsPath: 'vars.items', itemVariable: 'vars.item' },
+      limits: { concurrency: 1, maxItems: 100 },
+    }),
   },
   DELAY: {
     type: 'DELAY',
@@ -186,11 +200,11 @@ export const SOAR_NODE_REGISTRY: Record<SoarNodeType, SoarNodeTypeMeta> = {
     description: 'Published child version',
     descriptionKey: 'soar.nodeTypeDesc.SUB_PLAYBOOK',
     tone: 'control',
-    creationAllowed: false,
-    comingSoon: true,
-    sourcePorts: [DEFAULT_PORT],
+    creationAllowed: true,
+    comingSoon: false,
+    sourcePorts: [DEFAULT_PORT, SUCCESS_PORT, FAILURE_PORT],
     acceptsTarget: true,
-    defaultCreate: (id) => ({ id, type: 'SUB_PLAYBOOK' }),
+    defaultCreate: (id) => ({ id, type: 'SUB_PLAYBOOK', name: 'Sub-playbook', playbookVersionId: '' }),
   },
   SET_VARIABLE: {
     type: 'SET_VARIABLE',

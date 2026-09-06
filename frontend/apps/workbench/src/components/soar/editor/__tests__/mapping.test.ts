@@ -11,7 +11,7 @@ import {
   serializeLayout,
 } from '../useDefinitionFlow'
 import { mapIssuesToNodes } from '../validation'
-import { SOAR_NODE_REGISTRY } from '../nodeRegistry'
+import { SOAR_NODE_REGISTRY, CREATION_TYPES } from '../nodeRegistry'
 import type { EditorDefinition, EditorNode, ValidationIssue } from '../types'
 
 /** Golden-template-like definition with CONDITION true/false + APPROVAL edges and a read-only type. */
@@ -25,7 +25,7 @@ function sampleDefinition(): EditorDefinition {
       { id: 'cond', type: 'CONDITION', name: 'Severity gate', expression: "trigger.severity == 'HIGH'" },
       { id: 'action', type: 'ACTION', name: 'Block host', actionRef: 'socp.alert/get@1', parameters: { host: '{{event.host}}' }, target: {} },
       { id: 'approval', type: 'APPROVAL', name: 'Review', config: { timeoutSeconds: 86400, requiredApprovals: 2 } },
-      { id: 'legacy', type: 'PARALLEL', name: 'Legacy fan-out', config: { branches: ['a', 'b'] } },
+      { id: 'legacy', type: 'SWITCH', name: 'Legacy switch', config: { cases: ['a', 'b'] } },
       { id: 'end', type: 'END', name: 'Done', outcome: 'SUCCEEDED' },
     ],
     edges: [
@@ -101,6 +101,34 @@ describe('definition <-> Vue Flow mapping', () => {
     expect(positions.start).toEqual({ x: 5, y: 5 })
     expect(positions.cond).toEqual(fallbackPosition(1))
     expect(positions.end).toEqual(fallbackPosition(5))
+  })
+
+  it('unlocks engine-backed control-flow types for creation with semantic ports', () => {
+    expect(CREATION_TYPES).toEqual(expect.arrayContaining(['PARALLEL', 'JOIN', 'FOREACH', 'SUB_PLAYBOOK']))
+    for (const type of ['PARALLEL', 'JOIN', 'FOREACH', 'SUB_PLAYBOOK'] as const) {
+      expect(SOAR_NODE_REGISTRY[type].comingSoon).toBe(false)
+      expect(SOAR_NODE_REGISTRY[type].creationAllowed).toBe(true)
+    }
+    const tokens = SOAR_NODE_REGISTRY.FOREACH.sourcePorts.map(port => port.token)
+    expect(tokens).toContain('body')
+    expect(tokens).toContain('done')
+
+    // an engine-backed type is now an editable, connectable node
+    const definition = normalizeDefinition({
+      schemaVersion: 'soar.playbook/v2',
+      entryNodeId: 'start',
+      nodes: [
+        { id: 'start', type: 'START', name: 'Start' },
+        { id: 'p', type: 'PARALLEL', name: 'Fan-out', limits: { maxParallelism: 2 } },
+        { id: 'end', type: 'END', name: 'Done', outcome: 'SUCCEEDED' },
+      ],
+      edges: [],
+    })
+    const positions = completePositions(definition)
+    const node = buildFlowNodes(definition, positions).find(item => item.id === 'p')!
+    expect(node.data.unsupported).toBe(false)
+    expect(node.connectable).toBe(true)
+    expect(node.deletable).toBe(true)
   })
 
   it('canonical key ignores array order but notices definition and layout edits', () => {
