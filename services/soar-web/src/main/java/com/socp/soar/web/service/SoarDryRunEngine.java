@@ -145,8 +145,11 @@ public final class SoarDryRunEngine {
             }
             results.add(result);
             current = nextNode(root.path("edges"), id, branch);
-            if (current != null && path.size() < 3) path.addLast(current);
+            // Cycle check must run BEFORE the next hop joins the visited
+            // window, otherwise the hop we just appended always matches
+            // path.contains and the walk stops right after the entry node.
             if (current != null && path.contains(current) && !"FOREACH".equals(type)) break;
+            if (current != null && path.size() < 3) path.addLast(current);
         }
         Map<String, Object> output = new LinkedHashMap<>();
         output.put("status", "SIMULATED");
