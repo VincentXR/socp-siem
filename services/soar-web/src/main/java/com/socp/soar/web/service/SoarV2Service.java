@@ -50,6 +50,7 @@ import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -488,7 +489,12 @@ public class SoarV2Service {
         playbook.setLatestPublishedVersion(versionNo);
         playbook.setUpdatedAt(now);
         playbooks.save(playbook);
-        return versionView(version);
+        Map<String, Object> view = versionView(version);
+        // Design 6.4: a publish result must surface connection health and the
+        // last test time so the summary cannot claim readiness for a connector
+        // that is disabled, missing or only guessed healthy.
+        view.put("connectionHealth", connectionHealth(version.getDefinitionJson(), tenant));
+        return view;
     }
 
     @Transactional
@@ -1514,6 +1520,43 @@ public class SoarV2Service {
             }
         } catch (ResponseStatusException failure) { throw failure; }
         catch (Exception failure) { throw error(HttpStatus.BAD_REQUEST, "SOAR_DEFINITION_INVALID", "invalid definition"); }
+    }
+
+    /** Per-connection readiness summary referenced by a definition. Used by the
+     * publish result (design 6.4); never treated as a live connectivity test. */
+    private List<Map<String, Object>> connectionHealth(String definitionJson, String tenant) {
+        List<Map<String, Object>> health = new ArrayList<>();
+        if (connectors == null || definitionJson == null || definitionJson.isBlank()) return health;
+        try {
+            JsonNode nodesJson = mapper.readTree(definitionJson).path("nodes");
+            if (!nodesJson.isArray()) return health;
+            Set<String> seen = new LinkedHashSet<>();
+            for (JsonNode node : nodesJson) {
+                if (!"ACTION".equalsIgnoreCase(node.path("type").asText(""))) continue;
+                String connectionId = node.path("connectionRef").asText("").trim();
+                if (connectionId.isBlank() || !seen.add(connectionId)) continue;
+                Map<String, Object> entry = new LinkedHashMap<>();
+                entry.put("connectionRef", connectionId);
+                // validateConnections has already verified existence/enabled/type
+                // before publish; a missing row here means a concurrent delete and
+                // the summary simply omits it rather than guessing state.
+                connectors.findByTenantIdAndId(tenant, connectionId).ifPresent(row -> {
+                    entry.put("name", nullSafe(row.getName()));
+                    entry.put("connectorType", nullSafe(row.getConnectorType()));
+                    entry.put("enabled", row.isEnabled());
+                    entry.put("deleted", row.getDeletedAt() != null);
+                    entry.put("status", row.getStatus() == null ? (row.isEnabled() ? "HEALTHY_UNKNOWN" : "DISABLED") : row.getStatus());
+                    entry.put("lastTestAt", row.getLastTestAt());
+                    entry.put("lastTestStatus", nullSafe(row.getLastTestStatus()));
+                    entry.put("ready", row.isEnabled() && row.getDeletedAt() == null);
+                    health.add(entry);
+                });
+            }
+        } catch (Exception ignored) {
+            // The definition was already validated before publish; malformed
+            // legacy JSON must not hide the publish result with a failure.
+        }
+        return health;
     }
 
     private record ApprovalContext(String actionRef, String inputHash, String targetSnapshotJson) {

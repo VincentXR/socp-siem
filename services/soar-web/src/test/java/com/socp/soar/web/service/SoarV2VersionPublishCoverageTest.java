@@ -4,11 +4,14 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.soar.web.connector.SoarConnectorRegistry;
+import com.socp.soar.web.connector.ActionDescriptor;
+import com.socp.soar.web.connector.ConnectorDescriptor;
 import com.socp.soar.web.definition.SoarDefinitionValidator;
 import com.socp.soar.web.domain.v2.DefinitionIssue;
 import com.socp.soar.web.domain.v2.DefinitionValidationResult;
 import com.socp.soar.web.domain.v2.SoarPlaybookVersionStatus;
 import com.socp.soar.web.persistence.entity.PlaybookVersionEntity;
+import com.socp.soar.web.persistence.entity.SoarConnectorEntity;
 import com.socp.soar.web.persistence.entity.SoarPlaybookEntity;
 import com.socp.soar.web.persistence.repository.PlaybookVersionRepository;
 import com.socp.soar.web.persistence.repository.SoarActionAttemptRepository;
@@ -59,6 +62,13 @@ class SoarV2VersionPublishCoverageTest {
             + "{\"id\":\"start\",\"type\":\"START\"},{\"id\":\"end\",\"type\":\"END\"}],"
             + "\"edges\":[{\"from\":\"start\",\"to\":\"end\"}]}";
     private static final String DEFAULT_RISK = "{\"highRiskActionCount\":0,\"actionCount\":0}";
+    private static final String CONNECTED_DEFINITION = "{\"schemaVersion\":\"soar.playbook/v2\","
+            + "\"entryNodeId\":\"start\",\"nodes\":["
+            + "{\"id\":\"start\",\"type\":\"START\"},"
+            + "{\"id\":\"act\",\"type\":\"ACTION\",\"actionRef\":\"my.conn/run@1\",\"connectionRef\":\"conn-1\","
+            + "\"parameters\":{},\"target\":{}},"
+            + "{\"id\":\"end\",\"type\":\"END\",\"outcome\":\"SUCCEEDED\"}],"
+            + "\"edges\":[{\"from\":\"start\",\"to\":\"act\"},{\"from\":\"act\",\"to\":\"end\"}]}";
 
     private final ObjectMapper mapper = new ObjectMapper();
 
@@ -393,6 +403,58 @@ class SoarV2VersionPublishCoverageTest {
                     assertThat(error.getStatusCode().value()).isEqualTo(404);
                     assertThat(error.getReason()).contains("SOAR_VERSION_NOT_FOUND");
                 });
+    }
+
+    @Test
+    void publishIncludesEmptyConnectionHealthWithoutConnectors() {
+        SoarPlaybookEntity playbook = playbook("pb-1", "Contain host");
+        PlaybookVersionEntity draft = draft();
+        given(playbooks.findByTenantIdAndId("tenant-a", "pb-1")).willReturn(Optional.of(playbook));
+        given(versions.findByTenantIdAndPlaybookIdAndVersionNo("tenant-a", "pb-1", 1)).willReturn(Optional.of(draft));
+        given(validator.validate(SIMPLE_DEFINITION)).willReturn(validation(true, "published-hash", 2, 2, 1));
+
+        Map<String, Object> result = service.publish("pb-1", 1);
+
+        assertThat(result).containsEntry("status", SoarPlaybookVersionStatus.PUBLISHED.name());
+        assertThat(result.get("connectionHealth")).isEqualTo(List.of());
+    }
+
+    @Test
+    void publishConnectionHealthSurfacesEnabledConnectorState() {
+        SoarPlaybookEntity playbook = playbook("pb-1", "Contain host");
+        PlaybookVersionEntity draft = draft();
+        draft.setDefinitionJson(CONNECTED_DEFINITION);
+        given(playbooks.findByTenantIdAndId("tenant-a", "pb-1")).willReturn(Optional.of(playbook));
+        given(versions.findByTenantIdAndPlaybookIdAndVersionNo("tenant-a", "pb-1", 1)).willReturn(Optional.of(draft));
+        given(validator.validate(CONNECTED_DEFINITION)).willReturn(validation(true, "connected-hash", 3, 1, 0));
+
+        ActionDescriptor action = new ActionDescriptor("run", 1, "Run", "", "LOW", "NONE", "NONE",
+                false, List.of("host"), Map.of(), Map.of());
+        given(connectorRegistry.descriptorForAction("my.conn/run@1"))
+                .willReturn(Optional.of(new ConnectorDescriptor("my.conn", 1, "My Connector", true, List.of(action))));
+        given(connectorRegistry.canonicalActionRef(anyString())).willAnswer(invocation -> invocation.getArgument(0));
+
+        SoarConnectorEntity row = new SoarConnectorEntity();
+        row.setId("conn-1");
+        row.setName("FW");
+        row.setConnectorType("my.conn");
+        row.setEnabled(true);
+        row.setStatus("HEALTHY");
+        row.setLastTestAt(Instant.parse("2026-09-01T00:00:00Z"));
+        row.setLastTestStatus("OK");
+        given(connectors.findByTenantIdAndId("tenant-a", "conn-1")).willReturn(Optional.of(row));
+
+        Map<String, Object> result = service.publish("pb-1", 1);
+
+        List<?> health = (List<?>) result.get("connectionHealth");
+        assertThat(health).hasSize(1);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> entry = (Map<String, Object>) health.get(0);
+        assertThat(entry).containsEntry("connectionRef", "conn-1")
+                .containsEntry("connectorType", "my.conn")
+                .containsEntry("ready", true)
+                .containsEntry("status", "HEALTHY")
+                .containsEntry("lastTestStatus", "OK");
     }
 
     // ------------------------------------------------------------- deprecate
