@@ -900,6 +900,11 @@ export const zhCN = {
     controlRules: 'SOAR V2 · 自动化规则',
     controlTasks: 'SOAR V2 · 人工任务',
     controlConnections: 'SOAR V2 · 连接与运维',
+    editorUndo: '撤销',
+    editorRedo: '重做',
+    editorUndoHint: '撤销 (Ctrl+Z)',
+    editorRedoHint: '重做 (Ctrl+Shift+Z / Ctrl+Y)',
+    discardChanges: '存在未保存的更改，隐藏编辑器将丢弃这些修改，确定继续吗？',
   },
 };
 

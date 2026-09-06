@@ -902,5 +902,10 @@ export const enUS: LocaleMessages = {
     controlRules: 'SOAR V2 Automation Rules',
     controlTasks: 'SOAR V2 Manual Tasks',
     controlConnections: 'SOAR V2 Connections & Ops',
+    editorUndo: 'Undo',
+    editorRedo: 'Redo',
+    editorUndoHint: 'Undo (Ctrl+Z)',
+    editorRedoHint: 'Redo (Ctrl+Shift+Z / Ctrl+Y)',
+    discardChanges: 'You have unsaved changes. Hiding the editor will discard them. Continue?',
   },
 };

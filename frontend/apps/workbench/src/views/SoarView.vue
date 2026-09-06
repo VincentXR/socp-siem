@@ -57,6 +57,7 @@ const page = ref(1)
 const size = ref(10)
 const dialogVisible = ref(false)
 const showEditor = ref(false)
+const editorRef = ref<{ hasUnsavedChanges: boolean } | null>(null)
 const loading = ref(false)
 const form = ref({ name: '', trigger: '', actions: '', enabled: true })
 const executionsPaged = computed(() => executions.value.slice((page.value - 1) * size.value, page.value * size.value))
@@ -152,6 +153,15 @@ async function removePlaybook(id: string) {
   await loadPlaybooks()
 }
 
+/**
+ * Hiding the editor unmounts it, so warn when it still holds unsaved changes
+ * (the dirty state is tracked by SoarV2Editor and surfaced through its ref).
+ */
+function toggleEditor(): void {
+  if (showEditor.value && editorRef.value?.hasUnsavedChanges && !confirm(t('soarV2.discardChanges'))) return
+  showEditor.value = !showEditor.value
+}
+
 async function toggle(id: string) {
   await togglePlaybook(id)
   await loadPlaybooks()
@@ -181,14 +191,14 @@ onMounted(loadPlaybooks)
         <div class="soar-tab-content">
           <!-- Action bar for editor / new playbook -->
           <div class="soar-editor-toggle-bar">
-            <el-button :type="showEditor ? 'primary' : 'default'" size="small" @click="showEditor = !showEditor">
+            <el-button :type="showEditor ? 'primary' : 'default'" size="small" @click="toggleEditor">
               {{ showEditor ? t('soarV2.editorHide') : t('soarV2.editorShow') }}
             </el-button>
           </div>
 
           <!-- Visual Playbook Editor (Collapsible) -->
           <div v-if="showEditor" class="soar-editor-container">
-            <SoarV2Editor />
+            <SoarV2Editor ref="editorRef" />
           </div>
 
           <!-- Golden Templates -->

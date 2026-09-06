@@ -11,6 +11,7 @@
  */
 import { computed, nextTick, ref, type ComputedRef, type Ref } from 'vue'
 import { MarkerType, type Connection, type Edge, type NodeDragEvent, type NodeMouseEvent, type VueFlowStore } from '@vue-flow/core'
+import { createHistory, deepClone } from './history'
 import { isCreationType, nodeTypeMeta, uniqueNodeId } from './nodeRegistry'
 import { mapIssuesToNodes } from './validation'
 import type {
@@ -32,6 +33,9 @@ export const NODE_LAYOUT_COLUMNS = 3
 export const NODE_WIDTH_STEP = 245
 export const NODE_HEIGHT_STEP = 112
 const GRID_ORIGIN = { x: 45, y: 42 }
+
+/** Cap on recorded undo/redo states; older snapshots are evicted. */
+const HISTORY_LIMIT = 100
 
 /* ------------------------------------------------------------------ */
 /* Pure mapping functions (exported for unit tests)                    */
@@ -244,6 +248,15 @@ export function canonicalKey(def: EditorDefinition, positions: PositionsMap): st
 /* Composables / shell state                                          */
 /* ------------------------------------------------------------------ */
 
+/** In-memory copy/cut payload: deep copies of the selected sub-graph. */
+export interface EditorClipboard {
+  nodes: EditorNode[]
+  edges: EditorEdge[]
+  positions: Record<string, GraphPosition>
+  /** Consecutive pastes step by ~40px so copies never overlap the originals. */
+  pasteCount: number
+}
+
 export interface SoarFlowApi {
   selectedNodeId: Ref<string>
   positions: Ref<PositionsMap>
@@ -252,6 +265,13 @@ export interface SoarFlowApi {
   validationIssues: Ref<ValidationIssue[]>
   graphRevision: Ref<number>
   dirty: ComputedRef<boolean>
+  canUndo: ComputedRef<boolean>
+  canRedo: ComputedRef<boolean>
+  undo: () => void
+  redo: () => void
+  copySelection: () => boolean
+  cutSelection: () => boolean
+  pasteSelection: () => boolean
   nodeCount: ComputedRef<number>
   edgeCount: ComputedRef<number>
   applyDefinition: (value: unknown, layout?: unknown) => void
@@ -288,8 +308,17 @@ export function useDefinitionFlow(
   const validationIssues = ref<ValidationIssue[]>([])
   const baselineKey = ref('')
 
+  /* ---------------- undo/redo history ---------------- */
+  const history = createHistory(HISTORY_LIMIT)
+  const historyToken = ref(0)
+  let lastHistoryKey = ''
+  let clipboard: EditorClipboard | null = null
+
   const dirty = computed(() =>
     canonicalKey(rawRoot.value, positions.value) !== baselineKey.value)
+
+  const canUndo = computed(() => { void historyToken.value; return history.canUndo() })
+  const canRedo = computed(() => { void historyToken.value; return history.canRedo() })
 
   const nodeCount = computed(() => rawRoot.value.nodes.length)
   const edgeCount = computed(() => rawRoot.value.edges.length)
@@ -366,11 +395,13 @@ export function useDefinitionFlow(
 
   function applyDefinition(value: unknown, layout?: unknown): void {
     applyState(value, layout, true)
+    resetHistory()
   }
 
   /** Applies a pasted/edited definition without moving the dirty baseline. */
   function applyWorkingCopy(value: unknown, layout?: unknown): void {
     applyState(value, layout, false)
+    pushHistory()
   }
 
   function resetToEmpty(): void {
@@ -379,6 +410,41 @@ export function useDefinitionFlow(
 
   function markBaseline(): void {
     baselineKey.value = canonicalKey(rawRoot.value, positions.value)
+  }
+
+  /* ---------------- undo/redo record points ---------------- */
+
+  /** Start a fresh history branch anchored at the current (just-loaded/saved) state. */
+  function resetHistory(): void {
+    history.clear()
+    history.record(rawRoot.value, serializeLayout(positions.value))
+    lastHistoryKey = canonicalKey(rawRoot.value, positions.value)
+    historyToken.value += 1
+  }
+
+  /** Snapshot a committed mutation; no-ops (same canonical state) are skipped. */
+  function pushHistory(): void {
+    const key = canonicalKey(rawRoot.value, positions.value)
+    if (key === lastHistoryKey) return
+    history.record(rawRoot.value, serializeLayout(positions.value))
+    lastHistoryKey = key
+    historyToken.value += 1
+  }
+
+  function undo(): void {
+    const snapshot = history.undo()
+    if (!snapshot) return
+    historyToken.value += 1
+    applyState(snapshot.definition, snapshot.layout, false)
+    lastHistoryKey = canonicalKey(rawRoot.value, positions.value)
+  }
+
+  function redo(): void {
+    const snapshot = history.redo()
+    if (!snapshot) return
+    historyToken.value += 1
+    applyState(snapshot.definition, snapshot.layout, false)
+    lastHistoryKey = canonicalKey(rawRoot.value, positions.value)
   }
 
   function serializeForSave(): { definition: EditorDefinition; layout: LayoutPayload } {
@@ -409,6 +475,7 @@ export function useDefinitionFlow(
     markStale()
     rebuild()
     refreshSelectionInStore()
+    pushHistory()
     return id
   }
 
@@ -469,6 +536,7 @@ export function useDefinitionFlow(
     markStale()
     rebuild()
     refreshSelectionInStore()
+    pushHistory()
   }
 
   function removeSelected(): void {
@@ -520,7 +588,90 @@ export function useDefinitionFlow(
       markStale()
       rebuild()
       refreshSelectionInStore()
+      pushHistory()
     }
+  }
+
+  /* ---------------- copy / cut / paste ---------------- */
+
+  /** Copies the selected node sub-graph (internal edges only) for later paste. */
+  function copySelection(): boolean {
+    const selectedNodes = [...store.getSelectedNodes.value]
+    if (!selectedNodes.length) return false
+    const ids = new Set(selectedNodes.map(node => node.id))
+    const nodes = rawRoot.value.nodes
+      .filter(raw => ids.has(raw.id))
+      .map(raw => deepClone(raw))
+    if (!nodes.length) return false
+    const copiedPositions: Record<string, GraphPosition> = {}
+    for (const node of nodes) {
+      const at = positions.value[node.id]
+      copiedPositions[node.id] = at ? { ...at } : { ...fallbackPosition(0) }
+    }
+    const edges = rawRoot.value.edges
+      .filter(edge => ids.has(edge.from) && ids.has(edge.to))
+      .map(edge => deepClone(edge))
+    clipboard = { nodes, edges, positions: copiedPositions, pasteCount: 0 }
+    return true
+  }
+
+  function cutSelection(): boolean {
+    if (!copySelection()) return false
+    deleteSelection()
+    return true
+  }
+
+  /** Unique id for a pasted copy: `<source>_copy`, `<source>_copy2`, ... */
+  function freshPasteId(sourceId: string, used: ReadonlySet<string>): string {
+    const base = `${sourceId}_copy`
+    if (!used.has(base)) return base
+    let index = 2
+    while (used.has(`${base}${index}`)) index += 1
+    return `${base}${index}`
+  }
+
+  /**
+   * Inserts the clipboard sub-graph. START is never duplicated; edges whose
+   * endpoints are both pasted are re-linked. Copied nodes keep whatever type
+   * they had in the source definition (creation-gating only governs the
+   * palette, so read-only types carried by a clipboard are preserved as-is).
+   */
+  function pasteSelection(): boolean {
+    if (!clipboard || !clipboard.nodes.length) return false
+    const used = new Set(rawRoot.value.nodes.map(node => node.id))
+    const idMap = new Map<string, string>()
+    const inserted: EditorNode[] = []
+    const delta = 40 * (clipboard.pasteCount + 1)
+    for (const source of clipboard.nodes) {
+      if (rawNodeType(source) === 'START') continue
+      const fresh = freshPasteId(source.id, used)
+      used.add(fresh)
+      idMap.set(source.id, fresh)
+      const node = deepClone(source)
+      node.id = fresh
+      inserted.push(node)
+      const at = clipboard.positions[source.id]
+      const base = at ?? fallbackPosition(rawRoot.value.nodes.length + inserted.length)
+      positions.value[fresh] = { x: base.x + delta, y: base.y + delta }
+    }
+    if (!inserted.length) return false
+    const pastedEdges = clipboard.edges
+      .filter(edge => idMap.has(edge.from) && idMap.has(edge.to))
+      .map((edge) => {
+        const copy = deepClone(edge)
+        copy.from = idMap.get(edge.from) as string
+        copy.to = idMap.get(edge.to) as string
+        return copy
+      })
+    rawRoot.value.nodes.push(...inserted)
+    rawRoot.value.edges.push(...pastedEdges)
+    clipboard.pasteCount += 1
+    selectedNodeId.value = inserted[0].id
+    markStale()
+    rebuild()
+    refreshSelectionInStore()
+    pushHistory()
+    return true
   }
 
   /** Current definition document (no structural rewrite). */
@@ -621,6 +772,7 @@ export function useDefinitionFlow(
     rawRoot.value.edges.push(rawEdge)
     markStale()
     rebuild()
+    pushHistory()
   })
 
   store.onNodeDragStop(({ nodes }: NodeDragEvent) => {
@@ -634,7 +786,7 @@ export function useDefinitionFlow(
         changed = true
       }
     }
-    void changed
+    if (changed) pushHistory()
   })
 
   store.onNodeClick(({ node }: NodeMouseEvent) => {
@@ -673,6 +825,7 @@ export function useDefinitionFlow(
       markStale()
       rebuild()
       refreshSelectionInStore()
+      pushHistory()
     }
   })
 
@@ -693,6 +846,7 @@ export function useDefinitionFlow(
     if (mutated) {
       markStale()
       rebuild()
+      pushHistory()
     }
   })
 
@@ -709,6 +863,13 @@ export function useDefinitionFlow(
     validationIssues,
     graphRevision,
     dirty,
+    canUndo,
+    canRedo,
+    undo,
+    redo,
+    copySelection,
+    cutSelection,
+    pasteSelection,
     nodeCount,
     edgeCount,
     applyDefinition,

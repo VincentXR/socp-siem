@@ -34,6 +34,7 @@ import SoarFlowPalette from './editor/SoarFlowPalette.vue'
 import SoarFlowPropertyPanel from './editor/SoarFlowPropertyPanel.vue'
 import { PALETTE_DATA_TYPE } from './editor/types'
 import type { EditorNode, ValidationIssue, ValidationResult } from './editor/types'
+import { useI18n } from '../../composables/useI18n'
 
 type JsonObject = Record<string, unknown>
 
@@ -50,7 +51,9 @@ const TONE_COLORS: Record<string, string> = {
 }
 
 const props = withDefaults(defineProps<{ initialPlaybookId?: string }>(), { initialPlaybookId: '' })
-const emit = defineEmits<{ saved: [SoarV2Version] }>()
+const emit = defineEmits<{ saved: [SoarV2Version]; 'dirty-change': [dirty: boolean] }>()
+
+const { t } = useI18n()
 
 const flowStore = useVueFlow(FLOW_ID)
 const flow = useDefinitionFlow(flowStore, text => { errorMessage.value = text })
@@ -73,6 +76,7 @@ const errorMessage = ref('')
 
 const selectedVersion = computed(() => versions.value.find(version => version.version === selectedVersionNo.value))
 const isDraft = computed(() => selectedVersion.value?.status === 'DRAFT')
+const hasUnsavedChanges = computed(() => flow.dirty.value)
 const issueCount = computed(() =>
   (validation.value?.errors?.length ?? 0) + (validation.value?.warnings?.length ?? 0))
 const flowSelectionCount = computed(() =>
@@ -308,6 +312,34 @@ function onCanvasDrop(event: DragEvent): void {
 function onKeyDown(event: KeyboardEvent): void {
   const target = event.target as HTMLElement | null
   if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return
+  const modified = event.ctrlKey || event.metaKey
+  const key = event.key.toLowerCase()
+  if (modified && key === 'z') {
+    event.preventDefault()
+    if (event.shiftKey) flow.redo()
+    else flow.undo()
+    return
+  }
+  if (modified && key === 'y') {
+    event.preventDefault()
+    flow.redo()
+    return
+  }
+  if (modified && key === 'c') {
+    event.preventDefault()
+    flow.copySelection()
+    return
+  }
+  if (modified && key === 'x') {
+    event.preventDefault()
+    flow.cutSelection()
+    return
+  }
+  if (modified && key === 'v') {
+    event.preventDefault()
+    flow.pasteSelection()
+    return
+  }
   if (event.key !== 'Delete' && event.key !== 'Backspace') return
   if (!flowStore.getSelectedNodes.value.length && !flowStore.getSelectedEdges.value.length) return
   event.preventDefault()
@@ -347,6 +379,12 @@ watch(() => props.initialPlaybookId, (value) => {
   }
 })
 
+watch(() => flow.dirty.value, (dirty) => {
+  emit('dirty-change', dirty)
+})
+
+defineExpose({ hasUnsavedChanges })
+
 onMounted(() => {
   document.addEventListener('keydown', onKeyDown)
   void loadCatalog()
@@ -383,6 +421,18 @@ onUnmounted(() => {
       <el-button size="small" @click="createPlaybookAndVersion">New V2 playbook</el-button>
       <el-button size="small" :disabled="!selectedPlaybookId" @click="createVersion">New draft version</el-button>
       <el-button size="small" :loading="loading" @click="loadCatalog">Reload</el-button>
+      <el-button
+        size="small"
+        :disabled="!flow.canUndo.value"
+        :title="t('soarV2.editorUndoHint')"
+        @click="flow.undo()"
+      >{{ t('soarV2.editorUndo') }}</el-button>
+      <el-button
+        size="small"
+        :disabled="!flow.canRedo.value"
+        :title="t('soarV2.editorRedoHint')"
+        @click="flow.redo()"
+      >{{ t('soarV2.editorRedo') }}</el-button>
       <span class="soar-v2-toolbar-spacer" />
       <el-tag v-if="selectedVersion" size="small" :type="isDraft ? 'warning' : 'success'">v{{ selectedVersion.version }} · {{ selectedVersion.status }}</el-tag>
       <el-tag v-if="validation" size="small" :type="flow.validationStale.value ? 'info' : validation.valid ? 'success' : 'danger'">
@@ -390,7 +440,13 @@ onUnmounted(() => {
       </el-tag>
       <el-button size="small" @click="validate" :disabled="!selectedVersionNo">Validate</el-button>
       <el-button size="small" @click="dryRun" :disabled="!selectedVersionNo">Dry-run</el-button>
-      <el-button size="small" type="primary" :loading="saving" @click="save" :disabled="!isDraft">Save draft</el-button>
+      <el-button
+        size="small"
+        :type="hasUnsavedChanges ? 'primary' : 'default'"
+        :loading="saving"
+        :disabled="!isDraft || !hasUnsavedChanges"
+        @click="save"
+      >Save draft</el-button>
       <el-button size="small" type="success" @click="publish" :disabled="!isDraft">Publish</el-button>
     </div>
 
