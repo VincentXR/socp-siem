@@ -793,7 +793,7 @@ public class SoarDefinitionValidator {
         JsonNode required = policy.has("approvalsRequired") ? policy.get("approvalsRequired")
                 : policy.get("requiredApprovals");
         if (required != null && (!isIntegerValue(required) || required.asInt() < 1 || required.asInt() > 20)) {
-            errors.add(DefinitionIssue.error("APPROVAL_POLICY_INVALID", node == null ? null : node.path("id").asText(),
+            errors.add(DefinitionIssue.error("APPROVAL_POLICY_INVALID", node.path("id").asText(),
                     path + "/policy/approvalsRequired", "approvalsRequired must be an integer from 1 to 20"));
         }
         validateApprovalPrincipalList(policy, "allowedRoles", path, node, errors);

@@ -97,7 +97,7 @@ public class SoarV2ConnectorService {
         row.setConfigJson("{}");
         row.setSecretRefsJson(secretRef == null ? "{}" : write(Map.of("auth", secretRef.trim())));
         row.setScopeJson("{}");
-        row.setAllowedHostsJson(write(allowedHosts == null ? List.of() : allowedHosts));
+        row.setAllowedHostsJson(write(allowedHosts));
         row.setEnabled(enabled);
         row.setStatus(enabled ? "HEALTHY_UNKNOWN" : "DISABLED");
         row.setRevision(1);

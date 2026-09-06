@@ -377,7 +377,7 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
         // production fallback for a namespaced action unknown to the registry.
         if ("SOAR_ACTION_NOT_FOUND".equals(result.errorCode()) && !SoarActionCatalog.isNamespaced(request.actionRef())) {
             Map<String, Object> legacy = executor.executeAction(SoarActionCatalog.toLegacyAction(request.actionRef()),
-                    input, false, Math.abs(request.nodeId().hashCode()));
+                    input, false, request.nodeId().hashCode() & Integer.MAX_VALUE);
             String wire = String.valueOf(legacy.getOrDefault("status", "failed"));
             return new ActionResult(PlaybookActionStatus.isSuccessful(wire) ? "SUCCEEDED" : "FAILED",
                     String.valueOf(legacy.getOrDefault("operationId", "")), legacy,

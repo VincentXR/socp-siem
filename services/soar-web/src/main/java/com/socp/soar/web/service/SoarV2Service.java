@@ -1547,7 +1547,7 @@ public class SoarV2Service {
                 risky.add(row);
                 if (risky.size() >= 64) break;
             }
-        } catch (Exception ignored) {
+        } catch (JsonProcessingException ignored) {
             // The version was already validated before a run can be queued;
             // preserve a bounded evidence object if legacy data is malformed.
         }
@@ -1563,7 +1563,7 @@ public class SoarV2Service {
                     ? root.path("approvalPolicy") : root.path("policy");
             Map<String, Object> policySnapshot = approvalPolicySnapshot(policy);
             if (!policySnapshot.isEmpty()) snapshot.put("approvalPolicy", policySnapshot);
-        } catch (Exception ignored) {
+        } catch (JsonProcessingException ignored) {
             // The version was already validated before admission; a malformed
             // optional policy cannot make the bounded approval evidence grow.
         }
