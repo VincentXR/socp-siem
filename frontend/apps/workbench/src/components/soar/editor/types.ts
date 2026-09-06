@@ -43,13 +43,13 @@ export interface SoarNodeTypeMeta {
   description: string
   descriptionKey: string
   tone: NodeTone
-  /** True only for START, ACTION, CONDITION, APPROVAL, END. */
+  /** True for every SoarNodeType (all engine paths are creatable). */
   creationAllowed: boolean
-  /** True iff !creationAllowed (palette shows a disabled "Coming soon" entry). */
+  /** Kept for palette rendering; false for every engine-backed type. */
   comingSoon: boolean
   sourcePorts: ReadonlyArray<PortSpec>
   acceptsTarget: boolean
-  /** Canonical creation template; never invoked for unsupported types. */
+  /** Canonical creation template; invoked whenever a node is added. */
   defaultCreate: (id: string) => EditorNode
 }
 
@@ -150,6 +150,16 @@ export interface FlowNodeData {
   /** error/warning counts used for the red/amber border + badge. */
   errors: number
   warnings: number
+  /**
+   * Run-path highlight (Slice 4). Set only when a `/runs/{id}/nodes` row
+   * matched this definition node; absent nodes keep the current look. These
+   * fields are a view-only overlay and never serialized back into a definition.
+   */
+  runStatus?: string
+  /** Number of node-run rows merged onto this definition node. */
+  runIterations?: number
+  /** Distinct iteration paths seen for this node ('' is the default path). */
+  runIterationPaths?: string[]
 }
 
 /** Payload stored on every Vue Flow edge `data`. */

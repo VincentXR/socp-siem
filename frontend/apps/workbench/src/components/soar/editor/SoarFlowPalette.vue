@@ -104,7 +104,7 @@ function onDragEnd(): void {
   height: 8px;
   flex: 0 0 8px;
   border-radius: 50%;
-  background: var(--ns-accent);
+  background: var(--soar-node-color, var(--ns-accent));
 }
 
 .soar-palette-text {

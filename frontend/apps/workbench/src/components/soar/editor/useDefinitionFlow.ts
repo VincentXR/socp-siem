@@ -14,6 +14,13 @@ import { MarkerType, type Connection, type Edge, type NodeDragEvent, type NodeMo
 import { createHistory, deepClone } from './history'
 import { isCreationType, nodeTypeMeta, uniqueNodeId } from './nodeRegistry'
 import { mapIssuesToNodes } from './validation'
+import {
+  mergeRunHighlights,
+  preferredRunStatus,
+  runStatusTone,
+  type NodeRunHighlight,
+  type RunHighlightRow,
+} from './runHighlight'
 import type {
   EditorDefinition,
   EditorEdge,
@@ -74,6 +81,45 @@ export function edgePortKey(edge: EditorEdge): string {
   if (typeof edge.port === 'string' && edge.port.length) return edge.port
   if (typeof edge.when === 'string' && edge.when.length) return edge.when
   return ''
+}
+
+/** One SWITCH case row, matching the engine's {@code config.cases} array item. */
+export interface SwitchCaseRow {
+  value: string
+  port: string
+}
+
+/**
+ * Reads the SWITCH case array with the same precedence as the backend
+ * `switchBranch`/validator: a top-level `node.cases` array wins, otherwise the
+ * `node.config.cases` array. Each row carries `value` (matched expression
+ * value) plus the outgoing edge `port` (or the `when`/`toPort` spellings).
+ */
+export function readSwitchCases(raw: EditorNode): SwitchCaseRow[] {
+  const source = (raw && typeof raw === 'object' ? raw : {}) as EditorNode
+  const top = Array.isArray(source.cases) ? source.cases : undefined
+  const config = source.config && typeof source.config === 'object'
+    ? source.config as Record<string, unknown> : {}
+  const nested = Array.isArray(config.cases) ? config.cases : undefined
+  const items = top ?? nested ?? []
+  const rows: SwitchCaseRow[] = []
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue
+    const row = item as Record<string, unknown>
+    const value = typeof row.value === 'string' ? row.value : typeof row.when === 'string' ? row.when : ''
+    const port = typeof row.port === 'string' ? row.port : typeof row.toPort === 'string' ? row.toPort : ''
+    rows.push({ value, port })
+  }
+  return rows
+}
+
+/** Distinct non-default source-port tokens declared by a SWITCH node's cases. */
+function switchCasePortTokens(raw: EditorNode): string[] {
+  const seen = new Set<string>()
+  for (const row of readSwitchCases(raw)) {
+    if (row.port) seen.add(row.port)
+  }
+  return [...seen]
 }
 
 /**
@@ -137,15 +183,22 @@ function resolveSourcePorts(raw: EditorNode, def: EditorDefinition): FlowNodeDat
   const meta = nodeTypeMeta(upper)
   const base = meta ? [...meta.sourcePorts] : [{ token: '', labelKey: '', label: 'Default' }]
   const unsupported = isCreationType(upper) ? false : true
-  if (!unsupported && meta) return base
+  // SWITCH exposes one handle per declared case port in addition to the fixed
+  // registry set, so its case edges can be drawn after the case table changes.
+  const dynamicPorts = unsupported || upper === 'SWITCH'
+  if (!dynamicPorts && meta) return base
   const staticTokens = new Set(base.map(port => port.token))
+  const append = (token: string): void => {
+    if (!token || staticTokens.has(token)) return
+    staticTokens.add(token)
+    base.push({ token, labelKey: '', label: token })
+  }
+  if (upper === 'SWITCH') {
+    for (const token of switchCasePortTokens(raw)) append(token)
+  }
   for (const edge of def.edges) {
     if (edge.from !== raw.id) continue
-    const token = edgePortKey(edge)
-    if (token && !staticTokens.has(token)) {
-      staticTokens.add(token)
-      base.push({ token, labelKey: '', label: token })
-    }
+    append(edgePortKey(edge))
   }
   if (!staticTokens.has('')) {
     staticTokens.add('')
@@ -154,10 +207,27 @@ function resolveSourcePorts(raw: EditorNode, def: EditorDefinition): FlowNodeDat
   return base
 }
 
+/**
+ * Resolves the view-only run-highlight fields for a definition node. Returns
+ * null when no row matched, or when every matched status is outside the
+ * recognised set (those nodes keep their current look).
+ */
+export function runHighlightFields(
+  nodeId: string,
+  highlights: Readonly<Record<string, NodeRunHighlight>> = {},
+): Pick<FlowNodeData, 'runStatus' | 'runIterations' | 'runIterationPaths'> | null {
+  const entry = highlights[nodeId]
+  if (!entry) return null
+  const status = preferredRunStatus(entry.statuses)
+  if (!status || !runStatusTone(status)) return null
+  return { runStatus: status, runIterations: entry.rowCount, runIterationPaths: entry.iterationPaths }
+}
+
 export function buildFlowNodes(
   def: EditorDefinition,
   positions: PositionsMap,
   issues: Record<string, NodeIssueState> = {},
+  runHighlights: Readonly<Record<string, NodeRunHighlight>> = {},
 ): VfNodeInput[] {
   return def.nodes.map((raw) => {
     const upper = rawNodeType(raw)
@@ -165,6 +235,7 @@ export function buildFlowNodes(
     const unsupported = isCreationType(upper) ? false : true
     const startsWithOutEdge = upper === 'START' && def.edges.some(edge => edge.from === raw.id)
     const issue = issues[raw.id]
+    const highlight = runHighlightFields(raw.id, runHighlights)
     return {
       id: raw.id,
       type: 'soar-flow-node',
@@ -178,6 +249,7 @@ export function buildFlowNodes(
         acceptsTarget: meta?.acceptsTarget ?? true,
         errors: issue?.errors.length ?? 0,
         warnings: issue?.warnings.length ?? 0,
+        ...(highlight ?? {}),
       },
       draggable: true,
       selectable: true,
@@ -290,8 +362,13 @@ export interface SoarFlowApi {
   clearSelection: () => void
   updateNodeType: (id: string, type: string) => void
   touchAfterNodeEdit: (node?: EditorNode) => void
+  /** Re-derives flow nodes so SWITCH case ports appear/disappear as handles. */
+  refreshPorts: () => void
   applyIssues: (issues: readonly ValidationIssue[]) => void
   nodeIssues: (id: string) => { errors: ValidationIssue[]; warnings: ValidationIssue[] }
+  runHighlights: Readonly<Ref<Record<string, NodeRunHighlight>>>
+  hasRunHighlights: ComputedRef<boolean>
+  applyRunHighlights: (rows: readonly RunHighlightRow[] | null | undefined) => void
   fitNode: (id: string) => void
   isValidConnection: (connection: Connection) => boolean
 }
@@ -307,6 +384,9 @@ export function useDefinitionFlow(
   const validationStale = ref(false)
   const validationIssues = ref<ValidationIssue[]>([])
   const baselineKey = ref('')
+  /** Run-path highlight rows merged per definition node (Slice 4, view-only). */
+  const runHighlightMap = ref<Record<string, NodeRunHighlight>>({})
+  const hasRunHighlights = computed(() => Object.keys(runHighlightMap.value).length > 0)
 
   /* ---------------- undo/redo history ---------------- */
   const history = createHistory(HISTORY_LIMIT)
@@ -341,7 +421,7 @@ export function useDefinitionFlow(
   /* ---------------- rebuild (raw -> Vue Flow store) ---------------- */
 
   function rebuild(): void {
-    const flowNodes = buildFlowNodes(rawRoot.value, positions.value, nodeIssueMap.value)
+    const flowNodes = buildFlowNodes(rawRoot.value, positions.value, nodeIssueMap.value, runHighlightMap.value)
     const flowEdges = buildFlowEdges(rawRoot.value)
     nodeInputsById = new Map(flowNodes.map(node => [node.id, node]))
     edgeInputsById = new Map(flowEdges.map(edge => [edge.id, edge]))
@@ -375,6 +455,35 @@ export function useDefinitionFlow(
     bump()
   }
 
+  /**
+   * Mirrors the merged run highlight map into live Vue Flow node data without
+   * rebuilding nodes (drags and selectors keep working while highlighting).
+   */
+  function syncRunHighlightsToStore(): void {
+    for (const graphNode of store.nodes.value) {
+      const fields = runHighlightFields(graphNode.id, runHighlightMap.value)
+      if (fields) {
+        graphNode.data.runStatus = fields.runStatus
+        graphNode.data.runIterations = fields.runIterations
+        graphNode.data.runIterationPaths = fields.runIterationPaths
+      } else if (graphNode.data && 'runStatus' in graphNode.data) {
+        delete graphNode.data.runStatus
+        delete graphNode.data.runIterations
+        delete graphNode.data.runIterationPaths
+      }
+    }
+  }
+
+  /**
+   * Merges `/runs/{id}/nodes` rows into per-node run highlights (Slice 4).
+   * Passing null/[] clears every highlight. This only overlays the canvas: it
+   * never touches the definition, the dirty baseline, or the undo history.
+   */
+  function applyRunHighlights(rows: readonly RunHighlightRow[] | null | undefined): void {
+    runHighlightMap.value = mergeRunHighlights(rows)
+    syncRunHighlightsToStore()
+  }
+
   /* ---------------- lifecycle / load ---------------- */
 
   function applyState(value: unknown, layout: unknown | undefined, resetBaseline: boolean): void {
@@ -383,6 +492,9 @@ export function useDefinitionFlow(
     nodeIssueMap.value = {}
     validationStale.value = false
     validationIssues.value = []
+    // Run highlights describe a specific executed run; they never survive a
+    // definition load (undo/redo, version switch, apply-JSON all clear them).
+    runHighlightMap.value = {}
     const first = rawRoot.value.nodes.find(node => rawNodeType(node) === 'START')
       ?? rawRoot.value.nodes[0]
     selectedNodeId.value = first?.id ?? ''
@@ -704,6 +816,12 @@ export function useDefinitionFlow(
     markStale()
   }
 
+  /** Rebuilds the Vue Flow layer so dynamic SWITCH case handles stay in sync. */
+  function refreshPorts(): void {
+    rebuild()
+    refreshSelectionInStore()
+  }
+
   /* ---------------- validation ---------------- */
 
   function applyIssues(issues: readonly ValidationIssue[]): void {
@@ -741,9 +859,10 @@ export function useDefinitionFlow(
     if (sourceType === 'START' && rawRoot.value.edges.some(edge => edge.from === source)) {
       return { ok: false, message: 'START may only have one outgoing edge' }
     }
-    const meta = nodeTypeMeta(sourceType)
-    if (meta && token) {
-      const allowed = meta.sourcePorts.some(port => port.token === token)
+    // Port allowance is the node's actual handle set (registry plus dynamic
+    // SWITCH case ports), not just the static registry list.
+    if (token) {
+      const allowed = resolveSourcePorts(sourceRaw, rawRoot.value).some(port => port.token === token)
       if (!allowed) return { ok: false, message: `Port “${token}” is not valid for a ${sourceType} node` }
     }
     const duplicate = rawRoot.value.edges.some(edge =>
@@ -888,8 +1007,12 @@ export function useDefinitionFlow(
     clearSelection,
     updateNodeType,
     touchAfterNodeEdit,
+    refreshPorts,
     applyIssues,
     nodeIssues,
+    runHighlights: runHighlightMap,
+    hasRunHighlights,
+    applyRunHighlights,
     fitNode,
     isValidConnection,
   }

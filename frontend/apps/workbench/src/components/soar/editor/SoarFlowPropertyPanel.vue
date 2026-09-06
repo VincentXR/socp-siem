@@ -6,7 +6,7 @@ import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { listV2Actions, listV2Connections, type SoarV2ActionDescriptor, type SoarV2Connection } from '../../../api'
 import { NODE_TYPE_ORDER, SOAR_NODE_REGISTRY } from './nodeRegistry'
-import { rawNodeType, isUnsupportedNodeType, type SoarFlowApi } from './useDefinitionFlow'
+import { rawNodeType, isUnsupportedNodeType, readSwitchCases, type SoarFlowApi } from './useDefinitionFlow'
 import type { EditorNode, ValidationIssue } from './types'
 import { useI18n } from '../../../composables/useI18n'
 
@@ -161,6 +161,61 @@ function nestedNumberValue(area: 'config' | 'limits', field: string, fallback: n
 function nestedTextValue(area: 'config' | 'limits', field: string): string {
   const value = nestedOf(area)[field]
   return typeof value === 'string' ? value : ''
+}
+
+/* ---------- SWITCH case table (config.cases rows of value -> branch port) ---------- */
+interface SwitchRow {
+  value: string
+  port: string
+}
+
+const switchRows = ref<SwitchRow[]>([])
+
+function syncSwitchRows(): void {
+  switchRows.value = props.node ? readSwitchCases(props.node).map(row => ({ value: row.value, port: row.port })) : []
+}
+
+watch(() => props.node, syncSwitchRows, { immediate: true })
+
+/** Writes the rows into the same field layout the engine/validator read. */
+function commitSwitchRows(refreshHandles = true): void {
+  const node = props.node
+  if (!node) return
+  const rawRows = switchRows.value.map(row => ({ value: row.value.trim(), port: row.port.trim() }))
+  if (Array.isArray(node.cases)) {
+    // A definition carrying a top-level `cases` array keeps that spelling
+    // (the engine prefers it over config.cases).
+    node.cases = rawRows
+  } else {
+    const config = { ...nestedOf('config') }
+    config.cases = rawRows
+    node.config = config
+  }
+  props.flow.touchAfterNodeEdit()
+  // New/renamed case ports must appear (or disappear) as node handles.
+  if (refreshHandles) props.flow.refreshPorts()
+}
+
+function updateSwitchValue(index: number, raw: string): void {
+  if (!switchRows.value[index]) return
+  switchRows.value[index].value = raw
+  commitSwitchRows(false)
+}
+
+function updateSwitchPort(index: number, raw: string): void {
+  if (!switchRows.value[index]) return
+  switchRows.value[index].port = raw
+  commitSwitchRows()
+}
+
+function addSwitchCase(): void {
+  switchRows.value.push({ value: '', port: '' })
+  commitSwitchRows()
+}
+
+function removeSwitchCase(index: number): void {
+  switchRows.value.splice(index, 1)
+  commitSwitchRows()
 }
 
 /* ---------- JSON editors ---------- */
@@ -398,6 +453,24 @@ function connectionRefKnown(): boolean {
         Expression
         <input :value="scalar(node, 'expression')" placeholder="trigger.severity == 'HIGH'" @input="updateScalar('expression', ($event.target as HTMLInputElement).value)" />
       </label>
+
+      <!-- SWITCH -->
+      <template v-if="nodeType === 'SWITCH'">
+        <label>
+          Expression
+          <input :value="scalar(node, 'expression')" placeholder="trigger.severity" @input="updateScalar('expression', ($event.target as HTMLInputElement).value)" />
+        </label>
+        <div class="soar-flow-inspector-section">
+          <span>Cases (value -&gt; branch port)</span>
+          <div v-for="(row, index) in switchRows" :key="index" class="soar-flow-switch-case-row">
+            <input :value="row.value" placeholder="value" @input="updateSwitchValue(index, ($event.target as HTMLInputElement).value)" />
+            <input :value="row.port" placeholder="port" @input="updateSwitchPort(index, ($event.target as HTMLInputElement).value)" />
+            <el-button size="small" plain @click="removeSwitchCase(index)">Remove</el-button>
+          </div>
+          <el-button size="small" plain @click="addSwitchCase">Add case</el-button>
+          <p class="soar-flow-hint">The expression value is matched against each case value. A match leaves the case port handle; an unmatched value leaves the Default handle. Connect each case port and the Default port to their targets.</p>
+        </div>
+      </template>
 
       <!-- END -->
       <label v-if="nodeType === 'END'">
@@ -661,6 +734,25 @@ function connectionRefKnown(): boolean {
 
 .soar-flow-retry-grid > .el-button {
   grid-column: 1 / -1;
+}
+
+.soar-flow-switch-case-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 5px;
+  align-items: center;
+  margin-top: 5px;
+}
+
+.soar-flow-switch-case-row input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 28px;
+  padding: 4px 7px;
+}
+
+.soar-flow-switch-case-row .el-button {
+  margin: 0;
 }
 
 .soar-flow-raw-json {

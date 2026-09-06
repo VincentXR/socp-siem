@@ -23,6 +23,7 @@ import PagerBar from '../components/PagerBar.vue'
 import SoarV2ControlPlane from '../components/soar/SoarV2ControlPlane.vue'
 import SoarV2Editor from '../components/soar/SoarV2Editor.vue'
 import SoarV2RunInspector from '../components/soar/SoarV2RunInspector.vue'
+import type { RunHighlightRow, RunOpenRequest } from '../components/soar/editor/runHighlight'
 import {
   approveV2,
   createPlaybook,
@@ -57,7 +58,12 @@ const page = ref(1)
 const size = ref(10)
 const dialogVisible = ref(false)
 const showEditor = ref(false)
-const editorRef = ref<{ hasUnsavedChanges: boolean } | null>(null)
+const editorRef = ref<{
+  hasUnsavedChanges: boolean
+  applyRunHighlights?: (rows: readonly RunHighlightRow[] | null | undefined) => void
+} | null>(null)
+/** Pending "open this run in the visual editor" hand-off to SoarV2Editor. */
+const openRunRequest = ref<RunOpenRequest | null>(null)
 const loading = ref(false)
 const form = ref({ name: '', trigger: '', actions: '', enabled: true })
 const executionsPaged = computed(() => executions.value.slice((page.value - 1) * size.value, page.value * size.value))
@@ -162,6 +168,18 @@ function toggleEditor(): void {
   showEditor.value = !showEditor.value
 }
 
+/**
+ * Run inspector → visual editor hand-off: reveal the playbook tab with the
+ * editor, then let SoarV2Editor load the exact run version and overlay the run
+ * node statuses (Slice 4). Unsaved graph edits are discarded after a confirm.
+ */
+function handleOpenRunInEditor(request: RunOpenRequest): void {
+  if (editorRef.value?.hasUnsavedChanges && !confirm(t('soarV2.runHighlightDiscardChanges'))) return
+  showEditor.value = true
+  activeTab.value = 'playbooks'
+  openRunRequest.value = { ...request }
+}
+
 async function toggle(id: string) {
   await togglePlaybook(id)
   await loadPlaybooks()
@@ -198,7 +216,7 @@ onMounted(loadPlaybooks)
 
           <!-- Visual Playbook Editor (Collapsible) -->
           <div v-if="showEditor" class="soar-editor-container">
-            <SoarV2Editor ref="editorRef" />
+            <SoarV2Editor ref="editorRef" :open-run="openRunRequest" />
           </div>
 
           <!-- Golden Templates -->
@@ -290,7 +308,7 @@ onMounted(loadPlaybooks)
           </el-card>
 
           <!-- Interactive Inspector -->
-          <SoarV2RunInspector />
+          <SoarV2RunInspector @open-in-editor="handleOpenRunInEditor" />
 
           <!-- Legacy execution history -->
           <el-card shadow="never" class="soar-card">

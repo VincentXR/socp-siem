@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { Handle, Position, type NodeProps } from '@vue-flow/core'
 import type { PortSpec, FlowNodeData } from './types'
 import { nodeTypeMeta } from './nodeRegistry'
+import { runStatusTone } from './runHighlight'
 import { useI18n } from '../../../composables/useI18n'
 
 const props = defineProps<NodeProps<FlowNodeData>>()
@@ -19,6 +20,20 @@ const typeLabel = computed(() => meta.value?.label ?? String(props.data?.nodeTyp
 
 const acceptsTarget = computed(() => Boolean(props.data?.acceptsTarget))
 
+/** Run-path highlight (Slice 4): present only for recognised statuses. */
+const runStatus = computed(() => {
+  const status = props.data?.runStatus
+  return status && runStatusTone(status) ? status : undefined
+})
+const runTone = computed(() => (runStatus.value ? runStatusTone(runStatus.value) : undefined))
+const runChipTitle = computed(() => {
+  if (!runStatus.value) return ''
+  const count = props.data?.runIterations ?? 1
+  const paths = (props.data?.runIterationPaths ?? []).filter(path => Boolean(path))
+  const base = t('soarV2.runHighlightNodeTitle', { count })
+  return paths.length ? `${base}: ${paths.join(', ')}` : base
+})
+
 /** Secondary line under the title (mirrors the old node card). */
 const summary = computed(() => {
   const node = raw.value
@@ -27,6 +42,10 @@ const summary = computed(() => {
   const type = props.data?.nodeType
   if (type === 'ACTION') return String(node.actionRef ?? '')
   if (type === 'CONDITION') {
+    const expression = node.expression
+    return typeof expression === 'string' ? expression : ''
+  }
+  if (type === 'SWITCH') {
     const expression = node.expression
     return typeof expression === 'string' ? expression : ''
   }
@@ -73,6 +92,7 @@ function portTitle(port: PortSpec): string {
       `tone-${props.data?.tone ?? 'action'}`,
       { selected: props.selected, unsupported: props.data?.unsupported },
       errorCount ? 'vf-invalid-node' : hasWarningsOnly ? 'vf-warn-node' : '',
+      runTone ? `run-${runTone}` : '',
     ]"
     :title="props.id"
   >
@@ -97,7 +117,14 @@ function portTitle(port: PortSpec): string {
       :title="portTitle(port)"
     />
 
-    <span class="soar-flow-node-type">{{ typeLabel }}</span>
+    <span class="soar-flow-node-type">
+      {{ typeLabel }}
+      <span
+        v-if="runStatus"
+        class="soar-flow-node-run-chip"
+        :title="runChipTitle"
+      >{{ runStatus }}</span>
+    </span>
     <span v-if="issueTotal" class="soar-flow-node-issue-badge" :class="{ warning: hasWarningsOnly }">{{ issueTotal }}</span>
     <strong>{{ title }}</strong>
     <small v-if="summary">{{ summary }}</small>
@@ -139,6 +166,30 @@ function portTitle(port: PortSpec): string {
 .soar-flow-node-card.unsupported {
   opacity: 0.92;
   border-style: dashed;
+}
+
+/* Run-path highlight ring (Slice 4). Declared after the validation/hover rings
+   so an executed node keeps its run color; nodes without a highlight are
+   untouched and keep the current look. */
+.soar-flow-node-card.run-succeeded { --run-status-color: var(--ns-success); }
+.soar-flow-node-card.run-failed { --run-status-color: var(--ns-danger); }
+.soar-flow-node-card.run-unknown { --run-status-color: var(--ns-warning); }
+.soar-flow-node-card.run-timeout { --run-status-color: #ea580c; }
+.soar-flow-node-card.run-running { --run-status-color: var(--ns-accent); }
+.soar-flow-node-card.run-waiting { --run-status-color: #d97706; }
+.soar-flow-node-card.run-cancelled { --run-status-color: var(--ns-info); }
+.soar-flow-node-card.run-suppressed { --run-status-color: var(--ns-text-3); }
+
+.soar-flow-node-card.run-succeeded,
+.soar-flow-node-card.run-failed,
+.soar-flow-node-card.run-unknown,
+.soar-flow-node-card.run-timeout,
+.soar-flow-node-card.run-running,
+.soar-flow-node-card.run-waiting,
+.soar-flow-node-card.run-cancelled,
+.soar-flow-node-card.run-suppressed {
+  border-left-color: var(--run-status-color);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--run-status-color) 55%, transparent);
 }
 
 .soar-flow-node-type {
@@ -187,6 +238,24 @@ function portTitle(port: PortSpec): string {
 .soar-flow-node-issue-badge.warning {
   background: var(--ns-warning);
 }
+
+.soar-flow-node-run-chip {
+  margin-left: auto;
+  max-width: 110px;
+  box-sizing: border-box;
+  overflow: hidden;
+  padding: 0 5px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--run-status-color, var(--ns-accent)) 14%, transparent);
+  color: var(--run-status-color, var(--ns-accent));
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 15px;
+  letter-spacing: 0.02em;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
 </style>
 
 <style>
@@ -203,4 +272,18 @@ function portTitle(port: PortSpec): string {
 .soar-flow-node-card .soar-handle-source {
   right: -6px;
 }
+
+/* Tone -> accent colour language (design doc §visual tones): the tone-* class on
+   any node card / palette item sets --soar-node-color, consumed by the card border,
+   type label, handles and palette dots. Kept unscoped so palette items (a sibling
+   component) inherit the same per-tone colours. Run-path highlight classes override
+   the accent via their own --run-status-color and are unaffected. */
+.tone-start { --soar-node-color: #2563eb; }
+.tone-end { --soar-node-color: #64748b; }
+.tone-action { --soar-node-color: #0891b2; }
+.tone-logic { --soar-node-color: #7c3aed; }
+.tone-control { --soar-node-color: #ea580c; }
+.tone-wait { --soar-node-color: #ca8a04; }
+.tone-human { --soar-node-color: #db2777; }
+.tone-data { --soar-node-color: #059669; }
 </style>

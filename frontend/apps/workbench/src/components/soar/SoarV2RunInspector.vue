@@ -6,6 +6,8 @@ import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import type { RunOpenRequest } from './editor/runHighlight'
+import { useI18n } from '../../composables/useI18n'
 import {
   cancelV2Run,
   getV2ArtifactContent,
@@ -25,6 +27,10 @@ import {
   type SoarV2Run,
 } from '../../api'
 
+const emit = defineEmits<{ 'open-in-editor': [payload: RunOpenRequest] }>()
+
+const { t } = useI18n()
+
 const runs = ref<SoarV2Run[]>([])
 const selectedRunId = ref('')
 const run = ref<SoarV2Run | null>(null)
@@ -42,6 +48,28 @@ let stream: EventSource | undefined
 const selectedNode = computed(() => nodes.value.find(node => node.id === selectedNodeRunId.value))
 const lastSequence = computed(() => events.value.reduce((max, item) => Math.max(max, item.sequence || 0), 0))
 const unknownNodes = computed(() => nodes.value.filter(node => ['ACTION_UNKNOWN', 'UNKNOWN'].includes(node.status)))
+
+/** True when the selected run points at a version the graph editor can open. */
+const canOpenInEditor = computed(() => Boolean(run.value?.playbookId && run.value?.playbookVersion))
+
+/**
+ * Projects the run's node projection into an editor request: load the exact
+ * immutable version the run executed, then overlay each node-run status.
+ */
+function openInEditor(): void {
+  const selected = run.value
+  if (!selected?.playbookId || !selected.playbookVersion) return
+  emit('open-in-editor', {
+    token: `${selected.runId}:${selected.playbookVersion}:${Date.now()}`,
+    playbookId: selected.playbookId,
+    version: selected.playbookVersion,
+    rows: nodes.value.map(node => ({
+      nodeId: node.nodeId,
+      status: node.status,
+      iterationPath: node.iterationPath ?? null,
+    })),
+  })
+}
 
 function json(value: unknown): string {
   if (value === undefined || value === null || value === '') return ''
@@ -228,6 +256,14 @@ onUnmounted(() => {
         <span><b>{{ run.runId }}</b></span><span>v{{ run.playbookVersion }}</span><span>{{ run.triggerType }}</span>
         <span class="soar-v2-stream-state" :class="streamState">● {{ streamState }}</span>
         <span class="soar-v2-toolbar-spacer" />
+        <el-button
+          size="small"
+          type="primary"
+          plain
+          :disabled="!canOpenInEditor"
+          :title="t('soarV2.runHighlightOpenHint')"
+          @click="openInEditor"
+        >{{ t('soarV2.runHighlightOpen') }}</el-button>
         <el-button size="small" @click="cancel" :disabled="['SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'SUPPRESSED', 'DEAD', 'CANCELLING'].includes(run.status)">Cancel</el-button>
         <el-button size="small" @click="retry" :disabled="!['FAILED', 'ACTION_UNKNOWN', 'TIMED_OUT', 'DEAD'].includes(run.status)">Retry</el-button>
         <el-button size="small" type="warning" plain @click="rerun">Rerun</el-button>

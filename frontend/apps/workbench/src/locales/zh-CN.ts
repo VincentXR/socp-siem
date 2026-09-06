@@ -905,6 +905,22 @@ export const zhCN = {
     editorUndoHint: '撤销 (Ctrl+Z)',
     editorRedoHint: '重做 (Ctrl+Shift+Z / Ctrl+Y)',
     discardChanges: '存在未保存的更改，隐藏编辑器将丢弃这些修改，确定继续吗？',
+    runHighlightDiscardChanges: '加载运行将替换当前画布，未保存的更改将被丢弃，确定继续吗？',
+    runHighlightOpen: '在可视化编辑器中打开',
+    runHighlightOpenHint: '将本次运行的节点状态加载到可视化编辑器',
+    runHighlightLegend: '运行状态',
+    runHighlightClear: '清除',
+    runHighlightNodeTitle: '本次运行 ×{count}',
+    runTone: {
+      succeeded: '成功',
+      failed: '失败',
+      unknown: '结果未知',
+      timeout: '超时',
+      running: '运行中',
+      waiting: '等待中',
+      cancelled: '已取消',
+      suppressed: '已抑制',
+    },
   },
 };
 

@@ -19,6 +19,7 @@ import {
   createV2Playbook,
   createV2Version,
   dryRunV2Version,
+  getV2Playbook,
   getV2Version,
   listV2Playbooks,
   listV2Versions,
@@ -32,6 +33,7 @@ import { useDefinitionFlow } from './editor/useDefinitionFlow'
 import SoarFlowNode from './editor/SoarFlowNode.vue'
 import SoarFlowPalette from './editor/SoarFlowPalette.vue'
 import SoarFlowPropertyPanel from './editor/SoarFlowPropertyPanel.vue'
+import { summarizeRunHighlights, type RunHighlightRow, type RunOpenRequest, type RunStatusTone } from './editor/runHighlight'
 import { PALETTE_DATA_TYPE } from './editor/types'
 import type { EditorNode, ValidationIssue, ValidationResult } from './editor/types'
 import { useI18n } from '../../composables/useI18n'
@@ -50,7 +52,23 @@ const TONE_COLORS: Record<string, string> = {
   data: '#059669',
 }
 
-const props = withDefaults(defineProps<{ initialPlaybookId?: string }>(), { initialPlaybookId: '' })
+/** Legend label key per run-status tone (both locale packs ship these keys). */
+const RUN_TONE_KEY: Record<RunStatusTone, string> = {
+  succeeded: 'soarV2.runTone.succeeded',
+  failed: 'soarV2.runTone.failed',
+  unknown: 'soarV2.runTone.unknown',
+  timeout: 'soarV2.runTone.timeout',
+  running: 'soarV2.runTone.running',
+  waiting: 'soarV2.runTone.waiting',
+  cancelled: 'soarV2.runTone.cancelled',
+  suppressed: 'soarV2.runTone.suppressed',
+}
+
+const props = withDefaults(defineProps<{
+  initialPlaybookId?: string
+  /** External "open this run in the editor" request from the run inspector. */
+  openRun?: RunOpenRequest | null
+}>(), { initialPlaybookId: '', openRun: null })
 const emit = defineEmits<{ saved: [SoarV2Version]; 'dirty-change': [dirty: boolean] }>()
 
 const { t } = useI18n()
@@ -73,6 +91,10 @@ const loading = ref(false)
 const saving = ref(false)
 const message = ref('')
 const errorMessage = ref('')
+/** Token of the openRun request already handled (guards re-runs/re-mounts). */
+const handledOpenRunToken = ref<string | null>(null)
+
+const runLegendEntries = computed(() => summarizeRunHighlights(flow.runHighlights.value))
 
 const selectedVersion = computed(() => versions.value.find(version => version.version === selectedVersionNo.value))
 const isDraft = computed(() => selectedVersion.value?.status === 'DRAFT')
@@ -130,12 +152,13 @@ async function loadCatalog() {
   }
 }
 
-async function loadVersions() {
+async function loadVersions(preferVersion?: number) {
   if (!selectedPlaybookId.value) return
   const result = await listV2Versions(selectedPlaybookId.value)
   versions.value = result
+  const requested = preferVersion !== undefined ? result.find(version => version.version === preferVersion) : undefined
   const draft = result.find(version => version.status === 'DRAFT')
-  const target = draft ?? result[0]
+  const target = requested ?? draft ?? result[0]
   selectedVersionNo.value = target?.version ?? null
   if (target) await loadVersion(target.version)
 }
@@ -154,6 +177,56 @@ async function loadVersion(versionNo = selectedVersionNo.value ?? 0) {
     message.value = `Loaded v${result.version}`
   } catch (failure) {
     errorMessage.value = failure instanceof Error ? failure.message : 'Unable to load playbook version'
+  } finally {
+    loading.value = false
+  }
+}
+
+/* ---------------- run-path highlight (Slice 4) ---------------- */
+
+function clearRunHighlights(): void {
+  flow.applyRunHighlights(null)
+}
+
+/**
+ * Opens the exact immutable version a run executed, then overlays that run's
+ * node statuses. Used by the run inspector's "open in visual editor" path and
+ * by any caller that can load a known playbook version.
+ */
+async function handleOpenRunRequest(request: RunOpenRequest): Promise<void> {
+  if (request.token === handledOpenRunToken.value) return
+  handledOpenRunToken.value = request.token
+  loading.value = true
+  errorMessage.value = ''
+  try {
+    let catalog = playbooks.value
+    if (!catalog.some(playbook => playbook.id === request.playbookId)) {
+      try {
+        catalog = (await listV2Playbooks(0, 100)).items
+      } catch {
+        catalog = []
+      }
+      if (!catalog.some(playbook => playbook.id === request.playbookId)) {
+        const single = await getV2Playbook(request.playbookId)
+        catalog = catalog.filter(playbook => playbook.id !== single.id)
+        catalog = [single, ...catalog]
+      }
+      if (handledOpenRunToken.value !== request.token) return
+      playbooks.value = catalog
+    }
+    if (selectedPlaybookId.value !== request.playbookId) selectedPlaybookId.value = request.playbookId
+    await loadVersions(request.version)
+    if (handledOpenRunToken.value !== request.token) return
+    if (selectedVersionNo.value !== request.version) {
+      handledOpenRunToken.value = ''
+      errorMessage.value = `Run version v${request.version} is not available for ${request.playbookId}`
+      return
+    }
+    flow.applyRunHighlights(request.rows)
+    message.value = `Loaded run path v${request.version}`
+  } catch (failure) {
+    handledOpenRunToken.value = ''
+    errorMessage.value = failure instanceof Error ? failure.message : 'Unable to open run in the editor'
   } finally {
     loading.value = false
   }
@@ -379,15 +452,26 @@ watch(() => props.initialPlaybookId, (value) => {
   }
 })
 
+watch(() => props.openRun, (request) => {
+  if (request && request.token !== handledOpenRunToken.value) void handleOpenRunRequest(request)
+})
+
 watch(() => flow.dirty.value, (dirty) => {
   emit('dirty-change', dirty)
 })
 
-defineExpose({ hasUnsavedChanges })
+defineExpose({
+  hasUnsavedChanges,
+  applyRunHighlights: (rows: readonly RunHighlightRow[] | null | undefined) => flow.applyRunHighlights(rows),
+})
 
 onMounted(() => {
   document.addEventListener('keydown', onKeyDown)
-  void loadCatalog()
+  if (props.openRun && props.openRun.token !== handledOpenRunToken.value) {
+    void handleOpenRunRequest(props.openRun)
+  } else {
+    void loadCatalog()
+  }
 })
 
 onUnmounted(() => {
@@ -473,6 +557,20 @@ onUnmounted(() => {
             <Controls position="bottom-right" />
             <MiniMap position="bottom-left" :pannable="true" :zoomable="true" :node-color="miniMapColor" />
           </VueFlow>
+          <div v-if="flow.hasRunHighlights.value" class="soar-run-highlight-legend">
+            <span class="soar-run-legend-title">{{ t('soarV2.runHighlightLegend') }}</span>
+            <span
+              v-for="entry in runLegendEntries"
+              :key="entry.tone"
+              class="soar-run-legend-entry"
+              :class="`run-${entry.tone}`"
+              :title="entry.statuses.join(', ')"
+            >
+              <i class="soar-run-legend-dot" />
+              <span>{{ t(RUN_TONE_KEY[entry.tone]) }} · {{ entry.count }}</span>
+            </span>
+            <button type="button" class="soar-run-legend-clear" @click="clearRunHighlights">{{ t('soarV2.runHighlightClear') }}</button>
+          </div>
         </div>
         <div class="soar-v2-canvas-footer">
           <span>{{ flow.nodeCount.value }} nodes · {{ flow.edgeCount.value }} edges</span>
@@ -523,6 +621,53 @@ onUnmounted(() => {
 .soar-v2-canvas-panel { display: flex; min-width: 0; flex-direction: column; background: var(--ns-bg); }
 .soar-v2-canvas { position: relative; min-height: 540px; flex: 1; background: var(--ns-bg); }
 .soar-v2-canvas .vue-flow { height: 540px; }
+.soar-run-highlight-legend {
+  position: absolute;
+  z-index: 6;
+  top: 10px;
+  left: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  max-width: 80%;
+  box-sizing: border-box;
+  padding: 6px 9px;
+  border: 1px solid var(--ns-border);
+  border-radius: 6px;
+  background: var(--ns-bg-subtle);
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.12);
+  font-size: 10px;
+}
+.soar-run-legend-title {
+  margin-right: 2px;
+  color: var(--ns-text-3);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.soar-run-legend-entry { display: inline-flex; align-items: center; gap: 4px; color: var(--ns-text-2); }
+.soar-run-legend-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--run-status-color, var(--ns-accent)); }
+.soar-run-legend-entry.run-succeeded { --run-status-color: var(--ns-success); }
+.soar-run-legend-entry.run-failed { --run-status-color: var(--ns-danger); }
+.soar-run-legend-entry.run-unknown { --run-status-color: var(--ns-warning); }
+.soar-run-legend-entry.run-timeout { --run-status-color: #ea580c; }
+.soar-run-legend-entry.run-running { --run-status-color: var(--ns-accent); }
+.soar-run-legend-entry.run-waiting { --run-status-color: #d97706; }
+.soar-run-legend-entry.run-cancelled { --run-status-color: var(--ns-info); }
+.soar-run-legend-entry.run-suppressed { --run-status-color: var(--ns-text-3); }
+.soar-run-legend-clear {
+  margin-left: 4px;
+  padding: 1px 6px;
+  border: 1px solid var(--ns-border);
+  border-radius: 4px;
+  background: var(--ns-bg);
+  color: var(--ns-text-2);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+}
+.soar-run-legend-clear:hover { color: var(--ns-danger); border-color: var(--ns-danger); }
 .soar-v2-canvas-footer { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-top: 1px solid var(--ns-border); color: var(--ns-text-3); font-size: 11px; }
 .soar-v2-canvas-footer span:first-child { margin-right: auto; }
 :deep(.vue-flow__edge-text) { font-size: 9px; font-weight: 600; }

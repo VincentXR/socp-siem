@@ -12,9 +12,9 @@ import {
 } from '../useDefinitionFlow'
 import { mapIssuesToNodes } from '../validation'
 import { SOAR_NODE_REGISTRY, CREATION_TYPES } from '../nodeRegistry'
-import type { EditorDefinition, EditorNode, ValidationIssue } from '../types'
+import type { EditorDefinition, EditorNode, SoarNodeType, ValidationIssue } from '../types'
 
-/** Golden-template-like definition with CONDITION true/false + APPROVAL edges and a read-only type. */
+/** Golden-template-like definition with CONDITION true/false + APPROVAL edges and a SWITCH case layout. */
 function sampleDefinition(): EditorDefinition {
   return {
     schemaVersion: 'soar.playbook/v2',
@@ -25,7 +25,7 @@ function sampleDefinition(): EditorDefinition {
       { id: 'cond', type: 'CONDITION', name: 'Severity gate', expression: "trigger.severity == 'HIGH'" },
       { id: 'action', type: 'ACTION', name: 'Block host', actionRef: 'socp.alert/get@1', parameters: { host: '{{event.host}}' }, target: {} },
       { id: 'approval', type: 'APPROVAL', name: 'Review', config: { timeoutSeconds: 86400, requiredApprovals: 2 } },
-      { id: 'legacy', type: 'SWITCH', name: 'Legacy switch', config: { cases: ['a', 'b'] } },
+      { id: 'switch', type: 'SWITCH', name: 'Severity switch', expression: 'trigger.severity', config: { cases: [{ value: 'high', port: 'high' }, { value: 'medium', port: 'medium' }] } },
       { id: 'end', type: 'END', name: 'Done', outcome: 'SUCCEEDED' },
     ],
     edges: [
@@ -34,7 +34,7 @@ function sampleDefinition(): EditorDefinition {
       { from: 'cond', to: 'approval', when: 'false' },
       { from: 'action', to: 'approval' },
       { from: 'approval', to: 'end', port: 'approved' },
-      { from: 'legacy', to: 'end', port: 'case1' },
+      { from: 'switch', to: 'action', port: 'high' },
     ],
   }
 }
@@ -61,7 +61,7 @@ describe('definition <-> Vue Flow mapping', () => {
     // Vue Flow bridge derivation stays consistent
     const flowNodes = buildFlowNodes(definition, positions)
     expect(flowNodes.map(node => node.id)).toEqual(input.nodes.map(node => node.id))
-    expect(flowNodes.find(node => node.id === 'legacy')?.data.unsupported).toBe(true)
+    expect(flowNodes.find(node => node.id === 'switch')?.data.unsupported).toBe(false)
     expect(flowNodes.find(node => node.id === 'start')?.connectable).toBe(false)
     expect(flowNodes.find(node => node.id === 'cond')?.connectable).toBe(true)
   })
@@ -83,14 +83,19 @@ describe('definition <-> Vue Flow mapping', () => {
     expect(conditionBranch?.port).toBeUndefined()
     expect(edgePortKey(conditionBranch!)).toBe('true')
 
-    // unsupported nodes anchor dynamic source handles but are not deletable
-    const legacy = definition.nodes.find(node => node.id === 'legacy')!
-    const legacyOut = edges.find(edge => edge.source === 'legacy')
-    expect(legacyOut?.sourceHandle).toBe('case1')
-    expect(legacyOut?.deletable).toBe(false)
-    const legacyNode = buildFlowNodes(definition, positions).find(node => node.id === 'legacy')!
-    expect(legacyNode.data.sourcePorts.map(port => port.token)).toContain('case1')
-    expect(legacyNode.connectable).toBe(false)
+    // SWITCH is now a supported type: its declared case ports become source
+    // handles, its edges are deletable and the node is connectable.
+    const switchNode = definition.nodes.find(node => node.id === 'switch')!
+    const switchOut = edges.find(edge => edge.source === 'switch')
+    expect(switchOut?.sourceHandle).toBe('high')
+    expect(switchOut?.deletable).toBe(true)
+    const switchFlowNode = buildFlowNodes(definition, positions).find(node => node.id === 'switch')!
+    const tokens = switchFlowNode.data.sourcePorts.map(port => port.token)
+    expect(tokens).toContain('high')
+    expect(tokens).toContain('medium')
+    expect(tokens).toContain('')
+    expect(switchFlowNode.connectable).toBe(true)
+    expect(switchFlowNode.deletable).toBe(true)
 
     void SOAR_NODE_REGISTRY
   })
@@ -103,22 +108,29 @@ describe('definition <-> Vue Flow mapping', () => {
     expect(positions.end).toEqual(fallbackPosition(5))
   })
 
-  it('unlocks engine-backed control-flow types for creation with semantic ports', () => {
+  it('unlocks every engine-backed SoarNodeType for creation with semantic ports', () => {
     expect(CREATION_TYPES).toEqual(expect.arrayContaining([
       'PARALLEL', 'JOIN', 'FOREACH', 'SUB_PLAYBOOK', 'MANUAL_TASK', 'DELAY', 'SET_VARIABLE',
     ]))
-    for (const type of [
-      'PARALLEL', 'JOIN', 'FOREACH', 'SUB_PLAYBOOK', 'MANUAL_TASK', 'DELAY', 'SET_VARIABLE',
-    ] as const) {
+    // Every SoarNodeType is engine-backed now (SWITCH included), so the
+    // palette has no coming-soon group left and nothing renders read-only.
+    for (const type of Object.keys(SOAR_NODE_REGISTRY) as SoarNodeType[]) {
       expect(SOAR_NODE_REGISTRY[type].comingSoon).toBe(false)
       expect(SOAR_NODE_REGISTRY[type].creationAllowed).toBe(true)
     }
-    // SWITCH stays locked until a dedicated case editor exists
-    expect(SOAR_NODE_REGISTRY.SWITCH.comingSoon).toBe(true)
-    expect(SOAR_NODE_REGISTRY.SWITCH.creationAllowed).toBe(false)
+    // SWITCH is creatable and its creation template emits the exact field
+    // layout the engine/validator read (top-level expression + config.cases).
+    expect(SOAR_NODE_REGISTRY.SWITCH.comingSoon).toBe(false)
+    expect(SOAR_NODE_REGISTRY.SWITCH.creationAllowed).toBe(true)
+    const created = SOAR_NODE_REGISTRY.SWITCH.defaultCreate('sw')
+    expect(created.expression).toBe('trigger.severity')
+    expect(created.config).toMatchObject({ cases: [] })
     const tokens = SOAR_NODE_REGISTRY.FOREACH.sourcePorts.map(port => port.token)
     expect(tokens).toContain('body')
     expect(tokens).toContain('done')
+    // SWITCH keeps a default (blank) handle in its static registry set.
+    const switchTokens = SOAR_NODE_REGISTRY.SWITCH.sourcePorts.map(port => port.token)
+    expect(switchTokens).toContain('')
 
     // an engine-backed type is now an editable, connectable node
     const definition = normalizeDefinition({
@@ -127,6 +139,7 @@ describe('definition <-> Vue Flow mapping', () => {
       nodes: [
         { id: 'start', type: 'START', name: 'Start' },
         { id: 'p', type: 'PARALLEL', name: 'Fan-out', limits: { maxParallelism: 2 } },
+        { id: 'sw', type: 'SWITCH', name: 'Severity switch', expression: 'trigger.severity', config: { cases: [{ value: 'high', port: 'high' }] } },
         { id: 'end', type: 'END', name: 'Done', outcome: 'SUCCEEDED' },
       ],
       edges: [],
@@ -136,6 +149,11 @@ describe('definition <-> Vue Flow mapping', () => {
     expect(node.data.unsupported).toBe(false)
     expect(node.connectable).toBe(true)
     expect(node.deletable).toBe(true)
+    const switchNode = buildFlowNodes(definition, positions).find(item => item.id === 'sw')!
+    expect(switchNode.data.unsupported).toBe(false)
+    expect(switchNode.connectable).toBe(true)
+    expect(switchNode.deletable).toBe(true)
+    expect(switchNode.data.sourcePorts.map(port => port.token)).toContain('high')
   })
 
   it('canonical key ignores array order but notices definition and layout edits', () => {

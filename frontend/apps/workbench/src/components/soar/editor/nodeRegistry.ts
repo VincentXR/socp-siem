@@ -1,12 +1,12 @@
 /**
  * Node registry for the SOAR V2 graph editor.
  *
- * Keyed by every SoarNodeType (13 values). Creation-capable types cover the
- * engine-backed interpreter paths with workflow-level evidence: START, ACTION,
- * CONDITION, APPROVAL, END, PARALLEL, JOIN, FOREACH, SUB_PLAYBOOK, MANUAL_TASK,
- * DELAY and SET_VARIABLE. SWITCH remains a palette "Coming soon" entry until a
- * dedicated case editor lands (it still renders read-only in loaded
- * definitions).
+ * Keyed by every SoarNodeType (13 values). All 13 are creation-capable:
+ * every interpreter path now has workflow-level evidence, including SWITCH
+ * (whose case/value editor matches the engine and validator case layout, see
+ * {@code switchBranch} / the SWITCH validator rules). SWITCH keeps a Default
+ * source port plus one dynamic source handle per case row declared in its
+ * {@code config.cases} array.
  */
 import type { EditorNode, PortSpec, SoarNodeType, SoarNodeTypeMeta } from './types'
 
@@ -25,7 +25,7 @@ const COMPLETED_PORT: PortSpec = { token: 'completed', labelKey: 'soar.port.comp
 const TIMEOUT_PORT: PortSpec = { token: 'timeout', labelKey: 'soar.port.timeout', label: 'timeout' }
 
 export const CREATION_TYPES: readonly SoarNodeType[] = [
-  'START', 'ACTION', 'CONDITION', 'APPROVAL', 'END',
+  'START', 'ACTION', 'CONDITION', 'SWITCH', 'APPROVAL', 'END',
   'PARALLEL', 'JOIN', 'FOREACH', 'SUB_PLAYBOOK',
   'MANUAL_TASK', 'DELAY', 'SET_VARIABLE',
 ]
@@ -35,13 +35,13 @@ export function isCreationType(type: string): boolean {
 }
 
 /**
- * Palette iteration order: the creation-capable types first, then SWITCH
- * (the remaining coming-soon entry).
+ * Palette iteration order, all 13 types enabled (no coming-soon group now):
+ * entry -> branch/types of decision -> human/control -> data primitives.
  */
 export const NODE_TYPE_ORDER: readonly SoarNodeType[] = [
-  'START', 'ACTION', 'CONDITION', 'APPROVAL', 'END',
+  'START', 'ACTION', 'CONDITION', 'SWITCH', 'APPROVAL', 'END',
   'PARALLEL', 'JOIN', 'FOREACH', 'SUB_PLAYBOOK',
-  'MANUAL_TASK', 'DELAY', 'SET_VARIABLE', 'SWITCH',
+  'MANUAL_TASK', 'DELAY', 'SET_VARIABLE',
 ]
 
 /** Port vocabulary matches the backend `validateEdgePort` table exactly. */
@@ -85,6 +85,27 @@ export const SOAR_NODE_REGISTRY: Record<SoarNodeType, SoarNodeTypeMeta> = {
     acceptsTarget: true,
     defaultCreate: (id) => ({ id, type: 'CONDITION', name: 'Condition', expression: "trigger.severity == 'HIGH'" }),
   },
+  SWITCH: {
+    type: 'SWITCH',
+    label: 'Switch',
+    labelKey: 'soar.nodeType.SWITCH',
+    description: 'Case/default branch',
+    descriptionKey: 'soar.nodeTypeDesc.SWITCH',
+    tone: 'logic',
+    creationAllowed: true,
+    comingSoon: false,
+    // Default port plus dynamic case handles resolved by the mapping layer
+    // from config.cases (each row declares an outgoing edge port).
+    sourcePorts: [DEFAULT_PORT],
+    acceptsTarget: true,
+    defaultCreate: (id) => ({
+      id,
+      type: 'SWITCH',
+      name: 'Switch',
+      expression: 'trigger.severity',
+      config: { cases: [] },
+    }),
+  },
   APPROVAL: {
     type: 'APPROVAL',
     label: 'Approval',
@@ -110,19 +131,6 @@ export const SOAR_NODE_REGISTRY: Record<SoarNodeType, SoarNodeTypeMeta> = {
     sourcePorts: [],
     acceptsTarget: true,
     defaultCreate: (id) => ({ id, type: 'END', name: 'Done', outcome: 'SUCCEEDED' }),
-  },
-  SWITCH: {
-    type: 'SWITCH',
-    label: 'Switch',
-    labelKey: 'soar.nodeType.SWITCH',
-    description: 'Case/default branch',
-    descriptionKey: 'soar.nodeTypeDesc.SWITCH',
-    tone: 'logic',
-    creationAllowed: false,
-    comingSoon: true,
-    sourcePorts: [DEFAULT_PORT],
-    acceptsTarget: true,
-    defaultCreate: (id) => ({ id, type: 'SWITCH' }),
   },
   PARALLEL: {
     type: 'PARALLEL',
