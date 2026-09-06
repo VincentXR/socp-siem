@@ -5,6 +5,7 @@ import 'element-plus/es/components/tag/style/css.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
+import { useI18n } from '../../composables/useI18n'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import {
   createV2AutomationRule,
@@ -202,6 +203,7 @@ async function discard(letter: SoarV2DeadLetter) {
   catch (failure) { errorMessage.value = failureText(failure) }
 }
 
+const { t } = useI18n()
 onMounted(() => { void load() })
 </script>
 
@@ -210,7 +212,7 @@ onMounted(() => { void load() })
     <template #header>
       <div class="soar-v2-control-header">
         <div>
-          <strong>{{ section === 'rules' ? 'SOAR V2 · 自动化规则' : section === 'tasks' ? 'SOAR V2 · 人工任务' : section === 'connections-and-ops' ? 'SOAR V2 · 连接与运维' : 'SOAR V2 control plane' }}</strong>
+          <strong>{{ section === 'rules' ? t('soarV2.controlRules') : section === 'tasks' ? t('soarV2.controlTasks') : section === 'connections-and-ops' ? t('soarV2.controlConnections') : 'SOAR V2 control plane' }}</strong>
           <span class="soar-v2-subtitle">{{ section === 'rules' ? 'event routing · conditions · dedup' : section === 'tasks' ? 'human-in-the-loop task queue' : section === 'connections-and-ops' ? 'connectors · allowlists · dead dispatches' : 'automation · connections · analyst tasks · dead-letter operations' }}</span>
         </div>
         <el-button size="small" :loading="loading" @click="load">Refresh</el-button>

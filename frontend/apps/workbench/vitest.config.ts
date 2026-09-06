@@ -6,7 +6,7 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     clearMocks: true,
-    include: ['scripts/**/*.component.test.ts'],
+    include: ['scripts/**/*.component.test.ts', 'src/components/soar/editor/**/*.test.ts'],
     server: {
       deps: { inline: ['element-plus'] },
     },

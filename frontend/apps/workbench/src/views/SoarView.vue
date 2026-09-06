@@ -182,7 +182,7 @@ onMounted(loadPlaybooks)
           <!-- Action bar for editor / new playbook -->
           <div class="soar-editor-toggle-bar">
             <el-button :type="showEditor ? 'primary' : 'default'" size="small" @click="showEditor = !showEditor">
-              {{ showEditor ? '收起编排设计器 (Hide Editor)' : '展开可视化编排设计器 (Open Visual Editor)' }}
+              {{ showEditor ? t('soarV2.editorHide') : t('soarV2.editorShow') }}
             </el-button>
           </div>
 
@@ -196,7 +196,7 @@ onMounted(loadPlaybooks)
             <template #header>
               <div class="soar-card-header">
                 <strong>{{ t('soar.templates') }} · {{ t('soar.installDraft') }}</strong>
-                <small class="soar-header-hint">基于真实响应场景的最佳实践模板，一键导入为可编辑草稿</small>
+                <small class="soar-header-hint">{{ t('soarV2.templateHint') }}</small>
               </div>
             </template>
             <el-table :data="templates" size="small" border>
@@ -260,7 +260,7 @@ onMounted(loadPlaybooks)
           <el-card shadow="never" class="soar-card">
             <template #header>
               <div class="soar-card-header">
-                <strong>SOAR V2 · 运行概览 (Run Summary)</strong>
+                <strong>SOAR V2 · {{ t('soarV2.runSummary') }}</strong>
               </div>
             </template>
             <div class="soar-v2-summary">
@@ -311,7 +311,7 @@ onMounted(loadPlaybooks)
               <div class="soar-card-header">
                 <div>
                   <strong>{{ t('soar.tabApprovals') }}</strong>
-                  <small class="soar-header-hint">双人复核与高危动作审批（必须附带审计理由）</small>
+                  <small class="soar-header-hint">{{ t('soarV2.approvalHint') }}</small>
                 </div>
                 <div class="soar-header-filter">
                   <el-button size="small" :type="approvalFilter === 'PENDING' ? 'primary' : 'default'" @click="approvalFilter = 'PENDING'">{{ t('soar.pendingApprovals') }} ({{ approvals.filter(item => item.status === 'PENDING').length }})</el-button>
@@ -375,7 +375,7 @@ onMounted(loadPlaybooks)
         <p v-if="approvalModal.actionRef"><strong>Action:</strong> {{ approvalModal.actionRef }}</p>
         <el-form label-position="top">
           <el-form-item :label="t('soar.decisionReason')">
-            <el-input v-model="approvalModal.reason" type="textarea" :rows="3" placeholder="填写审批原因与处置意见（用于审计追踪）" />
+            <el-input v-model="approvalModal.reason" type="textarea" :rows="3" :placeholder="t('soarV2.decisionPlaceholder')" />
           </el-form-item>
         </el-form>
       </div>
