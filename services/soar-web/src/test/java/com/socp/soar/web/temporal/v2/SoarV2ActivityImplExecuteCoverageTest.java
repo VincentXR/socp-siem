@@ -2,7 +2,6 @@ package com.socp.soar.web.temporal.v2;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.tenant.context.TenantContext;
-import com.socp.soar.web.connector.ActionRequest;
 import com.socp.soar.web.connector.ActionResult;
 import com.socp.soar.web.connector.EnvironmentSecretResolver;
 import com.socp.soar.web.connector.SoarConnectorRegistry;
@@ -25,6 +24,8 @@ import com.socp.soar.web.persistence.repository.SoarNodeRunRepository;
 import com.socp.soar.web.persistence.repository.SoarRunEventRepository;
 import com.socp.soar.web.persistence.repository.SoarRunRepository;
 import com.socp.soar.web.service.PlaybookExecutor;
+import com.socp.soar.web.temporal.request.ActionRequest;
+import com.socp.soar.web.temporal.request.SoarV2NodeRequest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

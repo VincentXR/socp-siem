@@ -1,4 +1,4 @@
-package com.socp.soar.web.temporal.v2;
+package com.socp.soar.web.temporal.request;
 
 /** Immutable payload used to start a SOAR V2 workflow. */
 public record SoarV2WorkflowRequest(

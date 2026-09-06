@@ -10,7 +10,7 @@ import com.socp.soar.web.persistence.entity.SoarRunEntity;
 import com.socp.soar.web.persistence.repository.PlaybookVersionRepository;
 import com.socp.soar.web.persistence.repository.SoarDispatchOutboxRepository;
 import com.socp.soar.web.persistence.repository.SoarRunRepository;
-import com.socp.soar.web.temporal.v2.SoarV2WorkflowRequest;
+import com.socp.soar.web.temporal.request.SoarV2WorkflowRequest;
 import io.temporal.api.common.v1.WorkflowExecution;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

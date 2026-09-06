@@ -17,6 +17,7 @@ import com.socp.soar.web.persistence.repository.SoarNodeRunRepository;
 import com.socp.soar.web.persistence.repository.SoarRunEventRepository;
 import com.socp.soar.web.persistence.repository.SoarRunRepository;
 import com.socp.soar.web.service.PlaybookExecutor;
+import com.socp.soar.web.temporal.request.SoarV2NodeRequest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -111,7 +112,7 @@ class SoarV2ActivityImplEdgeCoverageTest {
                 .willReturn(Optional.empty());
         given(connectors.findByTenantIdAndId(TENANT, "conn-1"))
                 .willReturn(Optional.of(corruptConnector()));
-        given(connectorRegistry.execute(any(com.socp.soar.web.connector.ActionRequest.class)))
+        given(connectorRegistry.execute(any(com.socp.soar.web.temporal.request.ActionRequest.class)))
                 .willReturn(ActionResult.success("op-1", Map.of("k", "v"), Map.of("action", "x")));
         given(runs.findByTenantIdAndIdForUpdate(TENANT, RUN_ID)).willReturn(Optional.of(new SoarRunEntity()));
         given(events.findTopByTenantIdAndRunIdOrderBySequenceNoDesc(TENANT, RUN_ID))
@@ -126,8 +127,8 @@ class SoarV2ActivityImplEdgeCoverageTest {
 
         assertThat(result.status()).isEqualTo("SUCCEEDED");
         verify(attempts).save(any(com.socp.soar.web.persistence.entity.SoarActionAttemptEntity.class));
-        ArgumentCaptor<com.socp.soar.web.connector.ActionRequest> captor =
-                ArgumentCaptor.forClass(com.socp.soar.web.connector.ActionRequest.class);
+        ArgumentCaptor<com.socp.soar.web.temporal.request.ActionRequest> captor =
+                ArgumentCaptor.forClass(com.socp.soar.web.temporal.request.ActionRequest.class);
         verify(connectorRegistry).execute(captor.capture());
         assertThat(captor.getValue().parameters()).containsEntry("tenantId", TENANT);
     }

@@ -1,5 +1,6 @@
-package com.socp.soar.web.connector;
+package com.socp.soar.web.temporal.request;
 
+import com.socp.soar.web.connector.ConnectionContext;
 import java.util.Map;
 import java.util.LinkedHashMap;
 import java.util.Collections;

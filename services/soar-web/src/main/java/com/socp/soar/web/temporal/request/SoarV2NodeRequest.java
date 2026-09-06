@@ -1,4 +1,4 @@
-package com.socp.soar.web.temporal.v2;
+package com.socp.soar.web.temporal.request;
 
 import java.util.Map;
 import java.util.Collections;

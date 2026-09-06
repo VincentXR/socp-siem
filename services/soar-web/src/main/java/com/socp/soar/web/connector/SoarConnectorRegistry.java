@@ -11,6 +11,7 @@ import com.socp.platform.client.service.NotifyClient;
 import com.socp.platform.client.service.SearchClient;
 import com.socp.platform.client.service.SocpService;
 import com.socp.platform.client.service.ThreatClient;
+import com.socp.soar.web.temporal.request.ActionRequest;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;

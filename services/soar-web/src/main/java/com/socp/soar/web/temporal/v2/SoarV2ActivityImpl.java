@@ -24,11 +24,12 @@ import com.socp.soar.web.persistence.repository.SoarArtifactRepository;
 import com.socp.soar.web.persistence.repository.PlaybookVersionRepository;
 import com.socp.soar.web.service.PlaybookExecutor;
 import com.socp.soar.web.service.SoarActionCatalog;
-import com.socp.soar.web.connector.ActionRequest;
 import com.socp.soar.web.connector.ActionResult;
 import com.socp.soar.web.connector.ActionQuery;
 import com.socp.soar.web.connector.ConnectionContext;
 import com.socp.soar.web.connector.EnvironmentSecretResolver;
+import com.socp.soar.web.temporal.request.ActionRequest;
+import com.socp.soar.web.temporal.request.SoarV2NodeRequest;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 

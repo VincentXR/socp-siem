@@ -1,5 +1,6 @@
 package com.socp.soar.web.temporal.v2;
 
+import com.socp.soar.web.temporal.request.SoarV2NodeRequest;
 import io.temporal.activity.ActivityInterface;
 import io.temporal.activity.ActivityMethod;
 

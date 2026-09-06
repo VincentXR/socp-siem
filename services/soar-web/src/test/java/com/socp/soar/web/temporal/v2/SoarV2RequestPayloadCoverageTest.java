@@ -1,5 +1,7 @@
 package com.socp.soar.web.temporal.v2;
 
+import com.socp.soar.web.temporal.request.SoarV2NodeRequest;
+import com.socp.soar.web.temporal.request.SoarV2WorkflowRequest;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;

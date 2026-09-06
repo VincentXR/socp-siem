@@ -1,5 +1,6 @@
 package com.socp.soar.web.connector;
 
+import com.socp.soar.web.temporal.request.ActionRequest;
 import java.util.Optional;
 
 /** Controlled runtime contract for one SOAR connector implementation. */
