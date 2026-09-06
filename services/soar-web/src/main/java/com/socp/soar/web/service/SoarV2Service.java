@@ -956,6 +956,21 @@ public class SoarV2Service {
         return out;
     }
 
+    /** System-wide dispatch/signal backlog for the health endpoint. The health
+     * surface is intentionally not tenant-scoped: operators need a cross-tenant
+     * view of stuck work. */
+    @Transactional(readOnly = true)
+    public Map<String, Object> healthBacklog() {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("dispatchBacklog", dispatches.countByStatus("PENDING"));
+        out.put("dispatchDead", dispatches.countByStatus("DEAD"));
+        if (signals != null) {
+            out.put("signalBacklog", signals.countByStatus("PENDING"));
+            out.put("signalDead", signals.countByStatus("DEAD"));
+        }
+        return out;
+    }
+
     @Transactional(readOnly = true)
     public List<Map<String, Object>> deadDispatches() {
         List<Map<String, Object>> result = new ArrayList<>();

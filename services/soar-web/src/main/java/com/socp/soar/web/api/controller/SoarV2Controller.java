@@ -2,6 +2,7 @@ package com.socp.soar.web.api.controller;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.socp.platform.auth.security.RequirePermission;
+import com.socp.platform.auth.security.RequireRole;
 import com.socp.platform.auth.security.RequireService;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.platform.error.api.ApiResult;
@@ -49,6 +50,7 @@ import java.time.format.DateTimeParseException;
 /** Versioned SOAR 2.0 API. V1 remains a separate compatibility surface. */
 @RestController
 @RequestMapping("/api/v2")
+@RequireRole({"admin", "analyst"})
 public class SoarV2Controller {
     private static final ScheduledExecutorService STREAMS = Executors.newScheduledThreadPool(2, runnable -> {
         Thread thread = new Thread(runnable, "soar-v2-sse");

@@ -4,8 +4,7 @@ import com.socp.platform.error.api.ApiResult;
 import com.socp.soar.web.config.SoarRuntimeProperties;
 import com.socp.soar.web.connector.ConnectorDescriptor;
 import com.socp.soar.web.connector.SoarConnectorRegistry;
-import com.socp.soar.web.persistence.repository.SoarDispatchOutboxRepository;
-import com.socp.soar.web.persistence.repository.SoarSignalOutboxRepository;
+import com.socp.soar.web.service.SoarV2Service;
 import com.socp.soar.web.service.TemporalExecutor;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -15,6 +14,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.ObjectProvider;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -30,17 +30,13 @@ class HealthControllerDetailCoverageTest {
     @Mock
     private ObjectProvider<TemporalExecutor> temporalProvider;
     @Mock
-    private ObjectProvider<SoarDispatchOutboxRepository> dispatchProvider;
-    @Mock
-    private ObjectProvider<SoarSignalOutboxRepository> signalProvider;
+    private ObjectProvider<SoarV2Service> soarProvider;
     @Mock
     private ObjectProvider<SoarConnectorRegistry> connectorProvider;
     @Mock
     private TemporalExecutor temporal;
     @Mock
-    private SoarDispatchOutboxRepository dispatches;
-    @Mock
-    private SoarSignalOutboxRepository signals;
+    private SoarV2Service soar;
     @Mock
     private SoarConnectorRegistry registry;
 
@@ -56,20 +52,20 @@ class HealthControllerDetailCoverageTest {
     void reportsFullDetailsWhenTemporalBacklogsAndConnectorsAreAvailable() {
         given(temporalProvider.getIfAvailable()).willReturn(temporal);
         given(temporal.isAvailable()).willReturn(true);
-        given(dispatchProvider.getIfAvailable()).willReturn(dispatches);
-        given(dispatches.countByStatus("PENDING")).willReturn(3L);
-        given(dispatches.countByStatus("DEAD")).willReturn(1L);
-        given(signalProvider.getIfAvailable()).willReturn(signals);
-        given(signals.countByStatus("PENDING")).willReturn(5L);
-        given(signals.countByStatus("DEAD")).willReturn(2L);
+        given(soarProvider.getIfAvailable()).willReturn(soar);
+        Map<String, Object> backlog = new LinkedHashMap<>();
+        backlog.put("dispatchBacklog", 3L);
+        backlog.put("dispatchDead", 1L);
+        backlog.put("signalBacklog", 5L);
+        backlog.put("signalDead", 2L);
+        given(soar.healthBacklog()).willReturn(backlog);
         given(connectorProvider.getIfAvailable()).willReturn(registry);
         given(registry.descriptors()).willReturn(List.of(
                 new ConnectorDescriptor("endpoint", 1, "Endpoint Response", false, List.of()),
                 new ConnectorDescriptor("firewall", 1, "Firewall Response", false, List.of())));
 
         ApiResult<Map<String, Object>> result = new HealthController(
-                properties, healthEndpoint, temporalProvider, dispatchProvider,
-                signalProvider, connectorProvider).health();
+                properties, healthEndpoint, temporalProvider, soarProvider, connectorProvider).health();
 
         Map<String, Object> details = result.data();
         assertThat(details.get("service")).isEqualTo("soar-web");
@@ -91,8 +87,7 @@ class HealthControllerDetailCoverageTest {
         given(temporal.isAvailable()).willReturn(false);
 
         ApiResult<Map<String, Object>> result = new HealthController(
-                properties, healthEndpoint, temporalProvider, dispatchProvider,
-                signalProvider, connectorProvider).health();
+                properties, healthEndpoint, temporalProvider, soarProvider, connectorProvider).health();
 
         Map<String, Object> details = result.data();
         assertThat(details.get("status")).isEqualTo("DEGRADED");

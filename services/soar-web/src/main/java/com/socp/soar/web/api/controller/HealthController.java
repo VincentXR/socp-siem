@@ -2,8 +2,7 @@ package com.socp.soar.web.api.controller;
 
 import com.socp.soar.web.config.SoarRuntimeProperties;
 import com.socp.soar.web.connector.SoarConnectorRegistry;
-import com.socp.soar.web.persistence.repository.SoarDispatchOutboxRepository;
-import com.socp.soar.web.persistence.repository.SoarSignalOutboxRepository;
+import com.socp.soar.web.service.SoarV2Service;
 import com.socp.soar.web.service.TemporalExecutor;
 import com.socp.platform.error.api.ApiResult;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -21,25 +20,22 @@ public class HealthController {
     private final SoarRuntimeProperties properties;
     private final ObjectProvider<HealthEndpoint> healthEndpoint;
     private final ObjectProvider<TemporalExecutor> temporal;
-    private final ObjectProvider<SoarDispatchOutboxRepository> dispatches;
-    private final ObjectProvider<SoarSignalOutboxRepository> signals;
+    private final ObjectProvider<SoarV2Service> soar;
     private final ObjectProvider<SoarConnectorRegistry> connectors;
 
     public HealthController(SoarRuntimeProperties properties, ObjectProvider<HealthEndpoint> healthEndpoint) {
-        this(properties, healthEndpoint, null, null, null, null);
+        this(properties, healthEndpoint, null, null, null);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
     public HealthController(SoarRuntimeProperties properties, ObjectProvider<HealthEndpoint> healthEndpoint,
                              ObjectProvider<TemporalExecutor> temporal,
-                             ObjectProvider<SoarDispatchOutboxRepository> dispatches,
-                             ObjectProvider<SoarSignalOutboxRepository> signals,
+                             ObjectProvider<SoarV2Service> soar,
                              ObjectProvider<SoarConnectorRegistry> connectors) {
         this.properties = properties;
         this.healthEndpoint = healthEndpoint;
         this.temporal = temporal;
-        this.dispatches = dispatches;
-        this.signals = signals;
+        this.soar = soar;
         this.connectors = connectors;
     }
 
@@ -65,15 +61,8 @@ public class HealthController {
         details.put("platform", platformStatus);
         details.put("maturity", properties.getMaturity());
         details.put("temporal", Map.of("status", temporalAvailable ? "UP" : "UNAVAILABLE"));
-        if (dispatches != null && dispatches.getIfAvailable() != null) {
-            var repo = dispatches.getIfAvailable();
-            details.put("dispatchBacklog", repo.countByStatus("PENDING"));
-            details.put("dispatchDead", repo.countByStatus("DEAD"));
-        }
-        if (signals != null && signals.getIfAvailable() != null) {
-            var repo = signals.getIfAvailable();
-            details.put("signalBacklog", repo.countByStatus("PENDING"));
-            details.put("signalDead", repo.countByStatus("DEAD"));
+        if (soar != null && soar.getIfAvailable() != null) {
+            details.putAll(soar.getIfAvailable().healthBacklog());
         }
         if (connectors != null && connectors.getIfAvailable() != null) {
             details.put("builtInConnectors", connectors.getIfAvailable().descriptors().stream()
