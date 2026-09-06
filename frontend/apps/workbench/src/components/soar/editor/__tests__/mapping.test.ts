@@ -104,11 +104,18 @@ describe('definition <-> Vue Flow mapping', () => {
   })
 
   it('unlocks engine-backed control-flow types for creation with semantic ports', () => {
-    expect(CREATION_TYPES).toEqual(expect.arrayContaining(['PARALLEL', 'JOIN', 'FOREACH', 'SUB_PLAYBOOK']))
-    for (const type of ['PARALLEL', 'JOIN', 'FOREACH', 'SUB_PLAYBOOK'] as const) {
+    expect(CREATION_TYPES).toEqual(expect.arrayContaining([
+      'PARALLEL', 'JOIN', 'FOREACH', 'SUB_PLAYBOOK', 'MANUAL_TASK', 'DELAY', 'SET_VARIABLE',
+    ]))
+    for (const type of [
+      'PARALLEL', 'JOIN', 'FOREACH', 'SUB_PLAYBOOK', 'MANUAL_TASK', 'DELAY', 'SET_VARIABLE',
+    ] as const) {
       expect(SOAR_NODE_REGISTRY[type].comingSoon).toBe(false)
       expect(SOAR_NODE_REGISTRY[type].creationAllowed).toBe(true)
     }
+    // SWITCH stays locked until a dedicated case editor exists
+    expect(SOAR_NODE_REGISTRY.SWITCH.comingSoon).toBe(true)
+    expect(SOAR_NODE_REGISTRY.SWITCH.creationAllowed).toBe(false)
     const tokens = SOAR_NODE_REGISTRY.FOREACH.sourcePorts.map(port => port.token)
     expect(tokens).toContain('body')
     expect(tokens).toContain('done')

@@ -1,13 +1,12 @@
 /**
  * Node registry for the SOAR V2 graph editor.
  *
- * Keyed by every SoarNodeType (13 values). Creation-capable types are
- * START, ACTION, CONDITION, APPROVAL, END, PARALLEL, JOIN, FOREACH and
- * SUB_PLAYBOOK (the last four are backed by the V2 engine's child-workflow
- * fan-out and are covered by workflow-level evidence tests). SWITCH, DELAY,
- * MANUAL_TASK and SET_VARIABLE remain palette "Coming soon" entries that can
- * never be dropped onto the canvas. Existing definitions that contain
- * unsupported types still render as read-only generic cards.
+ * Keyed by every SoarNodeType (13 values). Creation-capable types cover the
+ * engine-backed interpreter paths with workflow-level evidence: START, ACTION,
+ * CONDITION, APPROVAL, END, PARALLEL, JOIN, FOREACH, SUB_PLAYBOOK, MANUAL_TASK,
+ * DELAY and SET_VARIABLE. SWITCH remains a palette "Coming soon" entry until a
+ * dedicated case editor lands (it still renders read-only in loaded
+ * definitions).
  */
 import type { EditorNode, PortSpec, SoarNodeType, SoarNodeTypeMeta } from './types'
 
@@ -22,10 +21,13 @@ const APPROVED_PORT: PortSpec = { token: 'approved', labelKey: 'soar.port.approv
 const REJECTED_PORT: PortSpec = { token: 'rejected', labelKey: 'soar.port.rejected', label: 'rejected' }
 const BODY_PORT: PortSpec = { token: 'body', labelKey: 'soar.port.body', label: 'body' }
 const DONE_PORT: PortSpec = { token: 'done', labelKey: 'soar.port.done', label: 'done' }
+const COMPLETED_PORT: PortSpec = { token: 'completed', labelKey: 'soar.port.completed', label: 'completed' }
+const TIMEOUT_PORT: PortSpec = { token: 'timeout', labelKey: 'soar.port.timeout', label: 'timeout' }
 
 export const CREATION_TYPES: readonly SoarNodeType[] = [
   'START', 'ACTION', 'CONDITION', 'APPROVAL', 'END',
   'PARALLEL', 'JOIN', 'FOREACH', 'SUB_PLAYBOOK',
+  'MANUAL_TASK', 'DELAY', 'SET_VARIABLE',
 ]
 
 export function isCreationType(type: string): boolean {
@@ -33,13 +35,13 @@ export function isCreationType(type: string): boolean {
 }
 
 /**
- * Palette iteration order: the nine creation-capable types first, then the
- * coming-soon group (SWITCH, DELAY, MANUAL_TASK, SET_VARIABLE) in the order
- * the current editor lists them.
+ * Palette iteration order: the creation-capable types first, then SWITCH
+ * (the remaining coming-soon entry).
  */
 export const NODE_TYPE_ORDER: readonly SoarNodeType[] = [
   'START', 'ACTION', 'CONDITION', 'APPROVAL', 'END',
-  'SWITCH', 'PARALLEL', 'JOIN', 'FOREACH', 'DELAY', 'MANUAL_TASK', 'SUB_PLAYBOOK', 'SET_VARIABLE',
+  'PARALLEL', 'JOIN', 'FOREACH', 'SUB_PLAYBOOK',
+  'MANUAL_TASK', 'DELAY', 'SET_VARIABLE', 'SWITCH',
 ]
 
 /** Port vocabulary matches the backend `validateEdgePort` table exactly. */
@@ -174,11 +176,11 @@ export const SOAR_NODE_REGISTRY: Record<SoarNodeType, SoarNodeTypeMeta> = {
     description: 'Temporal timer',
     descriptionKey: 'soar.nodeTypeDesc.DELAY',
     tone: 'wait',
-    creationAllowed: false,
-    comingSoon: true,
-    sourcePorts: [DEFAULT_PORT],
+    creationAllowed: true,
+    comingSoon: false,
+    sourcePorts: [DEFAULT_PORT, SUCCESS_PORT, FAILURE_PORT],
     acceptsTarget: true,
-    defaultCreate: (id) => ({ id, type: 'DELAY' }),
+    defaultCreate: (id) => ({ id, type: 'DELAY', name: 'Delay', config: { durationSeconds: 60 } }),
   },
   MANUAL_TASK: {
     type: 'MANUAL_TASK',
@@ -187,11 +189,16 @@ export const SOAR_NODE_REGISTRY: Record<SoarNodeType, SoarNodeTypeMeta> = {
     description: 'Structured analyst input',
     descriptionKey: 'soar.nodeTypeDesc.MANUAL_TASK',
     tone: 'human',
-    creationAllowed: false,
-    comingSoon: true,
-    sourcePorts: [DEFAULT_PORT],
+    creationAllowed: true,
+    comingSoon: false,
+    sourcePorts: [DEFAULT_PORT, COMPLETED_PORT, TIMEOUT_PORT, FAILURE_PORT],
     acceptsTarget: true,
-    defaultCreate: (id) => ({ id, type: 'MANUAL_TASK' }),
+    defaultCreate: (id) => ({
+      id,
+      type: 'MANUAL_TASK',
+      name: 'Manual task',
+      config: { timeoutSeconds: 86400, formSchema: { type: 'object', properties: {}, required: [] } },
+    }),
   },
   SUB_PLAYBOOK: {
     type: 'SUB_PLAYBOOK',
@@ -213,11 +220,11 @@ export const SOAR_NODE_REGISTRY: Record<SoarNodeType, SoarNodeTypeMeta> = {
     description: 'Write vars.* only',
     descriptionKey: 'soar.nodeTypeDesc.SET_VARIABLE',
     tone: 'data',
-    creationAllowed: false,
-    comingSoon: true,
-    sourcePorts: [DEFAULT_PORT],
+    creationAllowed: true,
+    comingSoon: false,
+    sourcePorts: [DEFAULT_PORT, SUCCESS_PORT, FAILURE_PORT],
     acceptsTarget: true,
-    defaultCreate: (id) => ({ id, type: 'SET_VARIABLE' }),
+    defaultCreate: (id) => ({ id, type: 'SET_VARIABLE', name: 'Set variable', config: { name: 'vars.note', value: '' } }),
   },
 }
 

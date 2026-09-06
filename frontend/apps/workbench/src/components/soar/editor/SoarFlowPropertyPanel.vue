@@ -460,6 +460,37 @@ function connectionRefKnown(): boolean {
         <input :value="scalar(node, 'playbookVersionId')" placeholder="published version id" @input="updateScalar('playbookVersionId', ($event.target as HTMLInputElement).value)" />
       </label>
 
+      <!-- DELAY -->
+      <label v-if="nodeType === 'DELAY'">
+        durationSeconds
+        <input type="number" min="1" max="86400" :value="nestedNumberValue('config', 'durationSeconds', 60)" @input="updateNestedNumber('config', 'durationSeconds', ($event.target as HTMLInputElement).value, 1, 86400)" />
+      </label>
+
+      <!-- SET_VARIABLE -->
+      <template v-if="nodeType === 'SET_VARIABLE'">
+        <label>
+          name (vars.*)
+          <input :value="nestedTextValue('config', 'name')" placeholder="vars.note" @input="updateNested('config', 'name', ($event.target as HTMLInputElement).value)" />
+        </label>
+        <label>
+          value
+          <input :value="nestedTextValue('config', 'value')" placeholder="auto" @input="updateNested('config', 'value', ($event.target as HTMLInputElement).value)" />
+        </label>
+      </template>
+
+      <!-- MANUAL_TASK -->
+      <template v-if="nodeType === 'MANUAL_TASK'">
+        <label>
+          timeoutSeconds
+          <input type="number" min="0" :max="7 * 24 * 3600" :value="nestedNumberValue('config', 'timeoutSeconds', 86400)" @input="updateNestedNumber('config', 'timeoutSeconds', ($event.target as HTMLInputElement).value, 0, 7 * 24 * 3600)" />
+        </label>
+        <label>
+          assignee
+          <input :value="nestedTextValue('config', 'assignee')" placeholder="analyst handle" @input="updateNested('config', 'assignee', ($event.target as HTMLInputElement).value)" />
+        </label>
+        <div class="soar-flow-hint">formSchema is edited via the Advanced node JSON below</div>
+      </template>
+
       <!-- Generic secondary fields for read-only types (raw display only) -->
       <template v-if="unsupported">
         <div class="soar-flow-inspector-section">
