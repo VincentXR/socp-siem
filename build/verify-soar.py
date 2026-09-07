@@ -105,6 +105,19 @@ def main() -> int:
     check("Alert service client enters V2 event evaluation",
           '"/api/v2/events/evaluate"' in soar_client
           and "legacyAlarmEnvelope" in controller)
+    request_dir = ROOT / "services/soar-web/src/main/java/com/socp/soar/web/api/request"
+    for request_type in ("UpdateV2PlaybookRequest", "DryRunV2Request", "ReasonRequest",
+                         "RerunV2Request", "UnknownResolutionRequest",
+                         "ApprovalDecisionRequest", "PatchV2ConnectionRequest"):
+        check(f"typed SOAR request {request_type}", (request_dir / f"{request_type}.java").is_file())
+    check("high-risk SOAR handlers use validated request DTOs",
+          "@Valid @RequestBody(required = false)\n                                                         UpdateV2PlaybookRequest" in controller
+          and "@Valid @RequestBody UnknownResolutionRequest" in controller
+          and "@Valid @RequestBody ApprovalDecisionRequest" in controller
+          and "@RequestBody PlaybookExecutionRequest" in controller)
+    dynamic_body_count = len(re.findall(r"@RequestBody(?:\([^)]*\))?\s+Map<", controller))
+    check("SOAR dynamic request maps stay at JSON extension boundaries",
+          dynamic_body_count == 4, f"found={dynamic_body_count}; patch/evaluation routes are explicit extension boundaries")
 
     workflow = read("services/soar-web/src/main/java/com/socp/soar/web/temporal/v2/SoarV2WorkflowImpl.java")
     activity = read("services/soar-web/src/main/java/com/socp/soar/web/temporal/v2/SoarV2ActivityImpl.java")
@@ -152,8 +165,15 @@ def main() -> int:
             "services/soar-web/src/main/java/com/socp/soar/web/definition/SoarDefinitionValidator.java")
         and "ACTION_PARAMETER_TYPE_INVALID" in read(
             "services/soar-web/src/main/java/com/socp/soar/web/definition/SoarDefinitionValidator.java")
-        and "ACTION_PARAMETER_UNKNOWN" in read(
+            and "ACTION_PARAMETER_UNKNOWN" in read(
             "services/soar-web/src/main/java/com/socp/soar/web/definition/SoarDefinitionValidator.java"),
+        "workflow JSON corruption fails explicitly": "invalid workflow JSON" in workflow
+        and 'return "{}"' not in workflow and "SoarWorkflowJsonException" in workflow,
+        "SSE scheduler has an application lifecycle": "soarSseScheduler" in read(
+            "services/soar-web/src/main/java/com/socp/soar/web/config/SoarSseConfiguration.java")
+        and "getIfAvailable" in controller,
+        "SSE bounds are configurable": "sse-poll-interval-ms" in application
+        and "sse-timeout-ms" in application and "sse-scheduler-threads" in production,
     }
     for name, condition in checks.items():
         check(name, condition)
