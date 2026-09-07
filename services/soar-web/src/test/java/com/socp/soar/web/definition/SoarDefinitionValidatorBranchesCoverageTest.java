@@ -5,6 +5,7 @@ import com.socp.platform.tenant.context.TenantContext;
 import com.socp.soar.web.connector.ActionDescriptor;
 import com.socp.soar.web.connector.ConnectorDescriptor;
 import com.socp.soar.web.connector.SoarConnectorRegistry;
+import com.socp.soar.web.domain.v2.DefinitionIssue;
 import com.socp.soar.web.domain.v2.DefinitionValidationResult;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -828,6 +829,9 @@ class SoarDefinitionValidatorBranchesCoverageTest {
     void rejectsManualFormPatternProblems() {
         assertHasError(manualTaskDef(",\"formSchema\":{\"pattern\":5}"), "MANUAL_FORM_INVALID");
         assertHasError(manualTaskDef(",\"formSchema\":{\"pattern\":\"([\"}"), "MANUAL_FORM_INVALID");
+        assertHasError(manualTaskDef(",\"formSchema\":{\"pattern\":\"(a+)+\"}"), "MANUAL_FORM_INVALID");
+        assertNoError(manualTaskDef(",\"formSchema\":{\"pattern\":\"^[A-Za-z0-9_-]+$\"}"),
+                "MANUAL_FORM_INVALID");
     }
 
     @Test
@@ -896,6 +900,46 @@ class SoarDefinitionValidatorBranchesCoverageTest {
                 + "\"parameters\":\"boom\"}," + END + "]";
         DefinitionValidationResult result = registryValidator.validate(definition(nodes, SE_EDGES));
         assertThat(result.errors()).anyMatch(issue -> "ACTION_PARAMETERS_INVALID".equals(issue.code()));
+    }
+
+    @Test
+    void validatesKnownActionParameterSchemaAndRequiredFields() {
+        Map<String, Object> targetSchema = Map.of(
+                "type", "object",
+                "additionalProperties", false,
+                "required", List.of("id"),
+                "properties", Map.of("id", Map.of("type", "string", "maxLength", 8)));
+        Map<String, Object> schema = Map.of(
+                "type", "object",
+                "additionalProperties", false,
+                "required", List.of("alertId"),
+                "properties", Map.of("alertId", Map.of("type", "string", "maxLength", 16),
+                        "target", targetSchema));
+        ActionDescriptor action = new ActionDescriptor("typed", 1, "Typed", "Typed", "LOW",
+                "NONE", "NONE", false, List.of(), schema, Map.of());
+        SoarDefinitionValidator registryValidator =
+                new SoarDefinitionValidator(new ObjectMapper(), registryFor(action, "conn/typed@1"));
+        String nodes = "[" + START + ",{\"id\":\"a\",\"type\":\"ACTION\",\"actionRef\":\"conn/typed@1\","
+                + "\"parameters\":{\"alertId\":123,\"extra\":true}}," + END + "]";
+        DefinitionValidationResult result = registryValidator.validate(definition(nodes, SE_EDGES));
+        assertThat(result.errors()).extracting(DefinitionIssue::code)
+                .contains("ACTION_PARAMETER_TYPE_INVALID", "ACTION_PARAMETER_UNKNOWN");
+
+        String missing = "[" + START + ",{\"id\":\"a\",\"type\":\"ACTION\",\"actionRef\":\"conn/typed@1\","
+                + "\"parameters\":{}}," + END + "]";
+        DefinitionValidationResult missingResult = registryValidator.validate(definition(missing, SE_EDGES));
+        assertThat(missingResult.errors()).anyMatch(issue -> "ACTION_PARAMETER_REQUIRED".equals(issue.code()));
+
+        String omitted = "[" + START + ",{\"id\":\"a\",\"type\":\"ACTION\",\"actionRef\":\"conn/typed@1\"},"
+                + END + "]";
+        DefinitionValidationResult omittedResult = registryValidator.validate(definition(omitted, SE_EDGES));
+        assertThat(omittedResult.errors()).anyMatch(issue -> "ACTION_PARAMETER_REQUIRED".equals(issue.code()));
+
+        String nested = "[" + START + ",{\"id\":\"a\",\"type\":\"ACTION\",\"actionRef\":\"conn/typed@1\","
+                + "\"parameters\":{\"alertId\":\"ok\",\"target\":{\"extra\":true}}}," + END + "]";
+        DefinitionValidationResult nestedResult = registryValidator.validate(definition(nested, SE_EDGES));
+        assertThat(nestedResult.errors()).extracting(DefinitionIssue::code)
+                .contains("ACTION_PARAMETER_REQUIRED", "ACTION_PARAMETER_UNKNOWN");
     }
 
     @Test

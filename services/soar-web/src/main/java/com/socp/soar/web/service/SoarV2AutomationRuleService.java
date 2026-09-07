@@ -31,7 +31,6 @@ import java.util.Optional;
 /** Automation-rule control plane and deterministic event-to-run fan-out. */
 @Service
 public class SoarV2AutomationRuleService {
-    private static final java.util.concurrent.locks.ReentrantLock RECEIPT_LOCK = new java.util.concurrent.locks.ReentrantLock();
     private final SoarAutomationRuleRepository rules;
     private final SoarV2Service soar;
     private final ObjectMapper mapper;
@@ -64,6 +63,7 @@ public class SoarV2AutomationRuleService {
     @AuditOperation(action = "SOAR_V2_CREATE_AUTOMATION_RULE", target = "t_soar_automation_rule")
     public Map<String, Object> create(String name, String triggerType, int priority, boolean enabled,
                                       JsonNode conditions, JsonNode actions, JsonNode suppression) {
+        soar.requireV2ControlPlane();
         String tenant = TenantContext.require();
         if (name == null || name.isBlank() || name.length() > 128) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "automation rule name is required (max 128)");
@@ -129,6 +129,7 @@ public class SoarV2AutomationRuleService {
     @Transactional
     @AuditOperation(action = "SOAR_V2_SET_AUTOMATION_RULE_ENABLED", target = "t_soar_automation_rule")
     public Map<String, Object> setEnabled(String id, boolean enabled) {
+        soar.requireV2ControlPlane();
         SoarAutomationRuleEntity row = findForUpdate(id);
         if (enabled) {
             // Re-check the immutable target versions and their live connection
@@ -154,6 +155,7 @@ public class SoarV2AutomationRuleService {
     public Map<String, Object> update(String id, String name, String triggerType, int priority,
                                       boolean enabled, JsonNode conditions, JsonNode actions,
                                       JsonNode suppression, Long expectedRowVersion) {
+        soar.requireV2ControlPlane();
         SoarAutomationRuleEntity row = findForUpdate(id);
         if (expectedRowVersion != null && !expectedRowVersion.equals(row.getRowVersion())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
@@ -181,6 +183,7 @@ public class SoarV2AutomationRuleService {
     @Transactional
     @AuditOperation(action = "SOAR_V2_UPDATE_AUTOMATION_RULE", target = "t_soar_automation_rule")
     public Map<String, Object> patch(String id, Map<String, Object> body) {
+        soar.requireV2ControlPlane();
         SoarAutomationRuleEntity row = findForUpdate(id);
         Map<String, Object> payload = body == null ? Map.of() : body;
         String name = optionalString(payload.get("name"), row.getName());
@@ -226,6 +229,7 @@ public class SoarV2AutomationRuleService {
     @Transactional
     @AuditOperation(action = "SOAR_V2_DISABLE_AUTOMATION_RULE", target = "t_soar_automation_rule")
     public Map<String, Object> remove(String id) {
+        soar.requireV2ControlPlane();
         SoarAutomationRuleEntity row = findForUpdate(id);
         row.setEnabled(false); row.setUpdatedAt(Instant.now()); rules.save(row);
         return view(row);
@@ -238,16 +242,12 @@ public class SoarV2AutomationRuleService {
     @Transactional
     @AuditOperation(action = "SOAR_V2_EVALUATE_AUTOMATION_RULES", target = "t_soar_trigger_receipt")
     public Map<String, Object> evaluate(Map<String, Object> event) {
-        // The database unique key is the final cross-instance guard. The
-        // short JVM lock prevents two local workers from both creating a run
-        // between the receipt read and insert (and keeps the common path free
-        // of avoidable unique-key rollbacks).
-        RECEIPT_LOCK.lock();
-        try {
-            return evaluateLocked(event);
-        } finally {
-            RECEIPT_LOCK.unlock();
-        }
+        soar.requireV2Evaluation();
+        // enabledRulesForEvaluation() acquires database row locks for every
+        // enabled rule. Receipt creation, capacity admission and run creation
+        // therefore serialize across service instances in the same transaction;
+        // no process-local lock is part of the correctness contract.
+        return evaluateLocked(event);
     }
 
     private Map<String, Object> evaluateLocked(Map<String, Object> event) {
@@ -282,7 +282,7 @@ public class SoarV2AutomationRuleService {
             return Map.of("eventId", eventId, "matchedRuns", 0, "runs", List.of(),
                     "receipts", List.of(Map.of("status", "SUPPRESSED", "reason", "AUTOMATION_DEPTH_EXCEEDED")));
         }
-        for (SoarAutomationRuleEntity rule : rules.findByTenantIdAndEnabledTrueOrderByPriorityAsc(tenant)) {
+        for (SoarAutomationRuleEntity rule : enabledRulesForEvaluation(tenant)) {
             if (!activeAt(rule, Instant.now()) || !triggerMatches(rule.getTriggerType(), event)
                     || !conditionMatches(rule.getConditionJson(), event)) {
                 continue;
@@ -325,7 +325,13 @@ public class SoarV2AutomationRuleService {
             for (JsonNode action : actions) {
                 String versionId = action.isTextual() ? action.asText() : action.path("playbookVersionId").asText("");
                 if (versionId.isBlank()) continue;
-                String requestId = "rule-" + rule.getId() + "-" + shortHash(eventId + "#" + actionIndex++);
+                // Revision is part of the idempotency identity.  Replaying an
+                // event after an operator edits a rule must create a run for
+                // the new immutable action set rather than reusing the old
+                // revision's request id.
+                String requestId = "rule-" + rule.getId() + "-r"
+                        + Math.max(1, rule.getRevision()) + "-"
+                        + shortHash(eventId + "#" + actionIndex++);
                 Map<String, Object> subject = Map.of("type", rule.getTriggerType(), "id", eventId);
                 Map<String, Object> inputs = automationInputs(event, depth + 1);
                 Map<String, Object> run = soar.queueManualRun(requestId, versionId, subject, inputs);
@@ -363,6 +369,20 @@ public class SoarV2AutomationRuleService {
             }
         }
         return null;
+    }
+
+    private List<SoarAutomationRuleEntity> enabledRulesForEvaluation(String tenant) {
+        List<SoarAutomationRuleEntity> locked =
+                rules.findByTenantIdAndEnabledTrueOrderByPriorityAscForUpdate(tenant);
+        // Compatibility doubles created before the cross-instance lock method
+        // was introduced may return null.  Only that impossible Spring Data
+        // result uses the historical finder; an empty locking result is a
+        // genuine "no enabled rules" result and must not be replaced by an
+        // unlocked read (otherwise a concurrent enable could bypass admission).
+        if (locked != null) return locked;
+        List<SoarAutomationRuleEntity> historical =
+                rules.findByTenantIdAndEnabledTrueOrderByPriorityAsc(tenant);
+        return historical == null ? List.of() : historical;
     }
 
     /** Explain rule evaluation without creating receipts or runs. */

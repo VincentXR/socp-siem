@@ -11,7 +11,9 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = ROOT / "build" / "architecture-controller-persistence-baseline.txt"
 WRITE_MAPPING = re.compile(r"@(Post|Put|Patch|Delete)Mapping\b")
-AUTH_BOUNDARY = re.compile(r"@(?:[\w.]+\.)?(RequireRole|RequireService|RequireIngestIdentity)\b")
+AUTH_BOUNDARY = re.compile(
+    r"@(?:[\w.]+\.)?(RequireRole|RequireService|RequireIngestIdentity|RequirePermission)\b"
+)
 PERSISTENCE_IMPORT = re.compile(r"^import\s+com\.socp\..*\.persistence\.(repository|entity)\.", re.MULTILINE)
 REPOSITORY_DECL = re.compile(
     r"public\s+interface\s+(\w+Repository)\s+extends\s+([^\{]+)\{", re.MULTILINE)

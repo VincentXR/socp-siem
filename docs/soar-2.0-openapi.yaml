@@ -1,0 +1,628 @@
+openapi: 3.1.0
+info:
+  title: SOCP SOAR 2.0 API
+  version: 2.0.0
+  description: Versioned playbooks and durable Temporal-backed response runs.
+servers:
+  - url: /soar-web
+security:
+  - cookieAuth: []
+tags:
+  - name: Playbooks
+  - name: Runs
+  - name: Operations
+  - name: Automation
+  - name: Connections
+paths:
+  /api/v2/definition-schema:
+    get:
+      tags: [Playbooks]
+      security: [{cookieAuth: []}]
+      responses:
+        '200': {description: JSON Schema for soar.playbook/v2}
+  /api/v2/templates:
+    get:
+      tags: [Playbooks]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+  /api/v2/templates/{templateId}/install:
+    post:
+      tags: [Playbooks]
+      description: Installs a shipped golden scenario as an unpublished tenant draft.
+      parameters: [{name: templateId, in: path, required: true, schema: {type: string}}]
+      responses: {'201': {$ref: '#/components/responses/ApiResult'}, '404': {$ref: '#/components/responses/Error'}}
+  /api/v2/playbooks:
+    get:
+      tags: [Playbooks]
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Size'}
+        - {name: status, in: query, schema: {type: string, enum: [ACTIVE, ARCHIVED]}}
+        - {name: owner, in: query, schema: {type: string, maxLength: 128}}
+        - {name: tag, in: query, schema: {type: string, maxLength: 64}}
+        - {name: risk, in: query, schema: {type: string, enum: [NONE, LOW, MEDIUM, HIGH, CRITICAL, READ_ONLY]}}
+      responses:
+        '200': {$ref: '#/components/responses/ApiResult'}
+    post:
+      tags: [Playbooks]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CreatePlaybook'}}}}
+      responses: {'201': {$ref: '#/components/responses/ApiResult'}, '400': {$ref: '#/components/responses/Error'}}
+  /api/v2/playbooks/import:
+    post:
+      tags: [Playbooks]
+      description: Imports a definition as a draft; it is never published implicitly.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ImportPlaybook'}}}}
+      responses: {'201': {$ref: '#/components/responses/ApiResult'}, '400': {$ref: '#/components/responses/Error'}}
+  /api/v2/playbooks/{playbookId}:
+    get:
+      tags: [Playbooks]
+      parameters: [{$ref: '#/components/parameters/PlaybookId'}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '404': {$ref: '#/components/responses/Error'}}
+    patch:
+      tags: [Playbooks]
+      description: Updates metadata or archives/restores a playbook; immutable versions are not changed.
+      parameters: [{$ref: '#/components/parameters/PlaybookId'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/UpdatePlaybook'}}}}
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '400': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v2/playbooks/{playbookId}/versions:
+    get:
+      tags: [Playbooks]
+      parameters: [{$ref: '#/components/parameters/PlaybookId'}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+    post:
+      tags: [Playbooks]
+      description: Creates a new editable draft from the latest published version.
+      parameters: [{$ref: '#/components/parameters/PlaybookId'}]
+      responses: {'201': {$ref: '#/components/responses/ApiResult'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v2/playbooks/{playbookId}/drafts:
+    post:
+      tags: [Playbooks]
+      description: Design-facing alias that creates a new editable draft from the latest published version.
+      parameters: [{$ref: '#/components/parameters/PlaybookId'}]
+      responses: {'201': {$ref: '#/components/responses/ApiResult'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v2/playbooks/{playbookId}/versions/{version}:
+    get:
+      tags: [Playbooks]
+      parameters: [{$ref: '#/components/parameters/PlaybookId'}, {$ref: '#/components/parameters/Version'}]
+      responses: {'200': {$ref: '#/components/responses/VersionResult'}, '404': {$ref: '#/components/responses/Error'}}
+    put:
+      tags: [Playbooks]
+      description: Saves only a DRAFT and requires the last rowVersion when supplied.
+      parameters: [{$ref: '#/components/parameters/PlaybookId'}, {$ref: '#/components/parameters/Version'}, {$ref: '#/components/parameters/IfMatch'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/SaveVersion'}}}}
+      responses: {'200': {$ref: '#/components/responses/VersionResult'}, '400': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}, '412': {$ref: '#/components/responses/Error'}}
+  /api/v2/playbooks/{playbookId}/versions/{version}/validate:
+    post:
+      tags: [Playbooks]
+      parameters: [{$ref: '#/components/parameters/PlaybookId'}, {$ref: '#/components/parameters/Version'}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+  /api/v2/playbooks/{playbookId}/versions/{version}/dry-run:
+    post:
+      tags: [Playbooks]
+      description: Side-effect-free simulation. No connector, HTTP, persistence or notification action is invoked.
+      parameters: [{$ref: '#/components/parameters/PlaybookId'}, {$ref: '#/components/parameters/Version'}]
+      requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/DryRunRequest'}}}}
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '400': {$ref: '#/components/responses/Error'}}
+  /api/v2/playbooks/{playbookId}/versions/{version}/publish:
+    post:
+      tags: [Playbooks]
+      parameters: [{$ref: '#/components/parameters/PlaybookId'}, {$ref: '#/components/parameters/Version'}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v2/playbooks/{playbookId}/versions/{version}/deprecate:
+    post:
+      tags: [Playbooks]
+      parameters: [{$ref: '#/components/parameters/PlaybookId'}, {$ref: '#/components/parameters/Version'}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v2/playbooks/{playbookId}/versions/{version}/export:
+    get:
+      tags: [Playbooks]
+      parameters: [{$ref: '#/components/parameters/PlaybookId'}, {$ref: '#/components/parameters/Version'}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+  /api/v2/runs:
+    get:
+      tags: [Runs]
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Size'}
+        - {name: status, in: query, schema: {type: string}}
+        - {name: playbookVersionId, in: query, schema: {type: string}}
+        - {name: triggerType, in: query, schema: {type: string}}
+        - {name: requestedBy, in: query, schema: {type: string}}
+        - {name: createdFrom, in: query, schema: {type: string, format: date-time}}
+        - {name: createdTo, in: query, schema: {type: string, format: date-time}}
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+    post:
+      tags: [Runs]
+      description: Accepts a published version and returns 202. requestId is idempotent per tenant.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/RunRequest'}}}}
+      responses: {'202': {$ref: '#/components/responses/ApiResult'}, '200': {description: Existing idempotent run}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v2/runs/{runId}/events:
+    get:
+      tags: [Runs]
+      parameters: [{$ref: '#/components/parameters/RunId'}, {$ref: '#/components/parameters/After'}, {$ref: '#/components/parameters/Page'}, {$ref: '#/components/parameters/Size'}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+  /api/v2/runs/{runId}:
+    get:
+      tags: [Runs]
+      parameters: [{$ref: '#/components/parameters/RunId'}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '404': {$ref: '#/components/responses/Error'}}
+  /api/v2/runs/{runId}/nodes:
+    get:
+      tags: [Runs]
+      parameters: [{$ref: '#/components/parameters/RunId'}, {$ref: '#/components/parameters/Page'}, {$ref: '#/components/parameters/Size'}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+  /api/v2/runs/{runId}/cancel:
+    post:
+      tags: [Runs]
+      parameters: [{$ref: '#/components/parameters/RunId'}]
+      requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/Reason'}}}}
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v2/runs/{runId}/retry:
+    post:
+      tags: [Runs]
+      parameters: [{$ref: '#/components/parameters/RunId'}]
+      requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/Reason'}}}}
+      responses: {'202': {$ref: '#/components/responses/ApiResult'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v2/runs/{runId}/rerun:
+    post:
+      tags: [Runs]
+      description: Explicitly creates a new execution series and therefore new idempotency keys.
+      parameters: [{$ref: '#/components/parameters/RunId'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/RerunRequest'}}}}
+      responses: {'202': {$ref: '#/components/responses/ApiResult'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v2/runs/{runId}/stream:
+    get:
+      tags: [Runs]
+      parameters: [{$ref: '#/components/parameters/RunId'}, {name: Last-Event-ID, in: header, schema: {type: string}}]
+      responses: {'200': {description: Server-sent run events, content: {text/event-stream: {schema: {type: string}}}}}
+  /api/v2/runs/{runId}/artifacts:
+    get:
+      tags: [Runs]
+      parameters: [{$ref: '#/components/parameters/RunId'}, {$ref: '#/components/parameters/Page'}, {$ref: '#/components/parameters/Size'}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+    post:
+      tags: [Runs]
+      description: Uploads a bounded JSON artifact for a run; content is redacted and retained according to the run policy.
+      parameters:
+        - {$ref: '#/components/parameters/RunId'}
+        - {name: nodeRunId, in: query, required: false, schema: {type: string}}
+        - {name: mediaType, in: query, required: false, schema: {type: string, default: application/json}}
+        - {name: classification, in: query, required: false, schema: {type: string, enum: [PUBLIC, INTERNAL, CONFIDENTIAL, RESTRICTED], default: INTERNAL}}
+      requestBody:
+        required: false
+        content: {application/json: {schema: {}}}
+      responses: {'201': {$ref: '#/components/responses/ApiResult'}, '400': {$ref: '#/components/responses/Error'}, '413': {$ref: '#/components/responses/Error'}}
+  /api/v2/artifacts/{artifactId}:
+    get:
+      tags: [Runs]
+      parameters: [{name: artifactId, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '404': {$ref: '#/components/responses/Error'}}
+  /api/v2/node-runs/{nodeRunId}/attempts:
+    get:
+      tags: [Runs]
+      parameters: [{name: nodeRunId, in: path, required: true, schema: {type: string}}, {$ref: '#/components/parameters/Page'}, {$ref: '#/components/parameters/Size'}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+  /api/v2/node-runs/{nodeRunId}/resolve-unknown:
+    post:
+      tags: [Operations]
+      description: Requires external evidence and a reason; never retries an unknown side effect automatically.
+      parameters: [{name: nodeRunId, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/UnknownResolution'}}}}
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '400': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v2/artifacts/{artifactId}/content:
+    get:
+      tags: [Operations]
+      parameters: [{name: artifactId, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {description: Redacted JSON artifact}, '410': {$ref: '#/components/responses/Error'}}
+  /api/v2/manual-tasks:
+    get:
+      tags: [Operations]
+      parameters:
+        - {name: pendingOnly, in: query, schema: {type: boolean, default: true}}
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Size'}
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+  /api/v2/manual-tasks/{taskId}/complete:
+    post:
+      tags: [Operations]
+      parameters: [{name: taskId, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object}}}}
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v2/approvals:
+    get:
+      tags: [Operations]
+      parameters: [{$ref: '#/components/parameters/Page'}, {$ref: '#/components/parameters/Size'}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+  /api/v2/approvals/{approvalId}/decisions:
+    post:
+      tags: [Operations]
+      parameters: [{name: approvalId, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ApprovalDecision'}}}}
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '400': {$ref: '#/components/responses/Error'}, '403': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v2/approvals/{approvalId}/approve:
+    post:
+      tags: [Operations]
+      parameters: [{name: approvalId, in: path, required: true, schema: {type: string}}]
+      requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/Reason'}}}}
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '403': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v2/approvals/{approvalId}/reject:
+    post:
+      tags: [Operations]
+      parameters: [{name: approvalId, in: path, required: true, schema: {type: string}}]
+      requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/Reason'}}}}
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '403': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v2/stats:
+    get:
+      tags: [Operations]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+  /api/v2/operations/dead-dispatches:
+    get:
+      tags: [Operations]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+  /api/v2/operations/dead-dispatches/{operationId}/requeue:
+    post:
+      tags: [Operations]
+      parameters: [{name: operationId, in: path, required: true, schema: {type: string}}]
+      requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/Reason'}}}}
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v2/operations/dead-dispatches/{operationId}/discard:
+    post:
+      tags: [Operations]
+      parameters: [{name: operationId, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Reason'}}}}
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '409': {$ref: '#/components/responses/Error'}}
+  /api/v2/automation-rules:
+    get:
+      tags: [Automation]
+      parameters: [{$ref: '#/components/parameters/Page'}, {$ref: '#/components/parameters/Size'}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+    post:
+      tags: [Automation]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AutomationRule'}}}}
+      responses: {'201': {$ref: '#/components/responses/ApiResult'}, '400': {$ref: '#/components/responses/Error'}}
+  /api/v2/automation-rules/{ruleId}:
+    get:
+      tags: [Automation]
+      parameters: [{name: ruleId, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '404': {$ref: '#/components/responses/Error'}}
+    put:
+      tags: [Automation]
+      parameters: [{name: ruleId, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AutomationRule'}}}}
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '409': {$ref: '#/components/responses/Error'}}
+    patch:
+      tags: [Automation]
+      parameters: [{name: ruleId, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AutomationRulePatch'}}}}
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '400': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}}
+    delete:
+      tags: [Automation]
+      parameters: [{name: ruleId, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+  /api/v2/automation-rules/{ruleId}/enable:
+    post:
+      tags: [Automation]
+      parameters: [{name: ruleId, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+  /api/v2/automation-rules/{ruleId}/disable:
+    post:
+      tags: [Automation]
+      parameters: [{name: ruleId, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+  /api/v2/automation-rules/evaluate:
+    post:
+      tags: [Automation]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/EventEnvelope'}}}}
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+  /api/v2/automation-rules/test:
+    post:
+      tags: [Automation]
+      requestBody: {required: true, content: {application/json: {schema: {type: object}}}}
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+  /api/v2/events/evaluate:
+    post:
+      tags: [Automation]
+      description: Service-only event ingress; ordinary user sessions must be rejected.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/EventEnvelope'}}}}
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '401': {$ref: '#/components/responses/Error'}, '403': {$ref: '#/components/responses/Error'}}
+  /api/v2/actions:
+    get:
+      tags: [Connections]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+  /api/v2/connectors:
+    get:
+      tags: [Connections]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+    post:
+      tags: [Connections]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Connection'}}}}
+      responses: {'201': {$ref: '#/components/responses/ApiResult'}, '400': {$ref: '#/components/responses/Error'}}
+  /api/v2/connectors/{connectorId}:
+    get:
+      tags: [Connections]
+      parameters: [{name: connectorId, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '404': {$ref: '#/components/responses/Error'}}
+    put:
+      tags: [Connections]
+      parameters: [{name: connectorId, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Connection'}}}}
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '400': {$ref: '#/components/responses/Error'}}
+  /api/v2/connectors/{connectorId}/test:
+    post:
+      tags: [Connections]
+      parameters: [{name: connectorId, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '503': {$ref: '#/components/responses/Error'}}
+  /api/v2/connectors/{connectorId}/enable:
+    post:
+      tags: [Connections]
+      description: Compatibility alias for enabling a connection.
+      parameters: [{name: connectorId, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '404': {$ref: '#/components/responses/Error'}}
+  /api/v2/connectors/{connectorId}/disable:
+    post:
+      tags: [Connections]
+      description: Compatibility alias for disabling a connection.
+      parameters: [{name: connectorId, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '404': {$ref: '#/components/responses/Error'}}
+  /api/v2/connections:
+    get:
+      tags: [Connections]
+      parameters: [{$ref: '#/components/parameters/Page'}, {$ref: '#/components/parameters/Size'}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+    post:
+      tags: [Connections]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Connection'}}}}
+      responses: {'201': {$ref: '#/components/responses/ApiResult'}, '400': {$ref: '#/components/responses/Error'}}
+  /api/v2/connections/{connectionId}:
+    get:
+      tags: [Connections]
+      parameters: [{name: connectionId, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '404': {$ref: '#/components/responses/Error'}}
+    put:
+      tags: [Connections]
+      parameters: [{name: connectionId, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Connection'}}}}
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '400': {$ref: '#/components/responses/Error'}}
+    patch:
+      tags: [Connections]
+      parameters: [{name: connectionId, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ConnectionPatch'}}}}
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '400': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}}
+    delete:
+      tags: [Connections]
+      parameters: [{name: connectionId, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+  /api/v2/connections/{connectionId}/test:
+    post:
+      tags: [Connections]
+      parameters: [{name: connectionId, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '503': {$ref: '#/components/responses/Error'}}
+  /api/v2/connections/{connectionId}/enable:
+    post:
+      tags: [Connections]
+      parameters: [{name: connectionId, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+  /api/v2/connections/{connectionId}/disable:
+    post:
+      tags: [Connections]
+      parameters: [{name: connectionId, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+components:
+  securitySchemes:
+    cookieAuth: {type: apiKey, in: cookie, name: SOCP_SESSION}
+  parameters:
+    Page: {name: page, in: query, schema: {type: integer, minimum: 0, default: 0}}
+    Size: {name: size, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 20}}
+    After: {name: after, in: query, schema: {type: integer, minimum: 0, default: 0}}
+    PlaybookId: {name: playbookId, in: path, required: true, schema: {type: string}}
+    Version: {name: version, in: path, required: true, schema: {type: integer, minimum: 1}}
+    RunId: {name: runId, in: path, required: true, schema: {type: string}}
+    IfMatch: {name: If-Match, in: header, required: false, description: Strong ETag or rowVersion token for optimistic concurrency, schema: {type: string, maxLength: 128}}
+  schemas:
+    CreatePlaybook:
+      type: object
+      required: [name]
+      properties: {name: {type: string, maxLength: 128}, description: {type: string, maxLength: 2048}, tags: {type: array, items: {type: string, maxLength: 64}}}
+    UpdatePlaybook:
+      type: object
+      minProperties: 1
+      properties:
+        name: {type: string, maxLength: 128}
+        description: {type: string, maxLength: 2048}
+        tags: {type: array, maxItems: 32, items: {type: string, maxLength: 64}}
+        status: {type: string, enum: [ACTIVE, ARCHIVED]}
+        rowVersion: {type: integer, minimum: 0}
+    ImportPlaybook:
+      allOf:
+        - {$ref: '#/components/schemas/CreatePlaybook'}
+        - type: object
+          required: [definition]
+          properties: {definition: {type: object}, layout: {type: object}}
+    DryRunRequest:
+      type: object
+      properties: {subject: {type: object}, inputs: {type: object}}
+    RunRequest:
+      type: object
+      required: [requestId, playbookVersionId]
+      properties: {requestId: {type: string, maxLength: 128}, playbookVersionId: {type: string}, subject: {type: object}, inputs: {type: object}}
+    EventEnvelope:
+      type: object
+      required: [schemaVersion, eventId, eventType, tenantId, occurredAt, producer, subject, data, trace]
+      properties:
+        schemaVersion: {type: string, enum: [soar.event/v1]}
+        eventId: {type: string, maxLength: 255}
+        eventType: {type: string, pattern: '^[A-Za-z][A-Za-z0-9_.-]{0,63}$'}
+        tenantId: {type: string, maxLength: 64, readOnly: true}
+        occurredAt: {type: string, format: date-time}
+        producer: {type: string, minLength: 1, maxLength: 128}
+        subject:
+          type: object
+          required: [type, id]
+          properties: {type: {type: string, maxLength: 64}, id: {type: string, maxLength: 255}}
+        data: {type: object}
+        trace:
+          type: object
+          required: [correlationId, causationId, automationDepth]
+          properties:
+            traceparent: {type: string, maxLength: 256}
+            correlationId: {type: string, maxLength: 255}
+            causationId: {type: string, maxLength: 255}
+            automationDepth: {type: integer, minimum: 0, maximum: 100}
+    UnknownResolution:
+      type: object
+      required: [resolution, evidence, reason]
+      properties:
+        resolution: {type: string, enum: [CONFIRMED_SUCCEEDED, CONFIRMED_NOT_EXECUTED]}
+        evidence: {type: string, minLength: 1, maxLength: 4096}
+        reason: {type: string, minLength: 1, maxLength: 2048}
+    SaveVersion:
+      type: object
+      required: [definition]
+      properties:
+        definition: {type: object}
+        layout: {type: object}
+        rowVersion: {type: integer, minimum: 0}
+    PlaybookDefinitionLimits:
+      type: object
+      properties:
+        executionTimeout: {type: string, description: ISO-8601 duration bounded to PT1S..P30D by the validator}
+        maxNodeExecutions: {type: integer, minimum: 1, maximum: 500}
+        maxParallelism: {type: integer, minimum: 1, maximum: 10}
+    Reason:
+      type: object
+      properties: {reason: {type: string, minLength: 1, maxLength: 2048}}
+    ApprovalDecision:
+      type: object
+      required: [decision, reason]
+      properties:
+        decision: {type: string, enum: [APPROVE, APPROVED, REJECT, REJECTED]}
+        reason: {type: string, minLength: 1, maxLength: 2048}
+    ApprovalVote:
+      type: object
+      properties:
+        id: {type: string}
+        actor: {type: string}
+        decision: {type: string, enum: [APPROVE, REJECT, EXPIRE]}
+        reason: {type: string, nullable: true, maxLength: 2048}
+        createdAt: {type: string, format: date-time}
+    Approval:
+      type: object
+      description: Durable approval gate projection; sensitive values are redacted or represented by hashes.
+      properties:
+        id: {type: string}
+        approvalKey: {type: string, maxLength: 255}
+        runId: {type: string}
+        nodeRunId: {type: string, nullable: true}
+        actionRef: {type: string, nullable: true}
+        inputHash: {type: string, nullable: true}
+        targetSnapshot: {type: object, nullable: true}
+        approvalPolicy:
+          type: object
+          nullable: true
+          description: Immutable role/group allow-list captured from the published gate.
+          properties:
+            allowedRoles: {type: array, maxItems: 64, items: {type: string, maxLength: 128}}
+            allowedGroups: {type: array, maxItems: 64, items: {type: string, maxLength: 128}}
+            approvalsRequired: {type: integer, minimum: 1, maximum: 20}
+        requiredApprovals: {type: integer, minimum: 1, maximum: 20}
+        approvedVotes: {type: integer, minimum: 0}
+        decisions:
+          type: array
+          items: {$ref: '#/components/schemas/ApprovalVote'}
+        status: {type: string, enum: [PENDING, APPROVED, REJECTED, EXPIRED, CANCELLED]}
+        requestedBy: {type: string}
+        approver: {type: string, nullable: true}
+        reason: {type: string, nullable: true, maxLength: 2048}
+        decisionReason: {type: string, nullable: true, maxLength: 2048}
+        createdAt: {type: string, format: date-time}
+        expiresAt: {type: string, format: date-time}
+        decidedAt: {type: string, format: date-time, nullable: true}
+    RerunRequest:
+      allOf:
+        - {$ref: '#/components/schemas/Reason'}
+        - type: object
+          required: [confirm]
+          properties: {confirm: {type: boolean, const: true}}
+    AutomationRule:
+      type: object
+      required: [name, triggerType, actions]
+      properties:
+        name: {type: string, maxLength: 128}
+        triggerType: {type: string, maxLength: 64}
+        priority: {type: integer, minimum: 0, maximum: 10000, default: 100}
+        enabled: {type: boolean, default: false}
+        conditions: {type: object}
+        actions: {type: array, minItems: 1, maxItems: 32, items: {oneOf: [{type: string}, {type: object}]}}
+        suppression: {type: object}
+        rowVersion: {type: integer, minimum: 0}
+    AutomationRulePatch:
+      type: object
+      minProperties: 1
+      properties:
+        name: {type: string, maxLength: 128}
+        triggerType: {type: string, maxLength: 64}
+        priority: {type: integer, minimum: 0, maximum: 10000}
+        enabled: {type: boolean}
+        conditions: {type: object}
+        actions: {type: array, minItems: 1, maxItems: 32, items: {oneOf: [{type: string}, {type: object}]}}
+        suppression: {type: object}
+        rowVersion: {type: integer, minimum: 0}
+    Connection:
+      type: object
+      required: [name, connectorType, endpoint, allowedHosts]
+      properties:
+        name: {type: string, maxLength: 128}
+        connectorType: {type: string, maxLength: 64}
+        endpoint: {type: string, format: uri, description: HTTPS endpoint; private IPs are rejected}
+        authSecretRef: {type: string, pattern: '^secret://[A-Za-z_][A-Za-z0-9_./-]{0,254}$'}
+        allowedHosts: {type: array, minItems: 1, maxItems: 32, items: {type: string}}
+        enabled: {type: boolean, default: false}
+        rowVersion: {type: integer, minimum: 0}
+    ConnectionPatch:
+      type: object
+      minProperties: 1
+      properties:
+        name: {type: string, maxLength: 128}
+        connectorType: {type: string, maxLength: 64}
+        endpoint: {type: string, format: uri}
+        authSecretRef: {type: string, pattern: '^secret://[A-Za-z_][A-Za-z0-9_./-]{0,254}$'}
+        allowedHosts: {type: array, minItems: 1, maxItems: 32, items: {type: string}}
+        enabled: {type: boolean}
+        rowVersion: {type: integer, minimum: 0}
+    ApiResult:
+      type: object
+      description: Standard SOCP ApiResult<T> envelope. The data property contains the endpoint-specific payload.
+      required: [code, message, timestamp]
+      properties:
+        code: {type: integer, format: int32, description: 0 for success; HTTP-aligned business code for failures}
+        message: {type: string}
+        data: {nullable: true, description: Endpoint-specific response data}
+        traceId: {type: string, nullable: true, maxLength: 128}
+        timestamp: {type: string, format: date-time}
+    PagedData:
+      type: object
+      required: [page, size, total, items]
+      properties:
+        page: {type: integer, minimum: 0}
+        size: {type: integer, minimum: 1, maximum: 200}
+        total: {type: integer, format: int64, minimum: 0}
+        items: {type: array, items: {}}
+  responses:
+    ApiResult:
+      description: Standard SOCP ApiResult<T> envelope.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiResult'}
+    VersionResult:
+      description: Version response. The weak ETag is the immutable rowVersion token used by If-Match.
+      headers:
+        ETag:
+          description: Weak entity tag, for example W/"3".
+          schema: {type: string, maxLength: 128}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiResult'}
+    Error:
+      description: Standard error envelope with traceId and stable error code.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiResult'}

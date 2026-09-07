@@ -2,17 +2,25 @@ package com.socp.soar.web.api.controller;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.socp.platform.auth.security.RequirePermission;
-import com.socp.platform.auth.security.RequireRole;
 import com.socp.platform.auth.security.RequireService;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.platform.error.api.ApiResult;
 import com.socp.soar.web.api.request.CreateV2PlaybookRequest;
 import com.socp.soar.web.api.request.CreateV2AutomationRuleRequest;
 import com.socp.soar.web.api.request.CreateV2ConnectorRequest;
+import com.socp.soar.web.api.request.ApprovalDecisionRequest;
+import com.socp.soar.web.api.request.DryRunV2Request;
+import com.socp.soar.web.api.request.PatchV2ConnectionRequest;
+import com.socp.soar.web.api.request.PlaybookExecutionRequest;
+import com.socp.soar.web.api.request.ReasonRequest;
+import com.socp.soar.web.api.request.RerunV2Request;
 import com.socp.soar.web.api.request.RunV2Request;
 import com.socp.soar.web.api.request.SaveV2VersionRequest;
 import com.socp.soar.web.api.request.ImportV2PlaybookRequest;
+import com.socp.soar.web.api.request.UnknownResolutionRequest;
+import com.socp.soar.web.api.request.UpdateV2PlaybookRequest;
 import com.socp.soar.web.domain.v2.DefinitionValidationResult;
+import com.socp.soar.web.config.SoarRuntimeProperties;
 import com.socp.soar.web.service.SoarV2Service;
 import com.socp.soar.web.service.SoarV2AutomationRuleService;
 import com.socp.soar.web.service.SoarV2ConnectorService;
@@ -20,6 +28,7 @@ import com.socp.soar.web.service.SoarV2TemplateService;
 import jakarta.validation.Valid;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -36,8 +45,8 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.http.MediaType;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 import java.util.LinkedHashMap;
@@ -50,25 +59,45 @@ import java.time.format.DateTimeParseException;
 /** Versioned SOAR 2.0 API. V1 remains a separate compatibility surface. */
 @RestController
 @RequestMapping("/api/v2")
-@RequireRole({"admin", "analyst"})
 public class SoarV2Controller {
-    private static final ScheduledExecutorService STREAMS = Executors.newScheduledThreadPool(2, runnable -> {
-        Thread thread = new Thread(runnable, "soar-v2-sse");
-        thread.setDaemon(true);
-        return thread;
-    });
     private final SoarV2Service service;
     private final SoarV2AutomationRuleService automationRules;
     private final SoarV2ConnectorService connectors;
     private final SoarV2TemplateService templates;
+    private final ScheduledExecutorService streams;
+    private final SoarRuntimeProperties runtimeProperties;
 
     @org.springframework.beans.factory.annotation.Autowired
     public SoarV2Controller(SoarV2Service service, SoarV2AutomationRuleService automationRules,
-                            SoarV2ConnectorService connectors, SoarV2TemplateService templates) {
+                            SoarV2ConnectorService connectors, SoarV2TemplateService templates,
+                            @org.springframework.beans.factory.annotation.Qualifier("soarSseScheduler")
+                            ObjectProvider<ScheduledExecutorService> schedulerProvider,
+                            SoarRuntimeProperties runtimeProperties) {
+        this(service, automationRules, connectors, templates,
+                schedulerProvider.getIfAvailable(SoarV2Controller::compatibilityScheduler), runtimeProperties);
+    }
+
+    private SoarV2Controller(SoarV2Service service, SoarV2AutomationRuleService automationRules,
+                             SoarV2ConnectorService connectors, SoarV2TemplateService templates,
+                             ScheduledExecutorService streams, SoarRuntimeProperties runtimeProperties) {
         this.service = service;
         this.automationRules = automationRules;
         this.connectors = connectors;
         this.templates = templates;
+        // The scheduler is a normal application bean, but sliced MVC tests and
+        // small compatibility deployments may deliberately omit the optional
+        // SSE configuration.  The caller resolves a bounded fallback for those
+        // contexts instead of making controller startup fail.
+        this.streams = streams;
+        this.runtimeProperties = runtimeProperties;
+    }
+
+    /** Spring wiring overload retained for deployments that do not expose the
+     * optional template catalog bean. */
+    public SoarV2Controller(SoarV2Service service, SoarV2AutomationRuleService automationRules,
+                            SoarV2ConnectorService connectors, SoarV2TemplateService templates) {
+        this(service, automationRules, connectors, templates, compatibilityScheduler(),
+                new SoarRuntimeProperties());
     }
 
     /** Compatibility constructor for isolated controller tests. */
@@ -130,14 +159,34 @@ public class SoarV2Controller {
     @PatchMapping("/playbooks/{id}")
     @RequirePermission("soar:edit")
     public ApiResult<Map<String, Object>> updatePlaybook(@PathVariable String id,
-                                                         @RequestBody(required = false) Map<String, Object> body) {
-        Map<String, Object> payload = body == null ? Map.of() : body;
+                                                         @Valid @RequestBody(required = false)
+                                                         UpdateV2PlaybookRequest request) {
+        return updatePlaybookInternal(id, request);
+    }
+
+    /** Compatibility overload for callers compiled against the original map-shaped handler. */
+    public ApiResult<Map<String, Object>> updatePlaybook(String id, Object legacyBody) {
+        if (legacyBody == null || legacyBody instanceof UpdateV2PlaybookRequest request) {
+            return updatePlaybookInternal(id, (UpdateV2PlaybookRequest) legacyBody);
+        }
+        if (!(legacyBody instanceof Map<?, ?> map)) {
+            throw badRequest("playbook update must be an object");
+        }
+        Map<String, Object> payload = toObjectMap(map);
         String name = optionalString(payload.get("name"));
         String description = optionalString(payload.get("description"));
         String status = optionalString(payload.get("status"));
         Long rowVersion = optionalLong(payload.get("rowVersion"));
         List<String> tags = optionalStringList(payload.get("tags"));
         return ApiResult.ok(service.updatePlaybook(id, name, description, tags, status, rowVersion));
+    }
+
+    private ApiResult<Map<String, Object>> updatePlaybookInternal(String id, UpdateV2PlaybookRequest request) {
+        if (request == null) {
+            return ApiResult.ok(service.updatePlaybook(id, null, null, null, null, null));
+        }
+        return ApiResult.ok(service.updatePlaybook(id, request.name(), request.description(), request.tags(),
+                request.status(), request.rowVersion()));
     }
 
     @GetMapping("/playbooks/{id}/versions")
@@ -251,13 +300,34 @@ public class SoarV2Controller {
     @PostMapping("/playbooks/{id}/versions/{version}/dry-run")
     @RequirePermission("soar:execute")
     public ApiResult<Map<String, Object>> dryRun(@PathVariable String id, @PathVariable int version,
-                                                 @RequestBody(required = false) Map<String, Object> body) {
-        Map<String, Object> payload = body == null ? Map.of() : body;
+                                                 @Valid @RequestBody(required = false) DryRunV2Request request) {
+        return dryRunInternal(id, version, request);
+    }
+
+    /** Compatibility overload for the pre-DTO map-shaped dry-run payload. */
+    public ApiResult<Map<String, Object>> dryRun(String id, int version, Object legacyBody) {
+        if (legacyBody == null) return dryRunInternal(id, version, null);
+        if (legacyBody instanceof DryRunV2Request request) {
+            return dryRunInternal(id, version, request);
+        }
+        if (!(legacyBody instanceof Map<?, ?> legacyMap)) {
+            throw badRequest("dry-run request must be an object");
+        }
+        Map<String, Object> payload = toObjectMap(legacyMap);
         Object subject = payload.get("subject");
         Object inputs = payload.get("inputs");
         return ApiResult.ok(service.dryRun(id, version,
-                subject instanceof Map<?, ?> map ? toObjectMap(map) : Map.of(),
-                inputs instanceof Map<?, ?> map ? toObjectMap(map) : payload));
+                subject instanceof Map<?, ?> subjectMap ? toObjectMap(subjectMap) : Map.of(),
+                inputs instanceof Map<?, ?> inputMap ? toObjectMap(inputMap) : payload));
+    }
+
+    private ApiResult<Map<String, Object>> dryRunInternal(String id, int version, DryRunV2Request request) {
+        if (request == null) {
+            return ApiResult.ok(service.dryRun(id, version, Map.of(), Map.of()));
+        }
+        return ApiResult.ok(service.dryRun(id, version,
+                request.subject() == null ? Map.of() : request.subject(),
+                request.inputs() == null ? Map.of() : request.inputs()));
     }
 
     @PostMapping("/playbooks/{id}/versions/{version}/publish")
@@ -381,15 +451,19 @@ public class SoarV2Controller {
     @RequirePermission("soar:view")
     public SseEmitter stream(@PathVariable String id,
                              @RequestHeader(value = "Last-Event-ID", required = false) String lastEventId) {
+        if (!runtimeProperties.isSseEnabled()) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                    "SOAR run-event streaming is disabled");
+        }
         // The polling callback runs on a scheduler thread, not the request
         // thread.  Capture the authenticated tenant before scheduling so a
         // stream can never fall back to another tenant (or fail with a
         // missing ThreadLocal context) after the HTTP request returns.
         String streamTenant = TenantContext.require();
         long after = parseSequence(lastEventId);
-        SseEmitter emitter = new SseEmitter(30_000L);
+        SseEmitter emitter = new SseEmitter(sseTimeoutMs());
         final long[] cursor = {after};
-        java.util.concurrent.ScheduledFuture<?> task = STREAMS.scheduleAtFixedRate(() -> {
+        java.util.concurrent.ScheduledFuture<?> task = streams.scheduleAtFixedRate(() -> {
             TenantContext.runWith(streamTenant, () -> {
                 try {
                     Page<Map<String, Object>> page = service.listEvents(id, cursor[0], PageRequest.of(0, 100));
@@ -408,18 +482,45 @@ public class SoarV2Controller {
                     emitter.completeWithError(failure);
                 }
             });
-        }, 0, 500, TimeUnit.MILLISECONDS);
+        }, 0, ssePollIntervalMs(), TimeUnit.MILLISECONDS);
         emitter.onCompletion(() -> task.cancel(false));
         emitter.onTimeout(() -> task.cancel(false));
         emitter.onError(ignore -> task.cancel(false));
         return emitter;
     }
 
+    private long ssePollIntervalMs() {
+        return Math.max(100L, Math.min(60_000L, runtimeProperties.getSsePollIntervalMs()));
+    }
+
+    private long sseTimeoutMs() {
+        return Math.max(1_000L, Math.min(24 * 60 * 60 * 1_000L, runtimeProperties.getSseTimeoutMs()));
+    }
+
+    private static ScheduledExecutorService compatibilityScheduler() {
+        ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(2, runnable -> {
+            Thread thread = new Thread(runnable, "soar-v2-sse-test");
+            thread.setDaemon(true);
+            return thread;
+        });
+        executor.setRemoveOnCancelPolicy(true);
+        return executor;
+    }
+
     @PostMapping("/runs/{id}/cancel")
     @RequirePermission("soar:execute")
     public ApiResult<Map<String, Object>> cancel(@PathVariable String id,
-                                                 @RequestBody(required = false) Map<String, Object> body) {
-        String reason = body == null ? "operator requested cancellation" : optionalString(body.get("reason"));
+                                                 @Valid @RequestBody(required = false) ReasonRequest request) {
+        return cancelInternal(id, request == null ? null : request.reason());
+    }
+
+    /** Compatibility overload for the original {reason: ...} payload. */
+    public ApiResult<Map<String, Object>> cancel(String id, Object legacyBody) {
+        return cancelInternal(id, reasonFromLegacy(legacyBody, "operator requested cancellation"));
+    }
+
+    private ApiResult<Map<String, Object>> cancelInternal(String id, String requestedReason) {
+        String reason = requestedReason;
         if (reason == null || reason.isBlank()) reason = "operator requested cancellation";
         return ApiResult.ok(service.cancelRun(id, reason));
     }
@@ -427,8 +528,18 @@ public class SoarV2Controller {
     @PostMapping("/runs/{id}/retry")
     @RequirePermission("soar:execute")
     public ResponseEntity<ApiResult<Map<String, Object>>> retry(@PathVariable String id,
-                                                                @RequestBody(required = false) Map<String, Object> body) {
-        String reason = body == null ? "operator requested retry" : optionalString(body.get("reason"));
+                                                                @Valid @RequestBody(required = false)
+                                                                ReasonRequest request) {
+        return retryInternal(id, request == null ? null : request.reason());
+    }
+
+    /** Compatibility overload for the original {reason: ...} payload. */
+    public ResponseEntity<ApiResult<Map<String, Object>>> retry(String id, Object legacyBody) {
+        return retryInternal(id, reasonFromLegacy(legacyBody, "operator requested retry"));
+    }
+
+    private ResponseEntity<ApiResult<Map<String, Object>>> retryInternal(String id, String requestedReason) {
+        String reason = requestedReason;
         if (reason == null || reason.isBlank()) reason = "operator requested retry";
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(ApiResult.ok(service.retryRun(id, reason)));
     }
@@ -436,18 +547,51 @@ public class SoarV2Controller {
     @PostMapping("/runs/{id}/rerun")
     @RequirePermission("soar:execute")
     public ResponseEntity<ApiResult<Map<String, Object>>> rerun(@PathVariable String id,
-                                                                @RequestBody(required = false) Map<String, Object> body) {
-        String reason = body == null ? "operator requested rerun" : optionalString(body.get("reason"));
+                                                                @Valid @RequestBody(required = false)
+                                                                RerunV2Request request) {
+        return rerunInternal(id, request == null ? null : request.reason(),
+                request != null && Boolean.TRUE.equals(request.confirm()));
+    }
+
+    /** Compatibility overload for the original {reason, confirm} payload. */
+    public ResponseEntity<ApiResult<Map<String, Object>>> rerun(String id, Object legacyBody) {
+        if (legacyBody == null) {
+            return rerunInternal(id, null, false);
+        }
+        if (legacyBody instanceof RerunV2Request request) {
+            return rerunInternal(id, request.reason(), Boolean.TRUE.equals(request.confirm()));
+        }
+        if (!(legacyBody instanceof Map<?, ?> legacyMap)) {
+            throw badRequest("rerun request must be an object");
+        }
+        Map<String, Object> payload = toObjectMap(legacyMap);
+        return rerunInternal(id, optionalString(payload.get("reason")),
+                Boolean.parseBoolean(String.valueOf(payload.getOrDefault("confirm", false))));
+    }
+
+    private ResponseEntity<ApiResult<Map<String, Object>>> rerunInternal(String id, String requestedReason,
+                                                                           boolean confirm) {
+        String reason = requestedReason;
         if (reason == null || reason.isBlank()) reason = "operator requested rerun";
-        boolean confirm = body != null && Boolean.parseBoolean(String.valueOf(body.getOrDefault("confirm", false)));
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(ApiResult.ok(service.rerun(id, reason, confirm)));
     }
 
     @PostMapping("/node-runs/{id}/resolve-unknown")
     @RequirePermission("soar:operations")
     public ApiResult<Map<String, Object>> resolveUnknown(@PathVariable String id,
-                                                         @RequestBody Map<String, Object> body) {
-        Map<String, Object> payload = body == null ? Map.of() : body;
+                                                         @Valid @RequestBody UnknownResolutionRequest request) {
+        return ApiResult.ok(service.resolveUnknown(id, request.resolution(), request.evidence(), request.reason()));
+    }
+
+    /** Compatibility overload for map-shaped resolution requests. */
+    public ApiResult<Map<String, Object>> resolveUnknown(String id, Object legacyBody) {
+        if (legacyBody instanceof UnknownResolutionRequest request) {
+            return ApiResult.ok(service.resolveUnknown(id, request.resolution(), request.evidence(), request.reason()));
+        }
+        if (!(legacyBody instanceof Map<?, ?> map)) {
+            throw badRequest("unknown resolution request must be an object");
+        }
+        Map<String, Object> payload = toObjectMap(map);
         return ApiResult.ok(service.resolveUnknown(id, optionalString(payload.get("resolution")),
                 optionalString(payload.get("evidence")), optionalString(payload.get("reason"))));
     }
@@ -468,8 +612,17 @@ public class SoarV2Controller {
     @PostMapping("/manual-tasks/{id}/complete")
     @RequirePermission("soar:task:complete")
     public ApiResult<Map<String, Object>> completeManualTask(@PathVariable String id,
-                                                             @RequestBody Map<String, Object> body) {
-        return ApiResult.ok(service.completeManualTask(id, body == null ? Map.of() : body));
+                                                             @RequestBody PlaybookExecutionRequest request) {
+        return ApiResult.ok(service.completeManualTask(id, request == null ? Map.of() : request.context()));
+    }
+
+    /** Compatibility overload for callers that already hold a decoded map. */
+    public ApiResult<Map<String, Object>> completeManualTask(String id, Object legacyBody) {
+        if (legacyBody == null) return ApiResult.ok(service.completeManualTask(id, Map.of()));
+        if (!(legacyBody instanceof Map<?, ?> map)) {
+            throw badRequest("manual task completion must be an object");
+        }
+        return ApiResult.ok(service.completeManualTask(id, toObjectMap(map)));
     }
 
     @GetMapping("/stats")
@@ -487,17 +640,37 @@ public class SoarV2Controller {
     @PostMapping("/operations/dead-dispatches/{id}/requeue")
     @RequirePermission("soar:operations")
     public ApiResult<Map<String, Object>> requeueDead(@PathVariable String id,
-                                                      @RequestBody(required = false) Map<String, Object> body) {
-        String reason = body == null ? "operator requeue" : optionalString(body.get("reason"));
+                                                       @Valid @RequestBody(required = false) ReasonRequest request) {
+        return requeueDeadInternal(id, request == null ? null : request.reason());
+    }
+
+    /** Compatibility overload for the original {reason: ...} payload. */
+    public ApiResult<Map<String, Object>> requeueDead(String id, Object legacyBody) {
+        return requeueDeadInternal(id, reasonFromLegacy(legacyBody, "operator requeue"));
+    }
+
+    private ApiResult<Map<String, Object>> requeueDeadInternal(String id, String requestedReason) {
+        String reason = requestedReason;
         return ApiResult.ok(service.requeueDead(id, reason == null ? "operator requeue" : reason));
     }
 
     @PostMapping("/operations/dead-dispatches/{id}/discard")
     @RequirePermission("soar:operations")
     public ApiResult<Map<String, Object>> discardDead(@PathVariable String id,
-                                                      @RequestBody Map<String, Object> body) {
-        Map<String, Object> payload = body == null ? Map.of() : body;
-        return ApiResult.ok(service.discardDead(id, optionalString(payload.get("reason"))));
+                                                       @Valid @RequestBody(required = false) ReasonRequest request) {
+        return ApiResult.ok(service.discardDead(id, request == null ? null : request.reason()));
+    }
+
+    /** Compatibility overload for the original {reason: ...} payload. */
+    public ApiResult<Map<String, Object>> discardDead(String id, Object legacyBody) {
+        if (legacyBody == null) return ApiResult.ok(service.discardDead(id, null));
+        if (legacyBody instanceof ReasonRequest request) {
+            return ApiResult.ok(service.discardDead(id, request.reason()));
+        }
+        if (!(legacyBody instanceof Map<?, ?> map)) {
+            throw badRequest("dead-dispatch discard request must be an object");
+        }
+        return ApiResult.ok(service.discardDead(id, optionalString(toObjectMap(map).get("reason"))));
     }
 
     @GetMapping("/approvals")
@@ -514,14 +687,30 @@ public class SoarV2Controller {
     @PostMapping("/approvals/{id}/decisions")
     @RequirePermission("soar:approve")
     public ApiResult<Map<String, Object>> decideApproval(@PathVariable String id,
-                                                          @RequestBody Map<String, Object> body) {
-        Map<String, Object> payload = body == null ? Map.of() : body;
+                                                          @Valid @RequestBody ApprovalDecisionRequest request) {
+        return decideApprovalInternal(id, request == null ? null : request.decision(),
+                request == null ? null : request.reason());
+    }
+
+    /** Compatibility overload for map-shaped approval decisions. */
+    public ApiResult<Map<String, Object>> decideApproval(String id, Object legacyBody) {
+        if (legacyBody instanceof ApprovalDecisionRequest request) {
+            return decideApprovalInternal(id, request.decision(), request.reason());
+        }
+        if (!(legacyBody instanceof Map<?, ?> map)) {
+            throw badRequest("approval decision must be an object");
+        }
+        Map<String, Object> payload = toObjectMap(map);
         String decision = String.valueOf(payload.getOrDefault("decision", "")).trim().toUpperCase();
+        return decideApprovalInternal(id, decision, optionalString(payload.get("reason")));
+    }
+
+    private ApiResult<Map<String, Object>> decideApprovalInternal(String id, String rawDecision, String reason) {
+        String decision = rawDecision == null ? "" : rawDecision.trim().toUpperCase();
         if (!Set.of("APPROVE", "APPROVED", "REJECT", "REJECTED").contains(decision)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "decision must be APPROVE or REJECT");
         }
-        String reason = optionalString(payload.get("reason"));
         return ApiResult.ok(service.decideApproval(id,
                 decision.startsWith("APPRO"), reason));
     }
@@ -529,17 +718,25 @@ public class SoarV2Controller {
     @PostMapping("/approvals/{id}/approve")
     @RequirePermission("soar:approve")
     public ApiResult<Map<String, Object>> approve(@PathVariable String id,
-                                                   @RequestBody(required = false) Map<String, Object> body) {
-        String reason = body == null ? null : optionalString(body.get("reason"));
-        return ApiResult.ok(service.decideApproval(id, true, reason));
+                                                   @Valid @RequestBody(required = false) ReasonRequest request) {
+        return ApiResult.ok(service.decideApproval(id, true, request == null ? null : request.reason()));
+    }
+
+    /** Compatibility overload for the original {reason: ...} payload. */
+    public ApiResult<Map<String, Object>> approve(String id, Object legacyBody) {
+        return ApiResult.ok(service.decideApproval(id, true, reasonFromLegacy(legacyBody, null)));
     }
 
     @PostMapping("/approvals/{id}/reject")
     @RequirePermission("soar:approve")
     public ApiResult<Map<String, Object>> reject(@PathVariable String id,
-                                                 @RequestBody(required = false) Map<String, Object> body) {
-        String reason = body == null ? null : optionalString(body.get("reason"));
-        return ApiResult.ok(service.decideApproval(id, false, reason));
+                                                 @Valid @RequestBody(required = false) ReasonRequest request) {
+        return ApiResult.ok(service.decideApproval(id, false, request == null ? null : request.reason()));
+    }
+
+    /** Compatibility overload for the original {reason: ...} payload. */
+    public ApiResult<Map<String, Object>> reject(String id, Object legacyBody) {
+        return ApiResult.ok(service.decideApproval(id, false, reasonFromLegacy(legacyBody, null)));
     }
 
     @GetMapping("/automation-rules")
@@ -620,7 +817,39 @@ public class SoarV2Controller {
     @RequireService
     @RequirePermission("soar:execute")
     public ApiResult<Map<String, Object>> evaluateEvent(@RequestBody Map<String, Object> event) {
-        return ApiResult.ok(automationRules.evaluate(event));
+        // Alert Web was historically coupled to the V1 evaluation route.  Keep
+        // the V2 service boundary tolerant of that already-persisted alarm
+        // payload while the client rollout is in flight, but immediately
+        // convert it to the typed event envelope so the durable evaluator is
+        // still the only execution path.
+        return ApiResult.ok(automationRules.evaluate(legacyAlarmEnvelope(event)));
+    }
+
+    private static Map<String, Object> legacyAlarmEnvelope(Map<String, Object> event) {
+        Map<String, Object> source = event == null ? Map.of() : new LinkedHashMap<>(event);
+        if (source.containsKey("schemaVersion") || source.containsKey("eventType")) return source;
+        String eventId = optionalString(source.get("eventId"));
+        if (eventId == null) eventId = optionalString(source.get("id"));
+        if (eventId == null) return source;
+        String tenantId = optionalString(source.get("tenantId"));
+        if (tenantId == null) tenantId = optionalString(source.get("tenant_id"));
+        String occurredAt = optionalString(source.get("occurredAt"));
+        if (occurredAt == null) occurredAt = Instant.now().toString();
+        Map<String, Object> envelope = new LinkedHashMap<>();
+        envelope.put("schemaVersion", "soar.event/v1");
+        envelope.put("eventId", eventId);
+        envelope.put("eventType", "alert.created");
+        if (tenantId != null) envelope.put("tenantId", tenantId);
+        envelope.put("occurredAt", occurredAt);
+        envelope.put("producer", "alert-web");
+        envelope.put("subject", Map.of("type", "alert", "id", eventId));
+        envelope.put("data", source);
+        envelope.put("trace", Map.of(
+                "correlationId", eventId,
+                "causationId", optionalString(source.get("triggerEventId")) == null
+                        ? eventId : optionalString(source.get("triggerEventId")),
+                "automationDepth", 0));
+        return envelope;
     }
 
     @GetMapping("/connectors")
@@ -679,9 +908,38 @@ public class SoarV2Controller {
     @PatchMapping("/connections/{id}")
     @RequirePermission("soar:connections:manage")
     public ApiResult<Map<String, Object>> patchConnection(@PathVariable String id,
-                                                           @RequestBody Map<String, Object> body) {
+                                                           @Valid @RequestBody PatchV2ConnectionRequest request) {
+        return patchConnectionInternal(id, request);
+    }
+
+    /** Compatibility overload for map-shaped partial connection updates. */
+    public ApiResult<Map<String, Object>> patchConnection(String id, Object legacyBody) {
+        if (legacyBody instanceof PatchV2ConnectionRequest request) {
+            return patchConnectionInternal(id, request);
+        }
+        if (!(legacyBody instanceof Map<?, ?> map)) {
+            throw badRequest("connection patch must be an object");
+        }
+        return patchConnectionFromMap(id, toObjectMap(map));
+    }
+
+    private ApiResult<Map<String, Object>> patchConnectionInternal(String id, PatchV2ConnectionRequest request) {
         Map<String, Object> current = connectors.get(id);
-        Map<String, Object> payload = body == null ? Map.of() : body;
+        if (request == null) return patchConnectionFromMap(id, Map.of());
+        String name = request.name() == null ? optionalString(current.get("name")) : request.name();
+        String type = request.connectorType() == null ? optionalString(current.get("connectorType")) : request.connectorType();
+        String endpoint = request.endpoint() == null ? optionalString(current.get("endpoint")) : request.endpoint();
+        String secret = request.authSecretRef();
+        List<String> allowedHosts = request.allowedHosts() == null
+                ? optionalStringList(current.get("allowedHosts")) : request.allowedHosts();
+        boolean enabled = request.enabled() == null
+                ? Boolean.TRUE.equals(current.get("enabled")) : request.enabled();
+        return ApiResult.ok(connectors.update(id, name, type, endpoint, secret, allowedHosts, enabled,
+                request.rowVersion()));
+    }
+
+    private ApiResult<Map<String, Object>> patchConnectionFromMap(String id, Map<String, Object> payload) {
+        Map<String, Object> current = connectors.get(id);
         String name = optionalString(payload.getOrDefault("name", current.get("name")));
         String type = optionalString(payload.getOrDefault("connectorType", current.get("connectorType")));
         String endpoint = optionalString(payload.getOrDefault("endpoint", current.get("endpoint")));
@@ -780,6 +1038,17 @@ public class SoarV2Controller {
         Map<String, Object> output = new LinkedHashMap<>();
         value.forEach((key, item) -> output.put(String.valueOf(key), item));
         return output;
+    }
+
+    private static String reasonFromLegacy(Object value, String defaultReason) {
+        if (value == null) return defaultReason;
+        if (value instanceof ReasonRequest request) return request.reason();
+        if (value instanceof Map<?, ?> map) return optionalString(toObjectMap(map).get("reason"));
+        throw badRequest("request must be an object");
+    }
+
+    private static ResponseStatusException badRequest(String message) {
+        return new ResponseStatusException(HttpStatus.BAD_REQUEST, message);
     }
 
     private static String optionalString(Object value) {

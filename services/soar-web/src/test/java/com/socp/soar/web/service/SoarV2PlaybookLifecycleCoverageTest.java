@@ -99,6 +99,7 @@ class SoarV2PlaybookLifecycleCoverageTest {
     @BeforeEach
     void setUp() {
         TenantContext.set("tenant-a");
+        SoarTestIdentity.setOperator();
         service = new SoarV2Service(playbooks, versions, runs, dispatches, nodes, events, approvals,
                 validator, mapper, temporal, attempts, manualTasks, signals, connectors, connectorRegistry);
     }
@@ -106,6 +107,7 @@ class SoarV2PlaybookLifecycleCoverageTest {
     @AfterEach
     void tearDown() {
         TenantContext.clear();
+        SoarTestIdentity.clear();
     }
 
     // ---------------------------------------------------------------- create

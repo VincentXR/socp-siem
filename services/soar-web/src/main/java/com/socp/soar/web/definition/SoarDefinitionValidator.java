@@ -31,6 +31,8 @@ public class SoarDefinitionValidator {
     public static final int MAX_NODES = 200;
     public static final int MAX_NODE_EXECUTIONS = 500;
     public static final int MAX_PARALLELISM = 10;
+    /** Java's backtracking engine is safe for this deliberately bounded subset. */
+    public static final int MAX_MANUAL_PATTERN_LENGTH = 256;
 
     private final ObjectMapper mapper;
     private final ObjectMapper canonicalMapper;
@@ -910,9 +912,11 @@ public class SoarDefinitionValidator {
         }
         JsonNode pattern = schema.get("pattern");
         if (pattern != null) {
-            if (!pattern.isTextual() || pattern.asText().length() > 1024) {
+            if (!pattern.isTextual() || pattern.asText().length() > MAX_MANUAL_PATTERN_LENGTH
+                    || !safeManualPattern(pattern.asText())) {
                 errors.add(DefinitionIssue.error("MANUAL_FORM_INVALID", null, path + "/pattern",
-                        "pattern must be a regular expression of at most 1024 characters"));
+                        "pattern must be a bounded, non-backtracking regular expression of at most "
+                                + MAX_MANUAL_PATTERN_LENGTH + " characters"));
             } else {
                 try { java.util.regex.Pattern.compile(pattern.asText()); }
                 catch (java.util.regex.PatternSyntaxException invalid) {
@@ -931,6 +935,90 @@ public class SoarDefinitionValidator {
             errors.add(DefinitionIssue.error("MANUAL_FORM_INVALID", null, path + "/enum",
                     "enum must contain at most 100 values"));
         }
+    }
+
+    /**
+     * Reject the Java-regex constructs that make runtime cost dependent on
+     * adversarial backtracking (lookarounds, back references and quantified
+     * groups that already contain a quantifier). This keeps useful patterns
+     * such as {@code ^[A-Za-z0-9_-]+$} while excluding {@code (a+)+}.
+     */
+    public static boolean safeManualPattern(String regex) {
+        if (regex == null || regex.length() > MAX_MANUAL_PATTERN_LENGTH
+                || regex.contains("(?")) return false;
+        java.util.ArrayDeque<Boolean> groups = new java.util.ArrayDeque<>();
+        boolean lastAtom = false;
+        boolean lastAtomWasQuantifiedGroup = false;
+        for (int index = 0; index < regex.length(); index++) {
+            char current = regex.charAt(index);
+            if (current == '\\') {
+                if (++index >= regex.length()) return false;
+                char escaped = regex.charAt(index);
+                if (Character.isDigit(escaped)) return false; // back-reference
+                lastAtom = true;
+                lastAtomWasQuantifiedGroup = false;
+                continue;
+            }
+            if (current == '[') {
+                boolean closed = false;
+                for (index++; index < regex.length(); index++) {
+                    char inClass = regex.charAt(index);
+                    if (inClass == '\\') {
+                        if (++index >= regex.length()) return false;
+                    } else if (inClass == ']') {
+                        closed = true;
+                        break;
+                    }
+                }
+                if (!closed) return false;
+                lastAtom = true;
+                lastAtomWasQuantifiedGroup = false;
+                continue;
+            }
+            if (current == '(') {
+                groups.push(false);
+                lastAtom = false;
+                lastAtomWasQuantifiedGroup = false;
+                continue;
+            }
+            if (current == ')') {
+                if (groups.isEmpty()) return false;
+                boolean containedQuantifier = groups.pop();
+                lastAtom = true;
+                lastAtomWasQuantifiedGroup = containedQuantifier;
+                continue;
+            }
+            if (current == '*' || current == '+' || current == '?' || current == '{') {
+                if (!lastAtom || lastAtomWasQuantifiedGroup) return false;
+                if (current == '{') {
+                    int end = regex.indexOf('}', index + 1);
+                    if (end < 0) return false;
+                    String bounds = regex.substring(index + 1, end);
+                    if (!bounds.matches("\\d{1,4}(,\\d{1,4})?")) return false;
+                    String[] parts = bounds.split(",", -1);
+                    try {
+                        int lower = Integer.parseInt(parts[0]);
+                        int upper = parts.length == 1 ? lower :
+                                (parts[1].isBlank() ? lower : Integer.parseInt(parts[1]));
+                        if (lower > 1000 || upper > 1000 || upper < lower) return false;
+                    } catch (NumberFormatException invalid) { return false; }
+                    index = end;
+                }
+                if (!groups.isEmpty()) groups.pop();
+                if (!groups.isEmpty()) groups.push(true);
+                lastAtom = false;
+                lastAtomWasQuantifiedGroup = false;
+                continue;
+            }
+            if (current == '^' || current == '$' || current == '|' ) {
+                lastAtom = false;
+                lastAtomWasQuantifiedGroup = false;
+                continue;
+            }
+            lastAtom = true;
+            lastAtomWasQuantifiedGroup = false;
+        }
+        return groups.isEmpty();
     }
 
     private static void validateManualBound(JsonNode schema, String field, int min, int max,
@@ -1043,7 +1131,203 @@ public class SoarDefinitionValidator {
         if (parameters != null && !parameters.isObject()) {
             errors.add(DefinitionIssue.error("ACTION_PARAMETERS_INVALID", nodeId,
                     path + "/parameters", "ACTION parameters must be an object"));
+        } else {
+            // Treat an omitted parameters object as an empty object for
+            // schema validation.  This preserves optional action inputs but
+            // makes declared required fields fail at publish time instead of
+            // surfacing as a late connector/runtime error.
+            validateActionParameters(action.inputSchema(),
+                    parameters == null ? mapper.createObjectNode() : parameters,
+                    nodeId, path, errors);
         }
+    }
+
+    /**
+     * Validate the bounded, declarative portion of an Action Definition input
+     * schema at publish time.  Connector schemas deliberately allow unknown
+     * context keys (for example a tenant-specific selector), but known fields
+     * must retain their declared JSON type and size.  A single {$expr: "..."}
+     * object is accepted as a deferred, safe expression because its final
+     * value is resolved inside the deterministic workflow.
+     */
+    private void validateActionParameters(Map<String, Object> schemaMap, JsonNode parameters,
+                                          String nodeId, String nodePath,
+                                          List<DefinitionIssue> errors) {
+        if (schemaMap == null || schemaMap.isEmpty()) return;
+        JsonNode schema = mapper.valueToTree(schemaMap);
+        if (schema == null || !schema.isObject()) return;
+        JsonNode required = schema.get("required");
+        if (required != null && required.isArray()) {
+            for (JsonNode item : required) {
+                if (item != null && item.isTextual() && !parameters.has(item.asText())) {
+                    errors.add(DefinitionIssue.error("ACTION_PARAMETER_REQUIRED", nodeId,
+                            nodePath + "/parameters/" + item.asText(),
+                            "required action parameter is missing"));
+                }
+            }
+        }
+        JsonNode properties = schema.get("properties");
+        boolean rejectAdditional = schema.has("additionalProperties")
+                && schema.get("additionalProperties").isBoolean()
+                && !schema.get("additionalProperties").asBoolean();
+        if (properties == null || !properties.isObject()) {
+            if (rejectAdditional) {
+                var fields = parameters.fields();
+                while (fields.hasNext()) {
+                    var field = fields.next();
+                    errors.add(DefinitionIssue.error("ACTION_PARAMETER_UNKNOWN", nodeId,
+                            nodePath + "/parameters/" + field.getKey(),
+                            "parameter is not declared by the action schema"));
+                }
+            }
+            return;
+        }
+        var fields = parameters.fields();
+        while (fields.hasNext()) {
+            var field = fields.next();
+            String name = field.getKey();
+            JsonNode propertySchema = properties.get(name);
+            if (propertySchema == null || propertySchema.isNull()) {
+                if (rejectAdditional) {
+                    errors.add(DefinitionIssue.error("ACTION_PARAMETER_UNKNOWN", nodeId,
+                            nodePath + "/parameters/" + name,
+                            "parameter is not declared by the action schema"));
+                }
+                continue;
+            }
+            JsonNode value = field.getValue();
+            if (isExpressionReference(value)) {
+                String expression = value.path("$expr").asText("");
+                if (expression.length() > 4096 || !safeExpression(expression)) {
+                    errors.add(DefinitionIssue.error("ACTION_PARAMETER_EXPRESSION_INVALID", nodeId,
+                            nodePath + "/parameters/" + name + "/$expr",
+                            "parameter expression is unsafe or exceeds 4 KiB"));
+                }
+                continue;
+            }
+            validateActionValue(value, propertySchema, nodeId,
+                    nodePath + "/parameters/" + name, errors, 0);
+        }
+    }
+
+    private static boolean isExpressionReference(JsonNode value) {
+        return value != null && value.isObject() && value.size() == 1
+                && value.has("$expr") && value.path("$expr").isTextual();
+    }
+
+    private void validateActionValue(JsonNode value, JsonNode schema, String nodeId,
+                                     String path, List<DefinitionIssue> errors, int depth) {
+        if (depth > 8 || schema == null || !schema.isObject()) return;
+        JsonNode declared = schema.get("type");
+        boolean typeMatches = declared == null || declared.isNull();
+        if (declared != null && declared.isTextual()) {
+            typeMatches = schemaTypeMatches(value, declared.asText(""));
+        } else if (declared != null && declared.isArray()) {
+            for (JsonNode candidate : declared) {
+                if (candidate.isTextual() && schemaTypeMatches(value, candidate.asText(""))) {
+                    typeMatches = true;
+                    break;
+                }
+            }
+        }
+        if (!typeMatches) {
+            errors.add(DefinitionIssue.error("ACTION_PARAMETER_TYPE_INVALID", nodeId, path,
+                    "parameter does not match its action schema type"));
+            return;
+        }
+        if (value != null && value.isTextual()) {
+            JsonNode maxLength = schema.get("maxLength");
+            if (maxLength != null && maxLength.isIntegralNumber()
+                    && value.asText().length() > maxLength.asInt()) {
+                errors.add(DefinitionIssue.error("ACTION_PARAMETER_SIZE_INVALID", nodeId, path,
+                        "string parameter exceeds its action schema maxLength"));
+            }
+        }
+        if (value != null && value.isArray()) {
+            JsonNode maxItems = schema.get("maxItems");
+            if (maxItems != null && maxItems.isIntegralNumber()
+                    && value.size() > maxItems.asInt()) {
+                errors.add(DefinitionIssue.error("ACTION_PARAMETER_SIZE_INVALID", nodeId, path,
+                        "array parameter exceeds its action schema maxItems"));
+            }
+            JsonNode itemSchema = schema.get("items");
+            if (itemSchema != null && itemSchema.isObject()) {
+                for (int index = 0; index < value.size(); index++) {
+                    validateActionValue(value.get(index), itemSchema, nodeId,
+                            path + "/" + index, errors, depth + 1);
+                }
+            }
+        } else if (value != null && value.isObject()) {
+            JsonNode maxProperties = schema.get("maxProperties");
+            if (maxProperties != null && maxProperties.isIntegralNumber()
+                    && value.size() > maxProperties.asInt()) {
+                errors.add(DefinitionIssue.error("ACTION_PARAMETER_SIZE_INVALID", nodeId, path,
+                        "object parameter exceeds its action schema maxProperties"));
+            }
+            JsonNode required = schema.get("required");
+            if (required != null && required.isArray()) {
+                for (JsonNode item : required) {
+                    if (item != null && item.isTextual() && !value.has(item.asText())) {
+                        errors.add(DefinitionIssue.error("ACTION_PARAMETER_REQUIRED", nodeId,
+                                path + "/" + item.asText(),
+                                "required action parameter is missing"));
+                    }
+                }
+            }
+            JsonNode properties = schema.get("properties");
+            boolean rejectAdditional = schema.has("additionalProperties")
+                    && schema.get("additionalProperties").isBoolean()
+                    && !schema.get("additionalProperties").asBoolean();
+            if (properties != null && properties.isObject()) {
+                var fields = value.fields();
+                while (fields.hasNext()) {
+                    var field = fields.next();
+                    JsonNode propertySchema = properties.get(field.getKey());
+                    if (propertySchema == null || propertySchema.isNull()) {
+                        if (rejectAdditional) {
+                            errors.add(DefinitionIssue.error("ACTION_PARAMETER_UNKNOWN", nodeId,
+                                    path + "/" + field.getKey(),
+                                    "parameter is not declared by the action schema"));
+                        }
+                        continue;
+                    }
+                    JsonNode child = field.getValue();
+                    if (isExpressionReference(child)) {
+                        String expression = child.path("$expr").asText("");
+                        if (expression.length() > 4096 || !safeExpression(expression)) {
+                            errors.add(DefinitionIssue.error("ACTION_PARAMETER_EXPRESSION_INVALID", nodeId,
+                                    path + "/" + field.getKey() + "/$expr",
+                                    "parameter expression is unsafe or exceeds 4 KiB"));
+                        }
+                        continue;
+                    }
+                    validateActionValue(child, propertySchema, nodeId,
+                            path + "/" + field.getKey(), errors, depth + 1);
+                }
+            } else if (rejectAdditional) {
+                var fields = value.fields();
+                while (fields.hasNext()) {
+                    var field = fields.next();
+                    errors.add(DefinitionIssue.error("ACTION_PARAMETER_UNKNOWN", nodeId,
+                            path + "/" + field.getKey(),
+                            "parameter is not declared by the action schema"));
+                }
+            }
+        }
+    }
+
+    private static boolean schemaTypeMatches(JsonNode value, String type) {
+        if (value == null || value.isMissingNode()) return false;
+        return switch (type == null ? "" : type.trim().toLowerCase(java.util.Locale.ROOT)) {
+            case "object" -> value.isObject();
+            case "array" -> value.isArray();
+            case "string" -> value.isTextual();
+            case "integer" -> value.isIntegralNumber();
+            case "number" -> value.isNumber();
+            case "boolean" -> value.isBoolean();
+            case "null" -> value.isNull();
+            default -> false;
+        };
     }
 
     private String actionRiskLevel(String actionRef) {

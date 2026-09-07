@@ -76,4 +76,21 @@ class SoarV2WorkflowPrimitiveTest {
         assertThat(fake.countOf("markRunStarted")).isEqualTo(1);
         assertThat(fake.lastCompletedUpdate().status()).isEqualTo("SUCCEEDED");
     }
+
+    @Test
+    void malformedDurableInputFailsExplicitlyInsteadOfBecomingAnEmptyObject() {
+        String definition = new SoarV2WorkflowSupport.Def()
+                .node("start", "START")
+                .node("end", "END", "outcome", "SUCCEEDED")
+                .edge("start", "end")
+                .json();
+
+        harness.startWorkflow(definition, "not-json{");
+
+        SoarV2WorkflowResult result = harness.result();
+
+        assertThat(result.status()).isEqualTo("FAILED");
+        assertThat(result.errorCode()).isEqualTo("WORKFLOW_DEFINITION_ERROR");
+        assertThat(result.errorMessage()).contains("invalid workflow JSON");
+    }
 }

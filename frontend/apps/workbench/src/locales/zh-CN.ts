@@ -911,6 +911,8 @@ export const zhCN = {
     runHighlightLegend: '运行状态',
     runHighlightClear: '清除',
     runHighlightNodeTitle: '本次运行 ×{count}',
+    editorAutoLayout: '自动布局 (Auto-layout)',
+    editorAutoLayoutHint: '按确定性分层整理剧本图',
     runTone: {
       succeeded: '成功',
       failed: '失败',

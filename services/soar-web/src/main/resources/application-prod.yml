@@ -12,6 +12,18 @@ socp:
     # Single-path evaluation (design §8.1): V2 automation rules only; the legacy
     # executor is a compatibility layer and must not double-fire on one alarm.
     v2-evaluation-enabled: ${SOCP_SOAR_V2_EVALUATION_ENABLED:true}
+    v2-control-plane-enabled: ${SOCP_SOAR_V2_CONTROL_PLANE_ENABLED:true}
+    v2-execution-enabled: ${SOCP_SOAR_V2_EXECUTION_ENABLED:true}
+    execution-tenant-allowlist: ${SOCP_SOAR_V2_TENANT_ALLOWLIST:}
+    # A migrated production tenant must not reach the legacy synchronous
+    # mutation/evaluation path.  Rollback is an explicit deployment choice,
+    # never an implicit Temporal outage fallback.
+    legacy-mutation-enabled: ${SOCP_SOAR_LEGACY_MUTATION_ENABLED:false}
+    legacy-execution-enabled: ${SOCP_SOAR_LEGACY_EXECUTION_ENABLED:false}
+    sse-enabled: ${SOCP_SOAR_SSE_ENABLED:true}
+    sse-poll-interval-ms: ${SOCP_SOAR_SSE_POLL_INTERVAL_MS:500}
+    sse-timeout-ms: ${SOCP_SOAR_SSE_TIMEOUT_MS:30000}
+    sse-scheduler-threads: ${SOCP_SOAR_SSE_SCHEDULER_THREADS:4}
 
   temporal:
     enabled: ${SOCP_TEMPORAL_ENABLED:true}

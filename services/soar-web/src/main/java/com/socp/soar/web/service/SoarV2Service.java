@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.socp.platform.audit.api.AuditOperation;
+import com.socp.platform.tenant.context.AuthenticatedIdentityContext;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.soar.web.definition.SoarDefinitionValidator;
 import com.socp.soar.web.domain.v2.DefinitionValidationResult;
@@ -57,13 +58,13 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.Set;
 import java.util.Comparator;
-import java.util.Collection;
 import java.util.Optional;
 
 /** Application service for the durable SOAR 2.0 control plane. */
 @Service
 public class SoarV2Service {
     private static final int MAX_APPROVAL_SNAPSHOT_BYTES = 64 * 1024;
+    private static final int MAX_SUB_PLAYBOOK_DEPTH = 5;
     private static final String DEFAULT_DEFINITION = "{\"schemaVersion\":\"soar.playbook/v2\"," 
             + "\"entryNodeId\":\"start\",\"nodes\":["
             + "{\"id\":\"start\",\"type\":\"START\",\"name\":\"Start\"},"
@@ -135,6 +136,7 @@ public class SoarV2Service {
     @Transactional
     @AuditOperation(action = "SOAR_V2_CREATE_PLAYBOOK", target = "t_soar_playbook")
     public Map<String, Object> createPlaybook(String name, String description, List<String> tags) {
+        requireV2ControlPlane();
         String tenant = tenant();
         String actor = actor();
         Instant now = Instant.now();
@@ -244,6 +246,7 @@ public class SoarV2Service {
     public Map<String, Object> updatePlaybook(String id, String name, String description,
                                                List<String> tags, String status,
                                                Long expectedRowVersion) {
+        requireV2ControlPlane();
         String tenant = tenant();
         SoarPlaybookEntity playbook = playbooks.findByTenantIdAndIdForUpdate(tenant, id)
                 .or(() -> playbooks.findByTenantIdAndId(tenant, id))
@@ -283,6 +286,7 @@ public class SoarV2Service {
     @Transactional
     @AuditOperation(action = "SOAR_V2_CREATE_VERSION", target = "t_soar_playbook_version")
     public Map<String, Object> createVersion(String playbookId) {
+        requireV2ControlPlane();
         String tenant = tenant();
         // Serialize draft creation on the aggregate row.  The follow-up
         // status check is still kept as a clear conflict for callers, while
@@ -364,12 +368,14 @@ public class SoarV2Service {
                     "published definition is no longer valid");
         }
         validateConnections(version.getDefinitionJson(), tenant());
+        validateSubPlaybookGraph(tenant(), version);
     }
 
     @Transactional
     @AuditOperation(action = "SOAR_V2_SAVE_DRAFT", target = "t_soar_playbook_version")
     public Map<String, Object> saveDraft(String playbookId, int versionNo, String definition,
                                          String layout, Long expectedRowVersion) {
+        requireV2ControlPlane();
         String tenant = tenant();
         // Aggregate locking is deliberately ordered playbook -> version,
         // matching publish/deprecate/createVersion.  Keeping one order avoids
@@ -459,6 +465,7 @@ public class SoarV2Service {
     @Transactional
     @AuditOperation(action = "SOAR_V2_PUBLISH_PLAYBOOK", target = "t_soar_playbook_version")
     public Map<String, Object> publish(String playbookId, int versionNo) {
+        requireV2ControlPlane();
         String tenant = tenant();
         SoarPlaybookEntity playbook = playbooks.findByTenantIdAndIdForUpdate(tenant, playbookId)
                 .or(() -> playbooks.findByTenantIdAndId(tenant, playbookId))
@@ -476,6 +483,7 @@ public class SoarV2Service {
                     "definition has " + checked.errors().size() + " validation error(s)");
         }
         validateConnections(version.getDefinitionJson(), tenant);
+        validateSubPlaybookGraph(tenant, version);
         Instant now = Instant.now();
         version.setStatus(SoarPlaybookVersionStatus.PUBLISHED.name());
         version.setPublishedBy(actor());
@@ -500,6 +508,7 @@ public class SoarV2Service {
     @Transactional
     @AuditOperation(action = "SOAR_V2_DEPRECATE_PLAYBOOK", target = "t_soar_playbook_version")
     public Map<String, Object> deprecate(String playbookId, int versionNo) {
+        requireV2ControlPlane();
         String tenant = tenant();
         SoarPlaybookEntity playbook = playbooks.findByTenantIdAndIdForUpdate(tenant, playbookId)
                 .or(() -> playbooks.findByTenantIdAndId(tenant, playbookId))
@@ -539,6 +548,7 @@ public class SoarV2Service {
             existing.put("duplicate", true);
             return existing;
         }
+        requireV2Execution(tenant);
         PlaybookVersionEntity version = versions.findByTenantIdAndId(tenant, versionId)
                 .orElseThrow(() -> error(HttpStatus.NOT_FOUND, "SOAR_VERSION_NOT_FOUND", "published version not found"));
         if (!SoarPlaybookVersionStatus.PUBLISHED.name().equals(version.getStatus())) {
@@ -558,6 +568,7 @@ public class SoarV2Service {
         // version is published. Re-check them at admission so a run never
         // enters the durable queue with an already-unusable target.
         validateConnections(version.getDefinitionJson(), tenant);
+        validateSubPlaybookGraph(tenant, version);
         if (subject != null && subject.size() > 8) {
             throw error(HttpStatus.PAYLOAD_TOO_LARGE, "SOAR_INPUT_INVALID", "subject has too many fields");
         }
@@ -576,6 +587,7 @@ public class SoarV2Service {
         run.setSubjectType(text(subject, "type"));
         run.setSubjectId(text(subject, "id"));
         run.setStatus(SoarRunStatus.QUEUED.name());
+        run.setExecutionNodeCount(0);
         String inputJson = write(redact(Map.of("subject", subject == null ? Map.of() : subject,
                 "inputs", inputs == null ? Map.of() : inputs)));
         if (inputJson.getBytes(StandardCharsets.UTF_8).length > SoarDefinitionValidator.MAX_BYTES) {
@@ -794,6 +806,7 @@ public class SoarV2Service {
     @Transactional
     @AuditOperation(action = "SOAR_V2_RETRY_RUN", target = "t_soar_run")
     public Map<String, Object> retryRun(String id, String reason) {
+        requireV2Execution(tenant());
         SoarRunEntity original = run(id);
         if (!Set.of(SoarRunStatus.FAILED.name(), SoarRunStatus.ACTION_UNKNOWN.name(),
                 SoarRunStatus.DEAD.name(), SoarRunStatus.TIMED_OUT.name()).contains(original.getStatus())) {
@@ -823,6 +836,7 @@ public class SoarV2Service {
     public Map<String, Object> rerun(String id, String reason, boolean confirm) {
         if (!confirm) throw error(HttpStatus.CONFLICT, "SOAR_RERUN_CONFIRMATION_REQUIRED",
                 "rerun requires explicit confirmation");
+        requireV2Execution(tenant());
         SoarRunEntity original = run(id);
         return cloneRun(original, "rerun-" + id + "-" + shortHash(String.valueOf(reason)),
                 UUID.randomUUID().toString(), null, reason, true);
@@ -852,6 +866,26 @@ public class SoarV2Service {
         }
         String safeEvidence = redactFreeText(evidence, 4096);
         String safeReason = redactFreeText(reason, 2048);
+
+        // Resolve is an operator decision on a still-live UNKNOWN action. Do
+        // not let a late browser request revive a run that has already reached
+        // a terminal projection (including PARTIALLY_SUCCEEDED), or one that
+        // is already in the cancellation fence. The node and run are checked
+        // before either projection is mutated so a rejected late decision is
+        // side-effect free.
+        java.util.Optional<SoarRunEntity> lockedOwner = runs.findByTenantIdAndIdForUpdate(tenant, node.getRunId());
+        if (lockedOwner == null) lockedOwner = runs.findByTenantIdAndId(tenant, node.getRunId());
+        SoarRunEntity owner = (lockedOwner == null ? java.util.Optional.<SoarRunEntity>empty() : lockedOwner)
+                .orElseThrow(() -> error(HttpStatus.NOT_FOUND, "SOAR_RUN_NOT_FOUND", "run not found"));
+        if (terminalRunProjection(owner)) {
+            throw error(HttpStatus.CONFLICT, "SOAR_RUN_NOT_RESUMABLE",
+                    "the run is already terminal and cannot resolve an unknown action");
+        }
+        if (SoarRunStatus.CANCELLING.name().equals(owner.getStatus())) {
+            throw error(HttpStatus.CONFLICT, "SOAR_RUN_NOT_RESUMABLE",
+                    "the run is cancelling and cannot resolve an unknown action");
+        }
+
         node.setStatus(normalized);
         node.setErrorCode(null);
         node.setErrorMessage(safeReason);
@@ -861,16 +895,10 @@ public class SoarV2Service {
         appendEvent(node.getRunId(), "ACTION_UNKNOWN_RESOLVED", actor(),
                 "Unknown action result was resolved", Map.of("nodeRunId", nodeRunId,
                         "resolution", normalized, "reason", redactFreeText(safeReason, 512)));
-        java.util.Optional<SoarRunEntity> lockedOwner = runs.findByTenantIdAndIdForUpdate(tenant, node.getRunId());
-        if (lockedOwner == null) lockedOwner = runs.findByTenantIdAndId(tenant, node.getRunId());
-        SoarRunEntity owner = (lockedOwner == null ? java.util.Optional.<SoarRunEntity>empty() : lockedOwner)
-                .orElseThrow(() -> error(HttpStatus.NOT_FOUND, "SOAR_RUN_NOT_FOUND", "run not found"));
         boolean workflowAttached = owner.getTemporalWorkflowId() != null
                 && !owner.getTemporalWorkflowId().isBlank();
         boolean workflowCanResume = workflowAttached && Set.of(
-                SoarRunStatus.RUNNING.name(), SoarRunStatus.ACTION_UNKNOWN.name(),
-                SoarRunStatus.WAITING_APPROVAL.name(), SoarRunStatus.WAITING_INPUT.name(),
-                SoarRunStatus.CANCELLING.name()).contains(owner.getStatus());
+                SoarRunStatus.RUNNING.name(), SoarRunStatus.ACTION_UNKNOWN.name()).contains(owner.getStatus());
         owner.setStatus(workflowCanResume ? SoarRunStatus.RUNNING.name()
                 : (workflowAttached ? owner.getStatus() : SoarRunStatus.QUEUED.name()));
         if (workflowCanResume || !workflowAttached) {
@@ -925,12 +953,37 @@ public class SoarV2Service {
             throw error(HttpStatus.CONFLICT, "SOAR_MANUAL_TASK_ALREADY_COMPLETED", "manual task is not pending");
         }
         validateManualInput(task.getFormSchemaJson(), input);
+        // The task row and its owning run are independent projections. Lock
+        // the run before completing the task so a late operator submission
+        // cannot move a cancelled/suppressed/partially-successful run back to
+        // RUNNING or enqueue a signal for a closed workflow.
+        java.util.Optional<SoarRunEntity> lockedOwner = runs.findByTenantIdAndIdForUpdate(tenant, task.getRunId());
+        if (lockedOwner == null || lockedOwner.isEmpty()) lockedOwner = runs.findByTenantIdAndId(tenant, task.getRunId());
+        // A lock projection must belong to the requested run.  Besides being
+        // a useful integrity check, this keeps compatibility with old test
+        // doubles that return a generic lock row for every id; the ordinary
+        // tenant-scoped lookup still resolves the actual owner.
+        if (lockedOwner != null && lockedOwner.isPresent()
+                && lockedOwner.get().getId() != null
+                && !task.getRunId().equals(lockedOwner.get().getId())) {
+            java.util.Optional<SoarRunEntity> requestedOwner = runs.findByTenantIdAndId(tenant, task.getRunId());
+            if (requestedOwner != null && requestedOwner.isPresent()) lockedOwner = requestedOwner;
+        }
+        SoarRunEntity owner = (lockedOwner == null ? java.util.Optional.<SoarRunEntity>empty() : lockedOwner)
+                .orElseThrow(() -> error(HttpStatus.NOT_FOUND, "SOAR_RUN_NOT_FOUND", "run not found"));
+        if (terminalRunProjection(owner)) {
+            throw error(HttpStatus.CONFLICT, "SOAR_RUN_NOT_RESUMABLE",
+                    "the run is already terminal and cannot complete a manual task");
+        }
+        if (SoarRunStatus.CANCELLING.name().equals(owner.getStatus())) {
+            throw error(HttpStatus.CONFLICT, "SOAR_RUN_NOT_RESUMABLE",
+                    "the run is cancelling and cannot complete a manual task");
+        }
         Instant now = Instant.now();
         task.setInputJson(write(redact(input)));
         task.setStatus("COMPLETED");
         task.setCompletedBy(actor()); task.setCompletedAt(now); task.setUpdatedAt(now);
         manualTasks.save(task);
-        SoarRunEntity owner = run(task.getRunId());
         boolean attachedWorkflow = owner.getTemporalWorkflowId() != null
                 && !owner.getTemporalWorkflowId().isBlank();
         // A running Temporal workflow must not look QUEUED while it is being
@@ -1009,7 +1062,13 @@ public class SoarV2Service {
             row.setStatus("PENDING"); row.setAttempts(0); row.setLastError("requeued: " + why);
             row.setNextAttemptAt(now); row.setUpdatedAt(now); dispatches.save(row);
             runs.findByTenantIdAndId(tenant, row.getRunId()).ifPresent(run -> {
-                run.setStatus("QUEUED"); run.setUpdatedAt(now); runs.save(run);
+                // DEAD is the one recoverable run projection: requeueing its
+                // dispatch intentionally returns it to QUEUED. A stale dead
+                // outbox attached to any other terminal run must not resurrect
+                // that run merely because an operator retried the row.
+                if (dispatchRunCanBeRequeued(run)) {
+                    run.setStatus("QUEUED"); run.setUpdatedAt(now); runs.save(run);
+                }
             });
             return Map.of("id", id, "kind", "DISPATCH", "status", "PENDING");
         }
@@ -1023,6 +1082,19 @@ public class SoarV2Service {
                 SoarSignalOutboxEntity row = signal.get();
                 if (!"DEAD".equals(row.getStatus())) {
                     throw error(HttpStatus.CONFLICT, "SOAR_OUTBOX_NOT_DEAD", "outbox is not dead");
+                }
+                // A signal is only recoverable while its owning run is still
+                // resumable.  An operator retry must not requeue a late
+                // approval/manual decision for a terminal or cancelling run;
+                // the signal worker's fence is a second line of defence, not
+                // a reason to report a misleading PENDING success here.
+                Optional<SoarRunEntity> owner = runs.findByTenantIdAndIdForUpdate(tenant, row.getRunId());
+                if (owner == null || owner.isEmpty()) owner = runs.findByTenantIdAndId(tenant, row.getRunId());
+                if (owner != null && owner.isPresent()
+                        && (terminalRunProjection(owner.get())
+                        || SoarRunStatus.CANCELLING.name().equals(owner.get().getStatus()))) {
+                    throw error(HttpStatus.CONFLICT, "SOAR_RUN_NOT_RESUMABLE",
+                            "the signal owner run is already terminal or cancelling");
                 }
                 Instant now = Instant.now();
                 row.setStatus("PENDING"); row.setAttempts(0); row.setLastError("requeued: " + why);
@@ -1052,8 +1124,7 @@ public class SoarV2Service {
             Optional<SoarRunEntity> lockedRun = runs.findByTenantIdAndIdForUpdate(tenant, row.getRunId());
             if (lockedRun == null) lockedRun = runs.findByTenantIdAndId(tenant, row.getRunId());
             lockedRun.ifPresent(run -> {
-                if (!Set.of("SUCCEEDED", "FAILED", "CANCELLED", "SUPPRESSED", "TIMED_OUT")
-                        .contains(run.getStatus())) {
+                if (!terminalRunProjection(run)) {
                     run.setStatus("SUPPRESSED"); run.setErrorCode("DISPATCH_DISCARDED");
                     run.setErrorMessage(why); run.setCompletedAt(now); run.setUpdatedAt(now); runs.save(run);
                 }
@@ -1076,8 +1147,7 @@ public class SoarV2Service {
                 Optional<SoarRunEntity> lockedRun = runs.findByTenantIdAndIdForUpdate(tenant, row.getRunId());
                 if (lockedRun == null) lockedRun = runs.findByTenantIdAndId(tenant, row.getRunId());
                 lockedRun.ifPresent(run -> {
-                    if (!Set.of("SUCCEEDED", "FAILED", "CANCELLED", "SUPPRESSED", "TIMED_OUT")
-                            .contains(run.getStatus())) {
+                    if (!terminalRunProjection(run)) {
                         run.setStatus("SUPPRESSED"); run.setErrorCode("SIGNAL_DISCARDED");
                         run.setErrorMessage(why); run.setCompletedAt(now); run.setUpdatedAt(now); runs.save(run);
                         appendEvent(run.getId(), "SIGNAL_DISCARDED", actor(),
@@ -1102,6 +1172,7 @@ public class SoarV2Service {
         boolean hasWorkflow = run.getTemporalWorkflowId() != null
                 && !run.getTemporalWorkflowId().isBlank();
         if (SoarRunStatus.QUEUED.name().equals(status)
+                || (SoarRunStatus.DISPATCHING.name().equals(status) && !hasWorkflow)
                 || ((SoarRunStatus.WAITING_APPROVAL.name().equals(status)
                 || SoarRunStatus.WAITING_INPUT.name().equals(status)) && !hasWorkflow)) {
             Instant now = Instant.now();
@@ -1131,6 +1202,7 @@ public class SoarV2Service {
             return runView(run);
         }
         if (SoarRunStatus.RUNNING.name().equals(status)
+                || SoarRunStatus.DISPATCHING.name().equals(status)
                 || ((SoarRunStatus.WAITING_APPROVAL.name().equals(status)
                 || SoarRunStatus.WAITING_INPUT.name().equals(status)) && hasWorkflow)) {
             run.setStatus(SoarRunStatus.CANCELLING.name());
@@ -1165,6 +1237,14 @@ public class SoarV2Service {
         SoarRunEntity run = runs.findByTenantIdAndIdForUpdate(tenant, approval.getRunId())
                 .or(() -> runs.findByTenantIdAndId(tenant, approval.getRunId()))
                 .orElseThrow(() -> error(HttpStatus.NOT_FOUND, "SOAR_RUN_NOT_FOUND", "approval run not found"));
+        if (terminalRunProjection(run)) {
+            throw error(HttpStatus.CONFLICT, "SOAR_RUN_NOT_RESUMABLE",
+                    "the approval run is already terminal");
+        }
+        if (SoarRunStatus.CANCELLING.name().equals(run.getStatus())) {
+            throw error(HttpStatus.CONFLICT, "SOAR_RUN_NOT_RESUMABLE",
+                    "the approval run is cancelling");
+        }
         if (!"PENDING".equals(approval.getStatus())) {
             throw error(HttpStatus.CONFLICT, "SOAR_APPROVAL_ALREADY_DECIDED", "approval is already decided");
         }
@@ -1310,6 +1390,9 @@ public class SoarV2Service {
         java.util.Optional<SoarRunEntity> run = runs.findByTenantIdAndIdForUpdate(tenant, row.getRunId());
         if (run == null) run = runs.findByTenantIdAndId(tenant, row.getRunId());
         if (run == null || run.isEmpty()) return false;
+        if (terminalRunProjection(run.get()) || SoarRunStatus.CANCELLING.name().equals(run.get().getStatus())) {
+            return false;
+        }
         expireApprovalLocked(row, run.get(), at);
         return true;
     }
@@ -1431,8 +1514,10 @@ public class SoarV2Service {
                     "source published definition failed runtime validation");
         }
         validateConnections(sourceVersion.getDefinitionJson(), tenant);
+        validateSubPlaybookGraph(tenant, sourceVersion);
         boolean approvalRequired = sourceChecked.highRiskActionCount() > 0;
         clone.setStatus(approvalRequired ? SoarRunStatus.WAITING_APPROVAL.name() : SoarRunStatus.QUEUED.name());
+        clone.setExecutionNodeCount(0);
         Map<String, Object> input = new LinkedHashMap<>(redact(readMap(original.getInputJson())) instanceof Map<?, ?> value
                 ? castObjectMap(value) : Map.of());
         // A terminal workflow projection carries a redacted variable
@@ -1787,8 +1872,14 @@ public class SoarV2Service {
             }
             String pattern = schema.path("pattern").asText("");
             if (!pattern.isBlank()) {
+                if (pattern.length() > SoarDefinitionValidator.MAX_MANUAL_PATTERN_LENGTH
+                        || !SoarDefinitionValidator.safeManualPattern(pattern)) {
+                    throw error(HttpStatus.BAD_REQUEST, "SOAR_MANUAL_INPUT_INVALID",
+                            "manual task form schema contains an unsafe pattern");
+                }
                 try {
-                    if (!java.util.regex.Pattern.matches(pattern, value.textValue())) {
+                    java.util.regex.Pattern compiled = java.util.regex.Pattern.compile(pattern);
+                    if (!compiled.matcher(value.textValue()).matches()) {
                         throw error(HttpStatus.BAD_REQUEST, "SOAR_MANUAL_INPUT_INVALID",
                                 "value does not match the required pattern at " + path);
                     }
@@ -1991,6 +2082,7 @@ public class SoarV2Service {
         result.put("triggerType", run.getTriggerType());
         result.put("subject", Map.of("type", nullSafe(run.getSubjectType()), "id", nullSafe(run.getSubjectId())));
         result.put("status", run.getStatus());
+        result.put("executionNodeCount", run.getExecutionNodeCount() == null ? 0 : run.getExecutionNodeCount());
         result.put("temporalWorkflowId", run.getTemporalWorkflowId());
         result.put("temporalRunId", run.getTemporalRunId());
         if (run.getErrorCode() != null) result.put("errorCode", run.getErrorCode());
@@ -2125,7 +2217,9 @@ public class SoarV2Service {
         // Event sequence numbers are part of the public SSE cursor contract.
         // Lock the owning run before reading the current tail so concurrent
         // activity completions cannot allocate the same (tenant, run, seq).
-        runs.findByTenantIdAndIdForUpdate(tenant, runId)
+        java.util.Optional<SoarRunEntity> locked = runs.findByTenantIdAndIdForUpdate(tenant, runId);
+        if (locked == null || locked.isEmpty()) locked = runs.findByTenantIdAndId(tenant, runId);
+        (locked == null ? java.util.Optional.<SoarRunEntity>empty() : locked)
                 .orElseThrow(() -> error(HttpStatus.NOT_FOUND, "SOAR_RUN_NOT_FOUND", "run not found"));
         SoarRunEventEntity event = new SoarRunEventEntity();
         event.setId(UUID.randomUUID().toString());
@@ -2146,9 +2240,110 @@ public class SoarV2Service {
         events.save(event);
     }
 
+    /**
+     * A run projection is one-way once it has a terminal outcome.  Keep this
+     * helper in the control-plane service (rather than relying on callers to
+     * remember the enum list) so late human/API requests cannot resurrect a
+     * PARTIALLY_SUCCEEDED run either.
+     */
+    private static boolean terminalRunProjection(SoarRunEntity run) {
+        return run != null && run.getStatus() != null && Set.of(
+                SoarRunStatus.SUCCEEDED.name(), SoarRunStatus.PARTIALLY_SUCCEEDED.name(),
+                SoarRunStatus.FAILED.name(), SoarRunStatus.TIMED_OUT.name(),
+                SoarRunStatus.CANCELLED.name(), SoarRunStatus.SUPPRESSED.name(),
+                SoarRunStatus.DEAD.name()).contains(run.getStatus());
+    }
+
+    /** A dead dispatch can only move a run that is still waiting to start. */
+    private static boolean dispatchRunCanBeRequeued(SoarRunEntity run) {
+        return run != null && run.getStatus() != null
+                && Set.of(SoarRunStatus.DEAD.name(), SoarRunStatus.QUEUED.name(),
+                SoarRunStatus.DISPATCHING.name()).contains(run.getStatus());
+    }
+
     private SoarPlaybookEntity playbook(String id) {
         return playbooks.findByTenantIdAndId(tenant(), id)
                 .orElseThrow(() -> error(HttpStatus.NOT_FOUND, "SOAR_PLAYBOOK_NOT_FOUND", "playbook not found"));
+    }
+
+    /**
+     * Validate the immutable SUB_PLAYBOOK call graph at the publication
+     * boundary. Runtime resolution remains a defensive check, but it must not
+     * be the first place where existence, publication state or recursion is
+     * discovered. Inline definitions are intentionally rejected for published
+     * versions: a child is a versioned, tenant-scoped artifact and therefore
+     * has to be pinned before it can be executed.
+     */
+    private void validateSubPlaybookGraph(String tenant, PlaybookVersionEntity rootVersion) {
+        if (rootVersion == null || rootVersion.getDefinitionJson() == null) return;
+        Set<String> visiting = new LinkedHashSet<>();
+        validateSubPlaybookVersion(tenant, rootVersion, 0, visiting);
+    }
+
+    private void validateSubPlaybookVersion(String tenant, PlaybookVersionEntity version,
+                                            int depth, Set<String> visiting) {
+        String versionId = version.getId();
+        String pathId = versionId == null || versionId.isBlank()
+                ? version.getPlaybookId() + ":" + version.getVersionNo() : versionId;
+        if (!visiting.add(pathId)) {
+            throw error(HttpStatus.CONFLICT, "SOAR_SUB_PLAYBOOK_CYCLE",
+                    "sub-playbook call graph contains a cycle at " + pathId);
+        }
+        JsonNode definition;
+        try {
+            definition = mapper.readTree(version.getDefinitionJson());
+        } catch (Exception invalid) {
+            visiting.remove(pathId);
+            throw error(HttpStatus.CONFLICT, "SOAR_SUB_PLAYBOOK_DEFINITION_INVALID",
+                    "sub-playbook definition is not valid JSON");
+        }
+        if (definition == null || !definition.isObject()) {
+            visiting.remove(pathId);
+            throw error(HttpStatus.CONFLICT, "SOAR_SUB_PLAYBOOK_DEFINITION_INVALID",
+                    "sub-playbook definition must be an object");
+        }
+        JsonNode nodes = definition.path("nodes");
+        if (nodes.isArray()) {
+            for (JsonNode node : nodes) {
+                if (!"SUB_PLAYBOOK".equalsIgnoreCase(node.path("type").asText(""))) continue;
+                String nodeId = node.path("id").asText("sub-playbook");
+                if (node.path("definition").isObject()) {
+                    visiting.remove(pathId);
+                    throw error(HttpStatus.BAD_REQUEST, "SOAR_SUB_PLAYBOOK_INLINE_FORBIDDEN",
+                            "SUB_PLAYBOOK " + nodeId + " must reference a published version");
+                }
+                String targetId = node.path("playbookVersionId").asText("").trim();
+                if (targetId.isBlank()) {
+                    targetId = node.path("config").path("playbookVersionId").asText("").trim();
+                }
+                if (targetId.isBlank()) {
+                    visiting.remove(pathId);
+                    throw error(HttpStatus.BAD_REQUEST, "SOAR_SUB_PLAYBOOK_REFERENCE_REQUIRED",
+                            "SUB_PLAYBOOK " + nodeId + " requires playbookVersionId");
+                }
+                if (depth >= MAX_SUB_PLAYBOOK_DEPTH) {
+                    visiting.remove(pathId);
+                    throw error(HttpStatus.CONFLICT, "SOAR_SUB_PLAYBOOK_DEPTH_EXCEEDED",
+                            "sub-playbook call graph exceeds depth " + MAX_SUB_PLAYBOOK_DEPTH);
+                }
+                if (visiting.contains(targetId)) {
+                    visiting.remove(pathId);
+                    throw error(HttpStatus.CONFLICT, "SOAR_SUB_PLAYBOOK_CYCLE",
+                            "sub-playbook call graph contains a cycle through " + targetId);
+                }
+                String referencedId = targetId;
+                PlaybookVersionEntity target = versions.findByTenantIdAndId(tenant, referencedId)
+                        .orElseThrow(() -> error(HttpStatus.CONFLICT, "SOAR_SUB_PLAYBOOK_NOT_FOUND",
+                                "referenced playbook version does not exist: " + referencedId));
+                if (!SoarPlaybookVersionStatus.PUBLISHED.name().equals(target.getStatus())) {
+                    visiting.remove(pathId);
+                    throw error(HttpStatus.CONFLICT, "SOAR_SUB_PLAYBOOK_NOT_PUBLISHED",
+                            "referenced playbook version is not published: " + targetId);
+                }
+                validateSubPlaybookVersion(tenant, target, depth + 1, visiting);
+            }
+        }
+        visiting.remove(pathId);
     }
 
     private PlaybookVersionEntity version(String playbookId, int versionNo) {
@@ -2175,26 +2370,48 @@ public class SoarV2Service {
         return value;
     }
 
+    /** Package-visible rollout gates used by the automation/control-plane
+     * services as well as this service.  A null properties object is retained
+     * for focused compatibility tests that construct the service directly. */
+    void requireV2ControlPlane() {
+        if (runtimeProperties != null && !runtimeProperties.isV2ControlPlaneEnabled()) {
+            throw error(HttpStatus.GONE, "SOAR_CONTROL_PLANE_DISABLED",
+                    "SOAR V2 control plane is disabled for this deployment");
+        }
+    }
+
+    void requireV2Evaluation() {
+        requireV2Execution(tenant());
+        if (runtimeProperties != null && !runtimeProperties.isV2EvaluationEnabled()) {
+            throw error(HttpStatus.GONE, "SOAR_EVALUATION_DISABLED",
+                    "SOAR V2 event evaluation is disabled for this deployment");
+        }
+    }
+
+    private void requireV2Execution(String tenant) {
+        requireV2ControlPlane();
+        if (runtimeProperties == null) return;
+        if (!runtimeProperties.isV2ExecutionEnabled()) {
+            throw error(HttpStatus.SERVICE_UNAVAILABLE, "SOAR_EXECUTION_DISABLED",
+                    "SOAR V2 execution is paused by the deployment feature flag");
+        }
+        String configured = runtimeProperties.getExecutionTenantAllowlist();
+        if (configured == null || configured.isBlank()) return;
+        boolean allowed = java.util.Arrays.stream(configured.split(","))
+                .map(String::trim).filter(value -> !value.isBlank())
+                .anyMatch(value -> value.equals(tenant));
+        if (!allowed) {
+            throw error(HttpStatus.FORBIDDEN, "SOAR_TENANT_NOT_ENABLED",
+                    "SOAR V2 execution is not enabled for this tenant");
+        }
+    }
+
     private String tenant() { return TenantContext.require(); }
 
     private static String actor() {
-        try {
-            // Keep soar-web's core module independent of spring-security-core;
-            // the platform starter may provide it at runtime. Reflection also
-            // keeps local unit tests usable without a security filter chain.
-            Class<?> holder = Class.forName("org.springframework.security.core.context.SecurityContextHolder");
-            Object context = holder.getMethod("getContext").invoke(null);
-            Object authentication = context.getClass().getMethod("getAuthentication").invoke(context);
-            if (authentication != null) {
-                Object authenticated = authentication.getClass().getMethod("isAuthenticated").invoke(authentication);
-                Object name = authentication.getClass().getMethod("getName").invoke(authentication);
-                if (Boolean.TRUE.equals(authenticated) && name != null && !String.valueOf(name).isBlank()) {
-                    return limit(String.valueOf(name), 128);
-                }
-            }
-        } catch (RuntimeException ignored) { }
-        catch (ReflectiveOperationException ignored) { }
-        return "operator";
+        return AuthenticatedIdentityContext.current()
+                .map(identity -> limit(identity.subject(), 128))
+                .orElse("system");
     }
 
     /**
@@ -2248,67 +2465,17 @@ public class SoarV2Service {
         return normalized.startsWith(prefix) ? normalized.substring(prefix.length()) : normalized;
     }
 
-    /** Read authorities and common OIDC/SAML group claims without coupling the
-     * SOAR module's compile-time surface to spring-security-core. */
+    /** Read authorities from the verified platform identity context. */
     private static Set<String> securityAuthorities() {
-        Set<String> result = new java.util.LinkedHashSet<>();
-        try {
-            Class<?> holder = Class.forName("org.springframework.security.core.context.SecurityContextHolder");
-            Object context = holder.getMethod("getContext").invoke(null);
-            Object authentication = context == null ? null
-                    : context.getClass().getMethod("getAuthentication").invoke(context);
-            if (authentication == null) return result;
-            collectAuthorityObjects(authentication.getClass().getMethod("getAuthorities").invoke(authentication), result);
-            Object principal = invokeNoArg(authentication, "getPrincipal");
-            collectPrincipalClaims(principal, result);
-            collectPrincipalClaims(invokeNoArg(authentication, "getTokenAttributes"), result);
-        } catch (RuntimeException ignored) {
-            // No security filter chain in an isolated/unit-test invocation.
-        } catch (ReflectiveOperationException ignored) {
-            // Keep the production contract fail-closed when the provider is absent.
-        }
-        return result;
-    }
-
-    private static void collectPrincipalClaims(Object principal, Set<String> target) {
-        if (principal == null) return;
-        collectAuthorityObjects(invokeNoArg(principal, "getGroups"), target);
-        collectAuthorityObjects(invokeNoArg(principal, "getRoles"), target);
-        Object attributes = principal instanceof Map<?, ?> ? principal : invokeNoArg(principal, "getAttributes");
-        if (attributes == null) attributes = invokeNoArg(principal, "getClaims");
-        if (!(attributes instanceof Map<?, ?> map)) return;
-        for (Map.Entry<?, ?> entry : map.entrySet()) {
-            String key = String.valueOf(entry.getKey()).toLowerCase(Locale.ROOT);
-            if (Set.of("groups", "group", "roles", "role", "authorities", "authority").contains(key)) {
-                collectAuthorityObjects(entry.getValue(), target);
-            }
-        }
-    }
-
-    private static void collectAuthorityObjects(Object value, Set<String> target) {
-        if (value == null) return;
-        if (value instanceof Iterable<?> iterable) {
-            for (Object item : iterable) collectAuthorityObjects(item, target);
-            return;
-        }
-        if (value.getClass().isArray()) {
-            int length = java.lang.reflect.Array.getLength(value);
-            for (int index = 0; index < length; index++) {
-                collectAuthorityObjects(java.lang.reflect.Array.get(value, index), target);
-            }
-            return;
-        }
-        String authority = value instanceof CharSequence
-                ? value.toString() : String.valueOf(invokeNoArg(value, "getAuthority"));
-        if (authority != null && !authority.isBlank() && !"null".equalsIgnoreCase(authority)) {
-            target.add(authority.trim().toUpperCase(Locale.ROOT));
-        }
-    }
-
-    private static Object invokeNoArg(Object target, String method) {
-        if (target == null) return null;
-        try { return target.getClass().getMethod(method).invoke(target); }
-        catch (RuntimeException | ReflectiveOperationException ignored) { return null; }
+        return AuthenticatedIdentityContext.current()
+                .map(identity -> {
+                    Set<String> result = new LinkedHashSet<>();
+                    for (String authority : identity.authorities()) {
+                        result.add(authority.toUpperCase(Locale.ROOT));
+                    }
+                    return result;
+                })
+                .orElseGet(Set::of);
     }
 
     private static String text(Map<String, Object> map, String key) {

@@ -10,7 +10,9 @@ import com.socp.soar.web.persistence.repository.PlaybookVersionRepository;
 import com.socp.soar.web.connector.ConnectionContext;
 import com.socp.soar.web.connector.ConnectionTestResult;
 import com.socp.soar.web.connector.EnvironmentSecretResolver;
+import com.socp.soar.web.connector.SecretResolver;
 import com.socp.soar.web.connector.SoarConnectorRegistry;
+import com.socp.soar.web.config.SoarRuntimeProperties;
 import org.springframework.http.HttpStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
@@ -34,12 +36,13 @@ public class SoarV2ConnectorService {
     private final SoarConnectorRepository connectors;
     private final ObjectMapper mapper;
     private final SoarConnectorRegistry registry;
-    private final EnvironmentSecretResolver secrets;
+    private final SecretResolver secrets;
     private final PlaybookVersionRepository versions;
+    private SoarRuntimeProperties runtimeProperties;
 
     @org.springframework.beans.factory.annotation.Autowired
     public SoarV2ConnectorService(SoarConnectorRepository connectors, ObjectMapper mapper,
-                                   SoarConnectorRegistry registry, EnvironmentSecretResolver secrets,
+                                   SoarConnectorRegistry registry, SecretResolver secrets,
                                    PlaybookVersionRepository versions) {
         this.connectors = connectors;
         this.mapper = mapper;
@@ -51,7 +54,7 @@ public class SoarV2ConnectorService {
     /** Compatibility constructor for production-shaped tests that wire the
      * connector runtime without the version repository. */
     public SoarV2ConnectorService(SoarConnectorRepository connectors, ObjectMapper mapper,
-                                   SoarConnectorRegistry registry, EnvironmentSecretResolver secrets) {
+                                   SoarConnectorRegistry registry, SecretResolver secrets) {
         this(connectors, mapper, registry, secrets, null);
     }
 
@@ -60,10 +63,16 @@ public class SoarV2ConnectorService {
         this(connectors, mapper, null, new EnvironmentSecretResolver(), null);
     }
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setRuntimeProperties(SoarRuntimeProperties runtimeProperties) {
+        this.runtimeProperties = runtimeProperties;
+    }
+
     @Transactional
     @AuditOperation(action = "SOAR_V2_CREATE_CONNECTION", target = "t_soar_connector")
     public Map<String, Object> create(String name, String type, String endpoint, String secretRef,
                                       List<String> allowedHosts, boolean enabled) {
+        requireControlPlane();
         String tenant = TenantContext.require();
         if (name == null || name.isBlank() || name.length() > 128) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "connector name is required (max 128)");
@@ -135,6 +144,7 @@ public class SoarV2ConnectorService {
     @Transactional
     @AuditOperation(action = "SOAR_V2_SET_CONNECTION_ENABLED", target = "t_soar_connector")
     public Map<String, Object> setEnabled(String id, boolean enabled) {
+        requireControlPlane();
         String tenant = TenantContext.require();
         SoarConnectorEntity row = findForUpdate(tenant, id);
         if (row.getDeletedAt() != null) {
@@ -159,6 +169,7 @@ public class SoarV2ConnectorService {
     public Map<String, Object> update(String id, String name, String type, String endpoint,
                                       String secretRef, List<String> allowedHosts, boolean enabled,
                                       Long expectedRowVersion) {
+        requireControlPlane();
         String tenant = TenantContext.require();
         SoarConnectorEntity row = findForUpdate(tenant, id);
         if (row.getDeletedAt() != null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "connector not found");
@@ -197,6 +208,7 @@ public class SoarV2ConnectorService {
     @Transactional
     @AuditOperation(action = "SOAR_V2_TEST_CONNECTION", target = "t_soar_connector")
     public Map<String, Object> test(String id) {
+        requireControlPlane();
         SoarConnectorEntity row = connectors.findByTenantIdAndId(TenantContext.require(), id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "connector not found"));
         if (row.getDeletedAt() != null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "connector not found");
@@ -221,6 +233,7 @@ public class SoarV2ConnectorService {
     @Transactional
     @AuditOperation(action = "SOAR_V2_DELETE_CONNECTION", target = "t_soar_connector")
     public Map<String, Object> softDelete(String id) {
+        requireControlPlane();
         String tenant = TenantContext.require();
         SoarConnectorEntity row = findForUpdate(tenant, id);
         if (row.getDeletedAt() != null) {
@@ -440,5 +453,12 @@ public class SoarV2ConnectorService {
 
     private static boolean validSecretRef(String value) {
         return value != null && value.matches("secret://[A-Za-z_][A-Za-z0-9_./-]{0,254}");
+    }
+
+    private void requireControlPlane() {
+        if (runtimeProperties != null && !runtimeProperties.isV2ControlPlaneEnabled()) {
+            throw new ResponseStatusException(HttpStatus.GONE,
+                    "SOAR V2 control plane is disabled for this deployment");
+        }
     }
 }

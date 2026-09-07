@@ -15,8 +15,14 @@ public class SoarClient {
         this.http = http;
     }
 
-    /** 评估并执行命中的剧本（{@code POST /soar-web/api/v1/playbooks/evaluate}）。 */
+    /**
+     * 评估告警并触发已发布的 V2 自动化规则。
+     *
+     * <p>Alert Web 是 SOAR 的主事件生产者，不能继续依赖 V1 的同步执行
+     * 入口：生产环境会关闭 legacy execution，V2 入口负责 durable admission
+     * 和去重。保留方法名只是为了兼容现有调用方。</p>
+     */
     public ServiceCall evaluate(String alarmJson) {
-        return http.postJson(SocpService.SOAR, "/api/v1/playbooks/evaluate", alarmJson);
+        return http.postJson(SocpService.SOAR, "/api/v2/events/evaluate", alarmJson);
     }
 }

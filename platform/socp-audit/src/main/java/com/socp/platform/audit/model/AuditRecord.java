@@ -1,4 +1,5 @@
 package com.socp.platform.audit.model;
+import com.socp.platform.tenant.context.AuthenticatedIdentityContext;
 import java.time.Instant;
 
 /** 审计记录：操作级留痕，落到 Kafka socp-audit → soc-base → PostgreSQL（见 §3 / P1 / P2） */
@@ -25,14 +26,6 @@ public record AuditRecord(
     }
 
     private static String currentOperator() {
-        var attributes = org.springframework.web.context.request.RequestContextHolder.getRequestAttributes();
-        if (attributes instanceof org.springframework.web.context.request.ServletRequestAttributes servlet) {
-            String user = servlet.getRequest().getHeader("X-Socp-User");
-            if (user != null && !user.isBlank()) return user;
-            String service = servlet.getRequest().getHeader(
-                    com.socp.platform.tenant.security.ServiceRequestSignature.SERVICE_HEADER);
-            if (service != null && !service.isBlank()) return "service:" + service;
-        }
-        return "system";
+        return AuthenticatedIdentityContext.current().map(identity -> identity.subject()).orElse("system");
     }
 }

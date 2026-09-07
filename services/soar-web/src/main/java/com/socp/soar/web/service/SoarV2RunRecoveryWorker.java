@@ -54,6 +54,23 @@ public class SoarV2RunRecoveryWorker {
             // completed the projection after the query snapshot was taken.
             if (!ACTIVE.contains(run.getStatus()) || run.getUpdatedAt() == null
                     || run.getUpdatedAt().isAfter(cutoff)) continue;
+            // CANCELLING is an operator decision, not a generic stale
+            // execution.  If the workflow has already disappeared (or the
+            // dispatch never acquired a workflow id), complete that one-way
+            // transition as CANCELLED instead of turning it into TIMED_OUT or
+            // ACTION_UNKNOWN and asking the operator to resolve cancellation.
+            if ("CANCELLING".equals(run.getStatus())) {
+                run.setStatus("CANCELLED");
+                run.setErrorCode("SOAR_RUN_CANCELLED");
+                if (run.getErrorMessage() == null || run.getErrorMessage().isBlank()) {
+                    run.setErrorMessage("cancellation completed during stale-run recovery");
+                }
+                run.setCompletedAt(Instant.now());
+                run.setUpdatedAt(Instant.now());
+                runs.save(run);
+                log.info("Completed cancellation for stale SOAR run {}", run.getId());
+                continue;
+            }
             boolean hasWorkflow = run.getTemporalWorkflowId() != null
                     && !run.getTemporalWorkflowId().isBlank();
             if (hasWorkflow && temporal != null) {

@@ -119,6 +119,7 @@ class SoarV2ServiceRetentionExportCoverageTest {
     @BeforeEach
     void setUp() {
         TenantContext.set("tenant-a");
+        SoarTestIdentity.setOperator();
         service = new SoarV2Service(playbooks, versions, runs, dispatches, nodes, events, approvals,
                 validator, mapper, temporal, attempts, manualTasks, signals, null, null);
         service.setArtifacts(artifacts);
@@ -130,6 +131,7 @@ class SoarV2ServiceRetentionExportCoverageTest {
     @AfterEach
     void tearDown() {
         TenantContext.clear();
+        SoarTestIdentity.clear();
     }
 
     // ------------------------------------------------------------------ listPlaybooks
@@ -236,7 +238,7 @@ class SoarV2ServiceRetentionExportCoverageTest {
     // ------------------------------------------------- bounded approval evidence paths
 
     @Test
-    void malformedDefinitionKeepsBoundedApprovalEvidence() {
+    void malformedPublishedDefinitionIsRejectedBeforeApprovalEvidence() {
         given(runs.findByTenantIdAndRequestId(eq("tenant-a"), anyString())).willReturn(Optional.empty());
         given(versions.findByTenantIdAndId("tenant-a", "ver-9"))
                 .willReturn(Optional.of(version("ver-9", "pb-1", "PUBLISHED", "{ bad json")));
@@ -244,13 +246,9 @@ class SoarV2ServiceRetentionExportCoverageTest {
                 .willReturn(Optional.of(playbook("pb-1", "ACTIVE")));
         given(validator.validate("{ bad json")).willReturn(validation(true, 1));
 
-        Map<String, Object> queued = service.queueManualRun("req-malformed", "ver-9", null, null);
-
-        assertThat(queued).containsEntry("status", SoarRunStatus.WAITING_APPROVAL.name());
-        ArgumentCaptor<SoarApprovalEntity> approvalCaptor = ArgumentCaptor.forClass(SoarApprovalEntity.class);
-        verify(approvals).save(approvalCaptor.capture());
-        assertThat(approvalCaptor.getValue().getActionRef()).isEmpty();
-        assertThat(approvalCaptor.getValue().getTargetSnapshotJson()).isEqualTo("{\"actions\":[]}");
+        assertRejected(HttpStatus.CONFLICT, "SOAR_SUB_PLAYBOOK_DEFINITION_INVALID",
+                () -> service.queueManualRun("req-malformed", "ver-9", null, null));
+        verify(approvals, org.mockito.Mockito.never()).save(any(SoarApprovalEntity.class));
     }
 
     @Test

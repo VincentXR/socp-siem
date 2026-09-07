@@ -63,6 +63,9 @@ public class SoarRunEntity implements Persistable<String> {
     private Instant completedAt;
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
+    /** Atomically incremented by the Temporal Activity budget gate. */
+    @Column(name = "execution_node_count", nullable = false)
+    private Integer executionNodeCount = 0;
     @Version
     @Column(name = "row_version", nullable = false)
     private Long rowVersion;
@@ -114,6 +117,8 @@ public class SoarRunEntity implements Persistable<String> {
     public void setCompletedAt(Instant completedAt) { this.completedAt = completedAt; }
     public Instant getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
+    public Integer getExecutionNodeCount() { return executionNodeCount; }
+    public void setExecutionNodeCount(Integer executionNodeCount) { this.executionNodeCount = executionNodeCount; }
     public Long getRowVersion() { return rowVersion; }
     public void setRowVersion(Long rowVersion) { this.rowVersion = rowVersion; }
     @Override

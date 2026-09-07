@@ -47,6 +47,7 @@ class TemporalConfigCoverageTest {
         assertThat(properties.getMaturity()).isEqualTo("preview");
         assertThat(properties.getScheduleZone()).isEqualTo("UTC");
         assertThat(properties.isV2EvaluationEnabled()).isTrue();
+        assertThat(properties.isLegacyExecutionEnabled()).isTrue();
         assertThat(properties.isV2ControlPlaneEnabled()).isTrue();
         assertThat(properties.isV2ExecutionEnabled()).isTrue();
         assertThat(properties.isLegacyMutationEnabled()).isTrue();
@@ -56,6 +57,7 @@ class TemporalConfigCoverageTest {
         properties.setMaturity("ga");
         properties.setScheduleZone("Asia/Shanghai");
         properties.setV2EvaluationEnabled(false);
+        properties.setLegacyExecutionEnabled(false);
         properties.setV2ControlPlaneEnabled(false);
         properties.setV2ExecutionEnabled(false);
         properties.setLegacyMutationEnabled(false);
@@ -65,6 +67,7 @@ class TemporalConfigCoverageTest {
         assertThat(properties.getMaturity()).isEqualTo("ga");
         assertThat(properties.getScheduleZone()).isEqualTo("Asia/Shanghai");
         assertThat(properties.isV2EvaluationEnabled()).isFalse();
+        assertThat(properties.isLegacyExecutionEnabled()).isFalse();
         assertThat(properties.isV2ControlPlaneEnabled()).isFalse();
         assertThat(properties.isV2ExecutionEnabled()).isFalse();
         assertThat(properties.isLegacyMutationEnabled()).isFalse();

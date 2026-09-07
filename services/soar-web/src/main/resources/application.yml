@@ -31,16 +31,28 @@ socp:
     dev-bypass: ${SOCP_DEV_BYPASS:false}
     metrics-token: ${SOCP_SECURITY_METRICS_TOKEN:socp-demo-metrics-token}
   temporal:
-    # 双模式（2026-08-12）：Temporal 可达走 Workflow，不可达回退进程内执行器。
+    # V2 语义（2026-09）：Temporal 不可达时只保留 durable backlog，不回退进程内副作用执行器。
     enabled: ${SOCP_TEMPORAL_ENABLED:true}
     target: ${SOCP_TEMPORAL_TARGET:localhost:7233}
     namespace: default
   soar:
     maturity: preview
+    # V2 rollout switches.  Empty tenant allow-list means every tenant;
+    # production can narrow admission during a staged migration.
+    v2-control-plane-enabled: ${SOCP_SOAR_V2_CONTROL_PLANE_ENABLED:true}
+    v2-execution-enabled: ${SOCP_SOAR_V2_EXECUTION_ENABLED:true}
+    v2-evaluation-enabled: ${SOCP_SOAR_V2_EVALUATION_ENABLED:true}
+    execution-tenant-allowlist: ${SOCP_SOAR_V2_TENANT_ALLOWLIST:}
+    legacy-mutation-enabled: ${SOCP_SOAR_LEGACY_MUTATION_ENABLED:true}
+    legacy-execution-enabled: ${SOCP_SOAR_LEGACY_EXECUTION_ENABLED:true}
     # Every node must interpret a schedule in the same zone.
     schedule-zone: ${SOCP_SOAR_SCHEDULE_ZONE:UTC}
     # Local/integration dry-runs remain visibly SIMULATED; application-prod.yml disables them.
     simulation-enabled: ${SOCP_SOAR_SIMULATION_ENABLED:true}
+    sse-enabled: ${SOCP_SOAR_SSE_ENABLED:true}
+    sse-poll-interval-ms: ${SOCP_SOAR_SSE_POLL_INTERVAL_MS:500}
+    sse-timeout-ms: ${SOCP_SOAR_SSE_TIMEOUT_MS:30000}
+    sse-scheduler-threads: ${SOCP_SOAR_SSE_SCHEDULER_THREADS:2}
     action-connectors:
       firewall-block-url: ${SOCP_SOAR_FIREWALL_BLOCK_URL:}
       network-isolation-url: ${SOCP_SOAR_NETWORK_ISOLATION_URL:}

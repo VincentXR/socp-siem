@@ -37,6 +37,7 @@ public class SoarV2WorkflowImpl implements SoarV2Workflow {
             .build();
     private static final int MAX_SNAPSHOT_BYTES = 256 * 1024;
     private static final int MAX_SNAPSHOT_ENTRY_BYTES = 64 * 1024;
+    private static final int MAX_SUB_PLAYBOOK_DEPTH = 5;
     private final SoarV2Activity activity = Workflow.newActivityStub(SoarV2Activity.class, ACTIVITY_OPTIONS);
     private final ObjectMapper mapper = new ObjectMapper();
     private boolean cancelled;
@@ -164,6 +165,17 @@ public class SoarV2WorkflowImpl implements SoarV2Workflow {
             }
             JsonNode node = findNode(root.path("nodes"), current);
             if (node == null) { fail("NODE_NOT_FOUND", "graph node not found: " + current); break; }
+            // New dispatch payloads carry the root budget.  Reserve the slot
+            // through the run projection before executing the node so every
+            // branch/child workflow spends from one database-serialized pool.
+            // A zero value is retained for old histories and isolated tests
+            // whose payloads predate the budget field.
+            if (currentRequest.executionBudgetLimit() > 0
+                    && !activity.reserveNodeExecution(requestTenant(), requestRun(),
+                    currentRequest.executionBudgetLimit())) {
+                fail("EXECUTION_LIMIT_EXCEEDED", "run exceeded its shared node execution budget");
+                break;
+            }
             steps++;
             String nodeId = node.path("id").asText(current);
             String type = node.path("type").asText("").toUpperCase(java.util.Locale.ROOT);
@@ -226,10 +238,18 @@ public class SoarV2WorkflowImpl implements SoarV2Workflow {
                         errorMessage = redactFreeText(result.errorMessage(), 2048);
                         break;
                     }
+                    // Temporal may deliver the durable UNKNOWN_RESOLUTION
+                    // signal just before this Activity returns. Preserve a
+                    // matching pending decision instead of clearing it when
+                    // the workflow enters its await state; unrelated or
+                    // stale node decisions are discarded.
+                    boolean preResolved = nodeId.equals(unknownNodeId) && unknownResolution != null;
                     unknownNodeId = nodeId;
-                    unknownResolution = null;
-                    unknownEvidence = null;
-                    unknownReason = null;
+                    if (!preResolved) {
+                        unknownResolution = null;
+                        unknownEvidence = null;
+                        unknownReason = null;
+                    }
                     activity.markRunUnknown(requestTenant(), requestRun(), nodeId);
                     Workflow.await(() -> cancelled || unknownResolution != null);
                     if (cancelled) {
@@ -500,6 +520,11 @@ public class SoarV2WorkflowImpl implements SoarV2Workflow {
                 }
                 Map<String, Object> manual = readObject(manualInputJson); variables.put("manual." + nodeId, manual); output.put("input", manual); branch = "completed"; manualInputJson = null; waitingManualNodeId = null; addNodeResult(nodeId, type, path, "SUCCEEDED", output, null, null);
             } else if ("SUB_PLAYBOOK".equals(type)) {
+                if (currentRequest.playbookDepth() >= MAX_SUB_PLAYBOOK_DEPTH) {
+                    fail("SUB_PLAYBOOK_DEPTH_EXCEEDED",
+                            "sub-playbook nesting exceeds the maximum depth of " + MAX_SUB_PLAYBOOK_DEPTH);
+                    break;
+                }
                 JsonNode child = node.get("definition");
                 if (child == null || !child.isObject()) {
                     String childVersionId = node.path("playbookVersionId").asText(
@@ -754,15 +779,22 @@ public class SoarV2WorkflowImpl implements SoarV2Workflow {
 
     @SuppressWarnings("unchecked")
     private List<Map<String, Object>> readObjects(String json) {
+        String source = json == null || json.isBlank() ? "[]" : json;
         try {
-            JsonNode value = mapper.readTree(json == null ? "[]" : json);
-            if (value == null || !value.isArray()) return List.of();
+            JsonNode value = mapper.readTree(source);
+            if (value == null || value.isNull()) return List.of();
+            if (!value.isArray()) throw jsonFailure("array", null);
             List<Map<String, Object>> result = new ArrayList<>();
-            for (JsonNode item : value) if (item != null && item.isObject()) {
+            for (JsonNode item : value) {
+                if (item == null || !item.isObject()) throw jsonFailure("array item", null);
                 result.add(mapper.convertValue(item, Map.class));
             }
             return result;
-        } catch (Exception ignored) { return List.of(); }
+        } catch (SoarWorkflowJsonException failure) {
+            throw failure;
+        } catch (Exception failure) {
+            throw jsonFailure("array", failure);
+        }
     }
 
     private Map<String, Object> actionInput(JsonNode node) {
@@ -893,7 +925,10 @@ public class SoarV2WorkflowImpl implements SoarV2Workflow {
             return Integer.toUnsignedString(value.hashCode(), 16);
         }
     }
-    private boolean isTerminal() { return Set.of("FAILED", "ACTION_UNKNOWN", "CANCELLED", "SUPPRESSED", "TIMED_OUT").contains(terminalStatus); }
+    private boolean isTerminal() {
+        return Set.of("FAILED", "ACTION_UNKNOWN", "CANCELLED", "SUPPRESSED", "TIMED_OUT",
+                "PARTIALLY_SUCCEEDED").contains(terminalStatus);
+    }
     private void fail(String code, String message) {
         terminalStatus = "FAILED"; errorCode = code; errorMessage = redactFreeText(message, 2048);
     }
@@ -1119,8 +1154,44 @@ public class SoarV2WorkflowImpl implements SoarV2Workflow {
         return value;
     }
     private String edgeText(JsonNode node, String first, String second) { String value = node.path(first).asText(""); return value.isBlank() ? node.path(second).asText("") : value; }
-    @SuppressWarnings("unchecked") private Map<String, Object> readObject(String json) { try { JsonNode node = mapper.readTree(json == null ? "{}" : json); return node != null && node.isObject() ? mapper.convertValue(node, Map.class) : new LinkedHashMap<>(); } catch (Exception ignored) { return new LinkedHashMap<>(); } }
-    private String writeJson(Object value) { try { return mapper.writeValueAsString(value); } catch (Exception ignored) { return "{}"; } }
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> readObject(String json) {
+        String source = json == null || json.isBlank() ? "{}" : json;
+        try {
+            JsonNode node = mapper.readTree(source);
+            if (node == null || node.isNull()) return new LinkedHashMap<>();
+            if (!node.isObject()) throw jsonFailure("object", null);
+            return mapper.convertValue(node, Map.class);
+        } catch (SoarWorkflowJsonException failure) {
+            throw failure;
+        } catch (Exception failure) {
+            throw jsonFailure("object", failure);
+        }
+    }
+
+    private String writeJson(Object value) {
+        try {
+            return mapper.writeValueAsString(value);
+        } catch (Exception failure) {
+            throw jsonFailure("serialization", failure);
+        }
+    }
+
+    /**
+     * JSON is part of the durable workflow contract.  Returning an empty
+     * object on malformed data hides corruption and can cause a side effect to
+     * run with the wrong inputs, so malformed payloads fail the workflow and
+     * are surfaced as WORKFLOW_DEFINITION_ERROR by {@link #execute}.
+     */
+    private SoarWorkflowJsonException jsonFailure(String kind, Exception cause) {
+        return new SoarWorkflowJsonException("invalid workflow JSON (" + kind + ")", cause);
+    }
+
+    private static final class SoarWorkflowJsonException extends IllegalStateException {
+        private SoarWorkflowJsonException(String message, Throwable cause) {
+            super(message, cause);
+        }
+    }
     private String safe(String value) {
         return redactFreeText(value == null ? "workflow failure" : value, 1024);
     }

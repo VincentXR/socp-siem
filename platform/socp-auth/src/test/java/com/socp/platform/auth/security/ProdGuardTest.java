@@ -128,6 +128,27 @@ class ProdGuardTest {
     }
 
     @Test
+    void rejectsSimultaneousV2AndLegacyExecution() {
+        MockEnvironment env = new MockEnvironment()
+                .withProperty("socp.security.jwk-set-uri", "https://id.example.test/keys")
+                .withProperty("socp.security.audience", "socp-api")
+                .withProperty("socp.security.ingest-token", "production-ingest-token")
+                .withProperty("socp.security.service-secret", "production-service-secret-0123456789")
+                .withProperty("socp.security.metrics-token", "production-metrics-secret-0123456789")
+                .withProperty("socp.ratelimit.backend", "redis")
+                .withProperty("socp.ratelimit.fail-closed", "true")
+                .withProperty("socp.audit.sink", "kafka")
+                .withProperty("socp.audit.fail-closed", "true")
+                .withProperty("socp.temporal.enabled", "true")
+                .withProperty("socp.soar.v2-execution-enabled", "true")
+                .withProperty("socp.soar.legacy-execution-enabled", "true");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+
+        assertTrue(error.getMessage().contains("v2-execution-enabled"));
+    }
+
+    @Test
     void rejectsProductionHmacUnlessExplicitlyAllowed() {
         MockEnvironment env = new MockEnvironment()
                 .withProperty("spring.datasource.url", "jdbc:postgresql://db.example.test/socp")

@@ -31,6 +31,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 
 /** Branch coverage for automation-rule validation, suppression, and fan-out. */
@@ -56,6 +57,9 @@ class SoarV2AutomationRuleBranchCoverageTest {
         TenantContext.set("tenant-a");
         service = new SoarV2AutomationRuleService(rules, soar, mapper, receipts, runs);
         service.setMetrics(mock(SoarMetrics.class));
+        lenient().when(rules.findByTenantIdAndEnabledTrueOrderByPriorityAscForUpdate(anyString()))
+                .thenAnswer(invocation -> rules.findByTenantIdAndEnabledTrueOrderByPriorityAsc(
+                        invocation.getArgument(0)));
     }
 
     @AfterEach

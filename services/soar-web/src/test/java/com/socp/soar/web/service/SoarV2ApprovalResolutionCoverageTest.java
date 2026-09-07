@@ -100,6 +100,7 @@ class SoarV2ApprovalResolutionCoverageTest {
     @BeforeEach
     void setUp() {
         TenantContext.set("tenant-a");
+        SoarTestIdentity.setOperator();
         service = new SoarV2Service(playbooks, versions, runs, dispatches, nodes, events, approvals,
                 validator, mapper, temporal, attempts, manualTasks, signals, null, null);
         service.setArtifacts(artifacts);
@@ -108,6 +109,7 @@ class SoarV2ApprovalResolutionCoverageTest {
     @AfterEach
     void tearDown() {
         TenantContext.clear();
+        SoarTestIdentity.clear();
     }
 
     // ------------------------------------------------------------------ approvals
@@ -420,6 +422,69 @@ class SoarV2ApprovalResolutionCoverageTest {
                 .willReturn(Optional.of(manualTask("task-2", "COMPLETED")));
         assertRejected(HttpStatus.CONFLICT, "SOAR_MANUAL_TASK_ALREADY_COMPLETED",
                 () -> service.completeManualTask("task-2", Map.of("confirmed", true)));
+    }
+
+    @Test
+    void completeManualTaskCannotResurrectAPartiallySucceededRun() {
+        SoarManualTaskEntity task = manualTask("task-terminal", "PENDING");
+        task.setRunId("run-terminal");
+        SoarRunEntity run = run("run-terminal", SoarRunStatus.PARTIALLY_SUCCEEDED, "bob");
+        given(manualTasks.findByTenantIdAndIdForUpdate("tenant-a", "task-terminal"))
+                .willReturn(Optional.of(task));
+        given(runs.findByTenantIdAndIdForUpdate("tenant-a", "run-terminal"))
+                .willReturn(Optional.of(run));
+
+        assertRejected(HttpStatus.CONFLICT, "SOAR_RUN_NOT_RESUMABLE",
+                () -> service.completeManualTask("task-terminal", Map.of("confirmed", true)));
+        verify(manualTasks, never()).save(any(SoarManualTaskEntity.class));
+        verify(signals, never()).save(any(SoarSignalOutboxEntity.class));
+    }
+
+    @Test
+    void resolveUnknownCannotReviveAPartiallySucceededRun() {
+        SoarNodeRunEntity node = node("node-terminal", "run-terminal", "contain", "ACTION_UNKNOWN");
+        SoarRunEntity run = run("run-terminal", SoarRunStatus.PARTIALLY_SUCCEEDED, "bob");
+        given(nodes.findByTenantIdAndIdForUpdate("tenant-a", "node-terminal"))
+                .willReturn(Optional.of(node));
+        given(runs.findByTenantIdAndIdForUpdate("tenant-a", "run-terminal"))
+                .willReturn(Optional.of(run));
+
+        assertRejected(HttpStatus.CONFLICT, "SOAR_RUN_NOT_RESUMABLE",
+                () -> service.resolveUnknown("node-terminal", "CONFIRMED_SUCCEEDED", "evidence", "reason"));
+        verify(nodes, never()).save(any(SoarNodeRunEntity.class));
+        verify(signals, never()).save(any(SoarSignalOutboxEntity.class));
+    }
+
+    @Test
+    void decideApprovalCannotReopenAPartiallySucceededRun() {
+        SoarApprovalEntity approval = approval("apr-terminal", "run-terminal", "PENDING");
+        SoarRunEntity run = run("run-terminal", SoarRunStatus.PARTIALLY_SUCCEEDED, "bob");
+        given(approvals.findByTenantIdAndIdForUpdate("tenant-a", "apr-terminal"))
+                .willReturn(Optional.of(approval));
+        given(runs.findByTenantIdAndIdForUpdate("tenant-a", "run-terminal"))
+                .willReturn(Optional.of(run));
+
+        assertRejected(HttpStatus.CONFLICT, "SOAR_RUN_NOT_RESUMABLE",
+                () -> service.decideApproval("apr-terminal", true, "late decision"));
+        verify(approvals, never()).save(any(SoarApprovalEntity.class));
+        verify(runs, never()).save(any(SoarRunEntity.class));
+        verify(signals, never()).save(any(SoarSignalOutboxEntity.class));
+    }
+
+    @Test
+    void expireApprovalDoesNotMutateAPartiallySucceededRun() {
+        SoarApprovalEntity approval = approval("apr-expired-terminal", "run-terminal", "PENDING");
+        approval.setExpiresAt(Instant.now().minusSeconds(5));
+        SoarRunEntity run = run("run-terminal", SoarRunStatus.PARTIALLY_SUCCEEDED, "bob");
+        given(approvals.findByTenantIdAndIdForUpdate("tenant-a", "apr-expired-terminal"))
+                .willReturn(Optional.of(approval));
+        given(runs.findByTenantIdAndIdForUpdate("tenant-a", "run-terminal"))
+                .willReturn(Optional.of(run));
+
+        assertThat(service.expireApproval("apr-expired-terminal", Instant.now())).isFalse();
+        assertThat(approval.getStatus()).isEqualTo("PENDING");
+        verify(approvals, never()).save(any(SoarApprovalEntity.class));
+        verify(signals, never()).save(any(SoarSignalOutboxEntity.class));
     }
 
     // -------------------------------------------------------------------- helpers

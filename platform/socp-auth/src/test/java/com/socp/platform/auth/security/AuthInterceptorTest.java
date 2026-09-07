@@ -1,6 +1,8 @@
 package com.socp.platform.auth.security;
 import com.socp.platform.auth.config.SocpSecurityProperties;
 import com.socp.platform.error.exception.ApiException;
+import com.socp.platform.tenant.context.AuthenticatedIdentity;
+import com.socp.platform.tenant.context.AuthenticatedIdentityContext;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.platform.tenant.security.ServiceRequestSignature;
 import com.nimbusds.jwt.JWTClaimsSet;
@@ -26,6 +28,7 @@ class AuthInterceptorTest {
     @AfterEach
     void clearTenant() {
         TenantContext.clear();
+        AuthenticatedIdentityContext.clear();
     }
 
     @Test
@@ -61,6 +64,35 @@ class AuthInterceptorTest {
 
         assertTrue(interceptor.preHandle(request, new MockHttpServletResponse(), protectedHandler()));
         assertEquals("default", TenantContext.get());
+    }
+
+    @Test
+    void verifiedJwtPopulatesTrustedIdentityAndGroups() throws Exception {
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .subject("alice")
+                .claim("role", "approver")
+                .claim("tenant", "tenant-a")
+                .claim("permissions", java.util.List.of("soar:approve"))
+                .claim("groups", java.util.List.of("SOC-ONCALL"))
+                .build();
+        org.mockito.BDDMockito.given(validator.isDevBypass()).willReturn(false);
+        org.mockito.BDDMockito.given(validator.validate("identity-token")).willReturn(claims);
+        org.mockito.BDDMockito.given(validator.extractTenant(claims)).willReturn("tenant-a");
+
+        MockHttpServletRequest request = request("identity-token", null, "spoofed-tenant");
+        assertTrue(interceptor.preHandle(request, new MockHttpServletResponse(), approvalHandler()));
+
+        AuthenticatedIdentity identity = AuthenticatedIdentityContext.require();
+        assertEquals("alice", identity.subject());
+        assertEquals("tenant-a", identity.tenantId());
+        assertEquals("approver", identity.role());
+        assertTrue(identity.permissions().contains("soar:approve"));
+        assertTrue(identity.groups().contains("SOC-ONCALL"));
+        assertTrue(identity.authorities().contains("ROLE_APPROVER"));
+        assertTrue(identity.authorities().contains("GROUP_SOC-ONCALL"));
+
+        interceptor.afterCompletion(request, new MockHttpServletResponse(), permissionHandler(), null);
+        assertTrue(AuthenticatedIdentityContext.current().isEmpty());
     }
 
     @Test

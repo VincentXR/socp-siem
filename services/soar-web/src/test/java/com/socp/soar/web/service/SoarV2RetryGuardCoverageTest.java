@@ -100,6 +100,7 @@ class SoarV2RetryGuardCoverageTest {
     @BeforeEach
     void setUp() {
         TenantContext.set("tenant-a");
+        SoarTestIdentity.setOperator();
         service = new SoarV2Service(playbooks, versions, runs, dispatches, nodes, events, approvals,
                 validator, mapper, temporal, attempts, manualTasks, signals, null, null);
         service.setArtifacts(artifacts);
@@ -111,6 +112,7 @@ class SoarV2RetryGuardCoverageTest {
     @AfterEach
     void tearDown() {
         TenantContext.clear();
+        SoarTestIdentity.clear();
     }
 
     @Test

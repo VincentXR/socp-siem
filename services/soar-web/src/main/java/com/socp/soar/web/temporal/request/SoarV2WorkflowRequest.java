@@ -11,7 +11,11 @@ public record SoarV2WorkflowRequest(
         String resumeFromNodeId,
         boolean topLevelProjection,
         String initialIterationPath,
-        String stopAtNodeId
+        String stopAtNodeId,
+        /** Root run-wide node budget. Zero keeps old wire/test payloads compatible. */
+        int executionBudgetLimit,
+        /** Number of SUB_PLAYBOOK edges traversed before this workflow. */
+        int playbookDepth
 ) {
     /** Backward-compatible wire constructor used by existing dispatch callers. */
     public SoarV2WorkflowRequest(String tenantId, String runId, String versionId,
@@ -19,19 +23,19 @@ public record SoarV2WorkflowRequest(
                                  String executionSeriesId, String resumeFromNodeId,
                                  boolean topLevelProjection) {
         this(tenantId, runId, versionId, definitionJson, inputJson, executionSeriesId,
-                resumeFromNodeId, topLevelProjection, "", null);
+                resumeFromNodeId, topLevelProjection, "", null, 0, 0);
     }
 
     public SoarV2WorkflowRequest(String tenantId, String runId, String versionId,
                                  String definitionJson, String inputJson) {
         this(tenantId, runId, versionId, definitionJson, inputJson, runId, null,
-                true, "", null);
+                true, "", null, 0, 0);
     }
 
     public SoarV2WorkflowRequest(String tenantId, String runId, String versionId, String definitionJson,
                                  String inputJson, String executionSeriesId, String resumeFromNodeId) {
         this(tenantId, runId, versionId, definitionJson, inputJson, executionSeriesId,
-                resumeFromNodeId, true, "", null);
+                resumeFromNodeId, true, "", null, 0, 0);
     }
 
     /** Sub-playbook children share the parent run projection and must not complete it. */
@@ -60,8 +64,11 @@ public record SoarV2WorkflowRequest(
                                                 String definitionJson,
                                                 String inputJson,
                                                 String iterationPath) {
-        return branchOf(parent, definitionJson, inputJson, null,
-                iterationPath == null ? "" : iterationPath, null);
+        return new SoarV2WorkflowRequest(parent.tenantId(), parent.runId(), parent.versionId(),
+                definitionJson, inputJson == null ? "{}" : inputJson,
+                parent.executionSeriesId(), null, false,
+                iterationPath == null ? "" : iterationPath, null,
+                parent.executionBudgetLimit(), parent.playbookDepth() + 1);
     }
 
     /**
@@ -78,6 +85,7 @@ public record SoarV2WorkflowRequest(
         return new SoarV2WorkflowRequest(parent.tenantId(), parent.runId(), parent.versionId(),
                 definitionJson, inputJson == null ? "{}" : inputJson,
                 parent.executionSeriesId(), resumeFromNodeId, false,
-                iterationPath == null ? "" : iterationPath, stopAtNodeId);
+                iterationPath == null ? "" : iterationPath, stopAtNodeId,
+                parent.executionBudgetLimit(), parent.playbookDepth());
     }
 }

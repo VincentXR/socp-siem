@@ -380,6 +380,30 @@ class SoarV2ActivityImplCoverageTest {
     }
 
     @Test
+    void executeNodeReplaysCompletedAttemptReceiptWithoutCallingConnectorAgain() {
+        SoarRunEntity run = run("RUNNING");
+        givenRunLocked(run);
+        givenNoPriorNodeRun();
+        SoarActionAttemptEntity existing = new SoarActionAttemptEntity();
+        existing.setId("att-replay");
+        existing.setStatus("SUCCEEDED");
+        existing.setRemoteOperationId("op-replay");
+        existing.setReceiptJson("{\"status\":\"SUCCEEDED\",\"operationId\":\"op-replay\","
+                + "\"output\":{\"proof\":true},\"receipt\":{},\"retryable\":false}");
+        given(attempts.findByTenantIdAndNodeRunIdAndAttemptNoForUpdate(anyString(), anyString(), anyInt()))
+                .willReturn(Optional.of(existing));
+        given(events.findTopByTenantIdAndRunIdOrderBySequenceNoDesc(TENANT, RUN_ID)).willReturn(Optional.empty());
+        given(events.findByTenantIdAndRunIdOrderBySequenceNoAsc(TENANT, RUN_ID)).willReturn(List.of());
+
+        SoarV2NodeResult result = activity.executeNode(nodeRequest("socp.alert/get", "{}", 1));
+
+        assertThat(result.status()).isEqualTo("SUCCEEDED");
+        assertThat(result.outputJson()).contains("op-replay");
+        verifyNoInteractions(connectorRegistry);
+        verify(nodeRuns).save(any(SoarNodeRunEntity.class));
+    }
+
+    @Test
     void executeNodePersistsArtifactWhenTheInlineOutputLimitIsExceeded() {
         SoarRunEntity run = run("RUNNING");
         givenRunLocked(run);
@@ -421,6 +445,21 @@ class SoarV2ActivityImplCoverageTest {
         assertThat(result.status()).isEqualTo("FAILED");
         assertThat(result.errorCode()).isEqualTo("SOAR_ARTIFACT_STORAGE_UNAVAILABLE");
         assertThat(result.retryable()).isFalse();
+    }
+
+    @Test
+    void executeNodeDoesNotInvokeAConnectorAfterTheRunBecomesTerminal() {
+        givenRunLocked(run("CANCELLED"));
+        givenNoPriorNodeRun();
+
+        SoarV2NodeResult result = activity.executeNode(
+                nodeRequest("endpoint/isolate-host", "{}", 1));
+
+        assertThat(result.status()).isEqualTo("CANCELLED");
+        assertThat(result.errorCode()).isEqualTo("SOAR_RUN_NOT_RESUMABLE");
+        verifyNoInteractions(connectorRegistry);
+        verify(nodeRuns, never()).save(any(SoarNodeRunEntity.class));
+        verify(events, never()).save(any(SoarRunEventEntity.class));
     }
 
     // ------------------------------------------------------------------
@@ -532,10 +571,58 @@ class SoarV2ActivityImplCoverageTest {
     }
 
     @Test
+    void markRunStartedTreatsPartiallySucceededAsTerminal() {
+        SoarRunEntity run = run("PARTIALLY_SUCCEEDED");
+        givenRunLocked(run);
+
+        activity.markRunStarted(TENANT, RUN_ID);
+
+        assertThat(run.getStatus()).isEqualTo("PARTIALLY_SUCCEEDED");
+        verify(runs, never()).save(any(SoarRunEntity.class));
+        verify(events, never()).save(any(SoarRunEventEntity.class));
+    }
+
+    @Test
+    void markRunStartedDoesNotResurrectACancellingRun() {
+        SoarRunEntity run = run("CANCELLING");
+        givenRunLocked(run);
+
+        activity.markRunStarted(TENANT, RUN_ID);
+
+        assertThat(run.getStatus()).isEqualTo("CANCELLING");
+        verify(runs, never()).save(any(SoarRunEntity.class));
+        verify(events, never()).save(any(SoarRunEventEntity.class));
+    }
+
+    @Test
     void markRunStartedFailsWhenTheRunIsMissing() {
         assertThatThrownBy(() -> activity.markRunStarted(TENANT, "missing"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("SOAR run not found");
+    }
+
+    @Test
+    void reserveNodeExecutionAtomicallyIncrementsTheSharedRunBudget() {
+        SoarRunEntity run = run("RUNNING");
+        run.setExecutionNodeCount(4);
+        givenRunLocked(run);
+
+        assertThat(activity.reserveNodeExecution(TENANT, RUN_ID, 5)).isTrue();
+        assertThat(run.getExecutionNodeCount()).isEqualTo(5);
+        verify(runs).save(run);
+    }
+
+    @Test
+    void reserveNodeExecutionRejectsAConsumedOrTerminalBudget() {
+        SoarRunEntity exhausted = run("RUNNING");
+        exhausted.setExecutionNodeCount(5);
+        givenRunLocked(exhausted);
+        assertThat(activity.reserveNodeExecution(TENANT, RUN_ID, 5)).isFalse();
+        verify(runs, never()).save(any(SoarRunEntity.class));
+
+        SoarRunEntity terminal = run("CANCELLED");
+        givenRunLocked(terminal);
+        assertThat(activity.reserveNodeExecution(TENANT, RUN_ID, 5)).isFalse();
     }
 
     @Test
@@ -655,6 +742,23 @@ class SoarV2ActivityImplCoverageTest {
     }
 
     @Test
+    void markApprovalExpiredDoesNotMutateAPartiallySucceededRun() {
+        givenRunLocked(run("PARTIALLY_SUCCEEDED"));
+        SoarApprovalEntity pending = new SoarApprovalEntity();
+        pending.setId("appr-partial");
+        pending.setStatus("PENDING");
+        given(approvals.findByTenantIdAndApprovalKeyForUpdate(TENANT, APPROVAL_KEY))
+                .willReturn(Optional.of(pending));
+
+        activity.markApprovalExpired(TENANT, RUN_ID, NODE_ID);
+
+        assertThat(pending.getStatus()).isEqualTo("PENDING");
+        verify(approvals, never()).save(any(SoarApprovalEntity.class));
+        verify(approvalDecisions, never()).save(any(SoarApprovalDecisionEntity.class));
+        verify(events, never()).save(any(SoarRunEventEntity.class));
+    }
+
+    @Test
     void markRunUnknownFlagsTheRunForOperatorResolution() {
         SoarRunEntity run = run("RUNNING");
         givenRunLocked(run);
@@ -758,6 +862,22 @@ class SoarV2ActivityImplCoverageTest {
         assertThat(captor.getValue().getNodeRunId()).isEqualTo("task-1");
     }
 
+    @Test
+    void markManualTaskExpiredDoesNotMutateAPartiallySucceededRun() {
+        givenRunLocked(run("PARTIALLY_SUCCEEDED"));
+        SoarManualTaskEntity task = new SoarManualTaskEntity();
+        task.setId("task-partial");
+        task.setStatus("PENDING");
+        given(manualTasks.findByTenantIdAndRunIdAndNodeIdForUpdate(TENANT, RUN_ID, NODE_ID))
+                .willReturn(Optional.of(task));
+
+        activity.markManualTaskExpired(TENANT, RUN_ID, NODE_ID);
+
+        assertThat(task.getStatus()).isEqualTo("PENDING");
+        verify(manualTasks, never()).save(any(SoarManualTaskEntity.class));
+        verify(events, never()).save(any(SoarRunEventEntity.class));
+    }
+
     // ------------------------------------------------------------------
     // recordNode / markRunCompleted / resolvePublishedDefinition
     // ------------------------------------------------------------------
@@ -782,6 +902,17 @@ class SoarV2ActivityImplCoverageTest {
         ArgumentCaptor<SoarRunEventEntity> eventCaptor = ArgumentCaptor.forClass(SoarRunEventEntity.class);
         verify(events).save(eventCaptor.capture());
         assertThat(eventCaptor.getValue().getEventType()).isEqualTo("NODE_SUCCEEDED");
+    }
+
+    @Test
+    void recordNodeDoesNotWriteAProjectionAfterPartialSuccessIsCommitted() {
+        givenRunLocked(run("PARTIALLY_SUCCEEDED"));
+
+        activity.recordNode(nodeRequest("socp.alert/get", "{}", 1),
+                new SoarV2NodeResult("SUCCEEDED", "{}", null, null));
+
+        verify(nodeRuns, never()).save(any(SoarNodeRunEntity.class));
+        verify(events, never()).save(any(SoarRunEventEntity.class));
     }
 
     @Test
@@ -813,6 +944,47 @@ class SoarV2ActivityImplCoverageTest {
         ArgumentCaptor<SoarRunEventEntity> captor = ArgumentCaptor.forClass(SoarRunEventEntity.class);
         verify(events).save(captor.capture());
         assertThat(captor.getValue().getEventType()).isEqualTo("RUN_COMPLETION_IGNORED");
+    }
+
+    @Test
+    void markRunCompletedDoesNotOverwriteAnUnresolvedActionUnknownProjection() {
+        SoarRunEntity run = run("ACTION_UNKNOWN");
+        givenRunLocked(run);
+
+        activity.markRunCompleted(new SoarV2RunUpdate(TENANT, RUN_ID, "SUCCEEDED", "{}", null, null));
+
+        assertThat(run.getStatus()).isEqualTo("ACTION_UNKNOWN");
+        verify(runs, never()).save(any(SoarRunEntity.class));
+        ArgumentCaptor<SoarRunEventEntity> captor = ArgumentCaptor.forClass(SoarRunEventEntity.class);
+        verify(events).save(captor.capture());
+        assertThat(captor.getValue().getEventType()).isEqualTo("RUN_COMPLETION_IGNORED");
+    }
+
+    @Test
+    void markRunCompletedDoesNotOverwriteACancellingProjection() {
+        SoarRunEntity run = run("CANCELLING");
+        givenRunLocked(run);
+
+        activity.markRunCompleted(new SoarV2RunUpdate(TENANT, RUN_ID, "SUCCEEDED", "{}", null, null));
+
+        assertThat(run.getStatus()).isEqualTo("CANCELLING");
+        verify(runs, never()).save(any(SoarRunEntity.class));
+        ArgumentCaptor<SoarRunEventEntity> captor = ArgumentCaptor.forClass(SoarRunEventEntity.class);
+        verify(events).save(captor.capture());
+        assertThat(captor.getValue().getEventType()).isEqualTo("RUN_COMPLETION_IGNORED");
+    }
+
+    @Test
+    void markRunCompletedFinalizesACancellingProjectionWhenWorkflowConfirmsCancellation() {
+        SoarRunEntity run = run("CANCELLING");
+        givenRunLocked(run);
+
+        activity.markRunCompleted(new SoarV2RunUpdate(TENANT, RUN_ID, "CANCELLED", "{}",
+                "RUN_CANCELLED", "operator requested cancellation"));
+
+        assertThat(run.getStatus()).isEqualTo("CANCELLED");
+        assertThat(run.getErrorCode()).isEqualTo("RUN_CANCELLED");
+        verify(runs).save(run);
     }
 
     @Test

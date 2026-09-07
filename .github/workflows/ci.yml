@@ -174,10 +174,10 @@ jobs:
       - name: Run real middleware contracts
         run: >-
           bash build/mvnw.sh
-          -pl platform/socp-test,platform/socp-tenant,services/incident-web,services/search-config,services/alert-web
+          -pl platform/socp-test,platform/socp-tenant,services/incident-web,services/search-config,services/alert-web,services/soar-web
           -am test
           -Dsurefire.failIfNoSpecifiedTests=false
-          -Dtest=MiddlewareSemanticsContainerTest,ContainerIdempotencyContractTest,TenantRlsPostgresTest,CaseTimelinePostgresTest,AlarmEnrichmentPostgresConcurrencyTest,OsEventReaderOpenSearchContainerTest,OsIndexerFailureContainerTest
+          -Dtest=MiddlewareSemanticsContainerTest,ContainerIdempotencyContractTest,TenantRlsPostgresTest,CaseTimelinePostgresTest,AlarmEnrichmentPostgresConcurrencyTest,OsEventReaderOpenSearchContainerTest,OsIndexerFailureContainerTest,SoarV2WorkflowLinearTest,SoarV2WorkflowFanOutTest,SoarV2WorkflowHumanGateTest,SoarV2WorkflowPrimitiveTest,SoarV2WorkflowSwitchTest
 
       - name: Upload middleware test reports
         if: always()
@@ -190,6 +190,7 @@ jobs:
             services/incident-web/target/surefire-reports/
             services/alert-web/target/surefire-reports/
             services/search-config/target/surefire-reports/
+            services/soar-web/target/surefire-reports/
           if-no-files-found: ignore
 
   dependency-review:

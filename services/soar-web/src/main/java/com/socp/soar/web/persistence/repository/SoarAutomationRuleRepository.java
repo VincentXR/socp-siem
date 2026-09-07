@@ -22,4 +22,17 @@ public interface SoarAutomationRuleRepository extends TenantScopedRepository<Soa
     Page<SoarAutomationRuleEntity> findByTenantIdOrderByPriorityAscUpdatedAtDesc(String tenantId,
                                                                                   Pageable pageable);
     List<SoarAutomationRuleEntity> findByTenantIdAndEnabledTrueOrderByPriorityAsc(String tenantId);
+
+    /**
+     * Cross-instance admission lock for event evaluation.  The rule rows are
+     * locked for the duration of the evaluation transaction, which makes the
+     * receipt check, capacity check and run insert one database-serialized
+     * decision instead of a JVM-local read-then-insert race.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select r from SoarAutomationRuleEntity r "
+            + "where r.tenantId = :tenantId and r.enabled = true "
+            + "order by r.priority asc, r.id asc")
+    List<SoarAutomationRuleEntity> findByTenantIdAndEnabledTrueOrderByPriorityAscForUpdate(
+            @Param("tenantId") String tenantId);
 }

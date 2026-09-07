@@ -229,6 +229,11 @@ public final class SoarV2WorkflowSupport {
             record("markRunStarted", tenantId, runId);
         }
 
+        @Override public boolean reserveNodeExecution(String tenantId, String runId, int budgetLimit) {
+            record("reserveNodeExecution", tenantId, runId, budgetLimit);
+            return true;
+        }
+
         @Override public void markRunWaiting(String tenantId, String runId, String nodeId) {
             record("markRunWaiting", tenantId, runId, nodeId);
         }

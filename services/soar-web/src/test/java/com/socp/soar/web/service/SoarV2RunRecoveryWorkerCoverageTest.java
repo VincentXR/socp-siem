@@ -105,15 +105,29 @@ class SoarV2RunRecoveryWorkerCoverageTest {
     }
 
     @Test
-    void blankWorkflowIdIsTreatedAsOrphan() {
+    void staleCancellationWithoutWorkflowIsCompletedAsCancelled() {
         SoarRunEntity run = staleRun("CANCELLING", "   ");
         given(runs.findTop100ByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAsc(anyCollection(), any()))
                 .willReturn(List.of(run));
 
         worker.tick();
 
-        assertThat(run.getStatus()).isEqualTo("TIMED_OUT");
+        assertThat(run.getStatus()).isEqualTo("CANCELLED");
+        assertThat(run.getErrorCode()).isEqualTo("SOAR_RUN_CANCELLED");
         verify(temporal, never()).describeV2(anyString());
+    }
+
+    @Test
+    void staleCancellationAfterClosedWorkflowIsCompletedAsCancelled() {
+        SoarRunEntity run = staleRun("CANCELLING", "soar-v2-tenant-a-run-cancelled");
+        given(runs.findTop100ByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAsc(anyCollection(), any()))
+                .willReturn(List.of(run));
+
+        worker.tick();
+
+        assertThat(run.getStatus()).isEqualTo("CANCELLED");
+        assertThat(run.getErrorCode()).isEqualTo("SOAR_RUN_CANCELLED");
+        verify(runs).save(run);
     }
 
     @Test

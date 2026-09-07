@@ -10,6 +10,7 @@ import com.socp.soar.web.persistence.entity.SoarRunEntity;
 import com.socp.soar.web.persistence.repository.PlaybookVersionRepository;
 import com.socp.soar.web.persistence.repository.SoarDispatchOutboxRepository;
 import com.socp.soar.web.persistence.repository.SoarRunRepository;
+import com.socp.soar.web.config.SoarRuntimeProperties;
 import com.socp.soar.web.temporal.request.SoarV2WorkflowRequest;
 import io.temporal.api.common.v1.WorkflowExecution;
 import org.slf4j.Logger;
@@ -32,6 +33,7 @@ public class SoarV2DispatchWorker {
     private final PlaybookVersionRepository versions;
     private final TemporalExecutor temporal;
     private final ObjectMapper mapper;
+    private SoarRuntimeProperties runtimeProperties;
     private final String workerId = "soar-v2-" + UUID.randomUUID().toString().substring(0, 12);
 
     public SoarV2DispatchWorker(SoarDispatchOutboxRepository dispatches, SoarRunRepository runs,
@@ -44,6 +46,11 @@ public class SoarV2DispatchWorker {
         this.mapper = mapper;
     }
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setRuntimeProperties(SoarRuntimeProperties runtimeProperties) {
+        this.runtimeProperties = runtimeProperties;
+    }
+
     @Scheduled(fixedDelayString = "${socp.soar.v2.dispatch-poll-ms:1000}",
             initialDelayString = "${socp.soar.v2.dispatch-initial-delay-ms:3000}")
     @TenantSystemJob
@@ -52,6 +59,7 @@ public class SoarV2DispatchWorker {
         // A worker can die after the atomic claim and before the Temporal
         // start call. Reopen old claims so another worker can safely retry.
         dispatches.recoverStaleClaims(now.minusSeconds(120), now);
+        if (runtimeProperties != null && !runtimeProperties.isV2ExecutionEnabled()) return;
         List<SoarDispatchOutboxEntity> pending = dispatches
                 .findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc("PENDING", now);
         for (SoarDispatchOutboxEntity outbox : pending) {
@@ -90,13 +98,45 @@ public class SoarV2DispatchWorker {
             run.setUpdatedAt(Instant.now());
             runs.save(run);
             try {
-                String resume = resumeNode(run.getInputJson());
+                // Cancellation can win between the initial QUEUED check and
+                // this start call. Re-read the projection immediately before
+                // crossing the Temporal side-effect boundary; a CANCELLING
+                // row is closed out instead of starting a late workflow.
+                java.util.Optional<SoarRunEntity> latest = runs.findByTenantIdAndId(tenant, outbox.getRunId());
+                SoarRunEntity startRun = latest != null && latest.isPresent() ? latest.get() : run;
+                if (!"DISPATCHING".equals(startRun.getStatus())) {
+                    outbox.setStatus("CANCELLED");
+                    outbox.setLastError("dispatch skipped for run status " + startRun.getStatus());
+                    outbox.setUpdatedAt(Instant.now());
+                    dispatches.save(outbox);
+                    return;
+                }
+                String resume = resumeNode(startRun.getInputJson());
+                int executionBudget = executionBudget(version.getDefinitionJson());
                 WorkflowExecution execution = temporal.startV2(new SoarV2WorkflowRequest(
-                        tenant, run.getId(), version.getId(), version.getDefinitionJson(), run.getInputJson(),
-                        run.getExecutionSeriesId(), resume), workflowId);
-                run.setTemporalRunId(execution.getRunId());
-                run.setUpdatedAt(Instant.now());
-                runs.save(run);
+                        tenant, startRun.getId(), version.getId(), version.getDefinitionJson(), startRun.getInputJson(),
+                        startRun.getExecutionSeriesId(), resume, true, "", null,
+                        executionBudget, 0), workflowId);
+                startRun.setTemporalRunId(execution.getRunId());
+                startRun.setUpdatedAt(Instant.now());
+                runs.save(startRun);
+                // Cancellation may win in the narrow window between the
+                // final pre-start read and Temporal accepting StartWorkflow.
+                // Re-read the projection after the side-effect boundary and
+                // immediately cancel a workflow that was started for a run
+                // already fenced as CANCELLING.  Without this second fence a
+                // cancellation that observed no workflow id could be lost.
+                java.util.Optional<SoarRunEntity> afterStart = runs.findByTenantIdAndId(
+                        tenant, outbox.getRunId());
+                if (afterStart != null && afterStart.isPresent()
+                        && "CANCELLING".equals(afterStart.get().getStatus())) {
+                    try {
+                        temporal.cancelV2(workflowId);
+                    } catch (RuntimeException cancelFailure) {
+                        log.warn("Unable to deliver late cancellation for SOAR run {}: {}",
+                                outbox.getRunId(), redactFreeText(cancelFailure.getMessage(), 2048));
+                    }
+                }
                 outbox.setStatus("DISPATCHED");
                 outbox.setClaimedBy(workerId);
                 outbox.setClaimedAt(Instant.now());
@@ -128,6 +168,18 @@ public class SoarV2DispatchWorker {
         } catch (Exception ignored) { return null; }
     }
 
+    private int executionBudget(String definitionJson) {
+        try {
+            int configured = mapper.readTree(definitionJson == null ? "{}" : definitionJson)
+                    .path("limits").path("maxNodeExecutions").asInt(500);
+            return Math.max(1, Math.min(500, configured));
+        } catch (Exception ignored) {
+            // Published definitions have already passed structural validation;
+            // keep a bounded fail-safe for an old/corrupt row.
+            return 500;
+        }
+    }
+
     private void fail(SoarDispatchOutboxEntity outbox, RuntimeException failure) {
         TenantContext.runAsSystem(() -> {
             int attempts = outbox.getAttempts() + 1;
@@ -137,11 +189,13 @@ public class SoarV2DispatchWorker {
             if (attempts >= MAX_ATTEMPTS) {
                 outbox.setStatus("DEAD");
                 runs.findByTenantIdAndId(outbox.getTenantId(), outbox.getRunId()).ifPresent(run -> {
-                    run.setStatus("DEAD");
-                    run.setErrorCode("DISPATCH_DEAD_LETTER");
-                    run.setErrorMessage("Temporal dispatch exhausted retries");
-                    run.setUpdatedAt(Instant.now());
-                    runs.save(run);
+                    if (!terminalRun(run) && !"CANCELLING".equals(run.getStatus())) {
+                        run.setStatus("DEAD");
+                        run.setErrorCode("DISPATCH_DEAD_LETTER");
+                        run.setErrorMessage("Temporal dispatch exhausted retries");
+                        run.setUpdatedAt(Instant.now());
+                        runs.save(run);
+                    }
                 });
             } else {
                 outbox.setStatus("PENDING");
@@ -150,7 +204,8 @@ public class SoarV2DispatchWorker {
                 // transient start call fails. Never leave it stuck in the
                 // intermediate DISPATCHING projection.
                 runs.findByTenantIdAndId(outbox.getTenantId(), outbox.getRunId()).ifPresent(run -> {
-                    if (!"RUNNING".equals(run.getStatus()) && !"WAITING_APPROVAL".equals(run.getStatus())) {
+                    if (!terminalRun(run) && !"CANCELLING".equals(run.getStatus())
+                            && !"RUNNING".equals(run.getStatus()) && !"WAITING_APPROVAL".equals(run.getStatus())) {
                         run.setStatus("QUEUED");
                         run.setUpdatedAt(Instant.now());
                         runs.save(run);
@@ -169,5 +224,11 @@ public class SoarV2DispatchWorker {
                 .replaceAll("(?i)((?:secret|token|password|authorization|api[_-]?key)\\s*[:=]\\s*)[^\\s,;]+",
                         "$1[REDACTED]");
         return safe.length() <= max ? safe : safe.substring(0, max);
+    }
+
+    private static boolean terminalRun(SoarRunEntity run) {
+        if (run == null || run.getStatus() == null) return false;
+        return java.util.Set.of("SUCCEEDED", "PARTIALLY_SUCCEEDED", "FAILED", "TIMED_OUT",
+                "ACTION_UNKNOWN", "CANCELLED", "SUPPRESSED", "DEAD").contains(run.getStatus());
     }
 }

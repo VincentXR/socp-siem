@@ -36,7 +36,7 @@ public class SoarConnectorRegistry {
     public SoarConnectorRegistry(AlertClient alert, IncidentClient incident,
                                  NotifyClient notify, SearchClient search,
                                  ThreatClient threat, SocpHttpClient http,
-                                 EnvironmentSecretResolver secrets, ObjectMapper mapper) {
+                                 SecretResolver secrets, ObjectMapper mapper) {
         Map<String, SoarConnector> values = new LinkedHashMap<>();
         values.put("socp.alert", service("socp.alert", "SOCP Alert", true,
                 List.of(action("get", "Get alert", "READ_ONLY", "NONE", "NONE", false),

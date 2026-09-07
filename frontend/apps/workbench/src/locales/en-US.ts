@@ -906,6 +906,8 @@ export const enUS: LocaleMessages = {
     editorRedo: 'Redo',
     editorUndoHint: 'Undo (Ctrl+Z)',
     editorRedoHint: 'Redo (Ctrl+Shift+Z / Ctrl+Y)',
+    editorAutoLayout: 'Auto-layout',
+    editorAutoLayoutHint: 'Arrange the graph into deterministic layers',
     discardChanges: 'You have unsaved changes. Hiding the editor will discard them. Continue?',
     runHighlightDiscardChanges: 'Loading a run replaces the current graph. Unsaved changes will be discarded. Continue?',
     runHighlightOpen: 'Open in visual editor',

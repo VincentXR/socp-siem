@@ -27,7 +27,7 @@ import com.socp.soar.web.service.SoarActionCatalog;
 import com.socp.soar.web.connector.ActionResult;
 import com.socp.soar.web.connector.ActionQuery;
 import com.socp.soar.web.connector.ConnectionContext;
-import com.socp.soar.web.connector.EnvironmentSecretResolver;
+import com.socp.soar.web.connector.SecretResolver;
 import com.socp.soar.web.temporal.request.ActionRequest;
 import com.socp.soar.web.temporal.request.SoarV2NodeRequest;
 import org.springframework.stereotype.Component;
@@ -57,7 +57,7 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
     private final SoarActionAttemptRepository attempts;
     private final SoarConnectorRepository connectors;
     private final com.socp.soar.web.connector.SoarConnectorRegistry connectorRegistry;
-    private final EnvironmentSecretResolver secretResolver;
+    private final SecretResolver secretResolver;
     private final SoarManualTaskRepository manualTasks;
     private final PlaybookVersionRepository versions;
     private final ObjectMapper mapper;
@@ -69,7 +69,7 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
                               SoarApprovalRepository approvals, SoarActionAttemptRepository attempts,
                               SoarConnectorRepository connectors,
                               com.socp.soar.web.connector.SoarConnectorRegistry connectorRegistry,
-                              EnvironmentSecretResolver secretResolver, SoarManualTaskRepository manualTasks,
+                              SecretResolver secretResolver, SoarManualTaskRepository manualTasks,
                               PlaybookVersionRepository versions,
                               ObjectMapper mapper) {
         this.executor = executor;
@@ -92,7 +92,7 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
                               SoarApprovalRepository approvals, SoarActionAttemptRepository attempts,
                               SoarConnectorRepository connectors,
                               com.socp.soar.web.connector.SoarConnectorRegistry connectorRegistry,
-                              EnvironmentSecretResolver secretResolver, SoarManualTaskRepository manualTasks,
+                              SecretResolver secretResolver, SoarManualTaskRepository manualTasks,
                               ObjectMapper mapper) {
         this(executor, runs, nodeRuns, events, approvals, attempts, connectors, connectorRegistry,
                 secretResolver, manualTasks, null, mapper);
@@ -121,7 +121,7 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
             // A stale Temporal command must not resurrect an operator-terminal
             // projection (cancel/discard/dead) after the database has already
             // committed that decision.
-            if (terminalProjection(run)) return null;
+            if (terminalProjection(run) || "CANCELLING".equals(run.getStatus())) return null;
             if (!"RUNNING".equals(run.getStatus())) {
                 run.setStatus("RUNNING");
                 run.setStartedAt(run.getStartedAt() == null ? Instant.now() : run.getStartedAt());
@@ -130,6 +130,37 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
                 appendEvent(tenantId, runId, "RUN_STARTED", "Temporal workflow started", null);
             }
             return null;
+        });
+    }
+
+    /**
+     * Reserve a node slot under the run row lock.  Child workflows and
+     * parallel branches deliberately share the same run id, so this is the
+     * cross-workflow/cross-instance budget gate that a workflow-local counter
+     * cannot provide.  A missing projection is a durable-integrity failure;
+     * dispatched production runs must fail closed instead of spending a slot
+     * that cannot be accounted for.
+     */
+    @Override
+    @Transactional
+    public boolean reserveNodeExecution(String tenantId, String runId, int budgetLimit) {
+        if (budgetLimit <= 0) return true;
+        return TenantContext.callWith(tenantId, () -> {
+            java.util.Optional<SoarRunEntity> locked = runs.findByTenantIdAndIdForUpdate(tenantId, runId);
+            if (locked == null || locked.isEmpty()) {
+                locked = runs.findByTenantIdAndId(tenantId, runId);
+            }
+            if (locked == null || locked.isEmpty()) {
+                return false;
+            }
+            SoarRunEntity run = locked.get();
+            if (terminalProjection(run) || "CANCELLING".equals(run.getStatus())) return false;
+            int used = run.getExecutionNodeCount() == null ? 0 : run.getExecutionNodeCount();
+            if (used >= budgetLimit) return false;
+            run.setExecutionNodeCount(used + 1);
+            run.setUpdatedAt(Instant.now());
+            runs.save(run);
+            return true;
         });
     }
 
@@ -144,6 +175,14 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
                     || "CONFIRMED_SUCCEEDED".equals(prior.getStatus()))) {
                 return new SoarV2NodeResult("SUCCEEDED", prior.getOutputJson(),
                         prior.getErrorCode(), prior.getErrorMessage());
+            }
+            // A stale/redelivered Activity must not perform a new remote side
+            // effect after the operator has committed cancellation or a
+            // terminal projection.  Keep the lookup tolerant for old isolated
+            // tests/histories that do not carry a run projection; production
+            // runs always have one because dispatch creates it first.
+            if (runTerminalOrCancelling(request.tenantId(), request.runId())) {
+                return terminalNodeResult();
             }
             Instant started = Instant.now();
             Map<String, Object> input = readMap(request.inputJson());
@@ -163,7 +202,22 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
                     : (priorAttempts == null ? 0 : priorAttempts.size()) + 1;
             String nodeRunId = prior == null ? nodeIdForAttempt(request) : prior.getId();
             ConnectionContext attemptConnection = null;
-            try {
+            java.util.Optional<SoarActionAttemptEntity> existingAttempt = findAttemptForUpdate(
+                    request.tenantId(), nodeRunId, attemptNo);
+            boolean replayedAttempt = existingAttempt.isPresent()
+                    && completedAttempt(existingAttempt.get());
+            if (replayedAttempt) {
+                // The remote side effect may have completed before an Activity
+                // transaction was interrupted.  Reuse the durable receipt for
+                // the same attempt instead of invoking the connector again;
+                // the stable idempotency key is a second-line provider guard.
+                SoarActionAttemptEntity priorAttempt = existingAttempt.get();
+                output = readMap(priorAttempt.getReceiptJson());
+                status = normalizeAttemptStatus(priorAttempt.getStatus());
+                errorCode = priorAttempt.getErrorCode();
+                errorMessage = redactFreeText(priorAttempt.getErrorMessage(), 2048);
+                actionResult = replayActionResult(priorAttempt, output);
+            } else try {
                 input.put("tenantId", request.tenantId());
                 input.put("runId", request.runId());
                 input.putIfAbsent("id", request.runId());
@@ -206,14 +260,14 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
             }
             String outputJson = writeJson(redact(output));
             long outputBytes = outputJson.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
-            if (outputBytes > MAX_OUTPUT_BYTES) {
+            if (!replayedAttempt && outputBytes > MAX_OUTPUT_BYTES) {
                 status = "FAILED";
                 errorCode = "SOAR_OUTPUT_TOO_LARGE";
                 errorMessage = "action output exceeds 10 MiB";
                 output = boundedFailureOutput(errorCode, errorMessage);
                 actionResult = ActionResult.failed(errorCode, errorMessage, false);
                 outputJson = writeJson(output);
-            } else if (outputBytes > INLINE_OUTPUT_LIMIT_BYTES) {
+            } else if (!replayedAttempt && outputBytes > INLINE_OUTPUT_LIMIT_BYTES) {
                 if (artifacts == null) {
                     status = "FAILED";
                     errorCode = "SOAR_ARTIFACT_STORAGE_UNAVAILABLE";
@@ -233,7 +287,9 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
                     outputJson = writeJson(output);
                 }
             }
-            completeAttempt(request.tenantId(), nodeRunId, attemptNo, actionResult, output);
+            if (!replayedAttempt) {
+                completeAttempt(request.tenantId(), nodeRunId, attemptNo, actionResult, output);
+            }
             SoarNodeRunEntity row = prior == null ? new SoarNodeRunEntity() : prior;
             if (row.getId() == null) row.setId(nodeIdForAttempt(request));
             row.setTenantId(request.tenantId());
@@ -247,7 +303,10 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
             row.setIdempotencyKey(request.idempotencyKey());
             row.setConnectionId(request.connectionRef() == null || request.connectionRef().isBlank()
                     ? null : request.connectionRef());
-            row.setConnectionRevision(attemptConnection == null ? null : attemptConnection.revision());
+            Integer connectionRevision = null;
+            if (attemptConnection != null) connectionRevision = attemptConnection.revision();
+            else if (existingAttempt.isPresent()) connectionRevision = existingAttempt.get().getConnectionRevision();
+            row.setConnectionRevision(connectionRevision);
             row.setErrorCode(errorCode);
             row.setErrorMessage(errorMessage);
             row.setStartedAt(started);
@@ -265,6 +324,9 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
     @Transactional
     public SoarV2NodeResult compensateNode(SoarV2NodeRequest request, String compensationRef) {
         return TenantContext.callWith(request.tenantId(), () -> {
+            if (runTerminalOrCancelling(request.tenantId(), request.runId())) {
+                return terminalNodeResult();
+            }
             if (compensationRef == null || compensationRef.isBlank()) {
                 return new SoarV2NodeResult("FAILED", "{}", "COMPENSATION_REF_REQUIRED",
                         "compensationRef is required", false);
@@ -447,6 +509,51 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
         attempts.save(row);
     }
 
+    private java.util.Optional<SoarActionAttemptEntity> findAttemptForUpdate(
+            String tenant, String nodeRunId, int attemptNo) {
+        java.util.Optional<SoarActionAttemptEntity> existing = attempts
+                .findByTenantIdAndNodeRunIdAndAttemptNoForUpdate(tenant, nodeRunId, attemptNo);
+        if (existing == null) {
+            // Focused Mockito/legacy tests may not stub the lock projection;
+            // Spring Data always returns an Optional in production.
+            existing = attempts.findByTenantIdAndNodeRunIdAndAttemptNo(tenant, nodeRunId, attemptNo);
+        }
+        return existing == null ? java.util.Optional.empty() : existing;
+    }
+
+    private static boolean completedAttempt(SoarActionAttemptEntity attempt) {
+        String status = attempt == null ? null : attempt.getStatus();
+        return status != null && !status.isBlank() && !"RUNNING".equalsIgnoreCase(status);
+    }
+
+    private static String normalizeAttemptStatus(String status) {
+        if (status == null || status.isBlank()) return "FAILED";
+        return status.toUpperCase(java.util.Locale.ROOT);
+    }
+
+    private ActionResult replayActionResult(SoarActionAttemptEntity attempt,
+                                             Map<String, Object> output) {
+        String status = normalizeAttemptStatus(attempt.getStatus());
+        String operationId = attempt.getRemoteOperationId();
+        Map<String, Object> nestedOutput = objectMap(output.get("output"));
+        Map<String, Object> receipt = objectMap(output.get("receipt"));
+        if ("SUCCEEDED".equals(status)) {
+            return ActionResult.success(operationId, nestedOutput, receipt);
+        }
+        if ("UNKNOWN".equals(status) || "ACTION_UNKNOWN".equals(status)) {
+            return ActionResult.unknown(attempt.getErrorCode(), attempt.getErrorMessage());
+        }
+        return ActionResult.failed(attempt.getErrorCode(), attempt.getErrorMessage(), attempt.isRetryable());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> objectMap(Object value) {
+        if (!(value instanceof Map<?, ?> map)) return Map.of();
+        Map<String, Object> result = new LinkedHashMap<>();
+        map.forEach((key, item) -> result.put(String.valueOf(key), item));
+        return result;
+    }
+
     private void completeAttempt(String tenant, String nodeRunId, int attemptNo,
                                  ActionResult action, Map<String, Object> output) {
         attempts.findByTenantIdAndNodeRunIdAndAttemptNo(tenant, nodeRunId, attemptNo).ifPresent(row -> {
@@ -613,6 +720,10 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
             if (found != null && found.isPresent()) {
                 SoarApprovalEntity approval = found.get();
                 if ("PENDING".equals(approval.getStatus())) {
+                    // Temporal may deliver the expiry timer after an operator
+                    // decision or terminal run projection has already won the
+                    // race. Never mutate the gate in that late-delivery case.
+                    if (runTerminalOrCancelling(tenantId, runId)) return null;
                     approval.setStatus("EXPIRED");
                     approval.setDecidedAt(Instant.now());
                     approval.setDecisionReason("approval expired by workflow timer");
@@ -691,6 +802,7 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
             if (locked == null) locked = manualTasks.findByTenantIdAndRunIdAndNodeId(tenantId, runId, nodeId);
             if (locked != null) locked.ifPresent(task -> {
                 if ("PENDING".equals(task.getStatus())) {
+                    if (runTerminalOrCancelling(tenantId, runId)) return;
                     task.setStatus("EXPIRED");
                     task.setUpdatedAt(Instant.now());
                     manualTasks.save(task);
@@ -706,6 +818,7 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
     @Transactional
     public void recordNode(SoarV2NodeRequest request, SoarV2NodeResult result) {
         TenantContext.callWith(request.tenantId(), () -> {
+            if (runTerminalOrCancelling(request.tenantId(), request.runId())) return null;
             String iteration = request.iterationPath() == null ? "" : request.iterationPath();
             SoarNodeRunEntity row = nodeRuns.findByTenantIdAndRunIdAndNodeIdAndIterationPath(
                     request.tenantId(), request.runId(), request.nodeId(), iteration).orElseGet(SoarNodeRunEntity::new);
@@ -738,7 +851,11 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
             // a stale Temporal completion is still in flight. Never let that
             // late completion resurrect a run that was deliberately made
             // terminal; this is the database-side fence for reconciliation.
-            if (terminalProjection(run)) {
+            if (terminalProjection(run)
+                    || ("CANCELLING".equals(run.getStatus())
+                    && !"CANCELLED".equals(update.status()))
+                    || ("ACTION_UNKNOWN".equals(run.getStatus())
+                    && !"ACTION_UNKNOWN".equals(update.status()))) {
                 appendEvent(update.tenantId(), update.runId(), "RUN_COMPLETION_IGNORED",
                         "Late Temporal completion ignored after operator terminal decision", null);
                 return null;
@@ -767,8 +884,23 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
     /** Any terminal projection is a one-way fence for stale Temporal calls. */
     private static boolean terminalProjection(SoarRunEntity run) {
         if (run == null) return false;
-        return Set.of("SUCCEEDED", "FAILED", "CANCELLED", "SUPPRESSED", "TIMED_OUT", "DEAD")
-                .contains(run.getStatus()) || operatorTerminalProjection(run);
+        String status = run.getStatus();
+        return (status != null && Set.of("SUCCEEDED", "PARTIALLY_SUCCEEDED", "FAILED", "CANCELLED",
+                "SUPPRESSED", "TIMED_OUT", "DEAD").contains(status)) || operatorTerminalProjection(run);
+    }
+
+    private boolean runTerminalOrCancelling(String tenantId, String runId) {
+        java.util.Optional<SoarRunEntity> locked = runs.findByTenantIdAndIdForUpdate(tenantId, runId);
+        if (locked == null) locked = runs.findByTenantIdAndId(tenantId, runId);
+        if (locked == null || locked.isEmpty()) return false;
+        SoarRunEntity run = locked.get();
+        return terminalProjection(run) || "CANCELLING".equals(run.getStatus());
+    }
+
+    private SoarV2NodeResult terminalNodeResult() {
+        return new SoarV2NodeResult("CANCELLED",
+                "{\"status\":\"CANCELLED\",\"retryable\":false}",
+                "SOAR_RUN_NOT_RESUMABLE", "run is already terminal or cancelling", false);
     }
 
     @Override

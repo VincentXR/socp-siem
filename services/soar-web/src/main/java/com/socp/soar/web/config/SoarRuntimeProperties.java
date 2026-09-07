@@ -16,6 +16,10 @@ public class SoarRuntimeProperties {
      * explicitly opt out of V2 evaluation.
      */
     private boolean v2EvaluationEnabled = true;
+    /** Legacy alarm evaluation/execution compatibility switch.  Production
+     * profiles turn this off after a tenant has migrated to V2 so an old
+     * synchronous route cannot bypass the durable V2 outbox. */
+    private boolean legacyExecutionEnabled = true;
     /**
      * V2 control-plane switch (design §19.3).  Kept for rollout symmetry; V2
      * routes are always mounted so individual methods can be consulted when a
@@ -32,6 +36,14 @@ public class SoarRuntimeProperties {
     private boolean legacyMutationEnabled = true;
     /** Comma-separated tenant allow-list for V2 execution; empty means all. */
     private String executionTenantAllowlist = "";
+    /** Whether the run-event SSE endpoint is enabled for this deployment. */
+    private boolean sseEnabled = true;
+    /** Polling interval used by the compatibility SSE projection. */
+    private long ssePollIntervalMs = 500L;
+    /** Maximum lifetime of an idle SSE connection. */
+    private long sseTimeoutMs = 30_000L;
+    /** Shared scheduler size for SSE projection callbacks. */
+    private int sseSchedulerThreads = 2;
 
     public boolean isSimulationEnabled() { return simulationEnabled; }
     public void setSimulationEnabled(boolean simulationEnabled) { this.simulationEnabled = simulationEnabled; }
@@ -41,6 +53,8 @@ public class SoarRuntimeProperties {
     public void setScheduleZone(String scheduleZone) { this.scheduleZone = scheduleZone; }
     public boolean isV2EvaluationEnabled() { return v2EvaluationEnabled; }
     public void setV2EvaluationEnabled(boolean v2EvaluationEnabled) { this.v2EvaluationEnabled = v2EvaluationEnabled; }
+    public boolean isLegacyExecutionEnabled() { return legacyExecutionEnabled; }
+    public void setLegacyExecutionEnabled(boolean legacyExecutionEnabled) { this.legacyExecutionEnabled = legacyExecutionEnabled; }
     public boolean isV2ControlPlaneEnabled() { return v2ControlPlaneEnabled; }
     public void setV2ControlPlaneEnabled(boolean v2ControlPlaneEnabled) { this.v2ControlPlaneEnabled = v2ControlPlaneEnabled; }
     public boolean isV2ExecutionEnabled() { return v2ExecutionEnabled; }
@@ -49,4 +63,12 @@ public class SoarRuntimeProperties {
     public void setLegacyMutationEnabled(boolean legacyMutationEnabled) { this.legacyMutationEnabled = legacyMutationEnabled; }
     public String getExecutionTenantAllowlist() { return executionTenantAllowlist; }
     public void setExecutionTenantAllowlist(String executionTenantAllowlist) { this.executionTenantAllowlist = executionTenantAllowlist; }
+    public boolean isSseEnabled() { return sseEnabled; }
+    public void setSseEnabled(boolean sseEnabled) { this.sseEnabled = sseEnabled; }
+    public long getSsePollIntervalMs() { return ssePollIntervalMs; }
+    public void setSsePollIntervalMs(long ssePollIntervalMs) { this.ssePollIntervalMs = ssePollIntervalMs; }
+    public long getSseTimeoutMs() { return sseTimeoutMs; }
+    public void setSseTimeoutMs(long sseTimeoutMs) { this.sseTimeoutMs = sseTimeoutMs; }
+    public int getSseSchedulerThreads() { return sseSchedulerThreads; }
+    public void setSseSchedulerThreads(int sseSchedulerThreads) { this.sseSchedulerThreads = sseSchedulerThreads; }
 }

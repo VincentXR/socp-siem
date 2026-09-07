@@ -29,7 +29,7 @@ class SoarMigrationTest {
                     "SELECT MAX(\"installed_rank\") FROM \"flyway_schema_history\"");
                  var migrationResult = migration.executeQuery()) {
                 migrationResult.next();
-                assertEquals(20, migrationResult.getInt(1));
+                assertEquals(22, migrationResult.getInt(1));
             }
             try (var policyColumn = connection.prepareStatement(
                     "SELECT COUNT(*) FROM information_schema.columns "
@@ -52,6 +52,15 @@ class SoarMigrationTest {
                  var connResult = connColumn.executeQuery()) {
                 connResult.next();
                 assertEquals(4, connResult.getInt(1));
+            }
+            try (var fkQuery = connection.prepareStatement(
+                    "SELECT COUNT(*) FROM information_schema.table_constraints "
+                            + "WHERE constraint_type = 'FOREIGN KEY' "
+                            + "AND constraint_name IN ('FK_SOAR_RUN_VERSION', 'FK_SOAR_ATTEMPT_NODE',"
+                            + "'FK_SOAR_ARTIFACT_RUN')");
+                 var fkResult = fkQuery.executeQuery()) {
+                fkResult.next();
+                assertEquals(3, fkResult.getInt(1));
             }
         }
     }

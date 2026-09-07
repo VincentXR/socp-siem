@@ -123,6 +123,19 @@ public class ProdGuard {
             violations.add("socp.temporal.enabled=false（生产禁止 SOAR 回退进程内执行器）");
         }
 
+        // A production deployment may stage tenants through the explicit
+        // rollout flags, but it must never enable the durable V2 dispatcher
+        // and the legacy synchronous execution path globally at the same
+        // time.  Without this guard an old route could double-fire an event
+        // while the V2 outbox is also accepting it.
+        boolean v2Execution = Boolean.parseBoolean(
+                env.getProperty("socp.soar.v2-execution-enabled", "true"));
+        boolean legacyExecution = Boolean.parseBoolean(
+                env.getProperty("socp.soar.legacy-execution-enabled", "false"));
+        if (v2Execution && legacyExecution) {
+            violations.add("socp.soar.v2-execution-enabled 与 socp.soar.legacy-execution-enabled 不能同时为 true");
+        }
+
         for (String simulationProperty : List.of("socp.soar.simulation-enabled")) {
             if ("true".equalsIgnoreCase(env.getProperty(simulationProperty, "false"))) {
                 violations.add(simulationProperty + "=true (production forbids simulated actions and collectors)");

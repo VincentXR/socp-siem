@@ -150,6 +150,48 @@ class SoarV2DispatchWorkerCoverageTest {
     }
 
     @Test
+    void cancellationWonAfterClaimIsRecheckedBeforeTemporalStart() {
+        SoarDispatchOutboxEntity outbox = outbox(0, "PENDING");
+        SoarRunEntity queued = run("QUEUED");
+        SoarRunEntity cancelling = run("CANCELLING");
+        given(temporal.isAvailable()).willReturn(true);
+        given(dispatches.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(eq("PENDING"), any()))
+                .willReturn(List.of(outbox));
+        given(dispatches.claim(eq("tenant-a"), eq("out-1"), anyString(), any())).willReturn(1);
+        given(runs.findByTenantIdAndId("tenant-a", "run-1"))
+                .willReturn(Optional.of(queued), Optional.of(cancelling));
+        given(versions.findByTenantIdAndId("tenant-a", "ver-1")).willReturn(Optional.of(version()));
+
+        worker.tick();
+
+        assertThat(outbox.getStatus()).isEqualTo("CANCELLED");
+        assertThat(outbox.getLastError()).contains("CANCELLING");
+        verify(temporal, never()).startV2(any(SoarV2WorkflowRequest.class), anyString());
+    }
+
+    @Test
+    void cancellationWonImmediatelyAfterTemporalStartIsDeliveredToStartedWorkflow() {
+        SoarDispatchOutboxEntity outbox = outbox(0, "PENDING");
+        SoarRunEntity queued = run("QUEUED");
+        SoarRunEntity dispatching = run("DISPATCHING");
+        SoarRunEntity cancelling = run("CANCELLING");
+        given(temporal.isAvailable()).willReturn(true);
+        given(dispatches.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(eq("PENDING"), any()))
+                .willReturn(List.of(outbox));
+        given(dispatches.claim(eq("tenant-a"), eq("out-1"), anyString(), any())).willReturn(1);
+        given(runs.findByTenantIdAndId("tenant-a", "run-1"))
+                .willReturn(Optional.of(queued), Optional.of(dispatching), Optional.of(cancelling));
+        given(versions.findByTenantIdAndId("tenant-a", "ver-1")).willReturn(Optional.of(version()));
+        given(temporal.startV2(any(SoarV2WorkflowRequest.class), anyString()))
+                .willReturn(WorkflowExecution.newBuilder().setRunId("temporal-run-late-cancel").build());
+
+        worker.tick();
+
+        verify(temporal).cancelV2("soar-v2-tenant-a-run-1");
+        assertThat(outbox.getStatus()).isEqualTo("DISPATCHED");
+    }
+
+    @Test
     void transientFailureRequeuesAndRestoresQueuedProjection() {
         SoarDispatchOutboxEntity outbox = outbox(0, "PENDING");
         SoarRunEntity run = run("QUEUED");
@@ -192,6 +234,23 @@ class SoarV2DispatchWorkerCoverageTest {
         assertThat(run.getStatus()).isEqualTo("DEAD");
         assertThat(run.getErrorCode()).isEqualTo("DISPATCH_DEAD_LETTER");
         assertThat(run.getErrorMessage()).isEqualTo("Temporal dispatch exhausted retries");
+    }
+
+    @Test
+    void exhaustedRetryBudgetDoesNotOverwriteAnAlreadyTerminalRun() {
+        SoarDispatchOutboxEntity outbox = outbox(9, "PENDING");
+        SoarRunEntity run = run("PARTIALLY_SUCCEEDED");
+        given(temporal.isAvailable()).willReturn(true);
+        given(dispatches.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(eq("PENDING"), any()))
+                .willReturn(List.of(outbox));
+        given(dispatches.claim(eq("tenant-a"), eq("out-1"), anyString(), any())).willReturn(1);
+        given(runs.findByTenantIdAndId("tenant-a", "run-1")).willReturn(Optional.of(run));
+
+        worker.tick();
+
+        assertThat(outbox.getStatus()).isEqualTo("CANCELLED");
+        assertThat(run.getStatus()).isEqualTo("PARTIALLY_SUCCEEDED");
+        assertThat(run.getErrorCode()).isNull();
     }
 
     @Test

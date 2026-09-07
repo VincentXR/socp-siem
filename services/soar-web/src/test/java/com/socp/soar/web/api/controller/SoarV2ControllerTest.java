@@ -6,6 +6,7 @@ import com.socp.soar.web.service.SoarV2AutomationRuleService;
 import com.socp.soar.web.service.SoarV2ConnectorService;
 import com.socp.soar.web.service.SoarV2Service;
 import com.socp.soar.web.service.SoarV2TemplateService;
+import com.socp.platform.tenant.security.ServiceRequestSignature;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -20,15 +21,19 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.List;
 import java.util.Map;
+import java.time.Instant;
+import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -269,6 +274,62 @@ class SoarV2ControllerTest {
                         .content(json.writeValueAsString(Map.of("decision", "APPROVED", "reason", "Isolation authorized"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("APPROVED"));
+    }
+
+    @Test
+    void approverRoleCanReachApprovalReadApiWithoutAdminRoleGate() throws Exception {
+        given(service.listApprovals()).willReturn(List.of(Map.of("id", "appr-2", "status", "PENDING")));
+
+        mvc.perform(get("/api/v2/approvals")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "approver"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].id").value("appr-2"));
+    }
+
+    @Test
+    void viewerRoleCanReachReadOnlyPlaybookApiWithoutClassRoleGate() throws Exception {
+        given(service.listPlaybooks(any(), isNull(), isNull(), isNull(), isNull()))
+                .willReturn(new PageImpl<>(List.of(Map.of("id", "pb-view", "name", "Read only")),
+                        PageRequest.of(0, 20), 1));
+
+        mvc.perform(get("/api/v2/playbooks")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", ROLE_VIEWER))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].id").value("pb-view"));
+    }
+
+    @Test
+    void legacyAlertPayloadOnV2EventRouteIsConvertedToTypedEnvelope() throws Exception {
+        given(automationRules.evaluate(anyMap()))
+                .willReturn(Map.of("eventId", "AL-1", "matchedRuns", 0));
+        String path = "/api/v2/events/evaluate";
+        String tenant = "tenant-a";
+        String timestamp = String.valueOf(Instant.now().getEpochSecond());
+        String nonce = UUID.randomUUID().toString();
+        String signature = ServiceRequestSignature.sign("test-service-secret", "alert-web", "POST",
+                path, tenant, timestamp, nonce);
+
+        mvc.perform(post(path)
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", ROLE_ADMIN)
+                        .header("X-Tenant-Id", tenant)
+                        .header(ServiceRequestSignature.SERVICE_HEADER, "alert-web")
+                        .header(ServiceRequestSignature.TIMESTAMP_HEADER, timestamp)
+                        .header(ServiceRequestSignature.NONCE_HEADER, nonce)
+                        .header(ServiceRequestSignature.SIGNATURE_HEADER, signature)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of(
+                                "id", "AL-1", "tenantId", "tenant-a", "severity", "HIGH"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.eventId").value("AL-1"));
+
+        verify(automationRules).evaluate(argThat(event ->
+                "soar.event/v1".equals(event.get("schemaVersion"))
+                        && "alert.created".equals(event.get("eventType"))
+                        && Map.of("type", "alert", "id", "AL-1").equals(event.get("subject"))
+                        && event.get("data") instanceof Map<?, ?>));
     }
 
     @Test

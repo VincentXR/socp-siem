@@ -62,13 +62,20 @@ class SoarV2VersionPublishCoverageTest {
             + "{\"id\":\"start\",\"type\":\"START\"},{\"id\":\"end\",\"type\":\"END\"}],"
             + "\"edges\":[{\"from\":\"start\",\"to\":\"end\"}]}";
     private static final String DEFAULT_RISK = "{\"highRiskActionCount\":0,\"actionCount\":0}";
-    private static final String CONNECTED_DEFINITION = "{\"schemaVersion\":\"soar.playbook/v2\","
-            + "\"entryNodeId\":\"start\",\"nodes\":["
+    private static final String CONNECTED_DEFINITION = "{\"schemaVersion\":\"soar.playbook/v2\"," +
+            "\"entryNodeId\":\"start\",\"nodes\":["
             + "{\"id\":\"start\",\"type\":\"START\"},"
             + "{\"id\":\"act\",\"type\":\"ACTION\",\"actionRef\":\"my.conn/run@1\",\"connectionRef\":\"conn-1\","
             + "\"parameters\":{},\"target\":{}},"
             + "{\"id\":\"end\",\"type\":\"END\",\"outcome\":\"SUCCEEDED\"}],"
             + "\"edges\":[{\"from\":\"start\",\"to\":\"act\"},{\"from\":\"act\",\"to\":\"end\"}]}";
+    private static final String SUB_DEFINITION = "{\"schemaVersion\":\"soar.playbook/v2\","
+            + "\"entryNodeId\":\"start\",\"nodes\":["
+            + "{\"id\":\"start\",\"type\":\"START\"},"
+            + "{\"id\":\"sp\",\"type\":\"SUB_PLAYBOOK\",\"playbookVersionId\":\"ver-2\"},"
+            + "{\"id\":\"end\",\"type\":\"END\",\"outcome\":\"SUCCEEDED\"}],"
+            + "\"edges\":[{\"from\":\"start\",\"to\":\"sp\"},{\"from\":\"sp\",\"to\":\"end\"}]}";
+    private static final String CYCLE_DEFINITION = SUB_DEFINITION.replace("ver-2", "ver-1");
 
     private final ObjectMapper mapper = new ObjectMapper();
 
@@ -106,6 +113,7 @@ class SoarV2VersionPublishCoverageTest {
     @BeforeEach
     void setUp() {
         TenantContext.set("tenant-a");
+        SoarTestIdentity.setOperator();
         service = new SoarV2Service(playbooks, versions, runs, dispatches, nodes, events, approvals,
                 validator, mapper, temporal, attempts, manualTasks, signals, connectors, connectorRegistry);
     }
@@ -113,6 +121,7 @@ class SoarV2VersionPublishCoverageTest {
     @AfterEach
     void tearDown() {
         TenantContext.clear();
+        SoarTestIdentity.clear();
     }
 
     // -------------------------------------------------------- version lookup
@@ -417,6 +426,55 @@ class SoarV2VersionPublishCoverageTest {
 
         assertThat(result).containsEntry("status", SoarPlaybookVersionStatus.PUBLISHED.name());
         assertThat(result.get("connectionHealth")).isEqualTo(List.of());
+    }
+
+    @Test
+    void publishRejectsMissingSubPlaybookVersionBeforeChangingDraft() {
+        PlaybookVersionEntity draft = draft();
+        draft.setDefinitionJson(SUB_DEFINITION);
+        given(playbooks.findByTenantIdAndId("tenant-a", "pb-1")).willReturn(Optional.of(playbook("pb-1", "x")));
+        given(versions.findByTenantIdAndPlaybookIdAndVersionNo("tenant-a", "pb-1", 1)).willReturn(Optional.of(draft));
+        given(validator.validate(SUB_DEFINITION)).willReturn(validation(true, "sub-hash", 3, 0, 0));
+        given(versions.findByTenantIdAndId("tenant-a", "ver-2")).willReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.publish("pb-1", 1))
+                .isInstanceOfSatisfying(ResponseStatusException.class,
+                        error -> assertThat(error.getReason()).contains("SOAR_SUB_PLAYBOOK_NOT_FOUND"));
+        assertThat(draft.getStatus()).isEqualTo(SoarPlaybookVersionStatus.DRAFT.name());
+        verify(versions, never()).save(any(PlaybookVersionEntity.class));
+    }
+
+    @Test
+    void publishRejectsUnpublishedSubPlaybookVersion() {
+        PlaybookVersionEntity draft = draft();
+        draft.setDefinitionJson(SUB_DEFINITION);
+        PlaybookVersionEntity child = version("ver-2", "pb-2", 1, SoarPlaybookVersionStatus.DRAFT);
+        given(playbooks.findByTenantIdAndId("tenant-a", "pb-1")).willReturn(Optional.of(playbook("pb-1", "x")));
+        given(versions.findByTenantIdAndPlaybookIdAndVersionNo("tenant-a", "pb-1", 1)).willReturn(Optional.of(draft));
+        given(validator.validate(SUB_DEFINITION)).willReturn(validation(true, "sub-hash", 3, 0, 0));
+        given(versions.findByTenantIdAndId("tenant-a", "ver-2")).willReturn(Optional.of(child));
+
+        assertThatThrownBy(() -> service.publish("pb-1", 1))
+                .isInstanceOfSatisfying(ResponseStatusException.class,
+                        error -> assertThat(error.getReason()).contains("SOAR_SUB_PLAYBOOK_NOT_PUBLISHED"));
+        verify(versions, never()).save(any(PlaybookVersionEntity.class));
+    }
+
+    @Test
+    void publishRejectsRecursiveSubPlaybookGraph() {
+        PlaybookVersionEntity draft = draft();
+        draft.setDefinitionJson(SUB_DEFINITION);
+        PlaybookVersionEntity child = version("ver-2", "pb-2", 1, SoarPlaybookVersionStatus.PUBLISHED,
+                CYCLE_DEFINITION, DEFAULT_RISK);
+        given(playbooks.findByTenantIdAndId("tenant-a", "pb-1")).willReturn(Optional.of(playbook("pb-1", "x")));
+        given(versions.findByTenantIdAndPlaybookIdAndVersionNo("tenant-a", "pb-1", 1)).willReturn(Optional.of(draft));
+        given(validator.validate(SUB_DEFINITION)).willReturn(validation(true, "sub-hash", 3, 0, 0));
+        given(versions.findByTenantIdAndId("tenant-a", "ver-2")).willReturn(Optional.of(child));
+
+        assertThatThrownBy(() -> service.publish("pb-1", 1))
+                .isInstanceOfSatisfying(ResponseStatusException.class,
+                        error -> assertThat(error.getReason()).contains("SOAR_SUB_PLAYBOOK_CYCLE"));
+        verify(versions, never()).save(any(PlaybookVersionEntity.class));
     }
 
     @Test

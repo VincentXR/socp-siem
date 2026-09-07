@@ -17,6 +17,7 @@ import jakarta.validation.Valid;
 import java.util.List;
 import java.util.Map;
 import com.socp.platform.auth.security.RequireRole;
+import com.socp.platform.tenant.context.AuthenticatedIdentityContext;
 import com.socp.soar.web.service.AlarmEvaluationService;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
@@ -82,6 +83,14 @@ public class PlaybookController {
     @com.socp.platform.auth.security.RequireService
     @PostMapping("/evaluate")
     public Map<String, Object> evaluate(@Valid @RequestBody AlarmEvaluationRequest alarm) {
+        // During the migration window the V1-shaped alarm payload is adapted
+        // by AlarmEvaluationService into the V2 event envelope.  Blocking it
+        // before the service sees the feature flag would make old Alert Web
+        // workers fail with 410 even though V2 evaluation is enabled.  The
+        // legacy guard remains for deployments that have not enabled V2.
+        if (runtimeProperties == null || !runtimeProperties.isV2EvaluationEnabled()) {
+            requireLegacyExecution();
+        }
         try {
             return evaluationService.evaluate(alarm.asMap());
         } catch (AlarmEvaluationService.EvaluationInProgressException inProgress) {
@@ -96,12 +105,12 @@ public class PlaybookController {
     public Map<String, Object> execute(@PathVariable String id,
                                        @RequestBody(required = false) PlaybookExecutionRequest request) {
         requireLegacyMutation();
+        requireLegacyExecution();
         Map<String, Object> context = request == null ? Map.of() : request.context();
         validateMap(context, "context");
         if (approvalService != null && approvalService.requiresApproval(id)) {
-            String requestedBy = String.valueOf(context.getOrDefault("requestedBy", "operator"));
             String reason = String.valueOf(context.getOrDefault("reason", "manual high-risk action"));
-            return approvalService.request(id, context, requestedBy, reason);
+            return approvalService.request(id, context, authenticatedSubject(), reason);
         }
         return executor.runById(id, context);
     }
@@ -120,9 +129,8 @@ public class PlaybookController {
         requireLegacyMutation();
         if (approvalService == null) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
                 "approval service is unavailable");
-        String approver = body == null ? "operator" : String.valueOf(body.getOrDefault("approver", "operator"));
         String reason = body == null ? null : String.valueOf(body.getOrDefault("reason", ""));
-        return approvalService.approve(approvalId, approver, reason);
+        return approvalService.approve(approvalId, authenticatedSubject(), reason);
     }
 
     @RequireRole("admin")
@@ -130,6 +138,7 @@ public class PlaybookController {
     @PostMapping("/approvals/{approvalId}/execute")
     public Map<String, Object> executeApproved(@PathVariable String approvalId) {
         requireLegacyMutation();
+        requireLegacyExecution();
         if (approvalService == null) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
                 "approval service is unavailable");
         return approvalService.execute(approvalId);
@@ -147,6 +156,21 @@ public class PlaybookController {
             throw new ResponseStatusException(HttpStatus.GONE,
                     "legacy V1 playbook mutation is disabled; use the /api/v2 playbook and approval API");
         }
+    }
+
+    private void requireLegacyExecution() {
+        if (runtimeProperties != null && !runtimeProperties.isLegacyExecutionEnabled()) {
+            throw new ResponseStatusException(HttpStatus.GONE,
+                    "legacy SOAR execution is disabled; use the /api/v2 run and event APIs");
+        }
+    }
+
+    private static String authenticatedSubject() {
+        return AuthenticatedIdentityContext.current()
+                .map(identity -> identity.subject())
+                .filter(subject -> !subject.isBlank())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED,
+                        "verified authenticated identity is required"));
     }
 
     private static void validateMap(Map<String, Object> body, String name) {

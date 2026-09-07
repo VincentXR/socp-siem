@@ -29,6 +29,10 @@ import java.util.UUID;
 @Component
 public class TemporalExecutor {
 
+    // V2 dispatch is fail-closed: an unavailable Temporal endpoint leaves the
+    // durable outbox entry queued. The legacy run(...) method below is kept
+    // only for the explicitly gated V1 migration surface.
+
     private static final Logger log = LoggerFactory.getLogger(TemporalExecutor.class);
 
     private final WorkflowClient workflowClient;
@@ -86,6 +90,7 @@ public class TemporalExecutor {
     }
 
     /** 用 Temporal Workflow 执行剧本，返回与进程内结构一致的执行结果。 */
+    /** Execute a legacy V1 playbook through Temporal; V2 uses startV2(...). */
     public Map<String, Object> run(Playbook pb, Map<String, Object> alarm) {
         Map<String, Object> tenantAlarm = new LinkedHashMap<>(alarm);
         String tenant = TenantContext.get();

@@ -344,6 +344,7 @@ export interface SoarFlowApi {
   copySelection: () => boolean
   cutSelection: () => boolean
   pasteSelection: () => boolean
+  autoLayout: () => void
   nodeCount: ComputedRef<number>
   edgeCount: ComputedRef<number>
   applyDefinition: (value: unknown, layout?: unknown) => void
@@ -841,6 +842,78 @@ export function useDefinitionFlow(
     void store.fitView({ nodes: [id], padding: 0.4, maxZoom: 1.25 })
   }
 
+  /**
+   * Apply a deterministic layered layout to the current graph.  This is
+   * intentionally dependency-free: the saved layout remains a presentation
+   * concern and must not depend on a browser-only layout engine.  A
+   * topological walk puts the START-to-END path into columns; disconnected or
+   * cyclic legacy nodes are placed after the reachable layers in definition
+   * order so the operation is still total and repeatable.
+   */
+  function autoLayout(): void {
+    const nodes = rawRoot.value.nodes
+    if (!nodes.length) return
+    const order = new Map(nodes.map((node, index) => [node.id, index]))
+    const outgoing = new Map<string, string[]>()
+    const indegree = new Map<string, number>()
+    for (const node of nodes) {
+      outgoing.set(node.id, [])
+      indegree.set(node.id, 0)
+    }
+    for (const edge of rawRoot.value.edges) {
+      if (!indegree.has(edge.from) || !indegree.has(edge.to)) continue
+      outgoing.get(edge.from)?.push(edge.to)
+      indegree.set(edge.to, (indegree.get(edge.to) ?? 0) + 1)
+    }
+    for (const targets of outgoing.values()) targets.sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0))
+
+    const depth = new Map<string, number>()
+    const queue: string[] = nodes
+      .filter(node => rawNodeType(node) === 'START')
+      .map(node => node.id)
+    if (!queue.length) queue.push(nodes[0].id)
+    for (const id of queue) depth.set(id, 0)
+    const remaining = new Map(indegree)
+    while (queue.length) {
+      const current = queue.shift() as string
+      const nextDepth = (depth.get(current) ?? 0) + 1
+      for (const target of outgoing.get(current) ?? []) {
+        depth.set(target, Math.max(depth.get(target) ?? 0, nextDepth))
+        const nextRemaining = (remaining.get(target) ?? 0) - 1
+        remaining.set(target, nextRemaining)
+        if (nextRemaining <= 0) queue.push(target)
+      }
+    }
+
+    let fallbackDepth = Math.max(-1, ...depth.values()) + 1
+    for (const node of nodes) {
+      if (!depth.has(node.id)) depth.set(node.id, fallbackDepth++)
+    }
+    const layers = new Map<number, EditorNode[]>()
+    for (const node of nodes) {
+      const layer = depth.get(node.id) ?? 0
+      const bucket = layers.get(layer) ?? []
+      bucket.push(node)
+      layers.set(layer, bucket)
+    }
+    const nextPositions: PositionsMap = {}
+    for (const [layer, bucket] of [...layers.entries()].sort(([a], [b]) => a - b)) {
+      bucket.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0))
+      bucket.forEach((node, index) => {
+        nextPositions[node.id] = {
+          x: GRID_ORIGIN.x + layer * NODE_WIDTH_STEP,
+          y: GRID_ORIGIN.y + index * NODE_HEIGHT_STEP,
+        }
+      })
+    }
+    positions.value = nextPositions
+    markStale()
+    rebuild()
+    refreshSelectionInStore()
+    pushHistory()
+    void nextTick(() => { void store.fitView({ padding: 0.2 }) })
+  }
+
   /* ---------------- connection validation ---------------- */
 
   function validateNewEdge(source: string, target: string, token: string): { ok: boolean; message: string } {
@@ -989,6 +1062,7 @@ export function useDefinitionFlow(
     copySelection,
     cutSelection,
     pasteSelection,
+    autoLayout,
     nodeCount,
     edgeCount,
     applyDefinition,
@@ -1017,4 +1091,3 @@ export function useDefinitionFlow(
     isValidConnection,
   }
 }
-

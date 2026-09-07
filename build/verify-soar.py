@@ -53,7 +53,7 @@ def main() -> int:
     migration_dir = ROOT / "services/soar-web/src/main/resources/db/migration"
     migrations = sorted(migration_dir.glob("V*.sql"), key=lambda path: int(re.match(r"V(\d+)", path.name).group(1)))
     versions = [int(re.match(r"V(\d+)", path.name).group(1)) for path in migrations]
-    check("SOAR migrations V6..V16 are present", set(range(6, 17)).issubset(versions), str(versions))
+    check("SOAR migrations V6..V22 are present", set(range(6, 23)).issubset(versions), str(versions))
     v11 = read("services/soar-web/src/main/resources/db/migration/V11__soar_v2_artifacts_retention.sql")
     v12 = read("services/soar-web/src/main/resources/db/migration/V12__soar_v2_artifact_inline_storage.sql")
     check("artifact migration has bounded inline storage", "inline_json" in v11 and "ADD COLUMN IF NOT EXISTS inline_json" in v12)
@@ -68,6 +68,23 @@ def main() -> int:
           "signal_key" in v15 and "uq_soar_signal_outbox_business" in v15, "V15")
     v16 = read("services/soar-web/src/main/resources/db/migration/V16__soar_v2_approval_policy.sql")
     check("approval migration persists role/group policy", "policy_json" in v16 and "t_soar_approval" in v16, "V16")
+    v17 = read("services/soar-web/src/main/resources/db/migration/V17__soar_v2_attempt_remote_time.sql")
+    check("attempt migration records remote operation time", "remote_time" in v17 and "t_soar_action_attempt" in v17, "V17")
+    v18 = read("services/soar-web/src/main/resources/db/migration/V18__soar_v2_connection_revision.sql")
+    check("node/attempt migration records connection revision", "connection_revision" in v18 and "t_soar_node_run" in v18, "V18")
+    v19 = read("services/soar-web/src/main/resources/db/migration/V19__soar_v2_retention_indexes.sql")
+    check("retention migration adds operational indexes", "idx_soar_run_status_updated" in v19
+          and "idx_soar_approval_status_expires" in v19, "V19")
+    v20 = read("services/soar-web/src/main/resources/db/migration/V20__soar_v2_row_version_defaults.sql")
+    check("row version migration protects inserts", "ALTER TABLE t_soar_run" in v20
+          and "SET DEFAULT 0" in v20, "V20")
+    v21 = read("services/soar-web/src/main/resources/db/migration/V21__soar_v2_run_execution_budget.sql")
+    check("run budget migration persists the shared counter",
+          "execution_node_count" in v21 and "t_soar_run" in v21, "V21")
+    v22 = read("services/soar-web/src/main/resources/db/migration/V22__soar_v2_tenant_foreign_keys.sql")
+    check("tenant foreign-key migration protects the V2 ownership graph",
+          "fk_soar_run_version" in v22 and "fk_soar_attempt_node" in v22
+          and "fk_soar_artifact_run" in v22, "V22")
 
     required_java = (
         "services/soar-web/src/main/java/com/socp/soar/web/definition/SoarDefinitionValidator.java",
@@ -82,14 +99,28 @@ def main() -> int:
         check(f"implementation file {Path(relative).name}", (ROOT / relative).is_file())
 
     controller = read("services/soar-web/src/main/java/com/socp/soar/web/api/controller/SoarV2Controller.java")
+    soar_client = read("platform/socp-client/src/main/java/com/socp/platform/client/service/SoarClient.java")
     for route in ("/runs", "/dry-run", "/definition-schema", "/resolve-unknown", "/artifacts", "@PatchMapping(\"/playbooks/{id}\")"):
         check(f"V2 route {route}", route in controller)
+    check("Alert service client enters V2 event evaluation",
+          '"/api/v2/events/evaluate"' in soar_client
+          and "legacyAlarmEnvelope" in controller)
 
     workflow = read("services/soar-web/src/main/java/com/socp/soar/web/temporal/v2/SoarV2WorkflowImpl.java")
     activity = read("services/soar-web/src/main/java/com/socp/soar/web/temporal/v2/SoarV2ActivityImpl.java")
     activity_contract = read("services/soar-web/src/main/java/com/socp/soar/web/temporal/v2/SoarV2Activity.java")
+    recovery = read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarV2RunRecoveryWorker.java")
+    runtime = read("services/soar-web/src/main/java/com/socp/soar/web/config/SoarRuntimeProperties.java")
+    application = read("services/soar-web/src/main/resources/application.yml")
+    production = read("services/soar-web/src/main/resources/application-prod.yml")
     checks = {
         "bounded graph execution": "maxSteps()" in workflow and "EXECUTION_LIMIT_EXCEEDED" in workflow,
+        "published sub-playbook graph gate": "validateSubPlaybookGraph" in read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarV2Service.java")
+        and "SOAR_SUB_PLAYBOOK_CYCLE" in read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarV2Service.java")
+        and "SOAR_SUB_PLAYBOOK_DEPTH_EXCEEDED" in read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarV2Service.java"),
+        "run-wide child workflow budget": "reserveNodeExecution" in activity_contract
+        and "execution_node_count" in read("services/soar-web/src/main/java/com/socp/soar/web/persistence/entity/SoarRunEntity.java")
+        and "executionBudgetLimit" in workflow,
         "unknown action is durable": "Workflow.await(() -> cancelled || unknownResolution != null)" in workflow,
         "approval gate context is persisted": "markRunWaitingWithPolicyV2" in activity_contract
         and "setInputHash" in activity and "setTargetSnapshotJson" in activity
@@ -99,6 +130,30 @@ def main() -> int:
         "output hard limit": "MAX_OUTPUT_BYTES = 10 * 1024 * 1024" in activity,
         "secret redaction": "[REDACTED]" in activity,
         "stale outbox recovery": "recoverStaleClaims" in read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarV2DispatchWorker.java"),
+        "cancellation is a one-way activity fence": '"CANCELLING".equals(run.getStatus())' in activity,
+        "stale cancellation settles as cancelled": 'run.setStatus("CANCELLED")' in recovery
+        and '"CANCELLING".equals(run.getStatus())' in recovery,
+        "rollout switches are bound": "v2ControlPlaneEnabled" in runtime
+        and "v2ExecutionEnabled" in runtime and "executionTenantAllowlist" in runtime
+        and "legacyExecutionEnabled" in runtime
+        and "v2-control-plane-enabled" in application
+        and "legacy-execution-enabled" in production,
+        "legacy execution cannot bypass the migration gate": "requireLegacyExecution" in read(
+            "services/soar-web/src/main/java/com/socp/soar/web/api/controller/PlaybookController.java")
+        and "isLegacyExecutionEnabled" in read(
+            "services/soar-web/src/main/java/com/socp/soar/web/service/AlarmEvaluationService.java"),
+        "paused V2 workers retain durable backlog": "isV2ExecutionEnabled" in read(
+            "services/soar-web/src/main/java/com/socp/soar/web/service/SoarV2DispatchWorker.java")
+        and "isV2ExecutionEnabled" in read(
+            "services/soar-web/src/main/java/com/socp/soar/web/service/SoarV2SignalWorker.java"),
+        "typed action parameter schemas are enforced": "validateActionParameters" in read(
+            "services/soar-web/src/main/java/com/socp/soar/web/definition/SoarDefinitionValidator.java")
+        and "ACTION_PARAMETER_REQUIRED" in read(
+            "services/soar-web/src/main/java/com/socp/soar/web/definition/SoarDefinitionValidator.java")
+        and "ACTION_PARAMETER_TYPE_INVALID" in read(
+            "services/soar-web/src/main/java/com/socp/soar/web/definition/SoarDefinitionValidator.java")
+        and "ACTION_PARAMETER_UNKNOWN" in read(
+            "services/soar-web/src/main/java/com/socp/soar/web/definition/SoarDefinitionValidator.java"),
     }
     for name, condition in checks.items():
         check(name, condition)
@@ -107,10 +162,14 @@ def main() -> int:
     for fn in ("dryRunV2Version", "resolveV2Unknown", "listV2Artifacts", "saveV2Version"):
         check(f"Workbench API {fn}", f"{fn} =" in frontend)
     editor = read("frontend/apps/workbench/src/components/soar/SoarV2Editor.vue")
+    node_registry = read("frontend/apps/workbench/src/components/soar/editor/nodeRegistry.ts")
     inspector = read("frontend/apps/workbench/src/components/soar/SoarV2RunInspector.vue")
     for node_type in ("START", "END", "ACTION", "CONDITION", "SWITCH", "PARALLEL", "JOIN",
                       "FOREACH", "DELAY", "APPROVAL", "MANUAL_TASK", "SUB_PLAYBOOK", "SET_VARIABLE"):
-        check(f"Workbench editor supports {node_type}", node_type in editor)
+        # The editor delegates palette metadata/default schemas to the node
+        # registry; checking only SoarV2Editor.vue would report false negatives
+        # whenever a node is deliberately kept out of the shell component.
+        check(f"Workbench editor supports {node_type}", node_type in editor or node_type in node_registry)
     check("Workbench graph editor is wired", "saveV2Version" in editor and "publishV2Version" in editor
           and "dryRunV2Version" in editor)
     check("Workbench run inspector is wired", "listV2NodeAttempts" in inspector
@@ -152,6 +211,10 @@ def main() -> int:
           and "allowedGroups" in openapi)
     check("OpenAPI exposes typed event envelope", "EventEnvelope:" in openapi
           and "soar.event/v1" in openapi and "/api/v2/events/evaluate:" in openapi)
+    check("OpenAPI uses the real session cookie and ApiResult schema",
+          "name: SOCP_SESSION" in openapi and "schemas/ApiResult" in openapi
+          and "required: [code, message, timestamp]" in openapi
+          and "VersionResult" in openapi and "'412'" in openapi and "ETag:" in openapi)
     registry = read("services/soar-web/src/main/java/com/socp/soar/web/connector/SoarConnectorRegistry.java")
     descriptor = read("services/soar-web/src/main/java/com/socp/soar/web/connector/ActionDescriptor.java")
     check("connector actions expose typed schemas and permissions",

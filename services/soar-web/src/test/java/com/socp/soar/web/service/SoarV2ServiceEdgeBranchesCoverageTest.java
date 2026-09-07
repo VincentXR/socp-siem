@@ -138,6 +138,7 @@ class SoarV2ServiceEdgeBranchesCoverageTest {
     @BeforeEach
     void setUp() {
         TenantContext.set("tenant-a");
+        SoarTestIdentity.setOperator();
         runtimeProperties = new SoarRuntimeProperties();
         service = new SoarV2Service(playbooks, versions, runs, dispatches, nodes, events, approvals,
                 validator, mapper, temporal, attempts, manualTasks, signals, connectors, connectorRegistry);
@@ -152,6 +153,7 @@ class SoarV2ServiceEdgeBranchesCoverageTest {
     @AfterEach
     void tearDown() {
         TenantContext.clear();
+        SoarTestIdentity.clear();
     }
 
     // ------------------------------------------------------------------ versions
@@ -548,6 +550,10 @@ class SoarV2ServiceEdgeBranchesCoverageTest {
         stubTask(task("t-bad-pattern", propSchema("{\"type\":\"string\",\"pattern\":\"[\"}")));
         assertRejected(HttpStatus.BAD_REQUEST, "SOAR_MANUAL_INPUT_INVALID",
                 () -> service.completeManualTask("t-bad-pattern", Map.of("v", "x")));
+
+        stubTask(task("t-unsafe-pattern", propSchema("{\"type\":\"string\",\"pattern\":\"(a+)+\"}")));
+        assertRejected(HttpStatus.BAD_REQUEST, "SOAR_MANUAL_INPUT_INVALID",
+                () -> service.completeManualTask("t-unsafe-pattern", Map.of("v", "aaaaaaaaaaaaaaaa!")));
     }
 
     @Test

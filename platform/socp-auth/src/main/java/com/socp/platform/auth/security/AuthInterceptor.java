@@ -4,6 +4,8 @@ import com.socp.platform.error.exception.ApiException;
 import com.socp.platform.auth.config.SocpSecurityProperties;
 import com.socp.platform.tenant.security.ServiceRequestSignature;
 import com.socp.platform.tenant.context.TenantContext;
+import com.socp.platform.tenant.context.AuthenticatedIdentity;
+import com.socp.platform.tenant.context.AuthenticatedIdentityContext;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
@@ -17,6 +19,11 @@ import java.time.Instant;
 import java.time.Duration;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.lang.reflect.Array;
+import java.util.Collection;
+import java.util.LinkedHashSet;
+import java.util.Locale;
+import java.util.Set;
 
 /** Authenticates user JWTs, fixed ingest credentials, and signed internal service requests. */
 @Component
@@ -52,6 +59,9 @@ public class AuthInterceptor implements HandlerInterceptor {
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
+        // A servlet thread can be reused after an aborted request. Never allow
+        // an identity from a previous request to bleed into this one.
+        AuthenticatedIdentityContext.clear();
         String authorization = request.getHeader(HttpHeaders.AUTHORIZATION);
         if (authorization == null || !authorization.startsWith(BEARER)) {
             throw ApiException.unauthorized("Missing Bearer token");
@@ -65,11 +75,18 @@ public class AuthInterceptor implements HandlerInterceptor {
                 throw ApiException.forbidden("Metrics credential is limited to actuator metrics");
             }
             TenantContext.set("default");
+            AuthenticatedIdentityContext.set(new AuthenticatedIdentity(
+                    "metrics", "default", "metrics", Permission.roleDefaults("viewer"), Set.of(),
+                    AuthenticatedIdentity.Kind.METRICS));
             return true;
         }
 
         String tenant = null;
         String role;
+        String subject = null;
+        Set<String> claimsPermissions = Set.of();
+        Set<String> claimsGroups = Set.of();
+        AuthenticatedIdentity.Kind identityKind = AuthenticatedIdentity.Kind.USER;
         String authenticatedService = null;
         boolean ingestCredential = false;
         CollectorCredentialRegistry.Identity collectorIdentity =
@@ -86,6 +103,8 @@ public class AuthInterceptor implements HandlerInterceptor {
             }
             tenant = collectorIdentity.tenantId();
             role = "ingest";
+            subject = "collector:" + collectorIdentity.collectorId();
+            identityKind = AuthenticatedIdentity.Kind.COLLECTOR;
             ingestCredential = true;
             request.setAttribute(CollectorCredentialRegistry.COLLECTOR_ID_ATTRIBUTE,
                     collectorIdentity.collectorId());
@@ -98,12 +117,16 @@ public class AuthInterceptor implements HandlerInterceptor {
             }
             tenant = "default";
             role = "ingest";
+            subject = "collector:global";
+            identityKind = AuthenticatedIdentity.Kind.COLLECTOR;
             ingestCredential = true;
             // The legacy token has no per-source identity. Do not trust a
             // caller-controlled collector header; production uses the
             // registry branch above for tenant/source binding.
         } else if (jwtValidator.isDevBypass()) {
             role = request.getHeader("X-Role");
+            subject = "dev-user";
+            identityKind = AuthenticatedIdentity.Kind.DEV;
         } else {
             JWTClaimsSet claims;
             try {
@@ -113,9 +136,13 @@ public class AuthInterceptor implements HandlerInterceptor {
                 throw ApiException.unauthorized(invalid.getMessage());
             }
             tenant = jwtValidator.extractTenant(claims);
-            String subject = claims.getSubject();
+            subject = claims.getSubject();
+            if (subject == null || subject.isBlank()) {
+                throw ApiException.unauthorized("Authenticated identity has no subject claim");
+            }
             if (subject != null && subject.startsWith("service:")) {
                 authenticatedService = subject.substring("service:".length());
+                identityKind = AuthenticatedIdentity.Kind.SERVICE;
             }
             try {
                 role = claims.getStringClaim("role");
@@ -123,7 +150,9 @@ public class AuthInterceptor implements HandlerInterceptor {
                 role = null;
             }
             Object permissions = claims.getClaim("permissions");
+            claimsPermissions = strings(permissions, false);
             if (permissions != null) request.setAttribute("socp.jwt.permissions", permissions);
+            claimsGroups = claimGroups(claims);
         }
 
         String delegatedTenant = verifyServiceIdentity(request);
@@ -140,6 +169,8 @@ public class AuthInterceptor implements HandlerInterceptor {
             }
             tenant = delegatedTenant;
             role = "analyst";
+            subject = "service:" + signedService;
+            identityKind = AuthenticatedIdentity.Kind.SERVICE;
             request.setAttribute(RequireService.SERVICE_ID_ATTRIBUTE,
                     signedService);
         } else if (authenticatedService != null) {
@@ -165,11 +196,25 @@ public class AuthInterceptor implements HandlerInterceptor {
             String headerTenant = request.getHeader("X-Tenant-Id");
             if (headerTenant == null || headerTenant.isBlank()) headerTenant = "default";
             if (!TenantContext.isValid(headerTenant)) throw ApiException.unauthorized("Invalid tenant header");
-            TenantContext.set(headerTenant);
+            tenant = headerTenant;
+            TenantContext.set(tenant);
         } else {
             throw ApiException.unauthorized("Authenticated identity has no tenant claim");
         }
+        if (subject == null || subject.isBlank()) {
+            throw ApiException.unauthorized("Authenticated identity has no subject");
+        }
+        Set<String> grantedPermissions = new LinkedHashSet<>(Permission.roleDefaults(role));
+        grantedPermissions.addAll(claimsPermissions);
+        AuthenticatedIdentityContext.set(new AuthenticatedIdentity(
+                subject, tenant, role, grantedPermissions, claimsGroups, identityKind));
         return true;
+    }
+
+    @Override
+    public void afterCompletion(HttpServletRequest request, HttpServletResponse response,
+                                Object handler, Exception ex) {
+        AuthenticatedIdentityContext.clear();
     }
 
     private void requireRole(Object handler, String role, String path) {
@@ -239,6 +284,47 @@ public class AuthInterceptor implements HandlerInterceptor {
     private static boolean constantTimeEquals(String expected, String actual) {
         return MessageDigest.isEqual(expected.getBytes(StandardCharsets.UTF_8),
                 actual.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static Set<String> claimGroups(JWTClaimsSet claims) {
+        Set<String> result = new LinkedHashSet<>();
+        // The scalar JWT role is represented by AuthenticatedIdentity.role.
+        // Only group-shaped claims enter the GROUP_ authority namespace; never
+        // turn a role claim into a group and accidentally satisfy a group-only
+        // approval policy.
+        for (String key : new String[]{"groups", "group"}) {
+            result.addAll(strings(claims.getClaim(key), true));
+        }
+        return result;
+    }
+
+    private static Set<String> strings(Object value, boolean upperCase) {
+        Set<String> result = new LinkedHashSet<>();
+        collectStrings(value, result, upperCase);
+        return Set.copyOf(result);
+    }
+
+    private static void collectStrings(Object value, Set<String> target, boolean upperCase) {
+        if (value == null) return;
+        if (value instanceof Collection<?> collection) {
+            for (Object item : collection) collectStrings(item, target, upperCase);
+            return;
+        }
+        if (value instanceof Iterable<?> iterable) {
+            for (Object item : iterable) collectStrings(item, target, upperCase);
+            return;
+        }
+        if (value.getClass().isArray()) {
+            for (int i = 0; i < Array.getLength(value); i++) {
+                collectStrings(Array.get(value, i), target, upperCase);
+            }
+            return;
+        }
+        String text = String.valueOf(value).trim();
+        if (text.isBlank()) return;
+        for (String item : text.split("[,\\s]+")) {
+            if (!item.isBlank()) target.add(upperCase ? item.toUpperCase(Locale.ROOT) : item.toLowerCase(Locale.ROOT));
+        }
     }
 
     private String verifyServiceIdentity(HttpServletRequest request) {

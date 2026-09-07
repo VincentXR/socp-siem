@@ -36,6 +36,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -60,6 +61,9 @@ class SoarV2AutomationRuleCoverageTest {
         TenantContext.set("tenant-a");
         mapper = new ObjectMapper();
         service = new SoarV2AutomationRuleService(rules, soar, mapper, receipts, runs);
+        lenient().when(rules.findByTenantIdAndEnabledTrueOrderByPriorityAscForUpdate(anyString()))
+                .thenAnswer(invocation -> rules.findByTenantIdAndEnabledTrueOrderByPriorityAsc(
+                        invocation.getArgument(0)));
     }
 
     @AfterEach
@@ -353,7 +357,7 @@ class SoarV2AutomationRuleCoverageTest {
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Map<String, Object>> inputs = ArgumentCaptor.forClass(Map.class);
         verify(soar).queueManualRun(requestId.capture(), eq("pv-1"), any(), inputs.capture());
-        assertThat(requestId.getValue()).startsWith("rule-r-1-");
+        assertThat(requestId.getValue()).startsWith("rule-r-1-r1-");
         assertThat(inputs.getValue()).containsEntry("eventId", "evt-1").containsEntry("automationDepth", 1);
 
         ArgumentCaptor<SoarTriggerReceiptEntity> saved = ArgumentCaptor.forClass(SoarTriggerReceiptEntity.class);

@@ -10,6 +10,15 @@ public interface SoarV2Activity {
     @ActivityMethod
     void markRunStarted(String tenantId, String runId);
 
+    /**
+     * Atomically reserve one node execution from the run-wide budget. The
+     * budget is shared by the top-level workflow, branches and child
+     * playbooks; returning false is a durable admission failure rather than a
+     * local per-workflow counter overflow.
+     */
+    @ActivityMethod
+    boolean reserveNodeExecution(String tenantId, String runId, int budgetLimit);
+
     @ActivityMethod
     void markRunWaiting(String tenantId, String runId, String nodeId);
 

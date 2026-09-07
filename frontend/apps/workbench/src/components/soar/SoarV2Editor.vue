@@ -517,6 +517,11 @@ onUnmounted(() => {
         :title="t('soarV2.editorRedoHint')"
         @click="flow.redo()"
       >{{ t('soarV2.editorRedo') }}</el-button>
+      <el-button
+        size="small"
+        :title="t('soarV2.editorAutoLayoutHint')"
+        @click="flow.autoLayout()"
+      >{{ t('soarV2.editorAutoLayout') }}</el-button>
       <span class="soar-v2-toolbar-spacer" />
       <el-tag v-if="selectedVersion" size="small" :type="isDraft ? 'warning' : 'success'">v{{ selectedVersion.version }} · {{ selectedVersion.status }}</el-tag>
       <el-tag v-if="validation" size="small" :type="flow.validationStale.value ? 'info' : validation.valid ? 'success' : 'danger'">

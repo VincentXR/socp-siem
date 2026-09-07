@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.soar.web.definition.SoarDefinitionValidator;
+import com.socp.soar.web.config.SoarRuntimeProperties;
 import com.socp.soar.web.domain.v2.DefinitionValidationResult;
 import com.socp.soar.web.domain.v2.SoarRunStatus;
 import com.socp.soar.web.persistence.entity.PlaybookVersionEntity;
@@ -119,6 +120,7 @@ class SoarV2RunControlCoverageTest {
     @BeforeEach
     void setUp() {
         TenantContext.set("tenant-a");
+        SoarTestIdentity.setOperator();
         service = new SoarV2Service(playbooks, versions, runs, dispatches, nodes, events, approvals,
                 validator, mapper, temporal, attempts, manualTasks, signals, null, null);
         service.setArtifacts(artifacts);
@@ -130,6 +132,7 @@ class SoarV2RunControlCoverageTest {
     @AfterEach
     void tearDown() {
         TenantContext.clear();
+        SoarTestIdentity.clear();
     }
 
     // ---------------------------------------------------------------- queueManualRun
@@ -172,6 +175,32 @@ class SoarV2RunControlCoverageTest {
         verify(events).save(eventCaptor.capture());
         assertThat(eventCaptor.getValue().getEventType()).isEqualTo("RUN_QUEUED");
         verify(approvals, never()).save(any(SoarApprovalEntity.class));
+    }
+
+    @Test
+    void queueManualRunHonorsTheV2ExecutionFeatureFlag() {
+        SoarRuntimeProperties properties = new SoarRuntimeProperties();
+        properties.setV2ExecutionEnabled(false);
+        service.setRuntimeProperties(properties);
+        given(runs.findByTenantIdAndRequestId("tenant-a", "req-paused"))
+                .willReturn(Optional.empty());
+
+        assertRejected(HttpStatus.SERVICE_UNAVAILABLE, "SOAR_EXECUTION_DISABLED",
+                () -> service.queueManualRun("req-paused", "ver-1", null, null));
+        verify(versions, never()).findByTenantIdAndId(anyString(), anyString());
+    }
+
+    @Test
+    void queueManualRunHonorsTheV2TenantAllowlist() {
+        SoarRuntimeProperties properties = new SoarRuntimeProperties();
+        properties.setExecutionTenantAllowlist("tenant-b, tenant-c");
+        service.setRuntimeProperties(properties);
+        given(runs.findByTenantIdAndRequestId("tenant-a", "req-not-enabled"))
+                .willReturn(Optional.empty());
+
+        assertRejected(HttpStatus.FORBIDDEN, "SOAR_TENANT_NOT_ENABLED",
+                () -> service.queueManualRun("req-not-enabled", "ver-1", null, null));
+        verify(versions, never()).findByTenantIdAndId(anyString(), anyString());
     }
 
     @Test
@@ -331,6 +360,19 @@ class SoarV2RunControlCoverageTest {
     }
 
     @Test
+    void cancellingDispatchingRunRequestsWorkflowCancellation() {
+        SoarRunEntity run = run("run-dispatching", "req-dispatching", SoarRunStatus.DISPATCHING);
+        run.setTemporalWorkflowId("soar-v2-tenant-a-run-dispatching");
+        given(runs.findByTenantIdAndId("tenant-a", "run-dispatching")).willReturn(Optional.of(run));
+
+        Map<String, Object> result = service.cancelRun("run-dispatching", "cancel while starting");
+
+        assertThat(result).containsEntry("status", SoarRunStatus.CANCELLING.name());
+        assertThat(run.getStatus()).isEqualTo(SoarRunStatus.CANCELLING.name());
+        assertThat(run.getErrorCode()).isEqualTo("SOAR_RUN_CANCEL_REQUESTED");
+    }
+
+    @Test
     void cancellingApprovalGateWithoutWorkflowIsTerminal() {
         SoarRunEntity run = run("run-3", "req-3", SoarRunStatus.WAITING_APPROVAL);
         given(runs.findByTenantIdAndId("tenant-a", "run-3")).willReturn(Optional.of(run));
@@ -407,6 +449,32 @@ class SoarV2RunControlCoverageTest {
     }
 
     @Test
+    void requeueDeadDoesNotResurrectAnAlreadySuccessfulRun() {
+        SoarDispatchOutboxEntity row = outbox("d-success", "run-success", "DEAD");
+        SoarRunEntity run = run("run-success", "req-success", SoarRunStatus.SUCCEEDED);
+        given(dispatches.findByTenantIdAndId("tenant-a", "d-success")).willReturn(Optional.of(row));
+        given(runs.findByTenantIdAndId("tenant-a", "run-success")).willReturn(Optional.of(run));
+
+        Map<String, Object> requeued = service.requeueDead("d-success", "late retry");
+
+        assertThat(requeued).containsEntry("status", "PENDING");
+        assertThat(run.getStatus()).isEqualTo(SoarRunStatus.SUCCEEDED.name());
+    }
+
+    @Test
+    void requeueDeadDoesNotRegressAnActionUnknownRun() {
+        SoarDispatchOutboxEntity row = outbox("d-unknown", "run-unknown", "DEAD");
+        SoarRunEntity run = run("run-unknown", "req-unknown", SoarRunStatus.ACTION_UNKNOWN);
+        given(dispatches.findByTenantIdAndId("tenant-a", "d-unknown")).willReturn(Optional.of(row));
+        given(runs.findByTenantIdAndId("tenant-a", "run-unknown")).willReturn(Optional.of(run));
+
+        Map<String, Object> requeued = service.requeueDead("d-unknown", "late retry");
+
+        assertThat(requeued).containsEntry("status", "PENDING");
+        assertThat(run.getStatus()).isEqualTo(SoarRunStatus.ACTION_UNKNOWN.name());
+    }
+
+    @Test
     void requeueDeadResolvesSignalRowsThroughTheSameOperatorId() {
         SoarSignalOutboxEntity row = signal("s-1", "run-2", "APPROVAL");
         given(dispatches.findByTenantIdAndId("tenant-a", "s-1")).willReturn(Optional.empty());
@@ -419,6 +487,19 @@ class SoarV2RunControlCoverageTest {
                 .containsEntry("signalType", "APPROVAL");
         assertThat(row.getStatus()).isEqualTo("PENDING");
         assertThat(row.getAttempts()).isZero();
+    }
+
+    @Test
+    void requeueDeadDoesNotRequeueSignalForTerminalRun() {
+        SoarSignalOutboxEntity row = signal("s-terminal", "run-terminal", "APPROVAL");
+        SoarRunEntity run = run("run-terminal", "req-terminal", SoarRunStatus.PARTIALLY_SUCCEEDED);
+        given(dispatches.findByTenantIdAndId("tenant-a", "s-terminal")).willReturn(Optional.empty());
+        given(signals.findByTenantIdAndId("tenant-a", "s-terminal")).willReturn(Optional.of(row));
+        given(runs.findByTenantIdAndIdForUpdate("tenant-a", "run-terminal")).willReturn(Optional.of(run));
+
+        assertRejected(HttpStatus.CONFLICT, "SOAR_RUN_NOT_RESUMABLE",
+                () -> service.requeueDead("s-terminal", "late retry"));
+        assertThat(row.getStatus()).isEqualTo("DEAD");
     }
 
     @Test

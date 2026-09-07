@@ -135,6 +135,27 @@ class AlarmEvaluationServiceBranchCoverageTest {
     }
 
     @Test
+    void legacyEvaluationIsRejectedWhenTheMigrationFlagIsClosed() {
+        SoarRuntimeProperties properties = new SoarRuntimeProperties();
+        properties.setV2EvaluationEnabled(false);
+        properties.setLegacyExecutionEnabled(false);
+        AlarmEvaluationService service = new AlarmEvaluationService(executor, repository,
+                null, properties);
+        given(repository.findByIdAndTenantIdForUpdate(any(), any())).willReturn(Optional.empty());
+        given(repository.findByIdAndTenantId(any(), any())).willReturn(Optional.empty());
+        given(repository.saveAndFlush(any(AlarmEvaluationEntity.class)))
+                .willAnswer(invocation -> invocation.getArgument(0));
+        given(repository.save(any(AlarmEvaluationEntity.class)))
+                .willAnswer(invocation -> invocation.getArgument(0));
+
+        assertThatThrownBy(() -> service.evaluate(Map.<String, Object>of("id", "AL-LEGACY-OFF")))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+                .satisfies(failure -> assertThat(((org.springframework.web.server.ResponseStatusException) failure)
+                        .getStatusCode()).isEqualTo(org.springframework.http.HttpStatus.GONE));
+        verify(executor, org.mockito.Mockito.never()).evaluate(any());
+    }
+
+    @Test
     void inProgressEvaluationIsRejectedUntilReceiptGoesStale() {
         AlarmEvaluationService service = new AlarmEvaluationService(executor, repository);
         AlarmEvaluationEntity processing = receipt("PROCESSING", Instant.now());

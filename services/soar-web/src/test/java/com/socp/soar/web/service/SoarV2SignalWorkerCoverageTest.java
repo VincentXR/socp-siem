@@ -123,6 +123,60 @@ class SoarV2SignalWorkerCoverageTest {
     }
 
     @Test
+    void unknownResolutionSignalCanResumeAnActionUnknownRun() {
+        SoarSignalOutboxEntity signal = signal("UNKNOWN_RESOLUTION", "node-unknown",
+                "{\"nodeId\":\"node-unknown\",\"resolution\":\"SUCCEEDED\",\"evidence\":\"receipt\",\"reason\":\"verified\"}", 0);
+        givenPending(signal, run("ACTION_UNKNOWN", "soar-v2-tenant-a-run-1"));
+
+        worker.tick();
+
+        verify(temporal).resolveUnknown("soar-v2-tenant-a-run-1", "node-unknown",
+                "SUCCEEDED", "receipt", "verified");
+        assertThat(signal.getStatus()).isEqualTo("SENT");
+    }
+
+    @Test
+    void lateSignalForTerminalRunIsCancelledWithoutTouchingTemporal() {
+        SoarSignalOutboxEntity signal = signal("APPROVAL", "gate-terminal",
+                "{\"approve\":true,\"approvalKey\":\"gate-terminal\"}", 0);
+        givenPending(signal, run("PARTIALLY_SUCCEEDED", "soar-v2-tenant-a-run-1"));
+
+        worker.tick();
+
+        assertThat(signal.getStatus()).isEqualTo("CANCELLED");
+        assertThat(signal.getLastError()).contains("PARTIALLY_SUCCEEDED");
+        verify(signals).save(signal);
+        verify(temporal).isAvailable();
+        verifyNoMoreInteractions(temporal);
+    }
+
+    @Test
+    void signalForCancellingRunIsCancelledWithoutTouchingTemporal() {
+        SoarSignalOutboxEntity signal = signal("MANUAL_TASK", "node-cancelling", "{}", 0);
+        givenPending(signal, run("CANCELLING", "soar-v2-tenant-a-run-1"));
+
+        worker.tick();
+
+        assertThat(signal.getStatus()).isEqualTo("CANCELLED");
+        verify(signals).save(signal);
+        verify(temporal).isAvailable();
+        verifyNoMoreInteractions(temporal);
+    }
+
+    @Test
+    void terminalSignalWithoutWorkflowIdIsCancelledWithoutTouchingTemporal() {
+        SoarSignalOutboxEntity signal = signal("APPROVAL", "gate-terminal-no-workflow", "{\"approve\":true}", 0);
+        givenPending(signal, run("SUCCEEDED", "  "));
+
+        worker.tick();
+
+        assertThat(signal.getStatus()).isEqualTo("CANCELLED");
+        verify(signals).save(signal);
+        verify(temporal).isAvailable();
+        verifyNoMoreInteractions(temporal);
+    }
+
+    @Test
     void signalBeforeDispatchIsClosedWithoutTouchingTemporal() {
         SoarSignalOutboxEntity signal = signal("APPROVAL", "gate-1",
                 "{\"approve\":true,\"approvalKey\":\"gate-1\"}", 0);

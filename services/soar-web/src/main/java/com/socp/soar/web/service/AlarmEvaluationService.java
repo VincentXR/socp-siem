@@ -6,8 +6,10 @@ import com.socp.platform.tenant.context.TenantContext;
 import com.socp.platform.audit.api.AuditOperation;
 import com.socp.soar.web.persistence.entity.AlarmEvaluationEntity;
 import com.socp.soar.web.persistence.repository.AlarmEvaluationRepository;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -112,6 +114,10 @@ public class AlarmEvaluationService {
                 envelope.putIfAbsent("trace", trace);
                 result.put("automation", automationRules.evaluate(envelope));
             } else {
+                if (properties != null && !properties.isLegacyExecutionEnabled()) {
+                    throw new ResponseStatusException(HttpStatus.GONE,
+                            "legacy SOAR evaluation is disabled; use the /api/v2/events/evaluate route");
+                }
                 result.putAll(executor.evaluate(alarm));
             }
             receipt.setResultJson(MAPPER.writeValueAsString(result));

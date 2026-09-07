@@ -6,6 +6,7 @@ import com.socp.platform.tenant.persistence.TenantSystemJob;
 import com.socp.soar.web.persistence.entity.SoarSignalOutboxEntity;
 import com.socp.soar.web.persistence.repository.SoarSignalOutboxRepository;
 import com.socp.soar.web.persistence.repository.SoarRunRepository;
+import com.socp.soar.web.config.SoarRuntimeProperties;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -22,11 +23,17 @@ public class SoarV2SignalWorker {
     private final SoarRunRepository runs;
     private final TemporalExecutor temporal;
     private final ObjectMapper mapper;
+    private SoarRuntimeProperties runtimeProperties;
     private final String workerId = "soar-signal-" + UUID.randomUUID().toString().substring(0, 12);
 
     public SoarV2SignalWorker(SoarSignalOutboxRepository signals, SoarRunRepository runs,
                               TemporalExecutor temporal, ObjectMapper mapper) {
         this.signals = signals; this.runs = runs; this.temporal = temporal; this.mapper = mapper;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setRuntimeProperties(SoarRuntimeProperties runtimeProperties) {
+        this.runtimeProperties = runtimeProperties;
     }
 
     @Scheduled(fixedDelayString = "${socp.soar.v2.signal-poll-ms:1000}",
@@ -35,6 +42,7 @@ public class SoarV2SignalWorker {
     public void tick() {
         Instant now = Instant.now();
         signals.recoverStaleClaims(now.minusSeconds(120), now);
+        if (runtimeProperties != null && !runtimeProperties.isV2ExecutionEnabled()) return;
         if (!temporal.isAvailable()) return;
         List<SoarSignalOutboxEntity> pending = signals
                 .findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc("PENDING", now);
@@ -48,6 +56,19 @@ public class SoarV2SignalWorker {
         TenantContext.runAsSystem(() -> {
             try {
                 var run = runs.findByTenantIdAndId(signal.getTenantId(), signal.getRunId()).orElse(null);
+                if (run != null && (terminalRun(run) || "CANCELLING".equals(run.getStatus())
+                        || ("ACTION_UNKNOWN".equals(run.getStatus())
+                        && !"UNKNOWN_RESOLUTION".equals(signal.getSignalType())))) {
+                    // A late operator decision must never reopen a completed
+                    // workflow.  Persist the skip so this row cannot be
+                    // retried forever or accidentally signal a new execution.
+                    signal.setStatus("CANCELLED");
+                    signal.setLastError("signal skipped for run status " + run.getStatus());
+                    signal.setClaimedAt(Instant.now());
+                    signal.setUpdatedAt(Instant.now());
+                    signals.save(signal);
+                    return;
+                }
                 if (run == null || run.getTemporalWorkflowId() == null || run.getTemporalWorkflowId().isBlank()) {
                     // Approval before dispatch is represented by the dispatch outbox;
                     // no Temporal signal is needed yet.
@@ -101,6 +122,12 @@ public class SoarV2SignalWorker {
     private String json(Object value) {
         try { return mapper.writeValueAsString(value == null ? Map.of() : value); }
         catch (Exception ignored) { return "{}"; }
+    }
+
+    private static boolean terminalRun(com.socp.soar.web.persistence.entity.SoarRunEntity run) {
+        if (run == null || run.getStatus() == null) return false;
+        return java.util.Set.of("SUCCEEDED", "PARTIALLY_SUCCEEDED", "FAILED", "TIMED_OUT",
+                "CANCELLED", "SUPPRESSED", "DEAD").contains(run.getStatus());
     }
 
     private static String redactFreeText(String value, int max) {
