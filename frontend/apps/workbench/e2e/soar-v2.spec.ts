@@ -270,3 +270,18 @@ test('SOAR V2 run queue reports an explicit permission denial', async ({ page })
   await expect(queueDialog.getByRole('alert')).toContainText('SOAR execute permission required')
   expect(state.unknown).toEqual([])
 })
+
+test('SOAR V2 run controls surface permission failures without breaking the inspector', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('socp-locale', 'en-US'))
+  const state = await installSoarMocks(page)
+  await page.route('**/soar-web/api/v2/runs/run-1/rerun', async route => {
+    await route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ code: 403, message: 'SOAR rerun permission required' }) })
+  })
+  await page.goto('/soar')
+  await page.getByRole('tab', { name: 'Runs' }).click({ force: true })
+  page.once('dialog', dialog => dialog.accept())
+  await page.getByRole('button', { name: 'Rerun' }).click()
+  await expect(page.locator('.soar-v2-inspector-error[role="alert"]')).toContainText('SOAR rerun permission required')
+  await expect(page.locator('.soar-v2-run-summary')).toContainText('run-1')
+  expect(state.unknown).toEqual([])
+})

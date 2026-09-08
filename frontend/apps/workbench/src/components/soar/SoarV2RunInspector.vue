@@ -59,6 +59,7 @@ const queueDialogVisible = ref(false)
 const queueLoading = ref(false)
 const queueError = ref('')
 const queueMessage = ref('')
+const controlBusy = ref<'cancel' | 'retry' | 'rerun' | 'resolve' | ''>('')
 const publishedVersions = ref<Array<{ version: SoarV2Version; playbook: SoarV2Playbook }>>([])
 const queueForm = ref({
   playbookVersionId: '',
@@ -284,22 +285,46 @@ async function cancel() {
   if (!selectedRunId.value) return
   const reason = window.prompt('Cancellation reason', 'Cancelled from Workbench')
   if (reason === null) return
-  await cancelV2Run(selectedRunId.value, reason)
-  await refreshProjection()
+  errorMessage.value = ''
+  controlBusy.value = 'cancel'
+  try {
+    await cancelV2Run(selectedRunId.value, reason)
+    await refreshProjection()
+  } catch (failure) {
+    errorMessage.value = failureText(failure)
+  } finally {
+    controlBusy.value = ''
+  }
 }
 
 async function retry() {
   if (!selectedRunId.value) return
   const reason = window.prompt('Retry reason', 'Retry from Workbench')
   if (reason === null) return
-  await retryV2Run(selectedRunId.value, reason)
-  await loadRuns()
+  errorMessage.value = ''
+  controlBusy.value = 'retry'
+  try {
+    await retryV2Run(selectedRunId.value, reason)
+    await loadRuns()
+  } catch (failure) {
+    errorMessage.value = failureText(failure)
+  } finally {
+    controlBusy.value = ''
+  }
 }
 
 async function rerun() {
   if (!selectedRunId.value || !window.confirm('Create a new execution series with new idempotency keys?')) return
-  await rerunV2Run(selectedRunId.value, 'Explicit rerun from Workbench')
-  await loadRuns()
+  errorMessage.value = ''
+  controlBusy.value = 'rerun'
+  try {
+    await rerunV2Run(selectedRunId.value, 'Explicit rerun from Workbench')
+    await loadRuns()
+  } catch (failure) {
+    errorMessage.value = failureText(failure)
+  } finally {
+    controlBusy.value = ''
+  }
 }
 
 async function resolveUnknown(node: SoarV2NodeRun, resolution: 'CONFIRMED_SUCCEEDED' | 'CONFIRMED_NOT_EXECUTED') {
@@ -307,8 +332,16 @@ async function resolveUnknown(node: SoarV2NodeRun, resolution: 'CONFIRMED_SUCCEE
   if (!evidence) return
   const reason = window.prompt('Resolution reason is required')
   if (!reason) return
-  await resolveV2Unknown(node.id, resolution, evidence, reason)
-  await refreshProjection()
+  errorMessage.value = ''
+  controlBusy.value = 'resolve'
+  try {
+    await resolveV2Unknown(node.id, resolution, evidence, reason)
+    await refreshProjection()
+  } catch (failure) {
+    errorMessage.value = failureText(failure)
+  } finally {
+    controlBusy.value = ''
+  }
 }
 
 async function viewArtifact(artifact: SoarV2Artifact) {
@@ -359,7 +392,7 @@ onUnmounted(() => {
       </div>
     </template>
 
-    <div v-if="errorMessage" class="soar-v2-inspector-error">{{ errorMessage }}</div>
+    <div v-if="errorMessage" class="soar-v2-inspector-error" role="alert">{{ errorMessage }}</div>
     <template v-if="run">
       <div class="soar-v2-run-summary">
         <el-tag size="small" :type="run.status === 'SUCCEEDED' ? 'success' : (['FAILED', 'ACTION_UNKNOWN', 'TIMED_OUT'].includes(run.status) ? 'danger' : 'warning')">{{ run.status }}</el-tag>
@@ -374,9 +407,9 @@ onUnmounted(() => {
           :title="t('soarV2.runHighlightOpenHint')"
           @click="openInEditor"
         >{{ t('soarV2.runHighlightOpen') }}</el-button>
-        <el-button size="small" @click="cancel" :disabled="['SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'SUPPRESSED', 'DEAD', 'CANCELLING'].includes(run.status)">Cancel</el-button>
-        <el-button size="small" @click="retry" :disabled="!['FAILED', 'ACTION_UNKNOWN', 'TIMED_OUT', 'DEAD'].includes(run.status)">Retry</el-button>
-        <el-button size="small" type="warning" plain @click="rerun">Rerun</el-button>
+        <el-button size="small" @click="cancel" :loading="controlBusy === 'cancel'" :disabled="Boolean(controlBusy) || ['SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'SUPPRESSED', 'DEAD', 'CANCELLING'].includes(run.status)">Cancel</el-button>
+        <el-button size="small" @click="retry" :loading="controlBusy === 'retry'" :disabled="Boolean(controlBusy) || !['FAILED', 'ACTION_UNKNOWN', 'TIMED_OUT', 'DEAD'].includes(run.status)">Retry</el-button>
+        <el-button size="small" type="warning" plain @click="rerun" :loading="controlBusy === 'rerun'" :disabled="Boolean(controlBusy)">Rerun</el-button>
       </div>
 
       <div v-if="run.errorCode" class="soar-v2-run-error"><b>{{ run.errorCode }}</b> {{ run.errorMessage }}</div>
@@ -394,7 +427,7 @@ onUnmounted(() => {
           </div>
           <div v-if="unknownNodes.length" class="soar-v2-unknown-box">
             <b>Unknown remote outcomes need evidence</b>
-            <div v-for="node in unknownNodes" :key="node.id" class="soar-v2-unknown-row"><span>{{ node.nodeId }}</span><el-button size="small" type="success" plain @click="resolveUnknown(node, 'CONFIRMED_SUCCEEDED')">Confirm succeeded</el-button><el-button size="small" type="warning" plain @click="resolveUnknown(node, 'CONFIRMED_NOT_EXECUTED')">Confirm not executed</el-button></div>
+            <div v-for="node in unknownNodes" :key="node.id" class="soar-v2-unknown-row"><span>{{ node.nodeId }}</span><el-button size="small" type="success" plain :loading="controlBusy === 'resolve'" :disabled="Boolean(controlBusy)" @click="resolveUnknown(node, 'CONFIRMED_SUCCEEDED')">Confirm succeeded</el-button><el-button size="small" type="warning" plain :loading="controlBusy === 'resolve'" :disabled="Boolean(controlBusy)" @click="resolveUnknown(node, 'CONFIRMED_NOT_EXECUTED')">Confirm not executed</el-button></div>
           </div>
         </section>
 
