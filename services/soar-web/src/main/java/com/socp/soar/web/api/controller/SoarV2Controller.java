@@ -25,6 +25,9 @@ import com.socp.soar.web.service.SoarV2Service;
 import com.socp.soar.web.service.SoarV2AutomationRuleService;
 import com.socp.soar.web.service.SoarV2ConnectorService;
 import com.socp.soar.web.service.SoarV2TemplateService;
+import io.swagger.v3.oas.annotations.headers.Header;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import jakarta.validation.Valid;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -211,6 +214,9 @@ public class SoarV2Controller {
 
     @GetMapping("/playbooks/{id}/versions/{version}")
     @RequirePermission("soar:view")
+    @ApiResponse(responseCode = "200", description = "Version envelope with the current optimistic-concurrency token",
+            headers = @Header(name = "ETag", description = "Weak ETag derived from the version rowVersion",
+                    schema = @Schema(type = "string", example = "W/\"3\"")))
     public ApiResult<Map<String, Object>> version(@PathVariable String id, @PathVariable int version,
                                                   jakarta.servlet.http.HttpServletResponse response) {
         ApiResult<Map<String, Object>> result = ApiResult.ok(service.getVersion(id, version));
@@ -231,6 +237,9 @@ public class SoarV2Controller {
 
     @PutMapping("/playbooks/{id}/versions/{version}")
     @RequirePermission("soar:edit")
+    @ApiResponse(responseCode = "200", description = "Updated version envelope with the new optimistic-concurrency token",
+            headers = @Header(name = "ETag", description = "Weak ETag for the saved version rowVersion",
+                    schema = @Schema(type = "string", example = "W/\"4\"")))
     public ApiResult<Map<String, Object>> saveDraft(@PathVariable String id, @PathVariable int version,
                                                     @Valid @RequestBody SaveV2VersionRequest request,
                                                     @org.springframework.web.bind.annotation.RequestHeader(
