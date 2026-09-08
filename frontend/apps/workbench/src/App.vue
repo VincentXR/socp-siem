@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, provide, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import ElConfigProvider from 'element-plus/es/components/config-provider/index.mjs'
 import LoginView from './LoginView.vue'
 import AppShell from './components/AppShell.vue'
@@ -17,6 +18,7 @@ import { WORKBENCH_STATE } from './app/workbenchState'
 const { t, elLocale } = useI18n()
 const auth = useAuth()
 const { currentUser, currentRole, isAuthed, userInitials } = auth
+const router = useRouter()
 const { activeMenu, navigate } = useWorkbenchRoute()
 const menuGroups = computed(() => getVisibleMenuGroups(currentRole.value, t))
 const activeLabel = computed(() => {
@@ -71,6 +73,10 @@ onMounted(async () => {
     window.addEventListener('online', () => { isOffline.value = false })
     window.addEventListener('offline', () => { isOffline.value = true })
   }
+  // The initial history navigation can still be pending when App mounts. Wait
+  // for the router before normalising the active menu, otherwise a deep link
+  // such as /soar is transiently seen as / and redirected to /overview.
+  await router.isReady()
   if (!await auth.initAuth()) return
   onMenuChange(activeMenu.value)
 })

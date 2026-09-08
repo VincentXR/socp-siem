@@ -28,7 +28,15 @@ export interface EditorHistory {
 
 /** Deep clone that works in jsdom/Node and browsers (structuredClone with JSON fallback). */
 export function deepClone<T>(value: T): T {
-  if (typeof structuredClone === 'function') return structuredClone(value)
+  if (typeof structuredClone === 'function') {
+    try {
+      return structuredClone(value)
+    } catch {
+      // Vue's reactive proxies are not structured-cloneable. The editor
+      // model is JSON by contract, so retain a deterministic fallback for
+      // snapshots created from reactive state.
+    }
+  }
   return JSON.parse(JSON.stringify(value)) as T
 }
 

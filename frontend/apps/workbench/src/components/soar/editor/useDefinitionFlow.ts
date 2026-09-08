@@ -384,7 +384,11 @@ export function useDefinitionFlow(
   const nodeIssueMap = ref<Record<string, NodeIssueState>>({})
   const validationStale = ref(false)
   const validationIssues = ref<ValidationIssue[]>([])
-  const baselineKey = ref('')
+  // The freshly mounted editor starts with its canonical empty graph. Treat
+  // that state as clean until a persisted definition or an explicit edit is
+  // applied; otherwise opening the "new playbook" dialog immediately invokes
+  // the unsaved-changes guard before the catalog has finished loading.
+  const baselineKey = ref(canonicalKey(rawRoot.value, positions.value))
   /** Run-path highlight rows merged per definition node (Slice 4, view-only). */
   const runHighlightMap = ref<Record<string, NodeRunHighlight>>({})
   const hasRunHighlights = computed(() => Object.keys(runHighlightMap.value).length > 0)
