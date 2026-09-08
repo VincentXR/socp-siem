@@ -32,6 +32,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 /** Branch coverage for automation-rule validation, suppression, and fan-out. */
@@ -302,6 +303,28 @@ class SoarV2AutomationRuleBranchCoverageTest {
         assertThat(result).containsEntry("matchedRuns", 0);
         assertThat(receiptViews(result)).extracting(view -> view.get("reason"))
                 .containsExactly("DEDUP_WINDOW", "COOLDOWN", "CAPACITY");
+    }
+
+    @Test
+    void evaluateAdmitsMultiActionRuleAsOneAtomicCapacityDecision() {
+        SoarAutomationRuleEntity capacity = rule("r-cap", "ALERT.CREATED", "{}",
+                "[{\"playbookVersionId\":\"v1\"},{\"playbookVersionId\":\"v2\"}]");
+        capacity.setMaxConcurrentRuns(1);
+        capacity.setConflictStrategy("SUPPRESS");
+        given(rules.findByTenantIdAndEnabledTrueOrderByPriorityAsc("tenant-a"))
+                .willReturn(List.of(capacity));
+        given(receipts.findByTenantIdAndEventIdAndAutomationRuleIdAndRuleRevision(
+                any(), any(), any(), anyInt())).willReturn(Optional.empty());
+        given(runs.countByTenantIdAndPlaybookVersionIdInAndStatusIn(eq("tenant-a"), any(), any()))
+                .willReturn(0L);
+
+        Map<String, Object> result = service.evaluate(event("E-MULTI"));
+
+        assertThat(result).containsEntry("matchedRuns", 0);
+        assertThat(receiptViews(result).get(0))
+                .containsEntry("status", "SUPPRESSED")
+                .containsEntry("reason", "CAPACITY");
+        verify(soar, never()).queueManualRun(anyString(), anyString(), any(), any());
     }
 
     @Test

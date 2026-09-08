@@ -293,7 +293,12 @@ public class SoarV2AutomationRuleService {
                 receiptsView.add(receiptView(existing));
                 continue;
             }
-            String suppressedReason = suppressionReason(rule, eventId, groupKey, tenant);
+            // Capacity is admitted for the whole immutable action set, not
+            // one action at a time. The rule row lock held by
+            // enabledRulesForEvaluation() serializes this count and the run
+            // inserts across service instances.
+            int requestedRuns = referencedVersionIds(rule).size();
+            String suppressedReason = suppressionReason(rule, eventId, groupKey, tenant, requestedRuns);
             SoarTriggerReceiptEntity receipt = newReceipt(tenant, eventId, rule, groupKey);
             String targetUnavailable = targetUnavailableReason(rule);
             if (targetUnavailable != null) {
@@ -425,7 +430,7 @@ public class SoarV2AutomationRuleService {
     }
 
     private String suppressionReason(SoarAutomationRuleEntity rule, String eventId,
-                                     String groupKey, String tenant) {
+                                     String groupKey, String tenant, int requestedRuns) {
         Instant now = Instant.now();
         if (rule.getDedupWindowSeconds() != null && rule.getDedupWindowSeconds() > 0 && receipts != null) {
             List<SoarTriggerReceiptEntity> recent = receipts.findByTenantIdAndAutomationRuleIdAndCreatedAtAfter(
@@ -445,7 +450,10 @@ public class SoarV2AutomationRuleService {
             List<String> versionIds = referencedVersionIds(rule);
             long active = versionIds.isEmpty() ? 0 : runs.countByTenantIdAndPlaybookVersionIdInAndStatusIn(tenant,
                     versionIds, Set.of("QUEUED", "DISPATCHING", "RUNNING", "WAITING_APPROVAL", "WAITING_INPUT"));
-            if (active >= max && "SUPPRESS".equalsIgnoreCase(rule.getConflictStrategy())) return "CAPACITY";
+            long requested = Math.max(1, requestedRuns);
+            if (active + requested > max && "SUPPRESS".equalsIgnoreCase(rule.getConflictStrategy())) {
+                return "CAPACITY";
+            }
         }
         return null;
     }

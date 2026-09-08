@@ -31,7 +31,7 @@ public class SoarDefinitionValidator {
     public static final int MAX_NODES = 200;
     public static final int MAX_NODE_EXECUTIONS = 500;
     public static final int MAX_PARALLELISM = 10;
-    /** Java's backtracking engine is safe for this deliberately bounded subset. */
+    /** Manual forms accept only a conservative, bounded regular-expression subset. */
     public static final int MAX_MANUAL_PATTERN_LENGTH = 256;
 
     private final ObjectMapper mapper;
@@ -938,17 +938,22 @@ public class SoarDefinitionValidator {
     }
 
     /**
-     * Reject the Java-regex constructs that make runtime cost dependent on
-     * adversarial backtracking (lookarounds, back references and quantified
-     * groups that already contain a quantifier). This keeps useful patterns
-     * such as {@code ^[A-Za-z0-9_-]+$} while excluding {@code (a+)+}.
+     * Reject Java-regex constructs that make runtime cost dependent on
+     * adversarial backtracking. In addition to lookarounds, back references
+     * and nested quantifiers, reject quantified alternation groups and more
+     * than one unbounded quantifier. This keeps useful patterns such as
+     * {@code ^[A-Za-z0-9_-]+$} while excluding {@code (a+)+},
+     * {@code (a|aa)+}, and {@code a*a*b}.
      */
     public static boolean safeManualPattern(String regex) {
         if (regex == null || regex.length() > MAX_MANUAL_PATTERN_LENGTH
                 || regex.contains("(?")) return false;
-        java.util.ArrayDeque<Boolean> groups = new java.util.ArrayDeque<>();
+        // [hasQuantifier, hasAlternation] for each open capturing group.
+        java.util.ArrayDeque<boolean[]> groups = new java.util.ArrayDeque<>();
         boolean lastAtom = false;
         boolean lastAtomWasQuantifiedGroup = false;
+        boolean lastGroupHadAlternation = false;
+        int unboundedQuantifiers = 0;
         for (int index = 0; index < regex.length(); index++) {
             char current = regex.charAt(index);
             if (current == '\\') {
@@ -957,6 +962,7 @@ public class SoarDefinitionValidator {
                 if (Character.isDigit(escaped)) return false; // back-reference
                 lastAtom = true;
                 lastAtomWasQuantifiedGroup = false;
+                lastGroupHadAlternation = false;
                 continue;
             }
             if (current == '[') {
@@ -973,50 +979,70 @@ public class SoarDefinitionValidator {
                 if (!closed) return false;
                 lastAtom = true;
                 lastAtomWasQuantifiedGroup = false;
+                lastGroupHadAlternation = false;
                 continue;
             }
             if (current == '(') {
-                groups.push(false);
+                groups.push(new boolean[] {false, false});
                 lastAtom = false;
                 lastAtomWasQuantifiedGroup = false;
+                lastGroupHadAlternation = false;
                 continue;
             }
             if (current == ')') {
                 if (groups.isEmpty()) return false;
-                boolean containedQuantifier = groups.pop();
+                boolean[] group = groups.pop();
+                if (!groups.isEmpty()) {
+                    groups.peek()[0] |= group[0];
+                    groups.peek()[1] |= group[1];
+                }
                 lastAtom = true;
-                lastAtomWasQuantifiedGroup = containedQuantifier;
+                lastAtomWasQuantifiedGroup = group[0];
+                lastGroupHadAlternation = group[1];
                 continue;
             }
             if (current == '*' || current == '+' || current == '?' || current == '{') {
-                if (!lastAtom || lastAtomWasQuantifiedGroup) return false;
+                if (!lastAtom || lastAtomWasQuantifiedGroup || lastGroupHadAlternation) return false;
+                boolean unbounded = current == '*' || current == '+';
                 if (current == '{') {
                     int end = regex.indexOf('}', index + 1);
                     if (end < 0) return false;
                     String bounds = regex.substring(index + 1, end);
-                    if (!bounds.matches("\\d{1,4}(,\\d{1,4})?")) return false;
+                    if (!bounds.matches("\\d{1,4}(,\\d{0,4})?")) return false;
                     String[] parts = bounds.split(",", -1);
                     try {
                         int lower = Integer.parseInt(parts[0]);
                         int upper = parts.length == 1 ? lower :
-                                (parts[1].isBlank() ? lower : Integer.parseInt(parts[1]));
-                        if (lower > 1000 || upper > 1000 || upper < lower) return false;
+                                (parts[1].isBlank() ? Integer.MAX_VALUE : Integer.parseInt(parts[1]));
+                        unbounded = parts.length == 2 && parts[1].isBlank();
+                        if (lower > 1000 || (!unbounded && upper > 1000)
+                                || (!unbounded && upper < lower)) return false;
                     } catch (NumberFormatException invalid) { return false; }
                     index = end;
                 }
-                if (!groups.isEmpty()) groups.pop();
-                if (!groups.isEmpty()) groups.push(true);
+                if (unbounded && ++unboundedQuantifiers > 1) return false;
+                if (!groups.isEmpty()) groups.peek()[0] = true;
                 lastAtom = false;
                 lastAtomWasQuantifiedGroup = false;
+                lastGroupHadAlternation = false;
                 continue;
             }
-            if (current == '^' || current == '$' || current == '|' ) {
+            if (current == '^' || current == '$') {
                 lastAtom = false;
                 lastAtomWasQuantifiedGroup = false;
+                lastGroupHadAlternation = false;
+                continue;
+            }
+            if (current == '|') {
+                if (!groups.isEmpty()) groups.peek()[1] = true;
+                lastAtom = false;
+                lastAtomWasQuantifiedGroup = false;
+                lastGroupHadAlternation = false;
                 continue;
             }
             lastAtom = true;
             lastAtomWasQuantifiedGroup = false;
+            lastGroupHadAlternation = false;
         }
         return groups.isEmpty();
     }

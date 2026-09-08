@@ -830,6 +830,16 @@ class SoarDefinitionValidatorBranchesCoverageTest {
         assertHasError(manualTaskDef(",\"formSchema\":{\"pattern\":5}"), "MANUAL_FORM_INVALID");
         assertHasError(manualTaskDef(",\"formSchema\":{\"pattern\":\"([\"}"), "MANUAL_FORM_INVALID");
         assertHasError(manualTaskDef(",\"formSchema\":{\"pattern\":\"(a+)+\"}"), "MANUAL_FORM_INVALID");
+        assertHasError(manualTaskDef(",\"formSchema\":{\"pattern\":\"(a|aa)+\"}"), "MANUAL_FORM_INVALID");
+        assertHasError(manualTaskDef(",\"formSchema\":{\"pattern\":\"a*a*b\"}"), "MANUAL_FORM_INVALID");
+        assertHasError(manualTaskDef(",\"formSchema\":{\"pattern\":\".*.*\"}"), "MANUAL_FORM_INVALID");
+        assertHasError(manualTaskDef(",\"formSchema\":{\"pattern\":\"a{2,}b{3,}\"}"), "MANUAL_FORM_INVALID");
+        assertNoError(manualTaskDef(",\"formSchema\":{\"pattern\":\"a{2,}\"}"),
+                "MANUAL_FORM_INVALID");
+        assertNoError(manualTaskDef(",\"formSchema\":{\"pattern\":\"a?b?\"}"),
+                "MANUAL_FORM_INVALID");
+        assertNoError(manualTaskDef(",\"formSchema\":{\"pattern\":\"^(foo|bar)$\"}"),
+                "MANUAL_FORM_INVALID");
         assertNoError(manualTaskDef(",\"formSchema\":{\"pattern\":\"^[A-Za-z0-9_-]+$\"}"),
                 "MANUAL_FORM_INVALID");
     }
