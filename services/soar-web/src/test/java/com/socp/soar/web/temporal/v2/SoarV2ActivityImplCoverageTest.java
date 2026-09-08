@@ -6,6 +6,7 @@ import com.socp.soar.web.connector.ActionQuery;
 import com.socp.soar.web.connector.ActionResult;
 import com.socp.soar.web.connector.EnvironmentSecretResolver;
 import com.socp.soar.web.connector.SoarConnectorRegistry;
+import com.socp.soar.web.artifact.SoarArtifactStore;
 import com.socp.soar.web.persistence.entity.PlaybookVersionEntity;
 import com.socp.soar.web.persistence.entity.SoarActionAttemptEntity;
 import com.socp.soar.web.persistence.entity.SoarApprovalDecisionEntity;
@@ -89,6 +90,8 @@ class SoarV2ActivityImplCoverageTest {
     private PlaybookVersionRepository versions;
     @Mock
     private SoarArtifactRepository artifacts;
+    @Mock
+    private SoarArtifactStore artifactStore;
 
     private final ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
 
@@ -409,6 +412,13 @@ class SoarV2ActivityImplCoverageTest {
         givenRunLocked(run);
         givenNoPriorNodeRun();
         String blob = "x".repeat(70_000);
+        activity.setArtifactStore(artifactStore);
+        given(artifactStore.put(eq(TENANT), eq(RUN_ID), anyString(), eq("application/json"), any()))
+                .willAnswer(invocation -> {
+                    byte[] bytes = invocation.getArgument(4);
+                    return new SoarArtifactStore.StoredArtifact("s3://soar-artifacts/object-1",
+                            bytes.length, "a".repeat(64));
+                });
         given(connectorRegistry.execute(any(ActionRequest.class)))
                 .willReturn(ActionResult.success("op-3", Map.<String, Object>of("blob", blob),
                         Map.<String, Object>of()));
@@ -432,7 +442,7 @@ class SoarV2ActivityImplCoverageTest {
 
     @Test
     void executeNodeFailsWhenLargeOutputHasNoArtifactStorage() {
-        SoarV2ActivityImpl withoutArtifacts = newActivity(false);
+        SoarV2ActivityImpl withoutArtifacts = newActivity(true);
         SoarRunEntity run = run("RUNNING");
         givenRunLocked(run);
         givenNoPriorNodeRun();

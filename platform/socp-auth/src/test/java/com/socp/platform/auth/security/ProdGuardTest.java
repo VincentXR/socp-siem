@@ -149,6 +149,80 @@ class ProdGuardTest {
     }
 
     @Test
+    void rejectsInlineSoarArtifactsInProduction() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("socp.soar.maturity", "production")
+                .withProperty("socp.soar.artifacts.backend", "inline");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+
+        assertTrue(error.getMessage().contains("socp.soar.artifacts.backend"));
+    }
+
+    @Test
+    void acceptsConfiguredHttpsSoarArtifactStore() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("socp.soar.maturity", "production")
+                .withProperty("socp.soar.artifacts.backend", "s3")
+                .withProperty("socp.soar.artifacts.endpoint", "https://minio.example.test")
+                .withProperty("socp.soar.artifacts.bucket", "soar-artifacts")
+                .withProperty("socp.soar.artifacts.access-key-ref", "k8s://platform/soar-artifacts/access-key")
+                .withProperty("socp.soar.artifacts.secret-key-ref", "k8s://platform/soar-artifacts/secret-key")
+                .withProperty("socp.soar.artifacts.allow-insecure", "false");
+
+        assertDoesNotThrow(() -> new ProdGuard(env));
+    }
+
+    @Test
+    void rejectsEnvironmentOnlySecretProviderInProduction() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("socp.soar.maturity", "production")
+                .withProperty("socp.soar.secrets.backend", "env");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+
+        assertTrue(error.getMessage().contains("socp.soar.secrets.backend"));
+    }
+
+    @Test
+    void rejectsEnvironmentArtifactReferencesInProduction() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("socp.soar.maturity", "production")
+                .withProperty("socp.soar.artifacts.access-key-ref", "env://SOAR_S3_ACCESS");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+
+        assertTrue(error.getMessage().contains("socp.soar.artifacts.access-key-ref"));
+    }
+
+    @Test
+    void acceptsVaultSecretProviderOverHttps() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("socp.soar.maturity", "production")
+                .withProperty("socp.soar.secrets.backend", "vault")
+                .withProperty("socp.soar.secrets.vault-endpoint", "https://vault.example.test")
+                .withProperty("socp.soar.secrets.vault-token-ref", "k8s://platform/vault/token")
+                .withProperty("socp.soar.artifacts.access-key-ref", "vault://secret/soar-artifacts#access-key")
+                .withProperty("socp.soar.artifacts.secret-key-ref", "vault://secret/soar-artifacts#secret-key")
+                .withProperty("socp.soar.secrets.allow-insecure", "false");
+
+        assertDoesNotThrow(() -> new ProdGuard(env));
+    }
+
+    @Test
+    void rejectsVaultSecretProviderOverHttp() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("socp.soar.maturity", "production")
+                .withProperty("socp.soar.secrets.backend", "vault")
+                .withProperty("socp.soar.secrets.vault-endpoint", "http://vault.example.test")
+                .withProperty("socp.soar.secrets.vault-token-ref", "env://SOAR_VAULT_TOKEN");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+
+        assertTrue(error.getMessage().contains("vault-endpoint"));
+    }
+
+    @Test
     void rejectsProductionHmacUnlessExplicitlyAllowed() {
         MockEnvironment env = new MockEnvironment()
                 .withProperty("spring.datasource.url", "jdbc:postgresql://db.example.test/socp")
@@ -272,6 +346,13 @@ class ProdGuardTest {
                 .withProperty("socp.ratelimit.fail-closed", "true")
                 .withProperty("socp.audit.sink", "kafka")
                 .withProperty("socp.audit.fail-closed", "true")
-                .withProperty("socp.temporal.enabled", "true");
+                .withProperty("socp.temporal.enabled", "true")
+                .withProperty("socp.soar.artifacts.backend", "s3")
+                .withProperty("socp.soar.artifacts.endpoint", "https://objects.example.test")
+                .withProperty("socp.soar.artifacts.bucket", "soar-artifacts")
+                .withProperty("socp.soar.artifacts.access-key-ref", "k8s://platform/object-store/access")
+                .withProperty("socp.soar.artifacts.secret-key-ref", "k8s://platform/object-store/secret")
+                .withProperty("socp.soar.secrets.backend", "kubernetes")
+                .withProperty("socp.soar.secrets.kubernetes-mount-path", "/var/run/secrets/socp");
     }
 }

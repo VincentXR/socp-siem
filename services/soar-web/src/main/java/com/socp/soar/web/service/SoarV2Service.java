@@ -37,7 +37,10 @@ import com.socp.soar.web.persistence.repository.SoarSignalOutboxRepository;
 import com.socp.soar.web.persistence.repository.SoarConnectorRepository;
 import com.socp.soar.web.persistence.repository.SoarArtifactRepository;
 import com.socp.soar.web.connector.SoarConnectorRegistry;
+import com.socp.soar.web.artifact.SoarArtifactStore;
 import com.socp.soar.web.config.SoarRuntimeProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
@@ -63,6 +66,9 @@ import java.util.Optional;
 /** Application service for the durable SOAR 2.0 control plane. */
 @Service
 public class SoarV2Service {
+    private static final Logger log = LoggerFactory.getLogger(SoarV2Service.class);
+    private static final long MAX_ARTIFACT_BYTES = 10L * 1024 * 1024;
+    private static final long INLINE_ARTIFACT_BYTES = 64L * 1024;
     private static final int MAX_APPROVAL_SNAPSHOT_BYTES = 64 * 1024;
     private static final int MAX_SUB_PLAYBOOK_DEPTH = 5;
     private static final String DEFAULT_DEFINITION = "{\"schemaVersion\":\"soar.playbook/v2\"," 
@@ -88,6 +94,7 @@ public class SoarV2Service {
     private final SoarConnectorRepository connectors;
     private final SoarConnectorRegistry connectorRegistry;
     private SoarArtifactRepository artifacts;
+    private SoarArtifactStore artifactStore;
     private SoarRuntimeProperties runtimeProperties;
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -120,6 +127,12 @@ public class SoarV2Service {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setArtifacts(SoarArtifactRepository artifacts) {
         this.artifacts = artifacts;
+    }
+
+    /** Optional in preview; production supplies the configured S3-compatible store. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setArtifactStore(SoarArtifactStore artifactStore) {
+        this.artifactStore = artifactStore;
     }
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
@@ -708,11 +721,22 @@ public class SoarV2Service {
     @Transactional(readOnly = true)
     public String getArtifactContent(String id) {
         SoarArtifactEntity artifact = artifact(id);
-        if (artifact.getInlineJson() == null) {
-            throw error(HttpStatus.SERVICE_UNAVAILABLE, "SOAR_ARTIFACT_CONTENT_UNAVAILABLE",
-                    "artifact storage adapter cannot serve this artifact");
+        if (artifact.getInlineJson() != null) return artifact.getInlineJson();
+        if (artifactStore != null) {
+            try {
+                return artifactStore.read(artifact.getStorageRef())
+                        .map(bytes -> decodeExternalArtifact(artifact, bytes))
+                        .orElseThrow(() -> error(HttpStatus.GONE, "SOAR_ARTIFACT_CONTENT_GONE",
+                                "artifact content is no longer available"));
+            } catch (ResponseStatusException failure) {
+                throw failure;
+            } catch (RuntimeException failure) {
+                throw error(HttpStatus.SERVICE_UNAVAILABLE, "SOAR_ARTIFACT_CONTENT_UNAVAILABLE",
+                        "artifact storage could not serve the content");
+            }
         }
-        return artifact.getInlineJson();
+        throw error(HttpStatus.SERVICE_UNAVAILABLE, "SOAR_ARTIFACT_CONTENT_UNAVAILABLE",
+                "artifact storage adapter cannot serve this artifact");
     }
 
     /** Upload a bounded analyst artifact when no object-store adapter is configured. */
@@ -753,27 +777,59 @@ public class SoarV2Service {
         Object sanitized = redact(jsonValue);
         String inline = write(sanitized);
         long size = inline.getBytes(StandardCharsets.UTF_8).length;
-        if (size > 64 * 1024L) {
+        if (size > MAX_ARTIFACT_BYTES) {
             throw error(HttpStatus.PAYLOAD_TOO_LARGE, "SOAR_ARTIFACT_TOO_LARGE",
-                    "inline artifact exceeds 64 KiB; configure an object-store adapter");
+                    "artifact exceeds the 10 MiB hard limit");
+        }
+        if (size > INLINE_ARTIFACT_BYTES && artifactStore == null) {
+            throw error(HttpStatus.SERVICE_UNAVAILABLE, "SOAR_ARTIFACT_STORAGE_UNAVAILABLE",
+                    "large artifact requires the configured object-store adapter");
         }
         SoarArtifactEntity artifact = new SoarArtifactEntity();
+        SoarArtifactStore.StoredArtifact external = null;
         artifact.setId(UUID.randomUUID().toString().replace("-", ""));
         artifact.setTenantId(tenant());
         artifact.setRunId(runId);
         artifact.setNodeRunId(boundNodeRunId);
         artifact.setMediaType(type);
-        artifact.setSizeBytes(size);
-        artifact.setSha256(sha256(inline));
-        artifact.setStorageRef("db://soar-artifacts/" + artifact.getId());
+        byte[] payload = inline.getBytes(StandardCharsets.UTF_8);
+        if (artifactStore != null && size > INLINE_ARTIFACT_BYTES) {
+            try {
+                external = artifactStore.put(tenant(), runId, artifact.getId(),
+                        type, payload);
+                if (external == null || external.storageRef() == null || external.storageRef().isBlank()
+                        || external.sizeBytes() != payload.length
+                        || external.sha256() == null
+                        || !MessageDigest.isEqual(external.sha256().getBytes(StandardCharsets.US_ASCII),
+                        sha256(payload).getBytes(StandardCharsets.US_ASCII))) {
+                    throw new IllegalStateException("SOAR_ARTIFACT_STORE_INVALID_RESULT");
+                }
+                artifact.setSizeBytes(external.sizeBytes());
+                artifact.setSha256(external.sha256());
+                artifact.setStorageRef(external.storageRef());
+            } catch (RuntimeException failure) {
+                throw error(HttpStatus.SERVICE_UNAVAILABLE, "SOAR_ARTIFACT_STORAGE_UNAVAILABLE",
+                        "artifact storage could not persist the payload");
+            }
+        } else {
+            artifact.setSizeBytes(size);
+            artifact.setSha256(sha256(inline));
+            artifact.setStorageRef("db://soar-artifacts/" + artifact.getId());
+        }
         artifact.setClassification(kind);
-        artifact.setInlineJson(inline);
+        artifact.setInlineJson(artifactStore != null && size > INLINE_ARTIFACT_BYTES ? null : inline);
         artifact.setCreatedAt(Instant.now());
         artifact.setExpiresAt(Instant.now().plusSeconds(30L * 24 * 3600));
-        SoarArtifactEntity saved = artifacts.save(artifact);
-        appendEvent(runId, "ARTIFACT_UPLOADED", actor(), "SOAR artifact uploaded",
-                Map.of("artifactId", saved.getId(), "sizeBytes", size));
-        return artifactView(saved);
+        try {
+            SoarArtifactEntity saved = artifacts.save(artifact);
+            if (saved == null) throw new IllegalStateException("artifact metadata save returned no row");
+            appendEvent(runId, "ARTIFACT_UPLOADED", actor(), "SOAR artifact uploaded",
+                    Map.of("artifactId", saved.getId(), "sizeBytes", size));
+            return artifactView(saved);
+        } catch (RuntimeException failure) {
+            deleteOrphanedArtifact(external);
+            throw failure;
+        }
     }
 
     @Transactional(readOnly = true)
@@ -2490,14 +2546,43 @@ public class SoarV2Service {
     }
 
     private static String sha256(String value) {
+        return sha256(value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String sha256(byte[] value) {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256")
-                    .digest(value.getBytes(StandardCharsets.UTF_8));
+                    .digest(value);
             StringBuilder out = new StringBuilder(digest.length * 2);
             for (byte item : digest) out.append(String.format("%02x", item));
             return out.toString();
         } catch (Exception failure) {
             throw new IllegalStateException("SHA-256 is unavailable", failure);
+        }
+    }
+
+    private String decodeExternalArtifact(SoarArtifactEntity artifact, byte[] bytes) {
+        String expectedSha = artifact.getSha256();
+        if (bytes == null || artifact.getSizeBytes() < 0 || artifact.getSizeBytes() > MAX_ARTIFACT_BYTES
+                || bytes.length > MAX_ARTIFACT_BYTES || expectedSha == null || expectedSha.length() != 64
+                || !expectedSha.matches("[0-9a-fA-F]{64}") || bytes.length != artifact.getSizeBytes()
+                || !MessageDigest.isEqual(sha256(bytes).getBytes(StandardCharsets.US_ASCII),
+                expectedSha.getBytes(StandardCharsets.US_ASCII))) {
+            throw error(HttpStatus.SERVICE_UNAVAILABLE, "SOAR_ARTIFACT_INTEGRITY_FAILED",
+                    "artifact content failed integrity verification");
+        }
+        return new String(bytes, StandardCharsets.UTF_8);
+    }
+
+    private void deleteOrphanedArtifact(SoarArtifactStore.StoredArtifact external) {
+        if (external == null || artifactStore == null || external.storageRef() == null) return;
+        try {
+            artifactStore.delete(external.storageRef());
+        } catch (RuntimeException cleanupFailure) {
+            // There is no metadata row to retry against after a transaction
+            // rollback. Keep the error bounded and leave operational cleanup
+            // to the provider's lifecycle/retention policy.
+            log.warn("SOAR artifact orphan cleanup deferred after metadata failure");
         }
     }
 

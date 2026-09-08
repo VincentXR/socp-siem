@@ -28,8 +28,11 @@ import com.socp.soar.web.connector.ActionResult;
 import com.socp.soar.web.connector.ActionQuery;
 import com.socp.soar.web.connector.ConnectionContext;
 import com.socp.soar.web.connector.SecretResolver;
+import com.socp.soar.web.artifact.SoarArtifactStore;
 import com.socp.soar.web.temporal.request.ActionRequest;
 import com.socp.soar.web.temporal.request.SoarV2NodeRequest;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -43,6 +46,8 @@ import java.util.UUID;
 /** Spring activity implementation; every side effect is tenant-scoped and durable. */
 @Component
 public class SoarV2ActivityImpl implements SoarV2Activity {
+
+    private static final Logger log = LoggerFactory.getLogger(SoarV2ActivityImpl.class);
 
     private static final int INLINE_OUTPUT_LIMIT_BYTES = 64 * 1024;
     private static final int MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
@@ -62,6 +67,7 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
     private final PlaybookVersionRepository versions;
     private final ObjectMapper mapper;
     private SoarArtifactRepository artifacts;
+    private SoarArtifactStore artifactStore;
 
     @org.springframework.beans.factory.annotation.Autowired
     public SoarV2ActivityImpl(PlaybookExecutor executor, SoarRunRepository runs,
@@ -102,6 +108,12 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setArtifacts(SoarArtifactRepository artifacts) {
         this.artifacts = artifacts;
+    }
+
+    /** Optional in preview; production config supplies the S3-compatible store. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setArtifactStore(SoarArtifactStore artifactStore) {
+        this.artifactStore = artifactStore;
     }
 
     /** Optional for compatibility tests; production wiring records expiry votes. */
@@ -268,7 +280,11 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
                 actionResult = ActionResult.failed(errorCode, errorMessage, false);
                 outputJson = writeJson(output);
             } else if (!replayedAttempt && outputBytes > INLINE_OUTPUT_LIMIT_BYTES) {
-                if (artifacts == null) {
+                // Database metadata is still required, but large payloads
+                // must never silently fall back to inline PostgreSQL storage.
+                // Preview may keep small evidence inline; anything over the
+                // boundary needs the configured object-store adapter.
+                if (artifacts == null || artifactStore == null) {
                     status = "FAILED";
                     errorCode = "SOAR_ARTIFACT_STORAGE_UNAVAILABLE";
                     errorMessage = "large action output has no artifact storage adapter";
@@ -276,15 +292,24 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
                     actionResult = ActionResult.failed(errorCode, errorMessage, false);
                     outputJson = writeJson(output);
                 } else {
-                    SoarArtifactEntity artifact = persistArtifact(request, nodeRunId, outputJson, outputBytes);
-                    output = new LinkedHashMap<>();
-                    output.put("status", status);
-                    output.put("retryable", actionResult.retryable());
-                    output.put("artifact", artifactView(artifact));
-                    output.put("outputTruncated", true);
-                    if (actionResult.errorCode() != null) output.put("errorCode", actionResult.errorCode());
-                    if (actionResult.errorMessage() != null) output.put("error", redactFreeText(actionResult.errorMessage(), 2048));
-                    outputJson = writeJson(output);
+                    try {
+                        SoarArtifactEntity artifact = persistArtifact(request, nodeRunId, outputJson, outputBytes);
+                        output = new LinkedHashMap<>();
+                        output.put("status", status);
+                        output.put("retryable", actionResult.retryable());
+                        output.put("artifact", artifactView(artifact));
+                        output.put("outputTruncated", true);
+                        if (actionResult.errorCode() != null) output.put("errorCode", actionResult.errorCode());
+                        if (actionResult.errorMessage() != null) output.put("error", redactFreeText(actionResult.errorMessage(), 2048));
+                        outputJson = writeJson(output);
+                    } catch (RuntimeException storageFailure) {
+                        status = "FAILED";
+                        errorCode = "SOAR_ARTIFACT_STORAGE_UNAVAILABLE";
+                        errorMessage = "artifact storage could not persist action output";
+                        actionResult = ActionResult.failed(errorCode, errorMessage, false);
+                        output = boundedFailureOutput(errorCode, errorMessage);
+                        outputJson = writeJson(output);
+                    }
                 }
             }
             if (!replayedAttempt) {
@@ -376,14 +401,37 @@ public class SoarV2ActivityImpl implements SoarV2Activity {
         artifact.setRunId(request.runId());
         artifact.setNodeRunId(nodeRunId);
         artifact.setMediaType("application/json");
-        artifact.setSizeBytes(sizeBytes);
-        artifact.setSha256(sha256(redactedJson));
-        artifact.setStorageRef("db://soar-artifacts/" + artifact.getId());
-        artifact.setClassification("INTERNAL");
-        artifact.setInlineJson(redactedJson);
-        artifact.setCreatedAt(Instant.now());
-        artifact.setExpiresAt(Instant.now().plusSeconds(ARTIFACT_RETENTION_DAYS * 24 * 3600));
-        return artifacts.save(artifact);
+        byte[] content = redactedJson.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        SoarArtifactStore.StoredArtifact external = null;
+        try {
+            if (artifactStore != null) {
+                external = artifactStore.put(request.tenantId(), request.runId(),
+                        artifact.getId(), "application/json", content);
+                artifact.setSizeBytes(external.sizeBytes());
+                artifact.setSha256(external.sha256());
+                artifact.setStorageRef(external.storageRef());
+            } else {
+                artifact.setSizeBytes(sizeBytes);
+                artifact.setSha256(sha256(redactedJson));
+                artifact.setStorageRef("db://soar-artifacts/" + artifact.getId());
+            }
+            artifact.setClassification("INTERNAL");
+            artifact.setInlineJson(artifactStore == null ? redactedJson : null);
+            artifact.setCreatedAt(Instant.now());
+            artifact.setExpiresAt(Instant.now().plusSeconds(ARTIFACT_RETENTION_DAYS * 24 * 3600));
+            SoarArtifactEntity saved = artifacts.save(artifact);
+            if (saved == null) throw new IllegalStateException("artifact metadata save returned no row");
+            return saved;
+        } catch (RuntimeException failure) {
+            if (external != null && artifactStore != null && external.storageRef() != null) {
+                try {
+                    artifactStore.delete(external.storageRef());
+                } catch (RuntimeException cleanupFailure) {
+                    log.warn("SOAR artifact orphan cleanup deferred after activity metadata failure");
+                }
+            }
+            throw failure;
+        }
     }
 
     private Map<String, Object> boundedFailureOutput(String code, String message) {

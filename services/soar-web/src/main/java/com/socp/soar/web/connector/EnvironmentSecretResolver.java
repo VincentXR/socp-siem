@@ -1,13 +1,14 @@
 package com.socp.soar.web.connector;
 
-import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.util.Optional;
 
 /** Development-safe resolver for env:// and secret:// environment references. */
 @Component
-@ConditionalOnMissingBean(SecretResolver.class)
+@ConditionalOnProperty(prefix = "socp.soar.secrets", name = "backend",
+        havingValue = "env", matchIfMissing = true)
 public class EnvironmentSecretResolver implements SecretResolver {
     @Override
     public Optional<String> resolve(String reference) {

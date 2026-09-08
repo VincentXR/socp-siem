@@ -8,6 +8,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import java.util.List;
 import java.util.Optional;
+import java.util.Collection;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -20,9 +21,10 @@ public interface SoarArtifactRepository extends TenantScopedRepository<SoarArtif
                                                                          Pageable pageable);
     List<SoarArtifactEntity> findTop100ByExpiresAtBeforeOrderByExpiresAtAsc(Instant now);
 
-    /** System-scope retention operation used only by the scheduled cleanup job. */
+    /** Delete only the rows whose remote object has been handled by retention. */
     @Modifying
     @Transactional
-    @Query("delete from SoarArtifactEntity a where a.expiresAt is not null and a.expiresAt < :now")
-    int deleteExpired(@Param("now") Instant now);
+    @Query("delete from SoarArtifactEntity a where a.id in :ids "
+            + "and a.expiresAt is not null and a.expiresAt < :now")
+    int deleteByIds(@Param("ids") Collection<String> ids, @Param("now") Instant now);
 }

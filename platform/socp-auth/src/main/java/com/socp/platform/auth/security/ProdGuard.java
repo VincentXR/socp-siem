@@ -123,6 +123,67 @@ public class ProdGuard {
             violations.add("socp.temporal.enabled=false（生产禁止 SOAR 回退进程内执行器）");
         }
 
+        // SOAR run projections may retain only metadata for large evidence in
+        // production.  Inline PostgreSQL artifacts are a preview convenience,
+        // not a safe high-throughput retention backend.
+        if ("production".equalsIgnoreCase(env.getProperty("socp.soar.maturity", "").trim())) {
+            String artifactBackend = env.getProperty("socp.soar.artifacts.backend", "inline");
+            if (!"s3".equalsIgnoreCase(artifactBackend)) {
+                violations.add("socp.soar.artifacts.backend must be s3 in production");
+            } else {
+                String endpoint = env.getProperty("socp.soar.artifacts.endpoint", "");
+                if (endpoint.isBlank() || !endpoint.toLowerCase(java.util.Locale.ROOT).startsWith("https://")) {
+                    violations.add("socp.soar.artifacts.endpoint must be an HTTPS S3 endpoint in production");
+                }
+                if (Boolean.parseBoolean(env.getProperty("socp.soar.artifacts.allow-insecure", "false"))) {
+                    violations.add("socp.soar.artifacts.allow-insecure=true (production forbids insecure object storage)");
+                }
+                for (String key : List.of("socp.soar.artifacts.bucket",
+                        "socp.soar.artifacts.access-key-ref", "socp.soar.artifacts.secret-key-ref")) {
+                    if (env.getProperty(key, "").isBlank()) violations.add(key + " is required in production");
+                }
+            }
+
+            String secretBackend = env.getProperty("socp.soar.secrets.backend", "kubernetes").trim();
+            String normalizedSecretBackend = secretBackend.toLowerCase(java.util.Locale.ROOT);
+            if (!List.of("kubernetes", "vault").contains(normalizedSecretBackend)) {
+                violations.add("socp.soar.secrets.backend must be kubernetes or vault in production");
+            } else if (Boolean.parseBoolean(env.getProperty("socp.soar.secrets.allow-environment-fallback", "false"))) {
+                violations.add("socp.soar.secrets.allow-environment-fallback=true (production requires rotatable provider references)");
+            } else if ("kubernetes".equalsIgnoreCase(secretBackend)) {
+                String mountPath = env.getProperty("socp.soar.secrets.kubernetes-mount-path",
+                        "/var/run/secrets/socp");
+                if (mountPath.isBlank() || !mountPath.startsWith("/")) {
+                    violations.add("socp.soar.secrets.kubernetes-mount-path must be an absolute path in production");
+                }
+            } else {
+                String vaultEndpoint = env.getProperty("socp.soar.secrets.vault-endpoint", "");
+                if (vaultEndpoint.isBlank()
+                        || !vaultEndpoint.toLowerCase(java.util.Locale.ROOT).startsWith("https://")) {
+                    violations.add("socp.soar.secrets.vault-endpoint must be an HTTPS endpoint in production");
+                }
+                if (Boolean.parseBoolean(env.getProperty("socp.soar.secrets.allow-insecure", "false"))) {
+                    violations.add("socp.soar.secrets.allow-insecure=true (production forbids insecure secret transport)");
+                }
+                if (env.getProperty("socp.soar.secrets.vault-token-ref", "").isBlank()) {
+                    violations.add("socp.soar.secrets.vault-token-ref is required in production");
+                } else if (!env.getProperty("socp.soar.secrets.vault-token-ref", "").trim()
+                        .toLowerCase(java.util.Locale.ROOT).startsWith("k8s://")) {
+                    violations.add("socp.soar.secrets.vault-token-ref must use k8s:// in production");
+                }
+            }
+            String accessRef = env.getProperty("socp.soar.artifacts.access-key-ref", "").trim();
+            String secretRef = env.getProperty("socp.soar.artifacts.secret-key-ref", "").trim();
+            String expectedArtifactScheme = "vault".equalsIgnoreCase(normalizedSecretBackend)
+                    ? "vault://" : "k8s://";
+            if (!accessRef.isBlank() && !accessRef.toLowerCase(java.util.Locale.ROOT).startsWith(expectedArtifactScheme)) {
+                violations.add("socp.soar.artifacts.access-key-ref must use " + expectedArtifactScheme + " in production");
+            }
+            if (!secretRef.isBlank() && !secretRef.toLowerCase(java.util.Locale.ROOT).startsWith(expectedArtifactScheme)) {
+                violations.add("socp.soar.artifacts.secret-key-ref must use " + expectedArtifactScheme + " in production");
+            }
+        }
+
         // A production deployment may stage tenants through the explicit
         // rollout flags, but it must never enable the durable V2 dispatcher
         // and the legacy synchronous execution path globally at the same

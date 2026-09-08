@@ -53,6 +53,30 @@ socp:
     sse-poll-interval-ms: ${SOCP_SOAR_SSE_POLL_INTERVAL_MS:500}
     sse-timeout-ms: ${SOCP_SOAR_SSE_TIMEOUT_MS:30000}
     sse-scheduler-threads: ${SOCP_SOAR_SSE_SCHEDULER_THREADS:2}
+    secrets:
+      # Preview keeps the env:// compatibility resolver. Production selects
+      # the Kubernetes projected-volume provider (or Vault explicitly).
+      backend: ${SOCP_SOAR_SECRET_BACKEND:env}
+      kubernetes-mount-path: ${SOCP_SOAR_K8S_SECRET_MOUNT_PATH:/var/run/secrets/socp}
+      vault-endpoint: ${SOCP_SOAR_VAULT_ENDPOINT:}
+      vault-token-ref: ${SOCP_SOAR_VAULT_TOKEN_REF:}
+      allow-insecure: ${SOCP_SOAR_SECRET_ALLOW_INSECURE:false}
+      allow-environment-fallback: ${SOCP_SOAR_SECRET_ALLOW_ENV_FALLBACK:true}
+      connect-timeout-ms: ${SOCP_SOAR_SECRET_CONNECT_TIMEOUT_MS:3000}
+      request-timeout-ms: ${SOCP_SOAR_SECRET_REQUEST_TIMEOUT_MS:5000}
+    artifacts:
+      # Inline is a development-only compatibility backend. Production uses
+      # the S3-compatible store below and rejects missing configuration.
+      backend: ${SOCP_SOAR_ARTIFACT_BACKEND:inline}
+      endpoint: ${SOCP_SOAR_ARTIFACT_S3_ENDPOINT:}
+      region: ${SOCP_SOAR_ARTIFACT_S3_REGION:us-east-1}
+      bucket: ${SOCP_SOAR_ARTIFACT_S3_BUCKET:}
+      access-key-ref: ${SOCP_SOAR_ARTIFACT_S3_ACCESS_KEY_REF:env://SOCP_SOAR_ARTIFACT_S3_ACCESS_KEY}
+      secret-key-ref: ${SOCP_SOAR_ARTIFACT_S3_SECRET_KEY_REF:env://SOCP_SOAR_ARTIFACT_S3_SECRET_KEY}
+      path-style: ${SOCP_SOAR_ARTIFACT_S3_PATH_STYLE:true}
+      allow-insecure: ${SOCP_SOAR_ARTIFACT_S3_ALLOW_INSECURE:false}
+      connect-timeout-ms: ${SOCP_SOAR_ARTIFACT_S3_CONNECT_TIMEOUT_MS:3000}
+      request-timeout-ms: ${SOCP_SOAR_ARTIFACT_S3_REQUEST_TIMEOUT_MS:15000}
     action-connectors:
       firewall-block-url: ${SOCP_SOAR_FIREWALL_BLOCK_URL:}
       network-isolation-url: ${SOCP_SOAR_NETWORK_ISOLATION_URL:}

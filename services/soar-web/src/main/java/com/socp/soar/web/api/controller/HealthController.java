@@ -1,6 +1,7 @@
 package com.socp.soar.web.api.controller;
 
 import com.socp.soar.web.config.SoarRuntimeProperties;
+import com.socp.soar.web.connector.SecretResolver;
 import com.socp.soar.web.connector.SoarConnectorRegistry;
 import com.socp.soar.web.service.SoarV2Service;
 import com.socp.soar.web.service.TemporalExecutor;
@@ -22,21 +23,31 @@ public class HealthController {
     private final ObjectProvider<TemporalExecutor> temporal;
     private final ObjectProvider<SoarV2Service> soar;
     private final ObjectProvider<SoarConnectorRegistry> connectors;
+    private final ObjectProvider<SecretResolver> secrets;
 
     public HealthController(SoarRuntimeProperties properties, ObjectProvider<HealthEndpoint> healthEndpoint) {
-        this(properties, healthEndpoint, null, null, null);
+        this(properties, healthEndpoint, null, null, null, null);
+    }
+
+    public HealthController(SoarRuntimeProperties properties, ObjectProvider<HealthEndpoint> healthEndpoint,
+                             ObjectProvider<TemporalExecutor> temporal,
+                             ObjectProvider<SoarV2Service> soar,
+                             ObjectProvider<SoarConnectorRegistry> connectors) {
+        this(properties, healthEndpoint, temporal, soar, connectors, null);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
     public HealthController(SoarRuntimeProperties properties, ObjectProvider<HealthEndpoint> healthEndpoint,
                              ObjectProvider<TemporalExecutor> temporal,
                              ObjectProvider<SoarV2Service> soar,
-                             ObjectProvider<SoarConnectorRegistry> connectors) {
+                             ObjectProvider<SoarConnectorRegistry> connectors,
+                             ObjectProvider<SecretResolver> secrets) {
         this.properties = properties;
         this.healthEndpoint = healthEndpoint;
         this.temporal = temporal;
         this.soar = soar;
         this.connectors = connectors;
+        this.secrets = secrets;
     }
 
     @GetMapping("/health")
@@ -48,9 +59,14 @@ public class HealthController {
         // The minimal constructor is used by legacy unit/integration probes;
         // in a real Spring context the provider is present and Temporal is a
         // required dependency for the execution health signal.
+        SecretResolver secretResolver = secrets == null ? null : secrets.getIfAvailable();
+        boolean secretProviderAvailable = secretResolver != null;
+        boolean productionSecretReady = !"production".equalsIgnoreCase(properties.getMaturity())
+                || secretProviderAvailable;
         String status = temporal == null
                 ? platformStatus
-                : ("UP".equalsIgnoreCase(platformStatus) && temporalAvailable ? "UP" : "DEGRADED");
+                : ("UP".equalsIgnoreCase(platformStatus) && temporalAvailable && productionSecretReady
+                ? "UP" : "DEGRADED");
         if (temporal == null) {
             return ApiResult.ok(Map.of("service", "soar-web", "status", status,
                     "maturity", properties.getMaturity()));
@@ -61,6 +77,10 @@ public class HealthController {
         details.put("platform", platformStatus);
         details.put("maturity", properties.getMaturity());
         details.put("temporal", Map.of("status", temporalAvailable ? "UP" : "UNAVAILABLE"));
+        if (secrets != null) {
+            details.put("secretResolver", Map.of("status", secretProviderAvailable ? "UP" : "UNAVAILABLE",
+                    "provider", secretProviderAvailable ? secretResolver.getClass().getSimpleName() : "none"));
+        }
         if (soar != null && soar.getIfAvailable() != null) {
             details.putAll(soar.getIfAvailable().healthBacklog());
         }

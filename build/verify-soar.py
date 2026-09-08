@@ -92,6 +92,8 @@ def main() -> int:
         "services/soar-web/src/main/java/com/socp/soar/web/service/SoarV2Service.java",
         "services/soar-web/src/main/java/com/socp/soar/web/service/SoarV2AutomationRuleService.java",
         "services/soar-web/src/main/java/com/socp/soar/web/service/SoarArtifactRetentionWorker.java",
+        "services/soar-web/src/main/java/com/socp/soar/web/artifact/SoarArtifactStore.java",
+        "services/soar-web/src/main/java/com/socp/soar/web/artifact/S3SoarArtifactStore.java",
         "services/soar-web/src/main/java/com/socp/soar/web/temporal/v2/SoarV2WorkflowImpl.java",
         "services/soar-web/src/main/java/com/socp/soar/web/connector/SoarConnectorRegistry.java",
     )
@@ -141,6 +143,22 @@ def main() -> int:
         "approval role/group policy is enforced": "approvalPolicyAllows" in read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarV2Service.java")
         and "APPROVER_POLICY_FORBIDDEN" in read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarV2Service.java"),
         "output hard limit": "MAX_OUTPUT_BYTES = 10 * 1024 * 1024" in activity,
+        "external artifact storage boundary": "SoarArtifactStore" in activity
+        and "artifactStore.put" in activity
+        and "artifactStore.read" in read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarV2Service.java")
+        and "ConditionalOnProperty" in read("services/soar-web/src/main/java/com/socp/soar/web/artifact/S3SoarArtifactStore.java"),
+        "production artifact backend is fail-closed": ("artifacts:" in production and "backend:" in production)
+        and "must be s3 in production" in read("platform/socp-auth/src/main/java/com/socp/platform/auth/security/ProdGuard.java")
+        and "large artifact requires the configured object-store adapter" in read(
+            "services/soar-web/src/main/java/com/socp/soar/web/service/SoarV2Service.java"),
+        "rotatable secret provider boundary": "kubernetes-mount-path" in production
+        and "KubernetesSecretResolver" in read(
+            "services/soar-web/src/main/java/com/socp/soar/web/connector/KubernetesSecretResolver.java")
+        and "VaultSecretResolver" in read(
+            "services/soar-web/src/main/java/com/socp/soar/web/connector/VaultSecretResolver.java")
+        and "allow-environment-fallback: ${SOCP_SOAR_SECRET_ALLOW_ENV_FALLBACK:false}" in production
+        and "access-key-ref: ${SOCP_SOAR_ARTIFACT_S3_ACCESS_KEY_REF:k8s://" in production
+        and "secret-key-ref: ${SOCP_SOAR_ARTIFACT_S3_SECRET_KEY_REF:k8s://" in production,
         "secret redaction": "[REDACTED]" in activity,
         "stale outbox recovery": "recoverStaleClaims" in read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarV2DispatchWorker.java"),
         "cancellation is a one-way activity fence": '"CANCELLING".equals(run.getStatus())' in activity,

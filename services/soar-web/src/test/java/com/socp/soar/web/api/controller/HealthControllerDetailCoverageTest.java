@@ -2,6 +2,7 @@ package com.socp.soar.web.api.controller;
 
 import com.socp.platform.error.api.ApiResult;
 import com.socp.soar.web.config.SoarRuntimeProperties;
+import com.socp.soar.web.connector.SecretResolver;
 import com.socp.soar.web.connector.ConnectorDescriptor;
 import com.socp.soar.web.connector.SoarConnectorRegistry;
 import com.socp.soar.web.service.SoarV2Service;
@@ -34,11 +35,15 @@ class HealthControllerDetailCoverageTest {
     @Mock
     private ObjectProvider<SoarConnectorRegistry> connectorProvider;
     @Mock
+    private ObjectProvider<SecretResolver> secretProvider;
+    @Mock
     private TemporalExecutor temporal;
     @Mock
     private SoarV2Service soar;
     @Mock
     private SoarConnectorRegistry registry;
+    @Mock
+    private SecretResolver secretResolver;
 
     private SoarRuntimeProperties properties;
 
@@ -79,6 +84,21 @@ class HealthControllerDetailCoverageTest {
         assertThat(details.get("signalDead")).isEqualTo(2L);
         assertThat(details.get("builtInConnectors")).isEqualTo(List.of("endpoint", "firewall"));
         assertThat(details.get("checkedAt")).isInstanceOf(Instant.class);
+    }
+
+    @Test
+    void reportsSecretResolverProviderInDetailedHealth() {
+        given(temporalProvider.getIfAvailable()).willReturn(temporal);
+        given(temporal.isAvailable()).willReturn(true);
+        given(secretProvider.getIfAvailable()).willReturn(secretResolver);
+
+        ApiResult<Map<String, Object>> result = new HealthController(
+                properties, healthEndpoint, temporalProvider, soarProvider, connectorProvider, secretProvider).health();
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> secretDetails = (Map<String, Object>) result.data().get("secretResolver");
+        assertThat(secretDetails).containsEntry("status", "UP");
+        assertThat(secretDetails.get("provider")).asString().startsWith("SecretResolver");
     }
 
     @Test

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.soar.web.definition.SoarDefinitionValidator;
+import com.socp.soar.web.artifact.SoarArtifactStore;
 import com.socp.soar.web.domain.v2.DefinitionValidationResult;
 import com.socp.soar.web.domain.v2.SoarRunStatus;
 import com.socp.soar.web.persistence.entity.PlaybookVersionEntity;
@@ -45,7 +46,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
+import java.security.MessageDigest;
 import java.util.List;
+import java.util.HexFormat;
 import java.util.Map;
 import java.util.Optional;
 
@@ -56,6 +59,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.doThrow;
 
 /**
  * Coverage for the connector-free paths of {@link SoarV2Service}: filtered
@@ -111,6 +115,8 @@ class SoarV2ServiceRetentionExportCoverageTest {
     private SoarSignalOutboxRepository signals;
     @Mock
     private SoarArtifactRepository artifacts;
+    @Mock
+    private SoarArtifactStore artifactStore;
 
     private final ObjectMapper mapper = new ObjectMapper();
 
@@ -321,7 +327,7 @@ class SoarV2ServiceRetentionExportCoverageTest {
         // oversized inline content
         ObjectNode huge = mapper.createObjectNode();
         huge.put("blob", "x".repeat(70 * 1024));
-        assertRejected(HttpStatus.PAYLOAD_TOO_LARGE, "SOAR_ARTIFACT_TOO_LARGE",
+        assertRejected(HttpStatus.SERVICE_UNAVAILABLE, "SOAR_ARTIFACT_STORAGE_UNAVAILABLE",
                 () -> service.uploadArtifact("run-1", null, "application/json", null, huge));
 
         // happy path: long nodeRunId is truncated to the bounded column length
@@ -337,6 +343,82 @@ class SoarV2ServiceRetentionExportCoverageTest {
         assertThat(uploaded).containsEntry("classification", "INTERNAL");
         assertThat(((String) uploaded.get("nodeRunId"))).hasSize(64);
         verify(events).save(any(SoarRunEventEntity.class));
+    }
+
+    @Test
+    void largeArtifactUsesExternalStoreAndKeepsOnlyMetadataInPostgres() {
+        SoarRunEntity owner = run("run-1", "req-1");
+        given(runs.findByTenantIdAndId("tenant-a", "run-1")).willReturn(Optional.of(owner));
+        given(artifactStore.put(eq("tenant-a"), eq("run-1"), anyString(), eq("application/json"), any()))
+                .willAnswer(invocation -> {
+                    byte[] bytes = invocation.getArgument(4);
+                    return new SoarArtifactStore.StoredArtifact("s3://soar-artifacts/object-1",
+                            bytes.length, sha256Hex(bytes));
+                });
+        service.setArtifactStore(artifactStore);
+        given(artifacts.save(any(SoarArtifactEntity.class)))
+                .willAnswer(invocation -> invocation.getArgument(0));
+        ObjectNode huge = mapper.createObjectNode();
+        huge.put("blob", "x".repeat(70 * 1024));
+
+        Map<String, Object> uploaded = service.uploadArtifact("run-1", null, "application/json",
+                "internal", huge);
+
+        assertThat(uploaded).containsEntry("storageRef", "s3://soar-artifacts/object-1")
+                .containsEntry("sizeBytes", 70L * 1024 + 11L);
+        ArgumentCaptor<SoarArtifactEntity> captor = ArgumentCaptor.forClass(SoarArtifactEntity.class);
+        verify(artifacts).save(captor.capture());
+        assertThat(captor.getValue().getInlineJson()).isNull();
+        verify(artifactStore).put(eq("tenant-a"), eq("run-1"), anyString(), eq("application/json"), any());
+    }
+
+    @Test
+    void externalArtifactContentIsIntegrityCheckedBeforeItIsReturned() {
+        SoarArtifactEntity external = artifact("art-external");
+        external.setInlineJson(null);
+        external.setStorageRef("s3://soar-artifacts/object-1");
+        external.setSizeBytes(3L);
+        external.setSha256("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        given(artifacts.findByTenantIdAndId("tenant-a", "art-external")).willReturn(Optional.of(external));
+        given(artifactStore.read("s3://soar-artifacts/object-1"))
+                .willReturn(Optional.of("abc".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        service.setArtifactStore(artifactStore);
+
+        assertThat(service.getArtifactContent("art-external")).isEqualTo("abc");
+
+        given(artifactStore.read("s3://soar-artifacts/object-1"))
+                .willReturn(Optional.of("tampered".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        assertRejected(HttpStatus.SERVICE_UNAVAILABLE, "SOAR_ARTIFACT_INTEGRITY_FAILED",
+                () -> service.getArtifactContent("art-external"));
+    }
+
+    @Test
+    void metadataFailureAttemptsToRemoveUploadedExternalObject() {
+        SoarRunEntity owner = run("run-1", "req-1");
+        given(runs.findByTenantIdAndId("tenant-a", "run-1")).willReturn(Optional.of(owner));
+        given(artifactStore.put(eq("tenant-a"), eq("run-1"), anyString(), eq("application/json"), any()))
+                .willAnswer(invocation -> {
+                    byte[] bytes = invocation.getArgument(4);
+                    return new SoarArtifactStore.StoredArtifact("s3://soar-artifacts/orphan", bytes.length,
+                            sha256Hex(bytes));
+                });
+        service.setArtifactStore(artifactStore);
+        doThrow(new IllegalStateException("database unavailable")).when(artifacts).save(any(SoarArtifactEntity.class));
+        ObjectNode huge = mapper.createObjectNode();
+        huge.put("blob", "x".repeat(70 * 1024));
+
+        assertThat(catchThrowable(() -> service.uploadArtifact("run-1", null, "application/json", null, huge)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("database unavailable");
+        verify(artifactStore).delete("s3://soar-artifacts/orphan");
+    }
+
+    private static String sha256Hex(byte[] bytes) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new AssertionError(impossible);
+        }
     }
 
     // -------------------------------------------------------------- manual task paging

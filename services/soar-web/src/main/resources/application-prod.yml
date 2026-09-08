@@ -24,6 +24,28 @@ socp:
     sse-poll-interval-ms: ${SOCP_SOAR_SSE_POLL_INTERVAL_MS:500}
     sse-timeout-ms: ${SOCP_SOAR_SSE_TIMEOUT_MS:30000}
     sse-scheduler-threads: ${SOCP_SOAR_SSE_SCHEDULER_THREADS:4}
+    secrets:
+      # Secrets are fetched from a projected volume on every Activity lookup;
+      # set backend=vault to use the Vault KV HTTP provider instead.
+      backend: ${SOCP_SOAR_SECRET_BACKEND:kubernetes}
+      kubernetes-mount-path: ${SOCP_SOAR_K8S_SECRET_MOUNT_PATH:/var/run/secrets/socp}
+      vault-endpoint: ${SOCP_SOAR_VAULT_ENDPOINT:}
+      vault-token-ref: ${SOCP_SOAR_VAULT_TOKEN_REF:}
+      allow-insecure: ${SOCP_SOAR_SECRET_ALLOW_INSECURE:false}
+      allow-environment-fallback: ${SOCP_SOAR_SECRET_ALLOW_ENV_FALLBACK:false}
+      connect-timeout-ms: ${SOCP_SOAR_SECRET_CONNECT_TIMEOUT_MS:3000}
+      request-timeout-ms: ${SOCP_SOAR_SECRET_REQUEST_TIMEOUT_MS:5000}
+    artifacts:
+      backend: ${SOCP_SOAR_ARTIFACT_BACKEND:s3}
+      endpoint: ${SOCP_SOAR_ARTIFACT_S3_ENDPOINT}
+      region: ${SOCP_SOAR_ARTIFACT_S3_REGION:us-east-1}
+      bucket: ${SOCP_SOAR_ARTIFACT_S3_BUCKET}
+      access-key-ref: ${SOCP_SOAR_ARTIFACT_S3_ACCESS_KEY_REF:k8s://platform/soar-artifacts/access-key}
+      secret-key-ref: ${SOCP_SOAR_ARTIFACT_S3_SECRET_KEY_REF:k8s://platform/soar-artifacts/secret-key}
+      path-style: ${SOCP_SOAR_ARTIFACT_S3_PATH_STYLE:true}
+      allow-insecure: ${SOCP_SOAR_ARTIFACT_S3_ALLOW_INSECURE:false}
+      connect-timeout-ms: ${SOCP_SOAR_ARTIFACT_S3_CONNECT_TIMEOUT_MS:3000}
+      request-timeout-ms: ${SOCP_SOAR_ARTIFACT_S3_REQUEST_TIMEOUT_MS:15000}
 
   temporal:
     enabled: ${SOCP_TEMPORAL_ENABLED:true}

@@ -604,7 +604,7 @@ Connection 保存：名称、connectorId、非敏感 `config_json`、`secret_ref
 密钥策略：
 
 1. 数据库只存引用，例如 `env://SOCP_EDR_CLIENT_SECRET` 或 `k8s://namespace/secret/key`，不存值。
-2. 首版实现 `SecretResolver` SPI 和环境变量 resolver；生产推荐由 Kubernetes Secret 注入环境变量。后续可增加 Vault/KMS provider。
+2. `SecretResolver` SPI 提供预览环境的环境变量 resolver，以及生产 Kubernetes projected-volume 和 Vault KV HTTP provider；provider 每次在 Activity lookup 时解析，不在 JVM 中缓存 secret value。KMS/HSM 可作为同一 SPI 的后续 provider。
 3. 解析只发生在 Action Activity 内；Workflow、API 和校验器只能看到引用和掩码。
 4. test connection 也走审计、超时、出站策略和脱敏。
 5. 运行记录保存 `connectionId + connectionRevision`，但密钥轮换无需重发剧本版本。
@@ -1258,6 +1258,7 @@ SOCP_SOAR_LEGACY_EXECUTION_ENABLED
 - 终态单向栅栏覆盖 Activity action/compensate、节点/人工/审批 timer、控制面审批/人工/unknown、signal/dispatcher/requeue 和 Temporal completion；`PARTIALLY_SUCCEEDED`、取消中与已终态请求均拒绝晚到恢复，唯一可恢复例外是显式 requeue 的 `DEAD` dispatch，迟到 signal 会持久化为 `CANCELLED`；
 - V2 人审门：高风险版本在 dispatch 前进入 `WAITING_APPROVAL`，显式 `APPROVAL/MANUAL_TASK` 节点通过 durable signal 等待批准/拒绝/结构化输入；每个审批闸门保存具体动作、输入哈希和脱敏目标快照，并按审批人持久化投票；
 - Connector SDK/SecretResolver：六个 SOCP 内置动作域、受限 HTTP/endpoint/firewall adapter、secret 仅在 Activity 解析、SSRF allowlist 和认证头注入；
+- SoarArtifactStore/S3SoarArtifactStore：超过 64 KiB 且不超过 10 MiB 的脱敏输出写入 S3/MinIO 兼容对象存储，PostgreSQL 只保留引用、摘要和 SHA-256；对象存储不可用时生产 Activity fail-closed，预览环境仅保留不超过 64 KiB 的 inline 兼容路径；
 - 五个版本化黄金场景 JSON 模板通过 `/api/v2/templates` 提供，安装只创建租户草稿；Workbench 保持 V1 兼容，并提供覆盖 13 类节点的轻量图编辑器、版本校验/dry-run/发布、durable run inspector、attempt/event/artifact 排障和 SSE 实时投影；告警处置备注使用 V18 durable idempotency key。
 
-本轮已补齐的关键生产语义包括：Alert→V2 durable evaluation 单路径、发布期子剧本已发布/无环/最大深度 5 门禁、父子/并行共享 Run 级执行预算、数据库行锁的多实例 rule admission（含 revision 幂等键）、安全正则上限、真实会话 Cookie/OpenAPI `ApiResult`/`If-Match` 契约、V21/V22 数据库完整性约束，以及 Temporal 不可用时只保留 durable backlog 的故障脚本。仍需在目标环境完成的发布门禁包括：真实厂商 endpoint/firewall/EDR 认证与 reconcile/compensate、Vault/KMS/Kubernetes Secret provider 与轮换、对象存储 artifact、PostgreSQL/Temporal replay/chaos/capacity、安全负例、图编辑器的完整 Playwright/可访问性验收和五条场景的 UI/业务副作用证据。当前实现提供受控 adapter 和明确的 `PRODUCTION_READY` 前置条件，不把模拟调用标记为生产成功；发布仍必须以第 20 节 DoD 为准。
+本轮已补齐的关键生产语义包括：Alert→V2 durable evaluation 单路径、发布期子剧本已发布/无环/最大深度 5 门禁、父子/并行共享 Run 级执行预算、数据库行锁的多实例 rule admission（含 revision 幂等键）、安全正则上限、真实会话 Cookie/OpenAPI `ApiResult`/`If-Match` 契约、V21/V22 数据库完整性约束、S3/MinIO 对象存储边界、Kubernetes/Vault 可轮换 SecretResolver，以及 Temporal 不可用时只保留 durable backlog 的故障脚本。生产 secret 与 artifact credential 引用必须使用 `k8s://` 或 `vault://`，禁用环境变量回退；预览环境才允许 `env://` 兼容解析。仍需在目标环境完成的发布门禁包括：对象存储的版本化/保留/恢复与密钥轮换证据、真实厂商 endpoint/firewall/EDR 认证与 reconcile/compensate、KMS/HSM provider（如环境要求）、PostgreSQL/Temporal replay/chaos/capacity、安全负例、图编辑器的完整 Playwright/可访问性验收和五条场景的 UI/业务副作用证据。当前实现提供受控 adapter 和明确的 `PRODUCTION_READY` 前置条件，不把模拟调用标记为生产成功；发布仍必须以第 20 节 DoD 为准。

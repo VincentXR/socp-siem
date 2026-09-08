@@ -39,3 +39,17 @@
 ## 事故处置底线
 
 不要用 SQL 直接把 `FAILED`、`ACTION_UNKNOWN`、`CANCELLING` 改成成功；不要删除事件、attempt、receipt 或审批记录；不要在未完成目标环境认证前打开高风险 connector。所有人工修复都应通过 API 并保留审计事件。
+
+## Secret provider configuration
+
+Preview defaults to `env://` references. Production defaults to the Kubernetes
+projected-volume provider; each `k8s://namespace/secret/key` lookup reads the
+mounted file on demand, so atomic Secret rotation is visible without a
+restart. Set `SOCP_SOAR_SECRET_BACKEND=vault` for Vault KV references in the
+form `vault://mount/path#field`; configure an HTTPS `SOCP_SOAR_VAULT_ENDPOINT`
+and a `SOCP_SOAR_VAULT_TOKEN_REF` backed by `k8s://`. Production artifact
+access/secret references must use the selected rotatable provider (`k8s://`
+for Kubernetes or `vault://` for Vault); environment fallback is disabled.
+Secret values are never persisted in definitions, Temporal payloads, logs, or
+API responses. The `/health` payload reports the selected resolver without
+exposing its configuration or values.
