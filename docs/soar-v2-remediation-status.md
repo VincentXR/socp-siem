@@ -35,7 +35,7 @@
 ## 本次本地验证
 
 - `python build/verify-soar.py`：静态 SOAR 契约检查通过（部署探针因未配置 URL 而跳过）；
-- `python -m unittest discover -s build/tests -p 'test_*.py'`：20 项通过，包含 live
+- `python -m unittest discover -s build/tests -p 'test_*.py'`：21 项通过，包含 live
   verifier 的 URL、envelope、SSE frame、边界剧本和租户 trace 单元检查；
 - `python build/verify-soar-live.py`：使用隔离 PostgreSQL 18 + Temporal 1.24 + 双 SOAR
   实例实跑，24 项通过、0 失败、0 警告；结果保存在 `.cache/soar-v2-live-local.json`（未纳入提交）；
