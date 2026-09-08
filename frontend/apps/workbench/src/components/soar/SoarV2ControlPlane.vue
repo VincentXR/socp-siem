@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/card/style/css.mjs'
+import 'element-plus/es/components/select/style/css.mjs'
 import 'element-plus/es/components/tag/style/css.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElCard from 'element-plus/es/components/card/index.mjs'
+import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
+import FieldConditionBuilder from '../FieldConditionBuilder.vue'
 import { useI18n } from '../../composables/useI18n'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import {
@@ -18,6 +21,8 @@ import {
   listV2Connections,
   listV2DeadDispatches,
   listV2ManualTasksPage,
+  listV2Playbooks,
+  listV2Versions,
   patchV2AutomationRule,
   requeueV2DeadDispatch,
   setV2AutomationRuleEnabled,
@@ -32,6 +37,7 @@ import {
   type SoarV2ManualTask,
   type SoarV2Stats,
 } from '../../api'
+import type { FieldDef, RuleCondition } from '../../api'
 
 export type SoarControlPlaneSection = 'rules' | 'connections' | 'tasks' | 'operations' | 'connections-and-ops' | 'all'
 type Tab = 'rules' | 'connections' | 'tasks' | 'operations'
@@ -72,9 +78,20 @@ const showRuleForm = ref(false)
 const showConnectionForm = ref(false)
 const ruleEventText = ref('{\n  "eventId": "sample-alert-1",\n  "type": "alert.created",\n  "severity": "HIGH"\n}')
 const ruleTestResult = ref<Record<string, unknown>[] | null>(null)
+const ruleConditionRows = ref<RuleCondition[]>([])
+const automationFields: FieldDef[] = [
+  { id: 'automation-event-type', fieldName: 'type', fieldLabel: 'Event type', fieldType: 'string', source: 'automation event', searchable: true, aggregatable: false, stored: true, description: 'alert.created, case.updated, or another event type' },
+  { id: 'automation-severity', fieldName: 'severity', fieldLabel: 'Severity', fieldType: 'string', source: 'automation event', searchable: true, aggregatable: false, stored: true, description: 'INFO through CRITICAL' },
+  { id: 'automation-source', fieldName: 'source', fieldLabel: 'Source', fieldType: 'string', source: 'automation event', searchable: true, aggregatable: false, stored: true, description: 'Event source or collector' },
+  { id: 'automation-host', fieldName: 'host', fieldLabel: 'Host', fieldType: 'string', source: 'automation event', searchable: true, aggregatable: false, stored: true, description: 'Host associated with the event' },
+  { id: 'automation-entity', fieldName: 'entity', fieldLabel: 'Entity', fieldType: 'string', source: 'automation event', searchable: true, aggregatable: false, stored: true, description: 'User, host, IP, or other entity' },
+]
+const publishedVersionOptions = ref<Array<{ id: string; playbookName: string; version: number; status: string }>>([])
+const versionOptionsLoading = ref(false)
+const versionOptionsError = ref('')
 const taskInputs = reactive<Record<string, string>>({})
 const ruleForm = reactive({
-  name: '', triggerType: 'alert.created', priority: 100, playbookVersionIds: '',
+  name: '', triggerType: 'alert.created', priority: 100, playbookVersionIds: [] as string[],
   conditions: '{}', suppression: '{\n  "dedupWindowSeconds": 300,\n  "conflictStrategy": "QUEUE"\n}',
 })
 const connectionForm = reactive({
@@ -108,10 +125,54 @@ async function load() {
   loading.value = false
 }
 
+async function loadPublishedVersionOptions(): Promise<void> {
+  if (versionOptionsLoading.value) return
+  versionOptionsLoading.value = true
+  versionOptionsError.value = ''
+  try {
+    const page = await listV2Playbooks(0, 100)
+    const results = await Promise.allSettled(page.items.map(async playbook => {
+      const versions = await listV2Versions(playbook.id)
+      return versions
+        .filter(version => version.status === 'PUBLISHED')
+        .map(version => ({ id: version.id, playbookName: playbook.name, version: version.version, status: version.status }))
+    }))
+    publishedVersionOptions.value = results
+      .filter((result): result is PromiseFulfilledResult<Array<{ id: string; playbookName: string; version: number; status: string }>> => result.status === 'fulfilled')
+      .flatMap(result => result.value)
+    if (!publishedVersionOptions.value.length && results.some(result => result.status === 'rejected')) {
+      versionOptionsError.value = 'Published version catalog is unavailable; paste an ID in advanced mode.'
+    }
+  } catch (failure) {
+    versionOptionsError.value = failureText(failure)
+  } finally {
+    versionOptionsLoading.value = false
+  }
+}
+
+function syncRuleConditionRows(): void {
+  try {
+    const parsed = parseJson(ruleForm.conditions, {})
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) { ruleConditionRows.value = []; return }
+    ruleConditionRows.value = Object.entries(parsed as Record<string, unknown>).map(([field, value]) => ({ field, op: 'eq', value: String(value) }))
+  } catch { ruleConditionRows.value = [] }
+}
+
+function commitRuleConditionRows(rows: RuleCondition[]): void {
+  ruleConditionRows.value = rows.map(row => ({ ...row }))
+  const conditions = Object.fromEntries(ruleConditionRows.value.filter(row => row.field.trim() && row.value.trim()).map(row => [row.field.trim(), row.value.trim()]))
+  ruleForm.conditions = JSON.stringify(conditions, null, 2)
+}
+
+function toggleRuleForm(): void {
+  showRuleForm.value = !showRuleForm.value
+  if (showRuleForm.value) { syncRuleConditionRows(); void loadPublishedVersionOptions() }
+}
+
 async function createRule() {
   clearFeedback()
   try {
-    const ids = ruleForm.playbookVersionIds.split(/[,\n]/).map(value => value.trim()).filter(Boolean)
+    const ids = ruleForm.playbookVersionIds.map(value => value.trim()).filter(Boolean)
     if (!ruleForm.name.trim() || !ids.length) throw new Error('Rule name and at least one published version are required')
     await createV2AutomationRule({
       name: ruleForm.name.trim(), triggerType: ruleForm.triggerType.trim() || 'ANY',
@@ -120,6 +181,8 @@ async function createRule() {
       suppression: parseJson(ruleForm.suppression),
     })
     showRuleForm.value = false
+    ruleForm.name = ''
+    ruleForm.playbookVersionIds = []
     message.value = 'Automation rule created disabled; enable it after review'
     await load()
   } catch (failure) { errorMessage.value = failureText(failure) }
@@ -233,13 +296,21 @@ onMounted(() => { void load() })
     <div v-if="errorMessage" class="soar-v2-feedback error">{{ errorMessage }}</div>
 
     <section v-if="tab === 'rules'" class="soar-v2-control-section">
-      <div class="soar-v2-section-toolbar"><div><b>Event → playbook routing</b><small>Rules are disabled by default when created and bind only immutable published versions.</small></div><div><el-button size="small" @click="showRuleForm = !showRuleForm">{{ showRuleForm ? 'Close form' : 'New rule' }}</el-button><el-button size="small" @click="testRules">Test event</el-button></div></div>
+      <div class="soar-v2-section-toolbar"><div><b>Event → playbook routing</b><small>Rules are disabled by default when created and bind only immutable published versions.</small></div><div><el-button size="small" @click="toggleRuleForm">{{ showRuleForm ? 'Close form' : 'New rule' }}</el-button><el-button size="small" @click="testRules">Test event</el-button></div></div>
       <div v-if="showRuleForm" class="soar-v2-form-grid">
         <label>Name<input v-model="ruleForm.name" placeholder="High severity response" /></label>
         <label>Trigger type<input v-model="ruleForm.triggerType" placeholder="alert.created" /></label>
         <label>Priority<input v-model.number="ruleForm.priority" type="number" min="0" max="10000" /></label>
-        <label>Published version IDs<textarea v-model="ruleForm.playbookVersionIds" rows="2" placeholder="one version id per line" /></label>
-        <label>Conditions JSON<textarea v-model="ruleForm.conditions" rows="3" spellcheck="false" /></label>
+        <label>Published versions
+          <el-select v-model="ruleForm.playbookVersionIds" multiple filterable allow-create default-first-option collapse-tags :loading="versionOptionsLoading" placeholder="Search published playbook versions">
+            <el-option v-for="version in publishedVersionOptions" :key="version.id" :label="`${version.playbookName} · v${version.version}`" :value="version.id"><div class="soar-v2-version-option"><b>{{ version.playbookName }} · v{{ version.version }}</b><small>{{ version.id }}</small></div></el-option>
+          </el-select>
+          <small v-if="versionOptionsError" class="soar-v2-field-warning">{{ versionOptionsError }}</small>
+        </label>
+        <div class="soar-v2-condition-builder">
+          <FieldConditionBuilder :model-value="ruleConditionRows" :fields="automationFields" title="Conditions" add-label="Add condition" empty-hint="No simple conditions; use advanced JSON for nested logic." field-placeholder="Select event field" value-placeholder="Expected value" @update:model-value="commitRuleConditionRows" />
+          <details class="soar-v2-inline-details"><summary>Advanced conditions JSON</summary><textarea v-model="ruleForm.conditions" rows="3" spellcheck="false" /></details>
+        </div>
         <label>Suppression JSON<textarea v-model="ruleForm.suppression" rows="3" spellcheck="false" /></label>
         <div class="soar-v2-form-actions"><el-button type="primary" size="small" @click="createRule">Create disabled rule</el-button></div>
       </div>
@@ -284,7 +355,7 @@ onMounted(() => { void load() })
 .soar-v2-feedback { margin: 8px 0; padding: 7px 10px; border-radius: 5px; font-size: 11px; }.soar-v2-feedback.success { color: var(--ns-success); background: color-mix(in srgb, var(--ns-success) 9%, transparent); }.soar-v2-feedback.error { color: var(--ns-danger); background: color-mix(in srgb, var(--ns-danger) 9%, transparent); }
 .soar-v2-control-section { min-width: 0; }.soar-v2-section-toolbar { margin-bottom: 10px; }.soar-v2-section-toolbar > div:first-child { min-width: 0; }
 .soar-v2-form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; margin: 10px 0; padding: 10px; border: 1px solid var(--ns-border); border-radius: 5px; background: var(--ns-bg-subtle); }
-.soar-v2-form-grid label { display: flex; flex-direction: column; gap: 4px; color: var(--ns-text-3); font-size: 10px; }.soar-v2-form-grid input, .soar-v2-form-grid textarea, .soar-v2-test-box textarea, .soar-v2-task-input { width: 100%; box-sizing: border-box; border: 1px solid var(--ns-border); border-radius: 4px; padding: 6px 7px; background: var(--ns-bg); color: var(--ns-text); font: inherit; font-size: 11px; }.soar-v2-form-grid textarea, .soar-v2-test-box textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }.soar-v2-form-actions { align-self: end; }.soar-v2-checkbox { justify-content: flex-end; flex-direction: row !important; align-items: center; gap: 7px !important; }.soar-v2-checkbox input { width: auto; }
+.soar-v2-form-grid label { display: flex; flex-direction: column; gap: 4px; color: var(--ns-text-3); font-size: 10px; }.soar-v2-form-grid input, .soar-v2-form-grid textarea, .soar-v2-form-grid .el-select, .soar-v2-test-box textarea, .soar-v2-task-input { width: 100%; box-sizing: border-box; border: 1px solid var(--ns-border); border-radius: 4px; padding: 6px 7px; background: var(--ns-bg); color: var(--ns-text); font: inherit; font-size: 11px; }.soar-v2-form-grid .el-select { padding: 0; border: 0; }.soar-v2-form-grid textarea, .soar-v2-test-box textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }.soar-v2-form-actions { align-self: end; }.soar-v2-checkbox { justify-content: flex-end; flex-direction: row !important; align-items: center; gap: 7px !important; }.soar-v2-checkbox input { width: auto; }.soar-v2-version-option { display: flex; flex-direction: column; gap: 2px; line-height: 1.25; }.soar-v2-version-option small, .soar-v2-field-warning { color: var(--ns-warning); font-size: 9px; }
 .soar-v2-test-box { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 9px; margin-bottom: 10px; }.soar-v2-test-box pre { max-height: 100px; margin: 0; overflow: auto; padding: 7px; border: 1px solid var(--ns-border); border-radius: 4px; font-size: 10px; }
 .soar-v2-table-scroll { max-height: 330px; overflow: auto; }.soar-v2-control-plane table { width: 100%; border-collapse: collapse; font-size: 10px; }.soar-v2-control-plane th, .soar-v2-control-plane td { padding: 7px 6px; border-bottom: 1px solid var(--ns-border); text-align: left; vertical-align: top; }.soar-v2-control-plane th { color: var(--ns-text-3); font-size: 9px; text-transform: uppercase; }.soar-v2-control-plane td b, .soar-v2-control-plane td small { display: block; }.soar-v2-control-plane td small { margin-top: 2px; color: var(--ns-text-3); font-size: 9px; }.mono { max-width: 300px; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }.nowrap { white-space: nowrap; }.soar-v2-empty { padding: 10px 0; color: var(--ns-text-3); font-size: 11px; }
 .soar-v2-inline-details { position: relative; display: inline-block; margin-left: 6px; color: var(--ns-text-2); font-size: 10px; }.soar-v2-inline-details summary { cursor: pointer; }.soar-v2-action-catalog { position: absolute; z-index: 2; right: 0; top: 22px; display: grid; width: min(520px, 80vw); max-height: 240px; overflow: auto; gap: 6px; padding: 9px; border: 1px solid var(--ns-border); border-radius: 5px; background: var(--ns-bg); box-shadow: 0 5px 20px rgb(0 0 0 / 16%); }.soar-v2-action-catalog span { display: flex; justify-content: space-between; gap: 10px; }.soar-v2-action-catalog small { color: var(--ns-text-3); }.soar-v2-task-input { min-width: 180px; }.soar-v2-stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 14px; }.soar-v2-stat-grid > div { padding: 10px; border: 1px solid var(--ns-border); border-radius: 5px; background: var(--ns-bg-subtle); }.soar-v2-stat-grid b, .soar-v2-stat-grid small { display: block; }.soar-v2-stat-grid b { font-size: 20px; }.soar-v2-stat-grid small { margin-top: 3px; color: var(--ns-text-3); font-size: 10px; }

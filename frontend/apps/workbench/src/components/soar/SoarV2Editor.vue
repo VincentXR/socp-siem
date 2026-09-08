@@ -5,9 +5,15 @@ import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/minimap/dist/style.css'
 import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/card/style/css.mjs'
+import 'element-plus/es/components/dialog/style/css.mjs'
+import 'element-plus/es/components/form/style/css.mjs'
+import 'element-plus/es/components/input/style/css.mjs'
 import 'element-plus/es/components/tag/style/css.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElCard from 'element-plus/es/components/card/index.mjs'
+import ElDialog from 'element-plus/es/components/dialog/index.mjs'
+import { ElForm, ElFormItem } from 'element-plus/es/components/form/index.mjs'
+import ElInput from 'element-plus/es/components/input/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { VueFlow, useVueFlow } from '@vue-flow/core'
@@ -23,6 +29,7 @@ import {
   getV2Version,
   listV2Playbooks,
   listV2Versions,
+  queueV2Run,
   publishV2Version,
   saveV2Version,
   validateV2Version,
@@ -68,7 +75,11 @@ const props = withDefaults(defineProps<{
   initialPlaybookId?: string
   /** External "open this run in the editor" request from the run inspector. */
   openRun?: RunOpenRequest | null
-}>(), { initialPlaybookId: '', openRun: null })
+  /** Incrementing token used by the page-level Create Playbook action. */
+  createRequest?: number
+  /** Optional alert context passed from the alarm workbench. */
+  contextAlarmId?: string
+}>(), { initialPlaybookId: '', openRun: null, createRequest: 0, contextAlarmId: '' })
 const emit = defineEmits<{ saved: [SoarV2Version]; 'dirty-change': [dirty: boolean] }>()
 
 const { t } = useI18n()
@@ -85,14 +96,33 @@ const selectedVersionNo = ref<number | null>(null)
 const definitionText = ref('')
 const rowVersion = ref<number | undefined>()
 const validation = ref<ValidationResult | null>(null)
-const dryRunText = ref('{\n  "eventId": "sample-alert-1",\n  "eventType": "alert.created",\n  "severity": "HIGH"\n}')
+const dryRunText = ref('')
 const dryRunResult = ref<JsonObject | null>(null)
 const loading = ref(false)
 const saving = ref(false)
+const runBusy = ref(false)
 const message = ref('')
 const errorMessage = ref('')
 /** Token of the openRun request already handled (guards re-runs/re-mounts). */
 const handledOpenRunToken = ref<string | null>(null)
+const handledCreateRequest = ref(0)
+const newPlaybookVisible = ref(false)
+const newPlaybookSaving = ref(false)
+const newPlaybookError = ref('')
+const newPlaybookForm = ref({ name: '', description: '', tags: '' })
+
+function defaultDryRunInput(): JsonObject {
+  return {
+    eventId: props.contextAlarmId || 'sample-alert-1',
+    eventType: 'alert.created',
+    severity: 'HIGH',
+    ...(props.contextAlarmId ? { alarmId: props.contextAlarmId } : {}),
+  }
+}
+
+function resetDryRunInput(): void {
+  dryRunText.value = JSON.stringify(defaultDryRunInput(), null, 2)
+}
 
 const runLegendEntries = computed(() => summarizeRunHighlights(flow.runHighlights.value))
 
@@ -232,13 +262,27 @@ async function handleOpenRunRequest(request: RunOpenRequest): Promise<void> {
   }
 }
 
+function openNewPlaybookDialog(): void {
+  if (!discardGuard()) return
+  newPlaybookError.value = ''
+  newPlaybookForm.value = { name: '', description: '', tags: '' }
+  newPlaybookVisible.value = true
+}
+
 async function createPlaybookAndVersion() {
   if (!discardGuard()) return
-  const name = window.prompt('V2 playbook name')?.trim()
-  if (!name) return
+  const name = newPlaybookForm.value.name.trim()
+  if (!name) {
+    newPlaybookError.value = t('soarV2.playbookNameRequired')
+    return
+  }
+  newPlaybookSaving.value = true
+  newPlaybookError.value = ''
   loading.value = true
   try {
-    const playbook = await createV2Playbook({ name, description: 'Created in the SOAR V2 graph editor', tags: [] })
+    const description = newPlaybookForm.value.description.trim() || undefined
+    const tags = newPlaybookForm.value.tags.split(/[,，\n]/).map(tag => tag.trim()).filter(Boolean)
+    const playbook = await createV2Playbook({ name, description, tags })
     const version = await createV2Version(playbook.id)
     playbooks.value = [playbook, ...playbooks.value.filter(item => item.id !== playbook.id)]
     selectedPlaybookId.value = playbook.id
@@ -247,11 +291,13 @@ async function createPlaybookAndVersion() {
     rowVersion.value = version.rowVersion
     flow.applyDefinition(version.definition)
     validation.value = null
-    message.value = 'Created a new draft'
+    newPlaybookVisible.value = false
+    message.value = t('soarV2.createdDraft')
   } catch (failure) {
-    errorMessage.value = failure instanceof Error ? failure.message : 'Unable to create playbook'
+    newPlaybookError.value = failure instanceof Error ? failure.message : t('soarV2.createFailed')
   } finally {
     loading.value = false
+    newPlaybookSaving.value = false
   }
 }
 
@@ -352,10 +398,38 @@ async function dryRun() {
   if (!selectedPlaybookId.value || !selectedVersionNo.value) return
   try {
     const inputs = JSON.parse(dryRunText.value) as JsonObject
-    dryRunResult.value = await dryRunV2Version(selectedPlaybookId.value, selectedVersionNo.value, {}, inputs) as JsonObject
+    dryRunResult.value = await dryRunV2Version(selectedPlaybookId.value, selectedVersionNo.value, contextSubject(), inputs) as JsonObject
     errorMessage.value = ''
   } catch (failure) {
     errorMessage.value = `Dry-run failed: ${failure instanceof Error ? failure.message : 'invalid input'}`
+  }
+}
+
+function contextSubject(): JsonObject {
+  return props.contextAlarmId ? { alarmId: props.contextAlarmId } : {}
+}
+
+async function queueRun(): Promise<void> {
+  const version = selectedVersion.value
+  if (!version || version.status !== 'PUBLISHED' || runBusy.value) return
+  runBusy.value = true
+  errorMessage.value = ''
+  try {
+    const inputs = JSON.parse(dryRunText.value || '{}') as JsonObject
+    const requestId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `workbench-${Date.now()}`
+    const result = await queueV2Run({
+      requestId,
+      playbookVersionId: version.id,
+      subject: contextSubject(),
+      inputs,
+    })
+    message.value = `${t('soarV2.runQueued')} ${result.runId}`
+  } catch (failure) {
+    errorMessage.value = failure instanceof Error ? failure.message : t('soarV2.runQueueFailed')
+  } finally {
+    runBusy.value = false
   }
 }
 
@@ -456,6 +530,13 @@ watch(() => props.openRun, (request) => {
   if (request && request.token !== handledOpenRunToken.value) void handleOpenRunRequest(request)
 })
 
+watch(() => props.createRequest, (request) => {
+  if (request && request !== handledCreateRequest.value) {
+    handledCreateRequest.value = request
+    openNewPlaybookDialog()
+  }
+})
+
 watch(() => flow.dirty.value, (dirty) => {
   emit('dirty-change', dirty)
 })
@@ -466,11 +547,16 @@ defineExpose({
 })
 
 onMounted(() => {
+  resetDryRunInput()
   document.addEventListener('keydown', onKeyDown)
   if (props.openRun && props.openRun.token !== handledOpenRunToken.value) {
     void handleOpenRunRequest(props.openRun)
   } else {
     void loadCatalog()
+  }
+  if (props.createRequest && props.createRequest !== handledCreateRequest.value) {
+    handledCreateRequest.value = props.createRequest
+    openNewPlaybookDialog()
   }
 })
 
@@ -485,8 +571,9 @@ onUnmounted(() => {
     <template #header>
       <div class="soar-v2-editor-header">
         <div>
-          <strong>SOAR V2 · Playbook graph editor</strong>
-          <span class="soar-v2-subtitle">immutable versions · safe nodes · dry-run before publish</span>
+          <strong>{{ t('soarV2.editorTitle') }}</strong>
+          <span class="soar-v2-subtitle">{{ t('soarV2.editorSubtitle') }}</span>
+          <span v-if="props.contextAlarmId" class="soar-v2-context-note">{{ t('soarV2.contextAlarm') }} {{ props.contextAlarmId }}</span>
         </div>
         <div class="soar-v2-editor-selects">
           <select v-model="selectedPlaybookId" aria-label="V2 playbook" @change="changePlaybook">
@@ -502,9 +589,9 @@ onUnmounted(() => {
     </template>
 
     <div class="soar-v2-editor-toolbar">
-      <el-button size="small" @click="createPlaybookAndVersion">New V2 playbook</el-button>
-      <el-button size="small" :disabled="!selectedPlaybookId" @click="createVersion">New draft version</el-button>
-      <el-button size="small" :loading="loading" @click="loadCatalog">Reload</el-button>
+      <el-button type="primary" size="small" @click="openNewPlaybookDialog">{{ t('soarV2.blankPlaybook') }}</el-button>
+      <el-button size="small" :disabled="!selectedPlaybookId" @click="createVersion">{{ t('soarV2.newDraftVersion') }}</el-button>
+      <el-button size="small" :loading="loading" @click="loadCatalog">{{ t('common.refresh') }}</el-button>
       <el-button
         size="small"
         :disabled="!flow.canUndo.value"
@@ -527,16 +614,17 @@ onUnmounted(() => {
       <el-tag v-if="validation" size="small" :type="flow.validationStale.value ? 'info' : validation.valid ? 'success' : 'danger'">
         {{ flow.validationStale.value ? 'OUTDATED' : validation.valid ? 'VALID' : 'INVALID' }}{{ issueCount ? ` · ${issueCount}` : '' }}
       </el-tag>
-      <el-button size="small" @click="validate" :disabled="!selectedVersionNo">Validate</el-button>
-      <el-button size="small" @click="dryRun" :disabled="!selectedVersionNo">Dry-run</el-button>
+      <el-button size="small" @click="validate" :disabled="!selectedVersionNo">{{ t('soarV2.validate') }}</el-button>
+      <el-button size="small" @click="dryRun" :disabled="!selectedVersionNo">{{ t('soarV2.dryRun') }}</el-button>
+      <el-button size="small" type="warning" plain :loading="runBusy" :disabled="selectedVersion?.status !== 'PUBLISHED'" @click="queueRun">{{ t('soarV2.queueRun') }}</el-button>
       <el-button
         size="small"
         :type="hasUnsavedChanges ? 'primary' : 'default'"
         :loading="saving"
         :disabled="!isDraft || !hasUnsavedChanges"
         @click="save"
-      >Save draft</el-button>
-      <el-button size="small" type="success" @click="publish" :disabled="!isDraft">Publish</el-button>
+      >{{ t('soarV2.saveDraft') }}</el-button>
+      <el-button size="small" type="success" @click="publish" :disabled="!isDraft">{{ t('soarV2.publish') }}</el-button>
     </div>
 
     <div v-if="message" class="soar-v2-editor-message">{{ message }}</div>
@@ -587,6 +675,17 @@ onUnmounted(() => {
       <SoarFlowPropertyPanel :flow="flow" :node="selectedRawNode" />
     </div>
 
+    <el-dialog v-model="newPlaybookVisible" :title="t('soarV2.createBlankTitle')" width="520px">
+      <p class="soar-v2-dialog-hint">{{ t('soarV2.createBlankHint') }}</p>
+      <el-form label-position="top">
+        <el-form-item :label="t('common.name')" required><el-input v-model="newPlaybookForm.name" :placeholder="t('soarV2.playbookNamePlaceholder')" /></el-form-item>
+        <el-form-item :label="t('common.description')"><el-input v-model="newPlaybookForm.description" type="textarea" :rows="2" /></el-form-item>
+        <el-form-item :label="t('soarV2.tags')"><el-input v-model="newPlaybookForm.tags" :placeholder="t('soarV2.tagsPlaceholder')" /></el-form-item>
+      </el-form>
+      <div v-if="newPlaybookError" class="soar-v2-editor-error">{{ newPlaybookError }}</div>
+      <template #footer><el-button @click="newPlaybookVisible = false">{{ t('common.cancel') }}</el-button><el-button type="primary" :loading="newPlaybookSaving" @click="createPlaybookAndVersion">{{ t('soarV2.openCanvas') }}</el-button></template>
+    </el-dialog>
+
     <div class="soar-v2-editor-lower">
       <div class="soar-v2-json-panel">
         <div class="soar-v2-panel-title">Definition JSON · advanced import/export</div>
@@ -622,6 +721,7 @@ onUnmounted(() => {
 .soar-v2-editor-message, .soar-v2-editor-error { margin: 6px 0 10px; border-radius: 5px; padding: 7px 10px; font-size: 12px; }
 .soar-v2-editor-message { color: var(--ns-success); background: color-mix(in srgb, var(--ns-success) 10%, transparent); }
 .soar-v2-editor-error { color: var(--ns-danger); background: color-mix(in srgb, var(--ns-danger) 10%, transparent); }
+.soar-v2-dialog-hint { margin: 0 0 14px; color: var(--ns-text-2); font-size: 12px; line-height: 1.5; }
 .soar-v2-editor-body { display: grid; grid-template-columns: 180px minmax(560px, 1fr) 260px; min-height: 570px; border: 1px solid var(--ns-border); border-radius: 6px; overflow: hidden; }
 .soar-v2-canvas-panel { display: flex; min-width: 0; flex-direction: column; background: var(--ns-bg); }
 .soar-v2-canvas { position: relative; min-height: 540px; flex: 1; background: var(--ns-bg); }

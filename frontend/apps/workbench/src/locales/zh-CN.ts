@@ -422,6 +422,8 @@ export const zhCN = {
     targetPlaceholder: 'Webhook URL / 邮箱',
   },
   detect: {
+    noConditions: '暂无条件，请添加字段比较。',
+    disableBeforeDelete: '请先停用规则再删除；已归档或有引用的规则应保留。',
     workspaceDescription: '在同一工作区完成规则配置、隔离测试和生命周期管理。',
     queueLoad: '检测队列负载',
     loadFailed: '规则数据加载失败',

@@ -1,12 +1,19 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import 'element-plus/es/components/button/style/css.mjs'
+import 'element-plus/es/components/input/style/css.mjs'
+import 'element-plus/es/components/select/style/css.mjs'
 import 'element-plus/es/components/tag/style/css.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
+import ElInput from 'element-plus/es/components/input/index.mjs'
+import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
-import { listV2Actions, listV2Connections, type SoarV2ActionDescriptor, type SoarV2Connection } from '../../../api'
+import FieldConditionBuilder from '../../FieldConditionBuilder.vue'
+import VariableSelector, { type VariableOption } from '../../VariableSelector.vue'
+import { listV2Actions, listV2Connections, listV2Playbooks, listV2Versions, type SoarV2ActionDescriptor, type SoarV2Connection } from '../../../api'
 import { NODE_TYPE_ORDER, SOAR_NODE_REGISTRY } from './nodeRegistry'
 import { rawNodeType, isUnsupportedNodeType, readSwitchCases, type SoarFlowApi } from './useDefinitionFlow'
+import type { FieldDef, RuleCondition } from '../../../api'
 import type { EditorNode, ValidationIssue } from './types'
 import { useI18n } from '../../../composables/useI18n'
 
@@ -21,10 +28,45 @@ const unsupported = computed(() => Boolean(props.node) && isUnsupportedNodeType(
 
 const typeOptions = computed(() => NODE_TYPE_ORDER.map(type => SOAR_NODE_REGISTRY[type]))
 
+const variableOptions = computed<VariableOption[]>(() => {
+  // Read the graph through graphRevision so a newly added node immediately
+  // becomes available as a selectable output without changing raw definitions.
+  props.flow.graphRevision.value
+  const definition = props.flow.getDefinition()
+  const options: VariableOption[] = [
+    { value: 'trigger.event', label: 'Trigger event', kind: 'trigger', description: 'The event that started this run' },
+    { value: 'trigger.eventId', label: 'Trigger event ID', kind: 'trigger' },
+    { value: 'trigger.alertId', label: 'Trigger alert ID', kind: 'trigger' },
+    { value: 'trigger.entity', label: 'Trigger entity', kind: 'trigger' },
+    { value: 'trigger.severity', label: 'Trigger severity', kind: 'trigger' },
+  ]
+  for (const item of definition.nodes) {
+    if (item.id === props.node?.id) continue
+    const name = typeof item.name === 'string' && item.name.trim() ? item.name : item.id
+    options.push({ value: `steps.${item.id}.output`, label: `${name} output`, kind: 'node', description: item.id })
+  }
+  const seen = new Set<string>()
+  return options.filter(option => !seen.has(option.value) && Boolean(seen.add(option.value)))
+})
+
+const conditionFields = computed<FieldDef[]>(() => variableOptions.value.map((option, index) => ({
+  id: `soar-${index}`,
+  fieldName: option.value,
+  fieldLabel: option.label,
+  fieldType: option.value.endsWith('severity') ? 'string' : 'string',
+  source: option.kind || 'workflow',
+  searchable: true,
+  aggregatable: false,
+  stored: true,
+  description: option.description || '',
+})))
+
 /* ---------- ACTION catalog (loaded lazily) ---------- */
 const actions = ref<SoarV2ActionDescriptor[]>([])
 const connections = ref<SoarV2Connection[]>([])
 const actionCatalogState = ref<'idle' | 'loading' | 'loaded' | 'error'>('idle')
+const subPlaybookVersions = ref<Array<{ id: string; playbookName: string; version: number; status: string }>>([])
+const subPlaybookCatalogState = ref<'idle' | 'loading' | 'loaded' | 'error'>('idle')
 
 async function loadActionCatalog(): Promise<void> {
   if (actionCatalogState.value === 'loading') return
@@ -62,6 +104,30 @@ watch(actions, (catalog) => {
     props.flow.touchAfterNodeEdit()
   }
 })
+
+async function loadSubPlaybookCatalog(): Promise<void> {
+  if (subPlaybookCatalogState.value === 'loading' || subPlaybookCatalogState.value === 'loaded') return
+  subPlaybookCatalogState.value = 'loading'
+  try {
+    const page = await listV2Playbooks(0, 100)
+    const results = await Promise.allSettled(page.items.map(async playbook => {
+      const versions = await listV2Versions(playbook.id)
+      return versions
+        .filter(version => version.status === 'PUBLISHED')
+        .map(version => ({ id: version.id, playbookName: playbook.name, version: version.version, status: version.status }))
+    }))
+    subPlaybookVersions.value = results
+      .filter((result): result is PromiseFulfilledResult<Array<{ id: string; playbookName: string; version: number; status: string }>> => result.status === 'fulfilled')
+      .flatMap(result => result.value)
+    subPlaybookCatalogState.value = 'loaded'
+  } catch {
+    subPlaybookCatalogState.value = 'error'
+  }
+}
+
+watch(nodeType, (type) => {
+  if (type === 'SUB_PLAYBOOK') void loadSubPlaybookCatalog()
+}, { immediate: true })
 
 const actionRefKnown = computed(() => {
   const ref = props.node ? String(props.node.actionRef ?? '') : ''
@@ -341,6 +407,209 @@ const selectedAction = computed<SoarV2ActionDescriptor | undefined>(() => {
   return ref ? actions.value.find(action => action.actionRef === ref) : undefined
 })
 
+const compatibleConnections = computed(() => {
+  const connectorId = selectedAction.value?.connectorId
+  if (!connectorId) return connections.value
+  const compatible = connections.value.filter(connection => connection.connectorType === connectorId)
+  return compatible.length ? compatible : connections.value
+})
+
+const conditionRows = ref<RuleCondition[]>([])
+const CONDITION_EXPRESSION_OPERATORS: Record<string, string> = {
+  eq: '==', ne: '!=', contains: 'contains', startswith: 'startsWith', endswith: 'endsWith',
+  gt: '>', gte: '>=', lt: '<', lte: '<=', regex: 'matches',
+}
+
+function expressionToConditions(expression: string): RuleCondition[] {
+  const match = expression.trim().match(/^([^\s]+)\s*(==|!=|>=|<=|>|<|contains|startsWith|endsWith|matches)\s*(?:['"](.*)['"]|(.*))$/i)
+  if (!match) return []
+  const operator = Object.entries(CONDITION_EXPRESSION_OPERATORS).find(([, value]) => value.toLowerCase() === match[2].toLowerCase())?.[0] || 'eq'
+  return [{ field: match[1], op: operator, value: String(match[3] ?? match[4] ?? '') }]
+}
+
+function syncConditionRows(): void {
+  const expression = props.node ? scalar(props.node, 'expression') : ''
+  conditionRows.value = expressionToConditions(expression)
+}
+
+function commitConditionRows(rows: RuleCondition[]): void {
+  conditionRows.value = rows.map(row => ({ ...row }))
+  const row = conditionRows.value[0]
+  if (!row?.field.trim() || !row.value.trim()) return
+  const operator = CONDITION_EXPRESSION_OPERATORS[row.op] || row.op
+  const value = /^[A-Za-z0-9_.:-]+$/.test(row.value.trim()) ? row.value.trim() : JSON.stringify(row.value.trim())
+  updateScalar('expression', `${row.field.trim()} ${operator} ${value}`)
+}
+
+watch(() => props.node, syncConditionRows, { immediate: true })
+
+function targetPath(): string {
+  const target = props.node?.target
+  if (!target || typeof target !== 'object' || Array.isArray(target)) return ''
+  const record = target as Record<string, unknown>
+  return typeof record.path === 'string' ? record.path : typeof record.ref === 'string' ? record.ref : ''
+}
+
+function updateTargetPath(value: string): void {
+  const node = props.node
+  if (!node) return
+  const current = node.target && typeof node.target === 'object' && !Array.isArray(node.target)
+    ? { ...(node.target as Record<string, unknown>) } : {}
+  if (value.trim()) current.path = value.trim()
+  else delete current.path
+  node.target = current
+  syncJsonEditors()
+  props.flow.touchAfterNodeEdit()
+}
+
+const approvalRoleOptions = ['admin', 'analyst', 'operator', 'approver']
+
+function approvalListValue(field: string): string[] {
+  const value = approvalConfig()[field]
+  return Array.isArray(value) ? value.map(String) : []
+}
+
+function updateApprovalList(field: string, value: string[]): void {
+  updateApprovalConfig(field, value.filter(item => item.trim()))
+}
+
+function asStringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(String) : []
+}
+
+interface ManualFieldRow {
+  name: string
+  title: string
+  type: string
+  required: boolean
+}
+
+function manualSchema(): { schema: Record<string, unknown>; inConfig: boolean } {
+  const node = props.node
+  const config = node?.config && typeof node.config === 'object' ? node.config as Record<string, unknown> : {}
+  const configSchema = config.formSchema && typeof config.formSchema === 'object' && !Array.isArray(config.formSchema)
+    ? config.formSchema as Record<string, unknown> : null
+  if (configSchema) return { schema: configSchema, inConfig: true }
+  const topSchema = node?.formSchema && typeof node.formSchema === 'object' && !Array.isArray(node.formSchema)
+    ? node.formSchema as Record<string, unknown> : null
+  if (topSchema) return { schema: topSchema, inConfig: false }
+  return { schema: { type: 'object', properties: {}, required: [] }, inConfig: true }
+}
+
+const manualFieldRows = computed<ManualFieldRow[]>(() => {
+  const { schema } = manualSchema()
+  const properties = schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)
+    ? schema.properties as Record<string, unknown> : {}
+  const required = new Set(Array.isArray(schema.required) ? schema.required.map(String) : [])
+  return Object.entries(properties).map(([name, value]) => {
+    const field = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+    return { name, title: String(field.title ?? name), type: String(field.type ?? 'string'), required: required.has(name) }
+  })
+})
+
+function writeManualSchema(schema: Record<string, unknown>): void {
+  const node = props.node
+  if (!node) return
+  const location = manualSchema()
+  if (location.inConfig) {
+    const config = node.config && typeof node.config === 'object' && !Array.isArray(node.config) ? { ...(node.config as Record<string, unknown>) } : {}
+    config.formSchema = schema
+    node.config = config
+  } else node.formSchema = schema
+  props.flow.touchAfterNodeEdit()
+}
+
+function updateManualField(name: string, patch: Partial<ManualFieldRow>): void {
+  const { schema } = manualSchema()
+  const properties = schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)
+    ? { ...(schema.properties as Record<string, unknown>) } : {}
+  const current = properties[name] && typeof properties[name] === 'object' && !Array.isArray(properties[name])
+    ? { ...(properties[name] as Record<string, unknown>) } : {}
+  if (patch.title !== undefined) current.title = patch.title
+  if (patch.type !== undefined) current.type = patch.type
+  properties[name] = current
+  const required = new Set(Array.isArray(schema.required) ? schema.required.map(String) : [])
+  if (patch.required === true) required.add(name)
+  if (patch.required === false) required.delete(name)
+  writeManualSchema({ ...schema, type: 'object', properties, required: [...required] })
+}
+
+function addManualField(): void {
+  const existing = new Set(manualFieldRows.value.map(field => field.name))
+  let index = 1
+  while (existing.has(`field_${index}`)) index += 1
+  const name = `field_${index}`
+  const { schema } = manualSchema()
+  const properties = schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)
+    ? { ...(schema.properties as Record<string, unknown>) } : {}
+  properties[name] = { title: name, type: 'string' }
+  writeManualSchema({ ...schema, type: 'object', properties, required: Array.isArray(schema.required) ? schema.required : [] })
+}
+
+function removeManualField(name: string): void {
+  const { schema } = manualSchema()
+  const properties = schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)
+    ? { ...(schema.properties as Record<string, unknown>) } : {}
+  delete properties[name]
+  const required = Array.isArray(schema.required) ? schema.required.map(String).filter(item => item !== name) : []
+  writeManualSchema({ ...schema, type: 'object', properties, required })
+}
+
+interface ActionInputField {
+  key: string
+  label: string
+  type: string
+  description?: string
+  enum?: string[]
+  required: boolean
+}
+
+const actionInputFields = computed<ActionInputField[]>(() => {
+  const schema = selectedAction.value?.inputSchema
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return []
+  const properties = (schema as Record<string, unknown>).properties
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) return []
+  const requiredValues = (schema as Record<string, unknown>).required
+  const required = Array.isArray(requiredValues) ? new Set(requiredValues.map(String)) : new Set<string>()
+  return Object.entries(properties as Record<string, unknown>).flatMap(([key, value]) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+    const field = value as Record<string, unknown>
+    return [{
+      key,
+      label: String(field.title ?? key),
+      type: String(field.type ?? 'string'),
+      description: typeof field.description === 'string' ? field.description : undefined,
+      enum: Array.isArray(field.enum) ? field.enum.map(String) : undefined,
+      required: required.has(key),
+    }]
+  })
+})
+
+function parameterValue(key: string): string {
+  const parameters = props.node?.parameters
+  if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) return ''
+  const value = (parameters as Record<string, unknown>)[key]
+  return value == null ? '' : String(value)
+}
+
+function updateParameterValue(field: ActionInputField, value: string): void {
+  const node = props.node
+  if (!node) return
+  const current = node.parameters && typeof node.parameters === 'object' && !Array.isArray(node.parameters)
+    ? { ...(node.parameters as Record<string, unknown>) } : {}
+  if (!value.trim()) delete current[field.key]
+  else if (field.type === 'number' || field.type === 'integer') {
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed)) return
+    current[field.key] = parsed
+  }
+  else if (field.type === 'boolean') current[field.key] = value === 'true'
+  else current[field.key] = value
+  node.parameters = current
+  syncJsonEditors()
+  props.flow.touchAfterNodeEdit()
+}
+
 function riskTag(risk: string): 'danger' | 'warning' | 'success' | 'info' {
   if (risk === 'CRITICAL' || risk === 'HIGH') return 'danger'
   if (risk === 'MEDIUM') return 'warning'
@@ -352,6 +621,10 @@ function connectionRefKnown(): boolean {
   const node = props.node
   const ref = node ? String(node.connectionRef ?? '') : ''
   return !ref || connections.value.some(connection => connection.id === ref)
+}
+
+function subPlaybookVersionKnown(id: string): boolean {
+  return subPlaybookVersions.value.some(version => version.id === id)
 }
 </script>
 
@@ -397,17 +670,21 @@ function connectionRefKnown(): boolean {
       <template v-if="nodeType === 'ACTION'">
         <label>
           Action ref
-          <input
-            :value="scalar(node, 'actionRef')"
-            :list="'soar-action-refs-' + node.id"
-            placeholder="socp.alert/get@1"
-            @input="updateScalar('actionRef', ($event.target as HTMLInputElement).value)"
-          />
-          <datalist :id="'soar-action-refs-' + node.id">
-            <option v-for="action in actions" :key="action.actionRef" :value="action.actionRef">
-              {{ action.displayName }} · {{ action.riskLevel }}
-            </option>
-          </datalist>
+          <el-select
+            :model-value="scalar(node, 'actionRef')"
+            filterable
+            default-first-option
+            clearable
+            placeholder="Search action"
+            @change="updateScalar('actionRef', String($event ?? ''))"
+          >
+            <el-option v-if="scalar(node, 'actionRef') && !actionRefKnown" :label="scalar(node, 'actionRef')" :value="scalar(node, 'actionRef')">
+              <div class="soar-flow-option"><b>{{ scalar(node, 'actionRef') }}</b><small>Unregistered reference · preserved</small></div>
+            </el-option>
+            <el-option v-for="action in actions" :key="action.actionRef" :value="action.actionRef" :label="action.displayName">
+              <div class="soar-flow-option"><b>{{ action.displayName }}</b><small>{{ action.actionRef }} · {{ action.riskLevel }} · {{ action.sideEffect }}</small></div>
+            </el-option>
+          </el-select>
         </label>
         <div class="soar-flow-catalog-toolbar">
           <el-tag v-if="!actionRefKnown && scalar(node, 'actionRef')" size="small" type="warning">unregistered ref</el-tag>
@@ -417,27 +694,47 @@ function connectionRefKnown(): boolean {
 
         <label>
           Connection ref
-          <input
-            :value="scalar(node, 'connectionRef')"
-            :list="'soar-connection-refs-' + node.id"
-            placeholder="optional connector id"
-            @input="updateScalar('connectionRef', ($event.target as HTMLInputElement).value)"
-          />
-          <datalist :id="'soar-connection-refs-' + node.id">
-            <option v-for="connection in connections" :key="connection.id" :value="connection.id">{{ connection.name }}</option>
-          </datalist>
+          <el-select
+            :model-value="scalar(node, 'connectionRef')"
+            filterable
+            clearable
+            placeholder="Search compatible connection"
+            @change="updateScalar('connectionRef', String($event ?? ''))"
+          >
+            <el-option v-if="scalar(node, 'connectionRef') && !connectionRefKnown()" :label="scalar(node, 'connectionRef')" :value="scalar(node, 'connectionRef')">
+              <div class="soar-flow-option"><b>{{ scalar(node, 'connectionRef') }}</b><small>Unregistered reference · preserved</small></div>
+            </el-option>
+            <el-option v-for="connection in compatibleConnections" :key="connection.id" :value="connection.id" :label="connection.name">
+              <div class="soar-flow-option"><b>{{ connection.name }}</b><small>{{ connection.connectorType }} · {{ connection.status }}</small></div>
+            </el-option>
+          </el-select>
         </label>
         <div v-if="scalar(node, 'connectionRef') && !connectionRefKnown()" class="soar-flow-warn-line">connection not in catalog</div>
 
         <div class="soar-flow-inspector-section">
-          <span>parameters</span>
-          <textarea v-model="parametersText" rows="4" spellcheck="false" />
-          <el-button size="small" @click="commitParameters">Apply</el-button>
+          <span>Parameters</span>
+          <div v-if="actionInputFields.length" class="soar-flow-parameter-form">
+            <label v-for="field in actionInputFields" :key="field.key">
+              <span>{{ field.label }}<i v-if="field.required">*</i></span>
+              <el-select v-if="field.enum?.length" :model-value="parameterValue(field.key)" clearable @change="updateParameterValue(field, String($event ?? ''))">
+                <el-option v-for="value in field.enum" :key="value" :label="value" :value="value" />
+              </el-select>
+              <el-select v-else-if="field.type === 'boolean'" :model-value="parameterValue(field.key)" clearable @change="updateParameterValue(field, String($event ?? ''))"><el-option label="true" value="true" /><el-option label="false" value="false" /></el-select>
+              <VariableSelector v-else-if="field.type === 'string'" :model-value="parameterValue(field.key)" :variables="variableOptions" placeholder="Select or enter a value" @update:model-value="value => updateParameterValue(field, value)" />
+              <el-input v-else :model-value="parameterValue(field.key)" :type="field.type === 'number' || field.type === 'integer' ? 'number' : 'text'" @update:model-value="value => updateParameterValue(field, String(value ?? ''))" />
+              <small v-if="field.description">{{ field.description }}</small>
+            </label>
+          </div>
+          <details class="soar-flow-advanced-details"><summary>Advanced parameters JSON</summary><textarea v-model="parametersText" rows="4" spellcheck="false" /><el-button size="small" @click="commitParameters">Apply JSON</el-button></details>
         </div>
         <div class="soar-flow-inspector-section">
-          <span>target</span>
-          <textarea v-model="targetText" rows="4" spellcheck="false" />
-          <el-button size="small" @click="commitTarget">Apply</el-button>
+          <span>Target</span>
+          <label class="soar-flow-common-field">
+            Common target path
+            <VariableSelector :model-value="targetPath()" :variables="variableOptions" placeholder="Select an event or node output" @update:model-value="updateTargetPath" />
+            <small>Stored as <code>target.path</code>; use advanced JSON for connector-specific targets.</small>
+          </label>
+          <details class="soar-flow-advanced-details" open><summary>Advanced target JSON</summary><textarea v-model="targetText" rows="4" spellcheck="false" /><el-button size="small" @click="commitTarget">Apply JSON</el-button></details>
         </div>
 
         <div v-if="hasRetry()" class="soar-flow-retry-grid">
@@ -449,10 +746,26 @@ function connectionRefKnown(): boolean {
       </template>
 
       <!-- CONDITION -->
-      <label v-if="nodeType === 'CONDITION'">
-        Expression
-        <input :value="scalar(node, 'expression')" placeholder="trigger.severity == 'HIGH'" @input="updateScalar('expression', ($event.target as HTMLInputElement).value)" />
-      </label>
+      <template v-if="nodeType === 'CONDITION'">
+        <div class="soar-flow-inspector-section">
+          <span>Visual condition</span>
+          <FieldConditionBuilder
+            :model-value="conditionRows"
+            :fields="conditionFields"
+            title="Field · operator · value"
+            add-label="Add condition"
+            empty-hint="This expression is complex; edit it in advanced mode."
+            field-placeholder="Select a workflow field"
+            value-placeholder="Expected value"
+            @update:model-value="commitConditionRows"
+          />
+          <small class="soar-flow-hint">The visual builder covers a single comparison. Existing complex expressions stay intact until you explicitly apply it.</small>
+        </div>
+        <label>
+          Expression
+          <input :value="scalar(node, 'expression')" placeholder="trigger.severity == 'HIGH'" @input="updateScalar('expression', ($event.target as HTMLInputElement).value)" />
+        </label>
+      </template>
 
       <!-- SWITCH -->
       <template v-if="nodeType === 'SWITCH'">
@@ -490,10 +803,27 @@ function connectionRefKnown(): boolean {
           <label>requiredApprovals
             <input type="number" min="1" :value="approvalNumberValue('requiredApprovals', 1)" @input="updateApprovalConfigNumber('requiredApprovals', ($event.target as HTMLInputElement).value)" />
           </label>
-          <label>allowedRoles<input :value="approvalTagsValue('allowedRoles')" placeholder="comma separated" @input="updateApprovalTags('allowedRoles', ($event.target as HTMLInputElement).value)" /></label>
-          <label>allowedGroups<input :value="approvalTagsValue('allowedGroups')" placeholder="comma separated" @input="updateApprovalTags('allowedGroups', ($event.target as HTMLInputElement).value)" /></label>
-          <label>approverRoles<input :value="approvalTagsValue('approverRoles')" placeholder="comma separated" @input="updateApprovalTags('approverRoles', ($event.target as HTMLInputElement).value)" /></label>
-          <label>approverGroups<input :value="approvalTagsValue('approverGroups')" placeholder="comma separated" @input="updateApprovalTags('approverGroups', ($event.target as HTMLInputElement).value)" /></label>
+          <label>Allowed roles
+            <el-select multiple filterable allow-create default-first-option :model-value="approvalListValue('allowedRoles')" placeholder="Select roles" @change="updateApprovalList('allowedRoles', asStringList($event))">
+              <el-option v-for="role in approvalRoleOptions" :key="role" :label="role" :value="role" />
+            </el-select>
+          </label>
+          <label>Allowed groups
+            <el-select multiple filterable allow-create default-first-option :model-value="approvalListValue('allowedGroups')" placeholder="Search or enter groups" @change="updateApprovalList('allowedGroups', asStringList($event))">
+              <el-option v-for="group in approvalListValue('allowedGroups')" :key="group" :label="group" :value="group" />
+            </el-select>
+          </label>
+          <label>Approver roles
+            <el-select multiple filterable allow-create default-first-option :model-value="approvalListValue('approverRoles')" placeholder="Select roles" @change="updateApprovalList('approverRoles', asStringList($event))">
+              <el-option v-for="role in approvalRoleOptions" :key="role" :label="role" :value="role" />
+            </el-select>
+          </label>
+          <label>Approver groups
+            <el-select multiple filterable allow-create default-first-option :model-value="approvalListValue('approverGroups')" placeholder="Search or enter groups" @change="updateApprovalList('approverGroups', asStringList($event))">
+              <el-option v-for="group in approvalListValue('approverGroups')" :key="group" :label="group" :value="group" />
+            </el-select>
+          </label>
+          <small class="soar-flow-hint">Groups use the tenant directory when available; existing values remain selectable if the directory is temporarily unavailable.</small>
         </div>
       </template>
 
@@ -501,11 +831,11 @@ function connectionRefKnown(): boolean {
       <template v-if="nodeType === 'FOREACH'">
         <label>
           itemsPath
-          <input :value="nestedTextValue('config', 'itemsPath')" placeholder="vars.items" @input="updateNested('config', 'itemsPath', ($event.target as HTMLInputElement).value)" />
+          <VariableSelector :model-value="nestedTextValue('config', 'itemsPath')" :variables="variableOptions" placeholder="Select a collection output" @update:model-value="value => updateNested('config', 'itemsPath', value)" />
         </label>
         <label>
           itemVariable
-          <input :value="nestedTextValue('config', 'itemVariable')" placeholder="vars.item" @input="updateNested('config', 'itemVariable', ($event.target as HTMLInputElement).value)" />
+          <VariableSelector :model-value="nestedTextValue('config', 'itemVariable')" :variables="variableOptions" placeholder="vars.item" @update:model-value="value => updateNested('config', 'itemVariable', value)" />
         </label>
         <div class="soar-flow-retry-grid">
           <label>concurrency<input type="number" min="1" max="10" :value="nestedNumberValue('limits', 'concurrency', 1)" @input="updateNestedNumber('limits', 'concurrency', ($event.target as HTMLInputElement).value, 1, 10)" /></label>
@@ -530,7 +860,11 @@ function connectionRefKnown(): boolean {
       <!-- SUB_PLAYBOOK -->
       <label v-if="nodeType === 'SUB_PLAYBOOK'">
         playbookVersionId
-        <input :value="scalar(node, 'playbookVersionId')" placeholder="published version id" @input="updateScalar('playbookVersionId', ($event.target as HTMLInputElement).value)" />
+        <el-select :model-value="scalar(node, 'playbookVersionId')" filterable allow-create default-first-option clearable :loading="subPlaybookCatalogState === 'loading'" placeholder="Search published version" @change="updateScalar('playbookVersionId', String($event ?? ''))">
+          <el-option v-if="scalar(node, 'playbookVersionId') && !subPlaybookVersionKnown(scalar(node, 'playbookVersionId'))" :label="scalar(node, 'playbookVersionId')" :value="scalar(node, 'playbookVersionId')" />
+          <el-option v-for="version in subPlaybookVersions" :key="version.id" :label="`${version.playbookName} · v${version.version}`" :value="version.id"><div class="soar-flow-option"><b>{{ version.playbookName }} · v{{ version.version }}</b><small>{{ version.id }} · {{ version.status }}</small></div></el-option>
+        </el-select>
+        <small v-if="subPlaybookCatalogState === 'error'" class="soar-flow-catalog-warning">Version catalog unavailable; paste a version ID if needed.</small>
       </label>
 
       <!-- DELAY -->
@@ -547,7 +881,7 @@ function connectionRefKnown(): boolean {
         </label>
         <label>
           value
-          <input :value="nestedTextValue('config', 'value')" placeholder="auto" @input="updateNested('config', 'value', ($event.target as HTMLInputElement).value)" />
+          <VariableSelector :model-value="nestedTextValue('config', 'value')" :variables="variableOptions" placeholder="Select a value or enter literal" @update:model-value="value => updateNested('config', 'value', value)" />
         </label>
       </template>
 
@@ -558,10 +892,19 @@ function connectionRefKnown(): boolean {
           <input type="number" min="0" :max="7 * 24 * 3600" :value="nestedNumberValue('config', 'timeoutSeconds', 86400)" @input="updateNestedNumber('config', 'timeoutSeconds', ($event.target as HTMLInputElement).value, 0, 7 * 24 * 3600)" />
         </label>
         <label>
-          assignee
-          <input :value="nestedTextValue('config', 'assignee')" placeholder="analyst handle" @input="updateNested('config', 'assignee', ($event.target as HTMLInputElement).value)" />
+          Assignee
+          <VariableSelector :model-value="nestedTextValue('config', 'assignee')" :variables="variableOptions" placeholder="Select an assignee or team" @update:model-value="value => updateNested('config', 'assignee', value)" />
         </label>
-        <div class="soar-flow-hint">formSchema is edited via the Advanced node JSON below</div>
+        <div class="soar-flow-inspector-section manual-task-schema">
+          <div class="soar-flow-section-header"><span>Task fields</span><el-button size="small" plain @click="addManualField">Add field</el-button></div>
+          <div v-for="field in manualFieldRows" :key="field.name" class="manual-task-field-row">
+            <input :value="field.title" :aria-label="`Label for ${field.name}`" @input="updateManualField(field.name, { title: ($event.target as HTMLInputElement).value })" />
+            <select :value="field.type" :aria-label="`Type for ${field.name}`" @change="updateManualField(field.name, { type: ($event.target as HTMLSelectElement).value })"><option value="string">Text</option><option value="number">Number</option><option value="boolean">Boolean</option></select>
+            <label class="manual-task-required"><input type="checkbox" :checked="field.required" @change="updateManualField(field.name, { required: ($event.target as HTMLInputElement).checked })" /> required</label>
+            <el-button link type="danger" :aria-label="`Remove ${field.name}`" @click="removeManualField(field.name)">×</el-button>
+          </div>
+          <p class="soar-flow-hint">Define the analyst input here; the complete schema remains available in advanced JSON.</p>
+        </div>
       </template>
 
       <!-- Generic secondary fields for read-only types (raw display only) -->
@@ -703,6 +1046,17 @@ function connectionRefKnown(): boolean {
   gap: 8px;
   margin: -4px 0 9px;
 }
+.soar-flow-option { display: flex; flex-direction: column; gap: 2px; line-height: 1.25; }
+.soar-flow-option small, .soar-flow-action-description { color: var(--ns-text-3); font-size: 9px; }
+.soar-flow-catalog-warning { display: block; margin-top: 3px; color: var(--ns-warning); font-size: 9px; line-height: 1.35; }
+.soar-flow-action-description { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.soar-flow-parameter-form { display: grid; gap: 7px; margin-top: 6px; }
+.soar-flow-parameter-form label { margin: 0; }
+.soar-flow-parameter-form label > span { display: block; margin-bottom: 3px; color: var(--ns-text-2); font-size: 10px; }
+.soar-flow-parameter-form label > span i { margin-left: 2px; color: var(--ns-danger); font-style: normal; }
+.soar-flow-parameter-form small { display: block; margin-top: 2px; color: var(--ns-text-3); font-size: 9px; line-height: 1.35; }
+.soar-flow-advanced-details { margin-top: 8px; }
+.soar-flow-advanced-details summary { color: var(--ns-text-3); cursor: pointer; font-size: 10px; }
 
 .soar-flow-warn-line {
   margin: -4px 0 9px;
@@ -804,4 +1158,13 @@ function connectionRefKnown(): boolean {
   font-size: 11px;
   line-height: 1.5;
 }
+.soar-flow-common-field { margin-top: 8px; }
+.soar-flow-common-field small { display: block; margin-top: 4px; color: var(--ns-text-3); font-size: 10px; line-height: 1.4; }
+.soar-flow-common-field :deep(.el-select) { width: 100%; margin-top: 3px; }
+.soar-flow-section-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 7px; }
+.manual-task-field-row { display: grid; grid-template-columns: minmax(0, 1.2fr) 90px auto auto; gap: 5px; align-items: center; margin-bottom: 6px; }
+.manual-task-field-row input, .manual-task-field-row select { min-width: 0; width: 100%; box-sizing: border-box; }
+.manual-task-required { display: flex !important; align-items: center; gap: 3px; margin: 0 !important; white-space: nowrap; font-size: 10px !important; }
+.manual-task-required input { width: auto; margin: 0; }
+@media (max-width: 520px) { .manual-task-field-row { grid-template-columns: 1fr 1fr auto; }.manual-task-required { grid-column: 1 / 3; } }
 </style>

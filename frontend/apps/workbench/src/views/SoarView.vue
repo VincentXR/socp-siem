@@ -4,7 +4,6 @@ import 'element-plus/es/components/card/style/css.mjs'
 import 'element-plus/es/components/dialog/style/css.mjs'
 import 'element-plus/es/components/form/style/css.mjs'
 import 'element-plus/es/components/input/style/css.mjs'
-import 'element-plus/es/components/switch/style/css.mjs'
 import 'element-plus/es/components/table/style/css.mjs'
 import 'element-plus/es/components/tabs/style/css.mjs'
 import 'element-plus/es/components/tag/style/css.mjs'
@@ -13,51 +12,45 @@ import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElDialog from 'element-plus/es/components/dialog/index.mjs'
 import { ElForm, ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
-import ElSwitch from 'element-plus/es/components/switch/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
-import PagerBar from '../components/PagerBar.vue'
 import SoarV2ControlPlane from '../components/soar/SoarV2ControlPlane.vue'
 import SoarV2Editor from '../components/soar/SoarV2Editor.vue'
 import SoarV2RunInspector from '../components/soar/SoarV2RunInspector.vue'
 import type { RunHighlightRow, RunOpenRequest } from '../components/soar/editor/runHighlight'
 import {
   approveV2,
-  createPlaybook,
-  deletePlaybook,
   installV2Template,
-  listPlaybookExecutions,
-  listPlaybooks,
   listV2Approvals,
+  listV2Playbooks,
   listV2Runs,
   listV2Templates,
   rejectV2,
-  togglePlaybook,
-  type Playbook,
-  type PlaybookExecution,
   type SoarV2Approval,
+  type SoarV2Playbook,
   type SoarV2Run,
   type SoarV2Template,
 } from '../api'
 import { useI18n } from '../composables/useI18n'
 
 const { t } = useI18n()
+const route = useRoute()
 
 type SoarTab = 'playbooks' | 'rules' | 'runs' | 'approvals' | 'connections'
 const activeTab = ref<SoarTab>('playbooks')
 
-const playbooks = ref<Playbook[]>([])
-const executions = ref<PlaybookExecution[]>([])
+const playbooks = ref<SoarV2Playbook[]>([])
 const v2Runs = ref<SoarV2Run[]>([])
 const approvals = ref<SoarV2Approval[]>([])
 const templates = ref<SoarV2Template[]>([])
-const page = ref(1)
-const size = ref(10)
-const dialogVisible = ref(false)
 const showEditor = ref(false)
+const selectedPlaybookId = ref('')
+const createRequestToken = ref(0)
+const loadError = ref('')
 const editorRef = ref<{
   hasUnsavedChanges: boolean
   applyRunHighlights?: (rows: readonly RunHighlightRow[] | null | undefined) => void
@@ -65,9 +58,7 @@ const editorRef = ref<{
 /** Pending "open this run in the visual editor" hand-off to SoarV2Editor. */
 const openRunRequest = ref<RunOpenRequest | null>(null)
 const loading = ref(false)
-const form = ref({ name: '', trigger: '', actions: '', enabled: true })
-const executionsPaged = computed(() => executions.value.slice((page.value - 1) * size.value, page.value * size.value))
-
+const contextAlarmId = computed(() => typeof route.query.alarmId === 'string' ? route.query.alarmId : '')
 // Approval decision state
 const approvalFilter = ref<'PENDING' | 'ALL'>('PENDING')
 const displayedApprovals = computed(() => {
@@ -94,7 +85,7 @@ function openApprovalModal(row: any, approve: boolean) {
     runId: String(row?.runId || ''),
     actionRef: String(row?.actionRef || row?.nodeRunId || ''),
     isApprove: approve,
-    reason: approve ? 'Verified risk parameters; approved for execution.' : 'Security risk detected; rejected.',
+    reason: '',
     loading: false,
   }
 }
@@ -118,45 +109,34 @@ async function submitApprovalDecision() {
 async function loadPlaybooks() {
   if (loading.value) return
   loading.value = true
+  loadError.value = ''
   try {
-    const [playbookResult, executionResult, runResult, approvalResult, templateResult] = await Promise.allSettled([
-      listPlaybooks(),
-      listPlaybookExecutions(),
+    const [playbookResult, runResult, approvalResult, templateResult] = await Promise.allSettled([
+      listV2Playbooks(0, 100),
       listV2Runs(),
       listV2Approvals(),
       listV2Templates(),
     ])
-    if (playbookResult.status === 'fulfilled') playbooks.value = playbookResult.value
-    executions.value = executionResult.status === 'fulfilled' ? executionResult.value : []
+    if (playbookResult.status === 'fulfilled') playbooks.value = playbookResult.value.items
     v2Runs.value = runResult.status === 'fulfilled' ? runResult.value.items : []
     approvals.value = approvalResult.status === 'fulfilled' ? approvalResult.value : []
     templates.value = templateResult.status === 'fulfilled' ? templateResult.value : []
+    const firstFailure = [playbookResult, runResult, approvalResult, templateResult].find(result => result.status === 'rejected')
+    if (firstFailure?.status === 'rejected') loadError.value = firstFailure.reason instanceof Error ? firstFailure.reason.message : 'Unable to load SOAR data'
   } finally {
     loading.value = false
   }
 }
 
 async function installTemplate(id: string) {
-  await installV2Template(id)
-  await loadPlaybooks()
-}
-
-async function addPlaybook() {
-  await createPlaybook({
-    name: form.value.name,
-    trigger: form.value.trigger,
-    actions: form.value.actions.split(/[,，\n]/).map(action => action.trim()).filter(Boolean),
-    enabled: form.value.enabled,
-  })
-  dialogVisible.value = false
-  form.value = { name: '', trigger: '', actions: '', enabled: true }
-  await loadPlaybooks()
-}
-
-async function removePlaybook(id: string) {
-  if (!confirm(t('soar.confirmDelete'))) return
-  await deletePlaybook(id)
-  await loadPlaybooks()
+  try {
+    const result = await installV2Template(id) as { playbook?: { id?: string } }
+    await loadPlaybooks()
+    const playbookId = String(result?.playbook?.id || '')
+    if (playbookId) openEditorForPlaybook(playbookId)
+  } catch (failure) {
+    loadError.value = failure instanceof Error ? failure.message : 'Unable to install the playbook template'
+  }
 }
 
 /**
@@ -177,12 +157,41 @@ function handleOpenRunInEditor(request: RunOpenRequest): void {
   if (editorRef.value?.hasUnsavedChanges && !confirm(t('soarV2.runHighlightDiscardChanges'))) return
   showEditor.value = true
   activeTab.value = 'playbooks'
+  selectedPlaybookId.value = request.playbookId
   openRunRequest.value = { ...request }
 }
 
-async function toggle(id: string) {
-  await togglePlaybook(id)
-  await loadPlaybooks()
+function openEditorForCreate(): void {
+  if (showEditor.value && editorRef.value?.hasUnsavedChanges && !confirm(t('soarV2.discardChanges'))) return
+  activeTab.value = 'playbooks'
+  selectedPlaybookId.value = ''
+  showEditor.value = true
+  createRequestToken.value += 1
+}
+
+function openEditorForPlaybook(id: string): void {
+  if (showEditor.value && editorRef.value?.hasUnsavedChanges && !confirm(t('soarV2.discardChanges'))) return
+  activeTab.value = 'playbooks'
+  selectedPlaybookId.value = id
+  showEditor.value = true
+}
+
+function playbookName(id: string): string {
+  return playbooks.value.find(playbook => playbook.id === id)?.name || id
+}
+
+function lastRun(playbookId: string): SoarV2Run | undefined {
+  return v2Runs.value
+    .filter(run => run.playbookId === playbookId)
+    .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0]
+}
+
+function runTag(status?: string): 'success' | 'warning' | 'danger' | 'info' | 'primary' {
+  if (status === 'SUCCEEDED') return 'success'
+  if (status === 'FAILED') return 'danger'
+  if (status === 'RUNNING') return 'primary'
+  if (status === 'WAITING_APPROVAL' || status === 'WAITING_MANUAL_TASK') return 'warning'
+  return 'info'
 }
 
 const v2StatusSummary = computed(() => {
@@ -196,12 +205,16 @@ onMounted(loadPlaybooks)
 
 <template>
   <div class="page-pad view-enter soar-view">
-    <PageHeader :title="t('soar.title')" :description="t('soar.description')">
+    <PageHeader :eyebrow="t('menuGroup.detectAndResponse')" :title="t('soar.title')" :description="t('soar.description')">
       <template #actions>
         <el-button size="small" :loading="loading" @click="loadPlaybooks">{{ t('common.refresh') }}</el-button>
-        <el-button type="primary" size="small" @click="dialogVisible = true">{{ t('soar.createPlaybook') }}</el-button>
+        <el-button type="primary" size="small" @click="openEditorForCreate">{{ t('soar.createPlaybook') }}</el-button>
       </template>
     </PageHeader>
+    <div v-if="contextAlarmId" class="soar-context-banner">
+      <span>{{ t('soar.contextFromAlarm') }} <code>{{ contextAlarmId }}</code></span>
+      <small>{{ t('soar.contextFromAlarmHint') }}</small>
+    </div>
 
     <el-tabs v-model="activeTab" class="soar-tabs">
       <!-- 14.1 剧本 (Playbooks) -->
@@ -216,7 +229,13 @@ onMounted(loadPlaybooks)
 
           <!-- Visual Playbook Editor (Collapsible) -->
           <div v-if="showEditor" class="soar-editor-container">
-            <SoarV2Editor ref="editorRef" :open-run="openRunRequest" />
+            <SoarV2Editor
+              ref="editorRef"
+              :initial-playbook-id="selectedPlaybookId"
+              :open-run="openRunRequest"
+              :create-request="createRequestToken"
+              :context-alarm-id="contextAlarmId"
+            />
           </div>
 
           <!-- Golden Templates -->
@@ -248,25 +267,41 @@ onMounted(loadPlaybooks)
             <template #header>
               <div class="soar-card-header">
                 <strong>{{ t('soar.playbooks') }}</strong>
+                <small class="soar-header-hint">{{ t('soarV2.playbookListHint') }}</small>
               </div>
             </template>
-            <el-table :data="playbooks" size="small" border>
-              <el-table-column prop="name" :label="t('common.name')" min-width="140" show-overflow-tooltip />
-              <el-table-column prop="trigger" :label="t('soar.trigger')" min-width="200" show-overflow-tooltip />
-              <el-table-column :label="t('soar.actionChain')" min-width="260">
+            <el-table :data="playbooks" size="small">
+              <el-table-column :label="t('common.name')" min-width="220" show-overflow-tooltip>
                 <template #default="{ row }">
-                  <el-tag v-for="action in row.actions" :key="action" size="small" class="soar-action-tag">{{ action }}</el-tag>
+                  <div class="soar-playbook-name">{{ row.name }}</div>
+                  <code class="soar-secondary-id">{{ row.id }}</code>
                 </template>
               </el-table-column>
-              <el-table-column :label="t('common.status')" width="80">
+              <el-table-column :label="t('common.status')" width="120">
                 <template #default="{ row }">
-                  <el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.enabled') : t('common.disabled') }}</el-tag>
+                  <el-tag size="small" :type="row.status === 'ACTIVE' ? 'success' : row.status === 'ARCHIVED' ? 'info' : 'warning'">{{ row.status }}</el-tag>
                 </template>
               </el-table-column>
-              <el-table-column :label="t('common.actions')" width="130">
+              <el-table-column :label="t('soarV2.versions')" width="150">
                 <template #default="{ row }">
-                  <el-button link size="small" @click="toggle(row.id)">{{ row.enabled ? t('common.disable') : t('common.enable') }}</el-button>
-                  <el-button link type="danger" size="small" @click="removePlaybook(row.id)">{{ t('common.delete') }}</el-button>
+                  <span v-if="row.latestPublishedVersion">v{{ row.latestPublishedVersion }} · {{ t('soarV2.published') }}</span>
+                  <span v-else class="soar-text-muted">{{ t('soarV2.noPublishedVersion') }}</span>
+                  <small v-if="row.draftVersion" class="soar-version-note">{{ t('soarV2.draftVersion', { version: row.draftVersion }) }}</small>
+                </template>
+              </el-table-column>
+              <el-table-column :label="t('soarV2.lastRun')" min-width="190">
+                <template #default="{ row }">
+                  <template v-if="lastRun(row.id)">
+                    <el-tag size="small" :type="runTag(lastRun(row.id)?.status)">{{ lastRun(row.id)?.status }}</el-tag>
+                    <small class="soar-version-note">{{ lastRun(row.id)?.createdAt || '—' }}</small>
+                  </template>
+                  <span v-else class="soar-text-muted">{{ t('soarV2.noRuns') }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="updatedAt" :label="t('soarV2.updatedAt')" width="190" show-overflow-tooltip />
+              <el-table-column :label="t('common.actions')" width="100" fixed="right">
+                <template #default="{ row }">
+                  <el-button link type="primary" size="small" @click="openEditorForPlaybook(row.id)">{{ t('common.view') }}</el-button>
                 </template>
               </el-table-column>
             </el-table>
@@ -288,20 +323,24 @@ onMounted(loadPlaybooks)
           <el-card shadow="never" class="soar-card">
             <template #header>
               <div class="soar-card-header">
-                <strong>SOAR V2 · {{ t('soarV2.runSummary') }}</strong>
+                <strong>{{ t('soarV2.runSummary') }}</strong>
               </div>
             </template>
             <div class="soar-v2-summary">
               <el-tag v-for="(count, status) in v2StatusSummary" :key="status" size="small" :type="status === 'FAILED' ? 'danger' : status === 'SUCCEEDED' ? 'success' : 'info'">{{ status }}: {{ count }}</el-tag>
               <el-tag type="warning" size="small">{{ t('soar.pendingApprovals') }}: {{ approvals.filter(item => item.status === 'PENDING').length }}</el-tag>
             </div>
-            <el-table :data="v2Runs" size="small" border>
+            <el-table :data="v2Runs" size="small">
               <el-table-column prop="runId" label="Run ID" min-width="180" show-overflow-tooltip />
+              <el-table-column :label="t('soar.playbook')" min-width="160" show-overflow-tooltip>
+                <template #default="{ row }">{{ playbookName(row.playbookId) }}</template>
+              </el-table-column>
               <el-table-column prop="status" label="Status" width="150">
                 <template #default="{ row }">
-                  <el-tag size="small" :type="row.status === 'SUCCEEDED' ? 'success' : row.status === 'FAILED' ? 'danger' : row.status === 'RUNNING' ? 'primary' : 'warning'">{{ row.status }}</el-tag>
+                  <el-tag size="small" :type="runTag(row.status)">{{ row.status }}</el-tag>
                 </template>
               </el-table-column>
+              <el-table-column prop="triggerType" :label="t('soarV2.triggerType')" width="140" show-overflow-tooltip />
               <el-table-column prop="playbookVersion" label="Version" width="90" />
               <el-table-column prop="createdAt" label="Created" width="210" />
             </el-table>
@@ -309,24 +348,6 @@ onMounted(loadPlaybooks)
 
           <!-- Interactive Inspector -->
           <SoarV2RunInspector @open-in-editor="handleOpenRunInEditor" />
-
-          <!-- Legacy execution history -->
-          <el-card shadow="never" class="soar-card">
-            <template #header>{{ t('soar.executionHistory', { count: executions.length }) }}</template>
-            <el-table :data="executionsPaged" size="small" border>
-              <el-table-column prop="ts" :label="t('common.timestamp')" width="200" />
-              <el-table-column prop="playbook" :label="t('soar.playbook')" min-width="140" show-overflow-tooltip />
-              <el-table-column prop="trigger" :label="t('soar.triggerLabel')" min-width="160" show-overflow-tooltip />
-              <el-table-column :label="t('soar.results')" min-width="320">
-                <template #default="{ row }">
-                  <span v-for="(result, index) in (row.results || [])" :key="index" class="soar-result-tag">
-                    <el-tag size="small" :type="String(result.status).startsWith('fail') ? 'danger' : (String(result.status).startsWith('sent') || String(result.status).startsWith('created') ? 'success' : 'info')">{{ result.action }} → {{ result.status }}</el-tag>
-                  </span>
-                </template>
-              </el-table-column>
-            </el-table>
-            <PagerBar v-model:current-page="page" v-model:page-size="size" :total="executions.length" />
-          </el-card>
         </div>
       </el-tab-pane>
 
@@ -382,19 +403,7 @@ onMounted(loadPlaybooks)
       </el-tab-pane>
     </el-tabs>
 
-    <!-- Create Playbook Dialog -->
-    <el-dialog v-model="dialogVisible" :title="t('soar.createPlaybook')" width="500px">
-      <el-form label-width="90px">
-        <el-form-item :label="t('common.name')"><el-input v-model="form.name" /></el-form-item>
-        <el-form-item :label="t('soar.triggerLabel')"><el-input v-model="form.trigger" /></el-form-item>
-        <el-form-item :label="t('soar.actions')"><el-input v-model="form.actions" type="textarea" :rows="3" :placeholder="t('soar.oneActionPerLine')" /></el-form-item>
-        <el-form-item :label="t('common.enable')"><el-switch v-model="form.enabled" /></el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="dialogVisible = false">{{ t('common.cancel') }}</el-button>
-        <el-button type="primary" @click="addPlaybook">{{ t('common.create') }}</el-button>
-      </template>
-    </el-dialog>
+    <div v-if="loadError" class="soar-load-error" role="alert">{{ loadError }}</div>
 
     <!-- Approval Decision Dialog -->
     <el-dialog v-model="approvalModal.visible" :title="approvalModal.isApprove ? t('soar.approve') : t('soar.reject')" width="480px">
@@ -428,6 +437,10 @@ onMounted(loadPlaybooks)
 .soar-editor-toggle-bar { display: flex; justify-content: flex-end; margin-bottom: 4px; }
 .soar-editor-container { margin-bottom: 8px; border-radius: 6px; overflow: hidden; }
 .soar-action-tag, .soar-result-tag { margin-right: 4px; }
+.soar-playbook-name { color: var(--ns-text); font-weight: 650; }
+.soar-secondary-id { display: block; margin-top: 3px; color: var(--ns-text-3); font-size: 10px; }
+.soar-version-note { display: block; margin-top: 4px; color: var(--ns-text-3); font-size: 10px; }
+.soar-load-error { margin-top: 10px; color: var(--ns-danger); font-size: 12px; }
 .soar-v2-summary { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .soar-approval-table { margin-top: 8px; }
 .soar-approval-dialog-body p { margin-bottom: 8px; font-size: 12px; color: var(--ns-text-2); }

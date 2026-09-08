@@ -18,6 +18,7 @@ import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { computed, inject, onMounted, ref } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import EmptyState from '../components/EmptyState.vue'
+import FieldConditionBuilder from '../components/FieldConditionBuilder.vue'
 import SevBadge from '../components/SevBadge.vue'
 import { WORKBENCH_STATE } from '../app/workbenchState'
 import {
@@ -31,6 +32,7 @@ const { t } = useI18n()
 const state = inject(WORKBENCH_STATE, null)
 const currentRole = computed(() => state?.currentRole.value ?? '')
 const canActivate = computed(() => ['admin', 'role_admin'].includes(currentRole.value.toLowerCase()))
+const canManageRules = computed(() => ['admin', 'role_admin', 'analyst', 'role_analyst'].includes(currentRole.value.toLowerCase()))
 
 type RuleEditorForm = {
   id: string; name: string; type: string; severity: string; message: string
@@ -50,7 +52,6 @@ type RuleTestTrace = {
 type RuleTestResult = { checked: number; matched: number; candidates: number; traces: RuleTestTrace[] }
 
 const RULE_TYPES = ['pattern', 'threshold', 'correlation', 'correlation-set', 'baseline', 'rare']
-const CONDITION_OPS = ['eq', 'ne', 'contains', 'startswith', 'endswith', 'regex', 'gt', 'gte', 'lt', 'lte', 'ge', 'gtsev', 'inlist', 'notinlist']
 const ADVANCED_TYPES = ['correlation-set', 'baseline', 'rare']
 
 const allRules = ref<RuleSpec[]>([])
@@ -243,34 +244,46 @@ async function toggleRule(row: unknown): Promise<void> {
 async function removeRule(row: unknown): Promise<void> {
   const rule = normalizeRuleSpec(row)
   if (!rule) return
+  if (ruleStatus(rule) === 'ACTIVE') {
+    actionMessage.value = t('detect.disableBeforeDelete')
+    return
+  }
   if (!confirm(t('detect.deleteRuleConfirm'))) return
   try { await deleteGasRule(String(rule.id)); await loadRules() }
   catch (error) { actionMessage.value = error instanceof Error ? error.message : String(error) }
 }
 
-function addCondition(target: RuleCondition[]): void { target.push(emptyCondition()) }
+function copyRuleAsDraft(row: unknown): void {
+  const rule = normalizeRuleSpec(row)
+  if (!rule) return
+  const draft = clone(rule)
+  draft.name = `${rule.name} · copy`
+  draft.enabled = false
+  draft.status = 'DRAFT'
+  // Keep the full source document in memory so fields unknown to the visual
+  // editor survive the eventual create request. The copied draft is saved as
+  // a new rule because ruleEditingId is intentionally cleared.
+  ruleEditingId.value = null
+  sourceRule.value = draft
+  ruleForm.value = formFromRule(draft)
+  advancedJson.value = JSON.stringify(draft, null, 2)
+  saveError.value = ''; advancedError.value = ''; actionMessage.value = ''
+  showRuleEditor.value = true
+}
+
+function testSingleRule(row: unknown): void {
+  const rule = normalizeRuleSpec(row)
+  if (!rule) return
+  testRuleId.value = String(rule.id)
+  document.getElementById('detect-test-workspace')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
 function addMatchAnyGroup(): void { ruleForm.value.matchAny.push([emptyCondition()]) }
 function addStep(): void { ruleForm.value.steps.push([emptyCondition()]) }
 function ruleStatus(row: unknown): string {
   const rule = row as Partial<RuleSpec>
   return textValue(rule.status).toUpperCase() || (rule.enabled ? 'ACTIVE' : 'DRAFT')
 }
-function fieldInfo(field: string): FieldDef | undefined { return fieldDefs.value.find(item => item.fieldName === field) }
-function fieldOperators(field: string, current = ''): string[] {
-  const type = fieldInfo(field)?.fieldType.toLowerCase()
-  const numeric = ['int', 'integer', 'long', 'float', 'double', 'number'].includes(type || '')
-  const boolean = ['bool', 'boolean'].includes(type || '')
-  const temporal = ['date', 'datetime', 'timestamp'].includes(type || '')
-  const operators = boolean
-    ? ['eq', 'ne']
-    : numeric || temporal
-      ? ['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'inlist', 'notinlist']
-      : type
-        ? ['eq', 'ne', 'contains', 'startswith', 'endswith', 'regex', 'inlist', 'notinlist']
-        : CONDITION_OPS
-  return current && !operators.includes(current) ? [current, ...operators] : operators
-}
-function isReferenceOperator(op: string): boolean { return op === 'inlist' || op === 'notinlist' }
 function statusTag(status: string): 'success' | 'warning' | 'danger' | 'info' | 'primary' {
   if (status === 'ACTIVE') return 'success'; if (status === 'TESTING') return 'warning'; if (status === 'DISABLED') return 'info'; if (status === 'ARCHIVED') return 'danger'; return 'primary'
 }
@@ -327,7 +340,7 @@ onMounted(loadRules)
 <template>
   <div class="page-pad view-enter detect-view">
     <PageHeader :eyebrow="t('menuGroup.detectAndResponse')" :title="t('detect.title')" :description="t('detect.workspaceDescription')">
-      <template #actions><el-select v-model="ruleStatusFilter" size="small" clearable :placeholder="t('common.filter')" style="width:150px"><el-option v-for="status in ['DRAFT', 'TESTING', 'ACTIVE', 'DISABLED', 'ARCHIVED']" :key="status" :label="status" :value="status" /></el-select><el-button size="small" :loading="loading" @click="loadRules">{{ t('common.refresh') }}</el-button><el-button type="primary" size="small" @click="openRuleEditor()">{{ t('detect.createRule') }}</el-button></template>
+      <template #actions><el-select v-model="ruleStatusFilter" size="small" clearable :placeholder="t('common.filter')" style="width:150px"><el-option v-for="status in ['DRAFT', 'TESTING', 'ACTIVE', 'DISABLED', 'ARCHIVED']" :key="status" :label="status" :value="status" /></el-select><el-button size="small" :loading="loading" @click="loadRules">{{ t('common.refresh') }}</el-button><el-button v-if="canManageRules" type="primary" size="small" @click="openRuleEditor()">{{ t('detect.createRule') }}</el-button></template>
     </PageHeader>
 
     <div v-if="loadError" class="detect-feedback error" role="alert"><strong>{{ t('detect.loadFailed') }}</strong><span>{{ loadError }}</span><el-button size="small" @click="loadRules">{{ t('common.refresh') }}</el-button></div>
@@ -372,41 +385,20 @@ onMounted(loadRules)
               <div class="condition-block-head"><b>{{ t('detect.correlationSteps') }}</b><el-button size="small" plain @click="addStep">{{ t('detect.addStep') }}</el-button></div>
               <div v-for="(step, stepIndex) in ruleForm.steps" :key="stepIndex" class="condition-group">
                 <div class="condition-group-head"><span>{{ t('detect.step') }} {{ stepIndex + 1 }}</span><el-button v-if="ruleForm.steps.length > 1" link type="danger" size="small" @click="ruleForm.steps.splice(stepIndex, 1)">{{ t('common.delete') }}</el-button></div>
-                <div v-for="(condition, conditionIndex) in step" :key="conditionIndex" class="condition-row">
-                  <el-select v-model="condition.field" filterable allow-create default-first-option clearable :placeholder="t('detect.fieldPlaceholder')">
-                    <el-option v-for="field in fieldDefs" :key="field.fieldName" :label="field.fieldName" :value="field.fieldName"><div class="field-option"><b>{{ field.fieldName }}</b><small>{{ field.fieldLabel || field.fieldType }} · {{ field.fieldType }}<span v-if="field.aggregatable"> · aggregate</span></small></div></el-option>
-                  </el-select>
-                  <el-select v-model="condition.op"><el-option v-for="op in fieldOperators(condition.field, condition.op)" :key="op" :label="op" :value="op" /></el-select>
-                  <el-select v-if="isReferenceOperator(condition.op)" v-model="condition.value" filterable allow-create default-first-option clearable :placeholder="t('detect.valuePlaceholder')"><el-option v-for="refset in referenceSets" :key="refset.id" :label="refset.name" :value="refset.name"><div class="field-option"><b>{{ refset.name }}</b><small>{{ refset.entries.length }} entries</small></div></el-option></el-select>
-                  <el-input v-else v-model="condition.value" :placeholder="t('detect.valuePlaceholder')" />
-                  <el-button link type="danger" @click="step.splice(conditionIndex, 1)">×</el-button>
-                </div>
-                <el-button link type="primary" size="small" @click="addCondition(step)">{{ t('detect.addCondition') }}</el-button>
+                <FieldConditionBuilder v-model="ruleForm.steps[stepIndex]" :fields="fieldDefs" :reference-sets="referenceSets" :add-label="t('detect.addCondition')" :empty-hint="t('detect.noConditions')" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" />
               </div>
               <EmptyState v-if="!ruleForm.steps.length" :title="t('detect.noSteps')" :description="t('detect.addStepHint')" />
             </div>
           </template>
           <template v-else>
             <div class="condition-block">
-              <div class="condition-block-head"><b>{{ t('detect.allConditions') }}</b><el-button size="small" plain @click="addCondition(ruleForm.match)">{{ t('detect.addCondition') }}</el-button></div>
-              <div v-for="(condition, conditionIndex) in ruleForm.match" :key="conditionIndex" class="condition-row">
-                <el-select v-model="condition.field" filterable allow-create default-first-option clearable :placeholder="t('detect.fieldPlaceholder')"><el-option v-for="field in fieldDefs" :key="field.fieldName" :label="field.fieldName" :value="field.fieldName"><div class="field-option"><b>{{ field.fieldName }}</b><small>{{ field.fieldLabel || field.fieldType }} · {{ field.fieldType }}<span v-if="field.aggregatable"> · aggregate</span></small></div></el-option></el-select>
-                <el-select v-model="condition.op"><el-option v-for="op in fieldOperators(condition.field, condition.op)" :key="op" :label="op" :value="op" /></el-select>
-                <el-select v-if="isReferenceOperator(condition.op)" v-model="condition.value" filterable allow-create default-first-option clearable :placeholder="t('detect.valuePlaceholder')"><el-option v-for="refset in referenceSets" :key="refset.id" :label="refset.name" :value="refset.name"><div class="field-option"><b>{{ refset.name }}</b><small>{{ refset.entries.length }} entries</small></div></el-option></el-select><el-input v-else v-model="condition.value" :placeholder="t('detect.valuePlaceholder')" />
-                <el-button link type="danger" @click="ruleForm.match.splice(conditionIndex, 1)">×</el-button>
-              </div>
+              <FieldConditionBuilder v-model="ruleForm.match" :title="t('detect.allConditions')" :add-label="t('detect.addCondition')" :empty-hint="t('detect.noConditions')" :fields="fieldDefs" :reference-sets="referenceSets" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" />
             </div>
             <div class="condition-block">
               <div class="condition-block-head"><b>{{ t('detect.anyConditionGroup') }}</b><el-button size="small" plain @click="addMatchAnyGroup">{{ t('detect.addGroup') }}</el-button></div>
               <div v-for="(group, groupIndex) in ruleForm.matchAny" :key="groupIndex" class="condition-group">
                 <div class="condition-group-head"><span>{{ t('detect.conditionGroup') }} {{ groupIndex + 1 }}</span><el-button link type="danger" size="small" @click="ruleForm.matchAny.splice(groupIndex, 1)">{{ t('common.delete') }}</el-button></div>
-                <div v-for="(condition, conditionIndex) in group" :key="conditionIndex" class="condition-row">
-                  <el-select v-model="condition.field" filterable allow-create default-first-option clearable :placeholder="t('detect.fieldPlaceholder')"><el-option v-for="field in fieldDefs" :key="field.fieldName" :label="field.fieldName" :value="field.fieldName"><div class="field-option"><b>{{ field.fieldName }}</b><small>{{ field.fieldLabel || field.fieldType }} · {{ field.fieldType }}<span v-if="field.aggregatable"> · aggregate</span></small></div></el-option></el-select>
-                  <el-select v-model="condition.op"><el-option v-for="op in fieldOperators(condition.field, condition.op)" :key="op" :label="op" :value="op" /></el-select>
-                  <el-select v-if="isReferenceOperator(condition.op)" v-model="condition.value" filterable allow-create default-first-option clearable :placeholder="t('detect.valuePlaceholder')"><el-option v-for="refset in referenceSets" :key="refset.id" :label="refset.name" :value="refset.name"><div class="field-option"><b>{{ refset.name }}</b><small>{{ refset.entries.length }} entries</small></div></el-option></el-select><el-input v-else v-model="condition.value" :placeholder="t('detect.valuePlaceholder')" />
-                  <el-button link type="danger" @click="group.splice(conditionIndex, 1)">×</el-button>
-                </div>
-                <el-button link type="primary" size="small" @click="addCondition(group)">{{ t('detect.addCondition') }}</el-button>
+                <FieldConditionBuilder v-model="ruleForm.matchAny[groupIndex]" :fields="fieldDefs" :reference-sets="referenceSets" :add-label="t('detect.addCondition')" :empty-hint="t('detect.noConditions')" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" />
               </div>
               <p v-if="!ruleForm.matchAny.length" class="form-hint">{{ t('detect.noAnyGroupHint') }}</p>
             </div>
@@ -420,7 +412,7 @@ onMounted(loadRules)
           </div>
         </section>
 
-        <section class="detect-form-section"><div class="detect-form-section-title"><span>03</span><div><h3>{{ t('detect.alertContent') }}</h3><p>{{ t('detect.alertContentHint') }}</p></div></div><div class="detect-form-grid"><el-form-item :label="t('detect.editor.alertTitle')"><el-input v-model="ruleForm.alertTitle" :placeholder="t('detect.editor.alertTitlePlaceholder')" /></el-form-item><el-form-item :label="t('detect.editor.alertDescription')"><el-input v-model="ruleForm.alertDescription" :placeholder="t('detect.editor.alertDescriptionPlaceholder')" /></el-form-item><el-form-item :label="t('detect.compatMessage')"><el-input v-model="ruleForm.message" /></el-form-item><el-form-item :label="t('detect.mitre')"><el-input v-model="ruleForm.mitre" placeholder="T1110" /></el-form-item></div><div class="condition-block"><div class="condition-block-head"><b>{{ t('detect.editor.whitelist') }}</b><el-button size="small" plain @click="addCondition(ruleForm.whitelist)">{{ t('detect.editor.addWhitelist') }}</el-button></div><div v-for="(condition, conditionIndex) in ruleForm.whitelist" :key="conditionIndex" class="condition-row"><el-select v-model="condition.field" filterable allow-create default-first-option clearable :placeholder="t('detect.fieldPlaceholder')"><el-option v-for="field in fieldDefs" :key="field.fieldName" :label="field.fieldName" :value="field.fieldName"><div class="field-option"><b>{{ field.fieldName }}</b><small>{{ field.fieldLabel || field.fieldType }} · {{ field.fieldType }}<span v-if="field.aggregatable"> · aggregate</span></small></div></el-option></el-select><el-select v-model="condition.op"><el-option v-for="op in fieldOperators(condition.field, condition.op)" :key="op" :label="op" :value="op" /></el-select><el-select v-if="isReferenceOperator(condition.op)" v-model="condition.value" filterable allow-create default-first-option clearable :placeholder="t('detect.valuePlaceholder')"><el-option v-for="refset in referenceSets" :key="refset.id" :label="refset.name" :value="refset.name"><div class="field-option"><b>{{ refset.name }}</b><small>{{ refset.entries.length }} entries</small></div></el-option></el-select><el-input v-else v-model="condition.value" :placeholder="t('detect.valuePlaceholder')" /><el-button link type="danger" @click="ruleForm.whitelist.splice(conditionIndex, 1)">×</el-button></div><p v-if="!ruleForm.whitelist.length" class="form-hint">{{ t('detect.noWhitelistHint') }}</p></div></section>
+        <section class="detect-form-section"><div class="detect-form-section-title"><span>03</span><div><h3>{{ t('detect.alertContent') }}</h3><p>{{ t('detect.alertContentHint') }}</p></div></div><div class="detect-form-grid"><el-form-item :label="t('detect.editor.alertTitle')"><el-input v-model="ruleForm.alertTitle" :placeholder="t('detect.editor.alertTitlePlaceholder')" /></el-form-item><el-form-item :label="t('detect.editor.alertDescription')"><el-input v-model="ruleForm.alertDescription" :placeholder="t('detect.editor.alertDescriptionPlaceholder')" /></el-form-item><el-form-item :label="t('detect.compatMessage')"><el-input v-model="ruleForm.message" /></el-form-item><el-form-item :label="t('detect.mitre')"><el-input v-model="ruleForm.mitre" placeholder="T1110" /></el-form-item></div><div class="condition-block"><FieldConditionBuilder v-model="ruleForm.whitelist" :title="t('detect.editor.whitelist')" :add-label="t('detect.editor.addWhitelist')" :empty-hint="t('detect.noWhitelistHint')" :fields="fieldDefs" :reference-sets="referenceSets" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" /></div></section>
 
         <section class="detect-form-section"><div class="detect-form-section-title"><span>04</span><div><h3>{{ t('detect.advancedFields') }}</h3><p>{{ t('detect.advancedFieldsHint') }}</p></div></div><div v-if="ADVANCED_TYPES.includes(ruleForm.type) || rawOnlyRuleType" class="detect-advanced-warning"><b>{{ t('detect.advancedType') }}</b><span>{{ t('detect.advancedTypeHint') }}</span></div><div class="detect-form-grid compact-grid"><el-form-item :label="t('detect.routingField')"><el-input v-model="ruleForm.routingField" /></el-form-item><el-form-item :label="t('detect.warmup')"><el-input v-model.number="ruleForm.warmup" type="number" min="1" /></el-form-item><el-form-item :label="t('detect.baselineWindows')"><el-input v-model.number="ruleForm.baselineWindows" type="number" min="1" /></el-form-item><el-form-item :label="t('detect.sigma')"><el-input v-model.number="ruleForm.sigma" type="number" min="0" max="100" /></el-form-item><el-form-item :label="t('detect.ruleVersion')"><el-input v-model="ruleForm.version" /></el-form-item><el-form-item :label="t('detect.owner')"><el-input v-model="ruleForm.owner" /></el-form-item><el-form-item :label="t('detect.contentPack')"><el-input v-model="ruleForm.contentPack" /></el-form-item><el-form-item :label="t('detect.contentVersion')"><el-input v-model="ruleForm.contentVersion" /></el-form-item></div><details class="advanced-json"><summary>{{ t('detect.rawRuleJson') }}</summary><p>{{ t('detect.rawRuleJsonHint') }}</p><textarea v-model="advancedJson" rows="12" spellcheck="false" /><div v-if="advancedError" class="detect-feedback error">{{ advancedError }}</div><el-button size="small" @click="applyAdvancedJson">{{ t('detect.applyRawJson') }}</el-button></details></section>
 
@@ -429,7 +421,7 @@ onMounted(loadRules)
       <div class="detect-editor-footer"><el-button @click="closeRuleEditor">{{ t('common.cancel') }}</el-button><el-button type="primary" :loading="saving" @click="saveRule">{{ t('common.save') }}</el-button></div>
     </section>
 
-    <section class="detect-list-section"><div class="workspace-section-head list-head"><div><h2>{{ t('detect.rules') }}</h2><p>{{ t('detect.lifecycleHint') }}</p></div><span class="toolbar-count">{{ t('common.total', { total: rules.length }) }}</span></div><el-card shadow="never" class="detect-table-card"><el-table :data="rules" size="small" row-key="id"><el-table-column prop="name" :label="t('common.name')" min-width="180" show-overflow-tooltip /><el-table-column prop="type" :label="t('common.type')" width="150"><template #default="{ row }"><span>{{ typeLabel(row.type) }}</span></template></el-table-column><el-table-column prop="severity" :label="t('common.severity')" width="110"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column><el-table-column :label="t('detect.matchingConditions')" min-width="260" show-overflow-tooltip><template #default="{ row }"><span v-if="row.match?.length" class="mono">{{ row.match.map((condition: RuleCondition) => `${condition.field} ${condition.op} ${condition.value}`).join(' AND ') }}</span><span v-else-if="row.steps?.length">{{ t('detect.stepCount', { count: row.steps.length }) }}</span><span v-else>—</span></template></el-table-column><el-table-column :label="t('detect.ruleStatus')" width="110"><template #default="{ row }"><el-tag :type="statusTag(ruleStatus(row))" size="small">{{ ruleStatus(row) }}</el-tag></template></el-table-column><el-table-column :label="t('common.actions')" width="190" fixed="right"><template #default="{ row }"><el-button link type="primary" size="small" @click="openRuleEditor(row)">{{ t('common.edit') }}</el-button><el-button v-if="ruleStatus(row) === 'ACTIVE' || canActivate" link size="small" :disabled="ruleStatus(row) === 'ARCHIVED'" @click="toggleRule(row)">{{ ruleStatus(row) === 'ACTIVE' ? t('common.disable') : t('common.enable') }}</el-button><el-button link type="danger" size="small" @click="removeRule(row)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table><EmptyState v-if="!loading && !rules.length" :title="t('detect.noRules')" :description="t('detect.noRulesHint')" /><div v-if="loading" class="detect-loading">{{ t('common.loading') }}</div></el-card></section>
+    <section class="detect-list-section"><div class="workspace-section-head list-head"><div><h2>{{ t('detect.rules') }}</h2><p>{{ t('detect.lifecycleHint') }}</p></div><span class="toolbar-count">{{ t('common.total', { total: rules.length }) }}</span></div><el-card shadow="never" class="detect-table-card"><el-table :data="rules" size="small" row-key="id"><el-table-column prop="name" :label="t('common.name')" min-width="180" show-overflow-tooltip /><el-table-column prop="type" :label="t('common.type')" width="150"><template #default="{ row }"><span>{{ typeLabel(row.type) }}</span></template></el-table-column><el-table-column prop="severity" :label="t('common.severity')" width="110"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column><el-table-column :label="t('detect.matchingConditions')" min-width="260" show-overflow-tooltip><template #default="{ row }"><span v-if="row.match?.length" class="mono">{{ row.match.map((condition: RuleCondition) => `${condition.field} ${condition.op} ${condition.value}`).join(' AND ') }}</span><span v-else-if="row.steps?.length">{{ t('detect.stepCount', { count: row.steps.length }) }}</span><span v-else>—</span></template></el-table-column><el-table-column :label="t('detect.ruleStatus')" width="110"><template #default="{ row }"><el-tag :type="statusTag(ruleStatus(row))" size="small">{{ ruleStatus(row) }}</el-tag></template></el-table-column><el-table-column :label="t('common.actions')" width="250" fixed="right"><template #default="{ row }"><el-button v-if="canManageRules" link type="primary" size="small" @click="openRuleEditor(row)">{{ t('common.edit') }}</el-button><el-button v-if="canManageRules && ['DRAFT', 'TESTING'].includes(ruleStatus(row))" link size="small" @click="testSingleRule(row)">{{ t('detect.testRule') }}</el-button><el-button v-if="canActivate && ruleStatus(row) === 'ACTIVE'" link size="small" @click="toggleRule(row)">{{ t('common.disable') }}</el-button><el-button v-if="canActivate && ['DISABLED', 'DRAFT', 'TESTING'].includes(ruleStatus(row))" link size="small" @click="toggleRule(row)">{{ t('common.enable') }}</el-button><el-button v-if="canManageRules && ruleStatus(row) !== 'ARCHIVED'" link size="small" @click="copyRuleAsDraft(row)">{{ t('common.copy') }}</el-button><el-button v-if="canManageRules && ['DRAFT', 'DISABLED'].includes(ruleStatus(row))" link type="danger" size="small" @click="removeRule(row)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table><EmptyState v-if="!loading && !rules.length" :title="t('detect.noRules')" :description="t('detect.noRulesHint')" /><div v-if="loading" class="detect-loading">{{ t('common.loading') }}</div></el-card></section>
   </div>
 </template>
 
