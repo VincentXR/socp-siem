@@ -32,6 +32,7 @@ const EXISTING_VERSION = {
 type MockState = {
   playbooks: Array<Record<string, unknown>>
   versions: Record<string, Array<Record<string, unknown>>>
+  runs: Array<Record<string, unknown>>
   approvals: Array<Record<string, unknown>>
   tasks: Array<Record<string, unknown>>
   deadLetters: Array<Record<string, unknown>>
@@ -59,6 +60,7 @@ async function installSoarMocks(page: Page): Promise<MockState> {
   const state: MockState = {
     playbooks: [EXISTING_PLAYBOOK],
     versions: { 'pb-existing': [EXISTING_VERSION] },
+    runs: [runFixture()],
     approvals: [{ id: 'approval-1', runId: 'run-1', actionRef: 'fixture.action', reason: 'Review required', status: 'PENDING', requestedBy: 'automation', createdAt: '2026-01-01T00:00:00Z' }],
     tasks: [{ id: 'task-1', runId: 'run-1', nodeId: 'manual-1', formSchema: {}, status: 'PENDING', assignee: 'analyst' }],
     deadLetters: [],
@@ -134,9 +136,20 @@ async function installSoarMocks(page: Page): Promise<MockState> {
       if (playbook) Object.assign(playbook, { latestPublishedVersion: Number(parts[6]), draftVersion: null })
       data = version || {}
     } else if (method === 'GET' && api === 'soar-web/api/v2/runs' && parts.length === 4) {
-      data = pageData([runFixture()])
+      data = pageData(state.runs)
+    } else if (method === 'POST' && api === 'soar-web/api/v2/runs' && parts.length === 4) {
+      const body = request.postDataJSON() as { requestId?: string; playbookVersionId?: string; subject?: unknown; inputs?: unknown }
+      const queued = {
+        runId: 'run-browser-queued', requestId: body.requestId || 'workbench-request', playbookId: 'pb-existing',
+        playbookVersionId: body.playbookVersionId || 'ver-existing', playbookVersion: 1, status: 'QUEUED',
+        triggerType: 'manual', definitionHash: 'fixture-hash', temporalWorkflowId: 'soar-run-browser-queued',
+        createdAt: '2026-01-01T00:01:00Z', subject: body.subject, inputs: body.inputs,
+      }
+      state.runs = [queued, ...state.runs.filter(item => item.runId !== queued.runId)]
+      data = queued
+      status = 202
     } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'v2' && parts[3] === 'runs' && parts.length === 5) {
-      data = runFixture()
+      data = state.runs.find(item => item.runId === parts[4]) || {}
     } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'v2' && parts[3] === 'runs' && parts.length === 6 && parts[5] === 'nodes') {
       data = [{ id: 'node-run-1', runId: 'run-1', nodeId: 'start', nodeType: 'START', status: 'SUCCEEDED' }]
     } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'v2' && parts[3] === 'runs' && parts.length === 6 && parts[5] === 'events') {
@@ -202,9 +215,17 @@ test('SOAR V2 workbench covers draft lifecycle, run inspection and human control
   await page.locator('.soar-v2-editor').getByRole('button', { name: 'Publish', exact: true }).click()
   await expect(page.locator('.soar-v2-editor-message')).toContainText('Published v1')
 
-  await page.getByRole('tab', { name: 'Runs' }).click()
+  await page.getByRole('tab', { name: 'Runs' }).click({ force: true })
   await expect(page.locator('.soar-v2-run-summary')).toContainText('run-1')
   await expect(page.locator('.soar-v2-run-summary')).toContainText('SUCCEEDED')
+  await page.getByRole('button', { name: 'Queue run' }).click()
+  const queueDialog = page.getByRole('dialog', { name: 'Queue a published SOAR run' })
+  await expect(queueDialog).toBeVisible()
+  await expect(queueDialog.getByRole('button', { name: 'Accept and queue' })).toBeEnabled()
+  await queueDialog.getByLabel('Inputs JSON').fill('{"eventId":"browser-queued","eventType":"manual.test"}')
+  await queueDialog.getByRole('button', { name: 'Accept and queue' }).click()
+  await expect(page.locator('.soar-v2-queue-message')).toContainText('run-browser-queued')
+  await expect(page.locator('.soar-v2-stream-state')).toHaveClass(/polling/)
   await page.getByRole('button', { name: /Open in visual editor|在可视化编辑器中打开/ }).click()
   await expect(page.locator('.soar-v2-editor-message')).toContainText('Loaded run path v1')
 
@@ -227,4 +248,25 @@ test('SOAR V2 workbench covers draft lifecycle, run inspection and human control
   expect(state.requests).toContainEqual({ method: 'POST', path: '/soar-web/api/v2/playbooks/pb-browser/versions/1/publish' })
   expect(state.requests).toContainEqual({ method: 'POST', path: '/soar-web/api/v2/approvals/approval-1/approve' })
   expect(state.requests).toContainEqual({ method: 'POST', path: '/soar-web/api/v2/manual-tasks/task-1/complete' })
+  expect(state.requests).toContainEqual({ method: 'POST', path: '/soar-web/api/v2/runs' })
+})
+
+test('SOAR V2 run queue reports an explicit permission denial', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('socp-locale', 'en-US'))
+  const state = await installSoarMocks(page)
+  await page.route('**/soar-web/api/v2/runs', async route => {
+    if (route.request().method() !== 'POST') {
+      await route.fallback()
+      return
+    }
+    await route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ code: 403, message: 'SOAR execute permission required' }) })
+  })
+  await page.goto('/soar')
+  await page.getByRole('tab', { name: 'Runs' }).click({ force: true })
+  await page.getByRole('button', { name: 'Queue run' }).click()
+  const queueDialog = page.getByRole('dialog', { name: 'Queue a published SOAR run' })
+  await expect(queueDialog.getByRole('button', { name: 'Accept and queue' })).toBeEnabled()
+  await queueDialog.getByRole('button', { name: 'Accept and queue' }).click()
+  await expect(queueDialog.getByRole('alert')).toContainText('SOAR execute permission required')
+  expect(state.unknown).toEqual([])
 })

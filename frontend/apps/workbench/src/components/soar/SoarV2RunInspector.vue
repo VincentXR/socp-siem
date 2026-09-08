@@ -1,9 +1,17 @@
 <script setup lang="ts">
 import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/card/style/css.mjs'
+import 'element-plus/es/components/dialog/style/css.mjs'
+import 'element-plus/es/components/form/style/css.mjs'
+import 'element-plus/es/components/input/style/css.mjs'
+import 'element-plus/es/components/select/style/css.mjs'
 import 'element-plus/es/components/tag/style/css.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElCard from 'element-plus/es/components/card/index.mjs'
+import ElDialog from 'element-plus/es/components/dialog/index.mjs'
+import { ElForm, ElFormItem } from 'element-plus/es/components/form/index.mjs'
+import ElInput from 'element-plus/es/components/input/index.mjs'
+import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { RunOpenRequest } from './editor/runHighlight'
@@ -12,11 +20,14 @@ import {
   cancelV2Run,
   getV2ArtifactContent,
   getV2Run,
+  listV2Playbooks,
+  listV2Versions,
   listV2Artifacts,
   listV2Events,
   listV2NodeAttempts,
   listV2Nodes,
   listV2Runs,
+  queueV2Run,
   rerunV2Run,
   resolveV2Unknown,
   retryV2Run,
@@ -24,6 +35,8 @@ import {
   type SoarV2Attempt,
   type SoarV2Event,
   type SoarV2NodeRun,
+  type SoarV2Version,
+  type SoarV2Playbook,
   type SoarV2Run,
 } from '../../api'
 
@@ -42,12 +55,106 @@ const selectedNodeRunId = ref('')
 const loading = ref(false)
 const errorMessage = ref('')
 const streamState = ref<'closed' | 'live' | 'polling'>('closed')
+const queueDialogVisible = ref(false)
+const queueLoading = ref(false)
+const queueError = ref('')
+const queueMessage = ref('')
+const publishedVersions = ref<Array<{ version: SoarV2Version; playbook: SoarV2Playbook }>>([])
+const queueForm = ref({
+  playbookVersionId: '',
+  requestId: '',
+  subject: '{}',
+  inputs: '{\n  "eventId": "workbench-manual-run",\n  "eventType": "manual.test"\n}',
+})
 let pollTimer: ReturnType<typeof setInterval> | undefined
 let stream: EventSource | undefined
 
 const selectedNode = computed(() => nodes.value.find(node => node.id === selectedNodeRunId.value))
 const lastSequence = computed(() => events.value.reduce((max, item) => Math.max(max, item.sequence || 0), 0))
 const unknownNodes = computed(() => nodes.value.filter(node => ['ACTION_UNKNOWN', 'UNKNOWN'].includes(node.status)))
+
+function failureText(failure: unknown): string {
+  return failure instanceof Error ? failure.message : 'SOAR V2 request failed'
+}
+
+function newRequestId(): string {
+  const suffix = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : Math.random().toString(36).slice(2)
+  return `workbench-${suffix}`
+}
+
+async function loadPublishedVersions(): Promise<void> {
+  queueError.value = ''
+  try {
+    const page = await listV2Playbooks(0, 100)
+    const results = await Promise.allSettled(page.items.map(async playbook => {
+      const versions = await listV2Versions(playbook.id)
+      return versions
+        .filter(version => version.status === 'PUBLISHED')
+        .map(version => ({ version, playbook }))
+    }))
+    publishedVersions.value = results
+      .filter((result): result is PromiseFulfilledResult<Array<{ version: SoarV2Version; playbook: SoarV2Playbook }>> => result.status === 'fulfilled')
+      .flatMap(result => result.value)
+    if (!publishedVersions.value.length) {
+      queueError.value = 'No published playbook versions are available for execution.'
+      return
+    }
+    if (!publishedVersions.value.some(item => item.version.id === queueForm.value.playbookVersionId)) {
+      queueForm.value.playbookVersionId = publishedVersions.value[0].version.id
+    }
+  } catch (failure) {
+    publishedVersions.value = []
+    queueError.value = failureText(failure)
+  }
+}
+
+function openQueueDialog(): void {
+  queueMessage.value = ''
+  queueError.value = ''
+  queueForm.value = {
+    playbookVersionId: publishedVersions.value[0]?.version.id ?? '',
+    requestId: newRequestId(),
+    subject: '{}',
+    inputs: '{\n  "eventId": "workbench-manual-run",\n  "eventType": "manual.test"\n}',
+  }
+  queueDialogVisible.value = true
+  void loadPublishedVersions()
+}
+
+function parseObject(value: string, label: string): Record<string, unknown> {
+  let parsed: unknown
+  try { parsed = JSON.parse(value.trim() || '{}') } catch { throw new Error(`${label} must be valid JSON`) }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error(`${label} must be a JSON object`)
+  return parsed as Record<string, unknown>
+}
+
+async function submitQueue(): Promise<void> {
+  queueError.value = ''
+  queueMessage.value = ''
+  if (!queueForm.value.playbookVersionId) {
+    queueError.value = 'Choose a published playbook version first.'
+    return
+  }
+  queueLoading.value = true
+  try {
+    const result = await queueV2Run({
+      requestId: queueForm.value.requestId.trim() || newRequestId(),
+      playbookVersionId: queueForm.value.playbookVersionId,
+      subject: parseObject(queueForm.value.subject, 'Subject'),
+      inputs: parseObject(queueForm.value.inputs, 'Inputs'),
+    })
+    queueDialogVisible.value = false
+    queueMessage.value = `Run ${result.runId} accepted (202); tracking durable execution.`
+    selectedRunId.value = result.runId
+    await loadRuns()
+  } catch (failure) {
+    queueError.value = failureText(failure)
+  } finally {
+    queueLoading.value = false
+  }
+}
 
 /** True when the selected run points at a version the graph editor can open. */
 const canOpenInEditor = computed(() => Boolean(run.value?.playbookId && run.value?.playbookVersion))
@@ -240,6 +347,7 @@ onUnmounted(() => {
           <span class="soar-v2-subtitle">durable projection · attempts · event stream · artifacts</span>
         </div>
         <div class="soar-v2-run-select">
+          <el-button size="small" type="primary" plain @click="openQueueDialog">Queue run</el-button>
           <select v-model="selectedRunId" aria-label="SOAR run">
             <option value="">Select run</option>
             <option v-for="item in runs" :key="item.runId" :value="item.runId">{{ item.runId }} · {{ item.status }}</option>
@@ -305,6 +413,40 @@ onUnmounted(() => {
       </div>
     </template>
     <div v-else class="soar-v2-empty soar-v2-no-run">No V2 run selected. Queue a published version to inspect its durable execution.</div>
+    <div v-if="queueMessage" class="soar-v2-queue-message" role="status">{{ queueMessage }}</div>
+
+    <el-dialog v-model="queueDialogVisible" title="Queue a published SOAR run" width="560px">
+      <p class="soar-v2-dialog-hint">Queueing creates a durable asynchronous run. It never executes a draft; review the immutable version and input before accepting.</p>
+      <el-form label-position="top">
+        <el-form-item label="Published playbook version" required>
+          <el-select v-model="queueForm.playbookVersionId" filterable :loading="publishedVersions.length === 0 && !queueError" placeholder="Select a published version" style="width: 100%">
+            <el-option
+              v-for="item in publishedVersions"
+              :key="item.version.id"
+              :value="item.version.id"
+              :label="`${item.playbook.name} · v${item.version.version}`"
+            >
+              <span>{{ item.playbook.name }} · v{{ item.version.version }}</span>
+              <small class="soar-v2-option-id">{{ item.version.id }}</small>
+            </el-option>
+          </el-select>
+        </el-form-item>
+        <el-form-item label="Request ID" required>
+          <el-input v-model="queueForm.requestId" maxlength="128" show-word-limit />
+        </el-form-item>
+        <el-form-item label="Subject JSON">
+          <el-input v-model="queueForm.subject" type="textarea" :rows="3" spellcheck="false" />
+        </el-form-item>
+        <el-form-item label="Inputs JSON" required>
+          <el-input v-model="queueForm.inputs" type="textarea" :rows="5" spellcheck="false" />
+        </el-form-item>
+      </el-form>
+      <div v-if="queueError" class="soar-v2-inspector-error" role="alert">{{ queueError }}</div>
+      <template #footer>
+        <el-button @click="queueDialogVisible = false">Cancel</el-button>
+        <el-button type="primary" :loading="queueLoading" :disabled="!publishedVersions.length" @click="submitQueue">Accept and queue</el-button>
+      </template>
+    </el-dialog>
   </el-card>
 </template>
 
@@ -314,6 +456,9 @@ onUnmounted(() => {
 .soar-v2-subtitle { display: block; margin-top: 4px; color: var(--ns-text-3); font-size: 11px; }
 .soar-v2-run-select { display: flex; gap: 8px; align-items: center; }
 .soar-v2-run-select select { min-width: 290px; min-height: 30px; padding: 5px 8px; border: 1px solid var(--ns-border); border-radius: 5px; background: var(--ns-bg); color: var(--ns-text); font: inherit; font-size: 11px; }
+.soar-v2-dialog-hint { margin: 0 0 14px; color: var(--ns-text-2); font-size: 12px; line-height: 1.5; }
+.soar-v2-option-id { display: block; margin-top: 2px; color: var(--ns-text-3); font-family: ui-monospace, monospace; font-size: 10px; }
+.soar-v2-queue-message { margin-top: 10px; padding: 7px 10px; border: 1px solid color-mix(in srgb, var(--ns-success) 28%, var(--ns-border)); border-radius: 5px; color: var(--ns-success); background: color-mix(in srgb, var(--ns-success) 8%, transparent); font-size: 11px; }
 .soar-v2-inspector-error, .soar-v2-run-error { margin-bottom: 10px; padding: 7px 10px; border-radius: 5px; color: var(--ns-danger); background: color-mix(in srgb, var(--ns-danger) 9%, transparent); font-size: 11px; }
 .soar-v2-run-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; color: var(--ns-text-2); font-size: 11px; }
 .soar-v2-toolbar-spacer { flex: 1; }
