@@ -254,7 +254,9 @@ services:
     mem_limit: 512m
 
   # ── SOAR 编排引擎（Temporal Workflow + Activity） ─────
-  # soar-web 可探测 Temporal：可达时使用 Workflow/Activity，不可达时回退本地执行器；
+  # SOAR V2 requires Temporal for durable Workflow/Activity dispatch. When
+  # Temporal is unavailable, runs remain durably queued; there is no local
+  # side-effect executor fallback.
   # prod profile 禁止关闭 Temporal。该服务位于 extra profile，避免本地开发默认占用资源。
   temporal:
     <<: *socp-runtime
@@ -264,7 +266,7 @@ services:
       DB: postgres12
       DB_PORT: 5432
       POSTGRES_USER: socp
-      POSTGRES_PWD: socp
+      POSTGRES_PWD: ${SOCP_PG_PASSWORD:-socp}
       POSTGRES_SEEDS: postgres
       # Temporal starts several internal services, each with its own SQL pool.
       # The image defaults (20/10) can consume ~70 of PostgreSQL's 100 local

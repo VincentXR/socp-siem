@@ -83,6 +83,7 @@ Start the required Docker middleware and backend slice before running these:
 python build/verify-slice.py
 python build/verify-pipeline.py
 python build/verify-full.py
+python build/verify-soar-live.py  # requires PostgreSQL + Temporal; set a second SOAR URL for race evidence
 python build/demos/golden-demo.py --transport ingest
 python build/demos/detection-recovery.py
 python build/chaos-pipeline.py --scenario alert_web_restart

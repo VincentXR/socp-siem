@@ -3,15 +3,16 @@ package com.socp.soar.web.persistence.repository;
 import com.socp.platform.tenant.persistence.TenantScopedRepository;
 import com.socp.soar.web.persistence.entity.SoarRunEventEntity;
 
-import java.util.List;
-import java.util.Optional;
 import java.util.Collection;
 import java.time.Instant;
+import java.util.List;
+import java.util.Optional;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Transactional;
 
 public interface SoarRunEventRepository extends TenantScopedRepository<SoarRunEventEntity, String> {
     List<SoarRunEventEntity> findByTenantIdAndRunIdOrderBySequenceNoAsc(String tenantId, String runId);
@@ -25,6 +26,11 @@ public interface SoarRunEventRepository extends TenantScopedRepository<SoarRunEv
 
     /** System-scope retention purge; call only from SoarRunRetentionWorker. */
     @Modifying
+    @Transactional
     @Query("delete from SoarRunEventEntity e where e.id in :ids")
     int deleteByIds(@Param("ids") Collection<String> ids);
+
+    /** Return runs that still have retained timeline rows. */
+    @Query("select distinct e.runId from SoarRunEventEntity e where e.runId in :runIds")
+    List<String> findRunIdsByRunIdIn(@Param("runIds") Collection<String> runIds);
 }

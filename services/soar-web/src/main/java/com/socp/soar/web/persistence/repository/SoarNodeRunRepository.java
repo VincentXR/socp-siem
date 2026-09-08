@@ -32,6 +32,7 @@ public interface SoarNodeRunRepository extends TenantScopedRepository<SoarNodeRu
 
     /** System-scope retention purge; call only from SoarRunRetentionWorker. */
     @Modifying
+    @org.springframework.transaction.annotation.Transactional
     @Query("delete from SoarNodeRunEntity n where n.runId in :runIds")
     int deleteByRunIdIn(@Param("runIds") Collection<String> runIds);
 }

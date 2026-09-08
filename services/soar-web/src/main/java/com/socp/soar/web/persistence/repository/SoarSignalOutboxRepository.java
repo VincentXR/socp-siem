@@ -4,6 +4,7 @@ import com.socp.platform.tenant.persistence.TenantScopedRepository;
 import com.socp.soar.web.persistence.entity.SoarSignalOutboxEntity;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.Modifying;
@@ -36,4 +37,10 @@ public interface SoarSignalOutboxRepository extends TenantScopedRepository<SoarS
             + "where s.status = 'SENDING' and s.claimedAt < :staleBefore")
     int recoverStaleClaims(@Param("staleBefore") Instant staleBefore, @Param("now") Instant now);
     List<SoarSignalOutboxEntity> findByTenantIdAndStatusOrderByUpdatedAtAsc(String tenantId, String status);
+
+    /** System-scope retention purge; call only after the owning run is selected. */
+    @Modifying
+    @Transactional
+    @Query("delete from SoarSignalOutboxEntity s where s.runId in :runIds")
+    int deleteByRunIdIn(@Param("runIds") Collection<String> runIds);
 }

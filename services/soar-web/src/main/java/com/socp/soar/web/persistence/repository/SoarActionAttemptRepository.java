@@ -31,6 +31,7 @@ public interface SoarActionAttemptRepository extends TenantScopedRepository<Soar
 
     /** System-scope retention purge; call only from SoarRunRetentionWorker. */
     @Modifying
+    @org.springframework.transaction.annotation.Transactional
     @Query("delete from SoarActionAttemptEntity a where a.nodeRunId in :nodeRunIds")
     int deleteByNodeRunIdIn(@Param("nodeRunIds") Collection<String> nodeRunIds);
 }

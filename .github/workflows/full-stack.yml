@@ -24,6 +24,9 @@ jobs:
       SOCP_MINIO_SECRET: ci-full-stack-minio-secret-0123456789abcdef
       SOCP_OPENSEARCH_PASSWORD: ci-full-stack-os-password-0123456789abcdef
       SOCP_RUNTIME_PROFILES: dev,pg
+      # Both the production-context boot smoke and the live dev,pg SOAR
+      # instances must target the Temporal service started below.
+      SOCP_TEMPORAL_TARGET: localhost:7233
       SOCP_RATELIMIT_BACKEND: redis
       SOCP_RATELIMIT_FAIL_CLOSED: "true"
       SOCP_CLIENT_EXTERNAL_ALLOWED_HOSTS: "127.0.0.1,localhost"
@@ -80,11 +83,35 @@ jobs:
 
       - name: Start integration middleware
         # Full-stack verification does not require dashboards, Keycloak,
-        # Temporal UI, Loki, or Jaeger. Starting those containers previously
-        # starved the application JVMs and made startup evidence flaky.
+        # Temporal UI, Loki, or Jaeger. Temporal itself is required: V2 must
+        # prove durable dispatch rather than silently accepting a queued-only
+        # run when the orchestration dependency is absent.
         run: >-
           docker compose -f infra/docker-compose.yml up -d
           postgres kafka opensearch redis clickhouse minio
+
+      - name: Start Temporal for SOAR V2 evidence
+        run: >-
+          docker compose -f infra/docker-compose.yml --profile extra up -d
+          temporal
+
+      - name: Wait for Temporal gRPC endpoint
+        run: |
+          python3 - <<'PY'
+          import socket
+          import time
+
+          deadline = time.monotonic() + 90
+          while time.monotonic() < deadline:
+              try:
+                  with socket.create_connection(("127.0.0.1", 7233), timeout=2):
+                      print("Temporal gRPC endpoint is reachable")
+                      break
+              except OSError:
+                  time.sleep(2)
+          else:
+              raise SystemExit("Temporal gRPC endpoint did not become reachable")
+          PY
 
       - name: Build backend
         run: bash build/mvnw.sh -DskipTests package
@@ -115,6 +142,49 @@ jobs:
 
       - name: Start all backend services
         run: bash build/run-all.sh backend full
+
+      - name: Start a second SOAR instance for admission evidence
+        run: |
+          mkdir -p .cache
+          secondary_jvm_opts="${SOCP_SOAR_WEB_JVM_OPTS:--Xms16m -Xmx192m -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC}"
+          nohup java $secondary_jvm_opts \
+            -jar services/soar-web/target/soar-web-1.0.0-SNAPSHOT.jar \
+            --server.port=28083 --spring.profiles.active=dev,pg \
+            --spring.main.banner-mode=off \
+            > .cache/soar-web-secondary.log 2>&1 &
+          echo $! > .cache/soar-web-secondary.pid
+          python3 - <<'PY'
+          import json
+          import time
+          import urllib.request
+
+          target = "http://127.0.0.1:28083/soar-web/health"
+          for _ in range(90):
+              try:
+                  with urllib.request.urlopen(target, timeout=2) as response:
+                      body = json.loads(response.read().decode("utf-8"))
+                      details = body.get("data", body)
+                      temporal = details.get("temporal", {}) if isinstance(details, dict) else {}
+                      if (response.status == 200 and details.get("status") == "UP"
+                              and temporal.get("status") == "UP"):
+                          print("secondary SOAR instance and Temporal are reachable")
+                          break
+              except Exception:
+                  pass
+              time.sleep(2)
+          else:
+              raise SystemExit("secondary SOAR instance did not become reachable")
+          PY
+
+      - name: Run SOAR V2 live and multi-instance verification
+        env:
+          SOAR_PRIMARY_URL: http://127.0.0.1:18092/soar-web
+          SOAR_SECONDARY_URL: http://127.0.0.1:28083/soar-web
+          SOAR_REQUIRE_SECONDARY: "true"
+          SOAR_LIVE_EVIDENCE_PATH: .cache/soar-v2-live.json
+          SOAR_VERIFY_USERNAME: admin
+          SOAR_VERIFY_PASSWORD: admin123
+        run: python3 build/verify-soar-live.py
 
       - name: Start persistent webhook verification fixture
         run: |
@@ -201,6 +271,9 @@ jobs:
         run: |
           if [ -f .cache/webhook-sink.pid ]; then
             kill "$(cat .cache/webhook-sink.pid)" 2>/dev/null || true
+          fi
+          if [ -f .cache/soar-web-secondary.pid ]; then
+            kill "$(cat .cache/soar-web-secondary.pid)" 2>/dev/null || true
           fi
           bash build/detection-cluster.sh stop || true
           bash build/run-all.sh stop || true

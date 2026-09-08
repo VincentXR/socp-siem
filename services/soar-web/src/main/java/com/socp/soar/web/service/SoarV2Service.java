@@ -2396,6 +2396,15 @@ public class SoarV2Service {
                     throw error(HttpStatus.CONFLICT, "SOAR_SUB_PLAYBOOK_NOT_PUBLISHED",
                             "referenced playbook version is not published: " + targetId);
                 }
+                SoarPlaybookEntity targetPlaybook = playbooks.findByTenantIdAndId(
+                                tenant, target.getPlaybookId())
+                        .orElseThrow(() -> error(HttpStatus.CONFLICT, "SOAR_SUB_PLAYBOOK_NOT_FOUND",
+                                "owning playbook does not exist for referenced version: " + referencedId));
+                if (!"ACTIVE".equalsIgnoreCase(targetPlaybook.getStatus())) {
+                    visiting.remove(pathId);
+                    throw error(HttpStatus.CONFLICT, "SOAR_SUB_PLAYBOOK_ARCHIVED",
+                            "referenced playbook is archived: " + target.getPlaybookId());
+                }
                 validateSubPlaybookVersion(tenant, target, depth + 1, visiting);
             }
         }

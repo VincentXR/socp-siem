@@ -107,6 +107,19 @@ def main() -> int:
     check("Alert service client enters V2 event evaluation",
           '"/api/v2/events/evaluate"' in soar_client
           and "legacyAlarmEnvelope" in controller)
+    live_probe = ROOT / "build/verify-soar-live.py"
+    full_stack = read(".github/workflows/full-stack.yml")
+    live_source = live_probe.read_text(encoding="utf-8") if live_probe.is_file() else ""
+    check("live SOAR integration verifier exists",
+          live_probe.is_file() and "SOAR V2 integration" in live_source
+          and "temporalWorkflowId" in live_source
+          and "SOAR_LIVE_EVIDENCE_PATH" in live_source)
+    check("full-stack starts real Temporal and cross-instance SOAR probe",
+          "Start Temporal for SOAR V2 evidence" in full_stack
+          and "SOAR_REQUIRE_SECONDARY: \"true\"" in full_stack
+          and "SOCP_TEMPORAL_TARGET: localhost:7233" in full_stack
+          and "SOAR_LIVE_EVIDENCE_PATH: .cache/soar-v2-live.json" in full_stack
+          and "verify-soar-live.py" in full_stack)
     request_dir = ROOT / "services/soar-web/src/main/java/com/socp/soar/web/api/request"
     for request_type in ("UpdateV2PlaybookRequest", "DryRunV2Request", "ReasonRequest",
                          "RerunV2Request", "UnknownResolutionRequest",

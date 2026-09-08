@@ -9,6 +9,23 @@
 3. `prod` profile 必须配置 JWT/JWKS、Temporal、TLS 出站策略和 secret reference。不得把 token、密码或 secret value 写进 definition、inputs、日志或 Temporal payload。
 4. 先发布低风险读动作，再单独认证 endpoint/firewall/EDR 的高风险动作；只有真实目标环境验收通过后才可把 connector 标记为 `PRODUCTION_READY`。
 
+### Live V2 evidence
+
+在 PostgreSQL、Temporal、gateway 和至少两个 `soar-web` 实例均已就绪时运行：
+
+```bash
+SOAR_PRIMARY_URL=http://127.0.0.1:18092/soar-web \
+SOAR_SECONDARY_URL=http://127.0.0.1:28083/soar-web \
+SOAR_REQUIRE_SECONDARY=true \
+python build/verify-soar-live.py
+```
+
+探针只创建 `START → DELAY → END` 的无副作用剧本，验证真实 Temporal 完成、事件
+幂等和跨实例 `maxConcurrentRuns` 裁决；规则会禁用、剧本会归档，运行和 receipt
+证据仍保留。设置 `SOAR_LIVE_EVIDENCE_PATH` 可将脱敏汇总写到指定 JSON；缺少
+第二实例时可省略 `SOAR_REQUIRE_SECONDARY`，但结果只能作为单进程 smoke，不能作为
+多实例发布证据。
+
 ## 健康与告警
 
 - `/soar-web/actuator/health` 的 `UP` 表示可接收；`DEGRADED` 表示仍可接受但 Temporal、连接器或 backlog 超阈值；`DOWN` 表示不能安全接收。
