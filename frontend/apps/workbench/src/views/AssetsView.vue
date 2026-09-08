@@ -29,6 +29,7 @@ import { useI18n } from '../composables/useI18n'
 const { t } = useI18n()
 
 const assetStat = ref<{ total: number; byType: Record<string, number>; byCriticality: Record<string, number> } | null>(null)
+const loadError = ref('')
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('assets')
 const showAssetDialog = ref(false)
 const assetImportInput = ref<HTMLInputElement | null>(null)
@@ -68,9 +69,11 @@ const { items: assets, page, size, keyword, loading, filtered: assetsFiltered, p
 async function loadAssets() {
   if (loading.value) return
   loading.value = true
+  loadError.value = ''
   try {
     const [listResult, statResult] = await Promise.allSettled([assetApi.list(), assetApi.stats()])
     if (listResult.status === 'fulfilled') setItems(listResult.value)
+    else loadError.value = listResult.reason instanceof Error ? listResult.reason.message : String(listResult.reason)
     if (statResult.status === 'fulfilled') assetStat.value = statResult.value
   } finally {
     loading.value = false
@@ -158,7 +161,7 @@ onMounted(loadAssets)
 
 <template>
   <div class="page-pad view-enter">
-    <PageHeader :title="t('assets.title')" :description="t('assets.description')">
+    <PageHeader :eyebrow="t('menuGroup.assetsAndIntel')" :title="t('assets.title')" :description="t('assets.description')">
       <template #actions>
         <el-button type="primary" size="small" @click="openCreateAsset">{{ t('assets.createAsset') }}</el-button>
         <el-button size="small" @click="selectAssetImport">{{ t('assets.importAssets') }}</el-button>
@@ -174,7 +177,7 @@ onMounted(loadAssets)
       <MetricCard :label="t('assets.assetTypes')" tone="neutral">{{ Object.keys(assetStat.byType || {}).length }}</MetricCard>
     </div>
 
-    <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="assetsFiltered.length">
+    <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="assetsFiltered.length" :loading="loading" :error="loadError" :retry="loadAssets" :empty-title="t('assets.assetList')" :empty-description="t('assets.description')">
       <template #toolbar>
         <FilterToolbar :count="assetsFiltered.length">
         <el-input v-model="keyword" :placeholder="t('assets.searchPlaceholder')" clearable @input="page = 1" />

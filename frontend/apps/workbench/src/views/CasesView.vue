@@ -23,7 +23,8 @@ import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { ElTimeline, ElTimelineItem } from 'element-plus/es/components/timeline/index.mjs'
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import DataTableCard from '../components/DataTableCard.vue'
 import FilterToolbar from '../components/FilterToolbar.vue'
 import MetricCard from '../components/MetricCard.vue'
@@ -35,6 +36,8 @@ import { caseApi, type CaseInfo, type TimelineEvent } from '../api/domains'
 import { useI18n } from '../composables/useI18n'
 
 const { t } = useI18n()
+const route = useRoute()
+const router = useRouter()
 
 const stats = ref<{ total?: number; open?: number; resolved?: number }>({})
 const detail = ref<CaseInfo | null>(null)
@@ -44,6 +47,7 @@ const createDialogVisible = ref(false)
 const caseForm = ref({ title: '', entity: '', severity: 'HIGH', assignee: '' })
 const newStatus = ref('')
 const statusFilter = ref('')
+const loadError = ref('')
 const caseSorters: Record<string, (item: CaseInfo) => unknown> = {
   alarmCount: item => item.alarmIds.length,
   id: item => item.id,
@@ -66,10 +70,13 @@ const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('cases')
 async function loadCases() {
   if (loading.value) return
   loading.value = true
+  loadError.value = ''
   try {
     const [caseResult, statResult] = await Promise.allSettled([caseApi.list(), caseApi.stats()])
     if (caseResult.status === 'fulfilled') setItems(caseResult.value)
+    else loadError.value = caseResult.reason instanceof Error ? caseResult.reason.message : String(caseResult.reason)
     if (statResult.status === 'fulfilled') stats.value = statResult.value
+    openCaseFromQuery()
   } finally { loading.value = false }
 }
 
@@ -81,11 +88,26 @@ async function openCase(item: CaseInfo) {
 }
 function openCaseRow(row: unknown) { openCase(row as CaseInfo) }
 
+function openCaseFromQuery(): void {
+  const id = typeof route.query.caseId === 'string' ? route.query.caseId : ''
+  if (!id) return
+  const match = cases.value.find(item => item.id === id || item.caseNo === id)
+  if (match && detail.value?.id !== match.id) void openCase(match)
+}
+
+function openAlarm(id: string): void {
+  void router.push({ name: 'alarms', query: { alarmId: id } })
+}
+
 async function updateStatus() {
   if (!detail.value || !newStatus.value) return
-  const result = await caseApi.updateStatus(detail.value.id, newStatus.value)
-  detail.value = result.case
-  await loadCases()
+  try {
+    const result = await caseApi.updateStatus(detail.value.id, newStatus.value)
+    detail.value = result.case
+    await loadCases()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : t('common.failed'))
+  }
 }
 
 function openCreateCase() {
@@ -112,11 +134,19 @@ async function saveCase() {
 }
 
 onMounted(loadCases)
+watch(() => route.query.caseId, openCaseFromQuery)
+watch(drawerVisible, visible => {
+  if (!visible && route.query.caseId) {
+    const query = { ...route.query }
+    delete query.caseId
+    void router.replace({ query })
+  }
+})
 </script>
 
 <template>
   <div class="page-pad view-enter">
-    <PageHeader :title="t('cases.title')" :description="t('cases.description')">
+    <PageHeader :eyebrow="t('menuGroup.alarmsAndEvents')" :title="t('cases.title')" :description="t('cases.description')">
       <template #actions>
         <el-button type="primary" size="small" @click="openCreateCase">{{ t('cases.createCase') }}</el-button>
         <el-button size="small" @click="caseApi.export()">{{ t('cases.exportJson') }}</el-button>
@@ -129,7 +159,7 @@ onMounted(loadCases)
       <MetricCard :label="t('cases.resolvedCases')" tone="success">{{ stats.resolved ?? 0 }}</MetricCard>
     </div>
 
-    <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="casesFiltered.length">
+    <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="casesFiltered.length" :loading="loading" :error="loadError" :retry="loadCases" :empty-title="t('cases.emptyCases')" :empty-description="t('cases.description')">
       <template #toolbar>
         <FilterToolbar :count="casesFiltered.length">
         <el-input v-model="keyword" :placeholder="t('cases.searchPlaceholder')" clearable @input="page = 1" />
@@ -138,7 +168,7 @@ onMounted(loadCases)
         </el-select>
         </FilterToolbar>
       </template>
-      <el-table :data="casesPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @sort-change="casesList.onSortChange">
+      <el-table :data="casesPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @sort-change="casesList.onSortChange" @row-click="openCaseRow">
         <el-table-column prop="id" column-key="id" :label="t('cases.caseId')" :width="columnWidth('id', 180)" sortable="custom" show-overflow-tooltip />
         <el-table-column prop="title" column-key="title" :label="t('cases.caseTitle')" :width="columnWidth('title')" min-width="180" sortable="custom" show-overflow-tooltip />
         <el-table-column prop="entity" column-key="entity" :label="t('common.entity')" :width="columnWidth('entity', 130)" sortable="custom" show-overflow-tooltip />
@@ -170,7 +200,10 @@ onMounted(loadCases)
           <el-descriptions-item :label="t('common.severity')"><SevBadge :value="detail.severity" /></el-descriptions-item>
           <el-descriptions-item :label="t('common.status')">{{ t('statuses.' + detail.status) || detail.status }}</el-descriptions-item>
           <el-descriptions-item :label="t('cases.linkedRules')" :span="2">{{ detail.ruleIds.join(', ') || '—' }}</el-descriptions-item>
-          <el-descriptions-item :label="t('cases.associatedAlarms')" :span="2">{{ detail.alarmIds.join(', ') || '—' }}</el-descriptions-item>
+          <el-descriptions-item :label="t('cases.associatedAlarms')" :span="2">
+            <div v-if="detail.alarmIds.length" class="case-object-list"><button v-for="alarmId in detail.alarmIds" :key="alarmId" type="button" class="case-object-link mono" @click="openAlarm(alarmId)">{{ alarmId }}</button></div>
+            <span v-else>—</span>
+          </el-descriptions-item>
         </el-descriptions>
         <div class="case-status-row"><el-select v-model="newStatus"><el-option v-for="status in ['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']" :key="status" :label="t('statuses.' + status) || status" :value="status" /></el-select><el-button type="primary" @click="updateStatus">{{ t('cases.updateStatus') }}</el-button></div>
         <el-divider content-position="left">{{ t('cases.timeline') }}</el-divider>

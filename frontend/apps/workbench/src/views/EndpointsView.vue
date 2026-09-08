@@ -20,6 +20,7 @@ import { useI18n } from '../composables/useI18n'
 const { t } = useI18n()
 
 const endpointStat = ref<{ total: number; online: number; byType: Record<string, number> } | null>(null)
+const loadError = ref('')
 const endpointsList = useResourceList<Endpoint>({
   searchFields: endpoint => [endpoint.hostname, endpoint.ip, endpoint.os, endpoint.agentVersion, endpoint.status],
 })
@@ -29,11 +30,12 @@ const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('endpoints')
 async function loadEndpoints() {
   if (loading.value) return
   loading.value = true
+  loadError.value = ''
   try {
     const [endpointResult, statResult] = await Promise.allSettled([endpointApi.list(), endpointApi.stats()])
     if (endpointResult.status === 'fulfilled') {
       setItems(endpointResult.value)
-    }
+    } else loadError.value = endpointResult.reason instanceof Error ? endpointResult.reason.message : String(endpointResult.reason)
     if (statResult.status === 'fulfilled') endpointStat.value = statResult.value
   } finally {
     loading.value = false
@@ -51,7 +53,7 @@ onMounted(loadEndpoints)
 
 <template>
   <div class="page-pad view-enter">
-    <PageHeader :title="t('endpoints.title')" :description="t('endpoints.description')">
+    <PageHeader :eyebrow="t('menuGroup.assetsAndIntel')" :title="t('endpoints.title')" :description="t('endpoints.description')">
       <template #actions><el-button size="small" :loading="loading" @click="loadEndpoints">{{ t('common.refresh') }}</el-button></template>
     </PageHeader>
 
@@ -62,7 +64,7 @@ onMounted(loadEndpoints)
       <MetricCard :label="t('endpoints.endpointTypes')" tone="neutral">{{ Object.keys(endpointStat.byType || {}).length }}</MetricCard>
     </div>
 
-    <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="endpointsFiltered.length">
+    <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="endpointsFiltered.length" :loading="loading" :error="loadError" :retry="loadEndpoints" :empty-title="t('endpoints.agentList')" :empty-description="t('endpoints.description')">
       <template #toolbar>
         <FilterToolbar :count="endpointsFiltered.length">
         <el-input v-model="keyword" :placeholder="t('endpoints.searchPlaceholder')" clearable @input="page = 1" />

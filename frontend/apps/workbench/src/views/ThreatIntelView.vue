@@ -32,6 +32,7 @@ import { useI18n } from '../composables/useI18n'
 const { t } = useI18n()
 
 const tiStat = ref<{ total?: number; byType?: Record<string, number> }>({})
+const loadError = ref('')
 const iocType = ref('')
 const showIocDialog = ref(false)
 const iocImportInput = ref<HTMLInputElement | null>(null)
@@ -66,12 +67,13 @@ function openIocDialog() {
 async function loadTi() {
   if (loading.value) return
   loading.value = true
+  loadError.value = ''
   try {
     const [listResult, statResult] = await Promise.allSettled([threatIntelApi.list(iocType.value || undefined), threatIntelApi.stats()])
     if (listResult.status === 'fulfilled') {
       setItems(listResult.value)
       resetPage()
-    }
+    } else loadError.value = listResult.reason instanceof Error ? listResult.reason.message : String(listResult.reason)
     if (statResult.status === 'fulfilled') tiStat.value = statResult.value
   } finally {
     loading.value = false
@@ -146,7 +148,7 @@ onMounted(loadTi)
 
 <template>
   <div class="page-pad view-enter">
-    <PageHeader :title="t('threat.title')" :description="t('threat.description')">
+    <PageHeader :eyebrow="t('menuGroup.assetsAndIntel')" :title="t('threat.title')" :description="t('threat.description')">
       <template #actions><el-button size="small" :loading="loading" @click="loadTi">{{ t('common.refresh') }}</el-button></template>
     </PageHeader>
     <div class="page-metrics ti-metrics">
@@ -182,7 +184,7 @@ onMounted(loadTi)
       </el-form>
       <template #footer><el-button @click="showIocDialog = false">{{ t('common.cancel') }}</el-button><el-button type="success" @click="addIoc">{{ t('common.submit') }}</el-button></template>
     </el-dialog>
-    <DataTableCard v-model:current-page="iocPage" v-model:page-size="iocSize" :total="iocsFiltered.length">
+    <DataTableCard v-model:current-page="iocPage" v-model:page-size="iocSize" :total="iocsFiltered.length" :loading="loading" :error="loadError" :retry="loadTi" :empty-title="t('threat.iocList')" :empty-description="t('threat.description')">
       <el-table :data="iocsPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @sort-change="iocList.onSortChange">
         <el-table-column prop="type" column-key="type" :label="t('common.type')" :width="columnWidth('type', 90)" sortable="custom" />
         <el-table-column prop="value" column-key="value" :label="t('threat.iocValue')" :width="columnWidth('value')" min-width="160" sortable="custom" show-overflow-tooltip />
