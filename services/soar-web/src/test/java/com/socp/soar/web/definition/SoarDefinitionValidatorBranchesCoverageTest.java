@@ -715,6 +715,14 @@ class SoarDefinitionValidatorBranchesCoverageTest {
         assertHasError(definition(nodes, edges), "EDGE_PORT_NOT_ALLOWED");
     }
 
+    @Test
+    void acceptsSubPlaybookVersionReferenceInConfigCompatibilityShape() {
+        String nodes = "[" + START + ",{\"id\":\"sp\",\"type\":\"SUB_PLAYBOOK\","
+                + "\"config\":{\"playbookVersionId\":\"pv-1\"}}," + END + "]";
+        String edges = "[{\"from\":\"s\",\"to\":\"sp\"},{\"from\":\"sp\",\"to\":\"e\"}]";
+        assertNoError(definition(nodes, edges), "SUB_PLAYBOOK_REFERENCE_REQUIRED");
+    }
+
     // ------------------------------------------------------------- root limits
 
     @Test

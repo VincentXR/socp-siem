@@ -385,8 +385,12 @@ public class SoarDefinitionValidator {
                             path + "/config/value", "SET_VARIABLE requires config.value"));
                 }
             }
+            String subPlaybookVersionId = text(node, "playbookVersionId");
+            if (subPlaybookVersionId.isBlank()) {
+                subPlaybookVersionId = text(node.path("config"), "playbookVersionId");
+            }
             if (type == SoarNodeType.SUB_PLAYBOOK
-                    && text(node, "playbookVersionId").isBlank()
+                    && subPlaybookVersionId.isBlank()
                     && (!node.has("definition") || !node.path("definition").isObject())) {
                 errors.add(DefinitionIssue.error("SUB_PLAYBOOK_REFERENCE_REQUIRED", id,
                         path, "SUB_PLAYBOOK requires a published playbookVersionId or resolved definition"));
