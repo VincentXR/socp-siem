@@ -35,8 +35,8 @@
 ## 本次本地验证
 
 - `python build/verify-soar.py`：静态 SOAR 契约检查通过（部署探针因未配置 URL 而跳过）；
-- `python -m unittest discover -s build/tests -p 'test_*.py'`：15 项通过，包含 live
-  verifier 的 URL、envelope、边界剧本和租户 trace 单元检查；
+- `python -m unittest discover -s build/tests -p 'test_*.py'`：20 项通过，包含 live
+  verifier 的 URL、envelope、SSE frame、边界剧本和租户 trace 单元检查；
 - `python build/verify-soar-live.py`：使用隔离 PostgreSQL 18 + Temporal 1.24 + 双 SOAR
   实例实跑，24 项通过、0 失败、0 警告；结果保存在 `.cache/soar-v2-live-local.json`（未纳入提交）；
   full-stack CI 已接入同一命令并保留 `.cache/soar-v2-live.json`；
@@ -47,4 +47,4 @@
 - S3、Kubernetes、Vault resolver 测试：13 项通过（Windows 默认临时目录清理存在
   JUnit 权限竞态，改用工作区临时目录重跑通过）；
 - `ProdGuardTest`：20 项通过。
-- `frontend/apps/workbench`：`pnpm exec playwright test e2e --workers=1`，4 项通过、1 项按环境跳过，包含 SOAR V2 浏览器主流程。
+- `frontend/apps/workbench`：`pnpm exec playwright test e2e --workers=1`，5 项通过、1 项按环境跳过，包含 SOAR V2 浏览器主流程、队列权限负例和 SSE 降级。

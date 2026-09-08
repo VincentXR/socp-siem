@@ -118,6 +118,49 @@ def request(base: str, path: str, token: str, tenant: str,
         return -1, {"error": str(error)[:300]}
 
 
+def stream_probe(base: str, token: str, tenant: str, run_id: str,
+                 last_event_id: int = 0, timeout: float = 8) -> tuple[bool, Any]:
+    """Read one complete ``run-event`` frame from the durable SSE endpoint.
+
+    ``urllib`` exposes the response as a line stream, so the probe only keeps
+    bounded protocol state and closes the socket as soon as one event has been
+    reconstructed.  No response body or bearer token is written to evidence.
+    """
+    headers = {
+        "Authorization": "Bearer " + token,
+        "X-Tenant-Id": tenant,
+        "Accept": "text/event-stream",
+        "Last-Event-ID": str(max(0, last_event_id)),
+        "Cache-Control": "no-cache",
+    }
+    url = base.rstrip("/") + f"/api/v2/runs/{run_id}/stream"
+    req = urllib.request.Request(url, method="GET", headers=headers)
+    event_name = False
+    event_id = False
+    event_data = False
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            if response.status != 200:
+                return False, {"status": response.status}
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                line = response.readline()
+                if not line:
+                    break
+                value = line.decode("utf-8", "replace").strip()
+                if value.startswith("event:") and value[len("event:"):].strip() == "run-event":
+                    event_name = True
+                elif value.startswith("id:") and value[len("id:"):].strip().isdigit():
+                    event_id = True
+                elif value.startswith("data:") and value[len("data:"):].strip():
+                    event_data = True
+                if event_name and event_id and event_data:
+                    return True, {"status": response.status, "lastEventId": last_event_id}
+    except (OSError, TimeoutError, urllib.error.URLError) as error:
+        return False, {"error": str(error)[:300]}
+    return False, {"status": 200, "event": "incomplete"}
+
+
 def parse_response(raw: bytes) -> Any:
     if not raw:
         return {}
@@ -333,6 +376,8 @@ def main() -> int:
                   completed.get("temporalWorkflowId"))
             check("alert-created V2 Run completes through Temporal",
                   completed.get("status") == "SUCCEEDED", completed)
+            sse_ok, sse_detail = stream_probe(primary, token, tenant, alert_runs[0])
+            check("run-event SSE resumes from Last-Event-ID", sse_ok, sse_detail)
 
         # Same event id concurrently at two service processes must yield one
         # durable receipt/run.  The losing request should return the existing

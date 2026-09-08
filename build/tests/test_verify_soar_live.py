@@ -43,6 +43,35 @@ class VerifySoarLiveTest(unittest.TestCase):
         self.assertEqual(event["eventType"], "alert.created")
         self.assertEqual(event["trace"]["automationDepth"], 0)
 
+    def test_stream_probe_reconstructs_a_bounded_event_frame(self):
+        class Response:
+            status = 200
+
+            def __init__(self):
+                self.lines = iter((
+                    b": keepalive\n",
+                    b"id: 4\n",
+                    b"event: run-event\n",
+                    b"data: {\"sequence\":4}\n",
+                    b"\n",
+                ))
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def readline(self):
+                return next(self.lines, b"")
+
+        with patch.object(MODULE.urllib.request, "urlopen", return_value=Response()):
+            ok, detail = MODULE.stream_probe(
+                "http://localhost:18083/soar-web", "token", "tenant-a", "run-1"
+            )
+        self.assertTrue(ok)
+        self.assertEqual(detail["lastEventId"], 0)
+
     def test_evidence_report_is_secret_free_and_atomic(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "live.json"
