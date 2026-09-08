@@ -170,6 +170,7 @@ export interface RuleSpec {
   enabled: boolean; status?: string; window?: string; keyField?: string; routingField?: string; threshold?: number
   valueField?: string; warmup?: number; baselineWindows?: number; sigma?: number; minCount?: number
   match?: RuleCondition[]; matchAny?: RuleCondition[][]; whitelist?: RuleCondition[]; steps?: RuleCondition[][]; mitre?: string; version?: string
+  owner?: string; contentPack?: string; contentVersion?: string
 }
 export interface GasStats {
   rules: number; eventCount: number; alertCount: number; dropCount: number

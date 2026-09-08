@@ -1,6 +1,6 @@
 import { computed, type Ref } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
-import { alarmStats, getHealthSnapshot, listAlarmsPaged } from '../api'
+import { alarmStats, caseStats, getHealthSnapshot, listAlarmsPaged } from '../api'
 
 export function useOverview(enabled: Ref<boolean>) {
   const alarmsQuery = useQuery({
@@ -31,6 +31,15 @@ export function useOverview(enabled: Ref<boolean>) {
     refetchIntervalInBackground: false,
   })
 
+  const casesQuery = useQuery({
+    queryKey: ['overview', 'cases'],
+    queryFn: ({ signal }) => caseStats({ signal }),
+    enabled,
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: false,
+  })
+
   const alarms = computed(() => alarmsQuery.data.value?.items ?? [])
   const healths = computed(() => healthQuery.data.value?.services ?? {})
   const sitStats = computed(() => statsQuery.data.value ?? null)
@@ -45,16 +54,22 @@ export function useOverview(enabled: Ref<boolean>) {
     total: sitStats.value?.total ?? recentAlarms.value.length,
     critical: sitStats.value?.bySeverity?.CRITICAL ?? recentAlarms.value.filter(alarm => alarm.severity === 'CRITICAL').length,
     high: sitStats.value?.bySeverity?.HIGH ?? recentAlarms.value.filter(alarm => alarm.severity === 'HIGH').length,
+    activeCases: casesQuery.data.value?.open ?? 0,
     online: Object.values(healths.value).filter(status => status === 'up').length,
   }))
+  const loading = computed(() => alarmsQuery.isPending.value || healthQuery.isPending.value || statsQuery.isPending.value || casesQuery.isPending.value)
+  const error = computed(() => {
+    const failure = alarmsQuery.error.value ?? healthQuery.error.value ?? statsQuery.error.value ?? casesQuery.error.value
+    return failure instanceof Error ? failure.message : failure ? String(failure) : ''
+  })
 
   async function refreshOverview() {
-    await Promise.allSettled([alarmsQuery.refetch(), healthQuery.refetch()])
+    await Promise.allSettled([alarmsQuery.refetch(), healthQuery.refetch(), statsQuery.refetch(), casesQuery.refetch()])
   }
 
   async function loadOverviewStats() {
     await statsQuery.refetch().catch(() => undefined)
   }
 
-  return { alarms, healths, sitStats, stat, refreshOverview, loadOverviewStats }
+  return { alarms, healths, sitStats, stat, loading, error, refreshOverview, loadOverviewStats }
 }

@@ -49,6 +49,7 @@ function onMenuChange(key: string) {
 
 provide(WORKBENCH_STATE, {
   theme,
+  currentRole,
   overview,
   alarmQuery,
   alarms,
@@ -57,9 +58,9 @@ provide(WORKBENCH_STATE, {
   logout: auth.doLogout,
 })
 
-watch(activeMenu, key => {
-  if (key === 'alarms') void alarmQuery.loadAlarmPage()
-})
+watch([activeMenu, isAuthed], ([key, authed]) => {
+  if (authed && key === 'alarms') void alarmQuery.loadAlarmPage()
+}, { immediate: true })
 
 watch(menuGroups, groups => {
   const visibleMenus = new Set(groups.flatMap(group => group.items.map(item => item.key)))

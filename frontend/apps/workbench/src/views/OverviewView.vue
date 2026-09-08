@@ -18,7 +18,7 @@ import { sevColor } from '../lib/ui'
 import { useI18n } from '../composables/useI18n'
 
 const props = defineProps<{
-  stat: { total: number; critical: number; high: number; online: number }
+  stat: { total: number; critical: number; high: number; activeCases: number; online: number }
   sitStats?: {
     trend7d?: Record<string, number>
     bySeverity?: Record<string, number>
@@ -26,6 +26,11 @@ const props = defineProps<{
   } | null
   filteredAlarms: Alarm[]
   healths: Record<string, string>
+  loading?: boolean
+  error?: string
+  goAlarms?: (query?: Record<string, string>) => void
+  openAlarm?: (id: string) => void
+  goCases?: () => void
 }>()
 const emit = defineEmits<{ (e: 'refresh'): void }>()
 
@@ -42,10 +47,16 @@ function onRefresh() {
 
 const trendSum = computed(() => Object.values(props.sitStats?.trend7d ?? {}).reduce((a, b) => a + b, 0))
 const highPending = computed(() => props.stat.critical + props.stat.high)
-const onlinePct = computed(() => (HEALTH_TARGETS.length ? Math.round((props.stat.online / HEALTH_TARGETS.length) * 100) : 0))
 const maxLevel = computed(() => Math.max(1, ...LEVELS.map(level => props.sitStats?.bySeverity?.[level] ?? 0)))
 const topRisk = computed(() => (props.sitStats?.topRisk ?? []).slice(0, 5))
 const latestAlarms = computed(() => props.filteredAlarms.slice(0, 5))
+function openAllAlarms(): void { props.goAlarms?.() }
+function openHighRiskAlarms(): void { props.goAlarms?.({ severity: 'HIGH' }) }
+function openCases(): void { props.goCases?.() }
+function openRecentAlarm(row: unknown): void {
+  const id = (row as Alarm)?.id
+  if (id) props.openAlarm?.(id)
+}
 const timeOnly = (iso: string) => (iso?.length >= 19 ? iso.slice(11, 19) : '—')
 
 function getStatusLabel(status: string): string {
@@ -55,7 +66,7 @@ function getStatusLabel(status: string): string {
 
 <template>
   <div class="page-pad view-enter">
-    <PageHeader :title="t('overview.title')">
+    <PageHeader :eyebrow="t('menuGroup.overview')" :title="t('overview.title')">
       <template #description>{{ t('overview.description') }} · {{ updatedAt }}</template>
       <template #actions>
         <span class="ov-date-pill">{{ t('overview.last7Days') }}</span>
@@ -63,18 +74,24 @@ function getStatusLabel(status: string): string {
       </template>
     </PageHeader>
 
+    <div v-if="props.error" class="overview-data-warning" role="alert">
+      <strong>{{ t('overview.dataUnavailable') }}</strong>
+      <span>{{ props.error }}</span>
+    </div>
+    <div v-if="props.loading" class="overview-loading" aria-live="polite">{{ t('common.loading') }}</div>
+
     <div class="ov-kpis">
-      <MetricCard :label="t('overview.totalEvents')" tone="info">
+      <MetricCard :label="t('overview.totalAlarms7d')" tone="info" :interactive="Boolean(props.goAlarms)" @click="openAllAlarms">
         <AnimatedNumber :value="stat.total" />
-        <template #hint>{{ t('overview.sevenDayTotal') }} <b class="mono">{{ trendSum }}</b></template>
+        <template #hint>{{ t('overview.alarmWindow7d') }} · {{ t('overview.sourceAlarmStats') }}</template>
       </MetricCard>
-      <MetricCard :label="t('overview.criticalAlarms')" tone="danger">
+      <MetricCard :label="t('overview.highCriticalAlarms7d')" tone="danger" :interactive="Boolean(props.goAlarms)" @click="openHighRiskAlarms">
         <AnimatedNumber :value="highPending" />
         <template #hint>CRITICAL <b class="mono">{{ stat.critical }}</b> · HIGH <b class="mono">{{ stat.high }}</b></template>
       </MetricCard>
-      <MetricCard :label="t('overview.onlineEndpoints')" tone="success">
-        <AnimatedNumber :value="onlinePct" /><span class="metric-suffix">%</span>
-        <template #hint>{{ stat.online }} / {{ HEALTH_TARGETS.length }} {{ t('overview.servicesHealthy') }}</template>
+      <MetricCard :label="t('overview.activeCases')" tone="warning" :interactive="Boolean(props.goCases)" @click="openCases">
+        <AnimatedNumber :value="stat.activeCases" />
+        <template #hint>{{ t('overview.activeCasesHint') }}</template>
       </MetricCard>
     </div>
 
@@ -110,7 +127,7 @@ function getStatusLabel(status: string): string {
       <el-card shadow="never" class="ov-card">
         <template #header><span>Top 5 {{ t('overview.riskEntities') }}</span></template>
         <div v-if="topRisk.length" class="ov-risk">
-          <div v-for="(risk, index) in topRisk" :key="risk.id" class="ov-risk-item">
+            <div v-for="(risk, index) in topRisk" :key="risk.id" class="ov-risk-item" role="button" tabindex="0" @click="openRecentAlarm(risk)" @keydown.enter.prevent="openRecentAlarm(risk)">
             <span class="ov-rank mono">{{ index + 1 }}</span>
             <div class="ov-risk-body">
               <div class="ov-risk-name">{{ risk.ruleName }}</div>
@@ -119,13 +136,13 @@ function getStatusLabel(status: string): string {
             <span class="ov-risk-score mono" :class="`risk-${String(risk.severity || 'INFO').toLowerCase()}`">{{ risk.riskScore ?? '—' }}</span>
           </div>
         </div>
-        <EmptyState v-else :title="t('overview.noHighRiskAlarms')" :description="t('overview.noUrgentRiskItems')" />
+        <EmptyState v-else-if="!props.loading" :title="t('overview.noHighRiskAlarms')" :description="t('overview.noUrgentRiskItems')" />
       </el-card>
 
       <el-card shadow="never" class="ov-card">
         <template #header><span>{{ t('overview.recentAlarms') }}</span></template>
         <div v-if="latestAlarms.length" class="ov-alert-table">
-          <el-table :data="latestAlarms" size="small">
+          <el-table :data="latestAlarms" size="small" @row-click="openRecentAlarm">
             <el-table-column :label="t('common.timestamp')" width="96">
               <template #default="{ row }"><span class="mono">{{ timeOnly(row.occurredAt) }}</span></template>
             </el-table-column>
@@ -142,7 +159,7 @@ function getStatusLabel(status: string): string {
             </el-table-column>
           </el-table>
         </div>
-        <EmptyState v-else :title="t('overview.noLiveAlarms')" :description="t('overview.alarmsWillAppear')" />
+        <EmptyState v-else-if="!props.loading" :title="t('overview.noLiveAlarms')" :description="t('overview.alarmsWillAppear')" />
       </el-card>
     </div>
 

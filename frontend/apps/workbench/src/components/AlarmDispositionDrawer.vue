@@ -7,6 +7,7 @@ import 'element-plus/es/components/divider/style/css.mjs'
 import 'element-plus/es/components/drawer/style/css.mjs'
 import 'element-plus/es/components/empty/style/css.mjs'
 import 'element-plus/es/components/input/style/css.mjs'
+import 'element-plus/es/components/message/style/css.mjs'
 import 'element-plus/es/components/select/style/css.mjs'
 import 'element-plus/es/components/tag/style/css.mjs'
 import ElAlert from 'element-plus/es/components/alert/index.mjs'
@@ -17,23 +18,30 @@ import ElDivider from 'element-plus/es/components/divider/index.mjs'
 import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
 import ElEmpty from 'element-plus/es/components/empty/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
+import ElMessage from 'element-plus/es/components/message/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { computed, ref, watch } from 'vue'
 import SevBadge from './SevBadge.vue'
 import type { Alarm, AlarmEvidenceResponse, CaseInfo, Disposition, Ioc } from '../api'
 import { addAlarmNote, assignAlarm, getAlarmEvidence, getDisposition, setDispositionStatus } from '../api/alarms'
-import { listCases as loadCases } from '../api/incidents'
+import { createCaseFromAlarm, listCases as loadCases } from '../api/incidents'
 import { useI18n } from '../composables/useI18n'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   modelValue: boolean
   alarm: Alarm | null
-  goCase: () => void
+  goCase: (caseId?: string) => void
   goSearch: () => void
-}>()
+  canWrite?: boolean
+}>(), {
+  canWrite: true,
+})
 
-const emit = defineEmits<{ 'update:modelValue': [value: boolean] }>()
+const emit = defineEmits<{
+  'update:modelValue': [value: boolean]
+  updated: []
+}>()
 const drawerVisible = computed({
   get: () => props.modelValue,
   set: (value: boolean) => emit('update:modelValue', value),
@@ -49,6 +57,8 @@ const relatedCase = ref<CaseInfo | null>(null)
 const newStatus = ref('OPEN')
 const newAssignee = ref('')
 const newNote = ref('')
+const creatingCase = ref(false)
+const actionError = ref('')
 let loadToken = 0
 
 const tiHits = computed<Ioc[]>(() => {
@@ -64,6 +74,7 @@ async function loadDetails(alarm: Alarm) {
   disposition.value = null
   evidence.value = null
   evidenceError.value = ''
+  actionError.value = ''
   newStatus.value = alarm.status || 'OPEN'
   newAssignee.value = ''
   newNote.value = ''
@@ -81,26 +92,59 @@ watch(() => [props.modelValue, props.alarm?.id] as const, ([visible]) => {
 }, { immediate: true })
 
 async function changeStatus() {
-  if (!props.alarm) return
+  if (!props.alarm || !props.canWrite) return
+  actionError.value = ''
   try {
     await setDispositionStatus(props.alarm.id, newStatus.value)
     disposition.value = await getDisposition(props.alarm.id)
-  } catch {
-    // Keep the previous state visible when the update fails.
+    emit('updated')
+  } catch (error) {
+    actionError.value = error instanceof Error ? error.message : String(error)
   }
 }
 
 async function doAssign() {
-  if (!props.alarm || !newAssignee.value.trim()) return
-  await assignAlarm(props.alarm.id, newAssignee.value.trim())
-  newAssignee.value = ''
+  if (!props.alarm || !props.canWrite || !newAssignee.value.trim()) return
+  actionError.value = ''
+  try {
+    await assignAlarm(props.alarm.id, newAssignee.value.trim())
+    newAssignee.value = ''
+    disposition.value = await getDisposition(props.alarm.id)
+    emit('updated')
+  } catch (error) {
+    actionError.value = error instanceof Error ? error.message : String(error)
+  }
 }
 
 async function doAddNote() {
-  if (!props.alarm || !newNote.value.trim()) return
-  await addAlarmNote(props.alarm.id, newNote.value.trim())
-  newNote.value = ''
-  disposition.value = await getDisposition(props.alarm.id)
+  if (!props.alarm || !props.canWrite || !newNote.value.trim()) return
+  actionError.value = ''
+  try {
+    await addAlarmNote(props.alarm.id, newNote.value.trim())
+    newNote.value = ''
+    disposition.value = await getDisposition(props.alarm.id)
+    emit('updated')
+  } catch (error) {
+    actionError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
+async function createCase(): Promise<void> {
+  if (!props.alarm || !props.canWrite || creatingCase.value) return
+  creatingCase.value = true
+  actionError.value = ''
+  try {
+    const result = await createCaseFromAlarm(props.alarm)
+    const cases = await loadCases()
+    relatedCase.value = cases.find(item => item.id === result.caseId || item.caseNo === result.caseNo) ?? null
+    if (result.duplicate) ElMessage.info(t('drawer.caseAlreadyLinked'))
+    else ElMessage.success(t('drawer.caseCreated'))
+    emit('updated')
+  } catch (error) {
+    actionError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    creatingCase.value = false
+  }
 }
 
 function openEvidenceSearch() {
@@ -113,7 +157,7 @@ function openEvidenceSearch() {
 </script>
 
 <template>
-  <el-drawer v-model="drawerVisible" :title="`${t('drawer.title')} · ${props.alarm?.title || props.alarm?.ruleName || ''}`" size="480px">
+  <el-drawer v-model="drawerVisible" class="alarm-detail-drawer" :title="`${t('drawer.title')} · ${props.alarm?.title || props.alarm?.ruleName || ''}`" size="min(720px, 92vw)">
     <template v-if="props.alarm">
       <el-descriptions :column="2" size="small" border style="margin-bottom:14px">
         <el-descriptions-item :label="t('drawer.ruleId')">{{ props.alarm.ruleId }}</el-descriptions-item>
@@ -133,6 +177,8 @@ function openEvidenceSearch() {
           <span v-else style="color:var(--ns-text-3)">—</span>
         </el-descriptions-item>
       </el-descriptions>
+
+      <el-alert v-if="actionError" :title="actionError" type="error" :closable="false" style="margin-bottom:14px" />
 
       <el-divider content-position="left">{{ t('drawer.evidence') }}</el-divider>
       <el-alert v-if="evidenceError" :title="evidenceError" type="error" :closable="false" />
@@ -156,13 +202,14 @@ function openEvidenceSearch() {
       <el-empty v-else :description="t('drawer.noEvidence')" :image-size="50" />
 
       <el-divider content-position="left">{{ t('drawer.stateFlow') }}</el-divider>
-      <div style="display:flex;gap:8px;margin-bottom:8px">
+      <div v-if="props.canWrite" style="display:flex;gap:8px;margin-bottom:8px">
         <el-select v-model="newStatus" style="flex:1"><el-option v-for="s in DISP_STATUSES" :key="s" :label="t('statuses.' + s) || s" :value="s" /></el-select>
         <el-button type="primary" @click="changeStatus">{{ t('common.update') }}</el-button>
       </div>
-      <div style="display:flex;gap:8px;margin-bottom:14px">
+      <div v-if="props.canWrite" style="display:flex;gap:8px;margin-bottom:14px">
         <el-input v-model="newAssignee" :placeholder="t('drawer.assigneePlaceholder')" /><el-button @click="doAssign">{{ t('common.assign') }}</el-button>
       </div>
+      <div v-else class="drawer-readonly-hint">{{ t('drawer.readOnly') }}</div>
 
       <el-divider content-position="left">{{ t('drawer.notesTitle') }}</el-divider>
       <div v-if="disposition && disposition.notes.length">
@@ -171,7 +218,7 @@ function openEvidenceSearch() {
         </div>
       </div>
       <el-empty v-else :description="t('drawer.noNotes')" :image-size="50" />
-      <div style="display:flex;gap:8px;margin-top:8px">
+      <div v-if="props.canWrite" style="display:flex;gap:8px;margin-top:8px">
         <el-input v-model="newNote" :placeholder="t('drawer.addNotePlaceholder')" @keyup.enter="doAddNote" /><el-button type="success" @click="doAddNote">{{ t('common.add') }}</el-button>
       </div>
 
@@ -179,10 +226,13 @@ function openEvidenceSearch() {
       <el-card v-if="relatedCase" shadow="never" style="margin-bottom:10px">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
           <div><div style="font-weight:600">{{ relatedCase.title }}</div><div style="font-size:12px;color:var(--ns-text-3);margin-top:2px">{{ relatedCase.id }} · {{ relatedCase.status }} · {{ relatedCase.entity }} · {{ relatedCase.alarmIds.length }} alarms</div></div>
-          <el-button link type="primary" size="small" @click="drawerVisible = false; props.goCase()">{{ t('drawer.goToCase') }}</el-button>
+          <el-button link type="primary" size="small" @click="drawerVisible = false; props.goCase(relatedCase.id)">{{ t('drawer.goToCase') }}</el-button>
         </div>
       </el-card>
-      <el-empty v-else :description="t('drawer.noRelatedCase')" :image-size="50" />
+      <div v-else class="drawer-case-empty">
+        <el-empty :description="t('drawer.noRelatedCase')" :image-size="50" />
+        <el-button v-if="props.canWrite" type="primary" size="small" :loading="creatingCase" @click="createCase">{{ t('drawer.createCase') }}</el-button>
+      </div>
     </template>
   </el-drawer>
 </template>

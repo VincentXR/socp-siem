@@ -1,7 +1,7 @@
 import { del, downloadFile, get, post, put, type ApiRequestOptions } from './core'
 import type {
   Alarm, AlarmBatchDispositionResult, AlarmFeedback, AlarmFeedbackKind,
-  AlarmEvidenceResponse, AlarmPage, AlarmStats, Disposition,
+  AlarmEvidenceResponse, AlarmPage, AlarmSortField, AlarmSortOrder, AlarmStats, Disposition,
 } from './models'
 import { withQuery } from '../lib/query'
 
@@ -26,4 +26,19 @@ export const saveAlarmFeedback = (id: string, feedback: { kind: AlarmFeedbackKin
 export const listSimilarAlarms = (id: string, limit = 20) =>
   get<Alarm[]>(withQuery(`/alert-web/api/alarms/${encodeURIComponent(id)}/similar`, { limit }))
 export const alarmStats = (options?: ApiRequestOptions, window = '7d') => get<AlarmStats>(withQuery('/alert-web/api/alarms/stats', { window }), options)
-export const exportAlarms = (format = 'csv') => downloadFile(withQuery('/alert-web/api/alarms/export', { format }), `alarms.${format}`)
+
+export interface AlarmExportFilters {
+  q?: string
+  severity?: string
+  status?: string
+  rule?: string
+  sort?: AlarmSortField
+  order?: AlarmSortOrder
+}
+
+/** Export the same result set represented by the alarm explorer filters. */
+export const exportAlarms = (format = 'csv', filters: AlarmExportFilters = {}) =>
+  downloadFile(
+    withQuery('/alert-web/api/alarms/export', { format, ...filters }),
+    `alarms.${format}`,
+  )
