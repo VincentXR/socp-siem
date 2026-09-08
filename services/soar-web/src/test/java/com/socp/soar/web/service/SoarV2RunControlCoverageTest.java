@@ -208,12 +208,37 @@ class SoarV2RunControlCoverageTest {
         given(runs.findByTenantIdAndRequestId("tenant-a", "req-1"))
                 .willReturn(Optional.of(run("run-1", "req-1", SoarRunStatus.QUEUED)));
 
-        Map<String, Object> result = service.queueManualRun("req-1", "ver-1", null, null);
+        Map<String, Object> result = service.queueManualRun("req-1", "ver-1",
+                Map.of("type", "alert"), null);
 
         assertThat(result).containsEntry("duplicate", true).containsEntry("runId", "run-1");
         verify(versions, never()).findByTenantIdAndId(anyString(), anyString());
         verify(runs, never()).save(any(SoarRunEntity.class));
         verify(dispatches, never()).save(any(SoarDispatchOutboxEntity.class));
+    }
+
+    @Test
+    void reusingRequestIdWithDifferentVersionIsRejected() {
+        given(runs.findByTenantIdAndRequestId("tenant-a", "req-1"))
+                .willReturn(Optional.of(run("run-1", "req-1", SoarRunStatus.QUEUED)));
+
+        assertRejected(HttpStatus.CONFLICT, "SOAR_IDEMPOTENCY_KEY_REUSED",
+                () -> service.queueManualRun("req-1", "ver-other",
+                        Map.of("type", "alert"), null));
+        verify(versions, never()).findByTenantIdAndId(anyString(), anyString());
+        verify(runs, never()).save(any(SoarRunEntity.class));
+    }
+
+    @Test
+    void reusingRequestIdWithDifferentInputsIsRejected() {
+        given(runs.findByTenantIdAndRequestId("tenant-a", "req-1"))
+                .willReturn(Optional.of(run("run-1", "req-1", SoarRunStatus.QUEUED)));
+
+        assertRejected(HttpStatus.CONFLICT, "SOAR_IDEMPOTENCY_KEY_REUSED",
+                () -> service.queueManualRun("req-1", "ver-1",
+                        Map.of("type", "alert"), Map.of("ticket", "different")));
+        verify(versions, never()).findByTenantIdAndId(anyString(), anyString());
+        verify(runs, never()).save(any(SoarRunEntity.class));
     }
 
     @Test

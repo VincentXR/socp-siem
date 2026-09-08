@@ -146,7 +146,9 @@ async function submitQueue(): Promise<void> {
       inputs: parseObject(queueForm.value.inputs, 'Inputs'),
     })
     queueDialogVisible.value = false
-    queueMessage.value = `Run ${result.runId} accepted (202); tracking durable execution.`
+    queueMessage.value = result.duplicate
+      ? `Run ${result.runId} already exists (200 idempotent duplicate); tracking the existing durable execution.`
+      : `Run ${result.runId} accepted (202); tracking durable execution.`
     selectedRunId.value = result.runId
     await loadRuns()
   } catch (failure) {

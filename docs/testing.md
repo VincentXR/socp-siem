@@ -21,6 +21,9 @@ cd frontend/apps/workbench
 pnpm test
 pnpm test:e2e
 pnpm verify
+
+# OpenAPI snapshot -> TypeScript SDK generation and strict compilation
+python build/verify-openapi-sdk.py
 ```
 
 `pnpm verify` runs the workbench type check and Vite build, then verifies the
@@ -84,6 +87,7 @@ Start the required Docker middleware and backend slice before running these:
 python build/verify-slice.py
 python build/verify-pipeline.py
 python build/verify-full.py
+python build/verify-openapi-sdk.py  # add runtime URL/env for live SDK smoke
 python build/verify-soar-live.py  # requires PostgreSQL + Temporal; set a second SOAR URL for race evidence
 python build/demos/golden-demo.py --transport ingest
 python build/demos/detection-recovery.py

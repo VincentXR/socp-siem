@@ -21,6 +21,8 @@ export interface SoarV2Run {
   runId: string; requestId: string; playbookId: string; playbookVersionId: string
   playbookVersion: number; status: string; triggerType: string; definitionHash: string
   temporalWorkflowId?: string; temporalRunId?: string; errorCode?: string; errorMessage?: string
+  /** True when the API returned an existing run for an idempotent request. */
+  duplicate?: boolean
   createdAt?: string; startedAt?: string; completedAt?: string
 }
 export interface SoarV2Approval {

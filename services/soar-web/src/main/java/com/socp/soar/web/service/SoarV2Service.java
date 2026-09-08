@@ -58,6 +58,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.Set;
 import java.util.Comparator;
@@ -555,9 +556,19 @@ public class SoarV2Service {
                                               Map<String, Object> inputs) {
         String tenant = tenant();
         requestId = required(requestId, "requestId", 128);
-        Map<String, Object> existing = runs.findByTenantIdAndRequestId(tenant, requestId)
-                .map(this::runView).orElse(null);
-        if (existing != null) {
+        SoarRunEntity existingEntity = runs.findByTenantIdAndRequestId(tenant, requestId).orElse(null);
+        if (existingEntity != null) {
+            // An idempotency key is bound to the complete immutable request,
+            // not merely to a tenant.  Silently returning an old Run when a
+            // caller accidentally reuses the key for another version/input
+            // would make a retry look successful while executing the wrong
+            // response plan.  Keep the duplicate path cheap, but reject key
+            // reuse with a different payload explicitly.
+            if (!idempotencyRequestMatches(existingEntity, versionId, subject, inputs)) {
+                throw error(HttpStatus.CONFLICT, "SOAR_IDEMPOTENCY_KEY_REUSED",
+                        "requestId is already bound to a different run request");
+            }
+            Map<String, Object> existing = runView(existingEntity);
             existing.put("duplicate", true);
             return existing;
         }
@@ -652,6 +663,34 @@ public class SoarV2Service {
         Map<String, Object> result = runView(run);
         result.put("duplicate", false);
         return result;
+    }
+
+    /**
+     * Compare a repeated queue request against the immutable fields stored on
+     * the first Run.  Jackson tree equality deliberately ignores object key
+     * order, while the persisted input has already gone through the normal
+     * redaction boundary.
+     */
+    private boolean idempotencyRequestMatches(SoarRunEntity existing, String versionId,
+                                               Map<String, Object> subject,
+                                               Map<String, Object> inputs) {
+        if (!Objects.equals(existing.getPlaybookVersionId(), versionId)) return false;
+        String stored = existing.getInputJson();
+        if (stored == null || stored.isBlank()) {
+            return (subject == null || subject.isEmpty()) && (inputs == null || inputs.isEmpty());
+        }
+        try {
+            JsonNode expected = mapper.readTree(stored);
+            JsonNode requested = mapper.valueToTree(redact(Map.of(
+                    "subject", subject == null ? Map.of() : subject,
+                    "inputs", inputs == null ? Map.of() : inputs)));
+            return expected.equals(requested);
+        } catch (RuntimeException | JsonProcessingException malformed) {
+            // A legacy/corrupt projection must not be used as proof that a
+            // new payload is the same request.  Force the operator/client to
+            // choose a fresh idempotency key instead.
+            return false;
+        }
     }
 
     @Transactional(readOnly = true)

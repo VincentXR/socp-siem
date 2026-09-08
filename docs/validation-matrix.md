@@ -30,6 +30,7 @@ correctness and recovery behavior, not a production capacity or HA claim.
 | Steady state | `python build/benchmark-pipeline.py --mode e2e --profile realistic --offered-eps 100 --duration 120` | Offered/actual EPS, lag samples, peak/growth, final drain | Performance regression |
 | Bulk baseline | `python build/benchmark-pipeline.py --count 100` | Detection HTTP accepted/rejected counters and latency percentiles | Manual |
 | Full API | `python build/verify-full.py` | Resource CRUD, tenancy, import/export, threat, and response contracts | Scheduled/release candidate |
+| OpenAPI SDK | `python build/verify-openapi-sdk.py` (add `SOAR_OPENAPI_REQUIRE_RUNTIME=true` and runtime URLs for deployment mode) | 71-operation TypeScript SDK generation, strict compilation, runtime `/v3/api-docs` parity, `SOCP_SESSION`, `X-Tenant-Id`, `ApiResult`, ETag/If-Match, status codes, and error envelopes | Every API change/release candidate |
 | SOAR V2 live | `python build/verify-soar-live.py` | Real PostgreSQL/Temporal Run completion, Alert-shaped V2 event admission, receipt idempotency, and two-instance capacity fence | Weekly/release candidate |
 | Dependency failure | `python build/failure-tests.py` | Kafka, OpenSearch, Temporal, and PostgreSQL recovery assertions | Manual/scheduled |
 
