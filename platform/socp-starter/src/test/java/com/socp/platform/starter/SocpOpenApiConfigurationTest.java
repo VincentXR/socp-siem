@@ -15,7 +15,10 @@ class SocpOpenApiConfigurationTest {
         assertThat(openApi.getInfo().getTitle()).isEqualTo("SOCP Security Operations API");
         assertThat(openApi.getInfo().getVersion()).isEqualTo("v1");
         assertThat(openApi.getComponents().getSecuritySchemes())
-                .containsKeys("bearerAuth", "tenantHeader");
+                .containsKeys("bearerAuth", "tenantHeader", "cookieAuth");
+        assertThat(openApi.getComponents().getSecuritySchemes().get("cookieAuth").getName())
+                .isEqualTo("SOCP_SESSION");
+        assertThat(openApi.getSecurity()).hasSize(2);
     }
 
     @Test

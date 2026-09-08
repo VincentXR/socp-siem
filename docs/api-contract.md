@@ -41,3 +41,34 @@ negative RBAC and tenant-isolation tests remain the security oracle. V2 mutation
 requests use bounded DTOs; only event and rule-extension payloads intentionally
 remain JSON objects because their schemas are supplied by the connector/content
 boundary.
+
+The repeatable SDK contract gate is:
+
+```text
+python build/verify-openapi-sdk.py
+```
+
+It resolves every local `$ref`, checks all operation names and response
+descriptions, and generates a dependency-free TypeScript client that is compiled
+with strict `tsc`. The generated client always sends browser credentials with
+`credentials: include`; Node/CI callers can pass `Cookie: SOCP_SESSION=<value>`
+and `X-Tenant-Id` explicitly. The gate also asserts the reviewed `ApiResult`
+envelope, `If-Match`, and `ETag` contract.
+
+For a deployment-backed verification, start the gateway and SOAR service and
+provide a test account (never commit its cookie):
+
+```text
+SOAR_OPENAPI_BASE_URL=http://127.0.0.1:18092/soar-web \
+SOCP_GATEWAY_URL=http://127.0.0.1:18092 \
+SOAR_OPENAPI_REQUIRE_RUNTIME=true \
+SOAR_VERIFY_USERNAME=admin SOAR_VERIFY_PASSWORD=admin123 \
+python build/verify-openapi-sdk.py
+```
+
+This fetches `/v3/api-docs`, compares runtime paths and security schemes with
+the snapshot, then uses the generated client against a real session to verify
+201 import, version 200 plus weak `ETag`, a correct `If-Match` update, stale
+`If-Match` 412, `ApiResult` error 404, and archive cleanup. Evidence is written
+to `.cache/openapi-sdk/manifest.json`; it contains hashes and pass/fail names,
+not credentials.

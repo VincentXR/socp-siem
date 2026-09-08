@@ -143,6 +143,16 @@ jobs:
       - name: Start all backend services
         run: bash build/run-all.sh backend full
 
+      - name: Verify generated SDK against runtime SOAR OpenAPI
+        env:
+          SOAR_OPENAPI_BASE_URL: http://127.0.0.1:18092/soar-web
+          SOCP_GATEWAY_URL: http://127.0.0.1:18092
+          SOAR_OPENAPI_REQUIRE_RUNTIME: "true"
+          SOAR_OPENAPI_OUTPUT: .cache/openapi-sdk
+          SOAR_VERIFY_USERNAME: admin
+          SOAR_VERIFY_PASSWORD: admin123
+        run: python3 build/verify-openapi-sdk.py
+
       - name: Start a second SOAR instance for admission evidence
         run: |
           mkdir -p .cache

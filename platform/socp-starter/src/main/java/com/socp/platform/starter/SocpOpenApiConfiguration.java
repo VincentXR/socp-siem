@@ -5,6 +5,7 @@ import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.info.Contact;
 import io.swagger.v3.oas.models.info.Info;
 import io.swagger.v3.oas.models.security.SecurityScheme;
+import io.swagger.v3.oas.models.security.SecurityRequirement;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -28,6 +29,19 @@ public class SocpOpenApiConfiguration {
                         .addSecuritySchemes("tenantHeader", new SecurityScheme()
                                 .type(SecurityScheme.Type.APIKEY)
                                 .in(SecurityScheme.In.HEADER)
-                                .name("X-Tenant-Id")));
+                                .name("X-Tenant-Id"))
+                        .addSecuritySchemes("cookieAuth", new SecurityScheme()
+                                .type(SecurityScheme.Type.APIKEY)
+                                .in(SecurityScheme.In.COOKIE)
+                                .name("SOCP_SESSION")))
+                // Browser clients authenticate with the HttpOnly session
+                // cookie; service clients may use the JWT bearer scheme.
+                // Both forms must carry an explicit tenant boundary.
+                .addSecurityItem(new SecurityRequirement()
+                        .addList("cookieAuth")
+                        .addList("tenantHeader"))
+                .addSecurityItem(new SecurityRequirement()
+                        .addList("bearerAuth")
+                        .addList("tenantHeader"));
     }
 }

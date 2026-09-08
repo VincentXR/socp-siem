@@ -98,6 +98,18 @@ jobs:
         run: pnpm install --frozen-lockfile
         working-directory: frontend
 
+      - name: Verify generated SOAR OpenAPI SDK
+        run: python3 build/verify-openapi-sdk.py --output .cache/evidence/openapi-sdk
+
+      - name: Upload OpenAPI SDK evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soar-openapi-sdk-evidence
+          path: .cache/evidence/openapi-sdk/
+          include-hidden-files: true
+          if-no-files-found: ignore
+
       - name: Test frontend API contracts
         run: pnpm test
         working-directory: frontend/apps/workbench
