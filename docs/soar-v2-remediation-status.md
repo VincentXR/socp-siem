@@ -38,8 +38,9 @@
 - `python -m unittest discover -s build/tests -p 'test_*.py'`：21 项通过，包含 live
   verifier 的 URL、envelope、SSE frame、边界剧本和租户 trace 单元检查；
 - `python build/verify-soar-live.py`：使用隔离 PostgreSQL 18 + Temporal 1.24 + 双 SOAR
-  实例实跑，24 项通过、0 失败、0 警告；结果保存在 `.cache/soar-v2-live-local.json`（未纳入提交）；
-  full-stack CI 已接入同一命令并保留 `.cache/soar-v2-live.json`；
+  实例实跑，已有 24 项通过、0 失败、0 警告的基线证据，结果保存在
+  `.cache/soar-v2-live-local.json`（未纳入提交）；当前版本新增真实 SSE
+  `Last-Event-ID` 续传检查，需在 full-stack CI/目标环境重跑后更新计数；
 - `python build/verify-style.py`、`git diff --check`：通过；
 - `SoarV2PostgresMigrationContractTest`（PostgreSQL 16 Testcontainers）：1 项通过；
 - 同一测试覆盖跨连接规则行锁（`55P03`）与 receipt 唯一键（`23505`）边界；
