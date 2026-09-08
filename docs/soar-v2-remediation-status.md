@@ -9,7 +9,7 @@
 | --- | --- | --- | --- | --- |
 | 1 | P0 Alert → V2 主链路断裂 | **代码已修复** | `SoarClient` 使用 `/api/v2/events/evaluate`；V1 evaluate 仅在 V2 evaluation 未开启时检查 legacy；V2 controller 将告警 envelope 送入 durable automation rule。 | 尚未在本工作区启动完整 middleware，未取得真实 Alert → Run 的部署级 E2E 证据。 |
 | 2 | P0 子剧本发布、递归、深度和全局预算 | **代码已修复** | 发布、准入和复制边界递归检查已发布版本、环、内联定义和最大深度 5；Temporal child/branch 共享根 Run；V21 `execution_node_count` 在 Activity 行锁下预留节点槽位。 | 需要目标 PostgreSQL + Temporal 的 replay、并发、故障恢复和容量压测证据。 |
-| 3 | P1 Automation Rule 多实例幂等/容量 | **部分修复** | enabled rule 使用数据库 `PESSIMISTIC_WRITE`；receipt 唯一键含 revision；requestId 含 revision；容量按整组 action 计数并在同一事务判断。 | 尚无独立 admission/reservation 表；手工运行等其他入口不自动占用规则容量；尚未完成真实多实例 PostgreSQL 竞争测试。 |
+| 3 | P1 Automation Rule 多实例幂等/容量 | **部分修复** | enabled rule 使用数据库 `PESSIMISTIC_WRITE`；receipt 唯一键含 revision；requestId 含 revision；容量按整组 action 计数并在同一事务判断；`SoarV2PostgresMigrationContractTest` 实测 receipt 唯一键和跨连接 `FOR UPDATE` 竞争。 | 尚无独立 admission/reservation 表；手工运行等其他入口不自动占用规则容量；仍需服务实例级并发压测与故障恢复证据。 |
 | 4 | P1 生产证据链不足 | **部分修复** | CI 已纳入 `services/soar-web` 的全量测试、`SoarV2PostgresMigrationContractTest` 和选定 Temporal workflow contracts；故障脚本已改为 Temporal 不可用时保持 durable `QUEUED`，不回退进程内执行器；full verify 查询 V2 Run。 | CI workflow contracts 使用 in-process Temporal test environment；full-stack job 未启动 soar-web/Temporal；故障脚本和部署探针在本环境未执行。 |
 | 5 | P1 Workbench 没有 SOAR V2 浏览器流程 | **未完成** | 当前 Playwright 主要覆盖登录、角色菜单、路由和 gateway smoke。 | 仍需创建/编辑、校验/发布、执行、审批、人工输入、恢复、SSE 和权限负例的浏览器流程及截图/可访问性验收。 |
 | 6 | P2 OpenAPI cookie、ApiResult、If-Match/ETag | **基础契约已修复，SDK 完整度未达标** | snapshot 使用真实 `SOCP_SESSION`；包含 `ApiResult` envelope、`If-Match` 参数和 ETag 响应头；`docs/api-contract.md` 明确 runtime `/v3/api-docs` 为准。 | `data` 仍是 endpoint-specific 泛型，尚未对每个运行时文档做部署 smoke 和 SDK 生成验证。 |
@@ -37,6 +37,7 @@
 - `python build/verify-soar.py`：静态 SOAR 契约检查通过（部署探针因未配置 URL 而跳过）；
 - `python build/verify-style.py`、`git diff --check`：通过；
 - `SoarV2PostgresMigrationContractTest`（PostgreSQL 16 Testcontainers）：1 项通过；
+- 同一测试覆盖跨连接规则行锁（`55P03`）与 receipt 唯一键（`23505`）边界；
 - SOAR V2 定向服务/定义/automation/Temporal/artifact 测试：通过；
 - S3、Kubernetes、Vault resolver 测试：13 项通过（Windows 默认临时目录清理存在
   JUnit 权限竞态，改用工作区临时目录重跑通过）；

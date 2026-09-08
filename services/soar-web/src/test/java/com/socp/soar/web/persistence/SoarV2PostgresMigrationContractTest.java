@@ -84,6 +84,15 @@ class SoarV2PostgresMigrationContractTest {
                             'version-a', 1, 'hash-a', 'CONTRACT', 'ACCEPTED',
                             'contract-test', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """);
+            statement.executeUpdate("""
+                    INSERT INTO t_soar_automation_rule
+                        (id, tenant_id, name, enabled, priority, trigger_type,
+                         condition_json, actions_json, created_by, created_at,
+                         updated_at, row_version, revision)
+                    VALUES ('rule-a', 'tenant-a', 'Contract rule', true, 1, 'ALERT',
+                            '{}', '[\"version-a\"]', 'contract-test', CURRENT_TIMESTAMP,
+                            CURRENT_TIMESTAMP, 0, 1)
+                    """);
 
             SQLException crossTenant = assertThrows(SQLException.class, () ->
                     statement.executeUpdate("""
@@ -98,6 +107,61 @@ class SoarV2PostgresMigrationContractTest {
             assertEquals("23503", crossTenant.getSQLState());
             assertTrue(crossTenant.getMessage().toLowerCase().contains("fk_soar_run"),
                     crossTenant.getMessage());
+
+            statement.executeUpdate("""
+                    INSERT INTO t_soar_trigger_receipt
+                        (id, tenant_id, event_id, automation_rule_id, rule_revision,
+                         status, run_id, created_at, updated_at)
+                    VALUES ('receipt-a', 'tenant-a', 'event-a', 'rule-a', 1,
+                            'ACCEPTED', 'run-a', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """);
+            SQLException duplicateReceipt = assertThrows(SQLException.class, () ->
+                    statement.executeUpdate("""
+                            INSERT INTO t_soar_trigger_receipt
+                                (id, tenant_id, event_id, automation_rule_id, rule_revision,
+                                 status, run_id, created_at, updated_at)
+                            VALUES ('receipt-b', 'tenant-a', 'event-a', 'rule-a', 1,
+                                    'ACCEPTED', 'run-a', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                            """));
+            assertEquals("23505", duplicateReceipt.getSQLState());
+
+            // Simulate two service instances evaluating the same enabled rule:
+            // the first transaction owns the row lock, while NOWAIT proves a
+            // second transaction cannot observe/admit the same capacity slot.
+            try (var owner = DriverManager.getConnection(url, POSTGRES.getUsername(), POSTGRES.getPassword());
+                 var contender = DriverManager.getConnection(url, POSTGRES.getUsername(), POSTGRES.getPassword());
+                 var ownerStatement = owner.createStatement();
+                 var contenderStatement = contender.createStatement()) {
+                owner.setAutoCommit(false);
+                contender.setAutoCommit(false);
+                try (var locked = ownerStatement.executeQuery("""
+                        SELECT id FROM t_soar_automation_rule
+                        WHERE tenant_id = 'tenant-a' AND enabled = true AND id = 'rule-a'
+                        FOR UPDATE
+                        """)) {
+                    assertTrue(locked.next());
+                }
+                SQLException lockConflict = assertThrows(SQLException.class, () -> {
+                    try (var ignored = contenderStatement.executeQuery("""
+                            SELECT id FROM t_soar_automation_rule
+                            WHERE tenant_id = 'tenant-a' AND enabled = true AND id = 'rule-a'
+                            FOR UPDATE NOWAIT
+                            """)) {
+                        // The NOWAIT query must fail while the owner holds the row.
+                    }
+                });
+                assertEquals("55P03", lockConflict.getSQLState());
+                owner.commit();
+                contender.rollback();
+                try (var acquired = contenderStatement.executeQuery("""
+                        SELECT id FROM t_soar_automation_rule
+                        WHERE tenant_id = 'tenant-a' AND enabled = true AND id = 'rule-a'
+                        FOR UPDATE
+                        """)) {
+                    assertTrue(acquired.next());
+                }
+                contender.commit();
+            }
         }
     }
 
