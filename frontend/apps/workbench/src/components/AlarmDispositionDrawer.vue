@@ -33,6 +33,8 @@ const props = withDefaults(defineProps<{
   alarm: Alarm | null
   goCase: (caseId?: string) => void
   goSearch: () => void
+  goAi?: (alarmId: string) => void
+  goSoar?: (alarmId: string) => void
   canWrite?: boolean
 }>(), {
   canWrite: true,
@@ -179,6 +181,12 @@ function openEvidenceSearch() {
       </el-descriptions>
 
       <el-alert v-if="actionError" :title="actionError" type="error" :closable="false" style="margin-bottom:14px" />
+
+      <div class="alarm-context-actions">
+        <span>{{ t('drawer.nextActions') }}</span>
+        <el-button v-if="props.goAi" size="small" type="primary" plain @click="props.goAi(props.alarm.id)">{{ t('drawer.openAiInvestigation') }}</el-button>
+        <el-button v-if="props.goSoar" size="small" type="warning" plain @click="props.goSoar(props.alarm.id)">{{ t('drawer.openSoarResponse') }}</el-button>
+      </div>
 
       <el-divider content-position="left">{{ t('drawer.evidence') }}</el-divider>
       <el-alert v-if="evidenceError" :title="evidenceError" type="error" :closable="false" />

@@ -28,6 +28,12 @@ function goCase(caseId?: string) {
   else state.navigate('case')
 }
 function goSearch() { state.navigate('search') }
+function goAi(alarmId: string) {
+  void router.push({ name: 'ai', query: { alarmId } })
+}
+function goSoar(alarmId: string) {
+  void router.push({ name: 'soar', query: { alarmId } })
+}
 function exportWithCurrentFilters(format: 'csv' | 'json') {
   return exportAlarms(format, {
     q: alarmKeyword.value.trim() || undefined,
@@ -59,6 +65,8 @@ function exportWithCurrentFilters(format: 'csv' | 'json') {
     :export-json="() => exportWithCurrentFilters('json')"
     :go-case="goCase"
     :go-search="goSearch"
+    :go-ai="goAi"
+    :go-soar="goSoar"
     :can-write="canWrite"
   />
 </template>

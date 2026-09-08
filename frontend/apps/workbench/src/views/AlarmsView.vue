@@ -40,6 +40,8 @@ const props = defineProps<{
   exportJson: () => Promise<void>
   goCase: () => void
   goSearch: () => void
+  goAi?: (alarmId: string) => void
+  goSoar?: (alarmId: string) => void
   canWrite?: boolean
 }>()
 
@@ -199,6 +201,6 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
       <el-pagination v-model:current-page="pageNum" :page-size="props.alarmPageSize" :total="props.alarmPageData.total" :page-sizes="[10, 20, 50, 100]" layout="total, sizes, prev, pager, next" @current-change="props.loadPage" @size-change="() => { pageNum = 1; props.loadPage() }" />
     </div>
 
-    <AlarmDispositionDrawer v-model="drawerVisible" :alarm="currentAlarm" :go-case="props.goCase" :go-search="props.goSearch" :can-write="props.canWrite" @updated="props.loadPage" />
+    <AlarmDispositionDrawer v-model="drawerVisible" :alarm="currentAlarm" :go-case="props.goCase" :go-search="props.goSearch" :go-ai="props.goAi" :go-soar="props.goSoar" :can-write="props.canWrite" @updated="props.loadPage" />
   </div>
 </template>

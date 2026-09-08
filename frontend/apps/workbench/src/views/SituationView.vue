@@ -27,7 +27,7 @@ import {
 import { useI18n } from '../composables/useI18n'
 
 const props = defineProps<{ theme: 'light' | 'dark' }>()
-const emit = defineEmits<{ 'session-expired': [] }>()
+const emit = defineEmits<{ 'session-expired': []; 'go-alarm': [id: string] }>()
 
 const { t, d, locale } = useI18n()
 
@@ -84,6 +84,15 @@ const queuePct = computed(() => Math.round((sitEngine.value?.queueLoad ?? 0) * 1
 const queueColor = computed(() => queuePct.value > 70
   ? cssToken('--ns-danger', '#dc2626')
   : queuePct.value > 30 ? cssToken('--ns-warning', '#a16207') : cssToken('--ns-success', '#15803d'))
+
+function openAlarm(id: unknown): void {
+  const value = String(id ?? '').trim()
+  if (value) emit('go-alarm', value)
+}
+
+function openRiskRow(row: { id?: string }): void {
+  openAlarm(row.id)
+}
 
 function openAlertStream() {
   try {
@@ -266,7 +275,7 @@ onUnmounted(() => {
                 </template>
                 <div class="feed">
                   <div v-if="!feedView.length" class="feed-empty">{{ t('situation.noLiveAlarmsHint') }}</div>
-                  <div v-for="a in feedView" :key="a.id" class="feed-item" :class="{ fresh: a._new }">
+                  <div v-for="a in feedView" :key="a.id" class="feed-item situation-clickable" :class="{ fresh: a._new }" role="button" tabindex="0" @click="openAlarm(a.id)" @keydown.enter="openAlarm(a.id)">
                     <span class="feed-dot" :style="{ background: sevColor(a.severity) }" />
                     <div class="feed-body">
                       <div class="feed-top">
@@ -284,7 +293,7 @@ onUnmounted(() => {
             <el-col :span="11">
               <el-card shadow="never" class="sit-card">
                 <template #header>{{ t('situation.topRiskAlarms') }}</template>
-                <el-table :data="sitStats?.topRisk ?? []" size="small" height="368">
+                <el-table :data="sitStats?.topRisk ?? []" size="small" height="368" @row-click="openRiskRow">
                   <el-table-column :label="t('situation.score')" width="86">
                     <template #default="{ row }">
                       <span class="risk-pill" :class="`risk-${String(row.riskLevel || 'INFO').toLowerCase()}`">{{ row.riskScore }}</span>

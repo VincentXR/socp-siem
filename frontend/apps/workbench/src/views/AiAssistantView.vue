@@ -7,12 +7,15 @@ import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
 import { aiAsk, appendInvestigationToIncident, investigateAlert, type AiResult, type InvestigationResult } from '../api'
 import { useI18n } from '../composables/useI18n'
 
 const { t } = useI18n()
+const route = useRoute()
+const router = useRouter()
 
 const question = ref('')
 const result = ref<AiResult | null>(null)
@@ -22,6 +25,12 @@ const investigation = ref<InvestigationResult | null>(null)
 const investigationLoading = ref(false)
 const appendLoading = ref(false)
 const investigationError = ref('')
+
+const contextAlarmId = computed(() => {
+  if (typeof route.query.alarmId === 'string') return route.query.alarmId
+  // Keep links created by older sessions usable while the canonical URL key is alarmId.
+  return typeof route.query.alertId === 'string' ? route.query.alertId : ''
+})
 
 const quickPrompts = computed(() => [
   t('ai.quickPromptBruteForce'),
@@ -52,6 +61,7 @@ function clear() {
 async function investigate() {
   const id = alertId.value.trim()
   if (!id || investigationLoading.value) return
+  if (route.query.alarmId !== id) void router.replace({ query: { ...route.query, alarmId: id } })
   investigationLoading.value = true
   investigationError.value = ''
   try {
@@ -61,6 +71,11 @@ async function investigate() {
   } finally {
     investigationLoading.value = false
   }
+}
+
+function openAlarm(): void {
+  if (!alertId.value.trim()) return
+  void router.push({ name: 'alarms', query: { alarmId: alertId.value.trim() } })
 }
 
 async function appendToIncident() {
@@ -75,11 +90,17 @@ async function appendToIncident() {
     appendLoading.value = false
   }
 }
+
+onMounted(() => {
+  if (!contextAlarmId.value) return
+  alertId.value = contextAlarmId.value
+  void investigate()
+})
 </script>
 
 <template>
   <div class="page-pad view-enter">
-    <PageHeader :title="t('ai.title')" :description="t('ai.description')" />
+    <PageHeader :eyebrow="t('menuGroup.analyticsAndAi')" :title="t('ai.title')" :description="t('ai.description')" />
     <el-card shadow="never" class="ai-panel">
       <div class="ai-ask-row">
         <el-input
@@ -127,6 +148,10 @@ async function appendToIncident() {
           <p class="ai-muted ai-investigation-description">{{ t('ai.investigation.evidenceFirstDescription') }}</p>
         </div>
         <el-tag size="small" type="warning" effect="plain">{{ t('ai.investigation.approvalRequired') }}</el-tag>
+      </div>
+      <div v-if="contextAlarmId" class="ai-context-banner">
+        <span>{{ t('ai.investigation.contextFromAlarm') }} <code>{{ contextAlarmId }}</code></span>
+        <el-button link type="primary" size="small" @click="openAlarm">{{ t('ai.investigation.openAlarm') }}</el-button>
       </div>
       <div class="ai-ask-row">
         <el-input v-model="alertId" clearable :placeholder="t('ai.investigation.alertId')" @keyup.enter="investigate" />
