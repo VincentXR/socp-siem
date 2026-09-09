@@ -18,6 +18,10 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.common.TopicPartition;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -29,6 +33,7 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.mock;
 
 @ExtendWith(MockitoExtension.class)
 class KafkaEventConsumerTest {
@@ -140,5 +145,48 @@ class KafkaEventConsumerTest {
             releaseFirst.countDown();
             lane.shutdownNow();
         }
+    }
+
+    @Test
+    void pausesOnlyTheSaturatedPartitionAndResumesAfterDeferredWorkDrains() throws Exception {
+        KafkaEventConsumer consumer = new KafkaEventConsumer(engine);
+        KafkaConsumer<String, String> kafka = mock(KafkaConsumer.class);
+        TopicPartition partition = new TopicPartition("events", 3);
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch secondFinished = new CountDownLatch(1);
+        ThreadPoolExecutor lane = new ThreadPoolExecutor(
+                1, 1, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(1));
+        lane.execute(() -> {
+            firstStarted.countDown();
+            try {
+                releaseFirst.await(2, TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        lane.execute(secondFinished::countDown);
+        assertTrue(firstStarted.await(1, TimeUnit.SECONDS));
+
+        Field lanes = KafkaEventConsumer.class.getDeclaredField("partitionLanes");
+        lanes.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Map<Integer, ThreadPoolExecutor> laneMap = (Map<Integer, ThreadPoolExecutor>) lanes.get(consumer);
+        laneMap.put(partition.partition(), lane);
+
+        Method dispatch = KafkaEventConsumer.class.getDeclaredMethod(
+                "dispatchOrDefer", KafkaConsumer.class, TopicPartition.class, Runnable.class);
+        dispatch.setAccessible(true);
+        dispatch.invoke(consumer, kafka, partition, secondFinished::countDown);
+        verify(kafka).pause(eq(java.util.Set.of(partition)));
+
+        releaseFirst.countDown();
+        assertTrue(secondFinished.await(2, TimeUnit.SECONDS));
+        Method drain = KafkaEventConsumer.class.getDeclaredMethod("drainDeferred", KafkaConsumer.class);
+        drain.setAccessible(true);
+        drain.invoke(consumer, kafka);
+
+        verify(kafka).resume(eq(java.util.Set.of(partition)));
+        consumer.stop();
     }
 }
