@@ -45,6 +45,13 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 @Service
 public class DetectEngineService {
 
+    /** Recovery is fail-closed: detection accepts work only after its state is ready. */
+    public enum RecoveryStatus {
+        READY,
+        RECOVERING,
+        DEGRADED
+    }
+
     private final RuleSpecStore store;
     private final RecentAlertSink sink;
     private final AlertForwarder forwarder;
@@ -57,6 +64,10 @@ public class DetectEngineService {
     private final DetectionStateSnapshotStore snapshotStore;
     private final Map<String, AtomicLong> snapshotCounters = new ConcurrentHashMap<>();
     private final AtomicReference<Set<Integer>> assignedPartitions = new AtomicReference<>(Set.of());
+    /** Starts READY for source-compatible unit callers; Spring invokes start before traffic. */
+    private final AtomicReference<RecoveryStatus> recoveryStatus =
+            new AtomicReference<>(RecoveryStatus.READY);
+    private volatile String recoveryFailure;
     private final ReentrantReadWriteLock engineLifecycle = new ReentrantReadWriteLock(true);
 
     @Value("${socp.detect.engine.idle-ttl-ms:1800000}")
@@ -113,10 +124,45 @@ public class DetectEngineService {
         this(store, sink, forwarder, rulePublisher, new InMemoryDetectionStateStore());
     }
 
+    public RecoveryStatus recoveryStatus() {
+        return recoveryStatus.get();
+    }
+
+    public boolean isReady() {
+        return recoveryStatus() == RecoveryStatus.READY;
+    }
+
+    public String recoveryFailure() {
+        return recoveryFailure;
+    }
+
+    private void markRecovering() {
+        recoveryFailure = null;
+        recoveryStatus.set(RecoveryStatus.RECOVERING);
+    }
+
+    private void markReady() {
+        recoveryFailure = null;
+        recoveryStatus.set(RecoveryStatus.READY);
+    }
+
+    private void markDegraded(Throwable failure) {
+        recoveryFailure = failure == null ? "unknown recovery failure" : failure.getMessage();
+        recoveryStatus.set(RecoveryStatus.DEGRADED);
+        org.slf4j.LoggerFactory.getLogger(DetectEngineService.class)
+                .error("Detection state recovery failed; readiness is degraded", failure);
+    }
+
     @PostConstruct
     public void start() {
-        com.socp.platform.tenant.context.TenantContext.runWith(
-                "default", () -> engineFor("default"));
+        markRecovering();
+        try {
+            com.socp.platform.tenant.context.TenantContext.runWith(
+                    "default", () -> engineFor("default"));
+            markReady();
+        } catch (RuntimeException failure) {
+            markDegraded(failure);
+        }
     }
 
     @PreDestroy
@@ -146,16 +192,15 @@ public class DetectEngineService {
                             event.requireTenantId());
                     return tenantScope::close;
                 });
+        // The journal itself clamps this to its configured retention. 24h
+        // covers the bundled UEBA baselines while keeping restart bounded.
+        // Any restore failure is propagated so readiness cannot claim a
+        // partially reconstructed detector is healthy.
         try {
-            // The journal itself clamps this to its configured retention. 24h
-            // covers the bundled UEBA baselines while keeping restart bounded.
             engine.restore(history);
-        } catch (Exception ex) {
-            // Detection must still start when a stale/corrupt state row exists;
-            // the row-level conversion logs the exact event and the next live
-            // event continues to be journaled normally.
-            org.slf4j.LoggerFactory.getLogger(DetectEngineService.class)
-                    .warn("检测状态恢复失败，将以空窗口启动: {}", ex.getMessage());
+        } catch (RuntimeException failure) {
+            engine.close();
+            throw failure;
         }
         return engine;
     }
@@ -172,9 +217,14 @@ public class DetectEngineService {
         try {
             RuleEngine engine = engines.computeIfAbsent(key, ignored -> {
                 RuleEngine created = buildEngine(resolved, List.of());
-                restoreState(resolved, created, assignedPartitions.get(), resolvedShard);
-                created.start();
-                return created;
+                try {
+                    restoreState(resolved, created, assignedPartitions.get(), resolvedShard);
+                    created.start();
+                    return created;
+                } catch (RuntimeException recoveryFailure) {
+                    created.close();
+                    throw recoveryFailure;
+                }
             });
             engineLastAccess.put(key, System.currentTimeMillis());
             return engine;
@@ -205,7 +255,13 @@ public class DetectEngineService {
 
     /** 规则热更新：原子替换引擎（旧引擎毒丸退出），无需重启进程 */
     public void reload() {
-        replaceTenantEngine(store.tenant());
+        markRecovering();
+        try {
+            replaceTenantEngine(store.tenant());
+            markReady();
+        } catch (RuntimeException failure) {
+            markDegraded(failure);
+        }
     }
 
     /**
@@ -228,21 +284,32 @@ public class DetectEngineService {
         if (partitions == null || partitions.isEmpty()) return;
         Set<Integer> normalized = Set.copyOf(partitions);
         if (!force && normalized.equals(assignedPartitions.get())) return;
+        markRecovering();
         assignedPartitions.set(normalized);
-        replaceAllEnginesFromState(normalized);
+        try {
+            replaceAllEnginesFromState(normalized);
+            markReady();
+        } catch (RuntimeException failure) {
+            markDegraded(failure);
+        }
     }
 
     /** Used when Kafka is disabled or for an operational full-state replay. */
     public synchronized void restoreAll() {
         com.socp.platform.tenant.context.TenantContext.runAsSystem(() -> {
+            markRecovering();
             assignedPartitions.set(Set.of());
-            replaceAllEnginesFromState(Set.of());
+            try {
+                replaceAllEnginesFromState(Set.of());
+                markReady();
+            } catch (RuntimeException failure) {
+                markDegraded(failure);
+            }
         });
     }
 
     private void restoreState(String tenant, RuleEngine replacement, Set<Integer> partitions, int shard) {
-        try {
-            if (snapshotStore != null && stateStore.supportsCheckpointReplay()) {
+        if (snapshotStore != null && stateStore.supportsCheckpointReplay()) {
                 Map<String, RuleEngine.RuleState> snapshots = new LinkedHashMap<>();
                 java.time.Instant checkpoint = null;
                 for (String ruleId : replacement.statefulRuleIds()) {
@@ -269,23 +336,19 @@ public class DetectEngineService {
                         return;
                     }
                 }
-            }
-            if (partitions == null || partitions.isEmpty()) {
-                stateStore.replayRecentForTenant(tenant, Duration.ofHours(24), events -> replacement.restore(
-                        events.stream().filter(event -> shardFor(event) == normalizeShard(shard)).toList()));
-            } else {
-                stateStore.replayRecentForPartitions(
-                        partitions, Duration.ofHours(24), events -> {
-                            List<SecurityEvent> owned = events.stream()
-                                    .filter(event -> tenant.equals(event.tenantId()))
-                                    .filter(event -> shardFor(event) == normalizeShard(shard))
-                                    .toList();
-                            if (!owned.isEmpty()) replacement.restore(owned);
-                        });
-            }
-        } catch (Exception ex) {
-            org.slf4j.LoggerFactory.getLogger(DetectEngineService.class)
-                    .warn("检测状态分页恢复失败，将保留已恢复窗口: {}", ex.getMessage());
+        }
+        if (partitions == null || partitions.isEmpty()) {
+            stateStore.replayRecentForTenant(tenant, Duration.ofHours(24), events -> replacement.restore(
+                    events.stream().filter(event -> shardFor(event) == normalizeShard(shard)).toList()));
+        } else {
+            stateStore.replayRecentForPartitions(
+                    partitions, Duration.ofHours(24), events -> {
+                        List<SecurityEvent> owned = events.stream()
+                                .filter(event -> tenant.equals(event.tenantId()))
+                                .filter(event -> shardFor(event) == normalizeShard(shard))
+                                .toList();
+                        if (!owned.isEmpty()) replacement.restore(owned);
+                    });
         }
     }
 
@@ -296,13 +359,13 @@ public class DetectEngineService {
     private void replaceTenantEngine(String tenant) {
         String resolvedTenant = tenant == null || tenant.isBlank() ? "default" : tenant;
         engineLifecycle.writeLock().lock();
+        Map<String, RuleEngine> replacements = new LinkedHashMap<>();
         try {
             // Resolve the rules before closing the live engine so a temporary
             // rule-store outage leaves it available. Once the replacement can
             // be built, stop admission and drain all accepted events before
             // reading the Journal. The new hot state therefore includes every
             // durable completion that happened before the swap.
-            Map<String, RuleEngine> replacements = new LinkedHashMap<>();
             for (int shard = 0; shard < effectiveShardCount(); shard++) {
                 RuleEngine replacement = buildEngine(resolvedTenant, List.of());
                 replacements.put(engineKey(resolvedTenant, shard), replacement);
@@ -324,6 +387,13 @@ public class DetectEngineService {
                 engines.put(key, replacement);
                 engineLastAccess.put(key, System.currentTimeMillis());
             });
+        } catch (RuntimeException failure) {
+            replacements.forEach((key, replacement) -> {
+                engines.remove(key, replacement);
+                engineLastAccess.remove(key);
+                replacement.close();
+            });
+            throw failure;
         } finally {
             engineLifecycle.writeLock().unlock();
         }
@@ -367,6 +437,12 @@ public class DetectEngineService {
                 engineLastAccess.put(key, System.currentTimeMillis());
             }
             engines.values().forEach(RuleEngine::start);
+        } catch (RuntimeException failure) {
+            engines.values().forEach(RuleEngine::close);
+            engines.clear();
+            engineLastAccess.clear();
+            snapshotCounters.clear();
+            throw failure;
         } finally {
             engineLifecycle.writeLock().unlock();
         }
@@ -485,28 +561,35 @@ public class DetectEngineService {
 
     /** 事件摄取：队列满回 false（接入端据此回 503 + Retry-After） */
     public boolean ingest(SecurityEvent ev) {
-        DetectionEventClaim claim = stateStore.claim(ev);
-        if (claim == DetectionEventClaim.COMPLETED || claim == DetectionEventClaim.DEAD_LETTERED) {
-            return true;
-        }
-        RuleEngine.Submission submission;
         engineLifecycle.readLock().lock();
         try {
-            submission = engineFor(ev.tenantId(), shardFor(ev)).submit(ev, true);
+            if (!isReady()) return false;
+            DetectionEventClaim claim = stateStore.claim(ev);
+            if (claim == DetectionEventClaim.COMPLETED || claim == DetectionEventClaim.DEAD_LETTERED) {
+                return true;
+            }
+            RuleEngine.Submission submission;
+            try {
+                submission = engineFor(ev.tenantId(), shardFor(ev)).submit(ev, true);
+            } catch (RuntimeException recoveryFailure) {
+                markDegraded(recoveryFailure);
+                if (claim == DetectionEventClaim.NEW) stateStore.remove(ev);
+                return false;
+            }
+            if (!submission.accepted()) {
+                if (claim == DetectionEventClaim.NEW) stateStore.remove(ev);
+                return false;
+            }
+            submission.completion().whenComplete((ignored, failure) -> {
+                if (failure == null) {
+                    stateStore.markCompleted(ev);
+                    snapshotAfterDurable(ev, null, -1L);
+                }
+            });
+            return true;
         } finally {
             engineLifecycle.readLock().unlock();
         }
-        if (!submission.accepted()) {
-            if (claim == DetectionEventClaim.NEW) stateStore.remove(ev);
-            return false;
-        }
-        submission.completion().whenComplete((ignored, failure) -> {
-            if (failure == null) {
-                stateStore.markCompleted(ev);
-                snapshotAfterDurable(ev, null, -1L);
-            }
-        });
-        return true;
     }
 
     /**
@@ -522,7 +605,16 @@ public class DetectEngineService {
     public CompletableFuture<Void> ingestFromKafkaAndAwait(SecurityEvent ev) {
         engineLifecycle.readLock().lock();
         try {
-            return engineFor(ev.tenantId(), shardFor(ev)).ingestAndAwait(ev);
+            if (!isReady()) {
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("detection state recovery is " + recoveryStatus().name()));
+            }
+            try {
+                return engineFor(ev.tenantId(), shardFor(ev)).ingestAndAwait(ev);
+            } catch (RuntimeException recoveryFailure) {
+                markDegraded(recoveryFailure);
+                return CompletableFuture.failedFuture(recoveryFailure);
+            }
         } finally {
             engineLifecycle.readLock().unlock();
         }
@@ -556,7 +648,13 @@ public class DetectEngineService {
     private boolean enqueue(SecurityEvent ev) {
         engineLifecycle.readLock().lock();
         try {
-            return engineFor(ev.tenantId(), shardFor(ev)).ingest(ev);
+            if (!isReady()) return false;
+            try {
+                return engineFor(ev.tenantId(), shardFor(ev)).ingest(ev);
+            } catch (RuntimeException recoveryFailure) {
+                markDegraded(recoveryFailure);
+                return false;
+            }
         } finally {
             engineLifecycle.readLock().unlock();
         }
@@ -572,7 +670,7 @@ public class DetectEngineService {
                 .filter(entry -> entry.getKey().startsWith(tenant + "\u0000shard-"))
                 .map(Map.Entry::getValue)
                 .toList();
-        if (tenantEngines.isEmpty()) tenantEngines = List.of(engineFor(tenant, 0));
+        if (tenantEngines.isEmpty() && isReady()) tenantEngines = List.of(engineFor(tenant, 0));
         long eventCount = tenantEngines.stream().mapToLong(RuleEngine::eventCount).sum();
         long alertCount = tenantEngines.stream().mapToLong(RuleEngine::alertCount).sum();
         long dropCount = tenantEngines.stream().mapToLong(RuleEngine::dropCount).sum();
@@ -592,6 +690,9 @@ public class DetectEngineService {
         m.put("assignedPartitions", assignedPartitions.get());
         m.put("pendingEvents", stateStore.pendingCount(tenant));
         Map<String, Object> recovery = new LinkedHashMap<>();
+        recovery.put("status", recoveryStatus().name());
+        recovery.put("ready", isReady());
+        if (recoveryFailure != null) recovery.put("error", recoveryFailure);
         recovery.put("store", stateStore.getClass().getSimpleName());
         String recoveryWindow = stateStore.recoveryWindow();
         recovery.put("replayWindow", recoveryWindow == null ? "unknown" : recoveryWindow);

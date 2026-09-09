@@ -20,7 +20,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -107,13 +107,13 @@ class KafkaEventConsumerTest {
     }
 
     @Test
-    void saturatedPartitionLaneBlocksAdmissionWithoutReorderingOffsets() throws Exception {
+    void saturatedPartitionLaneRejectsImmediatelyWithoutBlockingTheAdmissionThread() throws Exception {
         List<Integer> executionOrder = new java.util.concurrent.CopyOnWriteArrayList<>();
         CountDownLatch firstStarted = new CountDownLatch(1);
         CountDownLatch releaseFirst = new CountDownLatch(1);
         ThreadPoolExecutor lane = new ThreadPoolExecutor(
                 1, 1, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(1),
-                KafkaEventConsumer.blockingLaneBackpressure());
+                KafkaEventConsumer.nonBlockingLaneBackpressure());
         try {
             lane.execute(() -> {
                 executionOrder.add(1);
@@ -127,16 +127,15 @@ class KafkaEventConsumerTest {
             assertTrue(firstStarted.await(1, TimeUnit.SECONDS));
             lane.execute(() -> executionOrder.add(2));
 
-            CompletableFuture<Void> thirdAdmission = CompletableFuture.runAsync(
-                    () -> lane.execute(() -> executionOrder.add(3)));
-            Thread.sleep(100);
-            assertFalse(thirdAdmission.isDone(), "saturated admission must apply backpressure");
+            CompletableFuture<Void> thirdAdmission = CompletableFuture.runAsync(() ->
+                    assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                            () -> lane.execute(() -> executionOrder.add(3))));
+            thirdAdmission.get(1, TimeUnit.SECONDS);
 
             releaseFirst.countDown();
-            thirdAdmission.get(1, TimeUnit.SECONDS);
             lane.shutdown();
             assertTrue(lane.awaitTermination(1, TimeUnit.SECONDS));
-            assertEquals(List.of(1, 2, 3), executionOrder);
+            assertEquals(List.of(1, 2), executionOrder);
         } finally {
             releaseFirst.countDown();
             lane.shutdownNow();

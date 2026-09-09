@@ -19,13 +19,14 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
@@ -63,7 +64,13 @@ public class KafkaEventConsumer {
     private final DetectionPerformanceMetrics performanceMetrics;
     private final DetectionRecordProcessor recordProcessor;
     private final PartitionCompletionTracker completionTracker = new PartitionCompletionTracker();
-    private final Map<Integer, ExecutorService> partitionLanes = new ConcurrentHashMap<>();
+    private static final int LANE_QUEUE_CAPACITY = 1_000;
+    private static final int LANE_RESUME_THRESHOLD = LANE_QUEUE_CAPACITY / 2;
+    private final Map<Integer, ThreadPoolExecutor> partitionLanes = new ConcurrentHashMap<>();
+    /** Consumer-thread-owned tasks which could not yet enter their partition lane. */
+    private final Map<TopicPartition, ArrayDeque<Runnable>> deferredWork = new ConcurrentHashMap<>();
+    /** Partitions paused because their lane or deferred buffer is saturated. */
+    private final Set<TopicPartition> pausedPartitions = ConcurrentHashMap.newKeySet();
     private final BlockingQueue<RecordCompletion> completions = new LinkedBlockingQueue<>();
     private final AtomicBoolean running = new AtomicBoolean(true);
     private volatile org.apache.kafka.clients.producer.KafkaProducer<String, String> dlqProducer;
@@ -104,8 +111,10 @@ public class KafkaEventConsumer {
     public void stop() {
         running.set(false);
         if (consumerThread != null) consumerThread.interrupt();
-        partitionLanes.values().forEach(ExecutorService::shutdownNow);
+        partitionLanes.values().forEach(ThreadPoolExecutor::shutdownNow);
         partitionLanes.clear();
+        deferredWork.clear();
+        pausedPartitions.clear();
         var producer = dlqProducer;
         if (producer != null) producer.close(Duration.ofSeconds(5));
     }
@@ -174,8 +183,10 @@ public class KafkaEventConsumer {
                 public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
                     log.info("Detection partitions revoked: {}", partitions);
                     for (TopicPartition partition : partitions) {
-                        ExecutorService lane = partitionLanes.remove(partition.partition());
+                        ThreadPoolExecutor lane = partitionLanes.remove(partition.partition());
                         if (lane != null) lane.shutdownNow();
+                        deferredWork.remove(partition);
+                        pausedPartitions.remove(partition);
                         completionTracker.remove(partition.partition());
                     }
                 }
@@ -194,48 +205,101 @@ public class KafkaEventConsumer {
                 }
             });
             while (running.get()) {
+                drainDeferred(consumer);
                 var records = consumer.poll(Duration.ofMillis(250));
                 for (var record : records) {
                     long epoch = completionTracker.register(record.partition(), record.offset());
-                    lane(record.partition()).execute(() -> processWithRetry(record, epoch));
+                    TopicPartition partition = new TopicPartition(record.topic(), record.partition());
+                    dispatchOrDefer(consumer, partition, () -> processWithRetry(record, epoch));
                 }
                 drainCompletions(consumer);
+                drainDeferred(consumer);
             }
         } catch (Exception ex) {
             if (running.get()) log.warn("Kafka consumer stopped: {}", ex.getMessage());
         } finally {
-            partitionLanes.values().forEach(ExecutorService::shutdownNow);
+            partitionLanes.values().forEach(ThreadPoolExecutor::shutdownNow);
             partitionLanes.clear();
+            deferredWork.clear();
+            pausedPartitions.clear();
         }
     }
 
-    private ExecutorService lane(int partition) {
+    private ThreadPoolExecutor lane(int partition) {
         return partitionLanes.computeIfAbsent(partition, ignored -> new ThreadPoolExecutor(
                 1, 1, 0L, TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(1_000),
+                new ArrayBlockingQueue<>(LANE_QUEUE_CAPACITY),
                 Thread.ofVirtual().name("detect-partition-" + partition + "-", 0).factory(),
-                blockingLaneBackpressure()));
+                nonBlockingLaneBackpressure()));
     }
 
     /**
-     * Preserve Kafka's partition order when a lane is saturated. Caller-runs
-     * would execute the newest offset on the consumer thread ahead of the
-     * older offsets already queued for that partition. Blocking admission is
-     * intentional backpressure; max.poll.interval.ms is sized for recovery.
+     * Reject immediately when a partition lane is saturated. The consumer
+     * thread turns that rejection into a deferred task and pauses only the
+     * affected partition, so other partitions continue to poll and commit.
      */
+    static RejectedExecutionHandler nonBlockingLaneBackpressure() {
+        return new ThreadPoolExecutor.AbortPolicy();
+    }
+
+    /**
+     * Kept as a source-compatible alias for integrations which referenced the
+     * old package-private test hook. It now has non-blocking semantics.
+     */
+    @Deprecated
     static RejectedExecutionHandler blockingLaneBackpressure() {
-        return (task, executor) -> {
-            try {
-                while (!executor.isShutdown()) {
-                    if (executor.getQueue().offer(task, 100, TimeUnit.MILLISECONDS)) return;
-                }
-                throw new RejectedExecutionException("Detection partition lane is closed");
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                throw new RejectedExecutionException(
-                        "Interrupted while applying Detection partition backpressure", interrupted);
+        return nonBlockingLaneBackpressure();
+    }
+
+    private boolean tryDispatch(int partition, Runnable task) {
+        try {
+            lane(partition).execute(task);
+            return true;
+        } catch (RejectedExecutionException rejected) {
+            return false;
+        }
+    }
+
+    private void dispatchOrDefer(KafkaConsumer<String, String> consumer,
+                                 TopicPartition partition,
+                                 Runnable task) {
+        if (tryDispatch(partition.partition(), task)) return;
+        deferredWork.computeIfAbsent(partition, ignored -> new ArrayDeque<>()).addLast(task);
+        pausedPartitions.add(partition);
+        if (consumer != null) consumer.pause(Set.of(partition));
+    }
+
+    /**
+     * Move deferred work back into lanes without blocking the Kafka consumer
+     * thread. A partition remains paused until its deferred buffer is empty and
+     * its lane falls below the low-water mark.
+     */
+    private void drainDeferred(KafkaConsumer<String, String> consumer) {
+        var iterator = deferredWork.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<TopicPartition, ArrayDeque<Runnable>> entry = iterator.next();
+            TopicPartition partition = entry.getKey();
+            ArrayDeque<Runnable> deferred = entry.getValue();
+            ThreadPoolExecutor lane = lane(partition.partition());
+
+            while (!deferred.isEmpty() && tryDispatch(partition.partition(), deferred.peekFirst())) {
+                deferred.removeFirst();
             }
-        };
+
+            if (deferred.isEmpty() && lane.getQueue().size() <= LANE_RESUME_THRESHOLD) {
+                deferredWork.remove(partition, deferred);
+                pausedPartitions.remove(partition);
+                consumer.resume(Set.of(partition));
+            } else {
+                pausedPartitions.add(partition);
+                consumer.pause(Set.of(partition));
+            }
+        }
+
+        // A partition can be paused while its deferred entry is being removed
+        // by a concurrent lifecycle callback. Re-apply the set before poll so
+        // no already-fetched records refill a saturated lane.
+        if (!pausedPartitions.isEmpty()) consumer.pause(new HashSet<>(pausedPartitions));
     }
 
     private void replayPending(Set<Integer> partitions) {
@@ -243,7 +307,8 @@ public class KafkaEventConsumer {
                 partitions, Duration.ofHours(24));
         for (PendingDetectionEvent row : pending) {
             if (row == null || row.event() == null || row.partition() == null) continue;
-            lane(row.partition()).execute(() -> processPendingWithRetry(row));
+            dispatchOrDefer(null, new TopicPartition(topic, row.partition()),
+                    () -> processPendingWithRetry(row));
         }
         if (!pending.isEmpty()) {
             log.info("Queued pending Detection journal rows for replay count={}", pending.size());

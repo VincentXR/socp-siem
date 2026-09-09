@@ -76,6 +76,29 @@ class DetectEngineServiceTest {
     }
 
     @Test
+    void failedStateRecoveryLeavesDetectionDegradedAndRejectsNewWork() {
+        when(store.list("default")).thenReturn(List.of());
+        org.mockito.Mockito.doThrow(new IllegalStateException("journal unavailable"))
+                .when(stateStore).replayRecentForTenant(
+                        org.mockito.ArgumentMatchers.eq("default"),
+                        org.mockito.ArgumentMatchers.any(Duration.class),
+                        org.mockito.ArgumentMatchers.any());
+        DetectEngineService service = new DetectEngineService(
+                store, new RecentAlertSink(10, null, null), forwarder, rulePublisher, stateStore);
+        try {
+            service.start();
+
+            assertEquals(DetectEngineService.RecoveryStatus.DEGRADED, service.recoveryStatus());
+            assertTrue(!service.isReady());
+            assertTrue(!service.ingest(event("default", "recovery-failed")));
+            assertEquals("DEGRADED",
+                    ((Map<?, ?>) service.stats().get("stateRecovery")).get("status"));
+        } finally {
+            service.stop();
+        }
+    }
+
+    @Test
     void addingRuleReloadsEngineAndEvaluatesNewEvents() throws Exception {
         List<Map<String, Object>> persisted = new ArrayList<>();
         when(store.list("default")).thenAnswer(invocation -> List.copyOf(persisted));

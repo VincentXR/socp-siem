@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.client.service.DetectClient;
 import com.socp.platform.client.http.ServiceCall;
+import com.socp.platform.error.exception.ApiException;
 import com.socp.search.config.config.IngestRuntimeProperties;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -75,46 +76,64 @@ public class IngestPipeline {
         Map<String, long[]> perCollector = new LinkedHashMap<>();
         List<IngestEventNormalizer.NormalizedEvent> pending = new ArrayList<>(BATCH_SIZE);
         var lines = body.lines().iterator();
-        while (lines.hasNext()) {
-            String line = lines.next();
-            String raw = line.trim();
-            if (raw.isEmpty()) continue;
-            long bytes = raw.length();
-            try {
-                var normalized = normalizer.normalize(raw, defaultCollector);
-                accepted++;
-                pending.add(normalized);
-                bump(perCollector, normalized.collector(), 1, 0, 0, bytes);
-                if (pending.size() >= BATCH_SIZE) {
-                    forwarded += flush(pending, perCollector);
+        try {
+            while (lines.hasNext()) {
+                String line = lines.next();
+                String raw = line.trim();
+                if (raw.isEmpty()) continue;
+                long bytes = raw.length();
+                IngestEventNormalizer.NormalizedEvent normalized;
+                try {
+                    normalized = normalizer.normalize(raw, defaultCollector);
+                } catch (RuntimeException invalidLine) {
+                    skipped++;
+                    bump(perCollector, defaultCollector, 0, 1, 0, bytes);
+                    log.debug("Ingest line rejected collector={} reason={}",
+                            defaultCollector, invalidLine.toString());
+                    continue;
                 }
-            } catch (RuntimeException invalidLine) {
-                skipped++;
-                bump(perCollector, defaultCollector, 0, 1, 0, bytes);
-                log.debug("Ingest line rejected collector={} reason={}",
-                        defaultCollector, invalidLine.toString());
+                // Bytes are received as soon as a line is parsed. Accepted is
+                // credited only after the durable commit boundary succeeds.
+                bump(perCollector, normalized.collector(), 0, 0, 0, bytes);
+                pending.add(normalized);
+                if (pending.size() >= BATCH_SIZE) {
+                    FlushResult flushed = flush(pending, perCollector);
+                    accepted += flushed.accepted();
+                    forwarded += flushed.forwarded();
+                }
             }
+            FlushResult flushed = flush(pending, perCollector);
+            accepted += flushed.accepted();
+            forwarded += flushed.forwarded();
+        } catch (PersistenceFailure failure) {
+            recordMetrics(accepted, skipped, forwarded, perCollector);
+            throw new ApiException(503,
+                    "Ingest persistence is unavailable; retry the uncommitted batch",
+                    failure.getCause());
         }
-        forwarded += flush(pending, perCollector);
-        perCollector.forEach((collector, values) -> monitor.record(
-                collector, (int) values[0], (int) values[1], (int) values[2], values[3]));
-        acceptedCounter.increment(accepted);
-        skippedCounter.increment(skipped);
-        forwardedCounter.increment(forwarded);
+        recordMetrics(accepted, skipped, forwarded, perCollector);
         return result(accepted, skipped, forwarded, perCollector, defaultCollector);
     }
 
-    private int flush(List<IngestEventNormalizer.NormalizedEvent> batch,
-                      Map<String, long[]> perCollector) {
-        if (batch.isEmpty()) return 0;
-        commitService.commit(batch.stream().map(IngestEventNormalizer.NormalizedEvent::event).toList());
+    private FlushResult flush(List<IngestEventNormalizer.NormalizedEvent> batch,
+                              Map<String, long[]> perCollector) {
+        if (batch.isEmpty()) return new FlushResult(0, 0);
+        try {
+            commitService.commit(batch.stream().map(IngestEventNormalizer.NormalizedEvent::event).toList());
+        } catch (RuntimeException persistenceFailure) {
+            throw new PersistenceFailure(persistenceFailure);
+        }
+        int accepted = batch.size();
+        for (IngestEventNormalizer.NormalizedEvent event : batch) {
+            bump(perCollector, event.collector(), 1, 0, 0, 0);
+        }
         int forwarded = forwardHttp ? forwardForDebug(batch) : 0;
         int credited = Math.min(forwarded, batch.size());
         for (int index = 0; index < credited; index++) {
             bump(perCollector, batch.get(index).collector(), 0, 0, 1, 0);
         }
         batch.clear();
-        return forwarded;
+        return new FlushResult(accepted, forwarded);
     }
 
     private int forwardForDebug(List<IngestEventNormalizer.NormalizedEvent> batch) {
@@ -124,9 +143,17 @@ public class IngestPipeline {
                 ndjson.append(MAPPER.writeValueAsString(event.payload())).append('\n');
             }
         } catch (JsonProcessingException serializationFailure) {
-            throw new IllegalStateException("cannot serialize normalized ingest batch", serializationFailure);
+            log.warn("Debug HTTP forwarding skipped because the normalized batch cannot be serialized: {}",
+                    serializationFailure.getOriginalMessage());
+            return 0;
         }
-        ServiceCall call = detectClient.ingestBulk(ndjson.toString());
+        ServiceCall call;
+        try {
+            call = detectClient.ingestBulk(ndjson.toString());
+        } catch (RuntimeException forwardingFailure) {
+            log.warn("Debug HTTP forwarding failed after durable ingest: {}", forwardingFailure.getMessage());
+            return 0;
+        }
         if (call == null || !call.ok()) {
             log.warn("Debug HTTP forwarding to Detection failed: {}",
                     call == null ? "no service result" : call.failureReason());
@@ -175,5 +202,23 @@ public class IngestPipeline {
         values[1] += skipped;
         values[2] += forwarded;
         values[3] += bytes;
+    }
+
+    private void recordMetrics(int accepted, int skipped, int forwarded,
+                               Map<String, long[]> perCollector) {
+        perCollector.forEach((collector, values) -> monitor.record(
+                collector, (int) values[0], (int) values[1], (int) values[2], values[3]));
+        acceptedCounter.increment(accepted);
+        skippedCounter.increment(skipped);
+        forwardedCounter.increment(forwarded);
+    }
+
+    private record FlushResult(int accepted, int forwarded) {
+    }
+
+    private static final class PersistenceFailure extends RuntimeException {
+        private PersistenceFailure(RuntimeException cause) {
+            super(cause);
+        }
     }
 }
