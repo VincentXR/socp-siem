@@ -177,7 +177,7 @@ class KafkaEventConsumerTest {
         Method dispatch = KafkaEventConsumer.class.getDeclaredMethod(
                 "dispatchOrDefer", KafkaConsumer.class, TopicPartition.class, Runnable.class);
         dispatch.setAccessible(true);
-        dispatch.invoke(consumer, kafka, partition, secondFinished::countDown);
+        dispatch.invoke(consumer, kafka, partition, (Runnable) secondFinished::countDown);
         verify(kafka).pause(eq(java.util.Set.of(partition)));
 
         releaseFirst.countDown();
