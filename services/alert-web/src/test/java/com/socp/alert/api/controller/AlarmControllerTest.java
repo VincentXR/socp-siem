@@ -55,6 +55,17 @@ class AlarmControllerTest {
     }
 
     @Test
+    void exportUsesTheSameStatusAndSortAsTheList() throws Exception {
+        given(service.query(Severity.HIGH, "R-1", "OPEN", "login", "riskScore", "ascending"))
+                .willReturn(List.of());
+        mvc.perform(get("/api/alarms/export").param("severity", "HIGH").param("rule", "R-1")
+                        .param("status", "OPEN").param("q", "login").param("sort", "riskScore")
+                        .param("order", "ascending").param("format", "json"))
+                .andExpect(status().isOk());
+        org.mockito.Mockito.verify(service).query(Severity.HIGH, "R-1", "OPEN", "login", "riskScore", "ascending");
+    }
+
+    @Test
     void createReturnsAlarmEnvelope() throws Exception {
         Alarm alarm = new Alarm("AUTH-BRUTE", "SSH brute force", Severity.HIGH,
                 "failed login", "203.0.113.10");

@@ -214,6 +214,53 @@ class DetectEngineServiceTest {
     }
 
     @Test
+    void hotReloadDrainsAcceptedWorkBeforeReadingTheJournal() throws Exception {
+        when(store.list("default")).thenReturn(List.of());
+        when(stateStore.claim(org.mockito.ArgumentMatchers.any(SecurityEvent.class)))
+                .thenReturn(com.socp.detect.web.persistence.store.DetectionEventClaim.NEW);
+        CountDownLatch sinkEntered = new CountDownLatch(1);
+        CountDownLatch releaseSink = new CountDownLatch(1);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            sinkEntered.countDown();
+            assertTrue(releaseSink.await(3, TimeUnit.SECONDS));
+            return null;
+        }).when(forwarder).forwardAll(
+                org.mockito.ArgumentMatchers.any(SecurityEvent.class),
+                org.mockito.ArgumentMatchers.anyList());
+
+        DetectEngineService service = new DetectEngineService(
+                store, new RecentAlertSink(10, forwarder, null),
+                forwarder, rulePublisher, stateStore);
+        service.start();
+        org.mockito.Mockito.clearInvocations(stateStore);
+        try {
+            assertTrue(service.ingest(new SecurityEvent(
+                    Instant.now(), "system", "host-1", "heartbeat",
+                    Map.of("tenant_id", "default"), Severity.INFO)));
+            assertTrue(sinkEntered.await(2, TimeUnit.SECONDS));
+
+            CompletableFuture<Void> rebuild = CompletableFuture.runAsync(
+                    service::reload);
+            Thread.sleep(100);
+            verify(stateStore, org.mockito.Mockito.never()).replayRecentForTenant(
+                    org.mockito.ArgumentMatchers.eq("default"),
+                    org.mockito.ArgumentMatchers.any(Duration.class),
+                    org.mockito.ArgumentMatchers.any());
+
+            releaseSink.countDown();
+            rebuild.get(3, TimeUnit.SECONDS);
+            verify(stateStore).markCompleted(org.mockito.ArgumentMatchers.any(SecurityEvent.class));
+            verify(stateStore).replayRecentForTenant(
+                    org.mockito.ArgumentMatchers.eq("default"),
+                    org.mockito.ArgumentMatchers.any(Duration.class),
+                    org.mockito.ArgumentMatchers.any());
+        } finally {
+            releaseSink.countDown();
+            service.stop();
+        }
+    }
+
+    @Test
     void boundsTenantEnginesAndRestoresAnEvictedTenant() throws Exception {
         when(store.list(org.mockito.ArgumentMatchers.anyString())).thenReturn(List.of());
         DetectEngineService service = new DetectEngineService(

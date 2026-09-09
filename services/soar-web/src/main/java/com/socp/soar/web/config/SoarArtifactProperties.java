@@ -1,4 +1,4 @@
-package com.socp.soar.web.artifact;
+package com.socp.soar.web.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 

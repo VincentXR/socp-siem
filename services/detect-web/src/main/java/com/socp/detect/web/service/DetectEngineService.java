@@ -305,7 +305,6 @@ public class DetectEngineService {
             Map<String, RuleEngine> replacements = new LinkedHashMap<>();
             for (int shard = 0; shard < effectiveShardCount(); shard++) {
                 RuleEngine replacement = buildEngine(resolvedTenant, List.of());
-                restoreState(resolvedTenant, replacement, assignedPartitions.get(), shard);
                 replacements.put(engineKey(resolvedTenant, shard), replacement);
             }
             List<String> oldKeys = engines.keySet().stream()
@@ -316,6 +315,10 @@ public class DetectEngineService {
                 if (old != null) old.close();
                 engineLastAccess.remove(key);
             });
+            int restoreShard = 0;
+            for (RuleEngine replacement : replacements.values()) {
+                restoreState(resolvedTenant, replacement, assignedPartitions.get(), restoreShard++);
+            }
             replacements.forEach((key, replacement) -> {
                 replacement.start();
                 engines.put(key, replacement);

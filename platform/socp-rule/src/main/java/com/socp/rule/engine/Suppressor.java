@@ -5,6 +5,11 @@ import com.socp.rule.model.Alert;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Comparator;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -17,6 +22,8 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class Suppressor implements AutoCloseable {
 
     private static final int DEFAULT_MAX_ENTRIES = 100_000;
+    private final ReentrantLock[] locks = java.util.stream.IntStream.range(0, 256)
+            .mapToObj(i -> new ReentrantLock()).toArray(ReentrantLock[]::new);
     private final Duration window;
     private final int maxEntries;
     private final ConcurrentHashMap<String, Instant> lastFired = new ConcurrentHashMap<>();
@@ -45,28 +52,70 @@ public final class Suppressor implements AutoCloseable {
         this.cleaner = Thread.startVirtualThread(this::cleanupLoop);
     }
 
-    /** 返回 true 表示放行；false 表示被抑制 */
+    /** Compatibility path for callers whose delivery is already complete. */
     public boolean allow(Alert alert) {
+        try (Batch batch = begin(List.of(alert))) {
+            batch.commit();
+            return !batch.alerts().isEmpty();
+        }
+    }
+
+    /** Reserve suppression keys until the durable sink succeeds or fails. */
+    public Batch begin(List<Alert> alerts) {
+        return new Batch(alerts);
+    }
+
+    private String key(Alert alert) {
         String tenant = "default";
         if (alert.evidence() != null) {
             for (var event : alert.evidence()) {
-                if (event != null) {
-                    tenant = event.tenantId();
-                    break;
+                if (event != null) { tenant = event.tenantId(); break; }
+            }
+        }
+        return tenant + "|" + alert.ruleId() + "|"
+                + (alert.entity() == null ? alert.message() : alert.entity());
+    }
+
+    public final class Batch implements AutoCloseable {
+        private final int[] stripes;
+        private final List<Alert> selected = new ArrayList<>();
+        private final Set<String> keys = new HashSet<>();
+        private boolean closed;
+
+        private Batch(List<Alert> candidates) {
+            stripes = candidates.stream().map(Suppressor.this::key)
+                    .mapToInt(key -> Math.floorMod(key.hashCode(), locks.length)).distinct().sorted().toArray();
+            // Fixed order prevents deadlocks when an event emits multiple alerts.
+            for (int stripe : stripes) locks[stripe].lock();
+            Instant now = Instant.now();
+            for (Alert alert : candidates) {
+                String key = key(alert);
+                Instant previous = lastFired.get(key);
+                if ((previous != null && previous.plus(window).isAfter(now))
+                        || (!window.isZero() && keys.contains(key))) {
+                    suppressed.incrementAndGet();
+                } else {
+                    keys.add(key);
+                    selected.add(alert);
                 }
             }
         }
-        String key = tenant + "|" + alert.ruleId() + "|"
-                + (alert.entity() == null ? alert.message() : alert.entity());
-        Instant now = Instant.now();
-        Instant prev = lastFired.get(key);
-        if (prev != null && prev.plus(window).isAfter(now)) {
-            suppressed.incrementAndGet();
-            return false;
+
+        public List<Alert> alerts() { return List.copyOf(selected); }
+
+        public void commit() {
+            if (closed) throw new IllegalStateException("suppression batch is closed");
+            Instant now = Instant.now();
+            for (String key : keys) lastFired.put(key, now);
+            trimToLimit(now);
         }
-        lastFired.put(key, now);
-        trimToLimit(now);
-        return true;
+
+        @Override
+        public void close() {
+            if (closed) return;
+            closed = true;
+            for (int i = stripes.length - 1; i >= 0; i--) locks[stripes[i]].unlock();
+        }
     }
 
     /** 定时清理过期条目：prev 早于 (now - window) 的条目已不可能再影响抑制判定 */

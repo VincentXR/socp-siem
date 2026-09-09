@@ -23,3 +23,7 @@ export const listWatchlists = () => get<Watchlist[]>('/detect-web/api/v1/watchli
 export const putWatchlist = (name: string, values: string[]) => put<Watchlist>(`/detect-web/api/v1/watchlists/${encodeURIComponent(name)}`, values)
 export const appendWatchlist = (name: string, values: string[]) => post<Watchlist>(`/detect-web/api/v1/watchlists/${encodeURIComponent(name)}`, values)
 export const deleteWatchlist = (name: string) => del<{ removed: boolean }>(`/detect-web/api/v1/watchlists/${encodeURIComponent(name)}`)
+
+export interface RuleDryRunResult { id: string; name: string; type: string; matched: boolean; alerts: GasAlert[]; eventCount: number }
+export const testGasRules = (rules: Partial<RuleSpec>[], events: DetectionIngestEvent[]) =>
+  post<RuleDryRunResult[]>('/detect-web/api/v1/rules/test', { rules, events })

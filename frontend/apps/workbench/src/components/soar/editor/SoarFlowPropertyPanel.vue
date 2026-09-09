@@ -8,6 +8,7 @@ import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
+import { CONDITION_OPERATORS, compileCondition, parseCondition, type ExpressionCondition } from './conditionExpression'
 import FieldConditionBuilder from '../../FieldConditionBuilder.vue'
 import VariableSelector, { type VariableOption } from '../../VariableSelector.vue'
 import { listV2Actions, listV2Connections, listV2Playbooks, listV2Versions, type SoarV2ActionDescriptor, type SoarV2Connection } from '../../../api'
@@ -414,31 +415,25 @@ const compatibleConnections = computed(() => {
   return compatible.length ? compatible : connections.value
 })
 
-const conditionRows = ref<RuleCondition[]>([])
-const CONDITION_EXPRESSION_OPERATORS: Record<string, string> = {
-  eq: '==', ne: '!=', contains: 'contains', startswith: 'startsWith', endswith: 'endsWith',
-  gt: '>', gte: '>=', lt: '<', lte: '<=', regex: 'matches',
-}
-
-function expressionToConditions(expression: string): RuleCondition[] {
-  const match = expression.trim().match(/^([^\s]+)\s*(==|!=|>=|<=|>|<|contains|startsWith|endsWith|matches)\s*(?:['"](.*)['"]|(.*))$/i)
-  if (!match) return []
-  const operator = Object.entries(CONDITION_EXPRESSION_OPERATORS).find(([, value]) => value.toLowerCase() === match[2].toLowerCase())?.[0] || 'eq'
-  return [{ field: match[1], op: operator, value: String(match[3] ?? match[4] ?? '') }]
-}
+const conditionRows = ref<ExpressionCondition[]>([])
+const conditionError = ref('')
 
 function syncConditionRows(): void {
   const expression = props.node ? scalar(props.node, 'expression') : ''
-  conditionRows.value = expressionToConditions(expression)
+  conditionRows.value = parseCondition(expression)
+  conditionError.value = ''
 }
 
-function commitConditionRows(rows: RuleCondition[]): void {
+function commitConditionRows(rows: ExpressionCondition[]): void {
   conditionRows.value = rows.map(row => ({ ...row }))
-  const row = conditionRows.value[0]
-  if (!row?.field.trim() || !row.value.trim()) return
-  const operator = CONDITION_EXPRESSION_OPERATORS[row.op] || row.op
-  const value = /^[A-Za-z0-9_.:-]+$/.test(row.value.trim()) ? row.value.trim() : JSON.stringify(row.value.trim())
-  updateScalar('expression', `${row.field.trim()} ${operator} ${value}`)
+  try {
+    const expression = compileCondition(conditionRows.value)
+    // An empty condition must not become an unconditional true branch.
+    updateScalar('expression', expression || 'false')
+    conditionError.value = ''
+  } catch (error) {
+    conditionError.value = error instanceof Error ? error.message : String(error)
+  }
 }
 
 watch(() => props.node, syncConditionRows, { immediate: true })
@@ -574,6 +569,7 @@ const actionInputFields = computed<ActionInputField[]>(() => {
   return Object.entries(properties as Record<string, unknown>).flatMap(([key, value]) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return []
     const field = value as Record<string, unknown>
+    if (field.type && !['string', 'number', 'integer', 'boolean'].includes(String(field.type))) return []
     return [{
       key,
       label: String(field.title ?? key),
@@ -589,7 +585,7 @@ function parameterValue(key: string): string {
   const parameters = props.node?.parameters
   if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) return ''
   const value = (parameters as Record<string, unknown>)[key]
-  return value == null ? '' : String(value)
+  return value == null ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value)
 }
 
 function updateParameterValue(field: ActionInputField, value: string): void {
@@ -713,6 +709,7 @@ function subPlaybookVersionKnown(id: string): boolean {
 
         <div class="soar-flow-inspector-section">
           <span>Parameters</span>
+          <small class="soar-flow-hint">Object and array parameters are preserved in Advanced JSON.</small>
           <div v-if="actionInputFields.length" class="soar-flow-parameter-form">
             <label v-for="field in actionInputFields" :key="field.key">
               <span>{{ field.label }}<i v-if="field.required">*</i></span>
@@ -749,8 +746,13 @@ function subPlaybookVersionKnown(id: string): boolean {
       <template v-if="nodeType === 'CONDITION'">
         <div class="soar-flow-inspector-section">
           <span>Visual condition</span>
+          <el-select v-if="conditionRows.length" :model-value="conditionRows[0]?.literalType || 'string'" @change="value => commitConditionRows(conditionRows.map(row => ({ ...row, literalType: value })))">
+            <el-option label="Text" value="string" /><el-option label="Integer" value="number" /><el-option label="Boolean" value="boolean" />
+          </el-select>
           <FieldConditionBuilder
             :model-value="conditionRows"
+            :operators="Object.keys(CONDITION_OPERATORS)"
+            :max-conditions="1"
             :fields="conditionFields"
             title="Field · operator · value"
             add-label="Add condition"
@@ -759,6 +761,7 @@ function subPlaybookVersionKnown(id: string): boolean {
             value-placeholder="Expected value"
             @update:model-value="commitConditionRows"
           />
+          <p v-if="conditionError" role="alert" class="soar-flow-hint">{{ conditionError }}</p>
           <small class="soar-flow-hint">The visual builder covers a single comparison. Existing complex expressions stay intact until you explicitly apply it.</small>
         </div>
         <label>

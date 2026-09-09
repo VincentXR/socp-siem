@@ -171,13 +171,20 @@ public class AlarmController {
     }
 
     /** 归档导出：告警全量按 CSV 或 JSON 下载（数据带不走问题的解法）。 */
+    public ResponseEntity<String> export(Severity severity, String rule, String q, String format) {
+        return export(severity, rule, q, format, null, "occurredAt", "descending");
+    }
+
     @GetMapping("/export")
     public ResponseEntity<String> export(
             @RequestParam(required = false) Severity severity,
             @RequestParam(required = false) String rule,
             @RequestParam(required = false) String q,
-            @RequestParam(defaultValue = "csv") String format) {
-        List<Alarm> alarms = service.query(severity, rule, q);
+            @RequestParam(defaultValue = "csv") String format,
+            @RequestParam(required = false) String status,
+            @RequestParam(defaultValue = "occurredAt") String sort,
+            @RequestParam(defaultValue = "descending") String order) {
+        List<Alarm> alarms = service.query(severity, rule, status, q, sort, order);
         String fname, ctype, body;
         if ("json".equalsIgnoreCase(format)) {
             fname = "alarms.json";

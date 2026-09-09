@@ -1,5 +1,6 @@
 package com.socp.soar.web.artifact;
 
+import com.socp.soar.web.config.SoarArtifactProperties;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;

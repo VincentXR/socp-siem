@@ -1,5 +1,6 @@
 package com.socp.soar.web.connector;
 
+import com.socp.soar.web.config.SoarSecretProperties;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 

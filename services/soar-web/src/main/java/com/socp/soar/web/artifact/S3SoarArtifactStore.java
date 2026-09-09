@@ -1,5 +1,6 @@
 package com.socp.soar.web.artifact;
 
+import com.socp.soar.web.config.SoarArtifactProperties;
 import com.socp.soar.web.connector.SecretResolver;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;

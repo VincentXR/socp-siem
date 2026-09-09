@@ -59,6 +59,31 @@ class RuleEngineTest {
     }
 
     @Test
+    void failedDurableDeliveryDoesNotSuppressRetry() throws Exception {
+        AtomicBoolean fail = new AtomicBoolean(true);
+        List<Alert> delivered = new CopyOnWriteArrayList<>();
+        EventAlertSink sink = new EventAlertSink() {
+            @Override public void publish(SecurityEvent event, List<Alert> alerts) {
+                if (fail.getAndSet(false)) throw new IllegalStateException("database unavailable");
+                delivered.addAll(alerts);
+            }
+            @Override public void publish(Alert alert) { delivered.add(alert); }
+            @Override public void close() { }
+        };
+        try (Suppressor suppressor = new Suppressor(Duration.ofMinutes(5));
+             RuleEngine engine = new RuleEngine(Rules.defaultRules(), List.of(sink), suppressor)) {
+            engine.start();
+            SecurityEvent event = ev("web", "GET /x?q=1' OR '1'='1 (SQLi)", "10.0.0.5", null);
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> engine.ingestAndAwait(event).get(3, TimeUnit.SECONDS));
+            engine.ingestAndAwait(event).get(3, TimeUnit.SECONDS);
+            assertEquals(1, delivered.stream().filter(alert -> alert.ruleId().equals("WEB-ATTACK")).count());
+            engine.ingestAndAwait(event).get(3, TimeUnit.SECONDS);
+            assertEquals(1, delivered.stream().filter(alert -> alert.ruleId().equals("WEB-ATTACK")).count());
+        }
+    }
+
+    @Test
     void patternRuleFiresOnWebAttack() throws Exception {
         CollectingSink sink = new CollectingSink();
         try (RuleEngine engine = new RuleEngine(Rules.defaultRules(), List.of(sink))) {

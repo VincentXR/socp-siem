@@ -23,8 +23,8 @@ import SevBadge from '../components/SevBadge.vue'
 import { WORKBENCH_STATE } from '../app/workbenchState'
 import {
   activateGasRule, createGasRule, deleteGasRule, gasStats, listRules, SEVERITIES, updateGasRule,
-  listFields, listRefSets,
-  type FieldDef, type GasStats, type ReferenceSet, type RuleCondition, type RuleSpec,
+  listFields, listRefSets, testGasRules,
+  type DetectionIngestEvent, type FieldDef, type GasStats, type ReferenceSet, type RuleCondition, type RuleSpec,
 } from '../api'
 import { useI18n } from '../composables/useI18n'
 
@@ -76,6 +76,8 @@ const testInput = ref({
 })
 const testRuleId = ref('')
 const testError = ref('')
+const testing = ref(false)
+const sampleEventsText = ref('')
 const testResult = ref<RuleTestResult | null>(null)
 
 function emptyCondition(): RuleCondition { return { field: 'msg', op: 'contains', value: '' } }
@@ -93,7 +95,7 @@ function emptyRuleForm(): RuleEditorForm {
 }
 
 function textValue(value: unknown): string { return value == null ? '' : String(value) }
-function numberValue(value: unknown): number | null { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : null }
+function numberValue(value: unknown): number | null { if (value == null || value === '') return null; const parsed = Number(value); return Number.isFinite(parsed) ? parsed : null }
 
 function formFromRule(rule: RuleSpec): RuleEditorForm {
   return {
@@ -217,7 +219,7 @@ function applyAdvancedJson(): void {
     const parsed = JSON.parse(advancedJson.value) as unknown
     const normalized = normalizeRuleSpec(parsed)
     if (!normalized) throw new Error(t('detect.invalidRuleJson'))
-    sourceRule.value = clone(normalized); ruleEditingId.value = String(normalized.id); ruleForm.value = formFromRule(normalized); advancedJson.value = JSON.stringify(normalized, null, 2)
+    sourceRule.value = clone(normalized); ruleForm.value = formFromRule(normalized); advancedJson.value = JSON.stringify(normalized, null, 2)
   } catch (error) { advancedError.value = error instanceof Error ? error.message : String(error) }
 }
 
@@ -289,49 +291,29 @@ function statusTag(status: string): 'success' | 'warning' | 'danger' | 'info' | 
 }
 function typeLabel(type: string): string { return ADVANCED_TYPES.includes(type) ? `${type} · ${t('detect.advancedType')}` : type }
 
-type TestEvent = { source: string; host: string; severity: string; msg: string; fields: Record<string, unknown> }
-function valueForField(field: string, event: TestEvent): unknown {
-  const normalized = field.replace(/^fields\./, '')
-  if (field === 'source') return event.source; if (field === 'host') return event.host; if (field === 'severity') return event.severity; if (field === 'msg' || field === 'message') return event.msg
-  return event.fields[normalized] ?? event.fields[field]
-}
-function compareCondition(condition: RuleCondition, value: unknown): boolean {
-  const expected = condition.value; const actual = value == null ? '' : String(value); const numberActual = Number(value); const numberExpected = Number(expected)
-  switch (condition.op) {
-    case 'eq': return actual === expected
-    case 'ne': return actual !== expected
-    case 'contains': return actual.toLowerCase().includes(expected.toLowerCase())
-    case 'startswith': return actual.toLowerCase().startsWith(expected.toLowerCase())
-    case 'endswith': return actual.toLowerCase().endsWith(expected.toLowerCase())
-    case 'regex': try { return new RegExp(expected).test(actual) } catch { return false }
-    case 'gt': case 'gte': case 'ge': case 'lt': case 'lte':
-      if (!Number.isFinite(numberActual) || !Number.isFinite(numberExpected)) return false
-      if (condition.op === 'gt') return numberActual > numberExpected; if (condition.op === 'lt') return numberActual < numberExpected; if (condition.op === 'lte') return numberActual <= numberExpected; return numberActual >= numberExpected
-    case 'inlist': return expected.split(',').map(item => item.trim()).includes(actual)
-    case 'notinlist': return !expected.split(',').map(item => item.trim()).includes(actual)
-    case 'gtsev': { const levels = ['INFO', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL']; return levels.indexOf(actual.toUpperCase()) >= levels.indexOf(expected.toUpperCase()) }
-    default: return actual === expected
-  }
-}
-function traceConditions(conditions: RuleCondition[], event: TestEvent): TestConditionTrace[] {
-  return conditions.map(condition => { const observed = valueForField(condition.field, event); return { condition: clone(condition), matched: compareCondition(condition, observed), observed: observed == null ? '∅' : String(observed) } })
-}
-function testRule(rule: RuleSpec, event: TestEvent): RuleTestTrace {
-  const main = traceConditions(rule.match ?? [], event); const anyGroups = (rule.matchAny ?? []).map(group => traceConditions(group, event)); const steps = (rule.steps ?? []).map(step => traceConditions(step, event)); const whitelist = traceConditions(rule.whitelist ?? [], event)
-  const mainMatched = main.length === 0 || main.every(item => item.matched); const anyMatched = anyGroups.length === 0 || anyGroups.some(group => group.length > 0 && group.every(item => item.matched)); const stepsMatched = steps.length === 0 || steps.every(step => step.length > 0 && step.every(item => item.matched))
-  const whitelistMatched = whitelist.some(item => item.matched)
-  const matched = main.length + anyGroups.flat().length + steps.flat().length > 0 && mainMatched && anyMatched && stepsMatched && !whitelistMatched; const candidate = matched && ['threshold', 'correlation', 'correlation-set', 'baseline', 'rare'].includes(textValue(rule.type))
-  return { id: String(rule.id), name: String(rule.name), type: textValue(rule.type), state: candidate ? 'CANDIDATE' : matched ? 'MATCHED' : 'NO_MATCH', reason: whitelistMatched ? t('detect.testWhitelisted') : candidate ? t('detect.testCandidate') : matched ? t('detect.testMatched') : t('detect.testNoMatch'), conditions: [...main, ...anyGroups.flat(), ...steps.flat(), ...whitelist] }
-}
-function runIsolatedTest(): void {
-  testError.value = ''; testResult.value = null
+async function runIsolatedTest(): Promise<void> {
+  if (testing.value) return
+  testError.value = ''; testResult.value = null; testing.value = true
   try {
     const parsed = JSON.parse(testInput.value.fieldsText) as unknown
     if (parsed === null || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error(t('detect.fieldsObjectRequired'))
-    const event: TestEvent = { source: testInput.value.source, host: testInput.value.host, severity: testInput.value.severity, msg: testInput.value.message, fields: parsed as Record<string, unknown> }
-    const selected = testRuleId.value ? rules.value.filter(rule => String(rule.id) === testRuleId.value) : rules.value; const traces = selected.map(rule => testRule(rule, event))
-    testResult.value = { checked: traces.length, matched: traces.filter(trace => trace.state === 'MATCHED').length, candidates: traces.filter(trace => trace.state === 'CANDIDATE').length, traces }
+    const fields = Object.fromEntries(Object.entries(parsed).map(([key, value]) => [key, typeof value === 'string' ? value : JSON.stringify(value)]))
+    const events: DetectionIngestEvent[] = sampleEventsText.value.trim() ? JSON.parse(sampleEventsText.value) : [{
+      source: testInput.value.source, host: testInput.value.host, severity: testInput.value.severity,
+      msg: testInput.value.message, fields,
+    }]
+    if (!Array.isArray(events) || !events.length || events.length > 100) throw new Error(t('detect.sampleLimit'))
+    const selected = showRuleEditor.value ? [{ ...buildRuleSpec(), id: ruleEditingId.value || 'dry-run-draft' }]
+      : testRuleId.value ? rules.value.filter(rule => String(rule.id) === testRuleId.value) : rules.value
+    if (!selected.length || selected.length > 20) throw new Error(t('detect.ruleTestLimit'))
+    const result = await testGasRules(selected, events)
+    const traces: RuleTestTrace[] = result.map(row => ({
+      id: row.id, name: row.name, type: row.type, state: row.matched ? 'MATCHED' : 'NO_MATCH',
+      reason: `${row.eventCount} ${t('detect.sampleEvents')} · ${row.alerts.length} ${t('detect.alarmsCount')}`, conditions: [],
+    }))
+    testResult.value = { checked: traces.length, matched: traces.filter(trace => trace.state === 'MATCHED').length, candidates: 0, traces }
   } catch (error) { testError.value = error instanceof Error ? error.message : String(error) }
+  finally { testing.value = false }
 }
 
 onMounted(loadRules)
@@ -361,12 +343,14 @@ onMounted(loadRules)
           <label>{{ t('common.source') }}<el-input v-model="testInput.source" /></label><label>{{ t('common.host') }}<el-input v-model="testInput.host" /></label>
           <label>{{ t('common.severity') }}<el-select v-model="testInput.severity"><el-option v-for="severity in SEVERITIES" :key="severity" :label="t('severities.' + severity) || severity" :value="severity" /></el-select></label>
           <label class="full-width">{{ t('detect.testMessage') }}<el-input v-model="testInput.message" /></label><label class="full-width">{{ t('detect.testFields') }}<el-input v-model="testInput.fieldsText" type="textarea" :rows="4" spellcheck="false" /></label>
-          <div class="detect-test-actions"><el-button type="primary" :disabled="!rules.length" @click="runIsolatedTest">{{ t('detect.runTest') }}</el-button><span>{{ t('detect.isolatedTestHint') }}</span></div>
+          <details class="full-width"><summary>{{ t('detect.sampleSequence') }}</summary><el-input v-model="sampleEventsText" type="textarea" :rows="5" placeholder='[{"timestamp":"2026-01-01T00:00:00Z","source":"auth","msg":"Failed password","fields":{}}]' /></details>
+          <p v-if="showRuleEditor" class="full-width form-hint">{{ t('detect.testingDraft') }}</p>
+          <div class="detect-test-actions"><el-button v-if="canManageRules" type="primary" :loading="testing" :disabled="!rules.length && !showRuleEditor" @click="runIsolatedTest">{{ t('detect.runTest') }}</el-button><span>{{ t('detect.isolatedTestHint') }}</span></div>
         </div>
         <div class="detect-test-result">
           <EmptyState v-if="!testResult && !testError" :title="t('detect.testWaiting')" :description="t('detect.testWaitingHint')" /><div v-if="testError" class="detect-feedback error" role="alert">{{ testError }}</div>
-          <template v-if="testResult"><div class="test-summary"><span>{{ t('detect.testChecked', { count: testResult.checked }) }}</span><el-tag type="success" size="small">{{ t('detect.testMatchedCount', { count: testResult.matched }) }}</el-tag><el-tag type="warning" size="small">{{ t('detect.testCandidateCount', { count: testResult.candidates }) }}</el-tag></div>
-            <div v-for="trace in testResult.traces" :key="trace.id" class="test-trace" :class="trace.state.toLowerCase()"><div class="test-trace-head"><div><b>{{ trace.name }}</b><span class="mono">{{ trace.id }}</span></div><el-tag size="small" :type="trace.state === 'NO_MATCH' ? 'info' : trace.state === 'CANDIDATE' ? 'warning' : 'success'">{{ trace.state }}</el-tag></div><p>{{ trace.reason }}</p><div v-if="trace.conditions.length" class="test-condition-list"><div v-for="(item, index) in trace.conditions" :key="index" class="test-condition" :class="{ matched: item.matched }"><span class="condition-mark">{{ item.matched ? '✓' : '×' }}</span><span class="mono">{{ item.condition.field }} {{ item.condition.op }} {{ item.condition.value }}</span><span>{{ item.observed }}</span></div></div><div v-else class="test-no-condition">{{ t('detect.testNoConditions') }}</div></div>
+          <template v-if="testResult"><div class="test-summary"><span>{{ t('detect.testChecked', { count: testResult.checked }) }}</span><el-tag type="success" size="small">{{ t('detect.testMatchedCount', { count: testResult.matched }) }}</el-tag></div>
+            <div v-for="trace in testResult.traces" :key="trace.id" class="test-trace" :class="trace.state.toLowerCase()"><div class="test-trace-head"><div><b>{{ trace.name }}</b><span class="mono">{{ trace.id }}</span></div><el-tag size="small" :type="trace.state === 'NO_MATCH' ? 'info' : trace.state === 'CANDIDATE' ? 'warning' : 'success'">{{ trace.state }}</el-tag></div><p>{{ trace.reason }}</p><div v-if="trace.conditions.length" class="test-condition-list"><div v-for="(item, index) in trace.conditions" :key="index" class="test-condition" :class="{ matched: item.matched }"><span class="condition-mark">{{ item.matched ? '✓' : '×' }}</span><span class="mono">{{ item.condition.field }} {{ item.condition.op }} {{ item.condition.value }}</span><span>{{ item.observed }}</span></div></div></div>
           </template>
         </div>
       </div>

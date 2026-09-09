@@ -11,6 +11,8 @@ const props = withDefaults(defineProps<{
   modelValue: RuleCondition[]
   fields?: FieldDef[]
   referenceSets?: ReferenceSet[]
+  operators?: string[]
+  maxConditions?: number
   title?: string
   addLabel?: string
   emptyHint?: string
@@ -19,6 +21,8 @@ const props = withDefaults(defineProps<{
 }>(), {
   fields: () => [],
   referenceSets: () => [],
+  operators: undefined,
+  maxConditions: Number.POSITIVE_INFINITY,
   title: '',
   addLabel: 'Add condition',
   emptyHint: 'No conditions',
@@ -39,6 +43,7 @@ function fieldType(fieldName: string): string {
 }
 
 function fieldOperators(fieldName: string, current = ''): string[] {
+  if (props.operators) return props.operators
   const type = fieldType(fieldName)
   const numeric = ['int', 'integer', 'long', 'float', 'double', 'number'].includes(type)
   const boolean = ['bool', 'boolean'].includes(type)
@@ -75,6 +80,7 @@ function updateOperator(index: number, operator: string): void {
 }
 
 function addCondition(): void {
+  if (props.modelValue.length >= props.maxConditions) return
   emit('update:modelValue', [...props.modelValue.map(condition => ({ ...condition })), { field: '', op: 'eq', value: '' }])
 }
 
@@ -105,7 +111,7 @@ function fieldMeta(fieldName: string): string {
   <div class="field-condition-builder">
     <div v-if="title" class="field-condition-builder-head">
       <b>{{ title }}</b>
-      <el-button size="small" plain @click="addCondition">{{ addLabel }}</el-button>
+      <el-button v-if="modelValue.length < maxConditions" size="small" plain @click="addCondition">{{ addLabel }}</el-button>
     </div>
     <div v-for="(condition, index) in modelValue" :key="index" class="field-condition-row">
       <el-select
@@ -145,7 +151,7 @@ function fieldMeta(fieldName: string): string {
       <small v-if="fieldMeta(condition.field)" class="field-condition-meta">{{ fieldMeta(condition.field) }}</small>
     </div>
     <div v-if="!modelValue.length" class="field-condition-empty">{{ emptyHint }}</div>
-    <el-button v-if="!title" size="small" plain @click="addCondition">{{ addLabel }}</el-button>
+    <el-button v-if="!title && modelValue.length < maxConditions" size="small" plain @click="addCondition">{{ addLabel }}</el-button>
   </div>
 </template>
 

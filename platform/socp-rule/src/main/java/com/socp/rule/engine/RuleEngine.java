@@ -139,35 +139,32 @@ public final class RuleEngine implements AutoCloseable {
         List<Rule> rules = rulesRef.get();
         for (Rule rule : rules) rule.accept(event);
 
-        List<Alert> emitted = new ArrayList<>();
-        for (Rule rule : rules) {
-            for (Alert alert : rule.drain()) {
-                if (suppressor != null && !suppressor.allow(alert)) continue;
-                alertCount.incrementAndGet();
-                emitted.add(alert);
-            }
-        }
-        notifyEvaluationCompleted(event, emitted.size());
-
-        for (AlertSink sink : sinks) {
-            try {
-                if (sink instanceof EventAlertSink eventSink) {
-                    // Empty results are intentional: they are still a
-                    // successful terminal outcome for the source event.
-                    eventSink.publish(event, List.copyOf(emitted));
-                } else {
-                    for (Alert alert : emitted) sink.publish(alert);
+        List<Alert> candidates = new ArrayList<>();
+        for (Rule rule : rules) candidates.addAll(rule.drain());
+        try (Suppressor.Batch batch = suppressor == null ? null : suppressor.begin(candidates)) {
+            List<Alert> emitted = batch == null ? List.copyOf(candidates) : batch.alerts();
+            notifyEvaluationCompleted(event, emitted.size());
+            boolean delivered = true;
+            for (AlertSink sink : sinks) {
+                try {
+                    if (sink instanceof EventAlertSink eventSink) {
+                        eventSink.publish(event, emitted);
+                    } else {
+                        for (Alert alert : emitted) sink.publish(alert);
+                    }
+                } catch (RuntimeException ex) {
+                    delivered = false;
+                    if (item.durable()) throw ex;
+                    log.error("Alert sink failed eventId={} alerts={}: {}",
+                            event.id(), emitted.size(), ex.getMessage(), ex);
                 }
-            } catch (RuntimeException ex) {
-                if (item.durable()) throw ex;
-                // Direct HTTP callers retain the old non-fatal sink behavior.
-                // Kafka callers receive the exception through the completion
-                // future and must retry without advancing the offset.
-                log.error("Alert sink failed eventId={} alerts={}: {}",
-                        event.id(), emitted.size(), ex.getMessage(), ex);
+            }
+            if (delivered) {
+                if (batch != null) batch.commit();
+                alertCount.addAndGet(emitted.size());
+                notifyDurableSinksCompleted(event, emitted.size());
             }
         }
-        notifyDurableSinksCompleted(event, emitted.size());
     }
 
     private void notifyEvaluationCompleted(SecurityEvent event, int emittedAlerts) {

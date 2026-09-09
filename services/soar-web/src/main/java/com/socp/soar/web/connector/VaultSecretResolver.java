@@ -1,5 +1,6 @@
 package com.socp.soar.web.connector;
 
+import com.socp.soar.web.config.SoarSecretProperties;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
