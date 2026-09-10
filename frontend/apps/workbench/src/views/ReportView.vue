@@ -30,6 +30,7 @@ const reportLoading = reportRequest.loading
 const reportError = reportRequest.error
 const archiveInfo = ref<Awaited<ReturnType<typeof listArchive>> | null>(null)
 const archiveBusy = ref(false)
+const archiveError = ref('')
 const chartBar = shallowRef<ECharts>()
 const chartLine = shallowRef<ECharts>()
 const barEl = ref<HTMLElement>()
@@ -77,7 +78,7 @@ async function renderCharts() {
 }
 
 async function loadArchive() {
-  try { archiveInfo.value = await listArchive() } catch { /* MinIO 未启用时静默 */ }
+  try { archiveInfo.value = await listArchive(); archiveError.value = '' } catch (failure) { archiveError.value = String(failure) }
 }
 
 async function doArchive() {
@@ -129,7 +130,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="page-pad view-enter">
+  <div class="page-pad view-enter"><el-alert v-if="archiveError" :title="archiveError" type="error" :closable="false" />
     <div style="margin-bottom:12px;display:flex;gap:10px;align-items:center">
       <el-button :loading="reportLoading" @click="loadReport">{{ t('report.refresh') }}</el-button>
       <el-button type="primary" :loading="archiveBusy" @click="doArchive">{{ t('report.archiveToMinio') }}</el-button>

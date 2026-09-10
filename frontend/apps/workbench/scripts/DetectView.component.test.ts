@@ -1,5 +1,6 @@
 import { mount, flushPromises } from '@vue/test-utils'
 import { ref } from 'vue'
+import { createRouter, createMemoryHistory } from 'vue-router'
 import { describe, expect, it, vi } from 'vitest'
 import DetectView from '../src/views/DetectView.vue'
 import { WORKBENCH_STATE } from '../src/app/workbenchState'
@@ -15,7 +16,10 @@ vi.mock('../src/api', async importOriginal => ({ ...await importOriginal<object>
 
 describe('rule editor identity', () => {
   it('applying copied JSON cannot update the source rule', async () => {
-    const wrapper = mount(DetectView, { global: { provide: { [WORKBENCH_STATE as symbol]: { currentRole: ref('admin') } } } })
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/detect', name: 'detect', component: DetectView }, { path: '/detect/rules/new', name: 'rule-new', component: DetectView, meta: { editor: true } }, { path: '/detect/rules/:ruleId/edit', name: 'rule-edit', component: DetectView, meta: { editor: true } }] })
+    await router.push('/detect')
+    await router.isReady()
+    const wrapper = mount(DetectView, { global: { plugins: [router], provide: { [WORKBENCH_STATE as symbol]: { currentRole: ref('admin') } } } })
     await flushPromises()
     const click = async (text: string) => {
       const button = wrapper.findAll('button').find(item => item.text() === text)

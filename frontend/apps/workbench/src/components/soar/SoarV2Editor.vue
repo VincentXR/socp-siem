@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
+import 'element-plus/es/components/select/style/css.mjs'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
 import '@vue-flow/controls/dist/style.css'
@@ -80,7 +82,7 @@ const props = withDefaults(defineProps<{
   /** Optional alert context passed from the alarm workbench. */
   contextAlarmId?: string
 }>(), { initialPlaybookId: '', openRun: null, createRequest: 0, contextAlarmId: '' })
-const emit = defineEmits<{ saved: [SoarV2Version]; 'dirty-change': [dirty: boolean] }>()
+const emit = defineEmits<{ saved: [SoarV2Version]; created: [id: string]; 'dirty-change': [dirty: boolean] }>()
 
 const { t } = useI18n()
 
@@ -292,6 +294,7 @@ async function createPlaybookAndVersion() {
     flow.applyDefinition(version.definition)
     validation.value = null
     newPlaybookVisible.value = false
+    emit('created', playbook.id)
     message.value = t('soarV2.createdDraft')
   } catch (failure) {
     newPlaybookError.value = failure instanceof Error ? failure.message : t('soarV2.createFailed')
@@ -576,20 +579,20 @@ onUnmounted(() => {
           <span v-if="props.contextAlarmId" class="soar-v2-context-note">{{ t('soarV2.contextAlarm') }} {{ props.contextAlarmId }}</span>
         </div>
         <div class="soar-v2-editor-selects">
-          <select v-model="selectedPlaybookId" aria-label="V2 playbook" @change="changePlaybook">
-            <option value="">Select playbook</option>
-            <option v-for="playbook in playbooks" :key="playbook.id" :value="playbook.id">{{ playbook.name }}</option>
-          </select>
-          <select v-model.number="selectedVersionNo" aria-label="V2 version" @change="changeVersion">
-            <option :value="null">Version</option>
-            <option v-for="version in versions" :key="version.id" :value="version.version">v{{ version.version }} · {{ version.status }}</option>
-          </select>
+          <el-select v-model="selectedPlaybookId" filterable aria-label="Playbook" @change="changePlaybook">
+            <el-option value="" label="Select playbook" />
+            <el-option v-for="playbook in playbooks" :key="playbook.id" :value="playbook.id" :label="playbook.name" />
+          </el-select>
+          <el-select v-model="selectedVersionNo" aria-label="Version" @change="changeVersion">
+
+            <el-option v-for="version in versions" :key="version.id" :value="version.version" :label="`v${version.version} · ${version.status}`" />
+          </el-select>
         </div>
       </div>
     </template>
 
     <div class="soar-v2-editor-toolbar">
-      <el-button type="primary" size="small" @click="openNewPlaybookDialog">{{ t('soarV2.blankPlaybook') }}</el-button>
+      <el-button v-if="!selectedPlaybookId" type="primary" size="small" @click="openNewPlaybookDialog">{{ t('soarV2.blankPlaybook') }}</el-button>
       <el-button size="small" :disabled="!selectedPlaybookId" @click="createVersion">{{ t('soarV2.newDraftVersion') }}</el-button>
       <el-button size="small" :loading="loading" @click="loadCatalog">{{ t('common.refresh') }}</el-button>
       <el-button
@@ -689,12 +692,12 @@ onUnmounted(() => {
     <div class="soar-v2-editor-lower">
       <div class="soar-v2-json-panel">
         <div class="soar-v2-panel-title">Definition JSON · advanced import/export</div>
-        <textarea v-model="definitionText" rows="12" spellcheck="false" aria-label="Definition JSON" />
+        <el-input type="textarea" v-model="definitionText" :rows="12" spellcheck="false" aria-label="Definition JSON"  />
         <el-button size="small" @click="applyDefinitionJson">Apply JSON</el-button>
       </div>
       <div class="soar-v2-json-panel">
         <div class="soar-v2-panel-title">Dry-run input</div>
-        <textarea v-model="dryRunText" rows="5" spellcheck="false" aria-label="Dry-run input" />
+        <el-input type="textarea" v-model="dryRunText" :rows="5" spellcheck="false" aria-label="Dry-run input"  />
         <pre v-if="dryRunResult" class="soar-v2-result">{{ JSON.stringify(dryRunResult, null, 2) }}</pre>
       </div>
       <div v-if="validation" class="soar-v2-validation-panel">

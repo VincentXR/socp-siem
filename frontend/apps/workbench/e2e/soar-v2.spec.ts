@@ -191,13 +191,15 @@ async function installSoarMocks(page: Page): Promise<MockState> {
   return state
 }
 
-test('SOAR V2 workbench covers draft lifecycle, run inspection and human controls', async ({ page }) => {
+test('SOAR V2 workbench covers draft lifecycle, run inspection and human controls', async ({ page }, testInfo) => {
   await page.addInitScript(() => localStorage.setItem('socp-locale', 'en-US'))
   const state = await installSoarMocks(page)
   await page.goto('/soar')
   await expect(page.locator('.soar-view')).toBeVisible()
 
   await page.getByRole('button', { name: /Create Playbook|新建剧本/ }).click()
+  await page.getByRole('dialog', { name: 'Choose template' }).getByRole('button', { name: 'Blank playbook', exact: true }).click()
+  await expect(page).toHaveURL(/\/soar\/playbooks\/new$/)
   await expect(page.locator('.soar-v2-editor')).toBeVisible()
   const createDialog = page.getByRole('dialog', { name: /Create blank playbook|创建空白剧本/ })
   await expect(createDialog).toBeVisible()
@@ -214,8 +216,10 @@ test('SOAR V2 workbench covers draft lifecycle, run inspection and human control
   await expect(page.locator('.soar-v2-editor-message')).toContainText('Definition is publishable')
   await page.locator('.soar-v2-editor').getByRole('button', { name: 'Publish', exact: true }).click()
   await expect(page.locator('.soar-v2-editor-message')).toContainText('Published v1')
+  await page.screenshot({ path: testInfo.outputPath('soar-editor.png'), fullPage: true })
 
-  await page.getByRole('tab', { name: 'Runs' }).click({ force: true })
+  await page.getByRole('button', { name: 'Back to list', exact: true }).click()
+  await page.getByRole('tab', { name: 'Runs' }).click()
   await expect(page.locator('.soar-v2-run-summary')).toContainText('run-1')
   await expect(page.locator('.soar-v2-run-summary')).toContainText('SUCCEEDED')
   await page.getByRole('button', { name: 'Queue run' }).click()
@@ -229,6 +233,7 @@ test('SOAR V2 workbench covers draft lifecycle, run inspection and human control
   await page.getByRole('button', { name: /Open in visual editor|在可视化编辑器中打开/ }).click()
   await expect(page.locator('.soar-v2-editor-message')).toContainText('Loaded run path v1')
 
+  await page.getByRole('button', { name: 'Back to list', exact: true }).click()
   await page.getByRole('tab', { name: /Approvals/ }).click()
   const approvalTable = page.locator('.soar-approval-table')
   await expect(approvalTable).toContainText('run-1')
@@ -240,8 +245,12 @@ test('SOAR V2 workbench covers draft lifecycle, run inspection and human control
 
   const taskRow = page.locator('.soar-v2-control-plane table tr').filter({ hasText: 'task-1' })
   await expect(taskRow).toBeVisible()
-  await taskRow.getByRole('textbox', { name: 'Manual task JSON input' }).fill('{"decision":"allow"}')
-  await taskRow.getByRole('button', { name: 'Complete' }).click()
+  await taskRow.getByRole('button', { name: 'Review task' }).click()
+  const taskDrawer = page.getByRole('dialog', { name: 'Review task' })
+  await taskDrawer.getByText('Advanced configuration', { exact: true }).click()
+  await taskDrawer.getByRole('textbox').fill('{"decision":"allow"}')
+  await page.screenshot({ path: testInfo.outputPath('manual-task.png'), fullPage: true })
+  await taskDrawer.getByRole('button', { name: 'Complete task' }).click()
   await expect(taskRow).toHaveCount(0)
 
   expect(state.unknown).toEqual([])

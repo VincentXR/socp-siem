@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useFormDialog } from '../composables/useFormDialog'
+import ActionFeedback from '../components/ActionFeedback.vue'
 import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/card/style/css.mjs'
 import 'element-plus/es/components/dialog/style/css.mjs'
@@ -18,26 +20,35 @@ import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import { computed, onMounted, ref } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
-import { attackCoverage, listRules, listTactics, listTechniques, type Alarm, type Tactic, type Technique, updateTechnique } from '../api'
+import { attackCoverage, listRules, listTactics, listTechniques, type Alarm, type Tactic, type Technique, getTechniqueNote, saveTechniqueNote } from '../api'
 import { useI18n } from '../composables/useI18n'
 
 const props = defineProps<{ alarms: Alarm[] }>()
 const { t } = useI18n()
 type AttackCov = Awaited<ReturnType<typeof attackCoverage>>
 
+const loadError = ref('')
+const noteLoaded = ref(false)
 const tactics = ref<Tactic[]>([])
 const techniques = ref<Technique[]>([])
 const attackTech = ref('')
 const attackCov = ref<AttackCov | null>(null)
 const attackLoading = ref(false)
 const techniqueDialogVisible = ref(false)
+const noteText = ref('')
+const noteLoading = ref(false)
+const noteError = ref('')
 const editingTechniqueId = ref('')
 const techniqueForm = ref({ name: '', tactic: '', url: '', description: '' })
 
 async function loadAttack() {
-  tactics.value = await listTactics()
-  techniques.value = await listTechniques(attackTech.value || undefined)
-  await computeAttackCov()
+  loadError.value = ''
+  try {
+    const [catalogTactics, catalogTechniques] = await Promise.all([listTactics(), listTechniques(attackTech.value || undefined)])
+    tactics.value = catalogTactics
+    techniques.value = catalogTechniques
+    await computeAttackCov()
+  } catch (failure) { loadError.value = String(failure) }
 }
 
 async function computeAttackCov() {
@@ -46,7 +57,7 @@ async function computeAttackCov() {
     const rules = await listRules()
     const techs = rules.map(rule => String(rule.mitre ?? '')).filter(Boolean)
     attackCov.value = await attackCoverage(techs)
-  } catch { attackCov.value = null }
+  } catch (failure) { attackCov.value = null; loadError.value = String(failure) }
   finally { attackLoading.value = false }
 }
 
@@ -60,7 +71,7 @@ const attackMatrix = computed(() => {
   const byTactic: Record<string, Array<Technique & { covered: boolean; count: number }>> = {}
   for (const technique of techniques.value) {
     const key = technique.tactic || ''
-    ;(byTactic[key] ||= []).push({ ...technique, covered: !uncoveredSet.value.has(technique.id), count: mitreCounts.value[technique.id] || 0 })
+    ;(byTactic[key] ||= []).push({ ...technique, covered: Boolean(attackCov.value) && !uncoveredSet.value.has(technique.id), count: mitreCounts.value[technique.id] || 0 })
   }
   return tactics.value.map(tactic => {
     const techs = byTactic[tactic.id] || byTactic[tactic.name] || []
@@ -76,35 +87,44 @@ function techStyle(technique: { covered: boolean; count: number }) {
 
 function openUrl(url: string) { if (url) window.open(url, '_blank') }
 
-function openTechniqueEdit(technique: Technique) {
+async function openTechniqueEdit(technique: Technique) {
   editingTechniqueId.value = technique.id
   techniqueForm.value = { name: technique.name, tactic: technique.tactic, url: technique.url, description: technique.description }
+  noteLoading.value = true
+  noteError.value = ''
+  noteText.value = ''
+  noteLoaded.value = false
   techniqueDialogVisible.value = true
+  try { noteText.value = (await getTechniqueNote(technique.id)).note; noteLoaded.value = true; noteGuard.markSaved() }
+  catch (failure) { noteError.value = String(failure) }
+  finally { noteLoading.value = false }
 }
 
 async function saveTechnique() {
+  if (noteLoading.value || !noteLoaded.value) return
   if (!techniqueForm.value.name.trim()) {
     ElMessage.warning(t('attack.enterName'))
     return
   }
+  noteLoading.value = true
   try {
-    await updateTechnique(editingTechniqueId.value, {
-      name: techniqueForm.value.name.trim(), tactic: techniqueForm.value.tactic,
-      url: techniqueForm.value.url.trim(), description: techniqueForm.value.description.trim(),
-    })
+    await saveTechniqueNote(editingTechniqueId.value, noteText.value)
     techniqueDialogVisible.value = false
     ElMessage.success(t('attack.updated'))
     await loadAttack()
   } catch (error) {
+    noteError.value = String(error)
     ElMessage.error(error instanceof Error ? error.message : t('attack.updateFailed'))
-  }
+  } finally { noteLoading.value = false }
 }
 
+const noteGuard = useFormDialog(techniqueDialogVisible, () => noteText.value, () => noteLoading.value)
 onMounted(loadAttack)
 </script>
 
 <template>
   <div class="page-pad view-enter">
+    <ActionFeedback :error="loadError" />
     <PageHeader :title="t('attack.title')" :description="t('attack.description')">
       <template #actions><el-button :loading="attackLoading" @click="computeAttackCov">{{ t('attack.refreshCoverage') }}</el-button></template>
     </PageHeader>
@@ -137,18 +157,19 @@ onMounted(loadAttack)
         <el-table-column prop="id" :label="t('attack.techniqueId')" width="110" />
         <el-table-column prop="name" :label="t('attack.name')" min-width="180" show-overflow-tooltip />
         <el-table-column prop="tactic" :label="t('attack.tactic')" width="130" show-overflow-tooltip />
-        <el-table-column :label="t('attack.operation')" width="125"><template #default="{ row }"><el-button link type="primary" size="small" @click="openUrl(row.url)">{{ t('attack.details') }}</el-button><el-button link type="primary" size="small" @click="openTechniqueEdit(row as Technique)">{{ t('attack.edit') }}</el-button></template></el-table-column>
+        <el-table-column :label="t('attack.operation')" width="125"><template #default="{ row }"><el-button link type="primary" size="small" @click="openUrl(row.url)">{{ t('attack.details') }}</el-button><el-button link type="primary" size="small" @click="openTechniqueEdit(row as Technique)">{{ t('forms.note') }}</el-button></template></el-table-column>
       </el-table>
     </el-card>
 
-    <el-dialog v-model="techniqueDialogVisible" :title="t('attack.editTitle', { id: editingTechniqueId })" width="620px">
-      <el-form label-width="80px">
-        <el-form-item :label="t('attack.name')" required><el-input v-model="techniqueForm.name" /></el-form-item>
-        <el-form-item :label="t('attack.tactic')"><el-select v-model="techniqueForm.tactic" style="width: 240px"><el-option v-for="tactic in tactics" :key="tactic.id" :label="tactic.name" :value="tactic.id" /></el-select></el-form-item>
-        <el-form-item :label="t('attack.detailUrl')"><el-input v-model="techniqueForm.url" /></el-form-item>
-        <el-form-item :label="t('common.description')"><el-input v-model="techniqueForm.description" type="textarea" :rows="4" /></el-form-item>
+    <el-dialog v-model="techniqueDialogVisible" :before-close="noteGuard.beforeClose" :title="t('attack.editTitle', { id: editingTechniqueId })" width="620px">
+      <p>{{ t('forms.standardReadOnly') }}</p><p v-if="noteError" role="alert">{{ noteError }}</p><el-form label-width="80px">
+        <el-form-item :label="t('attack.name')" required><el-input disabled v-model="techniqueForm.name" /></el-form-item>
+        <el-form-item :label="t('attack.tactic')"><el-select disabled v-model="techniqueForm.tactic" style="width: 240px"><el-option v-for="tactic in tactics" :key="tactic.id" :label="tactic.name" :value="tactic.id" /></el-select></el-form-item>
+        <el-form-item :label="t('attack.detailUrl')"><el-input disabled v-model="techniqueForm.url" /></el-form-item>
+        <el-form-item :label="t('common.description')"><el-input disabled v-model="techniqueForm.description" type="textarea" :rows="4" /></el-form-item>
+        <el-form-item :label="t('forms.note')"><el-input v-model="noteText" type="textarea" :rows="5" maxlength="4000" :disabled="noteLoading || Boolean(noteError)" /></el-form-item>
       </el-form>
-      <template #footer><el-button @click="techniqueDialogVisible = false">{{ t('common.cancel') }}</el-button><el-button type="primary" @click="saveTechnique">{{ t('common.save') }}</el-button></template>
+      <template #footer><el-button @click="noteGuard.cancel">{{ t('common.cancel') }}</el-button><el-button type="primary" :loading="noteLoading" :disabled="Boolean(noteError)" @click="saveTechnique">{{ t('common.save') }}</el-button></template>
     </el-dialog>
   </div>
 </template>

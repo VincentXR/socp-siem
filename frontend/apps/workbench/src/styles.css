@@ -1654,3 +1654,17 @@ body {
   .alarm-batchbar > span:not(.alarm-batch-error) { flex-basis: 100%; }
   .detect-list-controls { width: 100%; justify-content: space-between; }
 }
+
+/* Shared workspaces: lists stay compact, editors own their scroll area. */
+.editor-page { max-width:1440px; margin:0 auto; }
+.editor-section { padding:16px 0; border-top:1px solid var(--ns-border); }
+.editor-footer { position:sticky; bottom:0; z-index:5; display:flex; justify-content:flex-end; gap:8px; padding:16px 0; border-top:1px solid var(--ns-border); background:var(--ns-surface); }
+.section-toolbar { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:12px 0; }
+.action-feedback { margin-bottom:12px; }
+.source-field { display:flex; flex-direction:column; gap:6px; color:var(--ns-text-2); font-size:13px; }
+.template-choice { display:flex; justify-content:space-between; align-items:center; gap:16px; padding:16px 0; border-bottom:1px solid var(--ns-border); }
+.template-choice p { color:var(--ns-text-3); margin:6px 0; }
+.el-dialog { max-width:calc(100vw - 32px); }
+.el-dialog__body, .el-drawer__body { overflow-wrap:anywhere; }
+.el-dialog .el-select, .el-drawer .el-form .el-select { width:100%; }
+.el-dialog__footer, .el-drawer__footer { border-top:1px solid var(--ns-border); padding-top:16px; }

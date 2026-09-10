@@ -38,3 +38,10 @@ export const listRefSets = () => get<ReferenceSet[]>('/search-config/api/v1/refe
 export const createRefSet = (r: { name: string; description?: string; entries: string[] }) => post<ReferenceSet>('/search-config/api/v1/reference-sets', r)
 export const deleteRefSet = (id: string) => del(`/search-config/api/v1/reference-sets/${encodeURIComponent(id)}`)
 export const addRefEntry = (id: string, value: string) => post<{ ok: boolean; size: number }>(`/search-config/api/v1/reference-sets/${encodeURIComponent(id)}/entries`, { value })
+
+export const updateParseRule = (id: string, rule: Partial<ParseRule>) => put<ParseRule>(`/search-config/api/v1/parse-rules/${encodeURIComponent(id)}`, rule)
+export const previewParseDraft = (rule: Partial<ParseRule>, line: string) => post<{ matched: boolean; fields: Record<string, string>; error?: string }>('/search-config/api/v1/parse-rules/preview-draft', { rule, line })
+export const deleteRefEntry = (id: string, value: string) => del(withQuery(`/search-config/api/v1/reference-sets/${encodeURIComponent(id)}/entries`, { value }))
+export const updateDataSourceType = (id: string, body: Partial<DataSourceType>) => put<DataSourceType>(`/search-config/api/v1/meta/data-source-types/${encodeURIComponent(id)}`, body)
+export const updateCategory = (id: string, body: Partial<LogCategory>) => put<LogCategory>(`/search-config/api/v1/meta/categories/${encodeURIComponent(id)}`, body)
+export const updateField = (id: string, body: Partial<FieldDef>) => put<FieldDef>(`/search-config/api/v1/meta/fields/${encodeURIComponent(id)}`, body)

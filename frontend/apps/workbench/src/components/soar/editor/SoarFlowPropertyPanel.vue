@@ -81,7 +81,7 @@ async function loadActionCatalog(): Promise<void> {
     ])
     if (actionResult.status === 'fulfilled') actions.value = actionResult.value
     if (connectionResult.status === 'fulfilled') connections.value = connectionResult.value.items
-    actionCatalogState.value = 'loaded'
+    actionCatalogState.value = actionResult.status === 'rejected' || connectionResult.status === 'rejected' ? 'error' : 'loaded'
   } catch {
     actionCatalogState.value = 'error'
   }
@@ -122,7 +122,7 @@ async function loadSubPlaybookCatalog(): Promise<void> {
     subPlaybookVersions.value = results
       .filter((result): result is PromiseFulfilledResult<Array<{ id: string; playbookName: string; version: number; status: string }>> => result.status === 'fulfilled')
       .flatMap(result => result.value)
-    subPlaybookCatalogState.value = 'loaded'
+    subPlaybookCatalogState.value = results.some(result => result.status === 'rejected') ? 'error' : 'loaded'
   } catch {
     subPlaybookCatalogState.value = 'error'
   }
@@ -822,7 +822,7 @@ function subPlaybookVersionKnown(id: string): boolean {
             </el-select>
           </label>
           <label>Allowed groups
-            <el-select multiple filterable default-first-option :model-value="approvalListValue('allowedGroups')" placeholder="Select existing groups" @change="updateApprovalList('allowedGroups', asStringList($event))">
+            <el-select multiple filterable allow-create default-first-option :model-value="approvalListValue('allowedGroups')" placeholder="Select existing groups" @change="updateApprovalList('allowedGroups', asStringList($event))">
               <el-option v-for="group in approvalListValue('allowedGroups')" :key="group" :label="group" :value="group" />
             </el-select>
           </label>
@@ -832,11 +832,11 @@ function subPlaybookVersionKnown(id: string): boolean {
             </el-select>
           </label>
           <label>Approver groups
-            <el-select multiple filterable default-first-option :model-value="approvalListValue('approverGroups')" placeholder="Select existing groups" @change="updateApprovalList('approverGroups', asStringList($event))">
+            <el-select multiple filterable allow-create default-first-option :model-value="approvalListValue('approverGroups')" placeholder="Select existing groups" @change="updateApprovalList('approverGroups', asStringList($event))">
               <el-option v-for="group in approvalListValue('approverGroups')" :key="group" :label="group" :value="group" />
             </el-select>
           </label>
-          <small class="soar-flow-hint">Groups use the tenant directory when available; existing values remain selectable if the directory is temporarily unavailable.</small>
+          <small class="soar-flow-hint">{{ t('forms.groupFallback') }}</small>
         </div>
       </template>
 

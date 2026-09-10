@@ -48,6 +48,18 @@ class NotificationDispatcherTest {
     }
 
     @Test
+    void selectedChannelTestDoesNotCreateAlarmDeliveryReceiptsOrFanOut() {
+        TenantContext.set("tenant-a");
+        Channel selected = new Channel("CH-TEST", "Selected", "LOG", "local", false, "");
+        assertEquals("logged", dispatcher().test(selected).get("status"));
+        verify(channels, never()).enabled();
+        verify(deliveries, never()).save(any());
+        ArgumentCaptor<NotificationDispatchLogEntity> record = ArgumentCaptor.forClass(NotificationDispatchLogEntity.class);
+        verify(dispatchLogs).save(record.capture());
+        assertEquals("tenant-a", record.getValue().getTenantId());
+    }
+
+    @Test
     void successfulChannelIsPersistedAsAnIdempotencyReceipt() {
         TenantContext.set("tenant-a");
         Channel channel = new Channel("CH-1", "Ops", "WEBHOOK", "http://ops", true, "");

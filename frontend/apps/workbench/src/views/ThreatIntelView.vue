@@ -1,4 +1,9 @@
 <script setup lang="ts">
+import { useFormDialog } from '../composables/useFormDialog'
+import { useMutation } from '../composables/useMutation'
+import ActionFeedback from '../components/ActionFeedback.vue'
+const mutation = useMutation()
+const { busy: actionBusy, error: actionError } = mutation
 import 'element-plus/es/components/alert/style/css.mjs'
 import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/card/style/css.mjs'
@@ -35,6 +40,9 @@ const tiStat = ref<{ total?: number; byType?: Record<string, number> }>({})
 const loadError = ref('')
 const iocType = ref('')
 const showIocDialog = ref(false)
+const showImportPreview = ref(false)
+const importRows = ref<Parameters<typeof threatIntelApi.bulkImport>[0]>([])
+const importResult = ref('')
 const iocImportInput = ref<HTMLInputElement | null>(null)
 const newIoc = ref({ type: 'ip', value: '', severity: 'HIGH', source: 'manual', description: '', tags: '' })
 const tiMatchResult = ref<{ value: string; matched: boolean; ioc?: Ioc } | null>(null)
@@ -81,7 +89,8 @@ async function loadTi() {
 }
 
 async function addIoc() {
-  if (!newIoc.value.value.trim()) return
+  return mutation.run(async () => {
+  if (!newIoc.value.value.trim()) throw new Error(t('forms.required'))
   await threatIntelApi.create({
     type: newIoc.value.type,
     value: newIoc.value.value.trim(),
@@ -93,21 +102,27 @@ async function addIoc() {
   showIocDialog.value = false
   ElMessage.success(t('threat.added'))
   await loadTi()
+  })
 }
 
 async function removeIoc(id: string) {
+  if (!confirm(t('forms.confirmDelete'))) return
+  return mutation.run(async () => {
   await threatIntelApi.remove(id)
   ElMessage.success(t('threat.deleted'))
   await loadTi()
+  })
 }
 
 async function doTiMatch() {
+  return mutation.run(async () => {
   const val = iocKeyword.value.trim()
   if (!val) {
     tiMatchResult.value = null
     return
   }
   tiMatchResult.value = await threatIntelApi.match(val)
+  })
 }
 
 function selectIocImport() {
@@ -132,10 +147,9 @@ async function importIocFile(event: Event) {
         tags: rawTags ? rawTags.split(/[,，\s]+/).filter(Boolean) : undefined,
       }
     })
-    const result = await threatIntelApi.bulkImport(payload)
-    if (result.skipped) ElMessage.warning(t('threat.importSkipped', { imported: result.imported, skipped: result.skipped }))
-    else ElMessage.success(t('threat.importSuccess', { count: result.imported }))
-    await loadTi()
+    importRows.value = payload
+    importResult.value = ''
+    showImportPreview.value = true
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : (t('threat.importFailed')))
   } finally {
@@ -143,11 +157,23 @@ async function importIocFile(event: Event) {
   }
 }
 
+async function confirmImport() {
+  await mutation.run(async () => {
+    const result = await threatIntelApi.bulkImport(importRows.value)
+    importResult.value = t('threat.importSkipped', { imported: result.imported, skipped: result.skipped || 0 })
+    importRows.value = []
+    await loadTi()
+  })
+}
+
+const importGuard = useFormDialog(showImportPreview, () => importRows.value, () => actionBusy.value)
+const showIocDialogGuard = useFormDialog(showIocDialog, () => newIoc.value, () => actionBusy.value)
 onMounted(loadTi)
 </script>
 
 <template>
   <div class="page-pad view-enter">
+    <ActionFeedback :error="actionError" />
     <PageHeader :eyebrow="t('menuGroup.assetsAndIntel')" :title="t('threat.title')" :description="t('threat.description')">
       <template #actions><el-button size="small" :loading="loading" @click="loadTi">{{ t('common.refresh') }}</el-button></template>
     </PageHeader>
@@ -163,7 +189,7 @@ onMounted(loadTi)
     </div>
     <FilterToolbar class="ti-query-toolbar" :count="iocsFiltered.length">
       <el-input v-model="iocKeyword" :placeholder="t('threat.searchPlaceholder')" clearable @input="iocPage = 1" @keyup.enter="doTiMatch" />
-      <el-button type="primary" @click="doTiMatch">{{ t('threat.checkMatch') }}</el-button>
+      <el-button type="primary" :loading="actionBusy" @click="doTiMatch">{{ t('threat.checkMatch') }}</el-button>
       <el-select v-model="iocType" :placeholder="t('threat.allTypes')" clearable @change="loadTi">
         <el-option v-for="t in ['ip', 'domain', 'url', 'sha256', 'email']" :key="t" :label="t" :value="t" />
       </el-select>
@@ -175,15 +201,16 @@ onMounted(loadTi)
       <input ref="iocImportInput" type="file" accept=".csv,.json,application/json,text/csv" hidden @change="importIocFile" />
       <span class="hint">{{ t('threat.descriptionHint') }}</span>
     </div>
-    <el-dialog v-model="showIocDialog" :title="t('threat.addIoc')" width="560px">
-      <el-form label-width="90px">
+    <el-dialog v-model="showIocDialog" :before-close="showIocDialogGuard.beforeClose" :title="t('threat.addIoc')" width="560px"><ActionFeedback :error="actionError" />
+      <el-form :disabled="actionBusy" label-width="90px">
         <el-form-item :label="t('threat.iocValue')"><el-input v-model="newIoc.value" :placeholder="t('threat.valuePlaceholder')" /></el-form-item>
         <el-form-item :label="t('common.type')"><el-select v-model="newIoc.type" style="width:160px"><el-option v-for="t in ['ip', 'domain', 'url', 'sha256', 'email']" :key="t" :label="t" :value="t" /></el-select></el-form-item>
         <el-form-item :label="t('common.severity')"><el-select v-model="newIoc.severity" style="width:160px"><el-option v-for="s in SEVERITIES" :key="s" :label="t('severities.' + s) || s" :value="s" /></el-select></el-form-item>
         <el-form-item :label="t('common.description')"><el-input v-model="newIoc.description" :placeholder="t('common.description')" /></el-form-item>
       </el-form>
-      <template #footer><el-button @click="showIocDialog = false">{{ t('common.cancel') }}</el-button><el-button type="success" @click="addIoc">{{ t('common.submit') }}</el-button></template>
+      <template #footer><el-button @click="showIocDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button type="success" :loading="actionBusy" @click="addIoc">{{ t('common.submit') }}</el-button></template>
     </el-dialog>
+    <el-dialog v-model="showImportPreview" :before-close="importGuard.beforeClose" :title="t('threat.batchImport')" width="760px" :close-on-click-modal="false"><ActionFeedback :error="actionError" /><p v-if="importResult">{{ importResult }}</p><p>{{ t('forms.importPreview', { count: importRows.length, shown: Math.min(importRows.length, 100) }) }}</p><el-table :data="importRows.slice(0, 100)" max-height="360"><el-table-column prop="type" :label="t('common.type')" /><el-table-column prop="value" :label="t('threat.iocValue')" /><el-table-column prop="source" :label="t('common.source')" /></el-table><template #footer><el-button @click="importGuard.cancel">{{ t('common.close') }}</el-button><el-button type="primary" :loading="actionBusy" :disabled="!importRows.length" @click="confirmImport">{{ t('common.submit') }}</el-button></template></el-dialog>
     <DataTableCard v-model:current-page="iocPage" v-model:page-size="iocSize" :total="iocsFiltered.length" :loading="loading" :error="loadError" :retry="loadTi" :empty-title="t('threat.iocList')" :empty-description="t('threat.description')">
       <el-table :data="iocsPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @sort-change="iocList.onSortChange">
         <el-table-column prop="type" column-key="type" :label="t('common.type')" :width="columnWidth('type', 90)" sortable="custom" />

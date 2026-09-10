@@ -61,6 +61,16 @@ public class ReferenceSetController {
         return Map.of("removed", store.delete(id), "id", id);
     }
 
+    @RequireRole({"admin", "analyst"})
+    @DeleteMapping("/{id}/entries")
+    public Map<String, Object> removeEntry(@PathVariable String id,
+            @org.springframework.web.bind.annotation.RequestParam String value) {
+        ReferenceSet updated = store.removeEntry(id, value);
+        if (updated == null) throw new org.springframework.web.server.ResponseStatusException(
+                org.springframework.http.HttpStatus.NOT_FOUND, "Reference set not found");
+        return Map.of("ok", true, "size", updated.entries().size());
+    }
+
     @GetMapping("/{name}/contains")
     public Map<String, Object> contains(@PathVariable String name, @org.springframework.web.bind.annotation.RequestParam String value) {
         return Map.of("name", name, "value", value, "contains", store.contains(name, value));

@@ -7,6 +7,7 @@ import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElCol from 'element-plus/es/components/col/index.mjs'
 import ElRow from 'element-plus/es/components/row/index.mjs'
 import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs'
+import ActionFeedback from '../components/ActionFeedback.vue'
 import { onMounted, ref } from 'vue'
 import {
   appendWatchlist, deleteWatchlist, listWatchlists, putWatchlist,
@@ -23,6 +24,7 @@ const props = defineProps<{ theme: 'light' | 'dark' }>()
 const emit = defineEmits<{ 'go-alarms': [entity: string] }>()
 const { t } = useI18n()
 
+const loadError = ref('')
 const riskEntities = ref<RiskEntity[]>([])
 const riskSummary = ref<RiskSummary | null>(null)
 const riskLimit = ref(20)
@@ -35,20 +37,21 @@ const scoreResult = ref<ScoreBreakdown | null>(null)
 
 async function loadUeba() {
   const [entities, summary, lists] = await Promise.allSettled([uebaEntities(riskLimit.value), uebaSummary(), listWatchlists()])
-  riskEntities.value = entities.status === 'fulfilled' ? entities.value : []
-  riskSummary.value = summary.status === 'fulfilled' ? summary.value : null
-  watchlists.value = lists.status === 'fulfilled' ? lists.value : []
+  loadError.value = [entities, summary, lists].filter(item => item.status === 'rejected').map(item => String((item as PromiseRejectedResult).reason)).join(' · ')
+  if (entities.status === 'fulfilled') riskEntities.value = entities.value
+  if (summary.status === 'fulfilled') riskSummary.value = summary.value
+  if (lists.status === 'fulfilled') watchlists.value = lists.value
   if (!scoreResult.value) await calcScore()
 }
 
 async function openEntity(entity: RiskEntity) {
   entityDetail.value = entity
   entityDrawer.value = true
-  try { entityDetail.value = await uebaEntity(entity.entity) } catch { /* 列表快照继续可用 */ }
+  try { entityDetail.value = await uebaEntity(entity.entity) } catch (failure) { loadError.value = String(failure) }
 }
 
 async function calcScore() {
-  try { scoreResult.value = await uebaScore(scoreForm.value) } catch { scoreResult.value = null }
+  try { scoreResult.value = await uebaScore(scoreForm.value) } catch (failure) { loadError.value = String(failure) }
 }
 
 async function refreshWatchlists() { watchlists.value = await listWatchlists() }
@@ -56,8 +59,8 @@ async function createWatchlist(name: string, values: string[]) { await putWatchl
 async function appendToWatchlist(name: string, values: string[]) { await appendWatchlist(name, values); await refreshWatchlists() }
 async function removeWatchlist(name: string) {
   if (!confirm(t('ueba.deleteWatchlistConfirm', { name }))) return
-  await deleteWatchlist(name)
-  await refreshWatchlists()
+  try { await deleteWatchlist(name); await refreshWatchlists() }
+  catch (failure) { loadError.value = String(failure) }
 }
 
 function goToAlarms() {
@@ -72,9 +75,10 @@ onMounted(loadUeba)
 
 <template>
   <div class="page-pad view-enter">
+    <ActionFeedback :error="loadError" />
     <el-row :gutter="12" style="margin-bottom:14px">
-      <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num">{{ riskSummary?.entities ?? 0 }}</div><div class="label">{{ t('ueba.entityCount') }}</div></div></el-card></el-col>
-      <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-danger)">{{ riskSummary?.maxRisk ?? 0 }}</div><div class="label">{{ t('ueba.maxRisk') }}</div></div></el-card></el-col>
+      <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num">{{ riskSummary?.entities ?? '—' }}</div><div class="label">{{ t('ueba.entityCount') }}</div></div></el-card></el-col>
+      <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-danger)">{{ riskSummary?.maxRisk ?? '—' }}</div><div class="label">{{ t('ueba.maxRisk') }}</div></div></el-card></el-col>
       <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-warning)">{{ (riskSummary?.byLevel?.CRITICAL ?? 0) + (riskSummary?.byLevel?.HIGH ?? 0) }}</div><div class="label">{{ t('ueba.highRiskEntities') }}</div></div></el-card></el-col>
       <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num">{{ riskSummary?.halfLifeHours ?? 0 }}h</div><div class="label">{{ t('ueba.halfLife') }}</div></div></el-card></el-col>
       <el-col :span="4"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-accent-fg)">{{ watchlists.length }}</div><div class="label">{{ t('ueba.watchlists') }}</div></div></el-card></el-col>
@@ -95,8 +99,8 @@ onMounted(loadUeba)
       <el-tab-pane :label="t('ueba.watchlists')" name="watchlists">
         <UebaWatchlistsPanel
           :watchlists="watchlists"
-          @create="createWatchlist"
-          @append="appendToWatchlist"
+          :create="createWatchlist"
+          :append="appendToWatchlist"
           @remove="removeWatchlist"
         />
       </el-tab-pane>

@@ -58,6 +58,13 @@ public class ReferenceSetStore {
         return catalog.get(id);
     }
 
+    public synchronized ReferenceSet removeEntry(String id, String value) {
+        ReferenceSet existing = get(id);
+        if (existing == null) return null;
+        return add(new ReferenceSet(existing.id(), existing.name(), existing.description(),
+                existing.entries().stream().filter(entry -> !entry.equals(value)).toList()));
+    }
+
     public boolean delete(String id) {
         return catalog.delete(id);
     }

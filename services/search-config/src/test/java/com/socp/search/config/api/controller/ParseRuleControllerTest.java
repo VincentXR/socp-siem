@@ -52,4 +52,23 @@ class ParseRuleControllerTest {
 
         assertThat(controller.list()).isEmpty();
     }
+    @Test
+    void updatingPreservesIdentityAndPreviewDoesNotPersist() {
+        ParseRuleStore store = mock(ParseRuleStore.class);
+        ParseRule original = ParseRule.create("original", null, "JSON", null, List.of(), List.of(), false, 1);
+        when(store.get(original.id())).thenReturn(original);
+        when(store.save(any(ParseRule.class))).thenAnswer(call -> call.getArgument(0));
+        ParseRuleController controller = new ParseRuleController(store, mock(ParsePreviewService.class), new ParseRuleExecutor(new ParserRegistry()));
+        ParseRuleRequest request = new ParseRuleRequest("edited", null, "JSON", null, List.of(), List.of(), false, 2);
+        ParseRule updated = controller.update(original.id(), request);
+        assertThat(updated.id()).isEqualTo(original.id());
+        assertThat(updated.createdAt()).isEqualTo(original.createdAt());
+        assertThat(updated.name()).isEqualTo("edited");
+        org.mockito.Mockito.clearInvocations(store);
+        var preview = controller.previewDraft(new ParseRuleController.DraftPreview(request, "{\"user\":\"alice\"}"));
+        assertThat(preview.get("matched")).isEqualTo(true);
+        org.mockito.Mockito.verifyNoInteractions(store);
+        assertThatThrownBy(() -> controller.update("missing", request)).isInstanceOf(ResponseStatusException.class);
+    }
+
 }

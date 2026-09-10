@@ -40,6 +40,12 @@ export const router = createRouter({
   routes: [
     { path: '/', redirect: MENU_PATHS.overview },
     ...menuRoutes,
+    { path: '/detect/rules/new', name: 'rule-new', component: pageComponents.detect, meta: { menu: 'detect', editor: true } },
+    { path: '/detect/rules/:ruleId/edit', name: 'rule-edit', component: pageComponents.detect, meta: { menu: 'detect', editor: true } },
+    { path: '/soar/playbooks/new', name: 'playbook-new', component: pageComponents.soar, meta: { menu: 'soar', editor: true } },
+    { path: '/soar/playbooks/:playbookId/edit', name: 'playbook-edit', component: pageComponents.soar, meta: { menu: 'soar', editor: true } },
+    { path: '/ingest/parsers/new', name: 'parser-new', component: () => import('../views/ParseRuleEditorView.vue'), meta: { menu: 'ingest' } },
+    { path: '/ingest/parsers/:parserId/edit', name: 'parser-edit', component: () => import('../views/ParseRuleEditorView.vue'), meta: { menu: 'ingest' } },
     { path: '/:pathMatch(.*)*', redirect: MENU_PATHS.overview },
   ],
 })

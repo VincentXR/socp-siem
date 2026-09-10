@@ -1,100 +1,102 @@
 <script setup lang="ts">
-import 'element-plus/es/components/button/style/css.mjs'
-import 'element-plus/es/components/card/style/css.mjs'
-import 'element-plus/es/components/col/style/css.mjs'
-import 'element-plus/es/components/dialog/style/css.mjs'
-import 'element-plus/es/components/form/style/css.mjs'
-import 'element-plus/es/components/input/style/css.mjs'
-import 'element-plus/es/components/row/style/css.mjs'
-import 'element-plus/es/components/tag/style/css.mjs'
+import { computed, ref } from 'vue'
 import ElButton from 'element-plus/es/components/button/index.mjs'
-import ElCard from 'element-plus/es/components/card/index.mjs'
-import ElCol from 'element-plus/es/components/col/index.mjs'
 import ElDialog from 'element-plus/es/components/dialog/index.mjs'
+import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
 import { ElForm, ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
-import ElRow from 'element-plus/es/components/row/index.mjs'
-import ElTag from 'element-plus/es/components/tag/index.mjs'
-import { ref } from 'vue'
-import type { Watchlist } from '../../api'
+import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
+import 'element-plus/es/components/button/style/css.mjs'
+import 'element-plus/es/components/dialog/style/css.mjs'
+import 'element-plus/es/components/drawer/style/css.mjs'
+import 'element-plus/es/components/form/style/css.mjs'
+import 'element-plus/es/components/input/style/css.mjs'
+import 'element-plus/es/components/table/style/css.mjs'
+import { useMutation } from '../../composables/useMutation'
+import { useFormDialog } from '../../composables/useFormDialog'
 import { useI18n } from '../../composables/useI18n'
+import ActionFeedback from '../ActionFeedback.vue'
+import DataTableCard from '../DataTableCard.vue'
+import type { Watchlist } from '../../api'
 
-defineProps<{ watchlists: Watchlist[] }>()
-const emit = defineEmits<{
-  create: [name: string, values: string[]]
-  append: [name: string, values: string[]]
-  remove: [name: string]
+const props = defineProps<{
+  watchlists: Watchlist[]
+  create: (name: string, values: string[]) => Promise<void>
+  append: (name: string, values: string[]) => Promise<void>
 }>()
-
-const appendValues = ref<Record<string, string>>({})
+const emit = defineEmits<{ remove: [name: string] }>()
+const mutation = useMutation()
+const { busy, error } = mutation
+const { t } = useI18n()
 const newWatchlist = ref({ name: '', values: '' })
 const dialogVisible = ref(false)
-const { t } = useI18n()
-
-function splitValues(value: string) {
-  return value.split(/[\n,\s，]+/).map(item => item.trim()).filter(Boolean)
+const drawerVisible = ref(false)
+const keyword = ref('')
+const selectedName = ref('')
+const appendText = ref('')
+const entrySearch = ref('')
+const page = ref(1)
+const size = ref(20)
+const filtered = computed(() => props.watchlists.filter(item => item.name.toLowerCase().includes(keyword.value.toLowerCase())))
+const selected = computed(() => props.watchlists.find(item => item.name === selectedName.value))
+const entries = computed(() => (selected.value?.values || []).filter(value => value.toLowerCase().includes(entrySearch.value.toLowerCase())))
+const dialogGuard = useFormDialog(dialogVisible, () => newWatchlist.value, () => busy.value)
+const drawerGuard = useFormDialog(drawerVisible, () => appendText.value, () => busy.value)
+function splitValues(value: string) { return value.split(/[\n,\s，]+/).map(item => item.trim()).filter(Boolean) }
+function openList(name: string) {
+  selectedName.value = name; entrySearch.value = ''; appendText.value = ''; page.value = 1; error.value = ''; drawerVisible.value = true
 }
-
-function openDialog() {
-  newWatchlist.value = { name: '', values: '' }
-  dialogVisible.value = true
-}
-
-function submitCreate() {
+function openDialog() { newWatchlist.value = { name: '', values: '' }; error.value = ''; dialogVisible.value = true }
+async function submitCreate() {
   const name = newWatchlist.value.name.trim()
-  if (!name) return
-  emit('create', name, splitValues(newWatchlist.value.values))
-  newWatchlist.value = { name: '', values: '' }
+  if (!name) { error.value = t('forms.required'); return }
+  if (props.watchlists.some(item => item.name.toLowerCase() === name.toLowerCase())) { error.value = t('forms.duplicateName'); return }
+  if (!await mutation.run(() => props.create(name, splitValues(newWatchlist.value.values)))) return
   dialogVisible.value = false
+  openList(name)
 }
-
-function submitAppend(name: string) {
-  const value = appendValues.value[name] || ''
-  const values = splitValues(value)
+async function submitAppend(name: string) {
+  const values = splitValues(appendText.value)
   if (!values.length) return
-  emit('append', name, values)
-  appendValues.value[name] = ''
+  if (!await mutation.run(() => props.append(name, values))) return
+  appendText.value = ''
+  drawerGuard.markSaved()
 }
 </script>
 
 <template>
   <div>
-    <div class="add-bar">
-      <el-button type="primary" @click="openDialog">+ {{ t('ueba.watchlistCreate') }}</el-button>
-      <span class="hint">{{ t('ueba.watchlistHint') }} <code class="mono">op=inlist / notinlist</code></span>
-    </div>
-    <el-dialog v-model="dialogVisible" :title="t('ueba.watchlistCreate')" width="560px">
-      <el-form label-width="92px">
-        <el-form-item :label="t('ueba.watchlistName')"><el-input v-model="newWatchlist.name" :placeholder="t('ueba.watchlistNamePlaceholder')" /></el-form-item>
-        <el-form-item :label="t('ueba.watchlistValues')">
-          <el-input v-model="newWatchlist.values" type="textarea" :rows="4" :placeholder="t('ueba.watchlistValuesPlaceholder')" />
-        </el-form-item>
+    <ActionFeedback :error="error" />
+    <div class="add-bar"><el-button type="primary" @click="openDialog">{{ t('ueba.watchlistCreate') }}</el-button></div>
+    <el-input v-model="keyword" :placeholder="t('forms.search')" clearable />
+    <el-table :data="filtered" style="margin-top:16px">
+      <el-table-column prop="name" :label="t('ueba.watchlistName')" min-width="200" />
+      <el-table-column prop="size" :label="t('forms.entries')" width="120" />
+      <el-table-column :label="t('common.actions')" width="200"><template #default="{ row }">
+        <el-button link @click="openList(row.name)">{{ t('forms.entries') }}</el-button>
+        <el-button link type="danger" :disabled="busy" @click="emit('remove', row.name)">{{ t('common.delete') }}</el-button>
+      </template></el-table-column>
+    </el-table>
+    <el-dialog v-model="dialogVisible" :before-close="dialogGuard.beforeClose" :title="t('ueba.watchlistCreate')" width="560px">
+      <ActionFeedback :error="error" />
+      <el-form label-width="92px" :disabled="busy">
+        <el-form-item :label="t('ueba.watchlistName')" required><el-input v-model="newWatchlist.name" :placeholder="t('ueba.watchlistNamePlaceholder')" /></el-form-item>
+        <el-form-item :label="t('ueba.watchlistValues')"><el-input v-model="newWatchlist.values" type="textarea" :rows="4" :placeholder="t('ueba.watchlistValuesPlaceholder')" /></el-form-item>
       </el-form>
-      <template #footer>
-        <el-button @click="dialogVisible = false">{{ t('common.cancel') }}</el-button>
-        <el-button type="primary" @click="submitCreate">{{ t('ueba.overwrite') }}</el-button>
-      </template>
+      <template #footer><el-button @click="dialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button type="primary" :loading="busy" @click="submitCreate">{{ t('common.create') }}</el-button></template>
     </el-dialog>
-    <el-row :gutter="12">
-      <el-col v-for="watchlist in watchlists" :key="watchlist.name" :span="8" style="margin-bottom:12px">
-        <el-card shadow="never" class="wl-card">
-          <template #header>
-            <div style="display:flex;align-items:center;gap:8px">
-              <span class="mono" style="font-weight:600">{{ watchlist.name }}</span>
-              <el-tag size="small" type="info">{{ t('ueba.itemCount', { count: watchlist.size }) }}</el-tag>
-              <el-button link type="danger" size="small" style="margin-left:auto" @click="emit('remove', watchlist.name)">{{ t('common.delete') }}</el-button>
-            </div>
-          </template>
-          <div class="wl-values">
-            <el-tag v-for="value in watchlist.values" :key="value" size="small" style="margin:2px" class="mono">{{ value }}</el-tag>
-            <span v-if="!watchlist.values.length" style="color:var(--ns-text-3);font-size:12px">{{ t('ueba.emptyWatchlist') }}</span>
-          </div>
-          <div style="display:flex;gap:6px;margin-top:10px">
-            <el-input v-model="appendValues[watchlist.name]" size="small" :placeholder="t('ueba.appendValue')" @keyup.enter="submitAppend(watchlist.name)" />
-            <el-button size="small" @click="submitAppend(watchlist.name)">{{ t('ueba.append') }}</el-button>
-          </div>
-        </el-card>
-      </el-col>
-    </el-row>
+    <el-drawer v-model="drawerVisible" :before-close="drawerGuard.beforeClose" :title="selectedName" size="min(720px, 96vw)">
+      <template v-if="selected">
+        <ActionFeedback :error="error" />
+        <el-input v-model="entrySearch" :placeholder="t('forms.search')" clearable @input="page = 1" />
+        <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="entries.length" :empty-title="t('ueba.emptyWatchlist')">
+          <el-table :data="entries.slice((page - 1) * size, page * size).map(value => ({ value }))"><el-table-column prop="value" :label="t('ueba.watchlistValues')" /></el-table>
+        </DataTableCard>
+        <el-form label-position="top" :disabled="busy" style="margin-top:20px">
+          <el-form-item :label="t('ueba.append')"><el-input v-model="appendText" type="textarea" :rows="4" :placeholder="t('ueba.appendValue')" /></el-form-item>
+          <el-button type="primary" :loading="busy" @click="submitAppend(selected.name)">{{ t('ueba.append') }}</el-button>
+        </el-form>
+      </template>
+    </el-drawer>
   </div>
 </template>

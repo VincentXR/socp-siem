@@ -15,8 +15,8 @@ import ElInput from 'element-plus/es/components/input/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
-import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { watch, computed, onMounted, ref } from 'vue'
+import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
 import SoarV2ControlPlane from '../components/soar/SoarV2ControlPlane.vue'
 import SoarV2Editor from '../components/soar/SoarV2Editor.vue'
@@ -39,6 +39,8 @@ import { useI18n } from '../composables/useI18n'
 
 const { t } = useI18n()
 const route = useRoute()
+const router = useRouter()
+const chooseTemplate = ref(false)
 
 type SoarTab = 'playbooks' | 'rules' | 'runs' | 'approvals' | 'connections'
 const activeTab = ref<SoarTab>('playbooks')
@@ -47,9 +49,9 @@ const playbooks = ref<SoarV2Playbook[]>([])
 const v2Runs = ref<SoarV2Run[]>([])
 const approvals = ref<SoarV2Approval[]>([])
 const templates = ref<SoarV2Template[]>([])
-const showEditor = ref(false)
-const selectedPlaybookId = ref('')
-const createRequestToken = ref(0)
+const showEditor = ref(Boolean(route.meta.editor))
+const selectedPlaybookId = ref(String(route.params.playbookId || ''))
+const createRequestToken = ref(route.name === 'playbook-new' ? 1 : 0)
 const loadError = ref('')
 const editorRef = ref<{
   hasUnsavedChanges: boolean
@@ -101,7 +103,7 @@ async function submitApprovalDecision() {
     }
     approvalModal.value.visible = false
     await loadPlaybooks()
-  } finally {
+  } catch (failure) { loadError.value = String(failure) } finally {
     approvalModal.value.loading = false
   }
 }
@@ -118,9 +120,9 @@ async function loadPlaybooks() {
       listV2Templates(),
     ])
     if (playbookResult.status === 'fulfilled') playbooks.value = playbookResult.value.items
-    v2Runs.value = runResult.status === 'fulfilled' ? runResult.value.items : []
-    approvals.value = approvalResult.status === 'fulfilled' ? approvalResult.value : []
-    templates.value = templateResult.status === 'fulfilled' ? templateResult.value : []
+    if (runResult.status === 'fulfilled') v2Runs.value = runResult.value.items
+    if (approvalResult.status === 'fulfilled') approvals.value = approvalResult.value
+    if (templateResult.status === 'fulfilled') templates.value = templateResult.value
     const firstFailure = [playbookResult, runResult, approvalResult, templateResult].find(result => result.status === 'rejected')
     if (firstFailure?.status === 'rejected') loadError.value = firstFailure.reason instanceof Error ? firstFailure.reason.message : 'Unable to load SOAR data'
   } finally {
@@ -159,6 +161,7 @@ function handleOpenRunInEditor(request: RunOpenRequest): void {
   activeTab.value = 'playbooks'
   selectedPlaybookId.value = request.playbookId
   openRunRequest.value = { ...request }
+  void router.push({ name: 'playbook-edit', params: { playbookId: request.playbookId } })
 }
 
 function openEditorForCreate(): void {
@@ -166,7 +169,8 @@ function openEditorForCreate(): void {
   activeTab.value = 'playbooks'
   selectedPlaybookId.value = ''
   showEditor.value = true
-  createRequestToken.value += 1
+  chooseTemplate.value = false
+  void router.push({ name: 'playbook-new' })
 }
 
 function openEditorForPlaybook(id: string): void {
@@ -174,6 +178,8 @@ function openEditorForPlaybook(id: string): void {
   activeTab.value = 'playbooks'
   selectedPlaybookId.value = id
   showEditor.value = true
+  chooseTemplate.value = false
+  void router.push({ name: 'playbook-edit', params: { playbookId: id } })
 }
 
 function playbookName(id: string): string {
@@ -200,6 +206,14 @@ const v2StatusSummary = computed(() => {
   return summary
 })
 
+watch(() => route.fullPath, () => {
+  showEditor.value = Boolean(route.meta.editor)
+  selectedPlaybookId.value = String(route.params.playbookId || '')
+  if (route.name === 'playbook-new') createRequestToken.value += 1
+})
+const canLeaveEditor = () => !editorRef.value?.hasUnsavedChanges || confirm(t('soarV2.discardChanges'))
+onBeforeRouteLeave(canLeaveEditor)
+onBeforeRouteUpdate((to, from) => to.path === from.path || canLeaveEditor())
 onMounted(loadPlaybooks)
 </script>
 
@@ -208,7 +222,7 @@ onMounted(loadPlaybooks)
     <PageHeader :eyebrow="t('menuGroup.detectAndResponse')" :title="t('soar.title')" :description="t('soar.description')">
       <template #actions>
         <el-button size="small" :loading="loading" @click="loadPlaybooks">{{ t('common.refresh') }}</el-button>
-        <el-button type="primary" size="small" @click="openEditorForCreate">{{ t('soar.createPlaybook') }}</el-button>
+        <el-button v-if="!showEditor" type="primary" size="small" @click="chooseTemplate = true">{{ t('soar.createPlaybook') }}</el-button>
       </template>
     </PageHeader>
     <div v-if="contextAlarmId" class="soar-context-banner">
@@ -216,52 +230,16 @@ onMounted(loadPlaybooks)
       <small>{{ t('soar.contextFromAlarmHint') }}</small>
     </div>
 
-    <el-tabs v-model="activeTab" class="soar-tabs">
+    <el-button v-if="showEditor" @click="router.push({ name: 'soar' })">{{ t('forms.back') }}</el-button>
+    <SoarV2Editor v-if="showEditor" ref="editorRef" :initial-playbook-id="selectedPlaybookId" :open-run="openRunRequest" :create-request="createRequestToken" :context-alarm-id="contextAlarmId" @created="id => router.replace({ name: 'playbook-edit', params: { playbookId: id } })" />
+    <el-dialog v-model="chooseTemplate" :title="t('forms.selectTemplate')" width="640px">
+      <el-button type="primary" @click="openEditorForCreate">{{ t('forms.blank') }}</el-button>
+      <div v-for="template in templates" :key="template.id" class="template-choice"><div><b>{{ template.name }}</b><p>{{ template.description }}</p></div><el-button @click="installTemplate(String(template.id))">{{ t('soar.installDraft') }}</el-button></div>
+    </el-dialog>
+    <el-tabs v-if="!showEditor" v-model="activeTab" class="soar-tabs">
       <!-- 14.1 剧本 (Playbooks) -->
       <el-tab-pane :label="t('soar.tabPlaybooks')" name="playbooks">
         <div class="soar-tab-content">
-          <!-- Action bar for editor / new playbook -->
-          <div class="soar-editor-toggle-bar">
-            <el-button :type="showEditor ? 'primary' : 'default'" size="small" @click="toggleEditor">
-              {{ showEditor ? t('soarV2.editorHide') : t('soarV2.editorShow') }}
-            </el-button>
-          </div>
-
-          <!-- Visual Playbook Editor (Collapsible) -->
-          <div v-if="showEditor" class="soar-editor-container">
-            <SoarV2Editor
-              ref="editorRef"
-              :initial-playbook-id="selectedPlaybookId"
-              :open-run="openRunRequest"
-              :create-request="createRequestToken"
-              :context-alarm-id="contextAlarmId"
-            />
-          </div>
-
-          <!-- Golden Templates -->
-          <el-card shadow="never" class="soar-card">
-            <template #header>
-              <div class="soar-card-header">
-                <strong>{{ t('soar.templates') }} · {{ t('soar.installDraft') }}</strong>
-                <small class="soar-header-hint">{{ t('soarV2.templateHint') }}</small>
-              </div>
-            </template>
-            <el-table :data="templates" size="small" border>
-              <el-table-column prop="name" :label="t('common.name')" min-width="190" show-overflow-tooltip />
-              <el-table-column prop="description" :label="t('common.description')" min-width="300" show-overflow-tooltip />
-              <el-table-column prop="risk" label="Risk" width="90">
-                <template #default="{ row }">
-                  <el-tag size="small" :type="row.risk === 'CRITICAL' ? 'danger' : row.risk === 'HIGH' ? 'warning' : 'info'">{{ row.risk }}</el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column :label="t('common.actions')" width="130">
-                <template #default="{ row }">
-                  <el-button link type="primary" size="small" @click="installTemplate(String(row.id))">{{ t('soar.installDraft') }}</el-button>
-                </template>
-              </el-table-column>
-            </el-table>
-          </el-card>
-
           <!-- Playbook List -->
           <el-card shadow="never" class="soar-card">
             <template #header>
@@ -319,33 +297,6 @@ onMounted(loadPlaybooks)
       <!-- 14.3 运行 (Runs) -->
       <el-tab-pane :label="t('soar.tabRuns')" name="runs">
         <div class="soar-tab-content">
-          <!-- Status summary -->
-          <el-card shadow="never" class="soar-card">
-            <template #header>
-              <div class="soar-card-header">
-                <strong>{{ t('soarV2.runSummary') }}</strong>
-              </div>
-            </template>
-            <div class="soar-v2-summary">
-              <el-tag v-for="(count, status) in v2StatusSummary" :key="status" size="small" :type="status === 'FAILED' ? 'danger' : status === 'SUCCEEDED' ? 'success' : 'info'">{{ status }}: {{ count }}</el-tag>
-              <el-tag type="warning" size="small">{{ t('soar.pendingApprovals') }}: {{ approvals.filter(item => item.status === 'PENDING').length }}</el-tag>
-            </div>
-            <el-table :data="v2Runs" size="small">
-              <el-table-column prop="runId" label="Run ID" min-width="180" show-overflow-tooltip />
-              <el-table-column :label="t('soar.playbook')" min-width="160" show-overflow-tooltip>
-                <template #default="{ row }">{{ playbookName(row.playbookId) }}</template>
-              </el-table-column>
-              <el-table-column prop="status" label="Status" width="150">
-                <template #default="{ row }">
-                  <el-tag size="small" :type="runTag(row.status)">{{ row.status }}</el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column prop="triggerType" :label="t('soarV2.triggerType')" width="140" show-overflow-tooltip />
-              <el-table-column prop="playbookVersion" label="Version" width="90" />
-              <el-table-column prop="createdAt" label="Created" width="210" />
-            </el-table>
-          </el-card>
-
           <!-- Interactive Inspector -->
           <SoarV2RunInspector @open-in-editor="handleOpenRunInEditor" />
         </div>

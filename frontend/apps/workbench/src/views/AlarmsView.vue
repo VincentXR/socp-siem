@@ -56,7 +56,9 @@ const pageNum = defineModel<number>('pageNum', { default: 1 })
 const drawerVisible = ref(false)
 const currentAlarm = ref<Alarm | null>(null)
 const selectedAlarms = ref<Alarm[]>([])
-const batchStatus = ref('INVESTIGATING')
+const batchStatus = ref('')
+const batchOperation = ref<'assign' | 'status'>('assign')
+const pageSize = defineModel<number>('pageSize', { default: 20 })
 const batchAssignee = ref('')
 const batchBusy = ref(false)
 const batchError = ref('')
@@ -89,12 +91,15 @@ function handleSelectionChange(rows: Alarm[]): void {
 
 async function handleBatchUpdate(): Promise<void> {
   if (!props.canWrite || batchBusy.value || !selectedAlarms.value.length) return
+  if (batchOperation.value === 'assign' ? !batchAssignee.value.trim() : !batchStatus.value) return
   batchBusy.value = true
   batchError.value = ''
   try {
     await batchUpdateAlarmDisposition(
       selectedAlarms.value.map(alarm => alarm.id),
-      { status: batchStatus.value, assignee: batchAssignee.value.trim() || undefined },
+      batchOperation.value === 'assign'
+        ? { assignee: batchAssignee.value.trim() }
+        : { status: batchStatus.value },
     )
     ElMessage.success(t('common.success'))
     selectedAlarms.value = []
@@ -165,10 +170,11 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
     <div v-if="props.canWrite && selectedAlarms.length" class="alarm-batchbar">
       <strong>{{ selectedAlarms.length }} {{ t('alarms.selected') }}</strong>
       <span>{{ t('alarms.batchHint') }}</span>
-      <el-select v-model="batchStatus" size="small" style="width:150px">
+      <el-select v-model="batchOperation" size="small" style="width:150px"><el-option :label="t('forms.assign')" value="assign" /><el-option :label="t('forms.changeStatus')" value="status" /></el-select>
+      <el-select v-if="batchOperation === 'status'" v-model="batchStatus" size="small" style="width:150px">
         <el-option v-for="item in DISP_STATUSES" :key="item" :label="t('statuses.' + item) || item" :value="item" />
       </el-select>
-      <el-select v-model="batchAssignee" filterable default-first-option clearable size="small" :placeholder="t('drawer.assigneePlaceholder')" style="width:180px">
+      <el-select v-else v-model="batchAssignee" filterable default-first-option clearable size="small" :placeholder="t('drawer.assigneePlaceholder')" style="width:180px">
         <el-option v-for="assignee in props.assigneeOptions ?? []" :key="assignee" :label="assignee" :value="assignee" />
       </el-select>
       <el-button size="small" type="primary" :loading="batchBusy" @click="handleBatchUpdate">{{ t('common.update') }}</el-button>
@@ -201,7 +207,7 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
     </el-card>
 
     <div class="alarm-pagination">
-      <el-pagination v-model:current-page="pageNum" :page-size="props.alarmPageSize" :total="props.alarmPageData.total" :page-sizes="[10, 20, 50, 100]" layout="total, sizes, prev, pager, next" @current-change="props.loadPage" @size-change="() => { pageNum = 1; props.loadPage() }" />
+      <el-pagination v-model:current-page="pageNum" v-model:page-size="pageSize" :total="props.alarmPageData.total" :page-sizes="[10, 20, 50, 100]" layout="total, sizes, prev, pager, next" @current-change="props.loadPage" @size-change="() => { pageNum = 1; props.loadPage() }" />
     </div>
 
     <AlarmDispositionDrawer v-model="drawerVisible" :alarm="currentAlarm" :go-case="props.goCase" :go-search="props.goSearch" :go-ai="props.goAi" :go-soar="props.goSoar" :assignee-options="props.assigneeOptions" :can-write="props.canWrite" @updated="props.loadPage" />

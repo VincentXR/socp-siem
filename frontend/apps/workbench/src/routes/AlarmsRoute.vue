@@ -56,6 +56,7 @@ function exportWithCurrentFilters(format: 'csv' | 'json') {
     :filtered-alarms="filteredAlarms"
     :alarm-page-data="alarmPageData"
     :alarm-page-size="alarmPageSize"
+    v-model:page-size="alarmPageSize"
     :loading="alarmLoading"
     :error="alarmError"
     :on-search="query.onAlarmSearch"

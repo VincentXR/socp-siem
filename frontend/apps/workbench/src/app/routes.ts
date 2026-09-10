@@ -36,7 +36,7 @@ export function pathForMenu(menu: MenuKey): string {
 
 export function menuForPath(pathname: string): MenuKey {
   const normalized = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname
-  return PATH_MENUS.get(normalized) ?? 'overview'
+  return PATH_MENUS.get(normalized) ?? [...PATH_MENUS.entries()].find(([path]) => normalized.startsWith(path + '/'))?.[1] ?? 'overview'
 }
 
 export function accessibleMenu(menu: MenuKey, visibleMenus: ReadonlySet<string>): MenuKey {

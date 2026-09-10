@@ -1,4 +1,13 @@
 <script setup lang="ts">
+import { useFormDialog } from '../composables/useFormDialog'
+import { inject } from 'vue'
+import { WORKBENCH_STATE } from '../app/workbenchState'
+const workbench = inject(WORKBENCH_STATE)
+
+import { useMutation } from '../composables/useMutation'
+import ActionFeedback from '../components/ActionFeedback.vue'
+const mutation = useMutation()
+const { busy: actionBusy, error: actionError } = mutation
 import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/dialog/style/css.mjs'
 import 'element-plus/es/components/form/style/css.mjs'
@@ -96,16 +105,20 @@ function openEditAsset(asset: Asset) {
 }
 
 async function removeAsset(id: string) {
+  if (!confirm(t('forms.confirmDelete'))) return
+  return mutation.run(async () => {
   try {
     await assetApi.remove(id)
     ElMessage.success(t('assets.deleted'))
     await loadAssets()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : (t('assets.deleteFailed')))
+    throw error
   }
+  })
 }
 
 async function saveAsset() {
+  return mutation.run(async () => {
   const payload = {
     name: assetForm.value.name.trim(),
     type: assetForm.value.type,
@@ -121,8 +134,9 @@ async function saveAsset() {
     ElMessage.success(editingAssetId.value ? (t('assets.updated')) : (t('assets.created')))
     await loadAssets()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : (t('assets.saveFailed')))
+    throw error
   }
+  })
 }
 
 function selectAssetImport() {
@@ -156,11 +170,13 @@ async function importAssetFile(event: Event) {
   }
 }
 
+const showAssetDialogGuard = useFormDialog(showAssetDialog, () => assetForm.value, () => actionBusy.value)
 onMounted(loadAssets)
 </script>
 
 <template>
   <div class="page-pad view-enter">
+    <ActionFeedback :error="actionError" />
     <PageHeader :eyebrow="t('menuGroup.assetsAndIntel')" :title="t('assets.title')" :description="t('assets.description')">
       <template #actions>
         <el-button type="primary" size="small" @click="openCreateAsset">{{ t('assets.createAsset') }}</el-button>
@@ -203,18 +219,18 @@ onMounted(loadAssets)
       </el-table>
     </DataTableCard>
 
-    <el-dialog v-model="showAssetDialog" :title="editingAssetId ? (t('assets.edit')) : t('assets.createAsset')" width="560px">
-      <el-form label-width="90px">
+    <el-dialog v-model="showAssetDialog" :before-close="showAssetDialogGuard.beforeClose" :title="editingAssetId ? (t('assets.edit')) : t('assets.createAsset')" width="560px"><ActionFeedback :error="actionError" />
+      <el-form :disabled="actionBusy" label-width="90px">
         <el-form-item :label="t('common.name')" required><el-input v-model="assetForm.name" :placeholder="t('assets.namePlaceholder')" /></el-form-item>
         <el-form-item :label="t('common.type')"><el-select v-model="assetForm.type" style="width: 180px"><el-option v-for="type in assetTypes" :key="type.value" :label="type.label" :value="type.value" /></el-select></el-form-item>
         <el-form-item :label="t('common.ip')" required><el-input v-model="assetForm.ip" :placeholder="t('assets.ipPlaceholder')" /></el-form-item>
         <el-form-item :label="t('endpoints.os')"><el-input v-model="assetForm.os" :placeholder="t('assets.osPlaceholder')" /></el-form-item>
-        <el-form-item :label="t('assets.owner')"><el-input v-model="assetForm.owner" :placeholder="t('assets.ownerPlaceholder')" /></el-form-item>
+        <el-form-item :label="t('assets.owner')"><el-select v-model="assetForm.owner" filterable clearable :placeholder="t('assets.ownerPlaceholder')"><el-option v-if="assetForm.owner" :label="assetForm.owner" :value="assetForm.owner" /><el-option v-for="person in workbench?.operatorOptions.value ?? []" :key="person" :label="person" :value="person" /></el-select></el-form-item>
         <el-form-item :label="t('assets.criticality')"><el-select v-model="assetForm.criticality" style="width: 180px"><el-option v-for="level in criticalityOptions" :key="level.value" :label="level.label" :value="level.value" /></el-select></el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="showAssetDialog = false">{{ t('common.cancel') }}</el-button>
-        <el-button type="primary" :disabled="!assetForm.name.trim() || !assetForm.ip.trim()" @click="saveAsset">{{ t('common.save') }}</el-button>
+        <el-button @click="showAssetDialogGuard.cancel">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :disabled="!assetForm.name.trim() || !assetForm.ip.trim()" :loading="actionBusy" @click="saveAsset">{{ t('common.save') }}</el-button>
       </template>
     </el-dialog>
   </div>

@@ -66,6 +66,28 @@ public class NotifyController {
         return Map.of("removed", channels.delete(id), "id", id);
     }
 
+    @RequireRole({"admin", "analyst"})
+    @org.springframework.web.bind.annotation.PutMapping("/channels/{id}")
+    public Channel update(@PathVariable String id, @Valid @RequestBody ChannelCreateRequest body) {
+        requireChannel(id);
+        return channels.add(new Channel(id, body.name().trim(), body.type(), body.target().trim(),
+                body.enabledOrDefault(), body.description()));
+    }
+
+    @RequireRole({"admin", "analyst"})
+    @PostMapping("/channels/{id}/test")
+    public ResponseEntity<Map<String, Object>> test(@PathVariable String id) {
+        Map<String, Object> result = dispatcher.test(requireChannel(id));
+        return ResponseEntity.status("failed".equals(result.get("status"))
+                ? HttpStatus.BAD_GATEWAY : HttpStatus.OK).body(result);
+    }
+
+    private Channel requireChannel(String id) {
+        Channel channel = channels.get(id);
+        if (channel == null) throw new org.springframework.web.server.ResponseStatusException(HttpStatus.NOT_FOUND, "Channel not found");
+        return channel;
+    }
+
     /** 告警外发入口：接收 alert-web 推送的告警，分发到启用渠道。 */
     @com.socp.platform.auth.security.RequireService
     @PostMapping("/notify/alert")

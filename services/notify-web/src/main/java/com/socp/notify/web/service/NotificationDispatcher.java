@@ -94,6 +94,15 @@ public class NotificationDispatcher {
         return response;
     }
 
+    /** Explicit operator test, restricted to one selected channel, with a distinct test identity. */
+    public Map<String, Object> test(Channel channel) {
+        Map<String, Object> sample = Map.of("id", "test-" + UUID.randomUUID(), "ruleId", "notification-test",
+                "severity", "INFO", "message", "SOCP notification test", "test", true);
+        Map<String, Object> result = send(channel, sample);
+        log(channel, result, sample);
+        return result;
+    }
+
     private Map<String, Object> deliveredResult(String tenant, String alarmId, Channel channel) {
         return deliveries.findByIdAndTenantId(deliveryId(tenant, alarmId, channel.id()), tenant)
                 .map(row -> {

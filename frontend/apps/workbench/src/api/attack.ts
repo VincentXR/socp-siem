@@ -9,3 +9,6 @@ export const attackCoverage = (ruleTechs: string[]) => post<{
   byTactic: Array<{ tactic: string; name: string; total: number; covered: number; coverage: number }>
   totalTechniques: number; coveredTechniques: number; coverage: number; uncovered: string[]
 }>('/attack-web/api/v1/coverage', { ruleTechniques: ruleTechs })
+
+export const getTechniqueNote = (id: string) => get<{ note: string }>(`/attack-web/api/v1/techniques/${encodeURIComponent(id)}/note`)
+export const saveTechniqueNote = (id: string, note: string) => put<{ note: string }>(`/attack-web/api/v1/techniques/${encodeURIComponent(id)}/note`, { note })

@@ -1,4 +1,9 @@
 <script setup lang="ts">
+import { useFormDialog } from '../composables/useFormDialog'
+import { useMutation } from '../composables/useMutation'
+import ActionFeedback from '../components/ActionFeedback.vue'
+const mutation = useMutation()
+const { busy: actionBusy, error: actionError } = mutation
 import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/descriptions/style/css.mjs'
 import 'element-plus/es/components/divider/style/css.mjs'
@@ -44,6 +49,7 @@ const router = useRouter()
 const stats = ref<{ total?: number; open?: number; resolved?: number }>({})
 const detail = ref<CaseInfo | null>(null)
 const timeline = ref<TimelineEvent[]>([])
+const timelineError = ref('')
 const drawerVisible = ref(false)
 const createDialogVisible = ref(false)
 const caseForm = ref({ title: '', entity: '', severity: 'HIGH', assignee: '' })
@@ -91,7 +97,8 @@ async function openCase(item: CaseInfo) {
   detail.value = item
   newStatus.value = item.status
   drawerVisible.value = true
-  try { timeline.value = (await caseApi.timeline(item.id)).timeline } catch { timeline.value = [] }
+  timeline.value = []; timelineError.value = ''
+  try { timeline.value = (await caseApi.timeline(item.id)).timeline } catch (failure) { timelineError.value = String(failure) }
 }
 function openCaseRow(row: unknown) { openCase(row as CaseInfo) }
 
@@ -107,14 +114,16 @@ function openAlarm(id: string): void {
 }
 
 async function updateStatus() {
+  return mutation.run(async () => {
   if (!detail.value || !newStatus.value) return
   try {
     const result = await caseApi.updateStatus(detail.value.id, newStatus.value)
     detail.value = result.case
     await loadCases()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : t('common.failed'))
+    throw error
   }
+  })
 }
 
 function openCreateCase() {
@@ -123,23 +132,27 @@ function openCreateCase() {
 }
 
 async function saveCase() {
+  return mutation.run(async () => {
   if (!caseForm.value.title.trim()) {
     ElMessage.warning(t('cases.pleaseEnterTitle'))
     return
   }
   try {
-    await caseApi.create({
+    const created = await caseApi.create({
       title: caseForm.value.title.trim(), entity: caseForm.value.entity.trim(),
       severity: caseForm.value.severity, assignee: caseForm.value.assignee.trim() || undefined,
     })
     createDialogVisible.value = false
     ElMessage.success(t('cases.createdSuccessfully'))
     await loadCases()
+    await openCase(created.case)
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : (t('cases.createFailed')))
+    throw error
   }
+  })
 }
 
+const createDialogVisibleGuard = useFormDialog(createDialogVisible, () => caseForm.value, () => actionBusy.value)
 onMounted(loadCases)
 watch(() => route.query.caseId, openCaseFromQuery)
 watch(drawerVisible, visible => {
@@ -153,6 +166,7 @@ watch(drawerVisible, visible => {
 
 <template>
   <div class="page-pad view-enter">
+    <ActionFeedback :error="actionError" />
     <PageHeader :eyebrow="t('menuGroup.alarmsAndEvents')" :title="t('cases.title')" :description="t('cases.description')">
       <template #actions>
         <el-button type="primary" size="small" @click="openCreateCase">{{ t('cases.createCase') }}</el-button>
@@ -186,16 +200,16 @@ watch(drawerVisible, visible => {
       </el-table>
     </DataTableCard>
 
-    <el-dialog v-model="createDialogVisible" :title="t('cases.createCase')" width="560px">
-      <el-form label-width="90px">
+    <el-dialog v-model="createDialogVisible" :before-close="createDialogVisibleGuard.beforeClose" :title="t('cases.createCase')" width="560px"><ActionFeedback :error="actionError" />
+      <el-form :disabled="actionBusy" label-width="90px">
         <el-form-item :label="t('cases.caseTitle')" required><el-input v-model="caseForm.title" :placeholder="t('cases.titlePlaceholder')" /></el-form-item>
         <el-form-item :label="t('common.entity')"><el-input v-model="caseForm.entity" :placeholder="t('cases.entityPlaceholder')" /></el-form-item>
         <el-form-item :label="t('common.severity')"><el-select v-model="caseForm.severity" style="width: 180px"><el-option v-for="level in ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']" :key="level" :label="t('severities.' + level) || level" :value="level" /></el-select></el-form-item>
         <el-form-item :label="t('cases.assignee')"><el-select v-model="caseForm.assignee" filterable default-first-option clearable :placeholder="t('cases.assigneePlaceholder')" style="width:100%"><el-option v-for="assignee in assigneeOptions" :key="assignee" :label="assignee" :value="assignee" /></el-select></el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="createDialogVisible = false">{{ t('common.cancel') }}</el-button>
-        <el-button type="primary" @click="saveCase">{{ t('cases.createCase') }}</el-button>
+        <el-button @click="createDialogVisibleGuard.cancel">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="actionBusy" @click="saveCase">{{ t('cases.createCase') }}</el-button>
       </template>
     </el-dialog>
 
@@ -212,9 +226,9 @@ watch(drawerVisible, visible => {
             <span v-else>—</span>
           </el-descriptions-item>
         </el-descriptions>
-        <div class="case-status-row"><el-select v-model="newStatus"><el-option v-for="status in ['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']" :key="status" :label="t('statuses.' + status) || status" :value="status" /></el-select><el-button type="primary" @click="updateStatus">{{ t('cases.updateStatus') }}</el-button></div>
+        <div class="case-status-row"><el-select v-model="newStatus"><el-option v-for="status in ['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']" :key="status" :label="t('statuses.' + status) || status" :value="status" /></el-select><el-button type="primary" :loading="actionBusy" @click="updateStatus">{{ t('cases.updateStatus') }}</el-button></div>
         <el-divider content-position="left">{{ t('cases.timeline') }}</el-divider>
-        <el-timeline><el-timeline-item v-for="(event, index) in timeline" :key="index" :timestamp="event.ts" placement="top"><div>{{ event.message }}</div><div class="case-event-meta">{{ event.type }} · {{ event.source }}</div></el-timeline-item></el-timeline>
+        <ActionFeedback :error="timelineError" /><el-timeline><el-timeline-item v-for="(event, index) in timeline" :key="index" :timestamp="event.ts" placement="top"><div>{{ event.message }}</div><div class="case-event-meta">{{ event.type }} · {{ event.source }}</div></el-timeline-item></el-timeline>
       </template>
     </el-drawer>
   </div>
