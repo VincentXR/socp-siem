@@ -335,6 +335,23 @@ class DetectEngineServiceTest {
     }
 
     @Test
+    void snapshotCheckpointUsesAtomicGenerationWhenStoreSupportsIt() {
+        when(store.list(org.mockito.ArgumentMatchers.anyString())).thenReturn(List.of(thresholdRule()));
+        when(stateStore.supportsCheckpointReplay()).thenReturn(false);
+        when(snapshotStore.supportsAtomicBatch()).thenReturn(true);
+        DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null),
+                forwarder, rulePublisher, stateStore, performanceMetrics, snapshotStore);
+        ReflectionTestUtils.setField(service, "snapshotEveryEvents", 1L);
+        try {
+            service.snapshotAfterDurable(event("tenant-a", "atomic-snapshot"), 0, 3L);
+            verify(snapshotStore).saveAll(org.mockito.ArgumentMatchers.anyList());
+            verify(snapshotStore, org.mockito.Mockito.never()).save(org.mockito.ArgumentMatchers.any());
+        } finally {
+            service.stop();
+        }
+    }
+
+    @Test
     void configuredStateShardsRouteSnapshotsByTheCanonicalRoutingTuple() {
         TenantContext.set("tenant-a");
         when(store.list(org.mockito.ArgumentMatchers.anyString())).thenReturn(List.of(thresholdRule()));
@@ -382,6 +399,29 @@ class DetectEngineServiceTest {
             verify(snapshotStore).latest("default", "THRESHOLD", 0);
             verify(stateStore).replayCompletedAfter(org.mockito.ArgumentMatchers.eq("default"),
                     org.mockito.ArgumentMatchers.any(Instant.class), org.mockito.ArgumentMatchers.anySet(),
+                    org.mockito.ArgumentMatchers.any());
+        } finally {
+            service.stop();
+        }
+    }
+
+    @Test
+    void restoresUsingPerPartitionCheckpointVector() {
+        when(store.list(org.mockito.ArgumentMatchers.anyString())).thenReturn(List.of(thresholdRule()));
+        when(stateStore.supportsCheckpointReplay()).thenReturn(true);
+        DetectionStateSnapshot snapshot = new DetectionStateSnapshot(
+                "THRESHOLD", "threshold-v1", "default", 0, 14L,
+                "{}".getBytes(java.nio.charset.StandardCharsets.UTF_8), Instant.now(),
+                Map.of(0, 8L, 2, 14L));
+        when(snapshotStore.latest("default", "THRESHOLD", 0)).thenReturn(Optional.of(snapshot));
+
+        DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null),
+                forwarder, rulePublisher, stateStore, performanceMetrics, snapshotStore);
+        try {
+            service.start();
+            verify(stateStore).replayCompletedAfter(org.mockito.ArgumentMatchers.eq("default"),
+                    org.mockito.ArgumentMatchers.any(Instant.class), org.mockito.ArgumentMatchers.anySet(),
+                    org.mockito.ArgumentMatchers.eq(Map.of(0, 8L, 2, 14L)),
                     org.mockito.ArgumentMatchers.any());
         } finally {
             service.stop();

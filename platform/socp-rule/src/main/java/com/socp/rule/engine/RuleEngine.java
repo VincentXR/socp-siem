@@ -48,13 +48,15 @@ public final class RuleEngine implements AutoCloseable {
     private final AtomicLong eventCount = new AtomicLong();
     private final AtomicLong alertCount = new AtomicLong();
     private final AtomicLong dropCount = new AtomicLong();
+    /** Serializes rule mutation, durable position callbacks, and snapshots. */
+    private final Object stateLock = new Object();
 
     /** Immediate queue admission plus an optional durable completion signal. */
     public record Submission(boolean accepted, CompletableFuture<Void> completion) {
     }
 
     private record WorkItem(SecurityEvent event, CompletableFuture<Void> completion,
-                            boolean durable) {
+                            boolean durable, Runnable onDurable) {
     }
 
     public RuleEngine(List<Rule> rules, List<AlertSink> sinks) {
@@ -96,9 +98,11 @@ public final class RuleEngine implements AutoCloseable {
      */
     public void restore(List<SecurityEvent> history) {
         if (history == null || history.isEmpty()) return;
-        for (SecurityEvent event : history) {
-            for (Rule rule : rulesRef.get()) rule.accept(event);
-            for (Rule rule : rulesRef.get()) rule.drain();
+        synchronized (stateLock) {
+            for (SecurityEvent event : history) {
+                for (Rule rule : rulesRef.get()) rule.accept(event);
+                for (Rule rule : rulesRef.get()) rule.drain();
+            }
         }
         log.info("Detection rule state restored events={}", history.size());
     }
@@ -128,9 +132,15 @@ public final class RuleEngine implements AutoCloseable {
     }
 
     private void process(WorkItem item) {
-        SecurityEvent event = item.event();
-        try (RuleExecutionScope.Scope ignored = executionScope.open(event)) {
-            processInScope(item, event);
+        synchronized (stateLock) {
+            SecurityEvent event = item.event();
+            try (RuleExecutionScope.Scope ignored = executionScope.open(event)) {
+                processInScope(item, event);
+            }
+            // Position bookkeeping is deliberately inside the same critical
+            // section as state mutation. A checkpoint can therefore never
+            // capture rule bytes ahead of the Kafka watermark it records.
+            if (item.onDurable() != null) item.onDurable().run();
         }
     }
 
@@ -193,17 +203,26 @@ public final class RuleEngine implements AutoCloseable {
 
     /** Legacy non-blocking ingestion API. */
     public boolean ingest(SecurityEvent event) {
-        return submit(event, false).accepted();
+        return submit(event, false, null).accepted();
     }
 
     /** Submit an event and complete after durable sinks have finished. */
     public CompletableFuture<Void> ingestAndAwait(SecurityEvent event) {
-        return submit(event, true).completion();
+        return ingestAndAwait(event, null);
+    }
+
+    /** Submit an event and run the callback before the completion signal. */
+    public CompletableFuture<Void> ingestAndAwait(SecurityEvent event, Runnable onDurable) {
+        return submit(event, true, onDurable).completion();
     }
 
     public Submission submit(SecurityEvent event, boolean durable) {
+        return submit(event, durable, null);
+    }
+
+    public Submission submit(SecurityEvent event, boolean durable, Runnable onDurable) {
         CompletableFuture<Void> completion = new CompletableFuture<>();
-        WorkItem item = new WorkItem(event, completion, durable);
+        WorkItem item = new WorkItem(event, completion, durable, onDurable);
         lifecycle.readLock().lock();
         try {
             if (!running) {
@@ -242,7 +261,7 @@ public final class RuleEngine implements AutoCloseable {
             running = false;
             for (;;) {
                 try {
-                    queue.put(new WorkItem(POISON_EVENT, null, false));
+                    queue.put(new WorkItem(POISON_EVENT, null, false, null));
                     break;
                 } catch (InterruptedException interruption) {
                     // Closing without the marker can strand every accepted
@@ -269,9 +288,13 @@ public final class RuleEngine implements AutoCloseable {
     }
 
     public void reload(List<Rule> newRules) {
-        List<Rule> old = rulesRef.getAndSet(List.copyOf(newRules));
-        old.forEach(Rule::close);
-        log.info("Detection rules reloaded count={}", newRules.size());
+        if (newRules == null) throw new IllegalArgumentException("rules are required");
+        List<Rule> replacement = List.copyOf(newRules);
+        synchronized (stateLock) {
+            List<Rule> old = rulesRef.getAndSet(replacement);
+            old.forEach(Rule::close);
+            log.info("Detection rules reloaded count={}", replacement.size());
+        }
     }
 
     public List<Map<String, Object>> ruleStats() {
@@ -280,12 +303,14 @@ public final class RuleEngine implements AutoCloseable {
 
     /** Portable state checkpoint payloads keyed by rule id. */
     public Map<String, RuleState> snapshotStates() {
-        Map<String, RuleState> out = new java.util.LinkedHashMap<>();
-        for (Rule rule : rulesRef.get()) {
-            if (!(rule instanceof StatefulRule stateful)) continue;
-            out.put(rule.id(), new RuleState(rule.id(), stateful.stateVersion(), stateful.snapshotState()));
+        synchronized (stateLock) {
+            Map<String, RuleState> out = new java.util.LinkedHashMap<>();
+            for (Rule rule : rulesRef.get()) {
+                if (!(rule instanceof StatefulRule stateful)) continue;
+                out.put(rule.id(), new RuleState(rule.id(), stateful.stateVersion(), stateful.snapshotState()));
+            }
+            return Map.copyOf(out);
         }
-        return Map.copyOf(out);
     }
 
     public List<String> statefulRuleIds() {
@@ -298,19 +323,42 @@ public final class RuleEngine implements AutoCloseable {
     /** Restore compatible rule state before journal replay. Incompatible bytes are ignored. */
     public List<String> restoreStates(Map<String, RuleState> states) {
         if (states == null || states.isEmpty()) return List.of();
-        List<String> restored = new ArrayList<>();
-        for (Rule rule : rulesRef.get()) {
-            if (!(rule instanceof StatefulRule stateful)) continue;
-            RuleState snapshot = states.get(rule.id());
-            if (snapshot == null || !stateful.stateVersion().equals(snapshot.version())) continue;
-            try {
-                stateful.restoreState(snapshot.serializedState());
-                restored.add(rule.id());
-            } catch (RuntimeException failure) {
-                log.warn("Ignoring corrupt state snapshot ruleId={}: {}", rule.id(), failure.getMessage());
+        synchronized (stateLock) {
+            Map<StatefulRule, byte[]> before = new java.util.LinkedHashMap<>();
+            for (Rule rule : rulesRef.get()) {
+                if (rule instanceof StatefulRule stateful) {
+                    before.put(stateful, stateful.snapshotState());
+                }
             }
+            List<String> restored = new ArrayList<>();
+            for (Rule rule : rulesRef.get()) {
+                if (!(rule instanceof StatefulRule stateful)) continue;
+                RuleState snapshot = states.get(rule.id());
+                if (snapshot == null || !stateful.stateVersion().equals(snapshot.version())) continue;
+                try {
+                    stateful.restoreState(snapshot.serializedState());
+                    restored.add(rule.id());
+                } catch (RuntimeException failure) {
+                    // A partially restored engine is more dangerous than a cold
+                    // replay: the next tail would double-apply the rules that did
+                    // restore successfully. Roll every stateful rule back to the
+                    // bytes captured before this attempt and let the caller choose
+                    // a complete journal replay instead.
+                    before.forEach((candidate, original) -> {
+                        try {
+                            candidate.restoreState(original);
+                        } catch (RuntimeException rollbackFailure) {
+                            log.warn("Unable to roll back state snapshot ruleId={}: {}",
+                                    candidate.id(), rollbackFailure.getMessage());
+                        }
+                    });
+                    log.warn("Ignoring incomplete state snapshot ruleId={}: {}",
+                            rule.id(), failure.getMessage());
+                    return List.of();
+                }
+            }
+            return List.copyOf(restored);
         }
-        return List.copyOf(restored);
     }
 
     public record RuleState(String ruleId, String version, byte[] serializedState) {

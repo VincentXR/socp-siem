@@ -15,10 +15,12 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
+import com.socp.rule.model.SecurityEvent;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.times;
@@ -122,6 +124,41 @@ class RuleControllerTest {
         verify(engine).ingest(org.mockito.ArgumentMatchers.argThat(event ->
                 "3".equals(event.fields().get("attempts"))
                         && "failed login".equals(event.fields().get("msg"))));
+    }
+
+    @Test
+    void idempotencyKeyKeepsRetryEventIdentityStable() throws Exception {
+        given(engine.ingest(any())).willReturn(true);
+        given(engine.stats()).willReturn(Map.of("queueLoad", 0));
+        String body = "{\"source\":\"auth\",\"msg\":\"failed login\"}";
+
+        mvc.perform(post("/api/v1/ingest")
+                        .header("Authorization", BEARER)
+                        .header("X-Role", "analyst")
+                        .header("Idempotency-Key", "collector-batch-42")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/v1/ingest")
+                        .header("Authorization", BEARER)
+                        .header("X-Role", "analyst")
+                        .header("Idempotency-Key", "collector-batch-42")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/v1/ingest")
+                        .header("Authorization", BEARER)
+                        .header("X-Role", "analyst")
+                        .header("Idempotency-Key", "collector-batch-42")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"source\":\"auth\",\"msg\":\"different event\"}"))
+                .andExpect(status().isOk());
+
+        org.mockito.ArgumentCaptor<SecurityEvent> events = org.mockito.ArgumentCaptor.forClass(SecurityEvent.class);
+        verify(engine, times(3)).ingest(events.capture());
+        assertEquals(events.getAllValues().get(0).id(), events.getAllValues().get(1).id());
+        org.junit.jupiter.api.Assertions.assertNotEquals(events.getAllValues().get(0).id(),
+                events.getAllValues().get(2).id());
     }
 
     @Test

@@ -5,6 +5,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
+import jakarta.persistence.Version;
 
 import java.time.Instant;
 
@@ -40,6 +41,15 @@ public class DetectionStateSnapshotEntity {
     @Column(name = "snapshot_timestamp", nullable = false)
     private Instant snapshotTimestamp;
 
+    /** JSON object of Kafka partition -> last included offset. */
+    @Column(name = "partition_offsets_json", nullable = false, columnDefinition = "TEXT")
+    private String partitionOffsetsJson = "{}";
+
+    /** Optimistic concurrency guard for two detection instances checkpointing the same shard. */
+    @Version
+    @Column(name = "row_version", nullable = false)
+    private long rowVersion;
+
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
     public String getTenantId() { return tenantId; }
@@ -56,4 +66,11 @@ public class DetectionStateSnapshotEntity {
     public void setSerializedState(String serializedState) { this.serializedState = serializedState; }
     public Instant getSnapshotTimestamp() { return snapshotTimestamp; }
     public void setSnapshotTimestamp(Instant snapshotTimestamp) { this.snapshotTimestamp = snapshotTimestamp; }
+    public String getPartitionOffsetsJson() { return partitionOffsetsJson; }
+    public void setPartitionOffsetsJson(String partitionOffsetsJson) {
+        this.partitionOffsetsJson = partitionOffsetsJson == null || partitionOffsetsJson.isBlank()
+                ? "{}" : partitionOffsetsJson;
+    }
+    public long getRowVersion() { return rowVersion; }
+    public void setRowVersion(long rowVersion) { this.rowVersion = rowVersion; }
 }

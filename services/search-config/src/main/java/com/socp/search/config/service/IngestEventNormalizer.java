@@ -13,13 +13,18 @@ import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
+import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /** Converts one vendor/raw log line into the canonical search/detection event contract. */
 @Component
 public class IngestEventNormalizer {
+
+    /** Keep attacker-controlled parser output from creating unbounded maps. */
+    private static final int MAX_NORMALIZED_FIELDS = 512;
 
     private final ReferenceSetStore referenceSets;
     private final ParserRegistry parsers;
@@ -43,12 +48,27 @@ public class IngestEventNormalizer {
     }
 
     NormalizedEvent normalize(String line, String collectorHint) {
+        return normalize(line, collectorHint, null);
+    }
+
+    /**
+     * Normalize one line with an optional request-scoped identity fallback.
+     * Producer supplied event IDs remain authoritative.  When a collector
+     * sends an HTTP Idempotency-Key, the pipeline passes a stable key per
+     * batch line so a retry cannot create a second event ID; a missing key
+     * intentionally keeps the historical random-ID behaviour.
+     */
+    NormalizedEvent normalize(String line, String collectorHint, String fallbackEventId) {
         IngestSourceContext sourceContext = sourceResolver == null
                 ? null : sourceResolver.resolve(line, collectorHint);
         Map<String, String> parsed = sourceContext == null
                 ? parsers.parse(line, collectorHint)
                 : parsers.parse(line, sourceContext.format(), null);
         Map<String, String> canonical = new LinkedHashMap<>(parsed == null ? Map.of() : parsed);
+        if (canonical.size() > MAX_NORMALIZED_FIELDS) {
+            throw new IllegalArgumentException("event contains too many fields (max "
+                    + MAX_NORMALIZED_FIELDS + ")");
+        }
         if (sourceContext != null && sourceContext.resolved()
                 && sourceContext.sourceId() != null && !sourceContext.sourceId().isBlank()) {
             canonical.putIfAbsent("source_id", sourceContext.sourceId());
@@ -102,7 +122,10 @@ public class IngestEventNormalizer {
         fields.put("severity", severity);
         String eventId = firstNonBlank(canonical.get("eventId"), canonical.get("event.id"),
                 canonical.get("id"), fields.get("eventId"), fields.get("event_id"));
-        if (eventId == null) eventId = java.util.UUID.randomUUID().toString();
+        if (eventId == null) {
+            eventId = fallbackEventId == null || fallbackEventId.isBlank()
+                    ? UUID.randomUUID().toString() : stableEventId(fallbackEventId);
+        }
 
         // Tenant identity comes from the authenticated request context, never
         // from a JSON field supplied by the collector.  Overwrite a spoofed
@@ -129,6 +152,12 @@ public class IngestEventNormalizer {
         payload.put("fields", fields);
         if (!ecs.isEmpty()) payload.put("ecs", ecs);
         return new NormalizedEvent(event, payload, collector(fields, collectorHint));
+    }
+
+    private static String stableEventId(String fallbackEventId) {
+        String value = fallbackEventId.trim();
+        if (value.length() > 512) value = value.substring(0, 512);
+        return UUID.nameUUIDFromBytes(value.getBytes(StandardCharsets.UTF_8)).toString();
     }
 
     private static boolean isSparseBase(Map<String, String> canonical) {

@@ -7,6 +7,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Set;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
 
 /**
@@ -151,5 +152,20 @@ public interface DetectionStateStore {
         if (!supportsCheckpointReplay()) {
             throw new UnsupportedOperationException("checkpoint replay is not supported by this state store");
         }
+    }
+
+    /**
+     * Replay the tail after an offset vector captured by a state snapshot.
+     * The vector is keyed by Kafka partition and contains the last durable
+     * offset included in the serialized rule state.  The timestamp overload
+     * remains the compatibility path for snapshots written before vectors
+     * existed; implementations that support exact replay should override this
+     * method.
+     */
+    default void replayCompletedAfter(String tenantId, Instant checkpoint,
+                                      Set<Integer> partitions,
+                                      Map<Integer, Long> offsets,
+                                      Consumer<List<SecurityEvent>> batchConsumer) {
+        replayCompletedAfter(tenantId, checkpoint, partitions, batchConsumer);
     }
 }

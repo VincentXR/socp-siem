@@ -49,6 +49,7 @@ function onMenuChange(key: string) {
 
 provide(WORKBENCH_STATE, {
   theme,
+  currentUser,
   currentRole,
   overview,
   alarmQuery,

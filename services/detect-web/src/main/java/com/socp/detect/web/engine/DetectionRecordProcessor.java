@@ -73,7 +73,12 @@ final class DetectionRecordProcessor {
                 return;
             }
 
-            CompletableFuture<Void> completion = engine.ingestFromKafkaAndAwait(normalized);
+            // Keep the lightweight/unit ingress path on the legacy overload;
+            // only real Kafka records carry an ownership position that needs
+            // to participate in the checkpoint vector.
+            CompletableFuture<Void> completion = partition == null || offset == null
+                    ? engine.ingestFromKafkaAndAwait(normalized)
+                    : engine.ingestFromKafkaAndAwait(normalized, partition, offset);
             if (completion == null) throw new IllegalStateException("detection completion signal is null");
             try {
                 completion.get(10, TimeUnit.MINUTES);
@@ -86,7 +91,6 @@ final class DetectionRecordProcessor {
                 Throwable cause = failed.getCause() == null ? failed : failed.getCause();
                 throw new IllegalStateException("durable detection result failed: " + cause.getMessage(), cause);
             }
-            engine.snapshotAfterDurable(normalized, partition, offset);
         }
     }
 

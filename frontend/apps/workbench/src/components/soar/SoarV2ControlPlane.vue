@@ -98,6 +98,10 @@ const connectionForm = reactive({
   name: '', connectorType: 'http.webhook', endpoint: '', authSecretRef: '', allowedHosts: '', enabled: true,
 })
 const pendingCount = computed(() => tasks.value.filter(item => item.status === 'PENDING').length)
+const connectorTypeOptions = computed(() => Array.from(new Set([
+  connectionForm.connectorType,
+  ...actions.value.map(action => action.connectorId),
+].filter(Boolean))))
 
 function clearFeedback() { message.value = ''; errorMessage.value = '' }
 function failureText(failure: unknown) { return failure instanceof Error ? failure.message : 'SOAR V2 request failed' }
@@ -299,7 +303,13 @@ onMounted(() => { void load() })
       <div class="soar-v2-section-toolbar"><div><b>Event → playbook routing</b><small>Rules are disabled by default when created and bind only immutable published versions.</small></div><div><el-button size="small" @click="toggleRuleForm">{{ showRuleForm ? 'Close form' : 'New rule' }}</el-button><el-button size="small" @click="testRules">Test event</el-button></div></div>
       <div v-if="showRuleForm" class="soar-v2-form-grid">
         <label>Name<input v-model="ruleForm.name" placeholder="High severity response" /></label>
-        <label>Trigger type<input v-model="ruleForm.triggerType" placeholder="alert.created" /></label>
+        <label>Trigger type
+          <el-select v-model="ruleForm.triggerType" filterable allow-create default-first-option placeholder="alert.created">
+            <el-option label="alert.created" value="alert.created" />
+            <el-option label="case.updated" value="case.updated" />
+            <el-option label="ANY" value="ANY" />
+          </el-select>
+        </label>
         <label>Priority<input v-model.number="ruleForm.priority" type="number" min="0" max="10000" /></label>
         <label>Published versions
           <el-select v-model="ruleForm.playbookVersionIds" multiple filterable allow-create default-first-option collapse-tags :loading="versionOptionsLoading" placeholder="Search published playbook versions">
@@ -322,7 +332,11 @@ onMounted(() => { void load() })
       <div class="soar-v2-section-toolbar"><div><b>Connector assets and egress policy</b><small>Secrets are references only; endpoints must pass HTTPS and host allowlist checks.</small></div><div><el-button size="small" @click="showConnectionForm = !showConnectionForm">{{ showConnectionForm ? 'Close form' : 'New connection' }}</el-button><details class="soar-v2-inline-details"><summary>Action catalog ({{ actions.length }})</summary><div class="soar-v2-action-catalog"><span v-for="action in actions" :key="action.actionRef"><b>{{ action.actionRef }}</b><small>{{ action.riskLevel }} · {{ action.idempotency }} · {{ action.production ? 'production' : 'certification required' }}</small></span></div></details></div></div>
       <div v-if="showConnectionForm" class="soar-v2-form-grid">
         <label>Name<input v-model="connectionForm.name" placeholder="EDR production" /></label>
-        <label>Connector type<input v-model="connectionForm.connectorType" placeholder="http.webhook" /></label>
+        <label>Connector type
+          <el-select v-model="connectionForm.connectorType" filterable allow-create default-first-option placeholder="Select connector">
+            <el-option v-for="connectorId in connectorTypeOptions" :key="connectorId" :label="connectorId" :value="connectorId" />
+          </el-select>
+        </label>
         <label>HTTPS endpoint<input v-model="connectionForm.endpoint" placeholder="https://api.example.test/response" /></label>
         <label>Secret ref<input v-model="connectionForm.authSecretRef" placeholder="secret://SOAR_EDR_TOKEN" /></label>
         <label>Allowed hosts<input v-model="connectionForm.allowedHosts" placeholder="api.example.test" /></label>

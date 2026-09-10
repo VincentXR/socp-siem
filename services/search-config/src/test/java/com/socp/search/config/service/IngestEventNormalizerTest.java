@@ -14,10 +14,12 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
+import java.util.LinkedHashMap;
 import java.util.Optional;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -133,6 +135,41 @@ class IngestEventNormalizerTest {
                     CanonicalEvent.EVENT_SEVERITY, input));
             assertEquals(output, normalizer.normalize("raw event", "collector-1").event().severity());
         });
+    }
+
+    @Test
+    void requestIdempotencyFallbackIsStableWithoutCollapsingDifferentLines() {
+        ParserRegistry parsers = mock(ParserRegistry.class);
+        ReferenceSetStore references = mock(ReferenceSetStore.class);
+        when(references.matchedSets(anyString())).thenReturn(List.of());
+        when(parsers.parse(anyString(), anyString())).thenReturn(Map.of(
+                CanonicalEvent.EVENT_MESSAGE, "same raw event"));
+        IngestEventNormalizer normalizer = new IngestEventNormalizer(
+                mock(ParsePreviewService.class), mock(ParseRuleStore.class), references, parsers);
+        TenantContext.set("tenant-a");
+
+        var first = normalizer.normalize("same raw event", "collector-1", "batch-42:0");
+        var retry = normalizer.normalize("same raw event", "collector-1", "batch-42:0");
+        var secondLine = normalizer.normalize("same raw event", "collector-1", "batch-42:1");
+
+        assertEquals(first.event().eventId(), retry.event().eventId());
+        assertNotEquals(first.event().eventId(), secondLine.event().eventId());
+    }
+
+    @Test
+    void rejectsParserOutputWithTooManyFields() {
+        ParserRegistry parsers = mock(ParserRegistry.class);
+        ReferenceSetStore references = mock(ReferenceSetStore.class);
+        when(references.matchedSets(anyString())).thenReturn(List.of());
+        Map<String, String> fields = new LinkedHashMap<>();
+        for (int index = 0; index < 513; index++) fields.put("custom_" + index, "value");
+        when(parsers.parse(anyString(), anyString())).thenReturn(fields);
+        IngestEventNormalizer normalizer = new IngestEventNormalizer(
+                mock(ParsePreviewService.class), mock(ParseRuleStore.class), references, parsers);
+        TenantContext.set("tenant-a");
+
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> normalizer.normalize("wide event", "collector-1"));
     }
 
     @Test

@@ -24,7 +24,8 @@ import { WORKBENCH_STATE } from '../app/workbenchState'
 import {
   activateGasRule, createGasRule, deleteGasRule, gasStats, listRules, SEVERITIES, updateGasRule,
   listFields, listRefSets, testGasRules,
-  type DetectionIngestEvent, type FieldDef, type GasStats, type ReferenceSet, type RuleCondition, type RuleSpec,
+  listTechniques,
+  type DetectionIngestEvent, type FieldDef, type GasStats, type ReferenceSet, type RuleCondition, type RuleSpec, type Technique,
 } from '../api'
 import { useI18n } from '../composables/useI18n'
 
@@ -57,11 +58,13 @@ const ADVANCED_TYPES = ['correlation-set', 'baseline', 'rare']
 const allRules = ref<RuleSpec[]>([])
 const fieldDefs = ref<FieldDef[]>([])
 const referenceSets = ref<ReferenceSet[]>([])
+const techniques = ref<Technique[]>([])
 const gasStat = ref<GasStats>({ rules: 0, eventCount: 0, alertCount: 0, dropCount: 0, suppressedCount: 0, queueLoad: 0 })
 const loading = ref(false)
 const saving = ref(false)
 const loadError = ref('')
 const fieldLoadError = ref('')
+const techniqueLoadError = ref('')
 const actionMessage = ref('')
 const saveError = ref('')
 const showRuleEditor = ref(false)
@@ -133,7 +136,7 @@ async function loadRules(): Promise<void> {
   if (loading.value) return
   loading.value = true
   loadError.value = ''
-  const [ruleResult, statResult, fieldResult, refsetResult] = await Promise.allSettled([listRules(), gasStats(), listFields(), listRefSets()])
+  const [ruleResult, statResult, fieldResult, refsetResult, techniqueResult] = await Promise.allSettled([listRules(), gasStats(), listFields(), listRefSets(), listTechniques()])
   if (ruleResult.status === 'fulfilled') allRules.value = ruleResult.value.map(normalizeRuleSpec).filter((rule): rule is RuleSpec => rule !== null)
   else loadError.value = ruleResult.reason instanceof Error ? ruleResult.reason.message : String(ruleResult.reason)
   if (statResult.status === 'fulfilled') gasStat.value = statResult.value
@@ -144,7 +147,22 @@ async function loadRules(): Promise<void> {
     fieldLoadError.value = fieldResult.reason instanceof Error ? fieldResult.reason.message : String(fieldResult.reason)
   }
   if (refsetResult.status === 'fulfilled') referenceSets.value = refsetResult.value
+  if (techniqueResult.status === 'fulfilled') {
+    techniques.value = techniqueResult.value
+    techniqueLoadError.value = ''
+  } else {
+    techniqueLoadError.value = techniqueResult.reason instanceof Error ? techniqueResult.reason.message : String(techniqueResult.reason)
+  }
   loading.value = false
+}
+
+function onKeyFieldChange(value: unknown): void {
+  const selected = textValue(value).trim()
+  ruleForm.value.keyField = selected
+  // Stateful aggregation and Kafka routing must use the same dimension. The
+  // routing field is therefore derived from the selected key instead of a
+  // second free-text value that can silently diverge.
+  ruleForm.value.routingField = selected
 }
 
 function openRuleEditor(row?: unknown): void {
@@ -389,16 +407,16 @@ onMounted(loadRules)
           </template>
           <div v-if="fieldLoadError" class="form-hint">{{ t('detect.fieldCatalogFallback') }} · {{ fieldLoadError }}</div>
           <div class="detect-form-grid compact-grid">
-            <el-form-item :label="t('detect.keyField')"><el-select v-model="ruleForm.keyField" filterable allow-create default-first-option clearable :placeholder="t('detect.fieldPlaceholder')"><el-option v-for="field in fieldDefs" :key="field.fieldName" :label="field.fieldName" :value="field.fieldName"><div class="field-option"><b>{{ field.fieldName }}</b><small>{{ field.fieldLabel || field.fieldType }} · {{ field.fieldType }}<span v-if="field.aggregatable"> · aggregate</span></small></div></el-option></el-select></el-form-item>
+            <el-form-item :label="t('detect.keyField')"><el-select v-model="ruleForm.keyField" filterable allow-create default-first-option clearable :placeholder="t('detect.fieldPlaceholder')" @change="onKeyFieldChange"><el-option v-for="field in fieldDefs" :key="field.fieldName" :label="field.fieldName" :value="field.fieldName"><div class="field-option"><b>{{ field.fieldName }}</b><small>{{ field.fieldLabel || field.fieldType }} · {{ field.fieldType }}<span v-if="field.aggregatable"> · aggregate</span></small></div></el-option></el-select></el-form-item>
             <el-form-item :label="t('detect.threshold')"><el-input v-model.number="ruleForm.threshold" type="number" min="1" /></el-form-item>
             <el-form-item :label="t('detect.valueField')"><el-select v-model="ruleForm.valueField" filterable allow-create default-first-option clearable :placeholder="t('detect.fieldPlaceholder')"><el-option v-for="field in fieldDefs" :key="field.fieldName" :label="field.fieldName" :value="field.fieldName"><div class="field-option"><b>{{ field.fieldName }}</b><small>{{ field.fieldLabel || field.fieldType }} · {{ field.fieldType }}<span v-if="field.aggregatable"> · aggregate</span></small></div></el-option></el-select></el-form-item>
             <el-form-item :label="t('detect.minCount')"><el-input v-model.number="ruleForm.minCount" type="number" min="1" /></el-form-item>
           </div>
         </section>
 
-        <section class="detect-form-section"><div class="detect-form-section-title"><span>03</span><div><h3>{{ t('detect.alertContent') }}</h3><p>{{ t('detect.alertContentHint') }}</p></div></div><div class="detect-form-grid"><el-form-item :label="t('detect.editor.alertTitle')"><el-input v-model="ruleForm.alertTitle" :placeholder="t('detect.editor.alertTitlePlaceholder')" /></el-form-item><el-form-item :label="t('detect.editor.alertDescription')"><el-input v-model="ruleForm.alertDescription" :placeholder="t('detect.editor.alertDescriptionPlaceholder')" /></el-form-item><el-form-item :label="t('detect.compatMessage')"><el-input v-model="ruleForm.message" /></el-form-item><el-form-item :label="t('detect.mitre')"><el-input v-model="ruleForm.mitre" placeholder="T1110" /></el-form-item></div><div class="condition-block"><FieldConditionBuilder v-model="ruleForm.whitelist" :title="t('detect.editor.whitelist')" :add-label="t('detect.editor.addWhitelist')" :empty-hint="t('detect.noWhitelistHint')" :fields="fieldDefs" :reference-sets="referenceSets" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" /></div></section>
+        <section class="detect-form-section"><div class="detect-form-section-title"><span>03</span><div><h3>{{ t('detect.alertContent') }}</h3><p>{{ t('detect.alertContentHint') }}</p></div></div><div class="detect-form-grid"><el-form-item :label="t('detect.editor.alertTitle')"><el-input v-model="ruleForm.alertTitle" :placeholder="t('detect.editor.alertTitlePlaceholder')" /></el-form-item><el-form-item :label="t('detect.editor.alertDescription')"><el-input v-model="ruleForm.alertDescription" :placeholder="t('detect.editor.alertDescriptionPlaceholder')" /></el-form-item><el-form-item :label="t('detect.compatMessage')"><el-input v-model="ruleForm.message" /></el-form-item><el-form-item :label="t('detect.mitre')"><el-select v-model="ruleForm.mitre" filterable allow-create default-first-option clearable placeholder="T1110"><el-option v-if="ruleForm.mitre && !techniques.some(item => item.id === ruleForm.mitre)" :label="ruleForm.mitre + ' (custom)'" :value="ruleForm.mitre" /><el-option v-for="technique in techniques" :key="technique.id" :label="`${technique.id} · ${technique.name}`" :value="technique.id" /></el-select><span v-if="techniqueLoadError" class="form-hint">{{ t('detect.fieldCatalogFallback') }}</span></el-form-item></div><div class="condition-block"><FieldConditionBuilder v-model="ruleForm.whitelist" :title="t('detect.editor.whitelist')" :add-label="t('detect.editor.addWhitelist')" :empty-hint="t('detect.noWhitelistHint')" :fields="fieldDefs" :reference-sets="referenceSets" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" /></div></section>
 
-        <section class="detect-form-section"><div class="detect-form-section-title"><span>04</span><div><h3>{{ t('detect.advancedFields') }}</h3><p>{{ t('detect.advancedFieldsHint') }}</p></div></div><div v-if="ADVANCED_TYPES.includes(ruleForm.type) || rawOnlyRuleType" class="detect-advanced-warning"><b>{{ t('detect.advancedType') }}</b><span>{{ t('detect.advancedTypeHint') }}</span></div><div class="detect-form-grid compact-grid"><el-form-item :label="t('detect.routingField')"><el-input v-model="ruleForm.routingField" /></el-form-item><el-form-item :label="t('detect.warmup')"><el-input v-model.number="ruleForm.warmup" type="number" min="1" /></el-form-item><el-form-item :label="t('detect.baselineWindows')"><el-input v-model.number="ruleForm.baselineWindows" type="number" min="1" /></el-form-item><el-form-item :label="t('detect.sigma')"><el-input v-model.number="ruleForm.sigma" type="number" min="0" max="100" /></el-form-item><el-form-item :label="t('detect.ruleVersion')"><el-input v-model="ruleForm.version" /></el-form-item><el-form-item :label="t('detect.owner')"><el-input v-model="ruleForm.owner" /></el-form-item><el-form-item :label="t('detect.contentPack')"><el-input v-model="ruleForm.contentPack" /></el-form-item><el-form-item :label="t('detect.contentVersion')"><el-input v-model="ruleForm.contentVersion" /></el-form-item></div><details class="advanced-json"><summary>{{ t('detect.rawRuleJson') }}</summary><p>{{ t('detect.rawRuleJsonHint') }}</p><textarea v-model="advancedJson" rows="12" spellcheck="false" /><div v-if="advancedError" class="detect-feedback error">{{ advancedError }}</div><el-button size="small" @click="applyAdvancedJson">{{ t('detect.applyRawJson') }}</el-button></details></section>
+        <section class="detect-form-section"><div class="detect-form-section-title"><span>04</span><div><h3>{{ t('detect.advancedFields') }}</h3><p>{{ t('detect.advancedFieldsHint') }}</p></div></div><div v-if="ADVANCED_TYPES.includes(ruleForm.type) || rawOnlyRuleType" class="detect-advanced-warning"><b>{{ t('detect.advancedType') }}</b><span>{{ t('detect.advancedTypeHint') }}</span></div><div class="detect-form-grid compact-grid"><el-form-item :label="t('detect.routingField')"><el-select v-model="ruleForm.routingField" disabled :placeholder="t('detect.fieldPlaceholder')"><el-option v-if="ruleForm.routingField && !fieldDefs.some(field => field.fieldName === ruleForm.routingField)" :label="ruleForm.routingField" :value="ruleForm.routingField" /><el-option v-for="field in fieldDefs" :key="field.fieldName" :label="field.fieldName" :value="field.fieldName" /></el-select><span class="form-hint">{{ t('detect.routingField') }} = {{ t('detect.keyField') }}</span></el-form-item><el-form-item :label="t('detect.warmup')"><el-input v-model.number="ruleForm.warmup" type="number" min="1" /></el-form-item><el-form-item :label="t('detect.baselineWindows')"><el-input v-model.number="ruleForm.baselineWindows" type="number" min="1" /></el-form-item><el-form-item :label="t('detect.sigma')"><el-input v-model.number="ruleForm.sigma" type="number" min="0" max="100" /></el-form-item><el-form-item :label="t('detect.ruleVersion')"><el-input v-model="ruleForm.version" /></el-form-item><el-form-item :label="t('detect.owner')"><el-input v-model="ruleForm.owner" /></el-form-item><el-form-item :label="t('detect.contentPack')"><el-input v-model="ruleForm.contentPack" /></el-form-item><el-form-item :label="t('detect.contentVersion')"><el-input v-model="ruleForm.contentVersion" /></el-form-item></div><details class="advanced-json"><summary>{{ t('detect.rawRuleJson') }}</summary><p>{{ t('detect.rawRuleJsonHint') }}</p><textarea v-model="advancedJson" rows="12" spellcheck="false" /><div v-if="advancedError" class="detect-feedback error">{{ advancedError }}</div><el-button size="small" @click="applyAdvancedJson">{{ t('detect.applyRawJson') }}</el-button></details></section>
 
         <section class="detect-form-section lifecycle-section"><div class="detect-form-section-title"><span>05</span><div><h3>{{ t('detect.testAndRelease') }}</h3><p>{{ t('detect.testAndReleaseHint') }}</p></div></div><div class="lifecycle-row"><div><span class="form-label">{{ t('detect.ruleStatus') }}</span><el-tag :type="statusTag(ruleForm.status)" size="small">{{ ruleForm.status }}</el-tag><span class="form-hint inline-hint">{{ ruleEditingId ? t('detect.lifecycleReadOnly') : t('detect.newRuleTesting') }}</span></div><div class="lifecycle-toggle"><span>{{ t('detect.executionToggle') }}</span><el-switch v-model="ruleForm.enabled" :disabled="!ruleEditingId || ruleForm.status !== 'ACTIVE'" /></div></div></section>
       </el-form>

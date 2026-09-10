@@ -28,6 +28,9 @@ import java.util.regex.Pattern;
 @Component
 public class ParseRuleExecutor {
 
+    private static final int MAX_REGEX_PATTERN_CHARS = 8 * 1024;
+    private static final int MAX_REGEX_INPUT_CHARS = 256 * 1024;
+    private static final int MAX_REGEX_QUANTIFIERS = 128;
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final Pattern NAMED_GROUP = Pattern.compile("\\(\\?<([A-Za-z][A-Za-z0-9_]*)>");
     private static final Pattern KV = Pattern.compile("([A-Za-z0-9_.-]+)=(\"[^\"]*\"|'[^']*'|\\S+)");
@@ -55,6 +58,7 @@ public class ParseRuleExecutor {
             if (rule.pattern() == null || rule.pattern().isBlank()) {
                 throw new IllegalArgumentException("REGEX parse rule requires pattern");
             }
+            validateRegexBudget(rule.pattern());
             regex = Pattern.compile(rule.pattern());
         }
         List<CompiledFilter> filters = new ArrayList<>();
@@ -71,6 +75,9 @@ public class ParseRuleExecutor {
     public Result execute(CompiledRule compiled, String input) {
         if (compiled == null || input == null || input.isBlank()) {
             return Result.notMatched();
+        }
+        if ("REGEX".equals(compiled.format()) && input.length() > MAX_REGEX_INPUT_CHARS) {
+            return new Result(false, Map.of(), "REGEX input exceeds " + MAX_REGEX_INPUT_CHARS + " characters");
         }
         try {
             Map<String, String> extracted = switch (compiled.format()) {
@@ -129,6 +136,38 @@ public class ParseRuleExecutor {
         }
         if (output.isEmpty() && rule.setFields().isEmpty()) return null;
         return output;
+    }
+
+    private static void validateRegexBudget(String pattern) {
+        if (pattern.length() > MAX_REGEX_PATTERN_CHARS) {
+            throw new IllegalArgumentException("REGEX pattern exceeds " + MAX_REGEX_PATTERN_CHARS + " characters");
+        }
+        int quantifiers = 0;
+        boolean escaped = false;
+        for (int index = 0; index < pattern.length(); index++) {
+            char current = pattern.charAt(index);
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (current == '\\') {
+                escaped = true;
+                continue;
+            }
+            if ((current == '*' || current == '+')
+                    || (current == '?' && (index == 0 || pattern.charAt(index - 1) != '('))) quantifiers++;
+            if (current == '{' && index + 1 < pattern.length()
+                    && Character.isDigit(pattern.charAt(index + 1))) quantifiers++;
+        }
+        if (quantifiers > MAX_REGEX_QUANTIFIERS) {
+            throw new IllegalArgumentException("REGEX pattern exceeds the quantifier budget");
+        }
+        // Back references make execution cost depend on captured text and are
+        // not needed for field extraction. Reject them rather than allowing a
+        // tenant rule to defeat the bounded linear parser path.
+        if (pattern.matches("(?s).*\\\\[1-9][0-9]*.*")) {
+            throw new IllegalArgumentException("REGEX back references are not supported");
+        }
     }
 
     private static Map<String, String> parseJson(String input) {

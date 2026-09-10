@@ -42,6 +42,7 @@ const props = defineProps<{
   goSearch: () => void
   goAi?: (alarmId: string) => void
   goSoar?: (alarmId: string) => void
+  assigneeOptions?: string[]
   canWrite?: boolean
 }>()
 
@@ -167,7 +168,9 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
       <el-select v-model="batchStatus" size="small" style="width:150px">
         <el-option v-for="item in DISP_STATUSES" :key="item" :label="t('statuses.' + item) || item" :value="item" />
       </el-select>
-      <el-input v-model="batchAssignee" size="small" :placeholder="t('drawer.assigneePlaceholder')" style="width:180px" />
+      <el-select v-model="batchAssignee" filterable allow-create default-first-option clearable size="small" :placeholder="t('drawer.assigneePlaceholder')" style="width:180px">
+        <el-option v-for="assignee in props.assigneeOptions ?? []" :key="assignee" :label="assignee" :value="assignee" />
+      </el-select>
       <el-button size="small" type="primary" :loading="batchBusy" @click="handleBatchUpdate">{{ t('common.update') }}</el-button>
       <span v-if="batchError" class="alarm-batch-error" role="alert">{{ batchError }}</span>
     </div>
@@ -201,6 +204,6 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
       <el-pagination v-model:current-page="pageNum" :page-size="props.alarmPageSize" :total="props.alarmPageData.total" :page-sizes="[10, 20, 50, 100]" layout="total, sizes, prev, pager, next" @current-change="props.loadPage" @size-change="() => { pageNum = 1; props.loadPage() }" />
     </div>
 
-    <AlarmDispositionDrawer v-model="drawerVisible" :alarm="currentAlarm" :go-case="props.goCase" :go-search="props.goSearch" :go-ai="props.goAi" :go-soar="props.goSoar" :can-write="props.canWrite" @updated="props.loadPage" />
+    <AlarmDispositionDrawer v-model="drawerVisible" :alarm="currentAlarm" :go-case="props.goCase" :go-search="props.goSearch" :go-ai="props.goAi" :go-soar="props.goSoar" :assignee-options="props.assigneeOptions" :can-write="props.canWrite" @updated="props.loadPage" />
   </div>
 </template>

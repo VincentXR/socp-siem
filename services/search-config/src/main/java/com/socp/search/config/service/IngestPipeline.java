@@ -17,6 +17,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.concurrent.atomic.AtomicReference;
 
 /** Batches normalized ingest events into the durable search/Kafka commit boundary. */
@@ -69,6 +71,25 @@ public class IngestPipeline {
     }
 
     public Map<String, Object> process(String body, String defaultCollector) {
+        return process(body, defaultCollector, null);
+    }
+
+    /**
+     * Process a batch with an optional HTTP idempotency key.  The key is
+     * scoped to the request body by contract; each non-empty line receives a
+     * deterministic suffix and payload fingerprint so retries preserve
+     * producer event identity while a reused key with a different body does
+     * not hide a real event. Genuine duplicate logs without a key remain
+     * separate events.
+     */
+    public Map<String, Object> process(String body, String defaultCollector, String idempotencyKey) {
+        if (idempotencyKey != null) {
+            idempotencyKey = idempotencyKey.trim();
+            if (idempotencyKey.length() > 256) {
+                throw new ApiException(400, "Idempotency-Key must not exceed 256 characters");
+            }
+            if (idempotencyKey.isBlank()) idempotencyKey = null;
+        }
         if (body == null || body.isBlank()) return emptyResult();
         int accepted = 0;
         int skipped = 0;
@@ -77,14 +98,22 @@ public class IngestPipeline {
         List<IngestEventNormalizer.NormalizedEvent> pending = new ArrayList<>(BATCH_SIZE);
         var lines = body.lines().iterator();
         try {
+            int lineNumber = 0;
             while (lines.hasNext()) {
                 String line = lines.next();
+                int currentLine = lineNumber++;
                 String raw = line.trim();
-                if (raw.isEmpty()) continue;
-                long bytes = raw.length();
+                if (raw.isEmpty()) {
+                    continue;
+                }
+                long bytes = raw.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
                 IngestEventNormalizer.NormalizedEvent normalized;
                 try {
-                    normalized = normalizer.normalize(raw, defaultCollector);
+                    String stableId = idempotencyKey == null ? null
+                            : stableBatchIdentity(idempotencyKey, currentLine, raw);
+                    normalized = idempotencyKey == null
+                            ? normalizer.normalize(raw, defaultCollector)
+                            : normalizer.normalize(raw, defaultCollector, stableId);
                 } catch (RuntimeException invalidLine) {
                     skipped++;
                     bump(perCollector, defaultCollector, 0, 1, 0, bytes);
@@ -113,6 +142,18 @@ public class IngestPipeline {
         }
         recordMetrics(accepted, skipped, forwarded, perCollector);
         return result(accepted, skipped, forwarded, perCollector, defaultCollector);
+    }
+
+    private static String stableBatchIdentity(String key, int lineNumber, String raw) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest(raw.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder fingerprint = new StringBuilder(bytes.length * 2);
+            for (byte value : bytes) fingerprint.append(String.format("%02x", value & 0xff));
+            return key + ":" + lineNumber + ":" + fingerprint;
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
     }
 
     private FlushResult flush(List<IngestEventNormalizer.NormalizedEvent> batch,

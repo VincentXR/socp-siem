@@ -9,6 +9,7 @@ import com.socp.rule.engine.Suppressor;
 import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
+import com.socp.rule.state.StatefulRule;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -214,6 +215,60 @@ class RuleEngineTest {
                     .get(3, TimeUnit.SECONDS);
             assertEquals(1, results.size());
             assertTrue(results.get(0).isEmpty());
+        }
+    }
+
+    @Test
+    void durableCallbackRunsBeforeCompletionSignal() throws Exception {
+        AtomicBoolean callbackRan = new AtomicBoolean();
+        try (RuleEngine engine = new RuleEngine(List.of(), List.of())) {
+            engine.start();
+            engine.ingestAndAwait(ev("system", "heartbeat", "10.0.0.101", null), () -> {
+                callbackRan.set(true);
+            }).get(3, TimeUnit.SECONDS);
+            assertTrue(callbackRan.get());
+        }
+    }
+
+    @Test
+    void partialStateRestoreRollsBackEarlierRules() {
+        TestStatefulRule first = new TestStatefulRule("first", "old", false);
+        TestStatefulRule failing = new TestStatefulRule("failing", "old", true);
+        try (RuleEngine engine = new RuleEngine(List.of(first, failing), List.of())) {
+            List<String> restored = engine.restoreStates(Map.of(
+                    "first", new RuleEngine.RuleState("first", "v1", bytes("new")),
+                    "failing", new RuleEngine.RuleState("failing", "v1", bytes("bad"))));
+
+            assertTrue(restored.isEmpty());
+            assertEquals("old", first.state);
+        }
+    }
+
+    private static byte[] bytes(String value) {
+        return value.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    private static final class TestStatefulRule implements StatefulRule {
+        private final String id;
+        private final boolean failOnBadState;
+        private String state;
+
+        private TestStatefulRule(String id, String state, boolean failOnBadState) {
+            this.id = id;
+            this.state = state;
+            this.failOnBadState = failOnBadState;
+        }
+
+        @Override public String id() { return id; }
+        @Override public String name() { return id; }
+        @Override public void accept(SecurityEvent event) { }
+        @Override public List<Alert> drain() { return List.of(); }
+        @Override public String stateVersion() { return "v1"; }
+        @Override public byte[] snapshotState() { return bytes(state); }
+        @Override public void restoreState(byte[] serializedState) {
+            String next = new String(serializedState, java.nio.charset.StandardCharsets.UTF_8);
+            if (failOnBadState && "bad".equals(next)) throw new IllegalStateException("corrupt state");
+            state = next;
         }
     }
 

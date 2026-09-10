@@ -68,9 +68,14 @@ public final class CorrelationRule extends AbstractRule implements StatefulRule 
 
         State st = states.get(key, State::new);
         synchronized (st) {
-            // 窗口过期则重置
-            if (st.firstTs != null && event.timestamp().minus(window).isAfter(st.firstTs)) {
+            // Sequence order follows the serialized processing order. Event
+            // time only bounds the correlation window, using the greatest
+            // timestamp seen so a late record cannot move the window back.
+            Instant watermark = st.lastTs == null || st.lastTs.isBefore(event.timestamp())
+                    ? event.timestamp() : st.lastTs;
+            if (st.firstTs != null && watermark.minus(window).isAfter(st.firstTs)) {
                 reset(st);
+                watermark = event.timestamp();
             }
 
             boolean matched;
@@ -95,7 +100,7 @@ public final class CorrelationRule extends AbstractRule implements StatefulRule 
             }
             st.evidence.add(event);
             st.step++;
-            st.lastTs = event.timestamp();
+            st.lastTs = watermark;
 
             if (st.step == steps.size()) {
                 Map<String, Object> context = Map.of(

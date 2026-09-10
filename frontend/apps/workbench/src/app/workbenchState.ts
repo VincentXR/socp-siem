@@ -7,6 +7,7 @@ import type { Theme } from '../composables/useTheme'
 /** State shared by the authenticated shell and route-level page components. */
 export interface WorkbenchState {
   theme: Ref<Theme>
+  currentUser: Ref<string>
   currentRole: Ref<string>
   overview: ReturnType<typeof useOverview>
   alarmQuery: ReturnType<typeof useAlarmQuery>

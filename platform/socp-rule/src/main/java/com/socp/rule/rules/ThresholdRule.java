@@ -72,11 +72,14 @@ public final class ThresholdRule extends AbstractRule implements StatefulRule {
                 q.pollFirst();
             }
             q.add(event);
-            // 清理窗口外的旧事件
-            Instant cutoff = event.timestamp().minus(window);
-            while (!q.isEmpty() && q.peekFirst().timestamp().isBefore(cutoff)) {
-                q.pollFirst();
-            }
+            // Kafka preserves order per partition, but a routed entity may be
+            // observed from several partitions. Use the greatest event-time
+            // watermark seen for this bucket so a late record cannot move the
+            // window backwards or resurrect expired evidence.
+            Instant watermark = q.stream().map(SecurityEvent::timestamp)
+                    .max(Instant::compareTo).orElse(event.timestamp());
+            Instant cutoff = watermark.minus(window);
+            q.removeIf(candidate -> candidate.timestamp().isBefore(cutoff));
             if (q.size() >= threshold) {
                 List<SecurityEvent> evidence = new ArrayList<>(q);
                 Map<String, Object> context = Map.of(

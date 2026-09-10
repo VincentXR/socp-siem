@@ -256,6 +256,27 @@ class DetectionEventJournalTest {
     }
 
     @Test
+    void vectorReplayUsesKafkaOffsetsEvenWhenCompletionTimeIsNotAUsefulCut() {
+        DetectionEventEntity before = row("event-7", "tenant-a", "{}");
+        DetectionEventEntity included = row("event-9", "tenant-a", "{}");
+        DetectionEventEntity otherPartition = new DetectionEventEntity(
+                "tenant-a", "event-12", "auth", "host", "raw", "{}", Severity.HIGH.name(),
+                Instant.now(), 5, 12L, "tenant-a|host|host");
+        before.setStatus(DetectionEventStatus.COMPLETED.name());
+        included.setStatus(DetectionEventStatus.COMPLETED.name());
+        otherPartition.setStatus(DetectionEventStatus.COMPLETED.name());
+        when(repository.findByTenantIdAndStatusAndKafkaPartitionInOrderByKafkaPosition(
+                eq("tenant-a"), eq(DetectionEventStatus.COMPLETED.name()), eq(Set.of(4, 5)), any(Pageable.class)))
+                .thenReturn(List.of(before, included, otherPartition));
+
+        List<SecurityEvent> replayed = new java.util.ArrayList<>();
+        journal.replayCompletedAfter("tenant-a", Instant.now().plusSeconds(3600), Set.of(4, 5),
+                Map.of(4, 8L, 5, 20L), replayed::addAll);
+
+        assertThat(replayed).extracting(SecurityEvent::id).containsExactly("event-9");
+    }
+
+    @Test
     void constructorClampsPoliciesAndFromRowsSkipsMalformedJson() {
         DetectionEventJournal configured = new DetectionEventJournal(repository, "", 1,
                 "0", "not-a-duration");

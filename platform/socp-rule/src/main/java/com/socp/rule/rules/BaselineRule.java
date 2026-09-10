@@ -96,13 +96,24 @@ public final class BaselineRule extends AbstractRule implements StatefulRule {
         State st = states.get(key, State::new);
         synchronized (st) {
             long idx = event.timestamp().getEpochSecond() / bucketSeconds;
+            // Late event-time records do not rewind a baseline bucket. The
+            // current bucket is advanced only by the watermark, making
+            // replay and multi-partition delivery deterministic.
+            if (st.bucketIdx != Long.MIN_VALUE && idx < st.bucketIdx) return;
             if (idx != st.bucketIdx) {
-                // 桶滚动：把上一个桶的计数沉淀进历史基线
+                // Fill skipped buckets with zero counts before opening the
+                // current bucket, so a long quiet period remains part of the
+                // baseline instead of collapsing into one jump.
                 if (st.bucketIdx != Long.MIN_VALUE) {
-                    st.history.addLast(st.count);
-                    while (st.history.size() > baselineWindows) st.history.pollFirst();
+                    while (st.bucketIdx < idx) {
+                        st.history.addLast(st.count);
+                        while (st.history.size() > baselineWindows) st.history.pollFirst();
+                        st.bucketIdx++;
+                        st.count = 0;
+                    }
+                } else {
+                    st.bucketIdx = idx;
                 }
-                st.bucketIdx = idx;
                 st.count = 0;
                 st.alerted = false;
                 st.evidence.clear();

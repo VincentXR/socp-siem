@@ -7,7 +7,7 @@ import { WORKBENCH_STATE } from '../src/app/workbenchState'
 const mocks = vi.hoisted(() => ({
   listRules: vi.fn().mockResolvedValue([{ id: 'original', name: 'Existing rule', type: 'pattern', severity: 'HIGH', status: 'DISABLED', enabled: false, match: [{ field: 'msg', op: 'eq', value: 'alert' }] }]),
   gasStats: vi.fn().mockResolvedValue({ rules: 1, queueLoad: 0 }),
-  listFields: vi.fn().mockResolvedValue([]), listRefSets: vi.fn().mockResolvedValue([]),
+  listFields: vi.fn().mockResolvedValue([]), listRefSets: vi.fn().mockResolvedValue([]), listTechniques: vi.fn().mockResolvedValue([]),
   createGasRule: vi.fn().mockResolvedValue(null), updateGasRule: vi.fn(),
   testGasRules: vi.fn().mockResolvedValue([]),
 }))

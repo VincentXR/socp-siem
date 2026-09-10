@@ -26,6 +26,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -174,7 +175,8 @@ public class LogSourceController {
     })
     public Map<String, Object> ingest(
             @RequestBody String body,
-            HttpServletRequest request) {
+            HttpServletRequest request,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
         // 采集器可用请求头显式声明身份；未声明则按每行的 collector 字段归属运行指标
         validateIngestBody(body);
         String trustedCollector = (String) request.getAttribute(
@@ -185,9 +187,14 @@ public class LogSourceController {
             if (service != null && !service.isBlank()) trustedCollector = "service:" + service;
         }
         // The annotation guarantees one of these identities for real HTTP
-        // requests.  The header is retained only as a local-development
-        // compatibility hint and is never used as the trusted identity.
-        return pipeline.process(body, trustedCollector);
+        // requests. Idempotency-Key only stabilizes event IDs for safe client
+        // retries; it is never used as the trusted collector identity.
+        return pipeline.process(body, trustedCollector, idempotencyKey);
+    }
+
+    /** Keeps direct Java integrations source-compatible with the pre-key ingress signature. */
+    public Map<String, Object> ingest(String body, HttpServletRequest request) {
+        return ingest(body, request, null);
     }
 
     private void validateIngestBody(String body) {

@@ -63,6 +63,8 @@ public class DetectEngineService {
     private final RuleProcessingObserver processingObserver;
     private final DetectionStateSnapshotStore snapshotStore;
     private final Map<String, AtomicLong> snapshotCounters = new ConcurrentHashMap<>();
+    /** Last durable Kafka position included in each tenant/shard snapshot. */
+    private final Map<String, Map<Integer, Long>> snapshotOffsets = new ConcurrentHashMap<>();
     private final AtomicReference<Set<Integer>> assignedPartitions = new AtomicReference<>(Set.of());
     /** Starts READY for source-compatible unit callers; Spring invokes start before traffic. */
     private final AtomicReference<RecoveryStatus> recoveryStatus =
@@ -173,6 +175,7 @@ public class DetectEngineService {
             engines.clear();
             engineLastAccess.clear();
             snapshotCounters.clear();
+            snapshotOffsets.clear();
             suppressor.close();
         } finally {
             engineLifecycle.writeLock().unlock();
@@ -310,32 +313,69 @@ public class DetectEngineService {
 
     private void restoreState(String tenant, RuleEngine replacement, Set<Integer> partitions, int shard) {
         if (snapshotStore != null && stateStore.supportsCheckpointReplay()) {
-                Map<String, RuleEngine.RuleState> snapshots = new LinkedHashMap<>();
-                java.time.Instant checkpoint = null;
-                for (String ruleId : replacement.statefulRuleIds()) {
-                    var latest = snapshotStore.latest(tenant, ruleId, normalizeShard(shard));
-                    if (latest.isEmpty()) continue;
-                    var snapshot = latest.get();
-                    snapshots.put(ruleId, new RuleEngine.RuleState(ruleId,
-                            snapshot.ruleVersion(), snapshot.serializedState()));
-                    if (checkpoint == null || snapshot.snapshotTimestamp().isBefore(checkpoint)) {
-                        checkpoint = snapshot.snapshotTimestamp();
-                    }
+            List<String> statefulRuleIds = replacement.statefulRuleIds();
+            Map<String, RuleEngine.RuleState> snapshots = new LinkedHashMap<>();
+            Map<Integer, Long> checkpointOffsets = new LinkedHashMap<>();
+            java.time.Instant checkpoint = null;
+            java.time.Instant referenceTimestamp = null;
+            Map<Integer, Long> referenceOffsets = null;
+            boolean coherent = true;
+            boolean complete = !statefulRuleIds.isEmpty();
+            for (String ruleId : statefulRuleIds) {
+                var latest = snapshotStore.latest(tenant, ruleId, normalizeShard(shard));
+                if (latest.isEmpty()) {
+                    complete = false;
+                    continue;
                 }
-                if (!snapshots.isEmpty() && checkpoint != null) {
-                    List<String> restored = replacement.restoreStates(snapshots);
-                    if (!restored.isEmpty()) {
+                var snapshot = latest.get();
+                snapshots.put(ruleId, new RuleEngine.RuleState(ruleId,
+                        snapshot.ruleVersion(), snapshot.serializedState()));
+                if (checkpoint == null || snapshot.snapshotTimestamp().isBefore(checkpoint)) {
+                    checkpoint = snapshot.snapshotTimestamp();
+                }
+                // Every rule row in a generation must describe the same state
+                // boundary. Mixed timestamps or vectors indicate an older
+                // interrupted write; replay the durable window instead of
+                // double-applying the newer rows.
+                if (referenceOffsets == null) referenceOffsets = snapshot.partitionOffsets();
+                else if (!referenceOffsets.equals(snapshot.partitionOffsets())) coherent = false;
+                if (referenceTimestamp == null) referenceTimestamp = snapshot.snapshotTimestamp();
+                else if (!referenceTimestamp.equals(snapshot.snapshotTimestamp())) {
+                    coherent = false;
+                }
+            }
+            if (complete && coherent && checkpoint != null) {
+                if (referenceOffsets != null) checkpointOffsets.putAll(referenceOffsets);
+                List<String> restored = replacement.restoreStates(snapshots);
+                if (restored.size() == statefulRuleIds.size()) {
+                    String key = engineKey(tenant, normalizeShard(shard));
+                    snapshotOffsets.put(key, new ConcurrentHashMap<>(checkpointOffsets));
+                    if (checkpointOffsets.isEmpty()) {
+                        // Legacy snapshots have no vector. Keep their original
+                        // timestamp-tail behaviour until the next checkpoint.
                         stateStore.replayCompletedAfter(tenant, checkpoint, partitions,
                                 events -> replacement.restore(events.stream()
                                         .filter(event -> tenant.equals(event.tenantId()))
                                         .filter(event -> shardFor(event) == normalizeShard(shard))
                                         .toList()));
-                        org.slf4j.LoggerFactory.getLogger(DetectEngineService.class).info(
-                                "Detection state restored from snapshots tenant={} rules={} checkpoint={}",
-                                tenant, restored.size(), checkpoint);
-                        return;
+                    } else {
+                        stateStore.replayCompletedAfter(tenant, checkpoint, partitions,
+                                checkpointOffsets,
+                                events -> replacement.restore(events.stream()
+                                        .filter(event -> tenant.equals(event.tenantId()))
+                                        .filter(event -> shardFor(event) == normalizeShard(shard))
+                                        .toList()));
                     }
+                    org.slf4j.LoggerFactory.getLogger(DetectEngineService.class).info(
+                            "Detection state restored from snapshots tenant={} rules={} checkpoint={} partitions={}",
+                            tenant, restored.size(), checkpoint, checkpointOffsets.size());
+                    return;
                 }
+            }
+            // A missing, incompatible, or corrupt rule snapshot must never be
+            // paired with a tail replay. Start from the durable event window
+            // instead so every stateful rule sees the same history boundary.
+            snapshotOffsets.remove(engineKey(tenant, normalizeShard(shard)));
         }
         if (partitions == null || partitions.isEmpty()) {
             stateStore.replayRecentForTenant(tenant, Duration.ofHours(24), events -> replacement.restore(
@@ -406,6 +446,7 @@ public class DetectEngineService {
             engines.clear();
             engineLastAccess.clear();
             snapshotCounters.clear();
+            snapshotOffsets.clear();
             java.util.function.Consumer<List<SecurityEvent>> restoreBatch = events -> {
                 Map<String, List<SecurityEvent>> byEngine = events.stream()
                         .collect(java.util.stream.Collectors.groupingBy(event ->
@@ -442,6 +483,7 @@ public class DetectEngineService {
             engines.clear();
             engineLastAccess.clear();
             snapshotCounters.clear();
+            snapshotOffsets.clear();
             throw failure;
         } finally {
             engineLifecycle.writeLock().unlock();
@@ -472,6 +514,7 @@ public class DetectEngineService {
                 RuleEngine removed = engines.remove(tenant);
                 engineLastAccess.remove(tenant);
                 snapshotCounters.remove(tenant);
+                snapshotOffsets.remove(tenant);
                 if (removed != null) removed.close();
             }
         } finally {
@@ -570,7 +613,11 @@ public class DetectEngineService {
             }
             RuleEngine.Submission submission;
             try {
-                submission = engineFor(ev.tenantId(), shardFor(ev)).submit(ev, true);
+                RuleEngine target = engineFor(ev.tenantId(), shardFor(ev));
+                // HTTP ingestion has no Kafka position to acknowledge. The
+                // completion handler below owns its checkpoint cadence; adding
+                // a worker callback here would count every event twice.
+                submission = target.submit(ev, true);
             } catch (RuntimeException recoveryFailure) {
                 markDegraded(recoveryFailure);
                 if (claim == DetectionEventClaim.NEW) stateStore.remove(ev);
@@ -603,6 +650,12 @@ public class DetectEngineService {
 
     /** Completion is signalled only after EventAlertSink durable effects return. */
     public CompletableFuture<Void> ingestFromKafkaAndAwait(SecurityEvent ev) {
+        return ingestFromKafkaAndAwait(ev, null, null);
+    }
+
+    /** Kafka ingestion with a position callback ordered before completion. */
+    public CompletableFuture<Void> ingestFromKafkaAndAwait(SecurityEvent ev,
+                                                           Integer partition, Long offset) {
         engineLifecycle.readLock().lock();
         try {
             if (!isReady()) {
@@ -610,7 +663,14 @@ public class DetectEngineService {
                         new IllegalStateException("detection state recovery is " + recoveryStatus().name()));
             }
             try {
-                return engineFor(ev.tenantId(), shardFor(ev)).ingestAndAwait(ev);
+                RuleEngine target = engineFor(ev.tenantId(), shardFor(ev));
+                CompletableFuture<Void> durable = target.ingestAndAwait(ev,
+                        () -> recordDurablePosition(ev, partition, offset));
+                // Keep the snapshot tied to the engine instance that processed
+                // the event. A concurrent hot reload can replace the map entry
+                // before the caller observes completion; looking the engine up
+                // again there could checkpoint the fresh, empty replacement.
+                return durable.thenRun(() -> snapshotAfterDurable(target, ev, partition, offset));
             } catch (RuntimeException recoveryFailure) {
                 markDegraded(recoveryFailure);
                 return CompletableFuture.failedFuture(recoveryFailure);
@@ -620,23 +680,45 @@ public class DetectEngineService {
         }
     }
 
+    private void recordDurablePosition(SecurityEvent event, Integer partition, Long offset) {
+        if (event == null || partition == null || offset == null || partition < 0 || offset < 0) return;
+        String key = engineKey(event.requireTenantId(), shardFor(event));
+        snapshotOffsets.computeIfAbsent(key, ignored -> new ConcurrentHashMap<>())
+                .merge(partition, offset, Math::max);
+    }
+
     /** Persist a versioned rule-state checkpoint after durable sink completion. */
     public void snapshotAfterDurable(SecurityEvent event, Integer partition, Long offset) {
         if (snapshotStore == null || event == null) return;
+        snapshotAfterDurable(engineFor(event.tenantId(), shardFor(event)), event, partition, offset);
+    }
+
+    /** Capture from a known engine instance; used by its worker callback during a hot swap. */
+    private void snapshotAfterDurable(RuleEngine engine, SecurityEvent event,
+                                      Integer partition, Long offset) {
+        if (snapshotStore == null || event == null || engine == null) return;
         String tenant = event.requireTenantId();
         long every = Math.max(1L, snapshotEveryEvents);
         int shard = shardFor(event);
         String counterKey = engineKey(tenant, shard);
         long count = snapshotCounters.computeIfAbsent(counterKey, ignored -> new AtomicLong()).incrementAndGet();
+        Map<Integer, Long> offsets = snapshotOffsets.computeIfAbsent(counterKey,
+                ignored -> new ConcurrentHashMap<>());
+        if (partition != null && offset != null && partition >= 0 && offset >= 0) {
+            offsets.merge(partition, offset, Math::max);
+        }
         if (count % every != 0) return;
         try {
-            RuleEngine engine = engineFor(tenant, shard);
             Map<String, RuleEngine.RuleState> states = engine.snapshotStates();
             java.time.Instant timestamp = java.time.Instant.now();
             long processedOffset = offset == null ? -1L : offset;
-            states.forEach((ruleId, state) -> snapshotStore.save(new DetectionStateSnapshot(
-                    ruleId, state.version(), tenant, shard, processedOffset,
-                    state.serializedState(), timestamp)));
+            List<DetectionStateSnapshot> snapshots = states.entrySet().stream()
+                    .map(entry -> new DetectionStateSnapshot(entry.getKey(), entry.getValue().version(),
+                            tenant, shard, processedOffset, entry.getValue().serializedState(), timestamp,
+                            Map.copyOf(offsets)))
+                    .toList();
+            if (snapshotStore.supportsAtomicBatch()) snapshotStore.saveAll(snapshots);
+            else snapshots.forEach(snapshotStore::save);
         } catch (RuntimeException failure) {
             // Checkpoints are an optimization. The durable journal remains the
             // source of truth when a snapshot write is temporarily unavailable.

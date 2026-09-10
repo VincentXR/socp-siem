@@ -35,9 +35,11 @@ const props = withDefaults(defineProps<{
   goSearch: () => void
   goAi?: (alarmId: string) => void
   goSoar?: (alarmId: string) => void
+  assigneeOptions?: string[]
   canWrite?: boolean
 }>(), {
   canWrite: true,
+  assigneeOptions: () => [],
 })
 
 const emit = defineEmits<{
@@ -69,6 +71,11 @@ const tiHits = computed<Ioc[]>(() => {
   } catch {
     return []
   }
+})
+const assigneeOptions = computed(() => {
+  const values = new Set(props.assigneeOptions)
+  if (disposition.value?.assignee) values.add(disposition.value.assignee)
+  return [...values].filter(Boolean)
 })
 
 async function loadDetails(alarm: Alarm) {
@@ -215,7 +222,9 @@ function openEvidenceSearch() {
         <el-button type="primary" @click="changeStatus">{{ t('common.update') }}</el-button>
       </div>
       <div v-if="props.canWrite" style="display:flex;gap:8px;margin-bottom:14px">
-        <el-input v-model="newAssignee" :placeholder="t('drawer.assigneePlaceholder')" /><el-button @click="doAssign">{{ t('common.assign') }}</el-button>
+        <el-select v-model="newAssignee" filterable allow-create default-first-option clearable :placeholder="t('drawer.assigneePlaceholder')" style="flex:1">
+          <el-option v-for="assignee in assigneeOptions" :key="assignee" :label="assignee" :value="assignee" />
+        </el-select><el-button @click="doAssign">{{ t('common.assign') }}</el-button>
       </div>
       <div v-else class="drawer-readonly-hint">{{ t('drawer.readOnly') }}</div>
 

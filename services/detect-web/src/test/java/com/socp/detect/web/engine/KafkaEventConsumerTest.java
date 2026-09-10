@@ -96,7 +96,7 @@ class KafkaEventConsumerTest {
     void kafkaOwnershipMetadataIsPersistedWithTheEventClaim() {
         given(stateStore.claim(any(SecurityEvent.class), eq(2), eq(42L), anyString()))
                 .willReturn(DetectionEventClaim.NEW);
-        given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class)))
+        given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), eq(2), eq(42L)))
                 .willReturn(CompletableFuture.completedFuture(null));
         KafkaEventConsumer consumer = new KafkaEventConsumer(engine, stateStore);
 
@@ -108,7 +108,7 @@ class KafkaEventConsumerTest {
         verify(stateStore).claim(any(SecurityEvent.class), eq(2), eq(42L),
                 eq("default|src_ip|198.51.100.9"));
         verify(stateStore, never()).markCompleted("partition-test-1");
-        verify(engine).ingestFromKafkaAndAwait(any(SecurityEvent.class));
+        verify(engine).ingestFromKafkaAndAwait(any(SecurityEvent.class), eq(2), eq(42L));
     }
 
     @Test

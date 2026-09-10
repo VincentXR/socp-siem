@@ -25,6 +25,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.io.IOException;
@@ -140,10 +141,21 @@ public class RuleController {
     }
 
     /** Local HTTP ingress for verification; production events normally arrive through Kafka. */
+    public ResponseEntity<DetectionIngestResponse> ingest(@Valid @RequestBody DetectionIngestRequest request) {
+        return ingest(request, null);
+    }
+
+    /**
+     * Header-aware ingress. The unannotated overload above keeps direct Java callers
+     * source-compatible while Spring uses this method for HTTP requests.
+     */
     @RequireRole({"admin", "analyst"})
     @PostMapping("/ingest")
-    public ResponseEntity<DetectionIngestResponse> ingest(@Valid @RequestBody DetectionIngestRequest request) {
-        boolean accepted = engine.ingest(request.toSecurityEvent(TenantContext.require()));
+    public ResponseEntity<DetectionIngestResponse> ingest(@Valid @RequestBody DetectionIngestRequest request,
+                                                         @RequestHeader(value = "Idempotency-Key", required = false)
+                                                         String idempotencyKey) {
+        String fallback = normalizedIdempotencyKey(idempotencyKey);
+        boolean accepted = engine.ingest(request.toSecurityEvent(TenantContext.require(), fallback));
         Object queueLoad = engine.stats().get("queueLoad");
         if (!accepted) {
             return ResponseEntity.status(503).header("Retry-After", "2")
@@ -153,11 +165,18 @@ public class RuleController {
     }
 
     /** NDJSON batch ingress used by SEARCH forwarding. */
+    public DetectionBulkIngestResponse ingestBulk(@RequestBody String body) {
+        return ingestBulk(body, null);
+    }
+
+    /** Header-aware batch ingress; see the single-event overload for compatibility rationale. */
     @RequireRole({"admin", "analyst"})
     @PostMapping(value = "/ingest/bulk", consumes = {
             MediaType.APPLICATION_JSON_VALUE, "application/x-ndjson", MediaType.TEXT_PLAIN_VALUE
     })
-    public DetectionBulkIngestResponse ingestBulk(@RequestBody String body) {
+    public DetectionBulkIngestResponse ingestBulk(@RequestBody String body,
+                                                  @RequestHeader(value = "Idempotency-Key", required = false)
+                                                  String idempotencyKey) {
         if (body != null && body.length() > 16 * 1024 * 1024) {
             throw new org.springframework.web.server.ResponseStatusException(
                     org.springframework.http.HttpStatus.PAYLOAD_TOO_LARGE, "bulk body exceeds 16 MiB");
@@ -170,7 +189,10 @@ public class RuleController {
                 throw new org.springframework.web.server.ResponseStatusException(
                         org.springframework.http.HttpStatus.PAYLOAD_TOO_LARGE, "bulk body exceeds 1000 events");
             }
+            String requestKey = normalizedIdempotencyKey(idempotencyKey);
+            int lineNumber = 0;
             for (String line : lines) {
+                int currentLine = lineNumber++;
                 String payload = line.trim();
                 if (payload.isEmpty()) continue;
                 if (payload.length() > 256 * 1024) {
@@ -181,7 +203,8 @@ public class RuleController {
                     DetectionIngestRequest request = MAPPER.readValue(payload, DetectionIngestRequest.class);
                     if (!validator.validate(request).isEmpty()) {
                         rejected++;
-                    } else if (engine.ingest(request.toSecurityEvent(TenantContext.require()))) accepted++;
+                    } else if (engine.ingest(request.toSecurityEvent(TenantContext.require(),
+                            requestKey == null ? null : requestKey + ":" + currentLine))) accepted++;
                     else rejected++;
                 } catch (Exception malformed) {
                     rejected++;
@@ -189,6 +212,18 @@ public class RuleController {
             }
         }
         return new DetectionBulkIngestResponse(accepted, rejected, engine.stats().get("queueLoad"));
+    }
+
+    private static String normalizedIdempotencyKey(String value) {
+        if (value == null) return null;
+        String normalized = value.trim();
+        if (normalized.isBlank()) return null;
+        if (normalized.length() > 256) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST,
+                    "Idempotency-Key must not exceed 256 characters");
+        }
+        return normalized;
     }
 
     @GetMapping("/alerts")

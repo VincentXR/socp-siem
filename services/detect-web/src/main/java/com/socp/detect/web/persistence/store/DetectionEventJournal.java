@@ -365,6 +365,41 @@ public class DetectionEventJournal implements DetectionStateStore {
         }
     }
 
+    /**
+     * Replay only records whose Kafka position is newer than the checkpoint
+     * vector.  The vector is the complete correctness boundary: completion
+     * timestamps are deliberately not used as a lower bound because producer
+     * and database clocks can make a newer offset look older in wall-clock
+     * order. The journal retention policy keeps this scan bounded.
+     */
+    @Override
+    public void replayCompletedAfter(String tenantId, Instant checkpoint,
+                                     Set<Integer> partitions, Map<Integer, Long> offsets,
+                                     Consumer<List<SecurityEvent>> batchConsumer) {
+        if (offsets == null || offsets.isEmpty()) {
+            replayCompletedAfter(tenantId, checkpoint, partitions, batchConsumer);
+            return;
+        }
+        if (tenantId == null || tenantId.isBlank() || batchConsumer == null) return;
+        Set<Integer> owned = partitions == null ? Set.of() : Set.copyOf(partitions);
+        for (int page = 0; ; page++) {
+            org.springframework.data.domain.Pageable request =
+                    org.springframework.data.domain.PageRequest.of(page, replayPageSize);
+            List<DetectionEventEntity> rows = owned.isEmpty()
+                    ? repository.findByTenantIdAndStatusAndOrderByKafkaPosition(
+                            tenantId, DetectionEventStatus.COMPLETED.name(), request)
+                    : repository.findByTenantIdAndStatusAndKafkaPartitionInOrderByKafkaPosition(
+                            tenantId, DetectionEventStatus.COMPLETED.name(), owned, request);
+            List<DetectionEventEntity> tail = rows.stream()
+                    .filter(row -> row.getKafkaPartition() != null && row.getKafkaOffset() != null)
+                    .filter(row -> row.getKafkaOffset() > offsets.getOrDefault(row.getKafkaPartition(), -1L))
+                    .toList();
+            List<SecurityEvent> events = fromRows(tail);
+            if (!events.isEmpty()) batchConsumer.accept(events);
+            if (rows.size() < replayPageSize) break;
+        }
+    }
+
     public Duration retention() {
         return retention;
     }

@@ -122,6 +122,29 @@ class StatefulRuleBehaviorTest {
         assertTrue(rule.stats().containsKey("stateKeys"));
     }
 
+    @Test
+    void thresholdUsesGreatestEventTimeSoLateExpiredRecordsDoNotReopenWindow() {
+        ThresholdRule rule = new ThresholdRule("threshold", "Threshold", ignored -> true,
+                event -> event.host(), 3, Duration.ofSeconds(60), Severity.HIGH, "threshold");
+        rule.accept(event("t-1", 100, "h", "yes"));
+        rule.accept(event("t-2", 101, "h", "yes"));
+        rule.accept(event("t-late", 0, "h", "yes"));
+
+        assertTrue(rule.drain().isEmpty());
+    }
+
+    @Test
+    void baselineIgnoresLateBucketsAndRecordsSkippedQuietBuckets() {
+        BaselineRule rule = new BaselineRule("baseline", "Baseline", ignored -> true,
+                SecurityEvent::host, Duration.ofSeconds(60), 4, 2, 1.0, 1,
+                Severity.HIGH, "baseline");
+        rule.accept(event("b-1", 0, "h", "value"));
+        rule.accept(event("b-2", 180, "h", "value"));
+        rule.accept(event("b-late", 60, "h", "value"));
+
+        assertEquals(3, rule.snapshot().getFirst().get("samples"));
+    }
+
     private static SecurityEvent event(String id, long seconds, String host) {
         return event(id, seconds, host, "value");
     }

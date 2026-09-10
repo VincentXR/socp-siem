@@ -65,6 +65,37 @@ public interface DetectionEventRepository extends TenantScopedRepository<Detecti
             @Param("partitions") Set<Integer> partitions, @Param("after") Instant after,
             Pageable pageable);
 
+    @Query("select e from DetectionEventEntity e where e.tenantId = :tenant and e.status = :status "
+            + "and e.kafkaPartition is not null and e.kafkaOffset is not null "
+            + "order by e.kafkaPartition asc, e.kafkaOffset asc, e.completedAt asc, e.sourceEventId asc")
+    List<DetectionEventEntity> findByTenantIdAndStatusAndOrderByKafkaPosition(
+            @Param("tenant") String tenantId, @Param("status") String status,
+            Pageable pageable);
+
+    @Query("select e from DetectionEventEntity e where e.tenantId = :tenant and e.status = :status "
+            + "and e.kafkaPartition in :partitions and e.kafkaOffset is not null "
+            + "order by e.kafkaPartition asc, e.kafkaOffset asc, e.completedAt asc, e.sourceEventId asc")
+    List<DetectionEventEntity> findByTenantIdAndStatusAndKafkaPartitionInOrderByKafkaPosition(
+            @Param("tenant") String tenantId, @Param("status") String status,
+            @Param("partitions") Set<Integer> partitions, Pageable pageable);
+
+    /** Legacy timestamp-bounded signatures retained for source compatibility. */
+    @Query("select e from DetectionEventEntity e where e.tenantId = :tenant and e.status = :status "
+            + "and e.completedAt > :after and e.kafkaPartition is not null "
+            + "order by e.kafkaPartition asc, e.kafkaOffset asc, e.completedAt asc, e.sourceEventId asc")
+    List<DetectionEventEntity> findByTenantIdAndStatusAndCompletedAtAfterOrderByKafkaPosition(
+            @Param("tenant") String tenantId, @Param("status") String status,
+            @Param("after") Instant after, Pageable pageable);
+
+    /** Legacy timestamp-bounded signatures retained for source compatibility. */
+    @Query("select e from DetectionEventEntity e where e.tenantId = :tenant and e.status = :status "
+            + "and e.kafkaPartition in :partitions and e.completedAt > :after "
+            + "order by e.kafkaPartition asc, e.kafkaOffset asc, e.completedAt asc, e.sourceEventId asc")
+    List<DetectionEventEntity> findByTenantIdAndStatusAndKafkaPartitionInAndCompletedAtAfterOrderByKafkaPosition(
+            @Param("tenant") String tenantId, @Param("status") String status,
+            @Param("partitions") Set<Integer> partitions, @Param("after") Instant after,
+            Pageable pageable);
+
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
     @Query(value = "delete from t_detection_event where event_id in ("

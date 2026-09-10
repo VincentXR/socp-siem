@@ -92,4 +92,15 @@ class ParseRuleExecutorTest {
                 "bad-convert", null, "KV", null, List.of(), List.of(),
                 List.of(Map.of("type", "convert", "field", "status", "to", "date")), true, 1)));
     }
+
+    @Test
+    void boundsRegexComplexityAndInputSize() {
+        assertThrows(IllegalArgumentException.class, () -> executor.compile(ParseRule.create(
+                "backref", null, "REGEX", "(?<value>\\w+)\\1", List.of(), List.of(), true, 1)));
+        String large = "x".repeat(256 * 1024 + 1);
+        ParseRule rule = ParseRule.create("bounded", null, "REGEX", "(?<value>.+)",
+                List.of(), List.of(), true, 1);
+        ParseRuleExecutor.Result result = executor.execute(rule, large);
+        assertEquals("REGEX input exceeds 262144 characters", result.error());
+    }
 }

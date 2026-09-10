@@ -4,6 +4,7 @@ import com.socp.rule.state.DetectionStateSnapshot;
 import com.socp.rule.state.DetectionStateSnapshotStore;
 
 import java.util.Map;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -17,6 +18,17 @@ public final class InMemoryDetectionStateSnapshotStore implements DetectionState
         snapshots.merge(key(snapshot.tenantId(), snapshot.ruleId(), snapshot.shardId()), snapshot,
                 (previous, candidate) -> previous.snapshotTimestamp().isAfter(candidate.snapshotTimestamp())
                         ? previous : candidate);
+    }
+
+    @Override
+    public boolean supportsAtomicBatch() {
+        return true;
+    }
+
+    @Override
+    public synchronized void saveAll(List<DetectionStateSnapshot> candidates) {
+        if (candidates == null) return;
+        candidates.forEach(this::save);
     }
 
     @Override

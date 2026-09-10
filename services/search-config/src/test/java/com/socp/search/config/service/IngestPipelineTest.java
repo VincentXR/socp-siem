@@ -14,6 +14,7 @@ import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -23,6 +24,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.any;
 
 class IngestPipelineTest {
 
@@ -80,6 +82,29 @@ class IngestPipelineTest {
         assertEquals(503, failure.getCode());
         verify(commit, times(2)).commit(anyList());
         verify(monitor).record(eq("collector-1"), eq(200), eq(0), eq(0), anyLong());
+    }
+
+    @Test
+    void idempotencyFingerprintChangesWhenSameKeyCarriesDifferentPayload() {
+        IngestEventNormalizer normalizer = mock(IngestEventNormalizer.class);
+        IngestionCommitService commit = mock(IngestionCommitService.class);
+        IngestTaskMonitor monitor = mock(IngestTaskMonitor.class);
+        when(monitor.runtime("collector-1", true)).thenReturn(Map.of("eps1m", 0.0));
+        when(normalizer.normalize(anyString(), eq("collector-1"), anyString()))
+                .thenAnswer(invocation -> {
+                    String line = invocation.getArgument(0, String.class);
+                    return new IngestEventNormalizer.NormalizedEvent(
+                            event(line), Map.of("eventId", line), "collector-1");
+                });
+        IngestPipeline pipeline = new IngestPipeline(normalizer, commit, monitor,
+                mock(DetectClient.class), new SimpleMeterRegistry());
+
+        pipeline.process("same", "collector-1", "request-1");
+        pipeline.process("different", "collector-1", "request-1");
+
+        org.mockito.ArgumentCaptor<String> identities = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(normalizer, times(2)).normalize(anyString(), eq("collector-1"), identities.capture());
+        assertNotEquals(identities.getAllValues().get(0), identities.getAllValues().get(1));
     }
 
     private static SearchEvent event(String id) {
