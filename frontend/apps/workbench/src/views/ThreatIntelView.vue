@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useWriteAccess } from '../composables/useWriteAccess'
+const canWrite = useWriteAccess()
 import { useFormDialog } from '../composables/useFormDialog'
 import { useMutation } from '../composables/useMutation'
 import ActionFeedback from '../components/ActionFeedback.vue'
@@ -196,8 +198,8 @@ onMounted(loadTi)
     </FilterToolbar>
     <el-alert v-if="tiMatchResult" :title="tiMatchResult.matched ? t('threat.matched', { value: tiMatchResult.ioc?.value ?? '—', severity: tiMatchResult.ioc?.severity ?? '—' }) : t('threat.noMatch')" :type="tiMatchResult.matched ? 'error' : 'info'" :closable="false" style="margin-bottom:14px" />
     <div class="add-bar">
-      <el-button type="primary" @click="openIocDialog">+ {{ t('threat.addIoc') }}</el-button>
-      <el-button @click="selectIocImport">{{ t('threat.batchImport') }}</el-button>
+      <el-button v-if="canWrite" type="primary" @click="openIocDialog">+ {{ t('threat.addIoc') }}</el-button>
+      <el-button v-if="canWrite" @click="selectIocImport">{{ t('threat.batchImport') }}</el-button>
       <input ref="iocImportInput" type="file" accept=".csv,.json,application/json,text/csv" hidden @change="importIocFile" />
       <span class="hint">{{ t('threat.descriptionHint') }}</span>
     </div>
@@ -208,9 +210,9 @@ onMounted(loadTi)
         <el-form-item :label="t('common.severity')"><el-select v-model="newIoc.severity" style="width:160px"><el-option v-for="s in SEVERITIES" :key="s" :label="t('severities.' + s) || s" :value="s" /></el-select></el-form-item>
         <el-form-item :label="t('common.description')"><el-input v-model="newIoc.description" :placeholder="t('common.description')" /></el-form-item>
       </el-form>
-      <template #footer><el-button @click="showIocDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button type="success" :loading="actionBusy" @click="addIoc">{{ t('common.submit') }}</el-button></template>
+      <template #footer><el-button @click="showIocDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="success" :loading="actionBusy" @click="addIoc">{{ t('common.submit') }}</el-button></template>
     </el-dialog>
-    <el-dialog v-model="showImportPreview" :before-close="importGuard.beforeClose" :title="t('threat.batchImport')" width="760px" :close-on-click-modal="false"><ActionFeedback :error="actionError" /><p v-if="importResult">{{ importResult }}</p><p>{{ t('forms.importPreview', { count: importRows.length, shown: Math.min(importRows.length, 100) }) }}</p><el-table :data="importRows.slice(0, 100)" max-height="360"><el-table-column prop="type" :label="t('common.type')" /><el-table-column prop="value" :label="t('threat.iocValue')" /><el-table-column prop="source" :label="t('common.source')" /></el-table><template #footer><el-button @click="importGuard.cancel">{{ t('common.close') }}</el-button><el-button type="primary" :loading="actionBusy" :disabled="!importRows.length" @click="confirmImport">{{ t('common.submit') }}</el-button></template></el-dialog>
+    <el-dialog v-model="showImportPreview" :before-close="importGuard.beforeClose" :title="t('threat.batchImport')" width="760px" :close-on-click-modal="false"><ActionFeedback :error="actionError" /><p v-if="importResult">{{ importResult }}</p><p>{{ t('forms.importPreview', { count: importRows.length, shown: Math.min(importRows.length, 100) }) }}</p><el-table :data="importRows.slice(0, 100)" max-height="360"><el-table-column prop="type" :label="t('common.type')" /><el-table-column prop="value" :label="t('threat.iocValue')" /><el-table-column prop="source" :label="t('common.source')" /></el-table><template #footer><el-button @click="importGuard.cancel">{{ t('common.close') }}</el-button><el-button v-if="canWrite" type="primary" :loading="actionBusy" :disabled="!importRows.length" @click="confirmImport">{{ t('common.submit') }}</el-button></template></el-dialog>
     <DataTableCard v-model:current-page="iocPage" v-model:page-size="iocSize" :total="iocsFiltered.length" :loading="loading" :error="loadError" :retry="loadTi" :empty-title="t('threat.iocList')" :empty-description="t('threat.description')">
       <el-table :data="iocsPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @sort-change="iocList.onSortChange">
         <el-table-column prop="type" column-key="type" :label="t('common.type')" :width="columnWidth('type', 90)" sortable="custom" />
@@ -218,7 +220,7 @@ onMounted(loadTi)
         <el-table-column prop="severity" column-key="severity" :label="t('common.severity')" :width="columnWidth('severity', 90)" sortable="custom"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
         <el-table-column prop="source" column-key="source" :label="t('common.source')" :width="columnWidth('source', 100)" sortable="custom" show-overflow-tooltip />
         <el-table-column prop="description" column-key="description" :label="t('common.description')" :width="columnWidth('description')" min-width="160" sortable="custom" show-overflow-tooltip />
-        <el-table-column :label="t('common.actions')" width="80" :resizable="false"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeIoc(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column>
+        <el-table-column :label="t('common.actions')" width="80" :resizable="false"><template #default="{ row }"><el-button v-if="canWrite" link type="danger" size="small" @click="removeIoc(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column>
       </el-table>
     </DataTableCard>
   </div>

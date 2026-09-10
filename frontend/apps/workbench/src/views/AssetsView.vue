@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useWriteAccess } from '../composables/useWriteAccess'
+const canWrite = useWriteAccess()
 import { useFormDialog } from '../composables/useFormDialog'
 import { inject } from 'vue'
 import { WORKBENCH_STATE } from '../app/workbenchState'
@@ -179,8 +181,8 @@ onMounted(loadAssets)
     <ActionFeedback :error="actionError" />
     <PageHeader :eyebrow="t('menuGroup.assetsAndIntel')" :title="t('assets.title')" :description="t('assets.description')">
       <template #actions>
-        <el-button type="primary" size="small" @click="openCreateAsset">{{ t('assets.createAsset') }}</el-button>
-        <el-button size="small" @click="selectAssetImport">{{ t('assets.importAssets') }}</el-button>
+        <el-button v-if="canWrite" type="primary" size="small" @click="openCreateAsset">{{ t('assets.createAsset') }}</el-button>
+        <el-button v-if="canWrite" size="small" @click="selectAssetImport">{{ t('assets.importAssets') }}</el-button>
         <el-button size="small" :loading="loading" @click="loadAssets">{{ t('common.refresh') }}</el-button>
         <input ref="assetImportInput" type="file" accept=".csv,.json,application/json,text/csv" hidden @change="importAssetFile" />
       </template>
@@ -212,8 +214,8 @@ onMounted(loadAssets)
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="125" :resizable="false">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="openEditAsset(row as Asset)">{{ t('common.edit') }}</el-button>
-            <el-button link type="danger" size="small" @click="removeAsset(row.id)">{{ t('common.delete') }}</el-button>
+            <el-button v-if="canWrite" link type="primary" size="small" @click="openEditAsset(row as Asset)">{{ t('common.edit') }}</el-button>
+            <el-button v-if="canWrite" link type="danger" size="small" @click="removeAsset(row.id)">{{ t('common.delete') }}</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -230,7 +232,7 @@ onMounted(loadAssets)
       </el-form>
       <template #footer>
         <el-button @click="showAssetDialogGuard.cancel">{{ t('common.cancel') }}</el-button>
-        <el-button type="primary" :disabled="!assetForm.name.trim() || !assetForm.ip.trim()" :loading="actionBusy" @click="saveAsset">{{ t('common.save') }}</el-button>
+        <el-button v-if="canWrite" type="primary" :disabled="!assetForm.name.trim() || !assetForm.ip.trim()" :loading="actionBusy" @click="saveAsset">{{ t('common.save') }}</el-button>
       </template>
     </el-dialog>
   </div>

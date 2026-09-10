@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useWriteAccess } from '../composables/useWriteAccess'
+const canWrite = useWriteAccess()
 import { useFormDialog } from '../composables/useFormDialog'
 import ActionFeedback from '../components/ActionFeedback.vue'
 import 'element-plus/es/components/button/style/css.mjs'
@@ -167,9 +169,9 @@ onMounted(loadAttack)
         <el-form-item :label="t('attack.tactic')"><el-select disabled v-model="techniqueForm.tactic" style="width: 240px"><el-option v-for="tactic in tactics" :key="tactic.id" :label="tactic.name" :value="tactic.id" /></el-select></el-form-item>
         <el-form-item :label="t('attack.detailUrl')"><el-input disabled v-model="techniqueForm.url" /></el-form-item>
         <el-form-item :label="t('common.description')"><el-input disabled v-model="techniqueForm.description" type="textarea" :rows="4" /></el-form-item>
-        <el-form-item :label="t('forms.note')"><el-input v-model="noteText" type="textarea" :rows="5" maxlength="4000" :disabled="noteLoading || Boolean(noteError)" /></el-form-item>
+        <el-form-item :label="t('forms.note')"><el-input :readonly="!canWrite" v-model="noteText" type="textarea" :rows="5" maxlength="4000" :disabled="noteLoading || Boolean(noteError)" /></el-form-item>
       </el-form>
-      <template #footer><el-button @click="noteGuard.cancel">{{ t('common.cancel') }}</el-button><el-button type="primary" :loading="noteLoading" :disabled="Boolean(noteError)" @click="saveTechnique">{{ t('common.save') }}</el-button></template>
+      <template #footer><el-button @click="noteGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="primary" :loading="noteLoading" :disabled="!noteLoaded" @click="saveTechnique">{{ t('common.save') }}</el-button></template>
     </el-dialog>
   </div>
 </template>

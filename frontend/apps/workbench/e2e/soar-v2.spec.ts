@@ -232,6 +232,7 @@ test('SOAR V2 workbench covers draft lifecycle, run inspection and human control
   await expect(page.locator('.soar-v2-stream-state')).toHaveClass(/polling/)
   await page.getByRole('button', { name: /Open in visual editor|在可视化编辑器中打开/ }).click()
   await expect(page.locator('.soar-v2-editor-message')).toContainText('Loaded run path v1')
+  await expect(page.getByRole('dialog', { name: 'Create blank playbook' })).not.toBeVisible()
 
   await page.getByRole('button', { name: 'Back to list', exact: true }).click()
   await page.getByRole('tab', { name: /Approvals/ }).click()

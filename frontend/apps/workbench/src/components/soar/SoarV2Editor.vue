@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useFormDialog } from '../../composables/useFormDialog'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import 'element-plus/es/components/select/style/css.mjs'
 import '@vue-flow/core/dist/style.css'
@@ -112,6 +113,7 @@ const newPlaybookVisible = ref(false)
 const newPlaybookSaving = ref(false)
 const newPlaybookError = ref('')
 const newPlaybookForm = ref({ name: '', description: '', tags: '' })
+const newPlaybookGuard = useFormDialog(newPlaybookVisible, () => newPlaybookForm.value, () => newPlaybookSaving.value)
 
 function defaultDryRunInput(): JsonObject {
   return {
@@ -171,9 +173,10 @@ async function loadCatalog() {
   try {
     const result = await listV2Playbooks(0, 100)
     playbooks.value = result.items
-    const wanted = props.initialPlaybookId && result.items.some(item => item.id === props.initialPlaybookId)
-      ? props.initialPlaybookId : (selectedPlaybookId.value && result.items.some(item => item.id === selectedPlaybookId.value)
-        ? selectedPlaybookId.value : result.items[0]?.id ?? '')
+    const wanted = props.initialPlaybookId || selectedPlaybookId.value
+    if (wanted && !playbooks.value.some(item => item.id === wanted)) {
+      playbooks.value = [await getV2Playbook(wanted), ...playbooks.value]
+    }
     selectedPlaybookId.value = wanted
     if (wanted) await loadVersions()
     else flow.resetToEmpty()
@@ -272,6 +275,7 @@ function openNewPlaybookDialog(): void {
 }
 
 async function createPlaybookAndVersion() {
+  if (newPlaybookSaving.value) return
   if (!discardGuard()) return
   const name = newPlaybookForm.value.name.trim()
   if (!name) {
@@ -323,25 +327,9 @@ async function createVersion() {
 }
 
 /* ---------------- selectors / change handlers ---------------- */
-async function changePlaybook(): Promise<void> {
-  const previous = selectedPlaybookId.value
-  if (!discardGuard()) {
-    selectedPlaybookId.value = previous === '' ? '' : previous
-    return
-  }
-  versions.value = []
-  selectedVersionNo.value = null
-  if (selectedPlaybookId.value) await loadVersions()
-  else flow.resetToEmpty()
-}
-
-async function changeVersion(): Promise<void> {
-  const previous = selectedVersionNo.value
-  if (!discardGuard()) {
-    selectedVersionNo.value = previous
-    return
-  }
-  await loadVersion()
+async function changeVersion(version: number): Promise<void> {
+  if (loading.value || !discardGuard()) return
+  await loadVersion(version)
 }
 
 /* ---------------- apply JSON ---------------- */
@@ -534,6 +522,7 @@ watch(() => props.openRun, (request) => {
 })
 
 watch(() => props.createRequest, (request) => {
+  if (!request) { handledCreateRequest.value = 0; return }
   if (request && request !== handledCreateRequest.value) {
     handledCreateRequest.value = request
     openNewPlaybookDialog()
@@ -579,11 +568,8 @@ onUnmounted(() => {
           <span v-if="props.contextAlarmId" class="soar-v2-context-note">{{ t('soarV2.contextAlarm') }} {{ props.contextAlarmId }}</span>
         </div>
         <div class="soar-v2-editor-selects">
-          <el-select v-model="selectedPlaybookId" filterable aria-label="Playbook" @change="changePlaybook">
-            <el-option value="" label="Select playbook" />
-            <el-option v-for="playbook in playbooks" :key="playbook.id" :value="playbook.id" :label="playbook.name" />
-          </el-select>
-          <el-select v-model="selectedVersionNo" aria-label="Version" @change="changeVersion">
+          <span>{{ playbooks.find(item => item.id === selectedPlaybookId)?.name || t('forms.blank') }}</span>
+          <el-select :model-value="selectedVersionNo" :disabled="loading" aria-label="Version" @change="changeVersion">
 
             <el-option v-for="version in versions" :key="version.id" :value="version.version" :label="`v${version.version} · ${version.status}`" />
           </el-select>
@@ -678,7 +664,7 @@ onUnmounted(() => {
       <SoarFlowPropertyPanel :flow="flow" :node="selectedRawNode" />
     </div>
 
-    <el-dialog v-model="newPlaybookVisible" :title="t('soarV2.createBlankTitle')" width="520px">
+    <el-dialog v-model="newPlaybookVisible" :before-close="newPlaybookGuard.beforeClose" :title="t('soarV2.createBlankTitle')" width="520px">
       <p class="soar-v2-dialog-hint">{{ t('soarV2.createBlankHint') }}</p>
       <el-form label-position="top">
         <el-form-item :label="t('common.name')" required><el-input v-model="newPlaybookForm.name" :placeholder="t('soarV2.playbookNamePlaceholder')" /></el-form-item>
@@ -686,7 +672,7 @@ onUnmounted(() => {
         <el-form-item :label="t('soarV2.tags')"><el-input v-model="newPlaybookForm.tags" :placeholder="t('soarV2.tagsPlaceholder')" /></el-form-item>
       </el-form>
       <div v-if="newPlaybookError" class="soar-v2-editor-error">{{ newPlaybookError }}</div>
-      <template #footer><el-button @click="newPlaybookVisible = false">{{ t('common.cancel') }}</el-button><el-button type="primary" :loading="newPlaybookSaving" @click="createPlaybookAndVersion">{{ t('soarV2.openCanvas') }}</el-button></template>
+      <template #footer><el-button @click="newPlaybookGuard.cancel">{{ t('common.cancel') }}</el-button><el-button type="primary" :loading="newPlaybookSaving" @click="createPlaybookAndVersion">{{ t('soarV2.openCanvas') }}</el-button></template>
     </el-dialog>
 
     <div class="soar-v2-editor-lower">

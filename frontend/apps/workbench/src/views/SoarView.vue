@@ -209,7 +209,7 @@ const v2StatusSummary = computed(() => {
 watch(() => route.fullPath, () => {
   showEditor.value = Boolean(route.meta.editor)
   selectedPlaybookId.value = String(route.params.playbookId || '')
-  if (route.name === 'playbook-new') createRequestToken.value += 1
+  createRequestToken.value = route.name === 'playbook-new' ? createRequestToken.value + 1 : 0
 })
 const canLeaveEditor = () => !editorRef.value?.hasUnsavedChanges || confirm(t('soarV2.discardChanges'))
 onBeforeRouteLeave(canLeaveEditor)

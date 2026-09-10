@@ -105,3 +105,42 @@ test('gateway auth endpoint is reachable in a real browser smoke run', async ({ 
   expect(response?.status()).toBeGreaterThanOrEqual(200)
   expect(response?.status()).toBeLessThan(500)
 })
+
+test('metadata edits stay in a dialog and retain inputs across a failed save', async ({ page }, testInfo) => {
+  await page.addInitScript(() => localStorage.setItem('socp-locale', 'en-US'))
+  await mockSession(page)
+  let type = { id: 'source-type-1', code: 'SYSLOG', name: 'Original source', description: '', enabled: true }
+  let attempts = 0
+  await page.route('**/search-config/api/v1/meta/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    if (route.request().method() === 'PUT') {
+      expect(path).toBe('/search-config/api/v1/meta/data-source-types/source-type-1')
+      attempts++
+      if (attempts === 1) {
+        await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ message: 'Database unavailable' }) })
+      } else {
+        type = { ...type, ...route.request().postDataJSON() }
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(type) })
+      }
+      return
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(path.endsWith('/data-source-types') ? [type] : []) })
+  })
+  await page.goto('/metadata')
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await page.getByRole('row').filter({ hasText: 'Original source' }).getByRole('button', { name: 'Edit', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Edit', exact: true })
+  await expect(dialog.getByLabel('Code', { exact: true })).toBeDisabled()
+  await dialog.getByLabel('Name', { exact: true }).fill('Updated source')
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click()
+  await expect(dialog.getByRole('alert')).toContainText('Database unavailable')
+  await expect(dialog.getByLabel('Name', { exact: true })).toHaveValue('Updated source')
+  await page.screenshot({ path: testInfo.outputPath('metadata-save-error.png'), fullPage: true })
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click()
+  await expect(dialog).not.toBeVisible()
+  await expect(page.getByRole('row').filter({ hasText: 'Updated source' })).toBeVisible()
+  await page.getByRole('button', { name: /Add Data Source Type/ }).click()
+  await expect(page.getByRole('dialog').getByLabel('Name', { exact: true })).toHaveValue('')
+  expect(type.id).toBe('source-type-1')
+  expect(attempts).toBe(2)
+})

@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useWriteAccess } from '../composables/useWriteAccess'
+const canWrite = useWriteAccess()
 import { useFormDialog } from '../composables/useFormDialog'
 import { useMutation } from '../composables/useMutation'
 import ActionFeedback from '../components/ActionFeedback.vue'
@@ -169,7 +171,7 @@ watch(drawerVisible, visible => {
     <ActionFeedback :error="actionError" />
     <PageHeader :eyebrow="t('menuGroup.alarmsAndEvents')" :title="t('cases.title')" :description="t('cases.description')">
       <template #actions>
-        <el-button type="primary" size="small" @click="openCreateCase">{{ t('cases.createCase') }}</el-button>
+        <el-button v-if="canWrite" type="primary" size="small" @click="openCreateCase">{{ t('cases.createCase') }}</el-button>
         <el-button size="small" @click="caseApi.export()">{{ t('cases.exportJson') }}</el-button>
       </template>
     </PageHeader>
@@ -209,7 +211,7 @@ watch(drawerVisible, visible => {
       </el-form>
       <template #footer>
         <el-button @click="createDialogVisibleGuard.cancel">{{ t('common.cancel') }}</el-button>
-        <el-button type="primary" :loading="actionBusy" @click="saveCase">{{ t('cases.createCase') }}</el-button>
+        <el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="saveCase">{{ t('cases.createCase') }}</el-button>
       </template>
     </el-dialog>
 
@@ -226,7 +228,7 @@ watch(drawerVisible, visible => {
             <span v-else>—</span>
           </el-descriptions-item>
         </el-descriptions>
-        <div class="case-status-row"><el-select v-model="newStatus"><el-option v-for="status in ['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']" :key="status" :label="t('statuses.' + status) || status" :value="status" /></el-select><el-button type="primary" :loading="actionBusy" @click="updateStatus">{{ t('cases.updateStatus') }}</el-button></div>
+        <div v-if="canWrite" class="case-status-row"><el-select v-model="newStatus"><el-option v-for="status in ['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']" :key="status" :label="t('statuses.' + status) || status" :value="status" /></el-select><el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="updateStatus">{{ t('cases.updateStatus') }}</el-button></div>
         <el-divider content-position="left">{{ t('cases.timeline') }}</el-divider>
         <ActionFeedback :error="timelineError" /><el-timeline><el-timeline-item v-for="(event, index) in timeline" :key="index" :timestamp="event.ts" placement="top"><div>{{ event.message }}</div><div class="case-event-meta">{{ event.type }} · {{ event.source }}</div></el-timeline-item></el-timeline>
       </template>
