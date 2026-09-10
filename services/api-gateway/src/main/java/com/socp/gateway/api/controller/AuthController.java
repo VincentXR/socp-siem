@@ -193,7 +193,9 @@ public class AuthController {
                         "role", supportedRole(roles.getOrDefault(name, "analyst")),
                         "current", name.equals(username)))
                 .toList();
-        return Map.of("items", items, "source", users.isEmpty() ? "session" : "configured");
+        String source = "default".equalsIgnoreCase(tenant) && !users.isEmpty()
+                ? "configured" : "session";
+        return Map.of("items", items, "source", source);
     }
 
     /** Compatibility overload for direct callers that do not have trusted identity headers. */
