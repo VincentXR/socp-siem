@@ -304,7 +304,7 @@ onMounted(() => { void load() })
       <div v-if="showRuleForm" class="soar-v2-form-grid">
         <label>Name<input v-model="ruleForm.name" placeholder="High severity response" /></label>
         <label>Trigger type
-          <el-select v-model="ruleForm.triggerType" filterable allow-create default-first-option placeholder="alert.created">
+          <el-select v-model="ruleForm.triggerType" filterable default-first-option placeholder="alert.created">
             <el-option label="alert.created" value="alert.created" />
             <el-option label="case.updated" value="case.updated" />
             <el-option label="ANY" value="ANY" />
@@ -312,7 +312,7 @@ onMounted(() => { void load() })
         </label>
         <label>Priority<input v-model.number="ruleForm.priority" type="number" min="0" max="10000" /></label>
         <label>Published versions
-          <el-select v-model="ruleForm.playbookVersionIds" multiple filterable allow-create default-first-option collapse-tags :loading="versionOptionsLoading" placeholder="Search published playbook versions">
+          <el-select v-model="ruleForm.playbookVersionIds" multiple filterable default-first-option collapse-tags :loading="versionOptionsLoading" placeholder="Search published playbook versions">
             <el-option v-for="version in publishedVersionOptions" :key="version.id" :label="`${version.playbookName} · v${version.version}`" :value="version.id"><div class="soar-v2-version-option"><b>{{ version.playbookName }} · v{{ version.version }}</b><small>{{ version.id }}</small></div></el-option>
           </el-select>
           <small v-if="versionOptionsError" class="soar-v2-field-warning">{{ versionOptionsError }}</small>
@@ -333,7 +333,7 @@ onMounted(() => { void load() })
       <div v-if="showConnectionForm" class="soar-v2-form-grid">
         <label>Name<input v-model="connectionForm.name" placeholder="EDR production" /></label>
         <label>Connector type
-          <el-select v-model="connectionForm.connectorType" filterable allow-create default-first-option placeholder="Select connector">
+          <el-select v-model="connectionForm.connectorType" filterable default-first-option placeholder="Select connector">
             <el-option v-for="connectorId in connectorTypeOptions" :key="connectorId" :label="connectorId" :value="connectorId" />
           </el-select>
         </label>

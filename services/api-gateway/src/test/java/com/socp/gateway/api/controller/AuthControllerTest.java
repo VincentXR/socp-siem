@@ -7,10 +7,12 @@ import org.springframework.http.HttpStatus;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.Map;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AuthControllerTest {
 
@@ -66,6 +68,31 @@ class AuthControllerTest {
 
         Map<String, Object> session = controller.session("demo", "analyst", "default", "en-US");
         assertEquals("en-US", session.get("locale"));
+    }
+
+    @Test
+    void operatorsExposeConfiguredNamesAndAlwaysIncludeCurrentIdentity() {
+        AuthController controller = controller();
+        ReflectionTestUtils.setField(controller, "usersJson", "{\"zeta\":\"secret\",\"alpha\":\"secret\"}");
+        ReflectionTestUtils.setField(controller, "rolesJson", "{\"alpha\":\"admin\"}");
+        controller.init();
+
+        Map<String, Object> result = controller.operators("oidc-user", "default");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> items = (List<Map<String, Object>>) result.get("items");
+        assertEquals(List.of("alpha", "oidc-user", "zeta"),
+                items.stream().map(item -> item.get("id")).toList());
+        assertEquals("admin", items.stream().filter(item -> "alpha".equals(item.get("id")))
+                .findFirst().orElseThrow().get("role"));
+        assertTrue(items.stream().anyMatch(item -> "oidc-user".equals(item.get("id"))
+                && Boolean.TRUE.equals(item.get("current"))));
+        assertEquals("configured", result.get("source"));
+
+        Map<String, Object> isolated = controller.operators("other-tenant-user", "tenant-b");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> isolatedItems = (List<Map<String, Object>>) isolated.get("items");
+        assertEquals(List.of("other-tenant-user"), isolatedItems.stream().map(item -> item.get("id")).toList());
+        assertEquals("session", isolated.get("source"));
     }
 
     private static AuthController controller() {

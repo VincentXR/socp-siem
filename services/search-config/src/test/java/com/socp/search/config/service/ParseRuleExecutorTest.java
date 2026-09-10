@@ -97,6 +97,10 @@ class ParseRuleExecutorTest {
     void boundsRegexComplexityAndInputSize() {
         assertThrows(IllegalArgumentException.class, () -> executor.compile(ParseRule.create(
                 "backref", null, "REGEX", "(?<value>\\w+)\\1", List.of(), List.of(), true, 1)));
+        assertThrows(IllegalArgumentException.class, () -> executor.compile(ParseRule.create(
+                "nested", null, "REGEX", "(a+)+", List.of(), List.of(), true, 1)));
+        assertThrows(IllegalArgumentException.class, () -> executor.compile(ParseRule.create(
+                "ambiguous", null, "REGEX", "(a|aa)+", List.of(), List.of(), true, 1)));
         String large = "x".repeat(256 * 1024 + 1);
         ParseRule rule = ParseRule.create("bounded", null, "REGEX", "(?<value>.+)",
                 List.of(), List.of(), true, 1);

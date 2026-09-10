@@ -168,7 +168,7 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
       <el-select v-model="batchStatus" size="small" style="width:150px">
         <el-option v-for="item in DISP_STATUSES" :key="item" :label="t('statuses.' + item) || item" :value="item" />
       </el-select>
-      <el-select v-model="batchAssignee" filterable allow-create default-first-option clearable size="small" :placeholder="t('drawer.assigneePlaceholder')" style="width:180px">
+      <el-select v-model="batchAssignee" filterable default-first-option clearable size="small" :placeholder="t('drawer.assigneePlaceholder')" style="width:180px">
         <el-option v-for="assignee in props.assigneeOptions ?? []" :key="assignee" :label="assignee" :value="assignee" />
       </el-select>
       <el-button size="small" type="primary" :loading="batchBusy" @click="handleBatchUpdate">{{ t('common.update') }}</el-button>

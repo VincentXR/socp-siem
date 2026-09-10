@@ -18,7 +18,7 @@ import java.util.Set;
 public class AuthSessionWebFilter implements WebFilter, Ordered {
 
     private static final Set<String> LOCAL_AUTHENTICATED_PATHS = Set.of(
-            "/auth/session", "/api/v1/system/health");
+            "/auth/session", "/auth/operators", "/api/v1/system/health");
 
     private final GatewayFilter gatewayFilter;
 

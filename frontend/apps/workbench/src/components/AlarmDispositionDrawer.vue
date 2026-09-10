@@ -222,7 +222,7 @@ function openEvidenceSearch() {
         <el-button type="primary" @click="changeStatus">{{ t('common.update') }}</el-button>
       </div>
       <div v-if="props.canWrite" style="display:flex;gap:8px;margin-bottom:14px">
-        <el-select v-model="newAssignee" filterable allow-create default-first-option clearable :placeholder="t('drawer.assigneePlaceholder')" style="flex:1">
+        <el-select v-model="newAssignee" filterable default-first-option clearable :placeholder="t('drawer.assigneePlaceholder')" style="flex:1">
           <el-option v-for="assignee in assigneeOptions" :key="assignee" :label="assignee" :value="assignee" />
         </el-select><el-button @click="doAssign">{{ t('common.assign') }}</el-button>
       </div>

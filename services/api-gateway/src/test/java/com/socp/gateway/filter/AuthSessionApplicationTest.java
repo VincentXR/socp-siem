@@ -81,5 +81,13 @@ class AuthSessionApplicationTest {
                 .jsonPath("$.username").isEqualTo("demo")
                 .jsonPath("$.role").isEqualTo("analyst")
                 .jsonPath("$.tenant").isEqualTo("default");
+
+        client.get().uri("/auth/operators")
+                .cookie(AuthController.SESSION_COOKIE, sessionToken)
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.items[1].id").isEqualTo("demo")
+                .jsonPath("$.items[1].current").isEqualTo(true);
     }
 }

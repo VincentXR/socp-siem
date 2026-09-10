@@ -117,7 +117,6 @@ function fieldMeta(fieldName: string): string {
       <el-select
         :model-value="condition.field"
         filterable
-        allow-create
         default-first-option
         clearable
         :placeholder="fieldPlaceholder"
@@ -136,7 +135,7 @@ function fieldMeta(fieldName: string): string {
       <el-select :model-value="condition.op" @change="updateOperator(index, String($event ?? ''))">
         <el-option v-for="operator in fieldOperators(condition.field, condition.op)" :key="operator" :label="operator" :value="operator" />
       </el-select>
-      <el-select v-if="isReferenceOperator(condition.op)" :model-value="condition.value" filterable allow-create default-first-option clearable :placeholder="valuePlaceholder" @change="updateRow(index, { value: String($event ?? '') })">
+      <el-select v-if="isReferenceOperator(condition.op)" :model-value="condition.value" filterable default-first-option clearable :placeholder="valuePlaceholder" @change="updateRow(index, { value: String($event ?? '') })">
         <el-option v-if="condition.value && !referenceSets.some(refset => refset.name === condition.value)" :label="condition.value" :value="condition.value" />
         <el-option v-for="refset in referenceSets" :key="refset.id" :label="refset.name" :value="refset.name">
           <div class="field-condition-option"><b>{{ refset.name }}</b><small>{{ refset.entries.length }} entries · {{ refset.description }}</small></div>

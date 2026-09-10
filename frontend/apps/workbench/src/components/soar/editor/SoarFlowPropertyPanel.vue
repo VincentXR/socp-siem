@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, inject, ref, watch } from 'vue'
 import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/input/style/css.mjs'
 import 'element-plus/es/components/select/style/css.mjs'
@@ -17,10 +17,12 @@ import { rawNodeType, isUnsupportedNodeType, readSwitchCases, type SoarFlowApi }
 import type { FieldDef, RuleCondition } from '../../../api'
 import type { EditorNode, ValidationIssue } from './types'
 import { useI18n } from '../../../composables/useI18n'
+import { WORKBENCH_STATE } from '../../../app/workbenchState'
 
 const props = defineProps<{ flow: SoarFlowApi; node: EditorNode | null }>()
 
 const { t } = useI18n()
+const workbenchState = inject(WORKBENCH_STATE, null)
 
 const END_OUTCOMES = ['SUCCEEDED', 'PARTIALLY_SUCCEEDED', 'SUPPRESSED', 'FAILED', 'TIMED_OUT', 'CANCELLED']
 
@@ -459,6 +461,14 @@ function updateTargetPath(value: string): void {
 
 const approvalRoleOptions = ['admin', 'analyst', 'operator', 'approver']
 
+const operatorOptions = computed(() => {
+  const current = nestedTextValue('config', 'assignee')
+  return Array.from(new Set([
+    ...(workbenchState?.operatorOptions.value ?? []),
+    current,
+  ].filter(Boolean)))
+})
+
 function approvalListValue(field: string): string[] {
   const value = approvalConfig()[field]
   return Array.isArray(value) ? value.map(String) : []
@@ -807,22 +817,22 @@ function subPlaybookVersionKnown(id: string): boolean {
             <input type="number" min="1" :value="approvalNumberValue('requiredApprovals', 1)" @input="updateApprovalConfigNumber('requiredApprovals', ($event.target as HTMLInputElement).value)" />
           </label>
           <label>Allowed roles
-            <el-select multiple filterable allow-create default-first-option :model-value="approvalListValue('allowedRoles')" placeholder="Select roles" @change="updateApprovalList('allowedRoles', asStringList($event))">
+            <el-select multiple filterable default-first-option :model-value="approvalListValue('allowedRoles')" placeholder="Select roles" @change="updateApprovalList('allowedRoles', asStringList($event))">
               <el-option v-for="role in approvalRoleOptions" :key="role" :label="role" :value="role" />
             </el-select>
           </label>
           <label>Allowed groups
-            <el-select multiple filterable allow-create default-first-option :model-value="approvalListValue('allowedGroups')" placeholder="Search or enter groups" @change="updateApprovalList('allowedGroups', asStringList($event))">
+            <el-select multiple filterable default-first-option :model-value="approvalListValue('allowedGroups')" placeholder="Select existing groups" @change="updateApprovalList('allowedGroups', asStringList($event))">
               <el-option v-for="group in approvalListValue('allowedGroups')" :key="group" :label="group" :value="group" />
             </el-select>
           </label>
           <label>Approver roles
-            <el-select multiple filterable allow-create default-first-option :model-value="approvalListValue('approverRoles')" placeholder="Select roles" @change="updateApprovalList('approverRoles', asStringList($event))">
+            <el-select multiple filterable default-first-option :model-value="approvalListValue('approverRoles')" placeholder="Select roles" @change="updateApprovalList('approverRoles', asStringList($event))">
               <el-option v-for="role in approvalRoleOptions" :key="role" :label="role" :value="role" />
             </el-select>
           </label>
           <label>Approver groups
-            <el-select multiple filterable allow-create default-first-option :model-value="approvalListValue('approverGroups')" placeholder="Search or enter groups" @change="updateApprovalList('approverGroups', asStringList($event))">
+            <el-select multiple filterable default-first-option :model-value="approvalListValue('approverGroups')" placeholder="Select existing groups" @change="updateApprovalList('approverGroups', asStringList($event))">
               <el-option v-for="group in approvalListValue('approverGroups')" :key="group" :label="group" :value="group" />
             </el-select>
           </label>
@@ -863,7 +873,7 @@ function subPlaybookVersionKnown(id: string): boolean {
       <!-- SUB_PLAYBOOK -->
       <label v-if="nodeType === 'SUB_PLAYBOOK'">
         playbookVersionId
-        <el-select :model-value="scalar(node, 'playbookVersionId')" filterable allow-create default-first-option clearable :loading="subPlaybookCatalogState === 'loading'" placeholder="Search published version" @change="updateScalar('playbookVersionId', String($event ?? ''))">
+        <el-select :model-value="scalar(node, 'playbookVersionId')" filterable default-first-option clearable :loading="subPlaybookCatalogState === 'loading'" placeholder="Search published version" @change="updateScalar('playbookVersionId', String($event ?? ''))">
           <el-option v-if="scalar(node, 'playbookVersionId') && !subPlaybookVersionKnown(scalar(node, 'playbookVersionId'))" :label="scalar(node, 'playbookVersionId')" :value="scalar(node, 'playbookVersionId')" />
           <el-option v-for="version in subPlaybookVersions" :key="version.id" :label="`${version.playbookName} · v${version.version}`" :value="version.id"><div class="soar-flow-option"><b>{{ version.playbookName }} · v{{ version.version }}</b><small>{{ version.id }} · {{ version.status }}</small></div></el-option>
         </el-select>
@@ -896,7 +906,10 @@ function subPlaybookVersionKnown(id: string): boolean {
         </label>
         <label>
           Assignee
-          <VariableSelector :model-value="nestedTextValue('config', 'assignee')" :variables="variableOptions" placeholder="Select an assignee or team" @update:model-value="value => updateNested('config', 'assignee', value)" />
+          <el-select :model-value="nestedTextValue('config', 'assignee')" filterable default-first-option clearable placeholder="Select an operator or workflow variable" @change="updateNested('config', 'assignee', String($event ?? ''))">
+            <el-option v-for="operator in operatorOptions" :key="`operator-${operator}`" :label="operator" :value="operator" />
+            <el-option v-for="variable in variableOptions" :key="`variable-${variable.value}`" :label="`${variable.label} · variable`" :value="variable.value" />
+          </el-select>
         </label>
         <div class="soar-flow-inspector-section manual-task-schema">
           <div class="soar-flow-section-header"><span>Task fields</span><el-button size="small" plain @click="addManualField">Add field</el-button></div>

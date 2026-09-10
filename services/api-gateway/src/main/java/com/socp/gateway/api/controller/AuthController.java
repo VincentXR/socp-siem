@@ -29,6 +29,7 @@ import reactor.core.publisher.Mono;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
@@ -163,6 +164,36 @@ public class AuthController {
             @RequestHeader("X-Socp-Locale") String locale) {
         return Map.of("username", username, "role", supportedRole(role), "tenant", tenant,
                 "locale", resolveLocale(username, locale));
+    }
+
+    /**
+     * Return the small operator directory visible to the current session.
+     *
+     * <p>The gateway is the only component that knows both the verified
+     * session subject and the optional local-auth configuration.  Returning
+     * display-safe identities here lets analyst workflows use selectors
+     * without exposing passwords or asking users to type opaque IDs.  OIDC
+     * deployments normally have no local user map, so the current verified
+     * subject is still returned as the minimum useful directory.  The demo
+     * local-user map is intentionally exposed only in its default tenant;
+     * other tenants must supply a real IdP directory instead of inheriting a
+     * global list.</p>
+     */
+    @GetMapping("/operators")
+    public Map<String, Object> operators(@RequestHeader("X-Socp-User") String username,
+                                         @RequestHeader("X-Tenant-Id") String tenant) {
+        List<String> names = "default".equalsIgnoreCase(tenant)
+                ? new ArrayList<>(users.keySet()) : new ArrayList<>();
+        if (username != null && !username.isBlank() && !names.contains(username)) names.add(username);
+        names.sort(String.CASE_INSENSITIVE_ORDER);
+        List<Map<String, Object>> items = names.stream()
+                .map(name -> Map.<String, Object>of(
+                        "id", name,
+                        "label", name,
+                        "role", supportedRole(roles.getOrDefault(name, "analyst")),
+                        "current", name.equals(username)))
+                .toList();
+        return Map.of("items", items, "source", users.isEmpty() ? "session" : "configured");
     }
 
     /** Compatibility overload for direct callers that do not have trusted identity headers. */

@@ -17,7 +17,7 @@ import { WORKBENCH_STATE } from './app/workbenchState'
 
 const { t, elLocale } = useI18n()
 const auth = useAuth()
-const { currentUser, currentRole, isAuthed, userInitials } = auth
+const { currentUser, currentRole, operatorOptions, isAuthed, userInitials } = auth
 const router = useRouter()
 const { activeMenu, navigate } = useWorkbenchRoute()
 const menuGroups = computed(() => getVisibleMenuGroups(currentRole.value, t))
@@ -51,6 +51,7 @@ provide(WORKBENCH_STATE, {
   theme,
   currentUser,
   currentRole,
+  operatorOptions,
   overview,
   alarmQuery,
   alarms,

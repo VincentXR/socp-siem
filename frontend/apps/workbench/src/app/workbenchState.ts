@@ -9,6 +9,7 @@ export interface WorkbenchState {
   theme: Ref<Theme>
   currentUser: Ref<string>
   currentRole: Ref<string>
+  operatorOptions: Ref<string[]>
   overview: ReturnType<typeof useOverview>
   alarmQuery: ReturnType<typeof useAlarmQuery>
   alarms: Ref<Alarm[]>

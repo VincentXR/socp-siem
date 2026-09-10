@@ -67,7 +67,7 @@ function exportWithCurrentFilters(format: 'csv' | 'json') {
     :go-search="goSearch"
     :go-ai="goAi"
     :go-soar="goSoar"
-    :assignee-options="state.currentUser.value ? [state.currentUser.value] : []"
+    :assignee-options="state.operatorOptions.value"
     :can-write="canWrite"
   />
 </template>

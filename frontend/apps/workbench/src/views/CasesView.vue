@@ -69,6 +69,7 @@ const casesList = useResourceList<CaseInfo>({
 const { items: cases, page, size, keyword, loading, filtered: casesFiltered, paged: casesPaged, setItems } = casesList
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('cases')
 const assigneeOptions = computed(() => Array.from(new Set([
+  ...(workbenchState?.operatorOptions.value ?? []),
   workbenchState?.currentUser.value ?? '',
   ...cases.value.map(item => item.assignee ?? ''),
 ].filter(Boolean))))
@@ -190,7 +191,7 @@ watch(drawerVisible, visible => {
         <el-form-item :label="t('cases.caseTitle')" required><el-input v-model="caseForm.title" :placeholder="t('cases.titlePlaceholder')" /></el-form-item>
         <el-form-item :label="t('common.entity')"><el-input v-model="caseForm.entity" :placeholder="t('cases.entityPlaceholder')" /></el-form-item>
         <el-form-item :label="t('common.severity')"><el-select v-model="caseForm.severity" style="width: 180px"><el-option v-for="level in ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']" :key="level" :label="t('severities.' + level) || level" :value="level" /></el-select></el-form-item>
-        <el-form-item :label="t('cases.assignee')"><el-select v-model="caseForm.assignee" filterable allow-create default-first-option clearable :placeholder="t('cases.assigneePlaceholder')" style="width:100%"><el-option v-for="assignee in assigneeOptions" :key="assignee" :label="assignee" :value="assignee" /></el-select></el-form-item>
+        <el-form-item :label="t('cases.assignee')"><el-select v-model="caseForm.assignee" filterable default-first-option clearable :placeholder="t('cases.assigneePlaceholder')" style="width:100%"><el-option v-for="assignee in assigneeOptions" :key="assignee" :label="assignee" :value="assignee" /></el-select></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="createDialogVisible = false">{{ t('common.cancel') }}</el-button>

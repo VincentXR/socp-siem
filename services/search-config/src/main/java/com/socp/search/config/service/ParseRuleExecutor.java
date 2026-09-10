@@ -8,6 +8,8 @@ import com.socp.search.config.parser.ParserRegistry;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -144,20 +146,76 @@ public class ParseRuleExecutor {
         }
         int quantifiers = 0;
         boolean escaped = false;
+        boolean characterClass = false;
+        Deque<RegexGroup> groups = new ArrayDeque<>();
+        RegexAtom lastAtom = RegexAtom.NONE;
         for (int index = 0; index < pattern.length(); index++) {
             char current = pattern.charAt(index);
             if (escaped) {
                 escaped = false;
+                lastAtom = RegexAtom.SIMPLE;
                 continue;
             }
             if (current == '\\') {
                 escaped = true;
                 continue;
             }
-            if ((current == '*' || current == '+')
-                    || (current == '?' && (index == 0 || pattern.charAt(index - 1) != '('))) quantifiers++;
-            if (current == '{' && index + 1 < pattern.length()
-                    && Character.isDigit(pattern.charAt(index + 1))) quantifiers++;
+            if (current == '[' && !characterClass) {
+                characterClass = true;
+                lastAtom = RegexAtom.SIMPLE;
+                continue;
+            }
+            if (current == ']' && characterClass) {
+                characterClass = false;
+                lastAtom = RegexAtom.SIMPLE;
+                continue;
+            }
+            if (characterClass) continue;
+            if (current == '(') {
+                if (startsLookaround(pattern, index)) {
+                    throw new IllegalArgumentException("REGEX lookarounds are not supported");
+                }
+                groups.push(new RegexGroup());
+                lastAtom = RegexAtom.NONE;
+                continue;
+            }
+            if (current == ')') {
+                if (!groups.isEmpty()) {
+                    RegexGroup group = groups.pop();
+                    lastAtom = RegexAtom.group(group.hasQuantifier, group.hasAlternation);
+                } else {
+                    lastAtom = RegexAtom.SIMPLE;
+                }
+                continue;
+            }
+            if (current == '|') {
+                if (!groups.isEmpty()) groups.peek().hasAlternation = true;
+                lastAtom = RegexAtom.NONE;
+                continue;
+            }
+            if (isQuantifierStart(pattern, index, current)) {
+                // Java accepts '?' and '+' after a quantifier as lazy or
+                // possessive modifiers; they are not a second repetition.
+                if (lastAtom == RegexAtom.QUANTIFIED && (current == '?' || current == '+')) {
+                    continue;
+                }
+                quantifiers++;
+                if (lastAtom == RegexAtom.NONE) continue;
+                if (lastAtom.group && (lastAtom.hasQuantifier || lastAtom.hasAlternation)) {
+                    throw new IllegalArgumentException(
+                            "REGEX nested or ambiguous quantified groups are not supported");
+                }
+                if (!groups.isEmpty()) groups.peek().hasQuantifier = true;
+                lastAtom = RegexAtom.QUANTIFIED;
+                if (current == '{') {
+                    int close = pattern.indexOf('}', index + 1);
+                    if (close > index) {
+                        index = close;
+                    }
+                }
+                continue;
+            }
+            if (!Character.isWhitespace(current)) lastAtom = RegexAtom.SIMPLE;
         }
         if (quantifiers > MAX_REGEX_QUANTIFIERS) {
             throw new IllegalArgumentException("REGEX pattern exceeds the quantifier budget");
@@ -167,6 +225,42 @@ public class ParseRuleExecutor {
         // tenant rule to defeat the bounded linear parser path.
         if (pattern.matches("(?s).*\\\\[1-9][0-9]*.*")) {
             throw new IllegalArgumentException("REGEX back references are not supported");
+        }
+    }
+
+    private static boolean isQuantifierStart(String pattern, int index, char current) {
+        if (current == '*' || current == '+') return true;
+        if (current == '?') return index == 0 || pattern.charAt(index - 1) != '(';
+        return current == '{' && index + 1 < pattern.length()
+                && Character.isDigit(pattern.charAt(index + 1));
+    }
+
+    private static boolean startsLookaround(String pattern, int index) {
+        return pattern.startsWith("(?=", index) || pattern.startsWith("(?!", index)
+                || pattern.startsWith("(?<=", index) || pattern.startsWith("(?<!", index);
+    }
+
+    private static final class RegexGroup {
+        private boolean hasQuantifier;
+        private boolean hasAlternation;
+    }
+
+    private static final class RegexAtom {
+        private static final RegexAtom NONE = new RegexAtom(false, false, false);
+        private static final RegexAtom SIMPLE = new RegexAtom(false, false, false);
+        private static final RegexAtom QUANTIFIED = new RegexAtom(false, false, false);
+        private final boolean group;
+        private final boolean hasQuantifier;
+        private final boolean hasAlternation;
+
+        private RegexAtom(boolean group, boolean hasQuantifier, boolean hasAlternation) {
+            this.group = group;
+            this.hasQuantifier = hasQuantifier;
+            this.hasAlternation = hasAlternation;
+        }
+
+        private static RegexAtom group(boolean hasQuantifier, boolean hasAlternation) {
+            return new RegexAtom(true, hasQuantifier, hasAlternation);
         }
     }
 

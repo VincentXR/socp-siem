@@ -11,4 +11,8 @@ export async function login(username: string, password: string): Promise<{ usern
 export const currentSession = () => requestJson<{ username: string; role: string; tenant: string; locale?: string }>(
   '/auth/session', {}, { unwrap: false, notifyUnauthorized: false },
 )
+export interface OperatorDirectoryItem { id: string; label: string; role: string; current: boolean }
+export const listOperators = () => requestJson<{ items: OperatorDirectoryItem[]; source: string }>(
+  '/auth/operators', {}, { unwrap: false },
+)
 export const logout = () => post<void>('/auth/logout', undefined, { unwrap: false, notifyUnauthorized: false })
