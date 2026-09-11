@@ -303,13 +303,18 @@ public final class RuleEngine implements AutoCloseable {
 
     /** Portable state checkpoint payloads keyed by rule id. */
     public Map<String, RuleState> snapshotStates() {
+        return captureStateSnapshot(java.util.function.Function.identity());
+    }
+
+    /** Capture state and its durable progress in the same critical section. */
+    public <T> T captureStateSnapshot(java.util.function.Function<Map<String, RuleState>, T> capture) {
         synchronized (stateLock) {
             Map<String, RuleState> out = new java.util.LinkedHashMap<>();
             for (Rule rule : rulesRef.get()) {
                 if (!(rule instanceof StatefulRule stateful)) continue;
                 out.put(rule.id(), new RuleState(rule.id(), stateful.stateVersion(), stateful.snapshotState()));
             }
-            return Map.copyOf(out);
+            return capture.apply(Map.copyOf(out));
         }
     }
 

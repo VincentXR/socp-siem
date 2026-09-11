@@ -17,6 +17,7 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -73,5 +74,65 @@ class JpaDetectionStateSnapshotStoreTest {
                 Instant.parse("2026-09-10T12:00:00Z"), Map.of(0, 10L)));
 
         org.mockito.Mockito.verify(repository, org.mockito.Mockito.never()).saveAllAndFlush(any());
+    }
+
+    @Test
+    void rejectsEntireGenerationBeforeMutatingManagedRows() {
+        Instant checkpoint = Instant.parse("2026-09-10T12:00:00Z");
+        DetectionStateSnapshotEntity first = row(checkpoint.minusSeconds(1), "{\"0\":8}");
+        DetectionStateSnapshotEntity second = row(checkpoint.plusSeconds(1), "{\"0\":12}");
+        when(repository.findByTenantIdAndRuleIdAndShardId("tenant-a", "first", 0)).thenReturn(Optional.of(first));
+        when(repository.findByTenantIdAndRuleIdAndShardId("tenant-a", "second", 0)).thenReturn(Optional.of(second));
+
+        new JpaDetectionStateSnapshotStore(repository).saveAll(List.of(
+                snapshot("first", checkpoint, Map.of(0, 10L)), snapshot("second", checkpoint, Map.of(0, 10L))));
+
+        assertEquals(checkpoint.minusSeconds(1), first.getSnapshotTimestamp());
+        assertEquals("{\"0\":8}", first.getPartitionOffsetsJson());
+        org.mockito.Mockito.verify(repository, org.mockito.Mockito.never()).saveAllAndFlush(any());
+    }
+
+    @Test
+    void laterClockCannotOverwriteRegressingOrMissingPartition() {
+        Instant checkpoint = Instant.parse("2026-09-10T12:00:00Z");
+        DetectionStateSnapshotEntity row = row(checkpoint, "{\"0\":10,\"1\":20}");
+        when(repository.findByTenantIdAndRuleIdAndShardId("tenant-a", "first", 0)).thenReturn(Optional.of(row));
+        var store = new JpaDetectionStateSnapshotStore(repository);
+        store.save(snapshot("first", checkpoint.plusSeconds(1), Map.of(0, 11L, 1, 19L)));
+        store.save(snapshot("first", checkpoint.plusSeconds(2), Map.of(0, 12L)));
+        assertEquals(checkpoint, row.getSnapshotTimestamp());
+        org.mockito.Mockito.verify(repository, org.mockito.Mockito.never()).saveAllAndFlush(any());
+    }
+
+    @Test
+    void advancedOffsetsSurviveClockSkew() {
+        Instant checkpoint = Instant.parse("2026-09-10T12:00:00Z");
+        DetectionStateSnapshotEntity row = row(checkpoint, "{\"0\":10}");
+        when(repository.findByTenantIdAndRuleIdAndShardId("tenant-a", "first", 0)).thenReturn(Optional.of(row));
+        new JpaDetectionStateSnapshotStore(repository).save(snapshot("first", checkpoint.minusSeconds(1), Map.of(0, 11L)));
+        verify(repository).saveAllAndFlush(any());
+        assertEquals("{\"0\":11}", row.getPartitionOffsetsJson());
+    }
+
+    @Test
+    void rejectsMixedAndDuplicateGenerationInputsBeforeReadingRows() {
+        var store = new JpaDetectionStateSnapshotStore(repository);
+        Instant checkpoint = Instant.parse("2026-09-10T12:00:00Z");
+        var first = snapshot("first", checkpoint, Map.of(0, 10L));
+        assertThrows(IllegalArgumentException.class, () -> store.saveAll(List.of(first,
+                snapshot("second", checkpoint, Map.of(0, 11L)))));
+        assertThrows(IllegalArgumentException.class, () -> store.saveAll(List.of(first, first)));
+        org.mockito.Mockito.verifyNoInteractions(repository);
+    }
+
+    private static DetectionStateSnapshotEntity row(Instant time, String offsets) {
+        var row = new DetectionStateSnapshotEntity();
+        row.setSnapshotTimestamp(time);
+        row.setPartitionOffsetsJson(offsets);
+        return row;
+    }
+
+    private static DetectionStateSnapshot snapshot(String id, Instant time, Map<Integer, Long> offsets) {
+        return new DetectionStateSnapshot(id, "v1", "tenant-a", 0, 10L, new byte[]{1}, time, offsets);
     }
 }

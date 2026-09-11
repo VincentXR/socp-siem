@@ -330,7 +330,7 @@ async function completeTask(task: SoarV2ManualTask) {
   try {
   clearFeedback()
   try {
-    if (!taskValid.value) throw new Error('Correct invalid JSON before completing the task')
+    if (!taskValid.value) throw new Error(t('forms.invalidInput'))
     const schema = task.formSchema as { required?: string[] } | null
     const missing = (schema?.required ?? []).filter(key => taskValue.value[key] === undefined || taskValue.value[key] === '')
     if (missing.length) throw new Error('Required: ' + missing.join(', '))

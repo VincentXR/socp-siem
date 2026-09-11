@@ -1,4 +1,7 @@
 package com.socp.detect.web.api.request;
+import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonAnySetter;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
@@ -38,10 +41,21 @@ public record RuleSpecRequest(
         @Size(max = 128) List<@Size(max = 128) @Valid List<@Valid RuleConditionRequest>> matchAny,
         @Size(max = 64) List<@Size(max = 128) @Valid List<@Valid RuleConditionRequest>> steps,
         @Valid AlertTemplateRequest alert,
-        @Size(max = 128) List<@Valid RuleConditionRequest> whitelist) {
+        @JsonAlias("allowlist") @Size(max = 128) List<@Valid RuleConditionRequest> whitelist,
+        @JsonIgnore @Size(max = 64) Map<String, Object> extensions) {
+
+    public RuleSpecRequest {
+        extensions = new LinkedHashMap<>();
+    }
+
+    /** Preserve extension metadata through edits without bypassing typed DSL validation. */
+    @JsonAnySetter
+    public void preserveExtension(String key, Object value) {
+        extensions.put(key, value);
+    }
 
     public Map<String, Object> asMap() {
-        Map<String, Object> out = new LinkedHashMap<>();
+        Map<String, Object> out = new LinkedHashMap<>(extensions);
         put(out, "id", id); put(out, "name", name); put(out, "type", type); put(out, "severity", severity);
         put(out, "message", message); put(out, "enabled", enabled); put(out, "window", window);
         put(out, "keyField", keyField); put(out, "routingField", routingField); put(out, "threshold", threshold);
@@ -50,7 +64,7 @@ public record RuleSpecRequest(
         put(out, "version", version); put(out, "status", status); put(out, "owner", owner);
         put(out, "contentPack", contentPack); put(out, "contentVersion", contentVersion);
         if (alert != null) {
-            Map<String, Object> template = new LinkedHashMap<>();
+            Map<String, Object> template = new LinkedHashMap<>(alert.extensions());
             put(template, "title", alert.title());
             put(template, "description", alert.description());
             if (!template.isEmpty()) out.put("alert", template);
@@ -71,16 +85,29 @@ public record RuleSpecRequest(
 
     public record AlertTemplateRequest(
             @Size(max = 512) String title,
-            @Size(max = 4096) String description) {
+            @Size(max = 4096) String description,
+            @JsonIgnore @Size(max = 64) Map<String, Object> extensions) {
+        public AlertTemplateRequest { extensions = new LinkedHashMap<>(); }
+
+        @JsonAnySetter
+        public void preserveExtension(String key, Object value) { extensions.put(key, value); }
     }
 
     public record RuleConditionRequest(
             @NotBlank @Size(max = 128) String field,
             @NotBlank @Size(max = 32) String op,
-            @NotBlank @Size(max = 4096) String value) {
+            @NotBlank @Size(max = 4096) String value,
+            @JsonIgnore @Size(max = 64) Map<String, Object> extensions) {
+
+        public RuleConditionRequest { extensions = new LinkedHashMap<>(); }
+
+        @JsonAnySetter
+        public void preserveExtension(String key, Object value) { extensions.put(key, value); }
 
         Map<String, Object> asMap() {
-            return Map.of("field", field, "op", op, "value", value);
+            Map<String, Object> out = new LinkedHashMap<>(extensions);
+            out.put("field", field); out.put("op", op); out.put("value", value);
+            return out;
         }
     }
 }

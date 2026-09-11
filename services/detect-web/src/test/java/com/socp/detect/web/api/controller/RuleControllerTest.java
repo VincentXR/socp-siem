@@ -81,6 +81,41 @@ class RuleControllerTest {
     }
 
     @Test
+    void updatePreservesNestedExtensionMetadataAndConditionWhitespace() throws Exception {
+        given(engine.updateRule(any())).willAnswer(invocation -> invocation.getArgument(0));
+        mvc.perform(put("/api/v1/rules/{id}", "preserved")
+                        .header("Authorization", BEARER).header("X-Role", "analyst")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"id":"wrong-id","name":"Roundtrip","type":"pattern","severity":"HIGH",
+                                 "evidence":{"fields":["host","msg"]},
+                                 "alert":{"title":"Title","grouping":{"strategy":"source"}},
+                                 "match":[{"field":"msg","op":"eq","value":" padded ","annotations":{"owner":"SOC"}}],
+                                 "allowlist":[{"field":"host","op":"eq","value":"trusted","source":"import"}]}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value("preserved"))
+                .andExpect(jsonPath("$.evidence.fields[1]").value("msg"))
+                .andExpect(jsonPath("$.alert.grouping.strategy").value("source"))
+                .andExpect(jsonPath("$.match[0].value").value(" padded "))
+                .andExpect(jsonPath("$.match[0].annotations.owner").value("SOC"))
+                .andExpect(jsonPath("$.whitelist[0].source").value("import"));
+    }
+
+    @Test
+    void extensionPreservationDoesNotDisableTypedValidation() throws Exception {
+        mvc.perform(put("/api/v1/rules/{id}", "invalid")
+                        .header("Authorization", BEARER).header("X-Role", "analyst")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"Invalid","type":"pattern","severity":"HIGH","metadata":{"keep":true},
+                                 "match":[{"field":"msg","op":"eq","value":"","annotations":{"keep":true}}]}
+                                """))
+                .andExpect(status().isBadRequest());
+        org.mockito.Mockito.verifyNoInteractions(engine);
+    }
+
+    @Test
     void bulkIngestCountsMalformedAndBackpressuredRows() throws Exception {
         given(engine.ingest(any())).willReturn(true, false);
         given(engine.stats()).willReturn(Map.of("queueLoad", 2));

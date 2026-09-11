@@ -2,6 +2,18 @@ import type { LocaleMessages } from './zh-CN';
 
 export const enUS: LocaleMessages = {
   forms: {
+    invalidInput: 'Correct invalid form values before continuing',
+    serverPattern: 'Pattern: {pattern} (validated on submission)',
+    schemaValidation: {
+      required: 'Required field is missing',
+      type: 'Value has the wrong type',
+      choice: 'Value is not one of the allowed choices',
+      length: 'Length is outside the allowed range',
+      range: 'Number is outside the allowed range',
+      unknown: 'Field is not declared by the schema',
+      size: 'Input exceeds the size or nesting limit',
+      schema: 'Value is rejected by the form schema',
+    },
     dedupWindow: 'Deduplication window (seconds)',
     conflictStrategy: 'When a run already exists',
     duplicateName: 'This name already exists. Choose another name.',

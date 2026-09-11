@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import { ElForm, ElFormItem } from 'element-plus/es/components/form/index.mjs'
@@ -23,7 +23,10 @@ const route = useRoute()
 const router = useRouter()
 const sources = ref<LogSource[]>([])
 const fields = ref<FieldDef[]>([])
-const form = ref<Partial<ParseRule>>({ name: '', format: 'REGEX', pattern: '', sourceId: null, enabled: false, order: 10, mapping: [], setFields: [], filters: [] })
+function emptyForm(): Partial<ParseRule> { return { name: '', format: 'REGEX', pattern: '', sourceId: null, enabled: false, order: 10, mapping: [], setFields: [], filters: [] } }
+const form = ref<Partial<ParseRule>>(emptyForm())
+let loadGeneration = 0
+let loadedId: string | null = null
 const filtersText = ref('[]')
 const sample = ref('')
 const preview = ref<Awaited<ReturnType<typeof previewParseDraft>> | null>(null)
@@ -42,18 +45,26 @@ function payload(): Partial<ParseRule> {
   return { ...form.value, filters, mapping: form.value.mapping ?? [], setFields: form.value.setFields ?? [] }
 }
 async function save() {
+  if (loading.value || loadError.value) return
+  const generation = loadGeneration
   await mutation.run(async () => {
-    const id = String(route.params.parserId || '')
+    const id = loadedId || ''
     const saved = id ? await updateParseRule(id, payload()) : await createParseRule(payload())
+    if (generation !== loadGeneration) return
     form.value = saved
+    filtersText.value = JSON.stringify(saved.filters ?? [], null, 2)
+    loadedId = saved.id
     changes.markSaved()
     await router.replace({ name: 'parser-edit', params: { parserId: saved.id } })
   })
 }
 async function test() {
+  const generation = loadGeneration
   await mutation.run(async () => {
     preview.value = null
-    preview.value = await previewParseDraft(payload(), sample.value)
+    const result = await previewParseDraft(payload(), sample.value)
+    if (generation !== loadGeneration) return
+    preview.value = result
     previewStale.value = false
   })
 }
@@ -61,20 +72,34 @@ function addMapping(fixed = false) {
   const key = fixed ? 'setFields' : 'mapping'
   form.value[key]!.push({ group: fixed ? 'fixed' : '', field: '', value: '' })
 }
-onMounted(async () => {
+async function loadEditor() {
+  const id = String(route.params.parserId || '')
+  const generation = ++loadGeneration
+  loading.value = true
+  loadError.value = ''
+  loadedId = null
+  form.value = emptyForm()
+  filtersText.value = '[]'
+  preview.value = null
+  previewStale.value = false
   try {
     const [rules, availableSources, availableFields] = await Promise.all([listParseRules(), listSources(), listFields()])
+    if (generation !== loadGeneration) return
     sources.value = availableSources
     fields.value = availableFields
-    if (route.params.parserId) {
-      const rule = rules.find(item => item.id === route.params.parserId)
+    if (id) {
+      const rule = rules.find(item => item.id === id)
       if (!rule) throw new Error('Parse rule not found')
       form.value = structuredClone(rule)
       filtersText.value = JSON.stringify(rule.filters ?? [], null, 2)
     }
-  } catch (failure) { loadError.value = String(failure) }
-  finally { loading.value = false; changes.markSaved() }
-})
+    loadedId = id
+  } catch (failure) { if (generation === loadGeneration) loadError.value = String(failure) }
+  finally { if (generation === loadGeneration) { loading.value = false; changes.markSaved() } }
+}
+watch(() => String(route.params.parserId || ''), id => {
+  if (id !== loadedId) void loadEditor()
+}, { immediate: true })
 </script>
 <template>
   <div class="page-pad editor-page">
@@ -82,6 +107,7 @@ onMounted(async () => {
       <template #actions><el-button @click="router.push({ name: 'ingest', query: { tab: 'rules' } })">{{ t('forms.back') }}</el-button></template>
     </PageHeader>
     <ActionFeedback :error="loadError || error" />
+    <el-button v-if="loadError" :loading="loading" @click="loadEditor">{{ t('common.refresh') }}</el-button>
     <div v-if="loading">{{ t('common.loading') }}</div>
     <div v-else-if="!loadError" class="parser-workspace">
       <el-form label-position="top" :disabled="busy">

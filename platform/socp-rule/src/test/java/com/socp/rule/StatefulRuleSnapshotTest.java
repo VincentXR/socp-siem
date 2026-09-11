@@ -13,6 +13,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class StatefulRuleSnapshotTest {
 
@@ -57,6 +58,31 @@ class StatefulRuleSnapshotTest {
                 restored.ingestAndAwait(event("e-2", 1)).join();
                 assertEquals(1, alerts.size());
             }
+        }
+    }
+
+    @Test
+    void capturingStateAndProgressExcludesConcurrentDurableMutation() throws Exception {
+        var progress = new java.util.concurrent.atomic.AtomicLong();
+        var nextDurable = new java.util.concurrent.CountDownLatch(1);
+        try (var engine = new com.socp.rule.engine.RuleEngine(List.of(threshold()), List.of())) {
+            engine.start();
+            engine.ingestAndAwait(event("e-1", 0), () -> progress.set(1)).get(3, java.util.concurrent.TimeUnit.SECONDS);
+            long captured = engine.captureStateSnapshot(states -> {
+                assertTrue(states.containsKey("threshold"));
+                engine.ingestAndAwait(event("e-2", 1), () -> { progress.set(2); nextDurable.countDown(); });
+                try {
+                    assertFalse(nextDurable.await(100, java.util.concurrent.TimeUnit.MILLISECONDS),
+                            "state must not advance between captured bytes and their progress");
+                } catch (InterruptedException failure) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(failure);
+                }
+                return progress.get();
+            });
+            assertEquals(1L, captured);
+            assertTrue(nextDurable.await(3, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(2L, progress.get());
         }
     }
 

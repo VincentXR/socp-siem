@@ -74,6 +74,7 @@ const loading = ref(false)
 const saving = ref(false)
 const loadError = ref('')
 const fieldLoadError = ref('')
+const referenceLoadError = ref('')
 const techniqueLoadError = ref('')
 const actionMessage = ref('')
 const saveError = ref('')
@@ -95,7 +96,6 @@ const testResult = ref<RuleTestResult | null>(null)
 
 function emptyCondition(): RuleCondition { return { field: 'msg', op: 'contains', value: '' } }
 function clone<T>(value: T): T { return value == null ? value : JSON.parse(JSON.stringify(value)) as T }
-function cloneConditions(conditions: RuleCondition[] | undefined): RuleCondition[] { return conditions?.length ? clone(conditions) : [emptyCondition()] }
 function cloneConditionGroups(groups: RuleCondition[][] | undefined): RuleCondition[][] { return groups?.length ? clone(groups) : [] }
 
 function emptyRuleForm(): RuleEditorForm {
@@ -120,7 +120,7 @@ function formFromRule(rule: RuleSpec): RuleEditorForm {
     valueField: textValue(rule.valueField), warmup: numberValue(rule.warmup), baselineWindows: numberValue(rule.baselineWindows),
     sigma: numberValue(rule.sigma), minCount: numberValue(rule.minCount), mitre: textValue(rule.mitre), version: textValue(rule.version),
     owner: textValue(rule.owner), contentPack: textValue(rule.contentPack), contentVersion: textValue(rule.contentVersion),
-    match: cloneConditions(rule.match), matchAny: cloneConditionGroups(rule.matchAny), whitelist: clone(rule.whitelist ?? []), steps: clone(rule.steps ?? []),
+    match: clone(rule.match ?? []), matchAny: cloneConditionGroups(rule.matchAny), whitelist: clone(rule.whitelist ?? (rule.allowlist as RuleCondition[] | undefined) ?? []), steps: clone(rule.steps ?? []),
   }
 }
 
@@ -157,7 +157,12 @@ async function loadRules(): Promise<void> {
   } else {
     fieldLoadError.value = fieldResult.reason instanceof Error ? fieldResult.reason.message : String(fieldResult.reason)
   }
-  if (refsetResult.status === 'fulfilled') referenceSets.value = refsetResult.value
+  if (refsetResult.status === 'fulfilled') {
+    referenceSets.value = refsetResult.value
+    referenceLoadError.value = ''
+  } else {
+    referenceLoadError.value = refsetResult.reason instanceof Error ? refsetResult.reason.message : String(refsetResult.reason)
+  }
   if (techniqueResult.status === 'fulfilled') {
     techniques.value = techniqueResult.value
     techniqueLoadError.value = ''
@@ -206,9 +211,19 @@ async function closeRuleEditor(): Promise<void> {
 }
 
 function cleanConditions(conditions: RuleCondition[]): RuleCondition[] {
-  return conditions.map(condition => ({ field: condition.field.trim(), op: condition.op.trim(), value: condition.value.trim() })).filter(condition => condition.field && condition.op && condition.value)
+  return conditions.map(condition => {
+    if (!condition.field?.trim() || !condition.op?.trim() || !condition.value?.trim()) throw new Error(t('forms.required'))
+    // Literal values can contain meaningful spaces; nested metadata belongs to
+    // the condition and must survive a visual edit or an advanced JSON edit.
+    return { ...clone(condition), field: condition.field.trim(), op: condition.op.trim(), value: condition.value }
+  })
 }
-function cleanGroups(groups: RuleCondition[][]): RuleCondition[][] { return groups.map(cleanConditions).filter(group => group.length) }
+function cleanGroups(groups: RuleCondition[][]): RuleCondition[][] {
+  return groups.map(group => {
+    if (!group.length) throw new Error(t('forms.required'))
+    return cleanConditions(group)
+  })
+}
 function setOptional(target: Record<string, unknown>, key: string, value: unknown): void {
   if (value === null || value === undefined || (typeof value === 'string' && !value.trim())) delete target[key]
   else target[key] = value
@@ -226,6 +241,7 @@ function buildRuleSpec(): Partial<RuleSpec> {
   setOptional(alert, 'title', ruleForm.value.alertTitle); setOptional(alert, 'description', ruleForm.value.alertDescription)
   if (Object.keys(alert).length) spec.alert = alert; else delete spec.alert
   spec.match = cleanConditions(ruleForm.value.match); spec.matchAny = cleanGroups(ruleForm.value.matchAny); spec.steps = cleanGroups(ruleForm.value.steps); spec.whitelist = cleanConditions(ruleForm.value.whitelist)
+  delete spec.allowlist
 
   // Lifecycle transitions are separate operations. An edit cannot promote a
   // draft or disabled rule through the ordinary update endpoint.
@@ -356,6 +372,7 @@ onMounted(async () => { await loadRules(); await syncEditorRoute() })
       <template #actions><el-button v-if="showRuleEditor" @click="closeRuleEditor">{{ t('forms.back') }}</el-button><el-select v-if="!showRuleEditor" v-model="ruleStatusFilter" size="small" clearable :placeholder="t('common.filter')" style="width:150px"><el-option v-for="status in ['DRAFT', 'TESTING', 'ACTIVE', 'DISABLED', 'ARCHIVED']" :key="status" :label="status" :value="status" /></el-select><el-button size="small" :loading="loading" @click="loadRules">{{ t('common.refresh') }}</el-button><el-button v-if="canManageRules && !showRuleEditor" type="primary" size="small" @click="openRuleEditor()">{{ t('detect.createRule') }}</el-button></template>
     </PageHeader>
 
+    <div v-if="referenceLoadError" class="detect-feedback error" role="alert"><strong>{{ t('menu.refset') }}</strong><span>{{ referenceLoadError }}</span><el-button size="small" :loading="loading" @click="loadRules">{{ t('common.refresh') }}</el-button></div>
     <div v-if="loadError" class="detect-feedback error" role="alert"><strong>{{ t('detect.loadFailed') }}</strong><span>{{ loadError }}</span><el-button size="small" @click="loadRules">{{ t('common.refresh') }}</el-button></div>
     <div v-if="actionMessage" class="detect-feedback error" role="alert">{{ actionMessage }}</div>
 

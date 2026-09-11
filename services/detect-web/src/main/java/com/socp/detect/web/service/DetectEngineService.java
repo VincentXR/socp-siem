@@ -709,14 +709,16 @@ public class DetectEngineService {
         }
         if (count % every != 0) return;
         try {
-            Map<String, RuleEngine.RuleState> states = engine.snapshotStates();
-            java.time.Instant timestamp = java.time.Instant.now();
-            long processedOffset = offset == null ? -1L : offset;
-            List<DetectionStateSnapshot> snapshots = states.entrySet().stream()
-                    .map(entry -> new DetectionStateSnapshot(entry.getKey(), entry.getValue().version(),
-                            tenant, shard, processedOffset, entry.getValue().serializedState(), timestamp,
-                            Map.copyOf(offsets)))
-                    .toList();
+            List<DetectionStateSnapshot> snapshots = engine.captureStateSnapshot(states -> {
+                java.time.Instant timestamp = java.time.Instant.now();
+                Map<Integer, Long> checkpoint = Map.copyOf(offsets);
+                long processedOffset = offset == null ? -1L : offset;
+                return states.entrySet().stream()
+                        .map(entry -> new DetectionStateSnapshot(entry.getKey(), entry.getValue().version(),
+                                tenant, shard, processedOffset, entry.getValue().serializedState(), timestamp,
+                                checkpoint))
+                        .toList();
+            });
             if (snapshotStore.supportsAtomicBatch()) snapshotStore.saveAll(snapshots);
             else snapshots.forEach(snapshotStore::save);
         } catch (RuntimeException failure) {

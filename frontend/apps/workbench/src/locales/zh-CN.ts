@@ -1,5 +1,17 @@
 export const zhCN = {
   forms: {
+    invalidInput: '请先修正表单中的无效输入',
+    serverPattern: '格式：{pattern}（提交时校验）',
+    schemaValidation: {
+      required: '必填字段缺失',
+      type: '类型不符合参数定义',
+      choice: '值不在允许范围内',
+      length: '长度不符合参数定义',
+      range: '数值超出允许范围',
+      unknown: '此字段未在参数定义中声明',
+      size: '输入超过大小或嵌套深度限制',
+      schema: '此值不符合表单定义',
+    },
     dedupWindow: '重复触发间隔（秒）',
     conflictStrategy: '已有运行时的处理方式',
     duplicateName: '名称已存在，请使用其他名称',

@@ -10,6 +10,7 @@ import 'element-plus/es/components/input-number/style/css.mjs'
 import 'element-plus/es/components/select/style/css.mjs'
 import ActionFeedback from './ActionFeedback.vue'
 import { useI18n } from '../composables/useI18n'
+import { validateSchemaInput } from '../utils/schemaValidation'
 const props = defineProps<{ schema: unknown; disabled?: boolean }>()
 const model = defineModel<Record<string, unknown>>({ default: () => ({}) })
 const emit = defineEmits<{ valid: [value: boolean] }>()
@@ -20,6 +21,8 @@ const errors = ref<Record<string, string>>({})
 const schema = computed(() => props.schema && typeof props.schema === 'object' ? props.schema as Record<string, unknown> : {})
 const required = computed(() => Array.isArray(schema.value.required) ? schema.value.required.map(String) : [])
 const fields = computed(() => Object.entries((schema.value.properties || {}) as Record<string, Record<string, unknown>>))
+const validation = computed(() => validateSchemaInput(model.value, props.schema))
+watch([validation, errors], () => emit('valid', !validation.value.length && !Object.keys(errors.value).length), { immediate: true, deep: true })
 watch(model, value => {
   if (errors.value.$) return
   try { if (JSON.stringify(JSON.parse(raw.value)) === JSON.stringify(value)) return } catch { /* initialize */ }
@@ -44,7 +47,6 @@ function updateJson(key: string, value: string) {
     }
     delete errors.value[key]
   } catch (failure) { errors.value[key] = String(failure) }
-  emit('valid', !Object.keys(errors.value).length)
 }
 </script>
 <template>
@@ -55,8 +57,9 @@ function updateJson(key: string, value: string) {
       <el-input-number v-else-if="field.type === 'number' || field.type === 'integer'" :model-value="model[key] as number | undefined" :precision="field.type === 'integer' ? 0 : undefined" :min="field.minimum as number | undefined" :max="field.maximum as number | undefined" @change="value => update(key, value)" />
       <el-input v-else-if="field.type === 'object' || field.type === 'array'" :model-value="jsonDrafts[key] ?? JSON.stringify(model[key] ?? (field.type === 'array' ? [] : {}), null, 2)" type="textarea" :rows="4" @update:model-value="value => updateJson(key, value)" />
       <el-input v-else :model-value="String(model[key] ?? '')" :maxlength="field.maxLength as number | undefined" @update:model-value="value => update(key, value)" />
-      <small v-if="field.description">{{ field.description }}</small><ActionFeedback :error="errors[key]" />
+      <small v-if="field.description">{{ field.description }}</small><small v-if="field.pattern">{{ t('forms.serverPattern', { pattern: String(field.pattern) }) }}</small><ActionFeedback :error="errors[key]" />
     </el-form-item>
     <details><summary>{{ t('forms.advanced') }}</summary><el-input v-model="raw" type="textarea" :rows="8" @input="value => updateJson('$', value)" /><ActionFeedback :error="errors.$" /></details>
+    <ActionFeedback v-for="(issue, index) in validation" :key="index" :error="`${issue.path}: ${t('forms.schemaValidation.' + issue.code)}`" />
   </el-form>
 </template>

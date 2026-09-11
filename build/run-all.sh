@@ -2,7 +2,7 @@
 # SOCP 本地启停脚本：按 profile 启动后端服务 + 前端 dev server（workbench）
 #
 # 用法（在仓库任意位置执行都可以，路径全部从脚本自身推导）：
-#   bash build/run-all.sh doctor    # 环境自检：java / maven / pnpm / jar / 端口
+#   bash build/run-all.sh doctor [core|ui|full] # 环境自检：java / maven / pnpm / jar / 端口
 #   bash build/run-all.sh start     # 默认启动完整后端 + 前端
 #   bash build/run-all.sh start ui  # 启动全部业务页面依赖 + 前端
 #   bash build/run-all.sh start core # 只启动核心事件链 + 前端（低资源）
@@ -126,16 +126,25 @@ kill_pid() {
 # doctor：冷启动前的环境自检（缺什么一次说清，别让人一个个撞）
 # ---------------------------------------------------------------------------
 doctor() {
-  local fatal=0 module_count service_count
-  module_count="$(awk '{print NF}' <<< "$SOCP_MODULE_NAMES")"
-  service_count="$(awk '{print NF}' <<< "$SOCP_SERVICE_NAMES")"
+  local profile="${1:-full}" selected fatal=0 service_count
+  selected="$(service_names "$profile")" || return 1
+  service_count="$(awk '{print NF}' <<< "$selected")"
+  echo "启动配置: $profile（$service_count 个后端服务）"
   echo "=== 仓库根 ==="
   echo "  $ROOT"
   [ -f "$ROOT/pom.xml" ] || { echo "  ❌ 这里没有 pom.xml，脚本可能被移出仓库了"; fatal=1; }
 
   echo "=== 工具链 ==="
   local j; if j="$(socp_java)"; then
-    echo "  ✅ java  : $j  ($("$j" -version 2>&1 | head -1))"
+    local java_version java_major
+    java_version="$("$j" -version 2>&1)"
+    java_major="$(sed -n 's/.*version "\([0-9][0-9]*\).*/\1/p' <<< "$java_version" | head -1)"
+    if [[ "$java_major" =~ ^[0-9]+$ ]] && [ "$java_major" -ge 21 ]; then
+      echo "  ✅ java  : $j（Java $java_major）"
+    else
+      echo "  ❌ Java 21+ 是必需条件，当前版本: ${java_major:-无法识别}"
+      fatal=1
+    fi
   else fatal=1; fi
   local m; if m="$(socp_maven)"; then
     echo "  ✅ maven : ${m#*|}  (来源 ${m%%|*})"
@@ -146,18 +155,19 @@ doctor() {
 
   echo "=== 构建产物 ==="
   local missing=0 name
-  for name in $SOCP_MODULE_NAMES; do
-    [ -f "$(jar_of "$name")" ] || { missing=$((missing + 1)); echo "  ❌ 缺 jar: $name"; }
+  for name in $selected; do
+    [ -s "$(jar_of "$name")" ] || { missing=$((missing + 1)); echo "  ❌ 缺少可用 jar: $name"; }
   done
   if [ "$missing" -eq 0 ]; then
-    echo "  ✅ $module_count/$module_count 模块 jar 就绪"
+    echo "  ✅ $service_count/$service_count 服务 jar 就绪"
   else
+    fatal=1
     echo "  → 执行 bash build/mvnw.sh -DskipTests package 生成"
   fi
 
   echo "=== 端口占用 ==="
   local busy=0 port pid
-  for name in $SOCP_SERVICE_NAMES; do
+  for name in $selected; do
     port="$(socp_port "$name")"
     pid="$(pid_on_port "$port")"
     if [ -n "$pid" ]; then
@@ -168,7 +178,7 @@ doctor() {
   [ "$busy" -eq 0 ] && echo "  ✅ $service_count 个默认部署端口均空闲"
 
   echo
-  [ "$fatal" -eq 0 ] && echo "自检通过，可以 bash build/run-all.sh start" || echo "存在致命问题，请先处理上面的 ❌"
+  [ "$fatal" -eq 0 ] && echo "后端工具链与构建产物检查通过；中间件连接和服务健康需启动后验证。启动命令: bash build/run-all.sh backend $profile" || echo "存在致命问题，请先处理上面的 ❌"
   return "$fatal"
 }
 
@@ -363,7 +373,7 @@ status_all() {
 nap() { sleep "$1" 2>/dev/null || python -c "import time;time.sleep($1)" 2>/dev/null || true; }
 
 case "${1:-start}" in
-  doctor)   doctor ;;
+  doctor)   doctor "${2:-full}" ;;
   start)
     profile="${2:-full}"
     start_backend "$profile"

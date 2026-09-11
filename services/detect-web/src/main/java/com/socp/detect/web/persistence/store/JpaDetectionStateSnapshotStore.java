@@ -42,6 +42,7 @@ public class JpaDetectionStateSnapshotStore implements DetectionStateSnapshotSto
     @Transactional
     public void saveAll(List<DetectionStateSnapshot> snapshots) {
         if (snapshots == null || snapshots.isEmpty()) return;
+        DetectionCheckpointPolicy.validateGeneration(snapshots);
         List<DetectionStateSnapshotEntity> rows = new ArrayList<>(snapshots.size());
         for (DetectionStateSnapshot snapshot : snapshots) {
             if (snapshot == null) throw new IllegalArgumentException("snapshot is required");
@@ -55,8 +56,16 @@ public class JpaDetectionStateSnapshotStore implements DetectionStateSnapshotSto
                         created.setShardId(snapshot.shardId());
                         return created;
                     });
-            if (row.getSnapshotTimestamp() != null
-                    && row.getSnapshotTimestamp().isAfter(snapshot.snapshotTimestamp())) continue;
+            if (!DetectionCheckpointPolicy.canReplace(row.getSnapshotTimestamp(),
+                    decodeOffsets(row.getPartitionOffsetsJson()), snapshot)) return;
+            rows.add(row);
+        }
+        // Validate every row before mutating any managed entity: returning
+        // early after a mutation would still let Hibernate dirty checking
+        // flush half a generation at transaction completion.
+        for (int index = 0; index < snapshots.size(); index++) {
+            DetectionStateSnapshot snapshot = snapshots.get(index);
+            DetectionStateSnapshotEntity row = rows.get(index);
             row.setRuleVersion(snapshot.ruleVersion());
             row.setLastProcessedOffset(snapshot.lastProcessedOffset());
             row.setSerializedState(Base64.getEncoder().encodeToString(snapshot.serializedState()));
@@ -67,7 +76,6 @@ public class JpaDetectionStateSnapshotStore implements DetectionStateSnapshotSto
             } catch (Exception failure) {
                 throw new IllegalStateException("invalid detection checkpoint offsets", failure);
             }
-            rows.add(row);
         }
         if (!rows.isEmpty()) repository.saveAllAndFlush(rows);
     }

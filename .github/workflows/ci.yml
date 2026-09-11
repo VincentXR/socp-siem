@@ -186,10 +186,10 @@ jobs:
       - name: Run real middleware contracts
         run: >-
           bash build/mvnw.sh
-          -pl platform/socp-test,platform/socp-tenant,services/incident-web,services/search-config,services/alert-web,services/soar-web
+          -pl platform/socp-test,platform/socp-tenant,services/incident-web,services/search-config,services/alert-web,services/detect-web,services/soar-web
           -am test
           -Dsurefire.failIfNoSpecifiedTests=false
-          -Dtest=MiddlewareSemanticsContainerTest,ContainerIdempotencyContractTest,TenantRlsPostgresTest,CaseTimelinePostgresTest,AlarmEnrichmentPostgresConcurrencyTest,OsEventReaderOpenSearchContainerTest,OsIndexerFailureContainerTest,SoarV2PostgresMigrationContractTest,SoarV2WorkflowLinearTest,SoarV2WorkflowFanOutTest,SoarV2WorkflowHumanGateTest,SoarV2WorkflowPrimitiveTest,SoarV2WorkflowSwitchTest
+          -Dtest=MiddlewareSemanticsContainerTest,ContainerIdempotencyContractTest,TenantRlsPostgresTest,CaseTimelinePostgresTest,DetectionSnapshotPostgresConcurrencyTest,AlarmEnrichmentPostgresConcurrencyTest,OsEventReaderOpenSearchContainerTest,OsIndexerFailureContainerTest,SoarV2PostgresMigrationContractTest,SoarV2WorkflowLinearTest,SoarV2WorkflowFanOutTest,SoarV2WorkflowHumanGateTest,SoarV2WorkflowPrimitiveTest,SoarV2WorkflowSwitchTest
 
       - name: Upload middleware test reports
         if: always()
@@ -512,8 +512,8 @@ jobs:
       - name: Run true-pipeline E2E (Kafka -> Detect -> stores)
         run: python3 build/verify-pipeline.py
 
-      - name: Run PR chaos evidence (duplicate + Detection outbox replay)
-        if: github.event_name == 'pull_request'
+      - name: Run change chaos evidence (duplicate + Detection outbox replay)
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
         env:
           # Service containers have generated names. Pass the stable job ID to
           # the probe instead of relying on Compose's socp-postgres name.
@@ -522,11 +522,11 @@ jobs:
           mkdir -p .cache/chaos
           set +e
           python3 build/chaos-pipeline.py --scenario duplicate_delivery \
-            --run-id "pr-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --run-id "change-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --output .cache/chaos/duplicate-delivery.json
           duplicate_status=$?
           python3 build/chaos-pipeline.py --scenario detection_outbox_replay \
-            --run-id "pr-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --run-id "change-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --output .cache/chaos/detection-outbox-replay.json
           replay_status=$?
           if [ "$duplicate_status" -ne 0 ] || [ "$replay_status" -ne 0 ]; then

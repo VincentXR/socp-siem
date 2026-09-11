@@ -163,10 +163,11 @@ export interface SearchResult {
   elapsedMs?: number
 }
 
-export interface RuleCondition { field: string; op: string; value: string }
+export interface RuleCondition { [extension: string]: unknown; field: string; op: string; value: string }
 export interface RuleSpec {
+  [extension: string]: unknown
   id: string; name: string; type: string; severity: string; message?: string
-  alert?: { title?: string; description?: string }
+  alert?: { [extension: string]: unknown; title?: string; description?: string }
   enabled: boolean; status?: string; window?: string; keyField?: string; routingField?: string; threshold?: number
   valueField?: string; warmup?: number; baselineWindows?: number; sigma?: number; minCount?: number
   match?: RuleCondition[]; matchAny?: RuleCondition[][]; whitelist?: RuleCondition[]; steps?: RuleCondition[][]; mitre?: string; version?: string

@@ -15,9 +15,7 @@ public final class InMemoryDetectionStateSnapshotStore implements DetectionState
     @Override
     public void save(DetectionStateSnapshot snapshot) {
         if (snapshot == null) throw new IllegalArgumentException("snapshot is required");
-        snapshots.merge(key(snapshot.tenantId(), snapshot.ruleId(), snapshot.shardId()), snapshot,
-                (previous, candidate) -> previous.snapshotTimestamp().isAfter(candidate.snapshotTimestamp())
-                        ? previous : candidate);
+        saveAll(List.of(snapshot));
     }
 
     @Override
@@ -27,12 +25,19 @@ public final class InMemoryDetectionStateSnapshotStore implements DetectionState
 
     @Override
     public synchronized void saveAll(List<DetectionStateSnapshot> candidates) {
-        if (candidates == null) return;
-        candidates.forEach(this::save);
+        if (candidates == null || candidates.isEmpty()) return;
+        DetectionCheckpointPolicy.validateGeneration(candidates);
+        for (DetectionStateSnapshot candidate : candidates) {
+            DetectionStateSnapshot previous = snapshots.get(key(candidate.tenantId(), candidate.ruleId(), candidate.shardId()));
+            if (previous != null && !DetectionCheckpointPolicy.canReplace(
+                    previous.snapshotTimestamp(), previous.partitionOffsets(), candidate)) return;
+        }
+        candidates.forEach(candidate -> snapshots.put(
+                key(candidate.tenantId(), candidate.ruleId(), candidate.shardId()), candidate));
     }
 
     @Override
-    public Optional<DetectionStateSnapshot> latest(String tenantId, String ruleId, int shardId) {
+    public synchronized Optional<DetectionStateSnapshot> latest(String tenantId, String ruleId, int shardId) {
         return Optional.ofNullable(snapshots.get(key(tenantId, ruleId, shardId)));
     }
 
