@@ -118,4 +118,47 @@ class EndpointControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.removed").value(true));
     }
+
+    @Test
+    void ingestEventReturnsAcceptedRecord() throws Exception {
+        Map<String, Object> event = Map.of("eventId", "event-1", "hostname", "web-01");
+        given(events.add(any())).willReturn(event);
+        given(events.list()).willReturn(List.of(event));
+
+        mvc.perform(post("/api/v1/endpoints/events")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("hostname", "web-01"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.accepted").value(true))
+                .andExpect(jsonPath("$.data.eventId").value("event-1"))
+                .andExpect(jsonPath("$.data.total").value(1));
+    }
+
+    @Test
+    void eventsAndStatsExposeEndpointData() throws Exception {
+        Endpoint online = Endpoint.register("web01", "10.0.0.5", "Linux", "agent-1");
+        Endpoint offline = new Endpoint("e-2", "web02", "10.0.0.6", "Linux", "agent-1", "OFFLINE", null);
+        given(store.list()).willReturn(List.of(online, offline));
+        given(events.list()).willReturn(List.of(
+                Map.of("type", "process"), Map.of("type", "network"), Map.of("eventId", "event-3")));
+
+        mvc.perform(get("/api/v1/endpoints/events").param("page", "1").param("size", "2")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(2))
+                .andExpect(jsonPath("$.data.total").value(3));
+
+        mvc.perform(get("/api/v1/endpoints/stats")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(2))
+                .andExpect(jsonPath("$.data.online").value(1))
+                .andExpect(jsonPath("$.data.events").value(3))
+                .andExpect(jsonPath("$.data.eventByType.process").value(1))
+                .andExpect(jsonPath("$.data.eventByType.UNKNOWN").value(1));
+    }
 }

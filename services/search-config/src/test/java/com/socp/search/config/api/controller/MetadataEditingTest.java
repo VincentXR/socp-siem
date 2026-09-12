@@ -37,6 +37,26 @@ class MetadataEditingTest {
         when(types.save(any())).thenAnswer(call -> call.getArgument(0));
         when(categories.save(any())).thenAnswer(call -> call.getArgument(0));
         when(fields.save(any())).thenAnswer(call -> call.getArgument(0));
+        when(types.delete(type.id())).thenReturn(true);
+        when(categories.delete(category.id())).thenReturn(true);
+        when(fields.delete(field.id())).thenReturn(true);
+
+        assertThat(controller.listDataSourceTypes().data()).containsExactly(type);
+        assertThat(controller.createDataSourceType(new DataSourceTypeRequest("syslog", "Created", "", true)).data().code())
+                .isEqualTo("syslog");
+        assertThat(controller.deleteDataSourceType(type.id()).data()).containsEntry("removed", true);
+        assertThat(controller.listCategories().data()).containsExactly(category);
+        assertThat(controller.createCategory(new LogCategoryRequest("auth", "Created", "", "HIGH", true)).data().code())
+                .isEqualTo("auth");
+        assertThat(controller.updateCategory(category.id(), new LogCategoryRequest("auth", "Updated", "", "LOW", false))
+                .data().id()).isEqualTo(category.id());
+        assertThat(controller.deleteCategory(category.id()).data()).containsEntry("removed", true);
+        assertThat(controller.listFields().data()).containsExactly(field, system);
+        assertThat(controller.createField(new FieldDefRequest("user", "User", "string", "custom", true, true, true, ""))
+                .data().fieldName()).isEqualTo("user");
+        assertThat(controller.updateField(field.id(), new FieldDefRequest("user", "User name", "string", "custom", true, false, true, ""))
+                .data().id()).isEqualTo(field.id());
+        assertThat(controller.deleteField(field.id()).data()).containsEntry("removed", true);
 
         DataSourceType edited = controller.updateDataSourceType(type.id(), new DataSourceTypeRequest("syslog", "Updated", "", false)).data();
         assertThat(edited.id()).isEqualTo(type.id());
@@ -49,5 +69,7 @@ class MetadataEditingTest {
         assertThatThrownBy(() -> controller.updateFieldDef(system.id(), new FieldDefRequest("tenant_id", "Tenant", "string", "system", true, true, true, ""))).isInstanceOf(ResponseStatusException.class);
         assertThatThrownBy(() -> controller.deleteField(system.id())).isInstanceOf(ResponseStatusException.class);
         assertThatThrownBy(() -> controller.updateLogCategory("missing", new LogCategoryRequest("auth", "Updated", "", "LOW", false))).isInstanceOf(ResponseStatusException.class);
+        assertThatThrownBy(() -> controller.updateLogCategory(category.id(), new LogCategoryRequest("renamed", "Updated", "", "LOW", false)))
+                .isInstanceOf(ResponseStatusException.class);
     }
 }

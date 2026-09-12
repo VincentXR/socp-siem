@@ -13,6 +13,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 import java.util.Map;
@@ -21,6 +22,8 @@ import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.verify;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -37,6 +40,9 @@ class EndpointCollectionControllerTest {
 
     @Autowired
     private MockMvc mvc;
+
+    @Autowired
+    private EndpointCollectionController controller;
 
     @Autowired
     private ObjectMapper json;
@@ -71,5 +77,20 @@ class EndpointCollectionControllerTest {
 
         verify(http).post(eq(SocpService.SEARCH), eq("/api/v1/ingest"),
                 contains("\"tenantId\":\"tenant-a\""), eq(SocpHttpClient.NDJSON), eq(5000));
+    }
+
+    @Test
+    void eventsReturnsPagedEnvelopeAndRejectsInvalidRanges() throws Exception {
+        Map<String, Object> event = Map.of("eventId", "event-1", "hostname", "web-01");
+        given(events.list()).willReturn(List.of(event));
+
+        var result = controller.events(1, 1);
+        assertThat(result.data().items()).containsExactly(event);
+        assertThat(result.data().total()).isEqualTo(1);
+        assertThat(result.data().page()).isEqualTo(1);
+        assertThat(result.data().size()).isEqualTo(1);
+
+        assertThatThrownBy(() -> controller.events(1, 501))
+                .isInstanceOf(ResponseStatusException.class);
     }
 }
