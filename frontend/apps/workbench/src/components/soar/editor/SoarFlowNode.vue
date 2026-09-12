@@ -12,16 +12,33 @@ const { t } = useI18n()
 
 const raw = computed(() => props.data?.raw)
 const meta = computed(() => nodeTypeMeta(props.data?.nodeType ?? ''))
-const title = computed(() => {
-  const name = raw.value?.name
-  return typeof name === 'string' && name.trim() ? name : String(raw.value?.id ?? '')
-})
 const typeLabel = computed(() => {
   const nodeType = String(props.data?.nodeType ?? '')
   const labelKey = meta.value?.labelKey
   if (!labelKey) return nodeType
   const translated = t(labelKey)
   return translated === labelKey ? (meta.value?.label ?? nodeType) : translated
+})
+const DEFAULT_NAME_ALIASES: Record<string, readonly string[]> = {
+  START: ['Start', '开始'],
+  ACTION: ['Action', '动作'],
+  CONDITION: ['Condition', '条件'],
+  SWITCH: ['Switch', '开关分支'],
+  APPROVAL: ['Approval', '审批'],
+  END: ['Done', 'End', '完成', '结束'],
+  PARALLEL: ['Parallel', '并行'],
+  JOIN: ['Join', '汇聚'],
+  FOREACH: ['For each', '循环'],
+  MANUAL_TASK: ['Manual task', '人工任务'],
+  DELAY: ['Delay', '延时'],
+  SUB_PLAYBOOK: ['Sub-playbook', '子剧本'],
+  SET_VARIABLE: ['Set variable', '设置变量'],
+}
+const title = computed(() => {
+  const name = raw.value?.name
+  if (typeof name !== 'string' || !name.trim()) return String(raw.value?.id ?? '')
+  const nodeType = String(props.data?.nodeType ?? '')
+  return DEFAULT_NAME_ALIASES[nodeType]?.includes(name.trim()) ? typeLabel.value : name
 })
 
 const acceptsTarget = computed(() => Boolean(props.data?.acceptsTarget))
@@ -55,10 +72,10 @@ const summary = computed(() => {
     const expression = node.expression
     return typeof expression === 'string' ? expression : ''
   }
-  if (type === 'END') return String(node.outcome ?? '')
+  if (type === 'END') return runStatusLabel(String(node.outcome ?? ''))
   if (type === 'APPROVAL') {
     const config = (node.config && typeof node.config === 'object' ? node.config : {}) as Record<string, unknown>
-    return config.timeoutSeconds ? `timeout ${config.timeoutSeconds}s` : ''
+    return config.timeoutSeconds ? t('soar.property.timeoutSummary', { seconds: String(config.timeoutSeconds) }) : ''
   }
   return String(node.id ?? '')
 })

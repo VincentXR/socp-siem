@@ -557,6 +557,7 @@ export const zhCN = {
       outcome: '结果',
       approvalPolicy: '审批策略（配置）',
       timeoutSeconds: '超时秒数',
+      timeoutSummary: '超时 {seconds} 秒',
       requiredApprovals: '所需审批数',
       allowedRoles: '允许的角色',
       selectRoles: '选择角色',

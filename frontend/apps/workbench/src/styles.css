@@ -490,7 +490,7 @@ body {
   text-transform: none;
   border-bottom: 1px solid var(--ns-border) !important;
 }
-.el-table--border .el-table__cell { border-right-color: var(--ns-border) !important; }
+.el-table--border .el-table__cell { border-right-color: color-mix(in srgb, var(--ns-border) 42%, transparent) !important; }
 .el-table--border th.el-table__cell.is-leaf { cursor: col-resize; }
 .el-table th.el-table__cell:hover { color: var(--ns-text); }
 .el-table td.el-table__cell {

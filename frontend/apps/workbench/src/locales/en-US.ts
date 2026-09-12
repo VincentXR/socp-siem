@@ -559,6 +559,7 @@ export const enUS: LocaleMessages = {
       outcome: 'Outcome',
       approvalPolicy: 'Approval policy (config)',
       timeoutSeconds: 'Timeout seconds',
+      timeoutSummary: 'Timeout {seconds}s',
       requiredApprovals: 'Required approvals',
       allowedRoles: 'Allowed roles',
       selectRoles: 'Select roles',
