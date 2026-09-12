@@ -13,18 +13,27 @@ import ElInput from 'element-plus/es/components/input/index.mjs'
 import ElRow from 'element-plus/es/components/row/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import ElSlider from 'element-plus/es/components/slider/index.mjs'
+import { computed } from 'vue'
 import SevBadge from '../SevBadge.vue'
 import type { ScoreBreakdown } from '../../api'
 import { useI18n } from '../../composables/useI18n'
 
 type ScoreForm = { severity: string; mitre: string; tiHits: number; recentAlerts: number; assetCriticality: number }
 
-defineProps<{
+const props = defineProps<{
   form: ScoreForm
   result: ScoreBreakdown | null
+  techniques?: Array<{ id: string; name: string }>
+  techniquesLoading?: boolean
 }>()
 const emit = defineEmits<{ calculate: [] }>()
 const { t } = useI18n()
+const techniqueOptions = computed(() => {
+  const options = [...(props.techniques ?? [])]
+  const current = props.form.mitre.trim()
+  if (current && !options.some(technique => technique.id === current)) options.unshift({ id: current, name: t('ueba.currentTechnique') })
+  return options
+})
 const severities = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO']
 const breakdownLabel: Record<string, string> = {
   base: 'ueba.severityBaseline', tactic: 'ueba.primaryTactic', intel: 'ueba.threatIntelHits',
@@ -48,7 +57,10 @@ function riskColor(level: string) {
             </el-select>
           </el-form-item>
           <el-form-item :label="t('ueba.attackTechnique')">
-            <el-input v-model="form.mitre" placeholder="T1486" style="width:160px" @change="emit('calculate')" />
+            <el-select v-model="form.mitre" filterable clearable :loading="techniquesLoading" :placeholder="t('ueba.attackTechniquePlaceholder')" style="width:100%" @change="emit('calculate')">
+              <el-option v-for="technique in techniqueOptions" :key="technique.id" :label="`${technique.id} · ${technique.name}`" :value="technique.id" />
+            </el-select>
+            <span class="field-hint">{{ techniques?.length ? t('ueba.attackTechniqueHint') : t('ueba.noTechniques') }}</span>
           </el-form-item>
           <el-form-item :label="t('ueba.threatIntelHits')"><el-slider v-model="form.tiHits" :min="0" :max="5" show-stops @change="emit('calculate')" /></el-form-item>
           <el-form-item :label="t('ueba.recentEntityAlerts')"><el-slider v-model="form.recentAlerts" :min="0" :max="20" @change="emit('calculate')" /></el-form-item>

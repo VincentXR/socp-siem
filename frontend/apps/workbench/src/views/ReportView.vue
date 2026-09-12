@@ -16,6 +16,7 @@ import type { ECharts } from 'echarts/core'
 import ElMessage from 'element-plus/es/components/message/index.mjs'
 import { loadEcharts } from '../lib/echarts'
 import { useRequest } from '../composables/useRequest'
+import PageHeader from '../components/PageHeader.vue'
 import { archiveReport, dailyReport, downloadArchivedReport, listArchive, trend7d, type ReportSummary, type ReportTrend } from '../api'
 import { useI18n } from '../composables/useI18n'
 import { sevColor } from '../lib/ui'
@@ -87,7 +88,7 @@ async function doArchive() {
   try {
     const result = await archiveReport()
     if (result.archived) {
-      ElMessage.success(t('report.archiveSuccess', { day: result.day ?? '', key: result.dailyKey ?? '' }))
+      ElMessage.success(t('report.saveSuccess', { day: result.day ?? '', key: result.dailyKey ?? '' }))
     } else {
       ElMessage.error(result.error || t('report.archiveFailed'))
     }
@@ -107,6 +108,11 @@ async function downloadArchive(key: string) {
   } catch (error) {
     ElMessage.error((error as Error).message || t('report.archiveDownloadFailed'))
   }
+}
+
+function reportName(key: string): string {
+  const name = key.split('/').pop() || key
+  return name.replace(/\.json$/i, '')
 }
 
 function onResize() {
@@ -130,10 +136,12 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="page-pad view-enter"><el-alert v-if="archiveError" :title="archiveError" type="error" :closable="false" />
-    <div style="margin-bottom:12px;display:flex;gap:10px;align-items:center">
-      <el-button :loading="reportLoading" @click="loadReport">{{ t('report.refresh') }}</el-button>
-      <el-button type="primary" :loading="archiveBusy" @click="doArchive">{{ t('report.archiveToMinio') }}</el-button>
+  <div class="page-pad view-enter">
+    <PageHeader :title="t('report.title')" :description="t('report.description')">
+      <template #actions><el-button size="small" :loading="reportLoading" @click="loadReport">{{ t('common.refresh') }}</el-button><el-button type="primary" size="small" :loading="archiveBusy" @click="doArchive">{{ t('report.generateReport') }}</el-button></template>
+    </PageHeader>
+    <el-alert v-if="archiveError" :title="archiveError" type="error" :closable="false" />
+    <div class="report-toolbar-meta">
       <span v-if="archiveInfo" style="font-size:12px;color:var(--ns-text-3)">{{ t('report.archivedObjects', { count: archiveInfo.count }) }}</span>
     </div>
     <el-alert v-if="reportError" type="error" :title="t('report.loadFailed')" show-icon closable @close="reportRequest.reset" />
@@ -153,10 +161,10 @@ onUnmounted(() => {
       <template #header>{{ t('report.topRules') }}</template>
       <el-table :data="report.byRule" size="small" border><el-table-column prop="rule" :label="t('common.rule')" show-overflow-tooltip /><el-table-column prop="count" :label="t('report.alarmCount')" width="120" /></el-table>
     </el-card>
-    <el-card shadow="never" style="margin-top:14px" v-if="archiveInfo?.objects.length">
-      <template #header>{{ t('report.minioObjects') }}</template>
+    <el-card shadow="never" style="margin-top:14px" v-if="archiveInfo?.objects.length" class="report-storage-card">
+      <template #header><div class="report-storage-head"><strong>{{ t('report.savedReports') }}</strong><span>{{ t('report.storageHint') }}</span></div></template>
       <el-table :data="archiveInfo.objects" size="small" border>
-        <el-table-column prop="key" :label="t('report.objectKey')" min-width="240" show-overflow-tooltip />
+        <el-table-column :label="t('report.reportFile')" min-width="240" show-overflow-tooltip><template #default="{ row }"><strong>{{ reportName(row.key) }}</strong><details class="report-storage-details"><summary>{{ t('report.storageDetails') }}</summary><span class="mono">{{ row.key }}</span></details></template></el-table-column>
         <el-table-column prop="size" :label="t('report.size')" width="120"><template #default="{ row }">{{ n(row.size / 1024, 'decimal') }} KB</template></el-table-column>
         <el-table-column :label="t('common.actions')" width="80"><template #default="{ row }"><el-button link type="primary" size="small" @click="downloadArchive(row.key)">{{ t('report.download') }}</el-button></template></el-table-column>
       </el-table>

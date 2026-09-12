@@ -1,17 +1,22 @@
 <script setup lang="ts">
+import 'element-plus/es/components/alert/style/css.mjs'
+import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/card/style/css.mjs'
 import 'element-plus/es/components/col/style/css.mjs'
 import 'element-plus/es/components/row/style/css.mjs'
 import 'element-plus/es/components/tabs/style/css.mjs'
+import ElAlert from 'element-plus/es/components/alert/index.mjs'
+import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElCol from 'element-plus/es/components/col/index.mjs'
 import ElRow from 'element-plus/es/components/row/index.mjs'
 import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs'
 import ActionFeedback from '../components/ActionFeedback.vue'
+import PageHeader from '../components/PageHeader.vue'
 import { onMounted, ref } from 'vue'
 import {
   appendWatchlist, deleteWatchlist, listWatchlists, putWatchlist,
-  uebaEntities, uebaEntity, uebaScore, uebaSummary,
+  listTechniques, uebaEntities, uebaEntity, uebaScore, uebaSummary,
   type RiskEntity, type RiskSummary, type ScoreBreakdown, type Watchlist,
 } from '../api'
 import UebaEntityDrawer from '../components/ueba/UebaEntityDrawer.vue'
@@ -25,6 +30,8 @@ const emit = defineEmits<{ 'go-alarms': [entity: string] }>()
 const { t } = useI18n()
 
 const loadError = ref('')
+const techniqueError = ref('')
+const loading = ref(false)
 const riskEntities = ref<RiskEntity[]>([])
 const riskSummary = ref<RiskSummary | null>(null)
 const riskLimit = ref(20)
@@ -34,14 +41,26 @@ const watchlists = ref<Watchlist[]>([])
 const uebaTab = ref('entities')
 const scoreForm = ref({ severity: 'HIGH', mitre: 'T1110', tiHits: 1, recentAlerts: 3, assetCriticality: 2 })
 const scoreResult = ref<ScoreBreakdown | null>(null)
+const attackTechniques = ref<Array<{ id: string; name: string }>>([])
+const techniquesLoading = ref(false)
 
 async function loadUeba() {
-  const [entities, summary, lists] = await Promise.allSettled([uebaEntities(riskLimit.value), uebaSummary(), listWatchlists()])
+  if (loading.value) return
+  loading.value = true
+  techniquesLoading.value = true
+  try {
+  const [entities, summary, lists, techniques] = await Promise.allSettled([uebaEntities(riskLimit.value), uebaSummary(), listWatchlists(), listTechniques()])
+  techniqueError.value = techniques.status === 'rejected' ? String(techniques.reason) : ''
+  if (techniques.status === 'fulfilled') attackTechniques.value = techniques.value.map(technique => ({ id: technique.id, name: technique.name }))
   loadError.value = [entities, summary, lists].filter(item => item.status === 'rejected').map(item => String((item as PromiseRejectedResult).reason)).join(' · ')
   if (entities.status === 'fulfilled') riskEntities.value = entities.value
   if (summary.status === 'fulfilled') riskSummary.value = summary.value
   if (lists.status === 'fulfilled') watchlists.value = lists.value
   if (!scoreResult.value) await calcScore()
+  } finally {
+    techniquesLoading.value = false
+    loading.value = false
+  }
 }
 
 async function openEntity(entity: RiskEntity) {
@@ -75,7 +94,11 @@ onMounted(loadUeba)
 
 <template>
   <div class="page-pad view-enter">
+    <PageHeader :eyebrow="t('menuGroup.assetsAndIntel')" :title="t('ueba.title')" :description="t('ueba.description')">
+      <template #actions><el-button size="small" :loading="loading" @click="loadUeba">{{ t('common.refresh') }}</el-button></template>
+    </PageHeader>
     <ActionFeedback :error="loadError" />
+    <el-alert v-if="techniqueError" :title="t('ueba.techniqueDictionaryUnavailable')" :description="techniqueError" type="warning" :closable="false" show-icon style="margin-bottom:12px" />
     <el-row :gutter="12" style="margin-bottom:14px">
       <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num">{{ riskSummary?.entities ?? '—' }}</div><div class="label">{{ t('ueba.entityCount') }}</div></div></el-card></el-col>
       <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-danger)">{{ riskSummary?.maxRisk ?? '—' }}</div><div class="label">{{ t('ueba.maxRisk') }}</div></div></el-card></el-col>
@@ -104,8 +127,9 @@ onMounted(loadUeba)
           @remove="removeWatchlist"
         />
       </el-tab-pane>
-      <el-tab-pane :label="t('ueba.scoreSimulation')" name="score">
-        <UebaScorePanel :form="scoreForm" :result="scoreResult" @calculate="calcScore" />
+      <el-tab-pane :label="t('ueba.advancedTools')" name="score">
+        <div class="workspace-hint">{{ t('ueba.scoreSimulationHint') }}</div>
+        <UebaScorePanel :form="scoreForm" :result="scoreResult" :techniques="attackTechniques" :techniques-loading="techniquesLoading" @calculate="calcScore" />
       </el-tab-pane>
     </el-tabs>
 

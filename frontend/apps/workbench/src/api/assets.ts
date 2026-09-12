@@ -9,5 +9,13 @@ export const importAssets = (items: Array<Partial<Asset>>) => post<{ imported: n
 export const assetStats = () => get<{ total: number; byType: Record<string, number>; byCriticality: Record<string, number> }>('/asset-web/api/v1/assets/stats')
 
 export const listEndpoints = () => get<Endpoint[]>('/hips-web/api/v1/endpoints')
-export const endpointStats = () => get<{ total: number; online: number; byType: Record<string, number> }>('/hips-web/api/v1/endpoints/stats')
+export type EndpointEvent = {
+  eventId?: string
+  hostname?: string
+  type?: string
+  receivedAt?: string
+  [key: string]: unknown
+}
+export const listEndpointEvents = () => get<EndpointEvent[]>('/hips-web/api/v1/endpoints/events')
+export const endpointStats = () => get<{ total: number; online: number; byType?: Record<string, number>; eventByType?: Record<string, number>; events?: number }>('/hips-web/api/v1/endpoints/stats')
 export const deleteEndpoint = (id: string) => del(`/hips-web/api/v1/endpoints/${encodeURIComponent(id)}`)
