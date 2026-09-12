@@ -221,7 +221,7 @@ test('SOAR workbench covers draft lifecycle, run inspection and human controls',
   await page.getByRole('button', { name: 'Back to list', exact: true }).click()
   await page.getByRole('tab', { name: 'Runs' }).click()
   await expect(page.locator('.soar-run-summary')).toContainText('run-1')
-  await expect(page.locator('.soar-run-summary')).toContainText('SUCCEEDED')
+  await expect(page.locator('.soar-run-summary')).toContainText('Succeeded')
   await page.getByRole('button', { name: 'Queue run' }).click()
   const queueDialog = page.getByRole('dialog', { name: 'Queue a published playbook run' })
   await expect(queueDialog).toBeVisible()
