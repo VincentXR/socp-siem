@@ -706,6 +706,7 @@ export const enUS: LocaleMessages = {
     scoreBreakdown: 'Score Breakdown (same scale as detection analytics)',
     scoreCap: 'Score cap 100',
     unavailable: 'Scoring service unavailable',
+    readOnly: 'This role can view entities and watchlists, but changes require analyst or administrator permission.',
     watchlistCreate: 'Add Watchlist',
     watchlistHint: 'Watchlists can be referenced by op=inlist / notinlist conditions and take effect immediately.',
     watchlistName: 'Watchlist ID',
@@ -894,6 +895,7 @@ export const enUS: LocaleMessages = {
     importHint: 'Paste one value per line. Commas and semicolons are also supported.',
     noItemsMatch: 'No entries match the current filter',
     emptySet: 'This set has no entries',
+    readOnly: 'This role can view reference sets, but changes require analyst or administrator permission.',
   },
   ingest: {
     title: 'Log Ingestion Pipelines',

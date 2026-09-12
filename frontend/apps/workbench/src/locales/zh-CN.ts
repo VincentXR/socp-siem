@@ -704,6 +704,7 @@ export const zhCN = {
     scoreBreakdown: '评分拆解（与检测分析侧同一口径）',
     scoreCap: '总分上限 100',
     unavailable: '评分服务不可用',
+    readOnly: '当前角色仅可查看风险实体和观察名单，名单变更需要分析员或管理员权限。',
     watchlistCreate: '新增观察名单',
     watchlistHint: '名单可被规则条件 op=inlist / notinlist 引用，改完立即生效，无需重载规则',
     watchlistName: '名单标识',
@@ -892,6 +893,7 @@ export const zhCN = {
     importHint: '每行输入一个值，也支持逗号或分号分隔。',
     noItemsMatch: '没有匹配当前筛选的条目',
     emptySet: '此集合暂无条目',
+    readOnly: '当前角色仅可查看参考数据集，条目和集合变更需要分析员或管理员权限。',
   },
   ingest: {
     title: '日志接入与管道',

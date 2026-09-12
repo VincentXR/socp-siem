@@ -24,10 +24,12 @@ import UebaRiskPanel from '../components/ueba/UebaRiskPanel.vue'
 import UebaScorePanel from '../components/ueba/UebaScorePanel.vue'
 import UebaWatchlistsPanel from '../components/ueba/UebaWatchlistsPanel.vue'
 import { useI18n } from '../composables/useI18n'
+import { useWriteAccess } from '../composables/useWriteAccess'
 
 const props = defineProps<{ theme: 'light' | 'dark' }>()
 const emit = defineEmits<{ 'go-alarms': [entity: string] }>()
 const { t } = useI18n()
+const canWrite = useWriteAccess()
 
 const loadError = ref('')
 const techniqueError = ref('')
@@ -74,9 +76,10 @@ async function calcScore() {
 }
 
 async function refreshWatchlists() { watchlists.value = await listWatchlists() }
-async function createWatchlist(name: string, values: string[]) { await putWatchlist(name, values); await refreshWatchlists() }
-async function appendToWatchlist(name: string, values: string[]) { await appendWatchlist(name, values); await refreshWatchlists() }
+async function createWatchlist(name: string, values: string[]) { if (!canWrite.value) return; await putWatchlist(name, values); await refreshWatchlists() }
+async function appendToWatchlist(name: string, values: string[]) { if (!canWrite.value) return; await appendWatchlist(name, values); await refreshWatchlists() }
 async function removeWatchlist(name: string) {
+  if (!canWrite.value) return
   if (!confirm(t('ueba.deleteWatchlistConfirm', { name }))) return
   try { await deleteWatchlist(name); await refreshWatchlists() }
   catch (failure) { loadError.value = String(failure) }
@@ -98,6 +101,7 @@ onMounted(loadUeba)
       <template #actions><el-button size="small" :loading="loading" @click="loadUeba">{{ t('common.refresh') }}</el-button></template>
     </PageHeader>
     <ActionFeedback :error="loadError" />
+    <div v-if="!canWrite" class="page-readonly-hint">{{ t('ueba.readOnly') }}</div>
     <el-alert v-if="techniqueError" :title="t('ueba.techniqueDictionaryUnavailable')" :description="techniqueError" type="warning" :closable="false" show-icon style="margin-bottom:12px" />
     <el-row :gutter="12" style="margin-bottom:14px">
       <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num">{{ riskSummary?.entities ?? '—' }}</div><div class="label">{{ t('ueba.entityCount') }}</div></div></el-card></el-col>
@@ -124,6 +128,7 @@ onMounted(loadUeba)
           :watchlists="watchlists"
           :create="createWatchlist"
           :append="appendToWatchlist"
+          :can-write="canWrite"
           @remove="removeWatchlist"
         />
       </el-tab-pane>
