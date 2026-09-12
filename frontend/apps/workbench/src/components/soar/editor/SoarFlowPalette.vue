@@ -4,7 +4,7 @@ import { PALETTE_DATA_TYPE } from './types'
 import type { SoarFlowApi } from './useDefinitionFlow'
 import { useI18n } from '../../../composables/useI18n'
 
-const props = defineProps<{ flow: SoarFlowApi }>()
+const props = withDefaults(defineProps<{ flow: SoarFlowApi; readOnly?: boolean }>(), { readOnly: false })
 
 const { t } = useI18n()
 
@@ -21,12 +21,12 @@ function descriptionOf(item: (typeof items)[number]): string {
 }
 
 function createFromClick(type: string): void {
-  if (!props.flow) return
+  if (!props.flow || props.readOnly) return
   props.flow.addAtViewportCenter(type)
 }
 
 function onDragStart(event: DragEvent, type: string): void {
-  if (!event.dataTransfer) return
+  if (props.readOnly || !event.dataTransfer) return
   event.dataTransfer.setData(PALETTE_DATA_TYPE, type)
   event.dataTransfer.effectAllowed = 'copy'
 }
@@ -44,9 +44,9 @@ function onDragEnd(): void {
       :key="item.type"
       type="button"
       class="soar-palette-item"
-      :class="[`tone-${item.tone}`, { disabled: item.comingSoon }]"
-      :disabled="item.comingSoon"
-      :draggable="!item.comingSoon"
+      :class="[`tone-${item.tone}`, { disabled: props.readOnly || item.comingSoon }]"
+      :disabled="props.readOnly || item.comingSoon"
+      :draggable="!props.readOnly && !item.comingSoon"
       @click="createFromClick(item.type)"
       @dragstart="onDragStart($event, item.type)"
       @dragend="onDragEnd"

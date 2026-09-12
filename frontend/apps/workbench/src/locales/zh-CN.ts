@@ -1210,6 +1210,7 @@ export const zhCN = {
     playbookNameRequired: '请填写剧本名称。',
     createdDraft: '已创建草稿，请在画布中配置流程。',
     createFailed: '创建剧本失败。',
+    readOnly: '当前角色仅可查看剧本、运行和审批记录；变更与审批需要分析员或管理员权限。',
     editorTitle: '剧本编辑器',
     editorSubtitle: '拖拽节点配置响应流程；完成测试后再发布。',
     editorShow: '展开可视化编排设计器 (Open Visual Editor)',

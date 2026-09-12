@@ -36,8 +36,10 @@ import {
   type SoarV2Template,
 } from '../api'
 import { useI18n } from '../composables/useI18n'
+import { useWriteAccess } from '../composables/useWriteAccess'
 
 const { t } = useI18n()
+const canWrite = useWriteAccess()
 const route = useRoute()
 const router = useRouter()
 const chooseTemplate = ref(false)
@@ -81,6 +83,7 @@ const approvalModal = ref({
 })
 
 function openApprovalModal(row: any, approve: boolean) {
+  if (!canWrite.value) return
   approvalModal.value = {
     visible: true,
     approvalId: String(row?.id || ''),
@@ -93,7 +96,7 @@ function openApprovalModal(row: any, approve: boolean) {
 }
 
 async function submitApprovalDecision() {
-  if (!approvalModal.value.reason.trim()) return
+  if (!canWrite.value || !approvalModal.value.reason.trim()) return
   approvalModal.value.loading = true
   try {
     if (approvalModal.value.isApprove) {
@@ -131,6 +134,7 @@ async function loadPlaybooks() {
 }
 
 async function installTemplate(id: string) {
+  if (!canWrite.value) return
   try {
     const result = await installV2Template(id) as { playbook?: { id?: string } }
     await loadPlaybooks()
@@ -222,19 +226,20 @@ onMounted(loadPlaybooks)
     <PageHeader :eyebrow="t('menuGroup.detectAndResponse')" :title="t('soar.title')" :description="t('soar.description')">
       <template #actions>
         <el-button size="small" :loading="loading" @click="loadPlaybooks">{{ t('common.refresh') }}</el-button>
-        <el-button v-if="!showEditor" type="primary" size="small" @click="chooseTemplate = true">{{ t('soar.createPlaybook') }}</el-button>
+        <el-button v-if="canWrite && !showEditor" type="primary" size="small" @click="chooseTemplate = true">{{ t('soar.createPlaybook') }}</el-button>
       </template>
     </PageHeader>
+    <div v-if="!canWrite" class="page-readonly-hint">{{ t('soarV2.readOnly') }}</div>
     <div v-if="contextAlarmId" class="soar-context-banner">
       <span>{{ t('soar.contextFromAlarm') }} <code>{{ contextAlarmId }}</code></span>
       <small>{{ t('soar.contextFromAlarmHint') }}</small>
     </div>
 
     <el-button v-if="showEditor" @click="router.push({ name: 'soar' })">{{ t('forms.back') }}</el-button>
-    <SoarV2Editor v-if="showEditor" ref="editorRef" :initial-playbook-id="selectedPlaybookId" :open-run="openRunRequest" :create-request="createRequestToken" :context-alarm-id="contextAlarmId" @created="id => router.replace({ name: 'playbook-edit', params: { playbookId: id } })" />
+    <SoarV2Editor v-if="showEditor" ref="editorRef" :initial-playbook-id="selectedPlaybookId" :open-run="openRunRequest" :create-request="createRequestToken" :context-alarm-id="contextAlarmId" :can-write="canWrite" @created="id => router.replace({ name: 'playbook-edit', params: { playbookId: id } })" />
     <el-dialog v-model="chooseTemplate" :title="t('forms.selectTemplate')" width="640px">
-      <el-button type="primary" @click="openEditorForCreate">{{ t('forms.blank') }}</el-button>
-      <div v-for="template in templates" :key="template.id" class="template-choice"><div><b>{{ template.name }}</b><p>{{ template.description }}</p></div><el-button @click="installTemplate(String(template.id))">{{ t('soar.installDraft') }}</el-button></div>
+      <el-button v-if="canWrite" type="primary" @click="openEditorForCreate">{{ t('forms.blank') }}</el-button>
+      <div v-for="template in templates" :key="template.id" class="template-choice"><div><b>{{ template.name }}</b><p>{{ template.description }}</p></div><el-button v-if="canWrite" @click="installTemplate(String(template.id))">{{ t('soar.installDraft') }}</el-button></div>
     </el-dialog>
     <el-tabs v-if="!showEditor" v-model="activeTab" class="soar-tabs">
       <!-- 14.1 剧本 (Playbooks) -->
@@ -290,7 +295,7 @@ onMounted(loadPlaybooks)
       <!-- 14.2 自动化规则 (Automation Rules) -->
       <el-tab-pane :label="t('soar.tabRules')" name="rules">
         <div class="soar-tab-content">
-          <SoarV2ControlPlane section="rules" :hide-tabs="true" />
+          <SoarV2ControlPlane section="rules" :hide-tabs="true" :can-write="canWrite" />
         </div>
       </el-tab-pane>
 
@@ -332,8 +337,8 @@ onMounted(loadPlaybooks)
               <el-table-column :label="t('common.actions')" width="160">
                 <template #default="{ row }">
                   <template v-if="row.status === 'PENDING'">
-                    <el-button link type="success" size="small" @click="openApprovalModal(row, true)">{{ t('soar.approve') }}</el-button>
-                    <el-button link type="danger" size="small" @click="openApprovalModal(row, false)">{{ t('soar.reject') }}</el-button>
+                    <el-button v-if="canWrite" link type="success" size="small" @click="openApprovalModal(row, true)">{{ t('soar.approve') }}</el-button>
+                    <el-button v-if="canWrite" link type="danger" size="small" @click="openApprovalModal(row, false)">{{ t('soar.reject') }}</el-button>
                   </template>
                   <span v-else class="soar-text-muted">-</span>
                 </template>
@@ -342,14 +347,14 @@ onMounted(loadPlaybooks)
           </el-card>
 
           <!-- Manual Tasks -->
-          <SoarV2ControlPlane section="tasks" :hide-tabs="true" />
+          <SoarV2ControlPlane section="tasks" :hide-tabs="true" :can-write="canWrite" />
         </div>
       </el-tab-pane>
 
       <!-- 14.5 连接与运维 (Connections & Ops) -->
       <el-tab-pane :label="t('soar.tabConnections')" name="connections">
         <div class="soar-tab-content">
-          <SoarV2ControlPlane section="connections-and-ops" />
+          <SoarV2ControlPlane section="connections-and-ops" :can-write="canWrite" />
         </div>
       </el-tab-pane>
     </el-tabs>
@@ -369,7 +374,7 @@ onMounted(loadPlaybooks)
       </div>
       <template #footer>
         <el-button @click="approvalModal.visible = false">{{ t('common.cancel') }}</el-button>
-        <el-button :type="approvalModal.isApprove ? 'success' : 'danger'" :loading="approvalModal.loading" @click="submitApprovalDecision">
+        <el-button v-if="canWrite" :type="approvalModal.isApprove ? 'success' : 'danger'" :loading="approvalModal.loading" @click="submitApprovalDecision">
           {{ approvalModal.isApprove ? t('soar.approve') : t('soar.reject') }}
         </el-button>
       </template>

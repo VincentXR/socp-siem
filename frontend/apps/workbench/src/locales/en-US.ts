@@ -1212,6 +1212,7 @@ export const enUS: LocaleMessages = {
     playbookNameRequired: 'Enter a playbook name.',
     createdDraft: 'Draft created. Configure the flow on the canvas.',
     createFailed: 'Failed to create playbook.',
+    readOnly: 'This role can view playbooks, runs, and approvals, but changes and decisions require analyst or administrator permission.',
     editorTitle: 'Playbook editor',
     editorSubtitle: 'Configure the response flow on the canvas, test it, then publish.',
     editorShow: 'Open Visual Editor',

@@ -82,7 +82,9 @@ const props = withDefaults(defineProps<{
   createRequest?: number
   /** Optional alert context passed from the alarm workbench. */
   contextAlarmId?: string
-}>(), { initialPlaybookId: '', openRun: null, createRequest: 0, contextAlarmId: '' })
+  /** Whether the current operator can change the draft or execute a run. */
+  canWrite?: boolean
+}>(), { initialPlaybookId: '', openRun: null, createRequest: 0, contextAlarmId: '', canWrite: true })
 const emit = defineEmits<{ saved: [SoarV2Version]; created: [id: string]; 'dirty-change': [dirty: boolean] }>()
 
 const { t } = useI18n()
@@ -268,6 +270,7 @@ async function handleOpenRunRequest(request: RunOpenRequest): Promise<void> {
 }
 
 function openNewPlaybookDialog(): void {
+  if (!props.canWrite) return
   if (!discardGuard()) return
   newPlaybookError.value = ''
   newPlaybookForm.value = { name: '', description: '', tags: '' }
@@ -275,7 +278,7 @@ function openNewPlaybookDialog(): void {
 }
 
 async function createPlaybookAndVersion() {
-  if (newPlaybookSaving.value) return
+  if (!props.canWrite || newPlaybookSaving.value) return
   if (!discardGuard()) return
   const name = newPlaybookForm.value.name.trim()
   if (!name) {
@@ -309,7 +312,7 @@ async function createPlaybookAndVersion() {
 }
 
 async function createVersion() {
-  if (!discardGuard() || !selectedPlaybookId.value) return
+  if (!props.canWrite || !discardGuard() || !selectedPlaybookId.value) return
   loading.value = true
   try {
     const result = await createV2Version(selectedPlaybookId.value)
@@ -334,6 +337,7 @@ async function changeVersion(version: number): Promise<void> {
 
 /* ---------------- apply JSON ---------------- */
 function applyDefinitionJson() {
+  if (!props.canWrite) return
   try {
     const parsed = JSON.parse(definitionText.value)
     flow.applyWorkingCopy(parsed)
@@ -348,7 +352,7 @@ function applyDefinitionJson() {
 
 /* ---------------- save / validate / dry-run / publish ---------------- */
 async function save() {
-  if (!selectedPlaybookId.value || !selectedVersionNo.value || !isDraft.value) return
+  if (!props.canWrite || !selectedPlaybookId.value || !selectedVersionNo.value || !isDraft.value) return
   saving.value = true
   errorMessage.value = ''
   try {
@@ -402,7 +406,7 @@ function contextSubject(): JsonObject {
 
 async function queueRun(): Promise<void> {
   const version = selectedVersion.value
-  if (!version || version.status !== 'PUBLISHED' || runBusy.value) return
+  if (!props.canWrite || !version || version.status !== 'PUBLISHED' || runBusy.value) return
   runBusy.value = true
   errorMessage.value = ''
   try {
@@ -425,7 +429,7 @@ async function queueRun(): Promise<void> {
 }
 
 async function publish() {
-  if (!selectedPlaybookId.value || !selectedVersionNo.value || !isDraft.value) return
+  if (!props.canWrite || !selectedPlaybookId.value || !selectedVersionNo.value || !isDraft.value) return
   await validate()
   if (validation.value && validation.value.valid === false) return
   try {
@@ -441,6 +445,7 @@ async function publish() {
 
 /* ---------------- canvas interactions ---------------- */
 function onCanvasDrop(event: DragEvent): void {
+  if (!props.canWrite) return
   const type = event.dataTransfer?.getData(PALETTE_DATA_TYPE)
   if (!type) return
   event.preventDefault()
@@ -448,6 +453,7 @@ function onCanvasDrop(event: DragEvent): void {
 }
 
 function onKeyDown(event: KeyboardEvent): void {
+  if (!props.canWrite) return
   const target = event.target as HTMLElement | null
   if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return
   const modified = event.ctrlKey || event.metaKey
@@ -566,6 +572,7 @@ onUnmounted(() => {
           <strong>{{ t('soarV2.editorTitle') }}</strong>
           <span class="soar-v2-subtitle">{{ t('soarV2.editorSubtitle') }}</span>
           <span v-if="props.contextAlarmId" class="soar-v2-context-note">{{ t('soarV2.contextAlarm') }} {{ props.contextAlarmId }}</span>
+          <span v-if="!props.canWrite" class="soar-v2-readonly-note">{{ t('soarV2.readOnly') }}</span>
         </div>
         <div class="soar-v2-editor-selects">
           <span>{{ playbooks.find(item => item.id === selectedPlaybookId)?.name || t('forms.blank') }}</span>
@@ -578,22 +585,25 @@ onUnmounted(() => {
     </template>
 
     <div class="soar-v2-editor-toolbar">
-      <el-button v-if="!selectedPlaybookId" type="primary" size="small" @click="openNewPlaybookDialog">{{ t('soarV2.blankPlaybook') }}</el-button>
-      <el-button size="small" :disabled="!selectedPlaybookId" @click="createVersion">{{ t('soarV2.newDraftVersion') }}</el-button>
+      <el-button v-if="props.canWrite && !selectedPlaybookId" type="primary" size="small" @click="openNewPlaybookDialog">{{ t('soarV2.blankPlaybook') }}</el-button>
+      <el-button v-if="props.canWrite" size="small" :disabled="!selectedPlaybookId" @click="createVersion">{{ t('soarV2.newDraftVersion') }}</el-button>
       <el-button size="small" :loading="loading" @click="loadCatalog">{{ t('common.refresh') }}</el-button>
       <el-button
+        v-if="props.canWrite"
         size="small"
         :disabled="!flow.canUndo.value"
         :title="t('soarV2.editorUndoHint')"
         @click="flow.undo()"
       >{{ t('soarV2.editorUndo') }}</el-button>
       <el-button
+        v-if="props.canWrite"
         size="small"
         :disabled="!flow.canRedo.value"
         :title="t('soarV2.editorRedoHint')"
         @click="flow.redo()"
       >{{ t('soarV2.editorRedo') }}</el-button>
       <el-button
+        v-if="props.canWrite"
         size="small"
         :title="t('soarV2.editorAutoLayoutHint')"
         @click="flow.autoLayout()"
@@ -605,22 +615,23 @@ onUnmounted(() => {
       </el-tag>
       <el-button size="small" @click="validate" :disabled="!selectedVersionNo">{{ t('soarV2.validate') }}</el-button>
       <el-button size="small" @click="dryRun" :disabled="!selectedVersionNo">{{ t('soarV2.dryRun') }}</el-button>
-      <el-button size="small" type="warning" plain :loading="runBusy" :disabled="selectedVersion?.status !== 'PUBLISHED'" @click="queueRun">{{ t('soarV2.queueRun') }}</el-button>
+      <el-button v-if="props.canWrite" size="small" type="warning" plain :loading="runBusy" :disabled="selectedVersion?.status !== 'PUBLISHED'" @click="queueRun">{{ t('soarV2.queueRun') }}</el-button>
       <el-button
+        v-if="props.canWrite"
         size="small"
         :type="hasUnsavedChanges ? 'primary' : 'default'"
         :loading="saving"
         :disabled="!isDraft || !hasUnsavedChanges"
         @click="save"
       >{{ t('soarV2.saveDraft') }}</el-button>
-      <el-button size="small" type="success" @click="publish" :disabled="!isDraft">{{ t('soarV2.publish') }}</el-button>
+      <el-button v-if="props.canWrite" size="small" type="success" @click="publish" :disabled="!isDraft">{{ t('soarV2.publish') }}</el-button>
     </div>
 
     <div v-if="message" class="soar-v2-editor-message">{{ message }}</div>
     <div v-if="errorMessage" class="soar-v2-editor-error">{{ errorMessage }}</div>
 
     <div class="soar-v2-editor-body">
-      <SoarFlowPalette :flow="flow" />
+      <SoarFlowPalette :flow="flow" :read-only="!props.canWrite" />
 
       <section class="soar-v2-canvas-panel" aria-label="Playbook graph">
         <div class="soar-v2-canvas" @dragover.prevent @drop="onCanvasDrop">
@@ -632,8 +643,8 @@ onUnmounted(() => {
             :min-zoom="0.2"
             :max-zoom="2"
             :zoom-on-scroll="true"
-            :nodes-draggable="true"
-            :nodes-connectable="true"
+            :nodes-draggable="props.canWrite"
+            :nodes-connectable="props.canWrite"
           >
             <Background pattern-color="#94a3b8" :gap="18" :size="1" />
             <Controls position="bottom-right" />
@@ -657,14 +668,14 @@ onUnmounted(() => {
         <div class="soar-v2-canvas-footer">
           <span>{{ flow.nodeCount.value }} nodes · {{ flow.edgeCount.value }} edges</span>
           <span v-if="flowSelectionCount">{{ flowSelectionCount }} selected</span>
-          <el-button size="small" type="danger" plain :disabled="!selectedRawNode || selectedRawNode.type === 'START'" @click="flow.removeSelected()">Remove selected</el-button>
+          <el-button v-if="props.canWrite" size="small" type="danger" plain :disabled="!selectedRawNode || selectedRawNode.type === 'START'" @click="flow.removeSelected()">Remove selected</el-button>
         </div>
       </section>
 
-      <SoarFlowPropertyPanel :flow="flow" :node="selectedRawNode" />
+      <SoarFlowPropertyPanel :flow="flow" :node="selectedRawNode" :read-only="!props.canWrite" />
     </div>
 
-    <el-dialog v-model="newPlaybookVisible" :before-close="newPlaybookGuard.beforeClose" :title="t('soarV2.createBlankTitle')" width="520px">
+    <el-dialog v-if="props.canWrite" v-model="newPlaybookVisible" :before-close="newPlaybookGuard.beforeClose" :title="t('soarV2.createBlankTitle')" width="520px">
       <p class="soar-v2-dialog-hint">{{ t('soarV2.createBlankHint') }}</p>
       <el-form label-position="top">
         <el-form-item :label="t('common.name')" required><el-input v-model="newPlaybookForm.name" :placeholder="t('soarV2.playbookNamePlaceholder')" /></el-form-item>
@@ -678,8 +689,8 @@ onUnmounted(() => {
     <div class="soar-v2-editor-lower">
       <div class="soar-v2-json-panel">
         <div class="soar-v2-panel-title">Definition JSON · advanced import/export</div>
-        <el-input type="textarea" v-model="definitionText" :rows="12" spellcheck="false" aria-label="Definition JSON"  />
-        <el-button size="small" @click="applyDefinitionJson">Apply JSON</el-button>
+        <el-input type="textarea" v-model="definitionText" :rows="12" :readonly="!props.canWrite" spellcheck="false" aria-label="Definition JSON"  />
+        <el-button v-if="props.canWrite" size="small" @click="applyDefinitionJson">Apply JSON</el-button>
       </div>
       <div class="soar-v2-json-panel">
         <div class="soar-v2-panel-title">Dry-run input</div>

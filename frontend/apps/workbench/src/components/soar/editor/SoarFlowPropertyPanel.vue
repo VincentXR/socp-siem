@@ -19,7 +19,7 @@ import type { EditorNode, ValidationIssue } from './types'
 import { useI18n } from '../../../composables/useI18n'
 import { WORKBENCH_STATE } from '../../../app/workbenchState'
 
-const props = defineProps<{ flow: SoarFlowApi; node: EditorNode | null }>()
+const props = withDefaults(defineProps<{ flow: SoarFlowApi; node: EditorNode | null; readOnly?: boolean }>(), { readOnly: false })
 
 const { t } = useI18n()
 const workbenchState = inject(WORKBENCH_STATE, null)
@@ -144,6 +144,7 @@ function scalar(node: EditorNode, field: string): string {
 }
 
 function updateScalar(field: string, value: string): void {
+  if (props.readOnly) return
   const node = props.node
   if (!node) return
   if (value.trim()) node[field] = value
@@ -159,6 +160,7 @@ function approvalConfig(): Record<string, unknown> {
 }
 
 function updateApprovalConfig(field: string, value: unknown): void {
+  if (props.readOnly) return
   const node = props.node
   if (!node) return
   const current = node.config && typeof node.config === 'object' ? node.config as Record<string, unknown> : {}
@@ -179,6 +181,7 @@ function tagsOf(value: Record<string, unknown>, field: string): string {
 }
 
 function updateApprovalTags(field: string, raw: string): void {
+  if (props.readOnly) return
   const values = raw.split(/[,，]/).map(value => value.trim()).filter(Boolean)
   const node = props.node
   if (!node) return
@@ -207,6 +210,7 @@ function nestedOf(area: 'config' | 'limits'): Record<string, unknown> {
 }
 
 function updateNested(area: 'config' | 'limits', field: string, value: string): void {
+  if (props.readOnly) return
   const node = props.node
   if (!node) return
   const current = { ...nestedOf(area) }
@@ -248,6 +252,7 @@ watch(() => props.node, syncSwitchRows, { immediate: true })
 
 /** Writes the rows into the same field layout the engine/validator read. */
 function commitSwitchRows(refreshHandles = true): void {
+  if (props.readOnly) return
   const node = props.node
   if (!node) return
   const rawRows = switchRows.value.map(row => ({ value: row.value.trim(), port: row.port.trim() }))
@@ -266,23 +271,25 @@ function commitSwitchRows(refreshHandles = true): void {
 }
 
 function updateSwitchValue(index: number, raw: string): void {
-  if (!switchRows.value[index]) return
+  if (props.readOnly || !switchRows.value[index]) return
   switchRows.value[index].value = raw
   commitSwitchRows(false)
 }
 
 function updateSwitchPort(index: number, raw: string): void {
-  if (!switchRows.value[index]) return
+  if (props.readOnly || !switchRows.value[index]) return
   switchRows.value[index].port = raw
   commitSwitchRows()
 }
 
 function addSwitchCase(): void {
+  if (props.readOnly) return
   switchRows.value.push({ value: '', port: '' })
   commitSwitchRows()
 }
 
 function removeSwitchCase(index: number): void {
+  if (props.readOnly) return
   switchRows.value.splice(index, 1)
   commitSwitchRows()
 }
@@ -314,6 +321,7 @@ function configOfNode(node: EditorNode): Record<string, unknown> {
 }
 
 function applyNodeConfigJson(): void {
+  if (props.readOnly) return
   const node = props.node
   if (!node) return
   try {
@@ -339,11 +347,13 @@ function applyJsonInto(field: string, text: string): void {
 }
 
 function commitParameters(): void {
+  if (props.readOnly) return
   applyJsonInto('parameters', parametersText.value)
   props.flow.touchAfterNodeEdit()
 }
 
 function commitTarget(): void {
+  if (props.readOnly) return
   applyJsonInto('target', targetText.value)
   props.flow.touchAfterNodeEdit()
 }
@@ -361,6 +371,7 @@ function hasRetry(): boolean {
 }
 
 function updateRetry(field: string, raw: string, min: number, max: number): void {
+  if (props.readOnly) return
   const node = props.node
   if (!node) return
   const parsed = Number(raw)
@@ -371,6 +382,7 @@ function updateRetry(field: string, raw: string, min: number, max: number): void
 }
 
 function addRetry(): void {
+  if (props.readOnly) return
   const node = props.node
   if (!node) return
   node.retry = { maxAttempts: 3, backoffSeconds: 30 }
@@ -378,6 +390,7 @@ function addRetry(): void {
 }
 
 function removeRetry(): void {
+  if (props.readOnly) return
   const node = props.node
   if (!node) return
   delete node.retry
@@ -386,6 +399,7 @@ function removeRetry(): void {
 
 /* ---------- type change / removal ---------- */
 function onTypeChange(event: Event): void {
+  if (props.readOnly) return
   const target = event.target as HTMLSelectElement
   if (!props.node) return
   props.flow.updateNodeType(props.node.id, target.value)
@@ -427,6 +441,7 @@ function syncConditionRows(): void {
 }
 
 function commitConditionRows(rows: ExpressionCondition[]): void {
+  if (props.readOnly) return
   conditionRows.value = rows.map(row => ({ ...row }))
   try {
     const expression = compileCondition(conditionRows.value)
@@ -448,6 +463,7 @@ function targetPath(): string {
 }
 
 function updateTargetPath(value: string): void {
+  if (props.readOnly) return
   const node = props.node
   if (!node) return
   const current = node.target && typeof node.target === 'object' && !Array.isArray(node.target)
@@ -513,6 +529,7 @@ const manualFieldRows = computed<ManualFieldRow[]>(() => {
 })
 
 function writeManualSchema(schema: Record<string, unknown>): void {
+  if (props.readOnly) return
   const node = props.node
   if (!node) return
   const location = manualSchema()
@@ -525,6 +542,7 @@ function writeManualSchema(schema: Record<string, unknown>): void {
 }
 
 function updateManualField(name: string, patch: Partial<ManualFieldRow>): void {
+  if (props.readOnly) return
   const { schema } = manualSchema()
   const properties = schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)
     ? { ...(schema.properties as Record<string, unknown>) } : {}
@@ -540,6 +558,7 @@ function updateManualField(name: string, patch: Partial<ManualFieldRow>): void {
 }
 
 function addManualField(): void {
+  if (props.readOnly) return
   const existing = new Set(manualFieldRows.value.map(field => field.name))
   let index = 1
   while (existing.has(`field_${index}`)) index += 1
@@ -552,6 +571,7 @@ function addManualField(): void {
 }
 
 function removeManualField(name: string): void {
+  if (props.readOnly) return
   const { schema } = manualSchema()
   const properties = schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)
     ? { ...(schema.properties as Record<string, unknown>) } : {}
@@ -599,6 +619,7 @@ function parameterValue(key: string): string {
 }
 
 function updateParameterValue(field: ActionInputField, value: string): void {
+  if (props.readOnly) return
   const node = props.node
   if (!node) return
   const current = node.parameters && typeof node.parameters === 'object' && !Array.isArray(node.parameters)
@@ -637,14 +658,15 @@ function subPlaybookVersionKnown(id: string): boolean {
 <template>
   <aside class="soar-flow-inspector" aria-label="Node properties">
     <div class="soar-v2-panel-title">{{ t('soar.propertyPanelTitle') }}</div>
+    <div v-if="props.readOnly" class="soar-flow-inspector-readonly">{{ t('soarV2.readOnly') }}</div>
 
-    <template v-if="node">
+    <div v-if="node" class="soar-flow-inspector-content" :class="{ 'soar-flow-inspector-content-readonly': props.readOnly }">
       <div class="soar-flow-inspector-head">
         <div>
           <span class="soar-flow-id-label">ID</span>
           <code class="soar-flow-node-id">{{ node.id }}</code>
         </div>
-        <el-button size="small" type="danger" plain :disabled="nodeType === 'START'" @click="flow.removeNode(node.id)">{{ t('common.delete') }}</el-button>
+        <el-button v-if="!props.readOnly" size="small" type="danger" plain :disabled="nodeType === 'START'" @click="flow.removeNode(node.id)">{{ t('common.delete') }}</el-button>
       </div>
 
       <!-- Unsupported / read-only banner -->
@@ -655,7 +677,7 @@ function subPlaybookVersionKnown(id: string): boolean {
 
       <label>
         Type
-        <select :value="nodeType" :disabled="unsupported" @change="onTypeChange">
+        <select :value="nodeType" :disabled="unsupported || props.readOnly" @change="onTypeChange">
           <option v-for="option in typeOptions" :key="option.type" :value="option.type" :disabled="option.comingSoon">
             {{ option.type }}
           </option>
@@ -945,7 +967,7 @@ function subPlaybookVersionKnown(id: string): boolean {
           <b>{{ issue.code || 'ISSUE' }}</b><span>{{ issue.path || '' }}</span><p>{{ issue.message }}</p>
         </div>
       </div>
-    </template>
+    </div>
 
     <div v-else class="soar-flow-empty">Select a node to inspect its contract.</div>
   </aside>
@@ -957,6 +979,22 @@ function subPlaybookVersionKnown(id: string): boolean {
   padding: 10px;
   border-left: 1px solid var(--ns-border);
   background: var(--ns-bg-subtle);
+}
+
+.soar-flow-inspector-readonly {
+  margin: 0 0 10px;
+  padding: 7px 8px;
+  border: 1px solid color-mix(in srgb, var(--ns-warning) 40%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--ns-warning) 8%, transparent);
+  color: var(--ns-warning);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.soar-flow-inspector-content-readonly {
+  pointer-events: none;
+  opacity: 0.92;
 }
 
 .soar-flow-inspector-head {
