@@ -702,6 +702,15 @@ body {
   background: var(--ns-bg-inset); color: var(--ns-text-2); border-radius: 8px; border: 1px solid var(--ns-border);
   padding: 10px 12px; font-size: 12px; max-height: 260px; overflow: auto; margin: 10px 0 0;
 }
+.parse-preview-fields {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px; margin-top: 10px;
+}
+.parse-preview-fields span {
+  display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 7px 9px;
+  border: 1px solid var(--ns-border); border-radius: 6px; background: var(--ns-bg-subtle); font-size: 11px;
+}
+.parse-preview-fields b { color: var(--ns-text-2); font-weight: 600; }
+.parse-preview-fields code { overflow-wrap: anywhere; color: var(--ns-text); font: 12px/1.4 var(--ns-font-mono); }
 
 /* ============ ATT&CK 矩阵 ============ */
 .attack-matrix { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 8px; }

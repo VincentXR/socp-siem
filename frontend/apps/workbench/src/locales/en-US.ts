@@ -1047,6 +1047,12 @@ export const enUS: LocaleMessages = {
     readOnly: 'This role can view reference sets, but changes require analyst or administrator permission.',
   },
   ingest: {
+    parsePreview: 'Parse preview',
+    parsePreviewTitle: 'Parse preview · {name}',
+    parsePreviewDescription: 'Validates parsing only. It does not write events or trigger detection and alarms.',
+    parsePreviewPassed: 'Parse succeeded',
+    parsePreviewFailed: 'No fields were parsed',
+    runParsePreview: 'Run parse preview',
     title: 'Log Ingestion Pipelines',
     description: 'Data source configuration, Kafka topic mappings, and Vector collector pipeline telemetry.',
     sources: 'Data Sources',

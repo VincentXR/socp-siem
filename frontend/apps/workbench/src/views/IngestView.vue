@@ -42,9 +42,9 @@ import { onMounted, ref } from 'vue'
 import {
   createOutput, createSource, deleteOutput, deleteParseRule, deleteSource, updateSource,
   ingestSummary, listCategories, listIngestTasks, listOutputs, listParseRules, listSources,
-  renderConfig, startIngestTask, stopIngestTask, testIngestTask,
+  previewParse, renderConfig, startIngestTask, stopIngestTask,
   SOURCE_TYPES, PARSE_FORMATS,
-  type IngestTask, type IngestSummary, type IngestTestResult, type LogCategory, type LogSource, type LogSourceInput, type ParseRule, type SinkTarget,
+  type IngestTask, type IngestSummary, type LogCategory, type LogSource, type LogSourceInput, type ParseRule, type SinkTarget,
 } from '../api'
 import { useI18n } from '../composables/useI18n'
 import { fmtBytes, fmtTime } from '../lib/ui'
@@ -70,7 +70,9 @@ const taskBusy = ref<Record<string, boolean>>({})
 const testDialog = ref(false)
 const testTarget = ref<IngestTask | null>(null)
 const testSample = ref('')
-const testResult = ref<IngestTestResult | null>(null)
+type ParsePreviewAttempt = { ruleId?: string; rule?: string; format?: string; matched: boolean; error?: string }
+type ParsePreviewResult = { ok: boolean; matched: boolean; sample: string; rule?: string; format?: string; fields: Record<string, string>; attempts?: ParsePreviewAttempt[]; error?: string }
+const testResult = ref<ParsePreviewResult | null>(null)
 const testLoading = ref(false)
 
 type TagType = 'primary' | 'success' | 'warning' | 'info' | 'danger'
@@ -201,11 +203,40 @@ function openTest(task: IngestTask) {
 }
 function toggleTaskRow(row: unknown) { toggleTask(row as IngestTask) }
 function openTestRow(row: unknown) { openTest(row as IngestTask) }
+function defaultPreviewSample(task: IngestTask): string {
+  return JSON.stringify({
+    collector: task.collector,
+    host: 'preview-host',
+    source: 'auth',
+    severity: 'HIGH',
+    message: 'Failed password for invalid user admin',
+    user: 'admin',
+  }, null, 2)
+}
 async function runTest() {
   if (!canWrite.value || !testTarget.value) return
   testLoading.value = true
-  try { testResult.value = await testIngestTask(testTarget.value.id, testSample.value.trim() || undefined); await loadTasks() }
-  catch (error) { testResult.value = { ok: false, error: String(error) } }
+  const sample = testSample.value.trim() || defaultPreviewSample(testTarget.value)
+  const ruleIds = testTarget.value.parseRuleIds?.length ? testTarget.value.parseRuleIds : [undefined]
+  try {
+    const attempts = await Promise.all(ruleIds.map(async ruleId => {
+      try {
+        const result = await previewParse({ ruleId, format: ruleId ? undefined : testTarget.value?.format || 'AUTO', line: sample })
+        return { ruleId, rule: result.rule, format: result.format, matched: result.matched, error: result.error, fields: result.fields }
+      } catch (error) {
+        return { ruleId, matched: false, error: error instanceof Error ? error.message : String(error), fields: {} }
+      }
+    }))
+    const selected = attempts.find(attempt => attempt.matched) ?? attempts[0]
+    testResult.value = {
+      ok: Boolean(selected?.matched), matched: Boolean(selected?.matched), sample,
+      rule: selected?.rule, format: selected?.format, fields: selected?.fields ?? {},
+      error: selected?.matched ? undefined : selected?.error,
+      attempts: attempts.length > 1 ? attempts.map(({ fields: _fields, ...attempt }) => attempt) : undefined,
+    }
+  } catch (error) {
+    testResult.value = { ok: false, matched: false, sample, fields: {}, error: String(error) }
+  }
   finally { testLoading.value = false }
 }
 
@@ -249,15 +280,15 @@ onMounted(async () => {
             <el-table-column :label="t('ingest.epsWindow')" width="110"><template #default="{ row }"><span :style="{ color: row.runtime.eps1m > 0 ? 'var(--ns-success)' : 'var(--ns-text-3)', fontWeight: 600 }">{{ row.runtime.eps1m }}</span><span style="color:var(--ns-text-3)"> / {{ row.runtime.eps5m }}</span></template></el-table-column>
             <el-table-column :label="t('ingest.receivedForwardedSkipped')" width="150"><template #default="{ row }"><span class="mono" style="font-size:12px">{{ row.runtime.accepted }} / {{ row.runtime.forwarded }} / <span :style="{ color: row.runtime.skipped > 0 ? 'var(--ns-warning)' : 'inherit' }">{{ row.runtime.skipped }}</span></span></template></el-table-column>
             <el-table-column :label="t('ingest.recentData')" width="150"><template #default="{ row }"><span class="mono" style="font-size:12px">{{ fmtTime(row.runtime.lastAt) }}</span></template></el-table-column>
-            <el-table-column :label="t('ingest.actions')" width="170"><template #default="{ row }"><el-button v-if="canWrite" link :type="row.enabled ? 'warning' : 'success'" size="small" :loading="taskBusy[row.id]" @click="toggleTaskRow(row)">{{ row.enabled ? t('ingest.stop') : t('ingest.start') }}</el-button><el-button v-if="canWrite" link type="primary" size="small" @click="openTestRow(row)">{{ t('ingest.connectivityTest') }}</el-button></template></el-table-column>
+            <el-table-column :label="t('ingest.actions')" width="170"><template #default="{ row }"><el-button v-if="canWrite" link :type="row.enabled ? 'warning' : 'success'" size="small" :loading="taskBusy[row.id]" @click="toggleTaskRow(row)">{{ row.enabled ? t('ingest.stop') : t('ingest.start') }}</el-button><el-button v-if="canWrite" link type="primary" size="small" @click="openTestRow(row)">{{ t('ingest.parsePreview') }}</el-button></template></el-table-column>
             <el-table-column type="expand"><template #default="{ row }"><div style="padding:8px 20px;font-size:12px;color:var(--ns-text-2)"><div>{{ t('ingest.environmentDetail', { value: row.env || t('time.notAvailable') }) }} · {{ t('ingest.categoryDetail', { value: row.categoryId || t('time.notAvailable') }) }} · {{ t('ingest.outputDetail', { value: row.sinkTargetId || t('ingest.disabledDefault') }) }} · {{ t('ingest.createdDetail', { value: fmtTime(row.createdAt) }) }}</div><div style="margin-top:4px">{{ t('ingest.boundRules') }}<el-tag v-for="p in row.parseRuleIds" :key="p" size="small" style="margin-right:4px">{{ p }}</el-tag><span v-if="!row.parseRuleIds?.length" style="color:var(--ns-text-3)">{{ t('ingest.autoDetect') }}</span></div><div v-if="row.runtime.lastError" style="margin-top:4px;color:var(--ns-danger)">{{ t('ingest.recentError', { time: fmtTime(row.runtime.lastErrorAt ?? null) }) }}{{ row.runtime.lastError }}</div></div></template></el-table-column>
           </el-table>
         </el-card>
-        <el-dialog v-model="testDialog" :title="t('ingest.testTitle', { name: testTarget?.name ?? '' })" width="680px"><ActionFeedback :error="actionError" />
-          <div style="font-size:12px;color:var(--ns-text-3);margin-bottom:8px">{{ t('ingest.testDescription') }}</div>
+        <el-dialog v-model="testDialog" :title="t('ingest.parsePreviewTitle', { name: testTarget?.name ?? '' })" width="680px"><ActionFeedback :error="actionError" />
+          <div style="font-size:12px;color:var(--ns-text-3);margin-bottom:8px">{{ t('ingest.parsePreviewDescription') }}</div>
           <el-input v-model="testSample" type="textarea" :rows="4" :placeholder="t('ingest.testSamplePlaceholder')" />
-          <div v-if="testResult" style="margin-top:12px"><el-alert :type="testResult.ok ? 'success' : 'error'" :closable="false" :title="t(testResult.ok ? 'ingest.testPassed' : 'ingest.testFailed')" /><pre class="mono test-out">{{ JSON.stringify(testResult, null, 2) }}</pre></div>
-          <template #footer><el-button @click="testDialog = false">{{ t('ingest.close') }}</el-button><el-button type="primary" :loading="testLoading" @click="runTest">{{ t('ingest.runTest') }}</el-button></template>
+          <div v-if="testResult" style="margin-top:12px"><el-alert :type="testResult.ok ? 'success' : 'error'" :closable="false" :title="t(testResult.ok ? 'ingest.parsePreviewPassed' : 'ingest.parsePreviewFailed')" /><div v-if="Object.keys(testResult.fields).length" class="parse-preview-fields"><span v-for="(value, field) in testResult.fields" :key="field"><b>{{ field }}</b><code>{{ value }}</code></span></div><pre class="mono test-out">{{ JSON.stringify(testResult, null, 2) }}</pre></div>
+          <template #footer><el-button @click="testDialog = false">{{ t('ingest.close') }}</el-button><el-button type="primary" :loading="testLoading" @click="runTest">{{ t('ingest.runParsePreview') }}</el-button></template>
         </el-dialog>
       </el-tab-pane>
 

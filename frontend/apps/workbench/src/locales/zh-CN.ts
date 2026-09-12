@@ -1045,6 +1045,12 @@ export const zhCN = {
     readOnly: '当前角色仅可查看参考数据集，条目和集合变更需要分析员或管理员权限。',
   },
   ingest: {
+    parsePreview: '解析预览',
+    parsePreviewTitle: '解析预览 · {name}',
+    parsePreviewDescription: '仅验证样例解析，不写入事件、不触发检测或告警。',
+    parsePreviewPassed: '解析成功',
+    parsePreviewFailed: '未解析出有效字段',
+    runParsePreview: '运行解析预览',
     title: '日志接入与管道',
     description: '日志源接入配置、Kafka Topic 映射与 Vector 收集管道状态。',
     sources: '数据源列表',
