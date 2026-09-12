@@ -3,6 +3,9 @@ package com.socp.gateway.api.controller;
 import com.socp.gateway.api.request.LoginRequest;
 import com.socp.gateway.api.request.ServiceTokenRequest;
 import com.socp.gateway.security.AuthAttemptLimiter;
+import com.socp.gateway.security.TokenRevocationStore;
+import com.socp.platform.auth.security.JwtValidationException;
+import com.socp.platform.auth.security.JwtValidator;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nimbusds.jose.JWSAlgorithm;
@@ -43,6 +46,7 @@ public class AuthController {
 
     public static final String SESSION_COOKIE = "SOCP_SESSION";
     public static final String DEFAULT_LOCALE = "zh-CN";
+    private static final String BEARER = "Bearer ";
     private static final long EXPIRES_SECONDS = 1800;
 
     @Value("${socp.auth.users:}") private String usersJson;
@@ -58,14 +62,19 @@ public class AuthController {
     private Map<String, String> locales = Map.of();
     private final AuthAttemptLimiter attemptLimiter;
     private final ObjectMapper objectMapper;
+    private final JwtValidator jwtValidator;
+    private final TokenRevocationStore revocations;
 
     @org.springframework.beans.factory.annotation.Autowired
-    public AuthController(AuthAttemptLimiter attemptLimiter, ObjectMapper objectMapper) {
+    public AuthController(AuthAttemptLimiter attemptLimiter, ObjectMapper objectMapper,
+                          JwtValidator jwtValidator, TokenRevocationStore revocations) {
         this.attemptLimiter = attemptLimiter;
         this.objectMapper = objectMapper;
+        this.jwtValidator = jwtValidator;
+        this.revocations = revocations;
     }
 
-    /** Focused unit-test constructor; Spring always uses the limiter constructor above. */
+    /** Focused unit-test constructor; Spring always uses the full constructor above. */
     AuthController() {
         this(new AuthAttemptLimiter() {
             @Override
@@ -77,7 +86,7 @@ public class AuthController {
             public Mono<Void> reset(String kind, String clientAddress, String identity) {
                 return Mono.empty();
             }
-        }, new ObjectMapper());
+        }, new ObjectMapper(), null, null);
     }
 
     @jakarta.annotation.PostConstruct
@@ -170,11 +179,11 @@ public class AuthController {
      * Return the small operator directory visible to the current session.
      *
      * <p>The gateway is the only component that knows both the verified
-     * session subject and the optional local-auth configuration.  Returning
+     * session subject and the optional local-auth configuration. Returning
      * display-safe identities here lets analyst workflows use selectors
-     * without exposing passwords or asking users to type opaque IDs.  OIDC
+     * without exposing passwords or asking users to type opaque IDs. OIDC
      * deployments normally have no local user map, so the current verified
-     * subject is still returned as the minimum useful directory.  The demo
+     * subject is still returned as the minimum useful directory. The demo
      * local-user map is intentionally exposed only in its default tenant;
      * other tenants must supply a real IdP directory instead of inheriting a
      * global list.</p>
@@ -203,12 +212,39 @@ public class AuthController {
         return session(username, role, tenant, DEFAULT_LOCALE);
     }
 
+    /**
+     * Revoke the current gateway-issued session until its natural expiry, then
+     * clear the browser cookie. AuthSessionWebFilter has already authenticated
+     * the request, but the controller validates once more to obtain trusted JTI
+     * and expiry claims for the shared deny-list.
+     */
     @PostMapping("/logout")
-    public ResponseEntity<?> logout() {
-        ResponseCookie expired = ResponseCookie.from(SESSION_COOKIE, "")
-                .httpOnly(true).secure(cookieSecure).sameSite("Lax").path("/")
-                .maxAge(Duration.ZERO).build();
-        return ResponseEntity.noContent().header(HttpHeaders.SET_COOKIE, expired.toString()).build();
+    public Mono<ResponseEntity<?>> logout(ServerHttpRequest request) {
+        ResponseCookie expired = expiredSessionCookie();
+        if (jwtValidator == null || revocations == null || jwtValidator.isDevBypass()) {
+            return Mono.just(noContent(expired));
+        }
+
+        String token = token(request);
+        if (token == null) {
+            return Mono.just(authFailure(expired, HttpStatus.UNAUTHORIZED, "Missing session"));
+        }
+
+        try {
+            JWTClaimsSet claims = jwtValidator.validate(token);
+            String jti = claims.getJWTID();
+            Date expiry = claims.getExpirationTime();
+            if (jti == null || jti.isBlank() || expiry == null) {
+                return Mono.just(authFailure(expired, HttpStatus.UNAUTHORIZED,
+                        "Session is missing revocation claims"));
+            }
+            return revocations.revoke(jti, expiry.toInstant())
+                    .thenReturn(noContent(expired))
+                    .onErrorResume(failure -> Mono.just(authFailure(expired,
+                            HttpStatus.SERVICE_UNAVAILABLE, "Unable to revoke session")));
+        } catch (JwtValidationException failure) {
+            return Mono.just(authFailure(expired, HttpStatus.UNAUTHORIZED, "Invalid or expired session"));
+        }
     }
 
     public String sign(String username, String role, String tenant) {
@@ -278,6 +314,32 @@ public class AuthController {
                 .path("/")
                 .maxAge(Duration.ofSeconds(EXPIRES_SECONDS))
                 .build();
+    }
+
+    private ResponseCookie expiredSessionCookie() {
+        return ResponseCookie.from(SESSION_COOKIE, "")
+                .httpOnly(true).secure(cookieSecure).sameSite("Lax").path("/")
+                .maxAge(Duration.ZERO).build();
+    }
+
+    private static ResponseEntity<?> noContent(ResponseCookie expired) {
+        return ResponseEntity.noContent().header(HttpHeaders.SET_COOKIE, expired.toString()).build();
+    }
+
+    private static ResponseEntity<?> authFailure(ResponseCookie expired, HttpStatus status, String message) {
+        return ResponseEntity.status(status)
+                .header(HttpHeaders.SET_COOKIE, expired.toString())
+                .body(Map.of("code", status.value(), "message", message));
+    }
+
+    private static String token(ServerHttpRequest request) {
+        if (request == null) return null;
+        String auth = request.getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
+        if (auth != null && auth.startsWith(BEARER) && !auth.substring(BEARER.length()).isBlank()) {
+            return auth.substring(BEARER.length()).trim();
+        }
+        var cookie = request.getCookies().getFirst(SESSION_COOKIE);
+        return cookie == null || cookie.getValue().isBlank() ? null : cookie.getValue();
     }
 
     private static String supportedRole(String role) {

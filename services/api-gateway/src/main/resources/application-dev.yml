@@ -8,6 +8,8 @@ socp:
     dev-bypass: ${SOCP_DEV_BYPASS:false}
   auth:
     login-secret: ${SOCP_LOGIN_SECRET:socp-demo-jwt-secret-0123456789abcdef0123456789abcdef}
+    revocation:
+      backend: memory
     # 账号表为 JSON 字符串（AuthController 启动时解析为 Map）
     users: '{"admin": "admin123", "demo": "demo123", "viewer": "viewer123"}'
     roles: '{"admin": "admin", "demo": "analyst", "viewer": "viewer"}'
