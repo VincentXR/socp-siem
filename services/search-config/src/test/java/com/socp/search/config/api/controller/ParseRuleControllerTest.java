@@ -31,7 +31,7 @@ class ParseRuleControllerTest {
                 List.of(new ParseRuleRequest.FieldMapping("user", "user", null)),
                 List.of(), List.of(), true, 1);
 
-        ParseRule saved = controller.create(valid);
+        ParseRule saved = controller.create(valid).data();
 
         assertThat(saved.name()).isEqualTo("auth");
         assertThat(saved.sourceId()).isEqualTo("source-1");
@@ -50,7 +50,7 @@ class ParseRuleControllerTest {
 
         when(store.list()).thenReturn(List.of());
 
-        assertThat(controller.list()).isEmpty();
+        assertThat(controller.list().data()).isEmpty();
     }
     @Test
     void updatingPreservesIdentityAndPreviewDoesNotPersist() {
@@ -60,12 +60,12 @@ class ParseRuleControllerTest {
         when(store.save(any(ParseRule.class))).thenAnswer(call -> call.getArgument(0));
         ParseRuleController controller = new ParseRuleController(store, mock(ParsePreviewService.class), new ParseRuleExecutor(new ParserRegistry()));
         ParseRuleRequest request = new ParseRuleRequest("edited", null, "JSON", null, List.of(), List.of(), false, 2);
-        ParseRule updated = controller.update(original.id(), request);
+        ParseRule updated = controller.update(original.id(), request).data();
         assertThat(updated.id()).isEqualTo(original.id());
         assertThat(updated.createdAt()).isEqualTo(original.createdAt());
         assertThat(updated.name()).isEqualTo("edited");
         org.mockito.Mockito.clearInvocations(store);
-        var preview = controller.previewDraft(new ParseRuleController.DraftPreview(request, "{\"user\":\"alice\"}"));
+        var preview = controller.previewDraft(new ParseRuleController.DraftPreview(request, "{\"user\":\"alice\"}")).data();
         assertThat(preview.get("matched")).isEqualTo(true);
         org.mockito.Mockito.verifyNoInteractions(store);
         assertThatThrownBy(() -> controller.update("missing", request)).isInstanceOf(ResponseStatusException.class);

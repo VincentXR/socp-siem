@@ -10,7 +10,7 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
+
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -29,18 +29,17 @@ class UebaControllerTest {
 
         UebaController controller = new UebaController(riskStore, watchlists);
 
-        assertThat(controller.entities(10)).isSameAs(entities);
-        assertThat(controller.entity("admin").getStatusCode().value()).isEqualTo(200);
-        assertThat(controller.entity("admin").getBody()).isEqualTo(entity);
-        assertThat(controller.summary()).isSameAs(summary);
-        assertThat(controller.score("HIGH", "T1110", 2, 3, 1))
+        assertThat(controller.entities(10).data()).isSameAs(entities);
+        assertThat(controller.entity("admin").data()).isEqualTo(entity);
+        assertThat(controller.summary().data()).isSameAs(summary);
+        assertThat(controller.score("HIGH", "T1110", 2, 3, 1).data())
                 .containsKeys("score", "level", "breakdown")
                 .extractingByKey("level").isEqualTo("HIGH");
-        assertThat(controller.score("not-a-severity", null, 0, 0, 0))
+        assertThat(controller.score("not-a-severity", null, 0, 0, 0).data())
                 .extractingByKey("level").isEqualTo("INFO");
 
         verify(riskStore).top(eq(10));
-        verify(riskStore, times(2)).get(eq("admin"));
+        verify(riskStore).get(eq("admin"));
         verify(riskStore).summary();
     }
 
@@ -60,14 +59,15 @@ class UebaControllerTest {
 
         UebaController controller = new UebaController(riskStore, watchlists);
 
-        assertThat(controller.entity("missing").getStatusCode().value()).isEqualTo(404);
-        assertThat(controller.listWatchlists()).isSameAs(listed);
-        assertThat(controller.getWatchlist("blocked_ips")).isSameAs(described);
-        assertThat(controller.putWatchlist("blocked_ips", List.of("203.0.113.66")))
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> controller.entity("missing"))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
+        assertThat(controller.listWatchlists().data()).isSameAs(listed);
+        assertThat(controller.getWatchlist("blocked_ips").data()).isSameAs(described);
+        assertThat(controller.putWatchlist("blocked_ips", List.of("203.0.113.66")).data())
                 .isSameAs(replaced);
-        assertThat(controller.appendWatchlist("blocked_ips", List.of("198.51.100.23")))
+        assertThat(controller.appendWatchlist("blocked_ips", List.of("198.51.100.23")).data())
                 .isSameAs(replaced);
-        assertThat(controller.deleteWatchlist("blocked_ips")).containsEntry("removed", true);
+        assertThat(controller.deleteWatchlist("blocked_ips").data()).containsEntry("removed", true);
 
         verify(watchlists).list();
         verify(watchlists).describe("blocked_ips");

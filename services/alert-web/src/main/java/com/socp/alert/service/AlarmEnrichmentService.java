@@ -197,7 +197,12 @@ public class AlarmEnrichmentService {
     private static ThreatHits threatHits(String body) {
         if (body == null || body.isBlank()) return null;
         try {
-            JsonNode hits = MAPPER.readTree(body).get("hits");
+            JsonNode root = MAPPER.readTree(body);
+            // threat-web 响应已包 ApiResult 信封：{code,message,data:{hits}}
+            if (root.isObject() && root.has("code") && root.has("data") && root.get("data").isObject()) {
+                root = root.get("data");
+            }
+            JsonNode hits = root.get("hits");
             if (hits == null || hits.isNull()) return null;
             JsonNode normalized = hits;
             if (hits.isObject()) {

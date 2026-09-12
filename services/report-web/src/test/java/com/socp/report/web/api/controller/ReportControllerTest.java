@@ -47,8 +47,8 @@ class ReportControllerTest {
         when(service.dailyReport()).thenReturn(daily);
         when(service.trend7d()).thenReturn(trend);
 
-        assertThat(controller.daily()).isSameAs(daily);
-        assertThat(controller.trend7d()).isSameAs(trend);
+        assertThat(controller.daily().data()).isSameAs(daily);
+        assertThat(controller.trend7d().data()).isSameAs(trend);
         verify(service).dailyReport();
         verify(service).trend7d();
     }
@@ -61,7 +61,7 @@ class ReportControllerTest {
         when(objectStore.put(anyString(), anyString(), anyString()))
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
-        Map<String, Object> result = controller.archive();
+        Map<String, Object> result = controller.archive().data();
 
         assertThat(result).containsEntry("archived", true)
                 .extractingByKey("dailyKey").asString()
@@ -74,7 +74,7 @@ class ReportControllerTest {
     void reportsArchiveFailureInsteadOfReturningAFalseSuccess() {
         when(service.dailyReport()).thenThrow(new IllegalStateException("ClickHouse unavailable"));
 
-        Map<String, Object> result = controller.archive();
+        Map<String, Object> result = controller.archive().data();
 
         assertThat(result).containsEntry("archived", false)
                 .containsEntry("error", "ClickHouse unavailable");
@@ -87,8 +87,8 @@ class ReportControllerTest {
         when(objectStore.presignedGet("reports/tenant-report/20260830/daily.json"))
                 .thenReturn("https://minio/presigned");
 
-        Map<String, Object> listed = controller.archived("reports/");
-        Map<String, Object> downloaded = controller.download("reports/tenant-report/20260830/daily.json");
+        Map<String, Object> listed = controller.archived("reports/").data();
+        Map<String, Object> downloaded = controller.download("reports/tenant-report/20260830/daily.json").data();
 
         assertThat(listed).containsEntry("count", 1).containsEntry("objects", objects);
         assertThat(downloaded).containsEntry("url", "https://minio/presigned");

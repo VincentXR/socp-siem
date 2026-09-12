@@ -93,7 +93,7 @@ class SearchControllerTest {
         given(reader.search("source=auth", 200, null, true)).willReturn(expected);
 
         SplEngine.QueryResult result = new SearchController(new SplEngine(), store, reader)
-                .searchHttp("source=auth", null, null, true);
+                .searchQuery("source=auth", null, null, true);
 
         assertThat(result.timeline()).containsExactly(Map.of("key", "2026-08-23", "count", 1L));
     }

@@ -16,10 +16,9 @@ import com.socp.platform.auth.security.RequireRole;
 import com.socp.platform.auth.security.RequirePermission;
 import com.socp.platform.error.api.ApiResult;
 import com.socp.platform.ratelimit.api.RateLimit;
+import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -29,6 +28,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.io.IOException;
+import java.io.PrintWriter;
 import java.util.List;
 import java.util.Map;
 
@@ -39,6 +40,10 @@ public class AlarmController {
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .registerModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+    /** Export streams the tenant alarm set in database-side pages of this size; nothing larger is held in memory. */
+    static final int EXPORT_BATCH_SIZE = 500;
+    private static final String CSV_HEADER =
+            "id,ruleId,title,ruleName,severity,entity,mitre,riskScore,status,occurredAt,message\n";
     private final AlarmService service;
     private final AlertPerformanceMetrics performanceMetrics;
 
@@ -177,48 +182,55 @@ public class AlarmController {
         return ApiResult.ok(service.stats(window));
     }
 
-    /** 归档导出：告警全量按 CSV 或 JSON 下载（数据带不走问题的解法）。 */
-    public ResponseEntity<String> export(Severity severity, String rule, String q, String format) {
-        return export(severity, rule, q, format, null, "occurredAt", "descending");
-    }
-
+    /**
+     * 归档导出：告警按 CSV 或 JSON 下载（数据带不走问题的解法）。
+     * 分批流式写出：每批只从数据库取 EXPORT_BATCH_SIZE 条并即刻写回响应，
+     * 不再全量物化租户告警，超大租户也不会把 JVM 推向 OOM。
+     */
     @GetMapping("/export")
-    public ResponseEntity<String> export(
+    public void export(
             @RequestParam(required = false) Severity severity,
             @RequestParam(required = false) String rule,
             @RequestParam(required = false) String q,
             @RequestParam(defaultValue = "csv") String format,
             @RequestParam(required = false) String status,
             @RequestParam(defaultValue = "occurredAt") String sort,
-            @RequestParam(defaultValue = "descending") String order) {
-        List<Alarm> alarms = service.query(severity, rule, status, q, sort, order);
-        String fname, ctype, body;
-        if ("json".equalsIgnoreCase(format)) {
-            fname = "alarms.json";
-            ctype = "application/json";
-            body = toJson(alarms);
+            @RequestParam(defaultValue = "descending") String order,
+            HttpServletResponse response) throws IOException {
+        boolean json = "json".equalsIgnoreCase(format);
+        response.setHeader(HttpHeaders.CONTENT_DISPOSITION,
+                "attachment; filename=\"" + (json ? "alarms.json" : "alarms.csv") + "\"");
+        response.setContentType(json ? "application/json" : "text/csv; charset=utf-8");
+        PrintWriter writer = response.getWriter();
+        if (json) {
+            writer.write('[');
         } else {
-            fname = "alarms.csv";
-            ctype = "text/csv; charset=utf-8";
-            body = toCsv(alarms);
+            writer.write(CSV_HEADER);
         }
-        return ResponseEntity.ok()
-                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + fname + "\"")
-                .contentType(MediaType.parseMediaType(ctype))
-                .body(body);
+        int page = 1;
+        boolean first = true;
+        while (true) {
+            var result = service.page(severity, rule, status, q, sort, order, page, EXPORT_BATCH_SIZE);
+            List<Alarm> batch = result.getContent();
+            for (Alarm alarm : batch) {
+                if (!first) writer.write(json ? "," : "\n");
+                writer.write(json ? toJson(alarm) : csvRow(alarm));
+                first = false;
+            }
+            if (batch.size() < EXPORT_BATCH_SIZE || !result.hasNext()) break;
+            page++;
+        }
+        if (json) writer.write(']');
+        writer.flush();
     }
 
-    private static String toCsv(List<Alarm> alarms) {
-        StringBuilder sb = new StringBuilder("id,ruleId,title,ruleName,severity,entity,mitre,riskScore,status,occurredAt,message\n");
-        for (Alarm a : alarms) {
-            sb.append(csv(a.getId())).append(',').append(csv(a.getRuleId())).append(',').append(csv(a.getTitle()))
-                    .append(',').append(csv(a.getRuleName()))
-                    .append(',').append(a.getSeverity()).append(',').append(csv(a.getEntity()))
-                    .append(',').append(csv(a.getMitre())).append(',').append(a.getRiskScore() == null ? "" : a.getRiskScore())
-                    .append(',').append(a.getStatus()).append(',').append(a.getOccurredAt())
-                    .append(',').append(csv(a.getMessage())).append('\n');
-        }
-        return sb.toString();
+    private static String csvRow(Alarm a) {
+        return csv(a.getId()) + ',' + csv(a.getRuleId()) + ',' + csv(a.getTitle())
+                + ',' + csv(a.getRuleName())
+                + ',' + a.getSeverity() + ',' + csv(a.getEntity())
+                + ',' + csv(a.getMitre()) + ',' + (a.getRiskScore() == null ? "" : a.getRiskScore())
+                + ',' + a.getStatus() + ',' + a.getOccurredAt()
+                + ',' + csv(a.getMessage());
     }
 
     private static String csv(String s) {
@@ -226,9 +238,9 @@ public class AlarmController {
         return "\"" + s.replace("\"", "\"\"") + "\"";
     }
 
-    private static String toJson(List<Alarm> alarms) {
+    private static String toJson(Alarm alarm) {
         try {
-            return MAPPER.writeValueAsString(alarms);
+            return MAPPER.writeValueAsString(alarm);
         } catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
             throw new IllegalStateException("cannot serialize alarm export", failure);
         }

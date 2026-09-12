@@ -5,6 +5,7 @@ import com.socp.search.config.domain.ReferenceSet;
 import com.socp.search.config.api.request.ReferenceEntryRequest;
 import com.socp.search.config.api.request.ReferenceSetCreateRequest;
 import com.socp.search.config.persistence.store.ReferenceSetStore;
+import com.socp.platform.error.api.ApiResult;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -35,47 +36,47 @@ public class ReferenceSetController {
     }
 
     @GetMapping
-    public List<ReferenceSet> list() {
-        return store.list();
+    public ApiResult<List<ReferenceSet>> list() {
+        return ApiResult.ok(store.list());
     }
 
     @RequireRole({"admin", "analyst"})
     @PostMapping
-    public ReferenceSet create(@Valid @RequestBody ReferenceSetCreateRequest body) {
-        return store.add(ReferenceSet.of(body.name(), body.description(), body.entries()));
+    public ApiResult<ReferenceSet> create(@Valid @RequestBody ReferenceSetCreateRequest body) {
+        return ApiResult.ok(store.add(ReferenceSet.of(body.name(), body.description(), body.entries())));
     }
 
     @RequireRole({"admin", "analyst"})
     @PostMapping("/{id}/entries")
-    public Map<String, Object> addEntry(@PathVariable String id, @Valid @RequestBody ReferenceEntryRequest body) {
+    public ApiResult<Map<String, Object>> addEntry(@PathVariable String id, @Valid @RequestBody ReferenceEntryRequest body) {
         ReferenceSet rs = store.get(id);
-        if (rs == null) return Map.of("error", "not_found");
+        if (rs == null) return ApiResult.ok(Map.of("error", "not_found"));
         List<String> entries = new java.util.ArrayList<>(rs.entries());
         String v = body.value();
         if (!entries.contains(v)) entries.add(v);
         store.add(new ReferenceSet(rs.id(), rs.name(), rs.description(), List.copyOf(entries)));
-        return Map.of("ok", true, "size", entries.size());
+        return ApiResult.ok(Map.of("ok", true, "size", entries.size()));
     }
 
     @RequireRole({"admin", "analyst"})
     @DeleteMapping("/{id}")
-    public Map<String, Object> delete(@PathVariable String id) {
-        return Map.of("removed", store.delete(id), "id", id);
+    public ApiResult<Map<String, Object>> delete(@PathVariable String id) {
+        return ApiResult.ok(Map.of("removed", store.delete(id), "id", id));
     }
 
     @RequireRole({"admin", "analyst"})
     @DeleteMapping("/{id}/entries")
-    public Map<String, Object> removeEntry(@PathVariable String id,
+    public ApiResult<Map<String, Object>> removeEntry(@PathVariable String id,
             @org.springframework.web.bind.annotation.RequestParam String value) {
         ReferenceSet updated = store.removeEntry(id, value);
         if (updated == null) throw new org.springframework.web.server.ResponseStatusException(
                 org.springframework.http.HttpStatus.NOT_FOUND, "Reference set not found");
-        return Map.of("ok", true, "size", updated.entries().size());
+        return ApiResult.ok(Map.of("ok", true, "size", updated.entries().size()));
     }
 
     @GetMapping("/{name}/contains")
-    public Map<String, Object> contains(@PathVariable String name, @org.springframework.web.bind.annotation.RequestParam String value) {
-        return Map.of("name", name, "value", value, "contains", store.contains(name, value));
+    public ApiResult<Map<String, Object>> contains(@PathVariable String name, @org.springframework.web.bind.annotation.RequestParam String value) {
+        return ApiResult.ok(Map.of("name", name, "value", value, "contains", store.contains(name, value)));
     }
 
     private static String str(Map<String, Object> m, String k) {

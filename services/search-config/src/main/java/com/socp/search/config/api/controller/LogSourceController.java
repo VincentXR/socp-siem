@@ -11,6 +11,7 @@ import com.socp.search.config.config.VectorProperties;
 import com.socp.search.config.render.VectorConfigRenderer;
 import com.socp.search.config.persistence.store.LogSourceStore;
 import com.socp.search.config.persistence.store.SinkTargetStore;
+import com.socp.platform.error.api.ApiResult;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.platform.auth.security.RequireIngestIdentity;
 import com.socp.platform.ratelimit.api.RateLimit;
@@ -116,38 +117,38 @@ public class LogSourceController {
     }
 
     @GetMapping("/sources")
-    public List<LogSource> list() {
-        return store.list();
+    public ApiResult<List<LogSource>> list() {
+        return ApiResult.ok(store.list());
     }
 
     @RequireRole({"admin", "analyst"})
     @PostMapping("/sources")
-    public LogSource create(@Valid @RequestBody LogSourceRequest req) {
-        return store.save(req.toNewDomain());
+    public ApiResult<LogSource> create(@Valid @RequestBody LogSourceRequest req) {
+        return ApiResult.ok(store.save(req.toNewDomain()));
     }
 
     @GetMapping("/sources/{id}")
-    public Map<String, Object> get(@PathVariable String id) {
+    public ApiResult<Map<String, Object>> get(@PathVariable String id) {
         Optional<LogSource> s = store.get(id);
-        if (s.isEmpty()) return Map.of("error", "not_found", "id", id);
-        return Map.of("source", s.get());
+        if (s.isEmpty()) return ApiResult.ok(Map.of("error", "not_found", "id", id));
+        return ApiResult.ok(Map.of("source", s.get()));
     }
 
     @RequireRole({"admin", "analyst"})
     @PutMapping("/sources/{id}")
-    public Map<String, Object> update(@PathVariable String id, @Valid @RequestBody LogSourceRequest req) {
+    public ApiResult<Map<String, Object>> update(@PathVariable String id, @Valid @RequestBody LogSourceRequest req) {
         Optional<LogSource> exist = store.get(id);
-        if (exist.isEmpty()) return Map.of("error", "not_found", "id", id);
+        if (exist.isEmpty()) return ApiResult.ok(Map.of("error", "not_found", "id", id));
         LogSource updated = req.toDomain(id, exist.get().createdAt());
         store.save(updated);
-        return Map.of("source", updated);
+        return ApiResult.ok(Map.of("source", updated));
     }
 
     @RequireRole({"admin", "analyst"})
     @DeleteMapping("/sources/{id}")
-    public Map<String, Object> delete(@PathVariable String id) {
+    public ApiResult<Map<String, Object>> delete(@PathVariable String id) {
         boolean ok = store.delete(id);
-        return Map.of("deleted", ok, "id", id);
+        return ApiResult.ok(Map.of("deleted", ok, "id", id));
     }
 
     @GetMapping(value = "/sources/{id}/vector-config", produces = "text/plain")
@@ -175,7 +176,7 @@ public class LogSourceController {
             "application/x-ndjson",
             MediaType.TEXT_PLAIN_VALUE
     })
-    public Map<String, Object> ingest(
+    public ApiResult<Map<String, Object>> ingest(
             @RequestBody String body,
             HttpServletRequest request,
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
@@ -191,12 +192,12 @@ public class LogSourceController {
         // The annotation guarantees one of these identities for real HTTP
         // requests. Idempotency-Key only stabilizes event IDs for safe client
         // retries; it is never used as the trusted collector identity.
-        return pipeline.process(body, trustedCollector, idempotencyKey);
+        return ApiResult.ok(pipeline.process(body, trustedCollector, idempotencyKey));
     }
 
     /** Keeps direct Java integrations source-compatible with the pre-key ingress signature. */
     public Map<String, Object> ingest(String body, HttpServletRequest request) {
-        return ingest(body, request, null);
+        return ingest(body, request, null).data();
     }
 
     private void validateIngestBody(String body) {

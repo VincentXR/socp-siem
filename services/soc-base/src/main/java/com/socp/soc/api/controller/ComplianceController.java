@@ -1,6 +1,7 @@
 package com.socp.soc.api.controller;
 
 import com.socp.soc.api.request.CoverageRequest;
+import com.socp.platform.error.api.ApiResult;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -70,7 +71,7 @@ public class ComplianceController {
 
     @GetMapping("/frameworks")
     @com.socp.platform.auth.security.RequireRole({"admin", "analyst", "viewer"})
-    public Map<String, Object> frameworks() {
+    public ApiResult<Map<String, Object>> frameworks() {
         Map<String, Object> out = new LinkedHashMap<>();
         List<Map<String, Object>> list = new ArrayList<>();
         for (var e : FRAMEWORKS.entrySet()) {
@@ -86,7 +87,7 @@ public class ComplianceController {
                 "assessment", "rule-mapping",
                 "owner", "security-engineering",
                 "validUntil", "2027-12-31"));
-        return out;
+        return ApiResult.ok(out);
     }
 
     /**
@@ -95,7 +96,7 @@ public class ComplianceController {
      */
     @PostMapping("/coverage")
     @com.socp.platform.auth.security.RequireRole({"admin", "analyst", "viewer"})
-    public Map<String, Object> coverage(@Valid @RequestBody CoverageRequest request) {
+    public ApiResult<Map<String, Object>> coverage(@Valid @RequestBody CoverageRequest request) {
         List<String> ruleIds = request.ruleIds();
         Set<String> have = Set.copyOf(ruleIds);
         Map<String, Object> out = new LinkedHashMap<>();
@@ -134,7 +135,7 @@ public class ComplianceController {
         out.put("coverage", totalControls == 0 ? 0 : (int) Math.round(100.0 * coveredControls / totalControls));
         out.put("contentVersion", CONTENT_VERSION);
         out.put("generatedAt", java.time.Instant.now().toString());
-        return out;
+        return ApiResult.ok(out);
     }
 
     private record Control(String id, String name, List<String> ruleIds,

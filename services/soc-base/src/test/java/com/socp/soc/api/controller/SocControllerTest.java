@@ -65,10 +65,10 @@ class SocControllerTest {
                         .header("X-Role", "admin"))
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.length()").value(2))
-                .andExpect(jsonPath("$[0].code").value("default"))
-                .andExpect(jsonPath("$[1].name").value("安全运营团队"))
-                .andExpect(jsonPath("$[0].id").isNotEmpty());
+                .andExpect(jsonPath("$.data.length()").value(2))
+                .andExpect(jsonPath("$.data[0].code").value("default"))
+                .andExpect(jsonPath("$.data[1].name").value("安全运营团队"))
+                .andExpect(jsonPath("$.data[0].id").isNotEmpty());
     }
 
     @Test
@@ -81,10 +81,10 @@ class SocControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(Map.of("name", "红队", "code", "red-team"))))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.name").value("红队"))
-                .andExpect(jsonPath("$.code").value("red-team"))
-                .andExpect(jsonPath("$.userCount").value(0))
-                .andExpect(jsonPath("$.id").isNotEmpty());
+                .andExpect(jsonPath("$.data.name").value("红队"))
+                .andExpect(jsonPath("$.data.code").value("red-team"))
+                .andExpect(jsonPath("$.data.userCount").value(0))
+                .andExpect(jsonPath("$.data.id").isNotEmpty());
     }
 
     @Test
@@ -157,8 +157,8 @@ class SocControllerTest {
                         .header(HttpHeaders.AUTHORIZATION, BEARER)
                         .header("X-Role", "admin"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.tenants").value(1))
-                .andExpect(jsonPath("$.platform").value("SOCP v1.0"))
-                .andExpect(jsonPath("$.services.length()").value(greaterThan(0)));
+                .andExpect(jsonPath("$.data.tenants").value(1))
+                .andExpect(jsonPath("$.data.platform").value("SOCP v1.0"))
+                .andExpect(jsonPath("$.data.services.length()").value(greaterThan(0)));
     }
 }

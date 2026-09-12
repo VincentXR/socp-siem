@@ -4,6 +4,7 @@ import com.socp.detect.web.api.request.RuleDryRunRequest;
 import com.socp.detect.web.config.DetectRuntimeRole;
 import com.socp.detect.web.service.RuleDryRunService;
 import com.socp.platform.auth.security.RequireRole;
+import com.socp.platform.error.api.ApiResult;
 import com.socp.platform.ratelimit.api.RateLimit;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -24,7 +25,7 @@ public class RuleDryRunController {
     @RequireRole({"admin", "analyst"})
     @RateLimit(permits = 2, seconds = 1)
     @PostMapping("/test")
-    public List<Map<String, Object>> test(@Valid @RequestBody RuleDryRunRequest request) {
-        return service.evaluate(request);
+    public ApiResult<List<Map<String, Object>>> test(@Valid @RequestBody RuleDryRunRequest request) {
+        return ApiResult.ok(service.evaluate(request));
     }
 }

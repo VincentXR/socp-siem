@@ -17,9 +17,9 @@ class TechniqueNoteControllerTest {
         AttackStore catalog = mock(AttackStore.class);
         when(catalog.technique("T1110")).thenReturn(new Technique("T1110", "Brute Force", "TA0006", "", ""));
         TechniqueNoteController controller = new TechniqueNoteController(new com.socp.attack.web.service.TechniqueNoteService(notes, catalog));
-        TenantContext.runWith("tenant-a", () -> assertThat(controller.put("T1110", new com.socp.attack.web.api.request.TechniqueNoteRequest("Investigate"))).containsEntry("note", "Investigate"));
+        TenantContext.runWith("tenant-a", () -> assertThat(controller.put("T1110", new com.socp.attack.web.api.request.TechniqueNoteRequest("Investigate")).data()).containsEntry("note", "Investigate"));
         verify(notes).findByTenantIdAndTechniqueId("tenant-a", "T1110");
-        TenantContext.runWith("tenant-b", () -> assertThat(controller.get("T1110")).containsEntry("note", ""));
+        TenantContext.runWith("tenant-b", () -> assertThat(controller.get("T1110").data()).containsEntry("note", ""));
         verify(notes).findByTenantIdAndTechniqueId("tenant-b", "T1110");
         verify(catalog, never()).update(anyString(), any(), any(), any(), any());
     }

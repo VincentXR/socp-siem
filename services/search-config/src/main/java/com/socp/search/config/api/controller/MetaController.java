@@ -10,6 +10,7 @@ import com.socp.search.config.api.request.LogCategoryRequest;
 import com.socp.search.config.persistence.store.DataSourceTypeStore;
 import com.socp.search.config.persistence.store.FieldDefStore;
 import com.socp.search.config.persistence.store.LogCategoryStore;
+import com.socp.platform.error.api.ApiResult;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -47,19 +48,19 @@ public class MetaController {
     // ---------- 数据源分类 ----------
 
     @GetMapping("/data-source-types")
-    public List<DataSourceType> listDataSourceTypes() {
-        return dsStore.list();
+    public ApiResult<List<DataSourceType>> listDataSourceTypes() {
+        return ApiResult.ok(dsStore.list());
     }
 
     @RequireRole({"admin", "analyst"})
     @PostMapping("/data-source-types")
-    public DataSourceType createDataSourceType(@Valid @RequestBody DataSourceTypeRequest t) {
-        return dsStore.save(t.toDomain());
+    public ApiResult<DataSourceType> createDataSourceType(@Valid @RequestBody DataSourceTypeRequest t) {
+        return ApiResult.ok(dsStore.save(t.toDomain()));
     }
 
     @RequireRole({"admin", "analyst"})
     @PutMapping("/data-source-types/{id}")
-    public DataSourceType updateDataSourceType(@PathVariable String id, @Valid @RequestBody DataSourceTypeRequest body) {
+    public ApiResult<DataSourceType> updateDataSourceType(@PathVariable String id, @Valid @RequestBody DataSourceTypeRequest body) {
         DataSourceType existing = dsStore.list().stream().filter(item -> item.id().equals(id)).findFirst()
                 .orElseThrow(() -> new org.springframework.web.server.ResponseStatusException(
                         org.springframework.http.HttpStatus.NOT_FOUND, "data source type not found"));
@@ -68,31 +69,89 @@ public class MetaController {
                     org.springframework.http.HttpStatus.CONFLICT,
                     "Existing identifiers and field types cannot be changed");
         }
-        return dsStore.save(new DataSourceType(id, body.code(), body.name(), body.description(), body.enabled(), existing.createdAt()));
+        return ApiResult.ok(dsStore.save(new DataSourceType(id, body.code(), body.name(), body.description(), body.enabled(), existing.createdAt())));
     }
 
     @RequireRole({"admin", "analyst"})
     @DeleteMapping("/data-source-types/{id}")
-    public Map<String, Object> deleteDataSourceType(@PathVariable String id) {
-        return Map.of("removed", dsStore.delete(id));
+    public ApiResult<Map<String, Object>> deleteDataSourceType(@PathVariable String id) {
+        return ApiResult.ok(Map.of("removed", dsStore.delete(id)));
     }
 
     // ---------- 日志类别 ----------
 
     @GetMapping("/categories")
-    public List<LogCategory> listCategories() {
-        return catStore.list();
+    public ApiResult<List<LogCategory>> listCategories() {
+        return ApiResult.ok(catStore.list());
     }
 
     @RequireRole({"admin", "analyst"})
     @PostMapping("/categories")
-    public LogCategory createCategory(@Valid @RequestBody LogCategoryRequest c) {
-        return catStore.save(c.toDomain());
+    public ApiResult<LogCategory> createCategory(@Valid @RequestBody LogCategoryRequest c) {
+        return ApiResult.ok(catStore.save(c.toDomain()));
     }
 
     @RequireRole({"admin", "analyst"})
     @PutMapping("/categories/{id}")
-    public LogCategory updateCategory(@PathVariable String id, @Valid @RequestBody LogCategoryRequest body) {
+    public ApiResult<LogCategory> updateCategory(@PathVariable String id, @Valid @RequestBody LogCategoryRequest body) {
+        LogCategory existing = catStore.list().stream().filter(item -> item.id().equals(id)).findFirst()
+                .orElseThrow(() -> new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.NOT_FOUND, "log category not found"));
+        if (!java.util.Objects.equals(existing.code(), body.code())) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.CONFLICT,
+                    "Existing identifiers and field types cannot be changed");
+        }
+        return ApiResult.ok(catStore.save(new LogCategory(id, body.code(), body.name(), body.description(), body.defaultSeverity(), body.enabled(), existing.createdAt())));
+    }
+
+    @RequireRole({"admin", "analyst"})
+    @DeleteMapping("/categories/{id}")
+    public ApiResult<Map<String, Object>> deleteCategory(@PathVariable String id) {
+        return ApiResult.ok(Map.of("removed", catStore.delete(id)));
+    }
+
+    // ---------- 字段字典 ----------
+
+    @GetMapping("/fields")
+    public ApiResult<List<FieldDef>> listFields() {
+        return ApiResult.ok(fieldStore.list());
+    }
+
+    @RequireRole({"admin", "analyst"})
+    @PostMapping("/fields")
+    public ApiResult<FieldDef> createField(@Valid @RequestBody FieldDefRequest f) {
+        return ApiResult.ok(fieldStore.save(f.toDomain()));
+    }
+
+    @RequireRole({"admin", "analyst"})
+    @PutMapping("/fields/{id}")
+    public ApiResult<FieldDef> updateField(@PathVariable String id, @Valid @RequestBody FieldDefRequest body) {
+        FieldDef existing = fieldStore.list().stream().filter(item -> item.id().equals(id)).findFirst()
+                .orElseThrow(() -> new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.NOT_FOUND, "field not found"));
+        if ("system".equals(existing.source()) || "system".equals(body.source())
+                || !java.util.Objects.equals(existing.fieldName(), body.fieldName())
+                || !java.util.Objects.equals(existing.fieldType(), body.fieldType())) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.CONFLICT,
+                    "Existing identifiers and field types cannot be changed");
+        }
+        return ApiResult.ok(fieldStore.save(new FieldDef(id, body.fieldName(), body.fieldLabel(), body.fieldType(), body.source(),
+                body.searchable(), body.aggregatable(), body.stored(), body.description(), existing.createdAt())));
+    }
+
+    @RequireRole({"admin", "analyst"})
+    @DeleteMapping("/fields/{id}")
+    public ApiResult<Map<String, Object>> deleteField(@PathVariable String id) {
+        FieldDef existing = fieldStore.list().stream().filter(item -> item.id().equals(id)).findFirst().orElse(null);
+        if (existing != null && "system".equals(existing.source()))
+            throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.CONFLICT, "System fields are read-only");
+        return ApiResult.ok(Map.of("removed", fieldStore.delete(id)));
+    }
+
+    /** Source-compatible Java entry points retained for older callers; HTTP uses the methods above. */
+    public LogCategory updateLogCategory(String id, LogCategoryRequest body) {
         LogCategory existing = catStore.list().stream().filter(item -> item.id().equals(id)).findFirst()
                 .orElseThrow(() -> new org.springframework.web.server.ResponseStatusException(
                         org.springframework.http.HttpStatus.NOT_FOUND, "log category not found"));
@@ -104,28 +163,7 @@ public class MetaController {
         return catStore.save(new LogCategory(id, body.code(), body.name(), body.description(), body.defaultSeverity(), body.enabled(), existing.createdAt()));
     }
 
-    @RequireRole({"admin", "analyst"})
-    @DeleteMapping("/categories/{id}")
-    public Map<String, Object> deleteCategory(@PathVariable String id) {
-        return Map.of("removed", catStore.delete(id));
-    }
-
-    // ---------- 字段字典 ----------
-
-    @GetMapping("/fields")
-    public List<FieldDef> listFields() {
-        return fieldStore.list();
-    }
-
-    @RequireRole({"admin", "analyst"})
-    @PostMapping("/fields")
-    public FieldDef createField(@Valid @RequestBody FieldDefRequest f) {
-        return fieldStore.save(f.toDomain());
-    }
-
-    @RequireRole({"admin", "analyst"})
-    @PutMapping("/fields/{id}")
-    public FieldDef updateField(@PathVariable String id, @Valid @RequestBody FieldDefRequest body) {
+    public FieldDef updateFieldDef(String id, FieldDefRequest body) {
         FieldDef existing = fieldStore.list().stream().filter(item -> item.id().equals(id)).findFirst()
                 .orElseThrow(() -> new org.springframework.web.server.ResponseStatusException(
                         org.springframework.http.HttpStatus.NOT_FOUND, "field not found"));
@@ -138,24 +176,6 @@ public class MetaController {
         }
         return fieldStore.save(new FieldDef(id, body.fieldName(), body.fieldLabel(), body.fieldType(), body.source(),
                 body.searchable(), body.aggregatable(), body.stored(), body.description(), existing.createdAt()));
-    }
-
-    @RequireRole({"admin", "analyst"})
-    @DeleteMapping("/fields/{id}")
-    public Map<String, Object> deleteField(@PathVariable String id) {
-        FieldDef existing = fieldStore.list().stream().filter(item -> item.id().equals(id)).findFirst().orElse(null);
-        if (existing != null && "system".equals(existing.source()))
-            throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.CONFLICT, "System fields are read-only");
-        return Map.of("removed", fieldStore.delete(id));
-    }
-
-    /** Source-compatible Java entry points retained for older callers; HTTP uses the methods above. */
-    public LogCategory updateLogCategory(String id, LogCategoryRequest body) {
-        return updateCategory(id, body);
-    }
-
-    public FieldDef updateFieldDef(String id, FieldDefRequest body) {
-        return updateField(id, body);
     }
 
 }

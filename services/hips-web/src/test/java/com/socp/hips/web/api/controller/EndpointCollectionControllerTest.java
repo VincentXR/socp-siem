@@ -64,9 +64,10 @@ class EndpointCollectionControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(Map.of("hostname", "web-01"))))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.accepted").value(true))
-                .andExpect(jsonPath("$.eventId").value("event-1"))
-                .andExpect(jsonPath("$.forwarded").value(true));
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.accepted").value(true))
+                .andExpect(jsonPath("$.data.eventId").value("event-1"))
+                .andExpect(jsonPath("$.data.forwarded").value(true));
 
         verify(http).post(eq(SocpService.SEARCH), eq("/api/v1/ingest"),
                 contains("\"tenantId\":\"tenant-a\""), eq(SocpHttpClient.NDJSON), eq(5000));

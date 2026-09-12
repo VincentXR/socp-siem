@@ -2,6 +2,7 @@ package com.socp.soc.api.controller;
 
 import com.socp.soc.api.request.TenantCreateRequest;
 import com.socp.platform.auth.security.RequireRole;
+import com.socp.platform.error.api.ApiResult;
 import com.socp.soc.domain.TenantInfo;
 import com.socp.soc.persistence.store.TenantStore;
 import jakarta.validation.Valid;
@@ -30,24 +31,24 @@ public class SocController {
     /** Tenant directory is readable platform metadata; tenant mutation remains admin-only. */
     @RequireRole({"admin", "analyst", "viewer"})
     @GetMapping("/tenants")
-    public List<TenantInfo> listTenants() {
-        return store.list();
+    public ApiResult<List<TenantInfo>> listTenants() {
+        return ApiResult.ok(store.list());
     }
 
     @RequireRole("admin")
     @PostMapping("/tenants")
-    public TenantInfo createTenant(@Valid @RequestBody TenantCreateRequest request) {
-        return store.save(TenantInfo.create(request.name().trim(), request.code()));
+    public ApiResult<TenantInfo> createTenant(@Valid @RequestBody TenantCreateRequest request) {
+        return ApiResult.ok(store.save(TenantInfo.create(request.name().trim(), request.code())));
     }
 
     /** The counts and service inventory are readable platform metadata. */
     @RequireRole({"admin", "analyst", "viewer"})
     @GetMapping("/overview")
-    public Map<String, Object> overview() {
-        return Map.of(
+    public ApiResult<Map<String, Object>> overview() {
+        return ApiResult.ok(Map.of(
                 "tenants", store.list().size(),
                 "services", List.of("alert-web", "search-config", "detect-web", "soar-web", "report-web", "asset-web", "hips-web", "ai-assistant"),
                 "platform", "SOCP v1.0"
-        );
+        ));
     }
 }

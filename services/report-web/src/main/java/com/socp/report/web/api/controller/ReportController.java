@@ -1,6 +1,7 @@
 package com.socp.report.web.api.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.auth.security.RequireRole;
+import com.socp.platform.error.api.ApiResult;
 import com.socp.report.web.domain.ReportSummary;
 import com.socp.report.web.domain.ReportTrend;
 import com.socp.report.web.service.ReportService;
@@ -38,19 +39,19 @@ public class ReportController {
     }
 
     @GetMapping("/daily")
-    public ReportSummary daily() {
-        return service.dailyReport();
+    public ApiResult<ReportSummary> daily() {
+        return ApiResult.ok(service.dailyReport());
     }
 
     @GetMapping("/trend7d")
-    public ReportTrend trend7d() {
-        return service.trend7d();
+    public ApiResult<ReportTrend> trend7d() {
+        return ApiResult.ok(service.trend7d());
     }
 
     /** 归档：把当日日报 + 趋势快照上传 MinIO，返回对象 key。 */
     @PostMapping("/archive")
     @RequireRole({"admin", "analyst"})
-    public Map<String, Object> archive() {
+    public ApiResult<Map<String, Object>> archive() {
         String day = ReportObjectStore.today();
         Map<String, Object> out = new LinkedHashMap<>();
         try {
@@ -67,24 +68,24 @@ public class ReportController {
             out.put("archived", false);
             out.put("error", e.getMessage());
         }
-        return out;
+        return ApiResult.ok(out);
     }
 
     /** 归档列表（最近对象）。 */
     @GetMapping("/archive")
-    public Map<String, Object> archived(@RequestParam(defaultValue = "reports/") String prefix) {
+    public ApiResult<Map<String, Object>> archived(@RequestParam(defaultValue = "reports/") String prefix) {
         String ownedPrefix = ownedPrefix(prefix);
         List<Map<String, Object>> items = objectStore.list(ownedPrefix);
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("prefix", ownedPrefix);
         out.put("count", items.size());
         out.put("objects", items);
-        return out;
+        return ApiResult.ok(out);
     }
 
     /** 生成对象下载链接（7 天有效）。key 通过查询参数传（含斜杠，如 reports/20260809/daily.json）。 */
     @GetMapping("/archive/download")
-    public Map<String, Object> download(@RequestParam String key) {
+    public ApiResult<Map<String, Object>> download(@RequestParam String key) {
         if (key == null || !key.startsWith(tenantPrefix()) || key.contains("..")) {
             throw new org.springframework.web.server.ResponseStatusException(
                     org.springframework.http.HttpStatus.FORBIDDEN,
@@ -93,7 +94,7 @@ public class ReportController {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("key", key);
         out.put("url", objectStore.presignedGet(key));
-        return out;
+        return ApiResult.ok(out);
     }
 
     private static String tenantPrefix() {

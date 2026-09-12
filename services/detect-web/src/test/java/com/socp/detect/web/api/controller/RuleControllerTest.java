@@ -73,8 +73,8 @@ class RuleControllerTest {
                                 "severity", "HIGH",
                                 "threshold", 5)))))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.id").value("AUTH-BRUTE"))
-                .andExpect(jsonPath("$.name").value("SSH brute force"));
+                .andExpect(jsonPath("$.data.id").value("AUTH-BRUTE"))
+                .andExpect(jsonPath("$.data.name").value("SSH brute force"));
 
         verify(engine).updateRule(org.mockito.ArgumentMatchers.argThat(rule ->
                 "AUTH-BRUTE".equals(rule.get("id"))));
@@ -95,13 +95,13 @@ class RuleControllerTest {
                                  "allowlist":[{"field":"host","op":"eq","value":"trusted","source":"import"}]}
                                 """))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.id").value("preserved"))
-                .andExpect(jsonPath("$.evidence.fields[1]").value("msg"))
-                .andExpect(jsonPath("$.alert.grouping.strategy").value("source"))
-                .andExpect(jsonPath("$.lateEventPolicy.source").value("content-pack"))
-                .andExpect(jsonPath("$.match[0].value").value(" padded "))
-                .andExpect(jsonPath("$.match[0].annotations.owner").value("SOC"))
-                .andExpect(jsonPath("$.whitelist[0].source").value("import"));
+                .andExpect(jsonPath("$.data.id").value("preserved"))
+                .andExpect(jsonPath("$.data.evidence.fields[1]").value("msg"))
+                .andExpect(jsonPath("$.data.alert.grouping.strategy").value("source"))
+                .andExpect(jsonPath("$.data.lateEventPolicy.source").value("content-pack"))
+                .andExpect(jsonPath("$.data.match[0].value").value(" padded "))
+                .andExpect(jsonPath("$.data.match[0].annotations.owner").value("SOC"))
+                .andExpect(jsonPath("$.data.whitelist[0].source").value("import"));
     }
 
     @Test
@@ -132,9 +132,9 @@ class RuleControllerTest {
                         .contentType(MediaType.APPLICATION_NDJSON)
                         .content(body))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.accepted").value(1))
-                .andExpect(jsonPath("$.rejected").value(2))
-                .andExpect(jsonPath("$.queueLoad").value(2));
+                .andExpect(jsonPath("$.data.accepted").value(1))
+                .andExpect(jsonPath("$.data.rejected").value(2))
+                .andExpect(jsonPath("$.data.queueLoad").value(2));
 
         verify(engine, times(2)).ingest(any());
     }
@@ -154,9 +154,10 @@ class RuleControllerTest {
                                  "fields":{"src_ip":"198.51.100.10","attempts":3}}
                                 """))
                 .andExpect(status().isServiceUnavailable())
-                .andExpect(jsonPath("$.accepted").value(false))
-                .andExpect(jsonPath("$.error").value("queue_full"))
-                .andExpect(jsonPath("$.queueLoad").value(9));
+                .andExpect(jsonPath("$.code").value(503))
+                .andExpect(jsonPath("$.data.accepted").value(false))
+                .andExpect(jsonPath("$.data.error").value("queue_full"))
+                .andExpect(jsonPath("$.data.queueLoad").value(9));
 
         verify(engine).ingest(org.mockito.ArgumentMatchers.argThat(event ->
                 "3".equals(event.fields().get("attempts"))
@@ -206,8 +207,8 @@ class RuleControllerTest {
                         .header("Authorization", BEARER)
                         .header("X-Role", "analyst"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.reloaded").value(true))
-                .andExpect(jsonPath("$.rules").value(2));
+                .andExpect(jsonPath("$.data.reloaded").value(true))
+                .andExpect(jsonPath("$.data.rules").value(2));
 
         verify(engine).reload();
     }

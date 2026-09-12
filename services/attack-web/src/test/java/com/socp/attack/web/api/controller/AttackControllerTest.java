@@ -30,15 +30,26 @@ class AttackControllerTest {
         when(store.tactics()).thenReturn(List.of(tactic));
         when(store.techniques()).thenReturn(List.of(technique));
         when(store.technique("T1110")).thenReturn(technique);
-        AttackController controller = new AttackController(store);
+        AttackController controller = new AttackController(store, 500);
 
-        assertThat(controller.tactics()).isEqualTo(List.of(tactic));
-        assertThat(controller.techniques(null)).containsExactly(technique);
-        assertThat(controller.techniques("TA0001")).containsExactly(technique);
-        assertThat(controller.techniques("TA9999")).isEmpty();
-        assertThat(controller.technique("T1110")).containsEntry("found", true)
+        assertThat(controller.tactics(1, 500).data().items()).isEqualTo(List.of(tactic));
+        assertThat(controller.tactics(1, 500).data().total()).isEqualTo(1);
+        assertThat(controller.techniques(null, 1, 500).data().items()).containsExactly(technique);
+        assertThat(controller.techniques("TA0001", 1, 500).data().items()).containsExactly(technique);
+        assertThat(controller.techniques("TA9999", 1, 500).data().items()).isEmpty();
+        assertThat(controller.techniques("TA9999", 1, 500).data().total()).isZero();
+        assertThat(controller.technique("T1110").data()).containsEntry("found", true)
                 .containsEntry("technique", technique);
-        assertThat(controller.stats()).containsEntry("tactics", 1).containsEntry("techniques", 1);
+        assertThat(controller.stats().data()).containsEntry("tactics", 1).containsEntry("techniques", 1);
+    }
+
+    @Test
+    void rejectsListPageSizeAboveConfiguredLimit() {
+        AttackController controller = new AttackController(mock(AttackStore.class), 500);
+        assertThatThrownBy(() -> controller.techniques(null, 1, 501))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
+        assertThatThrownBy(() -> controller.tactics(0, 10))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
     }
 
     @Test
@@ -46,10 +57,10 @@ class AttackControllerTest {
         AttackStore store = mock(AttackStore.class);
         Technique updated = new Technique("T1110", "Password Spray", "TA0001", "url", "desc");
         when(store.update(eq("T1110"), any(), any(), any(), any())).thenReturn(updated);
-        AttackController controller = new AttackController(store);
+        AttackController controller = new AttackController(store, 500);
 
         assertThat(controller.update("T1110", new TechniqueUpdateRequest(
-                "Password Spray", "TA0001", "url", "desc"))).isEqualTo(updated);
+                "Password Spray", "TA0001", "url", "desc")).data()).isEqualTo(updated);
         when(store.update(eq("missing"), any(), any(), any(), any())).thenReturn(null);
         assertThatThrownBy(() -> controller.update("missing", new TechniqueUpdateRequest(
                 null, null, null, null))).isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
@@ -59,8 +70,8 @@ class AttackControllerTest {
     void delegatesCoverageWithAUniqueSetOfRuleTechniques() {
         AttackStore store = mock(AttackStore.class);
         when(store.coverage(anySet())).thenReturn(Map.of("coverage", 50));
-        Map<String, Object> result = new AttackController(store).coverage(
-                new CoverageRequest(List.of("T1110", "T1110")));
+        Map<String, Object> result = new AttackController(store, 500).coverage(
+                new CoverageRequest(List.of("T1110", "T1110"))).data();
 
         assertThat(result).containsEntry("coverage", 50);
         verify(store).coverage(argThat(values -> values.size() == 1 && values.contains("T1110")));

@@ -4,6 +4,7 @@ package com.socp.search.config.api.controller;
 import com.socp.search.config.domain.SinkTarget;
 import com.socp.search.config.api.request.SinkTargetRequest;
 import com.socp.search.config.persistence.store.SinkTargetStore;
+import com.socp.platform.error.api.ApiResult;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -33,19 +34,19 @@ public class SinkTargetController {
     }
 
     @GetMapping
-    public List<SinkTarget> list() {
-        return store.list();
+    public ApiResult<List<SinkTarget>> list() {
+        return ApiResult.ok(store.list());
     }
 
     @RequireRole({"admin", "analyst"})
     @PostMapping
-    public SinkTarget create(@Valid @RequestBody SinkTargetRequest target) {
-        return store.save(target.toDomain());
+    public ApiResult<SinkTarget> create(@Valid @RequestBody SinkTargetRequest target) {
+        return ApiResult.ok(store.save(target.toDomain()));
     }
 
     @RequireRole({"admin", "analyst"})
     @DeleteMapping("/{id}")
-    public Map<String, Object> delete(@PathVariable String id) {
-        return Map.of("removed", store.delete(id));
+    public ApiResult<Map<String, Object>> delete(@PathVariable String id) {
+        return ApiResult.ok(Map.of("removed", store.delete(id)));
     }
 }

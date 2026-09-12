@@ -13,6 +13,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.http.MediaType;
 import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.validation.beanvalidation.SpringValidatorAdapter;
@@ -21,14 +22,21 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import jakarta.validation.Validation;
 
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -56,13 +64,46 @@ class AlarmControllerTest {
 
     @Test
     void exportUsesTheSameStatusAndSortAsTheList() throws Exception {
-        given(service.query(Severity.HIGH, "R-1", "OPEN", "login", "riskScore", "ascending"))
-                .willReturn(List.of());
+        Alarm alarm = new Alarm("AUTH-BRUTE", "SSH brute force", Severity.HIGH,
+                "failed login", "203.0.113.10");
+        alarm.setId("alarm-1");
+        given(service.page(Severity.HIGH, "R-1", "OPEN", "login", "riskScore", "ascending", 1, 500))
+                .willReturn(new PageImpl<>(List.of(alarm)));
         mvc.perform(get("/api/alarms/export").param("severity", "HIGH").param("rule", "R-1")
                         .param("status", "OPEN").param("q", "login").param("sort", "riskScore")
                         .param("order", "ascending").param("format", "json"))
-                .andExpect(status().isOk());
-        org.mockito.Mockito.verify(service).query(Severity.HIGH, "R-1", "OPEN", "login", "riskScore", "ascending");
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString("AUTH-BRUTE")));
+        verify(service).page(Severity.HIGH, "R-1", "OPEN", "login", "riskScore", "ascending", 1, 500);
+        verify(service, never()).query(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void exportStreamsInBatchesWithoutFullMaterialization() throws Exception {
+        List<Alarm> fullBatch = new ArrayList<>();
+        for (int i = 0; i < 500; i++) {
+            Alarm alarm = new Alarm("R-" + i, "rule", Severity.LOW, "msg", "entity");
+            alarm.setId("a-" + i);
+            fullBatch.add(alarm);
+        }
+        Alarm tail = new Alarm("R-tail", "rule", Severity.LOW, "msg", "entity");
+        tail.setId("alarm-tail");
+        given(service.page(null, null, null, null, "occurredAt", "descending", 1, 500))
+                .willReturn(new PageImpl<>(fullBatch, PageRequest.of(0, 500), 501));
+        given(service.page(null, null, null, null, "occurredAt", "descending", 2, 500))
+                .willReturn(new PageImpl<>(List.of(tail)));
+
+        String csv = mvc.perform(get("/api/alarms/export"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Disposition", "attachment; filename=\"alarms.csv\""))
+                .andExpect(content().contentTypeCompatibleWith("text/csv"))
+                .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+
+        org.assertj.core.api.Assertions.assertThat(csv)
+                .contains("\"a-0\"").contains("\"a-499\"").contains("\"alarm-tail\"").doesNotContain("a-500");
+        verify(service).page(null, null, null, null, "occurredAt", "descending", 1, 500);
+        verify(service).page(null, null, null, null, "occurredAt", "descending", 2, 500);
+        verify(service, never()).query(any(), any(), any(), any(), any(), any());
     }
 
     @Test

@@ -61,9 +61,10 @@ class AssetCollectionControllerTest {
                         .content(json.writeValueAsString(Map.of(
                                 "name", "web-03", "ip", "10.0.0.30", "tenantId", "spoofed"))))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.accepted").value(true))
-                .andExpect(jsonPath("$.assetId").value(saved.id()))
-                .andExpect(jsonPath("$.forwarded").value(true));
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.accepted").value(true))
+                .andExpect(jsonPath("$.data.assetId").value(saved.id()))
+                .andExpect(jsonPath("$.data.forwarded").value(true));
 
         verify(http).post(eq(SocpService.SEARCH), eq("/api/v1/ingest"),
                 contains("\"tenantId\":\"tenant-a\""), eq(SocpHttpClient.NDJSON), eq(5000));

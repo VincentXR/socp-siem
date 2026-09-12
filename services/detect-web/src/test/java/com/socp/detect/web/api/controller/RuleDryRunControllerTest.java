@@ -39,8 +39,8 @@ class RuleDryRunControllerTest {
             mvc.perform(post("/api/v1/rules/test").contentType(MediaType.APPLICATION_JSON)
                             .content(mapper.writeValueAsString(Map.of("rules", List.of(rule("pattern", "eq", "admin")),
                                     "events", List.of(event("forged"))))))
-                    .andExpect(status().isOk()).andExpect(jsonPath("$[0].matched").value(true))
-                    .andExpect(jsonPath("$[0].alerts[0].evidence[0].fields.tenant_id").value("dry-run-tenant"));
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].matched").value(true))
+                    .andExpect(jsonPath("$.data[0].alerts[0].evidence[0].fields.tenant_id").value("dry-run-tenant"));
         }
     }
 
@@ -50,10 +50,10 @@ class RuleDryRunControllerTest {
             var rules = List.of(rule("threshold", "eq", "admin"));
             mvc.perform(post("/api/v1/rules/test").contentType(MediaType.APPLICATION_JSON)
                             .content(mapper.writeValueAsString(Map.of("rules", rules, "events", List.of(event("x"), event("x"))))))
-                    .andExpect(status().isOk()).andExpect(jsonPath("$[0].alerts.length()").value(1));
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].alerts.length()").value(1));
             mvc.perform(post("/api/v1/rules/test").contentType(MediaType.APPLICATION_JSON)
                             .content(mapper.writeValueAsString(Map.of("rules", rules, "events", List.of(event("x"))))))
-                    .andExpect(status().isOk()).andExpect(jsonPath("$[0].matched").value(false));
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].matched").value(false));
         }
     }
 
@@ -64,7 +64,7 @@ class RuleDryRunControllerTest {
             mvc.perform(post("/api/v1/rules/test").contentType(MediaType.APPLICATION_JSON)
                             .content(mapper.writeValueAsString(Map.of("rules", List.of(rule("pattern", "inlist", "review-users")),
                                     "events", List.of(event("other"))))))
-                    .andExpect(status().isOk()).andExpect(jsonPath("$[0].matched").value(true));
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].matched").value(true));
         } finally { Watchlists.delete("dry-run-tenant", "review-users"); }
     }
 

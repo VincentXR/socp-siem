@@ -1,6 +1,7 @@
 package com.socp.search.config.api.controller;
 
 
+import com.socp.platform.error.api.ApiResult;
 import com.socp.platform.error.exception.ApiException;
 import com.socp.search.config.domain.SearchEvent;
 import com.socp.search.config.infrastructure.opensearch.OsEventReader;
@@ -50,17 +51,22 @@ public class SearchController {
     }
 
     @GetMapping
-    public SplEngine.QueryResult searchHttp(
+    public ApiResult<SplEngine.QueryResult> searchHttp(
             @RequestParam(value = "q", defaultValue = "") String q,
             @RequestParam(value = "limit", required = false) Integer limit,
             @RequestParam(value = "cursor", required = false) String cursor,
             @RequestParam(value = "timeline", defaultValue = "false") boolean timeline) {
-        return resolveSafely(q, bounded(limit, SEARCH_LIMIT, SEARCH_MAX_LIMIT), cursor, timeline);
+        return ApiResult.ok(searchQuery(q, limit, cursor, timeline));
     }
 
     /** Java/source-compatible overload for callers that do not request analytics. */
     public SplEngine.QueryResult searchHttp(String q, Integer limit, String cursor) {
-        return searchHttp(q, limit, cursor, false);
+        return searchQuery(q, limit, cursor, false);
+    }
+
+    /** Java/source-compatible raw query used by unit tests and internal callers. */
+    public SplEngine.QueryResult searchQuery(String q, Integer limit, String cursor, boolean timeline) {
+        return resolveSafely(q, bounded(limit, SEARCH_LIMIT, SEARCH_MAX_LIMIT), cursor, timeline);
     }
 
     /** Export follows the same source-selection policy as interactive search. */

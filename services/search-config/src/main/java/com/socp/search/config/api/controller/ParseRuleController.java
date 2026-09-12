@@ -8,6 +8,7 @@ import com.socp.search.config.service.ParsePreviewService;
 import com.socp.search.config.service.ParseRuleExecutor;
 import com.socp.search.config.parser.ParserRegistry;
 import com.socp.search.config.persistence.store.ParseRuleStore;
+import com.socp.platform.error.api.ApiResult;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -51,13 +52,13 @@ public class ParseRuleController {
     }
 
     @GetMapping
-    public List<ParseRule> list() {
-        return store.list();
+    public ApiResult<List<ParseRule>> list() {
+        return ApiResult.ok(store.list());
     }
 
     @RequireRole({"admin", "analyst"})
     @PostMapping
-    public ParseRule create(@Valid @RequestBody ParseRuleRequest rule) {
+    public ApiResult<ParseRule> create(@Valid @RequestBody ParseRuleRequest rule) {
         ParseRule domain = rule.toDomain();
         try {
             executor.compile(domain);
@@ -65,12 +66,12 @@ public class ParseRuleController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "invalid parse rule: " + invalid.getMessage(), invalid);
         }
-        return store.save(domain);
+        return ApiResult.ok(store.save(domain));
     }
 
     @RequireRole({"admin", "analyst"})
     @org.springframework.web.bind.annotation.PutMapping("/{id}")
-    public ParseRule update(@PathVariable String id, @Valid @RequestBody ParseRuleRequest request) {
+    public ApiResult<ParseRule> update(@PathVariable String id, @Valid @RequestBody ParseRuleRequest request) {
         ParseRule existing = store.get(id);
         if (existing == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Parse rule not found");
         ParseRule draft = request.toDomain();
@@ -79,7 +80,7 @@ public class ParseRuleController {
                 draft.order(), existing.createdAt());
         try { executor.compile(updated); }
         catch (IllegalArgumentException invalid) { throw new ResponseStatusException(HttpStatus.BAD_REQUEST, invalid.getMessage(), invalid); }
-        return store.save(updated);
+        return ApiResult.ok(store.save(updated));
     }
 
     public record DraftPreview(@Valid @jakarta.validation.constraints.NotNull ParseRuleRequest rule,
@@ -87,14 +88,14 @@ public class ParseRuleController {
 
     @RequireRole({"admin", "analyst"})
     @PostMapping("/preview-draft")
-    public Map<String, Object> previewDraft(@Valid @RequestBody DraftPreview request) {
+    public ApiResult<Map<String, Object>> previewDraft(@Valid @RequestBody DraftPreview request) {
         try {
             var result = executor.execute(request.rule().toDomain(), request.line());
             Map<String, Object> response = new java.util.LinkedHashMap<>();
             response.put("matched", result.matched());
             response.put("fields", result.fields());
             if (result.error() != null) response.put("error", result.error());
-            return response;
+            return ApiResult.ok(response);
         } catch (IllegalArgumentException invalid) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, invalid.getMessage(), invalid);
         }
@@ -102,15 +103,15 @@ public class ParseRuleController {
 
     @RequireRole({"admin", "analyst"})
     @DeleteMapping("/{id}")
-    public Map<String, Object> delete(@PathVariable String id) {
-        return Map.of("removed", store.delete(id));
+    public ApiResult<Map<String, Object>> delete(@PathVariable String id) {
+        return ApiResult.ok(Map.of("removed", store.delete(id)));
     }
 
     /** 预览：用规则 + 示例行验证字段抽取 */
     @RequireRole({"admin", "analyst"})
     @PostMapping("/preview")
-    public Map<String, Object> preview(@Valid @RequestBody PreviewRequest req) {
-        return preview.preview(req.ruleId(), req.format(), req.pattern(), req.line());
+    public ApiResult<Map<String, Object>> preview(@Valid @RequestBody PreviewRequest req) {
+        return ApiResult.ok(preview.preview(req.ruleId(), req.format(), req.pattern(), req.line()));
     }
 
 }

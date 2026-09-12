@@ -6,6 +6,8 @@ import com.socp.search.config.api.request.IngestTestRequest;
 import com.socp.search.config.service.IngestPipeline;
 import com.socp.search.config.service.IngestTaskMonitor;
 import com.socp.search.config.persistence.store.LogSourceStore;
+import com.socp.platform.error.api.ApiResult;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -48,45 +50,47 @@ public class IngestTaskController {
     }
 
     @GetMapping("/ingest/tasks")
-    public List<Map<String, Object>> tasks() {
-        return store.list().stream().map(this::toTask).toList();
+    public ApiResult<List<Map<String, Object>>> tasks() {
+        return ApiResult.ok(store.list().stream().map(this::toTask).toList());
     }
 
     @GetMapping("/ingest/tasks/summary")
-    public Map<String, Object> summary() {
+    public ApiResult<Map<String, Object>> summary() {
         List<String> enabled = store.enabled().stream().map(LogSource::collectorTag).toList();
         Map<String, Object> m = new LinkedHashMap<>(monitor.summary(enabled));
         m.put("sources", store.list().size());
         m.put("enabledSources", enabled.size());
-        return m;
+        return ApiResult.ok(m);
     }
 
     @GetMapping("/ingest/tasks/{id}")
-    public ResponseEntity<?> task(@PathVariable String id) {
+    public ResponseEntity<ApiResult<Map<String, Object>>> task(@PathVariable String id) {
         Optional<LogSource> s = store.get(id);
-        return s.<ResponseEntity<?>>map(logSource -> ResponseEntity.ok(toTask(logSource)))
-                .orElseGet(() -> ResponseEntity.status(404).body(Map.of("error", "source_not_found", "id", id)));
+        return s.<ResponseEntity<ApiResult<Map<String, Object>>>>map(
+                        logSource -> ResponseEntity.ok(ApiResult.ok(toTask(logSource))))
+                .orElseGet(() -> notFound(id));
     }
 
         @RequireRole({"admin", "analyst"})
 @PostMapping("/ingest/tasks/{id}/start")
-    public ResponseEntity<?> start(@PathVariable String id) {
+    public ResponseEntity<ApiResult<Map<String, Object>>> start(@PathVariable String id) {
         return toggle(id, true);
     }
 
         @RequireRole({"admin", "analyst"})
 @PostMapping("/ingest/tasks/{id}/stop")
-    public ResponseEntity<?> stop(@PathVariable String id) {
+    public ResponseEntity<ApiResult<Map<String, Object>>> stop(@PathVariable String id) {
         return toggle(id, false);
     }
 
     /** 接入连通性自测：灌一条样例日志走完整解析/富化/转发链路，回显管线结果 */
         @RequireRole({"admin", "analyst"})
 @PostMapping("/ingest/tasks/{id}/test")
-    public ResponseEntity<?> test(@PathVariable String id, @Valid @RequestBody(required = false) IngestTestRequest body) {
+    public ResponseEntity<ApiResult<Map<String, Object>>> test(@PathVariable String id,
+                                                               @Valid @RequestBody(required = false) IngestTestRequest body) {
         Optional<LogSource> s = store.get(id);
         if (s.isEmpty()) {
-            return ResponseEntity.status(404).body(Map.of("error", "source_not_found", "id", id));
+            return notFound(id);
         }
         LogSource src = s.get();
         String sample = body == null || body.sample() == null
@@ -98,7 +102,7 @@ public class IngestTaskController {
         out.put("sample", sample);
         out.put("pipeline", result);
         out.put("ok", Integer.parseInt(String.valueOf(result.getOrDefault("accepted", 0))) > 0);
-        return ResponseEntity.ok(out);
+        return ResponseEntity.ok(ApiResult.ok(out));
     }
 
     /** 造一条贴合该源类型的样例日志，让"测试"按钮开箱即用 */
@@ -112,10 +116,10 @@ public class IngestTaskController {
                 .formatted(collector, host);
     }
 
-    private ResponseEntity<?> toggle(String id, boolean enabled) {
+    private ResponseEntity<ApiResult<Map<String, Object>>> toggle(String id, boolean enabled) {
         Optional<LogSource> opt = store.get(id);
         if (opt.isEmpty()) {
-            return ResponseEntity.status(404).body(Map.of("error", "source_not_found", "id", id));
+            return notFound(id);
         }
         LogSource s = opt.get();
         LogSource updated = new LogSource(s.id(), s.name(), s.type(), s.format(), s.path(), s.address(),
@@ -127,7 +131,12 @@ public class IngestTaskController {
         out.put("id", id);
         out.put("enabled", enabled);
         out.put("task", toTask(updated));
-        return ResponseEntity.ok(out);
+        return ResponseEntity.ok(ApiResult.ok(out));
+    }
+
+    private static ResponseEntity<ApiResult<Map<String, Object>>> notFound(String id) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(ApiResult.fail(404, "source_not_found: " + id));
     }
 
     private Map<String, Object> toTask(LogSource s) {

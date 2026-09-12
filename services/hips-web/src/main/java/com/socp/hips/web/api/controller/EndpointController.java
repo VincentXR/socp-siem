@@ -18,6 +18,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 import com.socp.platform.auth.security.RequireRole;
+import com.socp.platform.error.api.ApiResult;
+import com.socp.platform.error.api.PageResponse;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.server.ResponseStatusException;
 import jakarta.validation.Valid;
 
 /**
@@ -29,46 +35,61 @@ public class EndpointController {
 
     private final EndpointStore store;
     private final EndpointEventStore events;
+    private final int maxListSize;
 
-    public EndpointController(EndpointStore store, EndpointEventStore events) {
+    public EndpointController(EndpointStore store, EndpointEventStore events,
+                              @Value("${socp.web.list-max-size:500}") int maxListSize) {
         this.store = store;
         this.events = events;
+        this.maxListSize = maxListSize;
     }
 
+    /** 端点列表：租户级分页，page 从 1 起，size 上限 socp.web.list-max-size（默认 500）。 */
+    @RequireRole({"admin", "analyst"})
     @GetMapping
-    public List<Endpoint> list() {
-        return store.list();
+    public ApiResult<PageResponse<Endpoint>> list(@RequestParam(defaultValue = "1") int page,
+                                                  @RequestParam(defaultValue = "500") int size) {
+        requireValidRange(page, size);
+        List<Endpoint> all = store.list();
+        int from = Math.min((page - 1) * size, all.size());
+        int to = Math.min(from + size, all.size());
+        return ApiResult.ok(PageResponse.of(all.subList(from, to), all.size(), page, size));
     }
 
     @RequireRole({"admin", "analyst"})
     @PostMapping
-    public Endpoint register(@Valid @RequestBody RegisterRequest req) {
-        return store.save(Endpoint.register(req.hostname(), req.ip(), req.os(), req.agentVersion()));
+    public ApiResult<Endpoint> register(@Valid @RequestBody RegisterRequest req) {
+        return ApiResult.ok(store.save(Endpoint.register(req.hostname(), req.ip(), req.os(), req.agentVersion())));
     }
 
     @RequireRole({"admin", "analyst"})
     @PostMapping("/{id}/heartbeat")
-    public Endpoint heartbeat(@PathVariable String id) {
-        return store.heartbeat(id);
+    public ApiResult<Endpoint> heartbeat(@PathVariable String id) {
+        return ApiResult.ok(store.heartbeat(id));
     }
 
     /** 接收 Agent/Falco 上报的运行时检测事件，暂存并刷新对应端点心跳。 */
     @RequireRole({"admin", "analyst"})
     @PostMapping("/events")
-    public Map<String, Object> ingestEvent(@Valid @RequestBody EndpointEventRequest request) {
+    public ApiResult<Map<String, Object>> ingestEvent(@Valid @RequestBody EndpointEventRequest request) {
         Map<String, Object> record = events.add(request.asMap());
-        return Map.of("accepted", true, "eventId", record.get("eventId"), "total", events.list().size());
+        return ApiResult.ok(Map.of("accepted", true, "eventId", record.get("eventId"), "total", events.list().size()));
     }
 
-    /** 最近收到的端点事件。 */
+    /** 最近收到的端点事件：租户级分页（page 从 1 起，size 上限 socp.web.list-max-size）。 */
     @GetMapping("/events")
-    public List<Map<String, Object>> events() {
-        return events.list();
+    public ApiResult<PageResponse<Map<String, Object>>> events(@RequestParam(defaultValue = "1") int page,
+                                                               @RequestParam(defaultValue = "500") int size) {
+        requireValidRange(page, size);
+        List<Map<String, Object>> all = events.list();
+        int from = Math.min((page - 1) * size, all.size());
+        int to = Math.min(from + size, all.size());
+        return ApiResult.ok(PageResponse.of(all.subList(from, to), all.size(), page, size));
     }
 
     /** 端点统计：在线数 / 事件数 / 事件类型分布。 */
     @GetMapping("/stats")
-    public Map<String, Object> stats() {
+    public ApiResult<Map<String, Object>> stats() {
         List<Endpoint> all = store.list();
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("total", all.size());
@@ -81,13 +102,19 @@ public class EndpointController {
         out.put("events", tenantEvents.size());
         out.put("eventByType", tenantEvents.stream().collect(Collectors.groupingBy(
                 e -> String.valueOf(e.getOrDefault("type", "UNKNOWN")), Collectors.counting())));
-        return out;
+        return ApiResult.ok(out);
     }
 
     @RequireRole({"admin", "analyst"})
     @DeleteMapping("/{id}")
-    public Map<String, Object> delete(@PathVariable String id) {
-        return Map.of("removed", store.delete(id));
+    public ApiResult<Map<String, Object>> delete(@PathVariable String id) {
+        return ApiResult.ok(Map.of("removed", store.delete(id)));
+    }
+
+    private void requireValidRange(int page, int size) {
+        if (page < 1 || size < 0 || size > maxListSize) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "分页参数非法：page 从 1 起，size 上限 " + maxListSize);
+        }
     }
 
 }

@@ -15,7 +15,13 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
+import com.socp.platform.error.api.ApiResult;
+import com.socp.platform.error.api.PageResponse;
 import jakarta.validation.Valid;
 
 import java.time.Instant;
@@ -39,16 +45,19 @@ public class AssetCollectionController {
     private final AssetStore store;
     private final SocpHttpClient http;
     private final ObjectMapper objectMapper;
+    private final int maxListSize;
 
-    public AssetCollectionController(AssetStore store, SocpHttpClient http, ObjectMapper objectMapper) {
+    public AssetCollectionController(AssetStore store, SocpHttpClient http, ObjectMapper objectMapper,
+                                     @Value("${socp.web.list-max-size:500}") int maxListSize) {
         this.store = store;
         this.http = http;
         this.objectMapper = objectMapper;
+        this.maxListSize = maxListSize;
     }
 
     @com.socp.platform.auth.security.RequireRole({"admin", "analyst"})
     @PostMapping("/collect")
-    public Map<String, Object> collect(@Valid @RequestBody AssetCollectionRequest input) {
+    public ApiResult<Map<String, Object>> collect(@Valid @RequestBody AssetCollectionRequest input) {
         Map<String, Object> source = new LinkedHashMap<>();
         source.put("name", input.name());
         source.put("type", input.type());
@@ -71,16 +80,28 @@ public class AssetCollectionController {
             log.warn("Asset collection event forwarding failed id={} reason={}",
                     event.get("id"), forward.failureReason());
         }
-        return Map.of(
+        return ApiResult.ok(Map.of(
                 "accepted", true,
                 "assetId", saved.id(),
                 "total", store.list().size(),
-                "forwarded", forward.ok());
+                "forwarded", forward.ok()));
     }
 
+    /** 已采集资产列表：租户级分页（page 从 1 起，size 上限 socp.web.list-max-size）。 */
     @GetMapping({"/collected", "/discovered"})
-    public List<Asset> collected() {
-        return store.list();
+    public ApiResult<PageResponse<Asset>> collected(@RequestParam(defaultValue = "1") int page,
+                                                    @RequestParam(defaultValue = "500") int size) {
+        requireValidRange(page, size);
+        List<Asset> all = store.list();
+        int from = Math.min((page - 1) * size, all.size());
+        int to = Math.min(from + size, all.size());
+        return ApiResult.ok(PageResponse.of(all.subList(from, to), all.size(), page, size));
+    }
+
+    private void requireValidRange(int page, int size) {
+        if (page < 1 || size < 0 || size > maxListSize) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "分页参数非法：page 从 1 起，size 上限 " + maxListSize);
+        }
     }
 
     private Map<String, Object> canonicalEvent(Map<String, Object> input) {

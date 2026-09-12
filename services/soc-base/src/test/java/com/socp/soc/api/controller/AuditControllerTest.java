@@ -53,10 +53,11 @@ class AuditControllerTest {
                         .header("Authorization", "Bearer test-token")
                         .header("X-Role", "analyst"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.total").value(1))
-                .andExpect(jsonPath("$.returned").value(1))
-                .andExpect(jsonPath("$.records[0].action").value("CREATE_IOC"))
-                .andExpect(jsonPath("$.records[0].result").value("SUCCESS"));
+                .andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.page").value(1))
+                .andExpect(jsonPath("$.data.size").value(50))
+                .andExpect(jsonPath("$.data.items[0].action").value("CREATE_IOC"))
+                .andExpect(jsonPath("$.data.items[0].result").value("SUCCESS"));
     }
 
     @Test
@@ -69,9 +70,9 @@ class AuditControllerTest {
         mvc.perform(get("/api/v1/audit/stats")
                         .header("Authorization", "Bearer test-token"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.total").value(2))
-                .andExpect(jsonPath("$.byAction.CREATE_IOC").value(1))
-                .andExpect(jsonPath("$.byAction.CREATE_ALARM").value(1))
-                .andExpect(jsonPath("$.byResult.SUCCESS").value(1));
+                .andExpect(jsonPath("$.data.total").value(2))
+                .andExpect(jsonPath("$.data.byAction.CREATE_IOC").value(1))
+                .andExpect(jsonPath("$.data.byAction.CREATE_ALARM").value(1))
+                .andExpect(jsonPath("$.data.byResult.SUCCESS").value(1));
     }
 }

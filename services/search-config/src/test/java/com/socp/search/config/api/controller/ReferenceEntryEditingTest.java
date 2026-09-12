@@ -17,9 +17,9 @@ class ReferenceEntryEditingTest {
         ReferenceSet set = ReferenceSet.of("review", "", List.of("alice", "bob"));
         TenantContext.runWith("tenant-a", () -> {
             store.add(set);
-            assertThat(controller.removeEntry(set.id(), "alice")).containsEntry("size", 1);
+            assertThat(controller.removeEntry(set.id(), "alice").data()).containsEntry("size", 1);
             assertThat(store.get(set.id()).entries()).containsExactly("bob");
-            assertThat(controller.removeEntry(set.id(), "alice")).containsEntry("size", 1);
+            assertThat(controller.removeEntry(set.id(), "alice").data()).containsEntry("size", 1);
         });
         TenantContext.runWith("tenant-b", () -> assertThatThrownBy(() -> controller.removeEntry(set.id(), "bob")).isInstanceOf(ResponseStatusException.class));
     }

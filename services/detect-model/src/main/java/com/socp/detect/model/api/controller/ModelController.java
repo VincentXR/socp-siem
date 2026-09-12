@@ -3,6 +3,8 @@ package com.socp.detect.model.api.controller;
 import com.socp.detect.model.api.request.AnalyzeRequest;
 import com.socp.detect.model.engine.AlertWindowAggregator;
 import com.socp.detect.model.service.AnalyzeService;
+import com.socp.platform.error.api.ApiResult;
+import com.socp.platform.error.api.PageResponse;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -11,6 +13,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import jakarta.validation.Valid;
 import com.socp.platform.auth.security.RequireRole;
+import com.socp.rule.model.Alert;
 
 import java.util.List;
 import java.util.Map;
@@ -41,31 +44,35 @@ public class ModelController {
     /** 接收原始告警做二次分析（HTTP 调试入口；生产主链走 Kafka，同一路径）。 */
     @RequireRole({"admin", "analyst"})
     @PostMapping("/analyze")
-    public Map<String, Object> analyze(@Valid @RequestBody AnalyzeRequest request) {
-        return analyzeService.analyze(request.asMap());
+    public ApiResult<Map<String, Object>> analyze(@Valid @RequestBody AnalyzeRequest request) {
+        return ApiResult.ok(analyzeService.analyze(request.asMap()));
     }
 
+    /** 已分析告警分页查询。page 为 1-based 共享分页契约，service 内部按 0-based Spring PageRequest 取页。 */
     @GetMapping("/analyzed")
-    public AnalyzeService.AnalyzedPage analyzed(
-            @RequestParam(defaultValue = "0") int page,
+    public ApiResult<PageResponse<Alert>> analyzed(
+            @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "50") int size) {
-        return analyzeService.analyzed(page, size);
+        int safePage = Math.max(1, page);
+        AnalyzeService.AnalyzedPage result = analyzeService.analyzed(safePage - 1, size);
+        return ApiResult.ok(PageResponse.of(result.items(), result.total(), safePage, result.size(),
+                result.totalPages()));
     }
 
     @GetMapping("/stats")
-    public Map<String, Object> stats() {
-        return analyzeService.stats();
+    public ApiResult<Map<String, Object>> stats() {
+        return ApiResult.ok(analyzeService.stats());
     }
 
     /** 5 分钟滑动窗口聚合：按规则/实体/级别命中数 + 分钟级趋势。 */
     @GetMapping("/window")
-    public Map<String, Object> window() {
-        return windowAggregator.snapshot();
+    public ApiResult<Map<String, Object>> window() {
+        return ApiResult.ok(windowAggregator.snapshot());
     }
 
     /** 分钟级趋势（最近 5 分钟命中数）。 */
     @GetMapping("/window/trend")
-    public List<Map<String, Object>> windowTrend() {
-        return windowAggregator.trend();
+    public ApiResult<List<Map<String, Object>>> windowTrend() {
+        return ApiResult.ok(windowAggregator.trend());
     }
 }

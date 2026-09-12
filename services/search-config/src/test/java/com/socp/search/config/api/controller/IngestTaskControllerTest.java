@@ -37,7 +37,7 @@ class IngestTaskControllerTest {
 
         IngestTaskController controller = new IngestTaskController(store, monitor, pipeline);
 
-        List<Map<String, Object>> tasks = controller.tasks();
+        List<Map<String, Object>> tasks = controller.tasks().data();
 
         assertThat(tasks).hasSize(4);
         assertThat(tasks.get(0)).containsEntry("target", "/var/log/auth.log");
@@ -59,7 +59,7 @@ class IngestTaskControllerTest {
         when(monitor.summary(List.of(enabled.collectorTag())))
                 .thenReturn(Map.of("accepted", 3L));
 
-        Map<String, Object> summary = new IngestTaskController(store, monitor, pipeline).summary();
+        Map<String, Object> summary = new IngestTaskController(store, monitor, pipeline).summary().data();
 
         assertThat(summary).containsEntry("accepted", 3L)
                 .containsEntry("sources", 2)
@@ -84,13 +84,13 @@ class IngestTaskControllerTest {
         var custom = controller.test(source.id(), new com.socp.search.config.api.request.IngestTestRequest("custom raw"));
 
         assertThat(started.getStatusCode().value()).isEqualTo(200);
-        assertThat(started.getBody()).asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+        assertThat(started.getBody().data()).asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
                 .containsEntry("enabled", true);
-        assertThat(stopped.getBody()).asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+        assertThat(stopped.getBody().data()).asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
                 .containsEntry("enabled", false);
-        assertThat(tested.getBody()).asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+        assertThat(tested.getBody().data()).asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
                 .containsEntry("ok", true);
-        assertThat(custom.getBody()).asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+        assertThat(custom.getBody().data()).asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
                 .containsEntry("sample", "custom raw");
         verify(store, org.mockito.Mockito.times(2)).save(any(LogSource.class));
         verify(pipeline).process("custom raw", source.collectorTag());

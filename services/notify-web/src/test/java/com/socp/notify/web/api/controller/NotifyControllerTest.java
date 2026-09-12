@@ -40,7 +40,7 @@ class NotifyControllerTest {
         List<Channel> expected = List.of(new Channel("CH-1", "Ops", "LOG", "local", true, ""));
         given(channels.list()).willReturn(expected);
 
-        assertSame(expected, controller().channels());
+        assertEquals(expected, controller().channels(1, 500).data().items());
         verify(channels).list();
     }
 
@@ -53,7 +53,7 @@ class NotifyControllerTest {
         ArgumentCaptor<Channel> captor = ArgumentCaptor.forClass(Channel.class);
         given(channels.add(any(Channel.class))).willReturn(saved);
 
-        Channel result = controller().create(request);
+        Channel result = controller().create(request).data();
 
         assertSame(saved, result);
         verify(channels).add(captor.capture());
@@ -69,7 +69,7 @@ class NotifyControllerTest {
         TenantContext.set("tenant-a");
         given(channels.get("missing")).willReturn(null);
 
-        assertEquals(Map.of("error", "not_found"), controller().toggle("missing"));
+        assertEquals(Map.of("error", "not_found"), controller().toggle("missing").data());
     }
 
     @Test
@@ -79,7 +79,7 @@ class NotifyControllerTest {
         given(channels.get("CH-1")).willReturn(existing);
         ArgumentCaptor<Channel> captor = ArgumentCaptor.forClass(Channel.class);
 
-        Map<String, Object> result = controller().toggle("CH-1");
+        Map<String, Object> result = controller().toggle("CH-1").data();
 
         verify(channels).add(captor.capture());
         Channel updated = captor.getValue();
@@ -92,7 +92,7 @@ class NotifyControllerTest {
         TenantContext.set("tenant-a");
         given(channels.delete("CH-1")).willReturn(true);
 
-        assertEquals(Map.of("removed", true, "id", "CH-1"), controller().delete("CH-1"));
+        assertEquals(Map.of("removed", true, "id", "CH-1"), controller().delete("CH-1").data());
     }
 
     @Test
@@ -106,7 +106,7 @@ class NotifyControllerTest {
         var response = controller().notify(request);
 
         assertEquals(HttpStatus.BAD_GATEWAY, response.getStatusCode());
-        assertSame(result, response.getBody());
+        assertSame(result, response.getBody().data());
     }
 
     @Test
@@ -122,11 +122,11 @@ class NotifyControllerTest {
         var response = controller().notify(request);
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
-        assertSame(log, controller().log());
+        assertEquals(log, controller().log(1, 500).data().items());
         verify(dispatcher).log();
     }
 
     private NotifyController controller() {
-        return new NotifyController(channels, dispatcher);
+        return new NotifyController(channels, dispatcher, 500);
     }
 }

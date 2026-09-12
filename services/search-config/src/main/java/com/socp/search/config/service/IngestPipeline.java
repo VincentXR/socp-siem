@@ -237,7 +237,8 @@ public class IngestPipeline {
         }
         if (call.body() == null || call.body().isBlank()) return 0;
         try {
-            return Math.max(0, MAPPER.readTree(call.body()).path("accepted").asInt(0));
+            // detect-web /ingest/bulk now wraps its payload in the ApiResult envelope.
+            return Math.max(0, MAPPER.readTree(call.body()).path("data").path("accepted").asInt(0));
         } catch (JsonProcessingException invalidResponse) {
             log.warn("Detection debug forwarding returned invalid JSON: {}",
                     invalidResponse.getOriginalMessage());

@@ -21,6 +21,10 @@ import java.util.Map;
 import java.util.stream.Collectors;
 import com.socp.platform.auth.security.RequireRole;
 import com.socp.platform.audit.api.AuditOperation;
+import com.socp.platform.error.api.ApiResult;
+import com.socp.platform.error.api.PageResponse;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.web.bind.annotation.RequestParam;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Size;
 
@@ -32,27 +36,37 @@ import jakarta.validation.constraints.Size;
 public class AssetController {
 
     private final AssetStore store;
+    private final int maxListSize;
 
-    public AssetController(AssetStore store) {
+    public AssetController(AssetStore store,
+                           @Value("${socp.web.list-max-size:500}") int maxListSize) {
         this.store = store;
+        this.maxListSize = maxListSize;
     }
 
+    /** 资产列表：租户级分页，page 从 1 起，size 上限 socp.web.list-max-size（默认 500）。 */
+    @RequireRole({"admin", "analyst"})
     @GetMapping
-    public List<Asset> list() {
-        return store.list();
+    public ApiResult<PageResponse<Asset>> list(@RequestParam(defaultValue = "1") int page,
+                                               @RequestParam(defaultValue = "500") int size) {
+        requireValidRange(page, size);
+        List<Asset> all = store.list();
+        int from = Math.min((page - 1) * size, all.size());
+        int to = Math.min(from + size, all.size());
+        return ApiResult.ok(PageResponse.of(all.subList(from, to), all.size(), page, size));
     }
 
     @RequireRole({"admin", "analyst"})
     @PostMapping
-    public Asset create(@Valid @RequestBody CreateAssetRequest req) {
-        return store.save(Asset.create(req.name(), req.type(), req.ip(), req.os(), req.owner(), req.criticality()));
+    public ApiResult<Asset> create(@Valid @RequestBody CreateAssetRequest req) {
+        return ApiResult.ok(store.save(Asset.create(req.name(), req.type(), req.ip(), req.os(), req.owner(), req.criticality())));
     }
 
     /** 批量导入资产：单条校验失败不会阻断同一批次的其他记录。 */
     @RequireRole({"admin", "analyst"})
     @AuditOperation(action = "IMPORT_ASSET", target = "asset")
     @PostMapping("/import")
-    public Map<String, Object> importAssets(@Valid @Size(max = 500) @RequestBody List<@Valid CreateAssetRequest> requests) {
+    public ApiResult<Map<String, Object>> importAssets(@Valid @Size(max = 500) @RequestBody List<@Valid CreateAssetRequest> requests) {
         List<String> errors = new java.util.ArrayList<>();
         int imported = 0;
         for (int index = 0; index < (requests == null ? 0 : requests.size()); index++) {
@@ -65,21 +79,21 @@ public class AssetController {
                     valueOr(req.os(), ""), valueOr(req.owner(), "import"), valueOr(req.criticality(), "HIGH")));
             imported++;
         }
-        return Map.of("imported", imported, "skipped", errors.size(), "errors", errors);
+        return ApiResult.ok(Map.of("imported", imported, "skipped", errors.size(), "errors", errors));
     }
 
     @RequireRole({"admin", "analyst"})
     @PutMapping("/{id}")
-    public Asset update(@PathVariable String id, @Valid @RequestBody CreateAssetRequest req) {
+    public ApiResult<Asset> update(@PathVariable String id, @Valid @RequestBody CreateAssetRequest req) {
         Asset existing = store.get(id);
         if (existing == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "资产不存在");
-        return store.save(new Asset(id, req.name(), req.type(), req.ip(), req.os(), req.owner(), req.criticality(), existing.createdAt()));
+        return ApiResult.ok(store.save(new Asset(id, req.name(), req.type(), req.ip(), req.os(), req.owner(), req.criticality(), existing.createdAt())));
     }
 
     /** 托管采集器经兼容入口上报新资产——按 name 去重，已存在则更新。 */
     @RequireRole({"admin", "analyst"})
     @PostMapping("/collect")
-    public Map<String, Object> collect(@Valid @RequestBody AssetCollectionRequest request) {
+    public ApiResult<Map<String, Object>> collect(@Valid @RequestBody AssetCollectionRequest request) {
         String name = valueOr(request.name(), "unknown");
         String type = valueOr(request.type(), "SERVER");
         String ip = valueOr(request.ip(), "");
@@ -87,25 +101,31 @@ public class AssetController {
         String owner = valueOr(request.owner(), "collect");
         String criticality = valueOr(request.criticality(), "HIGH");
         Asset saved = store.upsertByIp(Asset.create(name, type, ip, os, owner, criticality));
-        return Map.of("accepted", true, "assetId", saved.id(), "total", store.list().size());
+        return ApiResult.ok(Map.of("accepted", true, "assetId", saved.id(), "total", store.list().size()));
     }
 
     /** 资产统计：按类型/关键性/负责人分布。 */
     @GetMapping("/stats")
-    public Map<String, Object> stats() {
+    public ApiResult<Map<String, Object>> stats() {
         List<Asset> all = store.list();
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("total", all.size());
         out.put("byType", countBy(all, Asset::type));
         out.put("byCriticality", countBy(all, Asset::criticality));
         out.put("byOwner", countBy(all, Asset::owner));
-        return out;
+        return ApiResult.ok(out);
     }
 
     @RequireRole({"admin", "analyst"})
     @DeleteMapping("/{id}")
-    public Map<String, Object> delete(@PathVariable String id) {
-        return Map.of("removed", store.delete(id));
+    public ApiResult<Map<String, Object>> delete(@PathVariable String id) {
+        return ApiResult.ok(Map.of("removed", store.delete(id)));
+    }
+
+    private void requireValidRange(int page, int size) {
+        if (page < 1 || size < 0 || size > maxListSize) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "分页参数非法：page 从 1 起，size 上限 " + maxListSize);
+        }
     }
 
     private static Map<String, Object> countBy(List<Asset> all, java.util.function.Function<Asset, String> f) {

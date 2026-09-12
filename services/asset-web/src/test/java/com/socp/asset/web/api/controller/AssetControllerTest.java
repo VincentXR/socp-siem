@@ -46,17 +46,55 @@ class AssetControllerTest {
     private AssetStore store;
 
     @Test
-    void listReturnsAssets() throws Exception {
+    void listReturnsPagedEnvelope() throws Exception {
         given(store.list()).willReturn(List.of(
                 Asset.create("web01", "SERVER", "10.0.0.5", "Ubuntu 22.04", "infra", "HIGH")));
 
         mvc.perform(get("/api/v1/assets")
-                        .header(HttpHeaders.AUTHORIZATION, BEARER))
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(1))
-                .andExpect(jsonPath("$[0].name").value("web01"))
-                .andExpect(jsonPath("$[0].ip").value("10.0.0.5"))
-                .andExpect(jsonPath("$[0].criticality").value("HIGH"));
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.page").value(1))
+                .andExpect(jsonPath("$.data.size").value(500))
+                .andExpect(jsonPath("$.data.totalPages").value(1))
+                .andExpect(jsonPath("$.data.items[0].name").value("web01"))
+                .andExpect(jsonPath("$.data.items[0].ip").value("10.0.0.5"))
+                .andExpect(jsonPath("$.data.items[0].criticality").value("HIGH"));
+    }
+
+    @Test
+    void listRejectsSizeAboveConfiguredLimit() throws Exception {
+        mvc.perform(get("/api/v1/assets")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst")
+                        .param("page", "1")
+                        .param("size", "501"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void listPaginatesByExplicitPageAndSize() throws Exception {
+        java.time.Instant createdAt = java.time.Instant.now();
+        given(store.list()).willReturn(List.of(
+                new Asset("a-1", "one", "SERVER", "10.0.0.1", "", "sec", "HIGH", createdAt),
+                new Asset("a-2", "two", "SERVER", "10.0.0.2", "", "sec", "HIGH", createdAt),
+                new Asset("a-3", "three", "SERVER", "10.0.0.3", "", "sec", "HIGH", createdAt)));
+
+        mvc.perform(get("/api/v1/assets")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst")
+                        .param("page", "2")
+                        .param("size", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.total").value(3))
+                .andExpect(jsonPath("$.data.page").value(2))
+                .andExpect(jsonPath("$.data.size").value(2))
+                .andExpect(jsonPath("$.data.totalPages").value(2))
+                .andExpect(jsonPath("$.data.items[0].id").value("a-3"));
     }
 
     @Test
@@ -73,10 +111,10 @@ class AssetControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(body)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.name").value("kafka-2"))
-                .andExpect(jsonPath("$.type").value("MESSAGE"))
-                .andExpect(jsonPath("$.owner").value("infra"))
-                .andExpect(jsonPath("$.id").isNotEmpty());
+                .andExpect(jsonPath("$.data.name").value("kafka-2"))
+                .andExpect(jsonPath("$.data.type").value("MESSAGE"))
+                .andExpect(jsonPath("$.data.owner").value("infra"))
+                .andExpect(jsonPath("$.data.id").isNotEmpty());
 
         verify(store).save(any(Asset.class));
     }
@@ -94,9 +132,9 @@ class AssetControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(rows)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.imported").value(1))
-                .andExpect(jsonPath("$.skipped").value(1))
-                .andExpect(jsonPath("$.errors[0]").value(org.hamcrest.Matchers.containsString("缺少名称或 IP")));
+                .andExpect(jsonPath("$.data.imported").value(1))
+                .andExpect(jsonPath("$.data.skipped").value(1))
+                .andExpect(jsonPath("$.data.errors[0]").value(org.hamcrest.Matchers.containsString("缺少名称或 IP")));
 
         verify(store).save(any(Asset.class));
     }
@@ -110,13 +148,13 @@ class AssetControllerTest {
                         .header(HttpHeaders.AUTHORIZATION, BEARER)
                         .header("X-Role", "analyst"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.removed").value(true));
+                .andExpect(jsonPath("$.data.removed").value(true));
 
         mvc.perform(delete("/api/v1/assets/{id}", "ghost")
                         .header(HttpHeaders.AUTHORIZATION, BEARER)
                         .header("X-Role", "analyst"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.removed").value(false));
+                .andExpect(jsonPath("$.data.removed").value(false));
     }
 
     @Test
@@ -135,9 +173,9 @@ class AssetControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(body)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.id").value("asset-1"))
-                .andExpect(jsonPath("$.name").value("web-prod-01"))
-                .andExpect(jsonPath("$.criticality").value("CRITICAL"));
+                .andExpect(jsonPath("$.data.id").value("asset-1"))
+                .andExpect(jsonPath("$.data.name").value("web-prod-01"))
+                .andExpect(jsonPath("$.data.criticality").value("CRITICAL"));
 
         verify(store).save(any(Asset.class));
     }
@@ -152,10 +190,10 @@ class AssetControllerTest {
 
         mvc.perform(get("/api/v1/assets/stats").header(HttpHeaders.AUTHORIZATION, BEARER))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.total").value(3))
-                .andExpect(jsonPath("$.byType.UNKNOWN").value(1))
-                .andExpect(jsonPath("$.byType.SERVER").value(2))
-                .andExpect(jsonPath("$.byOwner.UNKNOWN").value(1))
-                .andExpect(jsonPath("$.byCriticality.UNKNOWN").value(2));
+                .andExpect(jsonPath("$.data.total").value(3))
+                .andExpect(jsonPath("$.data.byType.UNKNOWN").value(1))
+                .andExpect(jsonPath("$.data.byType.SERVER").value(2))
+                .andExpect(jsonPath("$.data.byOwner.UNKNOWN").value(1))
+                .andExpect(jsonPath("$.data.byCriticality.UNKNOWN").value(2));
     }
 }

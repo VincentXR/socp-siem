@@ -38,7 +38,7 @@ class MetadataEditingTest {
         when(categories.save(any())).thenAnswer(call -> call.getArgument(0));
         when(fields.save(any())).thenAnswer(call -> call.getArgument(0));
 
-        DataSourceType edited = controller.updateDataSourceType(type.id(), new DataSourceTypeRequest("syslog", "Updated", "", false));
+        DataSourceType edited = controller.updateDataSourceType(type.id(), new DataSourceTypeRequest("syslog", "Updated", "", false)).data();
         assertThat(edited.id()).isEqualTo(type.id());
         assertThat(edited.createdAt()).isEqualTo(type.createdAt());
         assertThat(edited.enabled()).isFalse();

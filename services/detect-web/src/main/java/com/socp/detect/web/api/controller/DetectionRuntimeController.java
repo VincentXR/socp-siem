@@ -8,6 +8,7 @@ import com.socp.detect.web.config.DetectRuntimeRole;
 import com.socp.detect.web.engine.AlertStreamHub;
 import com.socp.detect.web.service.DetectEngineService;
 import com.socp.platform.auth.security.RequireRole;
+import com.socp.platform.error.api.ApiResult;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.model.Alert;
 import jakarta.servlet.http.HttpServletResponse;
@@ -47,35 +48,36 @@ public class DetectionRuntimeController {
     }
 
     /** Local HTTP ingress for verification; production events normally arrive through Kafka. */
-    public ResponseEntity<DetectionIngestResponse> ingest(@Valid @RequestBody DetectionIngestRequest request) {
-        return ingest(request, null);
+    public DetectionIngestResponse ingest(@Valid @RequestBody DetectionIngestRequest request) {
+        return ingest(request, null).getBody().data();
     }
 
     @RequireRole({"admin", "analyst"})
     @PostMapping("/ingest")
-    public ResponseEntity<DetectionIngestResponse> ingest(@Valid @RequestBody DetectionIngestRequest request,
-                                                          @RequestHeader(value = "Idempotency-Key", required = false)
-                                                          String idempotencyKey) {
+    public ResponseEntity<ApiResult<DetectionIngestResponse>> ingest(
+            @Valid @RequestBody DetectionIngestRequest request,
+            @RequestHeader(value = "Idempotency-Key", required = false)
+            String idempotencyKey) {
         String fallback = normalizedIdempotencyKey(idempotencyKey);
         boolean accepted = engine.ingest(request.toSecurityEvent(TenantContext.require(), fallback));
         Object queueLoad = engine.stats().get("queueLoad");
         if (!accepted) {
             return ResponseEntity.status(503).header("Retry-After", "2")
-                    .body(new DetectionIngestResponse(false, queueLoad, "queue_full"));
+                    .body(ApiResult.of(503, "queue_full", new DetectionIngestResponse(false, queueLoad, "queue_full")));
         }
-        return ResponseEntity.ok(new DetectionIngestResponse(true, queueLoad, null));
+        return ResponseEntity.ok(ApiResult.ok(new DetectionIngestResponse(true, queueLoad, null)));
     }
 
     /** NDJSON batch ingress used by SEARCH forwarding. */
     public DetectionBulkIngestResponse ingestBulk(@RequestBody String body) {
-        return ingestBulk(body, null);
+        return ingestBulk(body, null).data();
     }
 
     @RequireRole({"admin", "analyst"})
     @PostMapping(value = "/ingest/bulk", consumes = {
             MediaType.APPLICATION_JSON_VALUE, "application/x-ndjson", MediaType.TEXT_PLAIN_VALUE
     })
-    public DetectionBulkIngestResponse ingestBulk(@RequestBody String body,
+    public ApiResult<DetectionBulkIngestResponse> ingestBulk(@RequestBody String body,
                                                   @RequestHeader(value = "Idempotency-Key", required = false)
                                                   String idempotencyKey) {
         if (body != null && body.length() > 16 * 1024 * 1024) {
@@ -112,12 +114,12 @@ public class DetectionRuntimeController {
                 }
             }
         }
-        return new DetectionBulkIngestResponse(accepted, rejected, engine.stats().get("queueLoad"));
+        return ApiResult.ok(new DetectionBulkIngestResponse(accepted, rejected, engine.stats().get("queueLoad")));
     }
 
     @GetMapping("/alerts")
-    public List<Alert> alerts() {
-        return engine.recentAlerts();
+    public ApiResult<List<Alert>> alerts() {
+        return ApiResult.ok(engine.recentAlerts());
     }
 
     /** Servlet SSE endpoint with a small heartbeat to keep intermediary proxies alive. */
@@ -147,8 +149,8 @@ public class DetectionRuntimeController {
     }
 
     @GetMapping("/stats")
-    public Map<String, Object> stats() {
-        return engine.stats();
+    public ApiResult<Map<String, Object>> stats() {
+        return ApiResult.ok(engine.stats());
     }
 
     private static String normalizedIdempotencyKey(String value) {

@@ -4,6 +4,7 @@ import com.socp.attack.web.api.request.TechniqueNoteRequest;
 import com.socp.attack.web.service.TechniqueNoteService;
 import com.socp.platform.auth.security.RequireRole;
 import com.socp.platform.audit.api.AuditOperation;
+import com.socp.platform.error.api.ApiResult;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -24,14 +25,14 @@ public class TechniqueNoteController {
     }
 
     @GetMapping
-    public Map<String, String> get(@PathVariable String id) {
-        return Map.of("note", notes.get(id));
+    public ApiResult<Map<String, String>> get(@PathVariable String id) {
+        return ApiResult.ok(Map.of("note", notes.get(id)));
     }
 
     @PutMapping
     @RequireRole({"admin", "analyst"})
     @AuditOperation(action = "UPDATE_ATTACK_NOTE", target = "attack")
-    public Map<String, String> put(@PathVariable String id, @Valid @RequestBody TechniqueNoteRequest request) {
-        return Map.of("note", notes.save(id, request.note()));
+    public ApiResult<Map<String, String>> put(@PathVariable String id, @Valid @RequestBody TechniqueNoteRequest request) {
+        return ApiResult.ok(Map.of("note", notes.save(id, request.note())));
     }
 }

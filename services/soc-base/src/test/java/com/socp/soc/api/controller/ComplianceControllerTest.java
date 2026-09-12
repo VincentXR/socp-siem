@@ -43,10 +43,10 @@ class ComplianceControllerTest {
                         .header(HttpHeaders.AUTHORIZATION, BEARER)
                         .header("X-Role", "viewer"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.frameworks.length()").value(5))
-                .andExpect(jsonPath("$.frameworks[0].name").value("PCI-DSS"))
-                .andExpect(jsonPath("$.frameworks[0].controls[0].id").value("PCI-10.2"))
-                .andExpect(jsonPath("$.frameworks[0].controls[0].ruleIds").isArray());
+                .andExpect(jsonPath("$.data.frameworks.length()").value(5))
+                .andExpect(jsonPath("$.data.frameworks[0].name").value("PCI-DSS"))
+                .andExpect(jsonPath("$.data.frameworks[0].controls[0].id").value("PCI-10.2"))
+                .andExpect(jsonPath("$.data.frameworks[0].controls[0].ruleIds").isArray());
     }
 
     @Test
@@ -61,14 +61,14 @@ class ComplianceControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.totalControls").value(TOTAL_CONTROLS))
-                .andExpect(jsonPath("$.coveredControls").value(10))
-                .andExpect(jsonPath("$.coverage").value(36))
-                .andExpect(jsonPath("$.byFramework.length()").value(5))
-                .andExpect(jsonPath("$.byFramework[0].framework").value("PCI-DSS"))
-                .andExpect(jsonPath("$.byFramework[0].coverage").value(43))
-                .andExpect(jsonPath("$.byFramework[0].controls[0].covered").value(true))
-                .andExpect(jsonPath("$.byFramework[0].controls[1].covered").value(false));
+                .andExpect(jsonPath("$.data.totalControls").value(TOTAL_CONTROLS))
+                .andExpect(jsonPath("$.data.coveredControls").value(10))
+                .andExpect(jsonPath("$.data.coverage").value(36))
+                .andExpect(jsonPath("$.data.byFramework.length()").value(5))
+                .andExpect(jsonPath("$.data.byFramework[0].framework").value("PCI-DSS"))
+                .andExpect(jsonPath("$.data.byFramework[0].coverage").value(43))
+                .andExpect(jsonPath("$.data.byFramework[0].controls[0].covered").value(true))
+                .andExpect(jsonPath("$.data.byFramework[0].controls[1].covered").value(false));
     }
 
     @Test
@@ -81,8 +81,8 @@ class ComplianceControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.totalControls").value(TOTAL_CONTROLS))
-                .andExpect(jsonPath("$.coveredControls").value(0))
-                .andExpect(jsonPath("$.coverage").value(0));
+                .andExpect(jsonPath("$.data.totalControls").value(TOTAL_CONTROLS))
+                .andExpect(jsonPath("$.data.coveredControls").value(0))
+                .andExpect(jsonPath("$.data.coverage").value(0));
     }
 }

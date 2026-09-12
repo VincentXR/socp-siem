@@ -20,8 +20,8 @@ class NotifyChannelEditingTest {
         when(channels.get("one")).thenReturn(original);
         when(channels.add(any())).thenAnswer(call -> call.getArgument(0));
         when(dispatcher.test(original)).thenReturn(Map.of("status", "logged"));
-        NotifyController controller = new NotifyController(channels, dispatcher);
-        Channel updated = controller.update("one", new ChannelCreateRequest("Edited", "LOG", "local", false, "note"));
+        NotifyController controller = new NotifyController(channels, dispatcher, 500);
+        Channel updated = controller.update("one", new ChannelCreateRequest("Edited", "LOG", "local", false, "note")).data();
         assertThat(updated.id()).isEqualTo("one");
         assertThat(updated.name()).isEqualTo("Edited");
         assertThat(controller.test("one").getStatusCode().value()).isEqualTo(200);

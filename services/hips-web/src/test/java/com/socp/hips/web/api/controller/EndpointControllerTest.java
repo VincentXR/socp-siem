@@ -48,18 +48,34 @@ class EndpointControllerTest {
     private EndpointEventStore events;
 
     @Test
-    void listReturnsRegisteredAgents() throws Exception {
+    void listReturnsPagedEnvelope() throws Exception {
         given(store.list()).willReturn(List.of(
                 Endpoint.register("web01", "10.0.0.5", "Ubuntu 22.04", "falco-0.39"),
                 Endpoint.register("web02", "10.0.0.6", "Ubuntu 22.04", "falco-0.39")));
 
         mvc.perform(get("/api/v1/endpoints")
-                        .header(HttpHeaders.AUTHORIZATION, BEARER))
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(2))
-                .andExpect(jsonPath("$[0].hostname").value("web01"))
-                .andExpect(jsonPath("$[0].status").value("ONLINE"))
-                .andExpect(jsonPath("$[0].agentVersion").value("falco-0.39"));
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.items.length()").value(2))
+                .andExpect(jsonPath("$.data.total").value(2))
+                .andExpect(jsonPath("$.data.page").value(1))
+                .andExpect(jsonPath("$.data.size").value(500))
+                .andExpect(jsonPath("$.data.totalPages").value(1))
+                .andExpect(jsonPath("$.data.items[0].hostname").value("web01"))
+                .andExpect(jsonPath("$.data.items[0].status").value("ONLINE"))
+                .andExpect(jsonPath("$.data.items[0].agentVersion").value("falco-0.39"));
+    }
+
+    @Test
+    void listRejectsSizeAboveConfiguredLimit() throws Exception {
+        mvc.perform(get("/api/v1/endpoints")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst")
+                        .param("page", "1")
+                        .param("size", "501"))
+                .andExpect(status().isBadRequest());
     }
 
     @Test
@@ -75,21 +91,21 @@ class EndpointControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(body)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.hostname").value("app01"))
-                .andExpect(jsonPath("$.agentVersion").value("falco-0.40"))
-                .andExpect(jsonPath("$.status").value("ONLINE"))
-                .andExpect(jsonPath("$.id").isNotEmpty());
+                .andExpect(jsonPath("$.data.hostname").value("app01"))
+                .andExpect(jsonPath("$.data.agentVersion").value("falco-0.40"))
+                .andExpect(jsonPath("$.data.status").value("ONLINE"))
+                .andExpect(jsonPath("$.data.id").isNotEmpty());
     }
 
     @Test
-    void heartbeatOnUnknownEndpointYieldsEmptyBody() throws Exception {
+    void heartbeatOnUnknownEndpointYieldsEmptyData() throws Exception {
         given(store.heartbeat("ghost")).willReturn(null);
 
         mvc.perform(post("/api/v1/endpoints/{id}/heartbeat", "ghost")
                         .header(HttpHeaders.AUTHORIZATION, BEARER)
                         .header("X-Role", "analyst"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$").doesNotExist());
+                .andExpect(jsonPath("$.data").doesNotExist());
     }
 
     @Test
@@ -100,6 +116,6 @@ class EndpointControllerTest {
                         .header(HttpHeaders.AUTHORIZATION, BEARER)
                         .header("X-Role", "analyst"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.removed").value(true));
+                .andExpect(jsonPath("$.data.removed").value(true));
     }
 }
