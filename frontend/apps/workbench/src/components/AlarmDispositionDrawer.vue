@@ -77,6 +77,13 @@ const assigneeOptions = computed(() => {
   if (disposition.value?.assignee) values.add(disposition.value.assignee)
   return [...values].filter(Boolean)
 })
+function statusLabel(status: string): string {
+  const value = String(status || '')
+  if (!value) return t('time.notAvailable')
+  const key = 'statuses.' + value
+  const translated = t(key)
+  return translated === key ? value : translated
+}
 
 async function loadDetails(alarm: Alarm) {
   const token = ++loadToken
@@ -242,7 +249,7 @@ function openEvidenceSearch() {
       <el-divider content-position="left">{{ t('drawer.relatedCase') }}</el-divider>
       <el-card v-if="relatedCase" shadow="never" style="margin-bottom:10px">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-          <div><div style="font-weight:600">{{ relatedCase.title }}</div><div style="font-size:12px;color:var(--ns-text-3);margin-top:2px">{{ relatedCase.id }} · {{ relatedCase.status }} · {{ relatedCase.entity }} · {{ relatedCase.alarmIds.length }} alarms</div></div>
+          <div><div style="font-weight:600">{{ relatedCase.title }}</div><div style="font-size:12px;color:var(--ns-text-3);margin-top:2px">{{ relatedCase.id }} · {{ statusLabel(relatedCase.status) }} · {{ relatedCase.entity }} · {{ t('drawer.alarmCount', { count: relatedCase.alarmIds.length }) }}</div></div>
           <el-button link type="primary" size="small" @click="drawerVisible = false; props.goCase(relatedCase.id)">{{ t('drawer.goToCase') }}</el-button>
         </div>
       </el-card>

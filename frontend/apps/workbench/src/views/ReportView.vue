@@ -39,6 +39,13 @@ const chartLine = shallowRef<ECharts>()
 const barEl = ref<HTMLElement>()
 const lineEl = ref<HTMLElement>()
 let renderToken = 0
+const severityKeys = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'] as const
+
+function severityLabel(severity: string): string {
+  const key = 'severities.' + severity
+  const translated = t(key)
+  return translated === key ? severity : translated
+}
 
 function tc(light: string, dark: string): string { return props.theme === 'dark' ? dark : light }
 
@@ -64,9 +71,9 @@ async function renderCharts() {
     chartBar.value = echarts.init(barEl.value, 'socp')
     chartBar.value.setOption({
       title: { text: t('report.alarmSeverityDistribution'), textStyle: { fontSize: 14, color: tc('#1f2328', '#e6edf3') } }, tooltip: {},
-      xAxis: { type: 'category', data: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'] }, yAxis: { type: 'value' },
-      series: [{ type: 'bar', data: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].map(k => report.value?.bySeverity[k] ?? 0),
-        itemStyle: { color: (p: { dataIndex: number }) => sevColor(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'][p.dataIndex]) } }],
+      xAxis: { type: 'category', data: severityKeys.map(severityLabel) }, yAxis: { type: 'value' },
+      series: [{ type: 'bar', data: severityKeys.map(k => report.value?.bySeverity[k] ?? 0),
+        itemStyle: { color: (p: { dataIndex: number }) => sevColor(severityKeys[p.dataIndex]) } }],
     })
   }
   if (lineEl.value && trend.value) {
@@ -152,9 +159,9 @@ onUnmounted(() => {
       :description="report.degradationReason || t('report.degradedDescription')" show-icon :closable="false" style="margin-bottom:12px" />
     <el-row :gutter="12" style="margin-bottom:14px" v-if="report">
       <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ report.total }}</div><div class="label">{{ t('report.todayAlarms') }}</div></div></el-card></el-col>
-      <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-danger)">{{ report.bySeverity.CRITICAL ?? 0 }}</div><div class="label">CRITICAL</div></div></el-card></el-col>
-      <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-danger)">{{ report.bySeverity.HIGH ?? 0 }}</div><div class="label">HIGH</div></div></el-card></el-col>
-      <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-warning)">{{ report.bySeverity.MEDIUM ?? 0 }}</div><div class="label">MEDIUM</div></div></el-card></el-col>
+      <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-danger)">{{ report.bySeverity.CRITICAL ?? 0 }}</div><div class="label">{{ severityLabel('CRITICAL') }}</div></div></el-card></el-col>
+      <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-danger)">{{ report.bySeverity.HIGH ?? 0 }}</div><div class="label">{{ severityLabel('HIGH') }}</div></div></el-card></el-col>
+      <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-warning)">{{ report.bySeverity.MEDIUM ?? 0 }}</div><div class="label">{{ severityLabel('MEDIUM') }}</div></div></el-card></el-col>
     </el-row>
     <el-row :gutter="12">
       <el-col :span="12"><el-card shadow="never"><div ref="barEl" style="height:300px" /></el-card></el-col>

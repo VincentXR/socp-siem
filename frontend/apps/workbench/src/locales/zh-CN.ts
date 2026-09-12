@@ -309,6 +309,7 @@ export const zhCN = {
     adjustFiltersHint: '调整筛选条件后重试，或等待新的告警进入系统。',
   },
   drawer: {
+    alarmCount: '{count} 条告警',
     title: '告警处置',
     ruleId: '规则 ID',
     mitre: 'ATT&CK',
@@ -630,6 +631,7 @@ export const zhCN = {
     targetPlaceholder: 'Webhook URL / 邮箱',
   },
   detect: {
+    ownerPlaceholder: '从人员目录选择负责人',
     noConditions: '暂无条件，请添加字段比较。',
     disableBeforeDelete: '请先停用规则再删除；已归档或有引用的规则应保留。',
     workspaceDescription: '在同一工作区完成规则配置、隔离测试和生命周期管理。',

@@ -311,6 +311,7 @@ export const enUS: LocaleMessages = {
     adjustFiltersHint: 'Try adjusting filter conditions or wait for new incoming events.',
   },
   drawer: {
+    alarmCount: '{count} alerts',
     title: 'Alarm Triage',
     ruleId: 'Rule ID',
     mitre: 'ATT&CK',
@@ -632,6 +633,7 @@ export const enUS: LocaleMessages = {
     targetPlaceholder: 'Webhook URL / Email',
   },
   detect: {
+    ownerPlaceholder: 'Select an owner from the operator directory',
     workspaceDescription: 'Configure rules, run isolated tests, and manage the lifecycle in one workspace.',
     readOnly: 'This role can view rules and test results, but rule changes and lifecycle actions require analyst or administrator permission.',
     queueLoad: 'Detection queue load',
