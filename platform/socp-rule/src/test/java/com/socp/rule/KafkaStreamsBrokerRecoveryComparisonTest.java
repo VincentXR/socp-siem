@@ -8,6 +8,7 @@ import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.ConsumerGroupState;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.kafka.streams.KafkaStreams;
@@ -33,7 +34,9 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -77,6 +80,7 @@ class KafkaStreamsBrokerRecoveryComparisonTest {
         } finally {
             first.close(Duration.ofSeconds(20));
         }
+        awaitConsumerGroupQuiesced(applicationId);
 
         KafkaStreams second = start(topology, properties(applicationId,
                 stateDirectory.resolve("second")));
@@ -92,6 +96,42 @@ class KafkaStreamsBrokerRecoveryComparisonTest {
         } finally {
             second.close(Duration.ofSeconds(20));
         }
+    }
+
+    /**
+     * Closing Kafka Streams finishes the local shutdown before the broker has
+     * necessarily completed the consumer-group transition. Waiting for the
+     * group to become empty avoids a restart racing the broker's rebalance,
+     * which otherwise leaves the second process in REBALANCING on CI brokers.
+     */
+    private static void awaitConsumerGroupQuiesced(String groupId) throws Exception {
+        long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+        int emptyObservations = 0;
+        try (AdminClient admin = AdminClient.create(Map.of(
+                AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers()))) {
+            while (System.nanoTime() < deadline) {
+                try {
+                    boolean listed = admin.listConsumerGroups().all()
+                            .get(5, TimeUnit.SECONDS).stream()
+                            .anyMatch(group -> groupId.equals(group.groupId()));
+                    if (!listed) return;
+
+                    var description = admin.describeConsumerGroups(List.of(groupId)).all()
+                            .get(5, TimeUnit.SECONDS).get(groupId);
+                    if (description != null
+                            && (description.state() == ConsumerGroupState.EMPTY
+                            || description.state() == ConsumerGroupState.DEAD)) {
+                        if (++emptyObservations >= 2) return;
+                    } else {
+                        emptyObservations = 0;
+                    }
+                } catch (ExecutionException | TimeoutException ignored) {
+                    emptyObservations = 0;
+                }
+                Thread.sleep(250);
+            }
+        }
+        fail("timed out waiting for Kafka consumer group to quiesce: " + groupId);
     }
 
     private void createTopics(String... topics) throws Exception {
