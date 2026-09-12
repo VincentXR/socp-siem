@@ -169,6 +169,9 @@ class KafkaStreamsBrokerRecoveryComparisonTest {
         properties.put(StreamsConfig.REPLICATION_FACTOR_CONFIG, 1);
         properties.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, 100);
         properties.put(StreamsConfig.consumerPrefix(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG), "earliest");
+        // Keep broker-side group cleanup bounded when a close races a metadata
+        // rebalance; the CI broker otherwise retains the member for 45 seconds.
+        properties.put(StreamsConfig.consumerPrefix(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG), 10_000);
         return properties;
     }
 
