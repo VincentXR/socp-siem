@@ -101,16 +101,8 @@ public final class BaselineRule extends AbstractRule implements StatefulRule {
             // replay and multi-partition delivery deterministic.
             if (st.bucketIdx != Long.MIN_VALUE && idx < st.bucketIdx) return;
             if (idx != st.bucketIdx) {
-                // Fill skipped buckets with zero counts before opening the
-                // current bucket, so a long quiet period remains part of the
-                // baseline instead of collapsing into one jump.
                 if (st.bucketIdx != Long.MIN_VALUE) {
-                    while (st.bucketIdx < idx) {
-                        st.history.addLast(st.count);
-                        while (st.history.size() > baselineWindows) st.history.pollFirst();
-                        st.bucketIdx++;
-                        st.count = 0;
-                    }
+                    advanceBuckets(st, idx);
                 } else {
                     st.bucketIdx = idx;
                 }
@@ -142,6 +134,34 @@ public final class BaselineRule extends AbstractRule implements StatefulRule {
             emit(new Alert(id, name, severity, title, msg, key, new ArrayList<>(st.evidence)));
             st.alerted = true;
         }
+    }
+
+    /**
+     * Advance to {@code targetIdx} in O(baselineWindows), regardless of the
+     * event-time gap. Once the gap covers the whole history window the previous
+     * bucket has aged out, so materialising every skipped zero bucket is both
+     * unnecessary and dangerous for malformed/far-future timestamps.
+     */
+    private void advanceBuckets(State st, long targetIdx) {
+        long gap;
+        try {
+            gap = Math.subtractExact(targetIdx, st.bucketIdx);
+        } catch (ArithmeticException overflow) {
+            gap = Long.MAX_VALUE;
+        }
+
+        if (gap >= baselineWindows) {
+            st.history.clear();
+            for (int i = 0; i < baselineWindows; i++) st.history.addLast(0);
+            st.bucketIdx = targetIdx;
+            return;
+        }
+
+        for (long i = 0; i < gap; i++) {
+            st.history.addLast(i == 0 ? st.count : 0);
+            while (st.history.size() > baselineWindows) st.history.pollFirst();
+        }
+        st.bucketIdx = targetIdx;
     }
 
     private static double mean(ArrayDeque<Integer> xs) {
