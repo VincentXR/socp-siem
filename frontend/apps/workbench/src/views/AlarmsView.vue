@@ -15,7 +15,7 @@ import ElMessage from 'element-plus/es/components/message/index.mjs'
 import ElPagination from 'element-plus/es/components/pagination/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
-import { ref, watch } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AlarmDispositionDrawer from '../components/AlarmDispositionDrawer.vue'
 import EmptyState from '../components/EmptyState.vue'
@@ -23,7 +23,7 @@ import PageHeader from '../components/PageHeader.vue'
 import SevBadge from '../components/SevBadge.vue'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { relTime } from '../lib/ui'
-import { SEVERITIES, type Alarm } from '../api'
+import { listRules, SEVERITIES, type Alarm, type RuleSpec } from '../api'
 import { batchUpdateAlarmDisposition } from '../api/alarms'
 import { useI18n } from '../composables/useI18n'
 
@@ -64,10 +64,25 @@ const batchBusy = ref(false)
 const batchError = ref('')
 const exporting = ref('')
 const exportError = ref('')
+const ruleOptions = ref<RuleSpec[]>([])
+const ruleCatalogLoading = ref(false)
+const ruleCatalogError = ref('')
 const route = useRoute()
 const router = useRouter()
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('alarms')
 const DISP_STATUSES = ['OPEN', 'INVESTIGATING', 'RESOLVED', 'CLOSED']
+
+async function loadRuleOptions(): Promise<void> {
+  ruleCatalogLoading.value = true
+  ruleCatalogError.value = ''
+  try {
+    ruleOptions.value = await listRules()
+  } catch (error) {
+    ruleCatalogError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    ruleCatalogLoading.value = false
+  }
+}
 
 function openAlarm(alarm: Alarm) {
   currentAlarm.value = alarm
@@ -135,6 +150,8 @@ watch(drawerVisible, visible => {
   }
 })
 
+onMounted(() => { void loadRuleOptions() })
+
 async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void>): Promise<void> {
   if (exporting.value) return
   exporting.value = format
@@ -151,7 +168,12 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
     <div class="alarm-toolbar">
       <div class="alarm-filter-controls">
         <el-input v-model="keyword" class="alarm-keyword-input" :placeholder="t('alarms.keywordPlaceholder')" clearable style="width:240px" @keyup.enter="props.onSearch" @clear="props.onSearch" />
-        <el-input v-model="rule" class="alarm-rule-input" :placeholder="t('alarms.ruleFilter')" clearable style="width:170px" @keyup.enter="props.onSearch" @clear="props.onSearch" />
+        <el-select v-model="rule" class="alarm-rule-input" filterable clearable :loading="ruleCatalogLoading" :placeholder="t('alarms.ruleFilter')" style="width:210px" @change="props.onSearch">
+          <el-option v-if="rule && !ruleOptions.some(item => item.id === rule)" :label="rule" :value="rule" />
+          <el-option v-for="item in ruleOptions" :key="item.id" :label="item.name" :value="item.id">
+            <div class="alarm-rule-option"><b>{{ item.name }}</b><small>{{ item.id }}</small></div>
+          </el-option>
+        </el-select>
         <el-select v-model="severity" :placeholder="t('alarms.severityFilter')" clearable style="width:140px" @change="props.onSearch">
           <el-option v-for="item in SEVERITIES" :key="item" :label="t('severities.' + item) || item" :value="item" />
         </el-select>
@@ -159,6 +181,7 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
           <el-option v-for="item in DISP_STATUSES" :key="item" :label="t('statuses.' + item) || item" :value="item" />
         </el-select>
         <el-button size="small" @click="props.onSearch">{{ t('common.search') }}</el-button>
+        <small v-if="ruleCatalogError" class="alarm-catalog-hint" :title="ruleCatalogError">{{ t('alarms.ruleCatalogUnavailable') }}</small>
       </div>
       <div class="alarm-toolbar-actions">
         <span class="toolbar-count">{{ t('common.total', { total: props.alarmPageData.total }) }}</span>
