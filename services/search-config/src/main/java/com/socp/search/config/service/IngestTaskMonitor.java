@@ -2,6 +2,7 @@ package com.socp.search.config.service;
 
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.search.config.config.IngestRuntimeProperties;
+import com.socp.search.config.config.SearchRuntimeRole;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -24,6 +25,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * 便于判断"是彻底断流还是只是变慢"。
  */
 @Component
+@SearchRuntimeRole(SearchRuntimeRole.Role.API)
 public class IngestTaskMonitor {
 
     /** 秒级桶保留时长 */

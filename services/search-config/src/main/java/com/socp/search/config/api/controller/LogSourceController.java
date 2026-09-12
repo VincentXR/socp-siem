@@ -48,6 +48,8 @@ import com.socp.platform.auth.security.RequireRole;
  *   POST   /api/v1/ingest             接收 Vector 投递的 NDJSON（解析/落 OpenSearch 为后续步骤）
  */
 @RestController
+@com.socp.search.config.config.SearchRuntimeRole(
+        com.socp.search.config.config.SearchRuntimeRole.Role.API)
 @RequestMapping("/api/v1")
 public class LogSourceController {
 

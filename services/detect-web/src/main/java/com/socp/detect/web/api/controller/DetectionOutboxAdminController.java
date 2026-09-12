@@ -2,6 +2,7 @@ package com.socp.detect.web.api.controller;
 
 import com.socp.detect.web.service.DetectionOutboxAdminService;
 import com.socp.detect.web.api.request.OutboxDiscardRequest;
+import com.socp.detect.web.config.DetectRuntimeRole;
 import com.socp.platform.audit.api.AuditOperation;
 import com.socp.platform.auth.security.RequireRole;
 import com.socp.platform.data.outbox.DeadOutboxRecord;
@@ -19,6 +20,7 @@ import java.util.List;
 import jakarta.validation.Valid;
 
 @RestController
+@DetectRuntimeRole(DetectRuntimeRole.Role.API)
 @RequestMapping("/api/admin/outbox")
 public class DetectionOutboxAdminController {
 

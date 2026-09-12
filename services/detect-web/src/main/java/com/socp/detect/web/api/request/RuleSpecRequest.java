@@ -24,7 +24,9 @@ public record RuleSpecRequest(
         Boolean enabled,
         @Size(max = 64) String window,
         @Size(max = 128) String keyField,
+        @Size(max = 128) String groupBy,
         @Size(max = 128) String routingField,
+        @Valid LateEventPolicyRequest lateEventPolicy,
         @Positive Integer threshold,
         @Size(max = 128) String valueField,
         @Positive Integer warmup,
@@ -58,7 +60,14 @@ public record RuleSpecRequest(
         Map<String, Object> out = new LinkedHashMap<>(extensions);
         put(out, "id", id); put(out, "name", name); put(out, "type", type); put(out, "severity", severity);
         put(out, "message", message); put(out, "enabled", enabled); put(out, "window", window);
-        put(out, "keyField", keyField); put(out, "routingField", routingField); put(out, "threshold", threshold);
+        put(out, "keyField", keyField); put(out, "groupBy", groupBy); put(out, "routingField", routingField);
+        if (lateEventPolicy != null) {
+            Map<String, Object> policy = new LinkedHashMap<>(lateEventPolicy.extensions());
+            put(policy, "allowedLateness", lateEventPolicy.allowedLateness());
+            put(policy, "handling", lateEventPolicy.handling());
+            out.put("lateEventPolicy", policy);
+        }
+        put(out, "threshold", threshold);
         put(out, "valueField", valueField); put(out, "warmup", warmup); put(out, "baselineWindows", baselineWindows);
         put(out, "sigma", sigma); put(out, "minCount", minCount); put(out, "mitre", mitre);
         put(out, "version", version); put(out, "status", status); put(out, "owner", owner);
@@ -81,6 +90,16 @@ public record RuleSpecRequest(
 
     private static void put(Map<String, Object> out, String key, Object value) {
         if (value != null) out.put(key, value);
+    }
+
+    public record LateEventPolicyRequest(
+            @Size(max = 32) String allowedLateness,
+            @Pattern(regexp = "(?i)DROP|ACCEPT") @Size(max = 16) String handling,
+            @JsonIgnore @Size(max = 64) Map<String, Object> extensions) {
+        public LateEventPolicyRequest { extensions = new LinkedHashMap<>(); }
+
+        @JsonAnySetter
+        public void preserveExtension(String key, Object value) { extensions.put(key, value); }
     }
 
     public record AlertTemplateRequest(

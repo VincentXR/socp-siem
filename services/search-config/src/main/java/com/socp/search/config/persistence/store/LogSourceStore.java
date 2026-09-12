@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.search.config.domain.LogSource;
 import com.socp.search.config.domain.ParseFormat;
 import com.socp.search.config.domain.SourceType;
+import com.socp.search.config.config.SearchRuntimeRole;
 import com.socp.platform.tenant.context.TenantContext;
 import org.springframework.stereotype.Component;
 
@@ -23,6 +24,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * 对外公共 API（save/get/list/enabled/delete）保持不变，渲染器与控制器无需改动。
  */
 @Component
+@SearchRuntimeRole(SearchRuntimeRole.Role.API)
 public class LogSourceStore {
 
     private final LogSourceRepository repo;

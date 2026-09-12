@@ -15,6 +15,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class RuleChangePublisherTest {
@@ -77,5 +78,16 @@ class RuleChangePublisherTest {
 
         verify(repository, org.mockito.Mockito.times(3))
                 .findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(eq("PENDING"), any());
+    }
+
+    @Test
+    void apiRoleDoesNotDrainRuleChangeOutboxToKafka() {
+        RuleChangeOutboxRepository repository = mock(RuleChangeOutboxRepository.class);
+        RuleChangePublisher publisher = new RuleChangePublisher(repository);
+        org.springframework.test.util.ReflectionTestUtils.setField(publisher, "runtimeRole", "api");
+
+        publisher.flush();
+
+        verifyNoInteractions(repository);
     }
 }

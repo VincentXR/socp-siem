@@ -75,6 +75,26 @@ class AlarmPayloadCodecTest {
     }
 
     @Test
+    void preservesTheRawPayloadFreeDetectionResultSummary() throws Exception {
+        Alarm alarm = new Alarm("R-1", "Brute Force", Severity.HIGH,
+                "failed login", "host-1");
+        alarm.setId("alarm-result-1");
+        alarm.setTenantId("tenant-a");
+        alarm.setDetectionResultJson("{\"inputEventId\":\"event-1\","
+                + "\"inputPosition\":{\"topic\":\"socp-events\",\"partition\":2,\"offset\":9},"
+                + "\"ruleVersions\":{\"R-1\":\"v3\"},"
+                + "\"suppression\":{\"policy\":\"NONE\"}}");
+
+        Map<String, Object> values = AlarmPayloadCodec.read(AlarmPayloadCodec.write(alarm, List.of()));
+        Alarm decoded = AlarmPayloadCodec.toAlarm(values);
+
+        assertThat(values).containsKey("detectionResult");
+        assertThat(decoded.getDetectionResult()).containsEntry("inputEventId", "event-1");
+        assertThat(decoded.getDetectionResult()).containsKey("ruleVersions");
+        assertThat(decoded.getDetectionResultJson()).contains("socp-events");
+    }
+
+    @Test
     void rejectsMalformedPayloadAndInvalidTenantIdentity() {
         assertThatThrownBy(() -> AlarmPayloadCodec.read("not-json"))
                 .isInstanceOf(com.fasterxml.jackson.core.JsonProcessingException.class);

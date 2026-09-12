@@ -15,6 +15,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.repository.query.FluentQuery;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -53,6 +54,7 @@ class SplEngineTest {
         @Override public long count() { return 0; }
         @Override public long countByTenantId(String tenantId) { return 0; }
         @Override public List<SearchEventEntity> findTop20000ByTenantIdOrderByTimestampDesc(String tenantId) { return List.of(); }
+        @Override public List<SearchEventEntity> findByTenantIdAndEventIdIn(String tenantId, Collection<String> eventIds) { return List.of(); }
         @Override public void deleteById(String s) { }
         @Override public void delete(SearchEventEntity e) { }
         @Override public void deleteAllById(Iterable<? extends String> ids) { }

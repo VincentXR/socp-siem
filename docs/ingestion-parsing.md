@@ -14,11 +14,34 @@ Vector transform
   -> ingestion outbox -> Detection / OpenSearch
 ```
 
+## Identity and retry contract
+
+The ingest endpoint accepts `Idempotency-Key` for clients that cannot attach an
+event ID. The server first trusts a producer `eventId`/`event.id`, then a stable
+collector position such as Kafka topic/partition/offset, file path/offset, or
+batch/line. The request key is the next fallback and is scoped by tenant,
+collector, line number, and payload fingerprint. A plain body hash is never used
+as the event identity, so two genuine identical log lines remain distinct.
+
+Events and their Kafka publication intents are committed in one database
+transaction. The tenant-local `(tenant_id, event_id)` constraints make a retry
+an idempotent acknowledgement. The response reports `created`, `duplicates`,
+and `acknowledged`; reusing an identity with different canonical content is a
+HTTP 409 conflict. A persistence error is HTTP 503 and means only the current
+uncommitted 200-event transaction should be retried.
+
 The rendered Vector envelope contains a stable `source_id`. The request
 credential still determines the tenant and trusted collector identity; body
 metadata is only used to find the source inside that tenant. The server uses
 the persisted `LogSource.parseRuleIds`, so changing a body field cannot select
 another tenant's rules.
+
+Malformed or over-budget event data is counted as a per-line parse rejection.
+Failure while reading the tenant-scoped source, parsing-rule, or reference-set
+configuration is a dependency failure instead: the API returns HTTP 503 and
+does not acknowledge the affected uncommitted batch. This distinction prevents
+an outage in shared configuration data from being reported as successful ingest
+with silently skipped events.
 
 ## Rule model
 

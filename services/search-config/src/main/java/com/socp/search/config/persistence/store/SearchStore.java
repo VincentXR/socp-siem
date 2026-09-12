@@ -3,10 +3,12 @@ package com.socp.search.config.persistence.store;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.search.config.config.SearchCacheProperties;
+import com.socp.search.config.config.SearchRuntimeRole;
 import com.socp.search.config.domain.SearchEvent;
 import com.socp.search.config.infrastructure.opensearch.OsEventWriter;
 import com.socp.search.config.persistence.entity.SearchEventEntity;
 import com.socp.search.config.persistence.repository.SearchEventRepository;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -25,10 +27,10 @@ import com.socp.platform.tenant.context.TenantContext;
  * 内存中仅保留最近的有界窗口供 SPL 引擎快速检索，写入同时落库。
  */
 @Component
+@SearchRuntimeRole(SearchRuntimeRole.Role.API)
 public class SearchStore {
 
     private final SearchEventRepository repo;
-    private final OsEventWriter osWriter;
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final int CAP = 20000;
 
@@ -37,15 +39,19 @@ public class SearchStore {
     private final long tenantBufferIdleTtlMs;
     private final int maxTenantBuffers;
 
-    public SearchStore(SearchEventRepository repo, OsEventWriter osWriter) {
-        this(repo, osWriter, new SearchCacheProperties());
+    /** Source-compatible constructor retained for direct Java integrations. */
+    public SearchStore(SearchEventRepository repo, OsEventWriter ignoredWriter) {
+        this(repo, new SearchCacheProperties());
     }
 
     @Autowired
-    public SearchStore(SearchEventRepository repo, OsEventWriter osWriter,
+    public SearchStore(SearchEventRepository repo, ObjectProvider<OsEventWriter> ignoredWriter,
                        SearchCacheProperties properties) {
+        this(repo, properties);
+    }
+
+    private SearchStore(SearchEventRepository repo, SearchCacheProperties properties) {
         this.repo = repo;
-        this.osWriter = osWriter;
         this.tenantBufferIdleTtlMs = properties.getIdleTtlMs();
         this.maxTenantBuffers = properties.getMaxTenants();
         TenantContext.runWith("default", () -> {
@@ -62,20 +68,16 @@ public class SearchStore {
         return events(currentTenant()).snapshot();
     }
 
-    /** 采集管线写入的归一化事件（真实接入数据），同时落库。超出容量时丢弃最旧。 */
+    /** Legacy direct-ingest compatibility path; durable publication is owned by the Outbox worker. */
     public void ingest(SearchEvent e) {
         repo.save(toEntity(e));
         remember(e);
-        // 生产检索库：OpenSearch 异步落索引（best-effort，失败静默；null=单测跳过）
-        if (osWriter != null) osWriter.writeEvents(List.of(e));
+        // Publication is intentionally not performed here; Kafka/Outbox owns the projection.
     }
 
-    /** 批量写入（攒批场景）：一次 saveAll 落库，避免逐条 H2 insert 拖慢采集吞吐。 */
+    /** Legacy direct-batch compatibility path; it never bypasses Kafka publication. */
     public void ingestBatch(List<SearchEvent> es) {
         saveBatch(es);
-        // 生产检索库：OpenSearch 异步落索引（best-effort，失败静默；null=单测跳过）。
-        // 2026-08-12 P2：Kafka 可用时 OS 由 OsIndexerConsumer 消费写入（可重放），此直写仅作无 Kafka 回退。
-        if (osWriter != null) osWriter.writeEvents(es);
     }
 
     /** 只落 H2（内存 List + repository），不写 OpenSearch——P2 后 OS 走 Kafka 消费侧写入。 */
@@ -155,8 +157,14 @@ public class SearchStore {
     // ---- 互转 ----
 
     public static SearchEventEntity toEntity(SearchEvent e) {
+        String tenant = TenantContext.require();
+        String declaredTenant = declaredTenant(e);
+        if (declaredTenant != null && !declaredTenant.isBlank() && !tenant.equals(declaredTenant)) {
+            throw new IllegalArgumentException("event tenant must match the authenticated tenant");
+        }
         SearchEventEntity en = new SearchEventEntity();
         en.setEventId(e.eventId());
+        en.setPayloadFingerprint(com.socp.search.config.service.IngestionEventIdentity.fingerprint(e));
         en.setTimestamp(e.timestamp());
         en.setSource(e.source());
         en.setHost(e.host());
@@ -164,7 +172,7 @@ public class SearchStore {
         en.setMsg(e.msg());
         en.setFieldsJson(writeJson(e.fields()));
         en.setEcsJson(writeJson(e.ecs()));
-        en.setTenantId(eventTenant(e));
+        en.setTenantId(tenant);
         return en;
     }
 
@@ -289,9 +297,15 @@ public class SearchStore {
     }
 
     private static String eventTenant(SearchEvent event) {
+        String tenant = declaredTenant(event);
+        return tenant == null || tenant.isBlank() ? currentTenant() : tenant;
+    }
+
+    private static String declaredTenant(SearchEvent event) {
+        if (event == null || event.fields() == null) return null;
         String tenant = event.fields().get("tenant_id");
         if (tenant == null || tenant.isBlank()) tenant = event.fields().get("tenantId");
-        return tenant == null || tenant.isBlank() ? currentTenant() : tenant;
+        return tenant;
     }
 
     private static String currentTenant() {

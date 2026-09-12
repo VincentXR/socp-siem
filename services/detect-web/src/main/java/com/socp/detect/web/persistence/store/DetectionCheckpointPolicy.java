@@ -20,6 +20,8 @@ final class DetectionCheckpointPolicy {
                     || first.shardId() != snapshot.shardId()
                     || !first.snapshotTimestamp().equals(snapshot.snapshotTimestamp())
                     || !first.partitionOffsets().equals(snapshot.partitionOffsets())
+                    || !first.partitionOwnerEpochs().equals(snapshot.partitionOwnerEpochs())
+                    || !java.util.Objects.equals(first.inputTopic(), snapshot.inputTopic())
                     || !rules.add(snapshot.ruleId())) {
                 throw new IllegalArgumentException("snapshots must describe one tenant/shard checkpoint generation");
             }

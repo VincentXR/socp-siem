@@ -35,7 +35,7 @@ import {
   activateGasRule, createGasRule, deleteGasRule, gasStats, listRules, SEVERITIES, updateGasRule,
   listFields, listRefSets, testGasRules,
   listTechniques,
-  type DetectionIngestEvent, type FieldDef, type GasStats, type ReferenceSet, type RuleCondition, type RuleSpec, type Technique,
+  type DetectionIngestEvent, type FieldDef, type GasStats, type LateEventPolicy, type ReferenceSet, type RuleCondition, type RuleSpec, type Technique,
 } from '../api'
 import { useI18n } from '../composables/useI18n'
 import { traceRuleConditions } from '../lib/detection-test'
@@ -48,7 +48,8 @@ const canManageRules = computed(() => ['admin', 'role_admin', 'analyst', 'role_a
 type RuleEditorForm = {
   id: string; name: string; type: string; severity: string; message: string
   alertTitle: string; alertDescription: string; enabled: boolean; status: string
-  window: string; keyField: string; routingField: string; threshold: number | null
+  window: string; keyField: string; groupBy: string; routingField: string
+  lateAllowedLateness: string; lateHandling: 'DROP' | 'ACCEPT'; threshold: number | null
   valueField: string; warmup: number | null; baselineWindows: number | null; sigma: number | null
   minCount: number | null; mitre: string; version: string; owner: string
   contentPack: string; contentVersion: string; match: RuleCondition[]; matchAny: RuleCondition[][]
@@ -64,6 +65,7 @@ type RuleTestResult = { checked: number; matched: number; candidates: number; tr
 
 const RULE_TYPES = ['pattern', 'threshold', 'correlation', 'correlation-set', 'baseline', 'rare']
 const ADVANCED_TYPES = ['correlation-set', 'baseline', 'rare']
+const STATEFUL_TYPES = ['threshold', 'correlation', 'correlation-set', 'baseline', 'rare']
 
 const allRules = ref<RuleSpec[]>([])
 const fieldDefs = ref<FieldDef[]>([])
@@ -101,7 +103,8 @@ function cloneConditionGroups(groups: RuleCondition[][] | undefined): RuleCondit
 function emptyRuleForm(): RuleEditorForm {
   return {
     id: '', name: '', type: 'pattern', severity: 'HIGH', message: '', alertTitle: '', alertDescription: '', enabled: false,
-    status: 'DRAFT', window: '60s', keyField: 'src_ip', routingField: '', threshold: 5, valueField: '', warmup: null,
+    status: 'DRAFT', window: '60s', keyField: 'src_ip', groupBy: 'src_ip', routingField: 'src_ip',
+    lateAllowedLateness: '60s', lateHandling: 'DROP', threshold: 5, valueField: '', warmup: null,
     baselineWindows: null, sigma: null, minCount: null, mitre: '', version: '', owner: '', contentPack: '', contentVersion: '',
     match: [emptyCondition()], matchAny: [], whitelist: [], steps: [],
   }
@@ -111,12 +114,19 @@ function textValue(value: unknown): string { return value == null ? '' : String(
 function numberValue(value: unknown): number | null { if (value == null || value === '') return null; const parsed = Number(value); return Number.isFinite(parsed) ? parsed : null }
 
 function formFromRule(rule: RuleSpec): RuleEditorForm {
+  const policy = rule.lateEventPolicy && typeof rule.lateEventPolicy === 'object'
+    ? rule.lateEventPolicy as LateEventPolicy
+    : undefined
+  const groupBy = textValue(rule.groupBy || rule.keyField || rule.routingField)
   return {
     id: textValue(rule.id), name: textValue(rule.name), type: textValue(rule.type || 'pattern'), severity: textValue(rule.severity || 'HIGH'),
     message: textValue(rule.message || rule.alert?.description), alertTitle: textValue(rule.alert?.title || rule.name),
     alertDescription: textValue(rule.alert?.description || rule.message), enabled: Boolean(rule.enabled),
     status: textValue(rule.status || (rule.enabled ? 'ACTIVE' : 'DRAFT')).toUpperCase(), window: textValue(rule.window),
-    keyField: textValue(rule.keyField), routingField: textValue(rule.routingField), threshold: numberValue(rule.threshold),
+    keyField: groupBy, groupBy, routingField: groupBy,
+    lateAllowedLateness: textValue(policy?.allowedLateness || rule.window),
+    lateHandling: String(policy?.handling || 'DROP').toUpperCase() === 'ACCEPT' ? 'ACCEPT' : 'DROP',
+    threshold: numberValue(rule.threshold),
     valueField: textValue(rule.valueField), warmup: numberValue(rule.warmup), baselineWindows: numberValue(rule.baselineWindows),
     sigma: numberValue(rule.sigma), minCount: numberValue(rule.minCount), mitre: textValue(rule.mitre), version: textValue(rule.version),
     owner: textValue(rule.owner), contentPack: textValue(rule.contentPack), contentVersion: textValue(rule.contentVersion),
@@ -178,14 +188,17 @@ async function loadRules(): Promise<void> {
   loading.value = false
 }
 
-function onKeyFieldChange(value: unknown): void {
+function onGroupByChange(value: unknown): void {
   const selected = textValue(value).trim()
+  ruleForm.value.groupBy = selected
   ruleForm.value.keyField = selected
   // Stateful aggregation and Kafka routing must use the same dimension. The
   // routing field is therefore derived from the selected key instead of a
   // second free-text value that can silently diverge.
   ruleForm.value.routingField = selected
 }
+
+function onKeyFieldChange(value: unknown): void { onGroupByChange(value) }
 
 function openRuleEditor(row?: unknown): void {
   if (!canManageRules.value) return
@@ -245,10 +258,21 @@ function buildRuleSpec(): Partial<RuleSpec> {
   const spec = (sourceRule.value ? clone(sourceRule.value) : {}) as Record<string, unknown>
   spec.name = ruleForm.value.name.trim(); spec.type = ruleForm.value.type; spec.severity = ruleForm.value.severity
   setOptional(spec, 'message', ruleForm.value.message); setOptional(spec, 'window', ruleForm.value.window); setOptional(spec, 'keyField', ruleForm.value.keyField)
+  setOptional(spec, 'groupBy', ruleForm.value.groupBy)
   setOptional(spec, 'routingField', ruleForm.value.routingField); setOptional(spec, 'threshold', ruleForm.value.threshold); setOptional(spec, 'valueField', ruleForm.value.valueField)
   setOptional(spec, 'warmup', ruleForm.value.warmup); setOptional(spec, 'baselineWindows', ruleForm.value.baselineWindows); setOptional(spec, 'sigma', ruleForm.value.sigma)
   setOptional(spec, 'minCount', ruleForm.value.minCount); setOptional(spec, 'mitre', ruleForm.value.mitre); setOptional(spec, 'version', ruleForm.value.version)
   setOptional(spec, 'owner', ruleForm.value.owner); setOptional(spec, 'contentPack', ruleForm.value.contentPack); setOptional(spec, 'contentVersion', ruleForm.value.contentVersion)
+  const rawPolicy = spec.lateEventPolicy
+  const policy = rawPolicy && typeof rawPolicy === 'object' && !Array.isArray(rawPolicy)
+    ? clone(rawPolicy) as Record<string, unknown>
+    : {}
+  if (STATEFUL_TYPES.includes(ruleForm.value.type) || Object.keys(policy).length) {
+    setOptional(policy, 'allowedLateness', ruleForm.value.lateAllowedLateness)
+    setOptional(policy, 'handling', ruleForm.value.lateHandling)
+    if (Object.keys(policy).length) spec.lateEventPolicy = policy
+    else delete spec.lateEventPolicy
+  }
   const alert = (spec.alert && typeof spec.alert === 'object' ? clone(spec.alert) : {}) as Record<string, unknown>
   setOptional(alert, 'title', ruleForm.value.alertTitle); setOptional(alert, 'description', ruleForm.value.alertDescription)
   if (Object.keys(alert).length) spec.alert = alert; else delete spec.alert
@@ -476,7 +500,7 @@ onMounted(async () => { await loadRules(); await syncEditorRoute() })
           </template>
           <div v-if="fieldLoadError" class="form-hint">{{ t('detect.fieldCatalogFallback') }} · {{ fieldLoadError }}</div>
           <div class="detect-form-grid compact-grid">
-            <el-form-item :label="t('detect.keyField')"><el-select v-model="ruleForm.keyField" filterable default-first-option clearable :placeholder="t('detect.fieldPlaceholder')" @change="onKeyFieldChange"><el-option v-if="ruleForm.keyField && !fieldDefs.some(field => field.fieldName === ruleForm.keyField)" :label="ruleForm.keyField" :value="ruleForm.keyField" /><el-option v-for="field in fieldDefs" :key="field.fieldName" :label="field.fieldName" :value="field.fieldName"><div class="field-option"><b>{{ field.fieldName }}</b><small>{{ field.fieldLabel || field.fieldType }} · {{ field.fieldType }}<span v-if="field.aggregatable"> · aggregate</span></small></div></el-option></el-select></el-form-item>
+            <el-form-item :label="t('detect.groupBy')"><el-select v-model="ruleForm.groupBy" filterable default-first-option clearable :placeholder="t('detect.fieldPlaceholder')" @change="onGroupByChange"><el-option v-if="ruleForm.groupBy && !fieldDefs.some(field => field.fieldName === ruleForm.groupBy)" :label="ruleForm.groupBy" :value="ruleForm.groupBy" /><el-option v-for="field in fieldDefs" :key="field.fieldName" :label="field.fieldName" :value="field.fieldName"><div class="field-option"><b>{{ field.fieldName }}</b><small>{{ field.fieldLabel || field.fieldType }} · {{ field.fieldType }}<span v-if="field.aggregatable"> · aggregate</span></small></div></el-option></el-select><span class="form-hint">{{ t('detect.groupByHint') }}</span></el-form-item>
             <el-form-item v-if="['threshold', 'correlation-set'].includes(ruleForm.type)" :label="t('detect.threshold')"><el-input v-model.number="ruleForm.threshold" type="number" min="1" /></el-form-item>
             <el-form-item v-if="['baseline', 'rare'].includes(ruleForm.type)" :label="t('detect.valueField')"><el-select v-model="ruleForm.valueField" filterable default-first-option clearable :placeholder="t('detect.fieldPlaceholder')"><el-option v-if="ruleForm.valueField && !fieldDefs.some(field => field.fieldName === ruleForm.valueField)" :label="ruleForm.valueField" :value="ruleForm.valueField" /><el-option v-for="field in fieldDefs" :key="field.fieldName" :label="field.fieldName" :value="field.fieldName"><div class="field-option"><b>{{ field.fieldName }}</b><small>{{ field.fieldLabel || field.fieldType }} · {{ field.fieldType }}<span v-if="field.aggregatable"> · aggregate</span></small></div></el-option></el-select></el-form-item>
             <el-form-item v-if="['baseline', 'rare'].includes(ruleForm.type)" :label="t('detect.minCount')"><el-input v-model.number="ruleForm.minCount" type="number" min="1" /></el-form-item>
@@ -485,7 +509,7 @@ onMounted(async () => { await loadRules(); await syncEditorRoute() })
 
         <section class="detect-form-section"><div class="detect-form-section-title"><span>03</span><div><h3>{{ t('detect.alertContent') }}</h3><p>{{ t('detect.alertContentHint') }}</p></div></div><div class="detect-form-grid"><el-form-item :label="t('detect.editor.alertTitle')"><el-input v-model="ruleForm.alertTitle" :placeholder="t('detect.editor.alertTitlePlaceholder')" /></el-form-item><el-form-item :label="t('detect.editor.alertDescription')"><el-input v-model="ruleForm.alertDescription" :placeholder="t('detect.editor.alertDescriptionPlaceholder')" /></el-form-item><el-form-item :label="t('detect.compatMessage')"><el-input v-model="ruleForm.message" /></el-form-item><el-form-item :label="t('detect.mitre')"><el-select v-model="ruleForm.mitre" filterable default-first-option clearable placeholder="T1110"><el-option v-if="ruleForm.mitre && !techniques.some(item => item.id === ruleForm.mitre)" :label="ruleForm.mitre + ' (custom)'" :value="ruleForm.mitre" /><el-option v-for="technique in techniques" :key="technique.id" :label="`${technique.id} · ${technique.name}`" :value="technique.id" /></el-select><span v-if="techniqueLoadError" class="form-hint">{{ t('detect.fieldCatalogFallback') }}</span></el-form-item></div><div class="condition-block"><FieldConditionBuilder v-model="ruleForm.whitelist" :read-only="!canManageRules" :title="t('detect.editor.whitelist')" :add-label="t('detect.editor.addWhitelist')" :empty-hint="t('detect.noWhitelistHint')" :fields="fieldDefs" :reference-sets="referenceSets" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" /></div></section>
 
-        <section class="detect-form-section"><div class="detect-form-section-title"><span>04</span><div><h3>{{ t('detect.advancedFields') }}</h3><p>{{ t('detect.advancedFieldsHint') }}</p></div></div><div v-if="ADVANCED_TYPES.includes(ruleForm.type) || rawOnlyRuleType" class="detect-advanced-warning"><b>{{ t('detect.advancedType') }}</b><span>{{ t('detect.advancedTypeHint') }}</span></div><div class="detect-form-grid compact-grid"><el-form-item :label="t('detect.routingField')"><el-select v-model="ruleForm.routingField" disabled :placeholder="t('detect.fieldPlaceholder')"><el-option v-if="ruleForm.routingField && !fieldDefs.some(field => field.fieldName === ruleForm.routingField)" :label="ruleForm.routingField" :value="ruleForm.routingField" /><el-option v-for="field in fieldDefs" :key="field.fieldName" :label="field.fieldName" :value="field.fieldName" /></el-select><span class="form-hint">{{ t('detect.routingField') }} = {{ t('detect.keyField') }}</span></el-form-item><el-form-item v-if="ruleForm.type === 'baseline'" :label="t('detect.warmup')"><el-input v-model.number="ruleForm.warmup" type="number" min="1" /></el-form-item><el-form-item v-if="ruleForm.type === 'baseline'" :label="t('detect.baselineWindows')"><el-input v-model.number="ruleForm.baselineWindows" type="number" min="1" /></el-form-item><el-form-item v-if="ruleForm.type === 'baseline'" :label="t('detect.sigma')"><el-input v-model.number="ruleForm.sigma" type="number" min="0" max="100" /></el-form-item><el-form-item :label="t('detect.ruleVersion')"><el-input v-model="ruleForm.version" /></el-form-item><el-form-item :label="t('detect.owner')"><el-select v-model="ruleForm.owner" filterable default-first-option allow-create clearable :placeholder="t('detect.ownerPlaceholder')"><el-option v-for="owner in ownerOptions" :key="owner" :label="owner" :value="owner" /></el-select></el-form-item><el-form-item :label="t('detect.contentPack')"><el-input v-model="ruleForm.contentPack" /></el-form-item><el-form-item :label="t('detect.contentVersion')"><el-input v-model="ruleForm.contentVersion" /></el-form-item></div><details class="advanced-json"><summary>{{ t('detect.rawRuleJson') }}</summary><p>{{ t('detect.rawRuleJsonHint') }}</p><textarea v-model="advancedJson" :readonly="!canManageRules" rows="12" spellcheck="false" /><div v-if="advancedError" class="detect-feedback error">{{ advancedError }}</div><el-button v-if="canManageRules" size="small" @click="applyAdvancedJson">{{ t('detect.applyRawJson') }}</el-button></details></section>
+        <section class="detect-form-section"><div class="detect-form-section-title"><span>04</span><div><h3>{{ t('detect.advancedFields') }}</h3><p>{{ t('detect.advancedFieldsHint') }}</p></div></div><div v-if="ADVANCED_TYPES.includes(ruleForm.type) || rawOnlyRuleType" class="detect-advanced-warning"><b>{{ t('detect.advancedType') }}</b><span>{{ t('detect.advancedTypeHint') }}</span></div><div class="detect-form-grid compact-grid"><el-form-item :label="t('detect.routingField')"><el-select v-model="ruleForm.routingField" disabled :placeholder="t('detect.fieldPlaceholder')"><el-option v-if="ruleForm.routingField && !fieldDefs.some(field => field.fieldName === ruleForm.routingField)" :label="ruleForm.routingField" :value="ruleForm.routingField" /><el-option v-for="field in fieldDefs" :key="field.fieldName" :label="field.fieldName" :value="field.fieldName" /></el-select><span class="form-hint">{{ t('detect.routingField') }} = {{ t('detect.groupBy') }}</span></el-form-item><el-form-item v-if="STATEFUL_TYPES.includes(ruleForm.type)" :label="t('detect.allowedLateness')"><el-input v-model="ruleForm.lateAllowedLateness" :placeholder="t('detect.allowedLatenessPlaceholder')" /></el-form-item><el-form-item v-if="STATEFUL_TYPES.includes(ruleForm.type)" :label="t('detect.lateHandling')"><el-select v-model="ruleForm.lateHandling"><el-option :label="t('detect.lateHandlingDrop')" value="DROP" /><el-option :label="t('detect.lateHandlingAccept')" value="ACCEPT" /></el-select></el-form-item><el-form-item v-if="ruleForm.type === 'baseline'" :label="t('detect.warmup')"><el-input v-model.number="ruleForm.warmup" type="number" min="1" /></el-form-item><el-form-item v-if="ruleForm.type === 'baseline'" :label="t('detect.baselineWindows')"><el-input v-model.number="ruleForm.baselineWindows" type="number" min="1" /></el-form-item><el-form-item v-if="ruleForm.type === 'baseline'" :label="t('detect.sigma')"><el-input v-model.number="ruleForm.sigma" type="number" min="0" max="100" /></el-form-item><el-form-item :label="t('detect.ruleVersion')"><el-input v-model="ruleForm.version" /></el-form-item><el-form-item :label="t('detect.owner')"><el-select v-model="ruleForm.owner" filterable default-first-option allow-create clearable :placeholder="t('detect.ownerPlaceholder')"><el-option v-for="owner in ownerOptions" :key="owner" :label="owner" :value="owner" /></el-select></el-form-item><el-form-item :label="t('detect.contentPack')"><el-input v-model="ruleForm.contentPack" /></el-form-item><el-form-item :label="t('detect.contentVersion')"><el-input v-model="ruleForm.contentVersion" /></el-form-item></div><details class="advanced-json"><summary>{{ t('detect.rawRuleJson') }}</summary><p>{{ t('detect.rawRuleJsonHint') }}</p><textarea v-model="advancedJson" :readonly="!canManageRules" rows="12" spellcheck="false" /><div v-if="advancedError" class="detect-feedback error">{{ advancedError }}</div><el-button v-if="canManageRules" size="small" @click="applyAdvancedJson">{{ t('detect.applyRawJson') }}</el-button></details></section>
 
         <section class="detect-form-section lifecycle-section"><div class="detect-form-section-title"><span>05</span><div><h3>{{ t('detect.testAndRelease') }}</h3><p>{{ t('detect.testAndReleaseHint') }}</p></div></div><div class="lifecycle-row"><div><span class="form-label">{{ t('detect.ruleStatus') }}</span><el-tag :type="statusTag(ruleForm.status)" size="small">{{ lifecycleStatusLabel(ruleForm.status) }}</el-tag><span class="form-hint inline-hint">{{ ruleEditingId ? t('detect.lifecycleReadOnly') : t('detect.newRuleTesting') }}</span></div><div class="lifecycle-toggle"><span>{{ t('detect.executionToggle') }}</span><el-switch v-model="ruleForm.enabled" :disabled="!ruleEditingId || ruleForm.status !== 'ACTIVE'" /></div></div></section>
       </el-form>

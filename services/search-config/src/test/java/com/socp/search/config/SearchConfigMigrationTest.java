@@ -27,6 +27,29 @@ class SearchConfigMigrationTest {
              var result = statement.executeQuery()) {
             result.next();
             assertEquals(2, result.getInt(1));
+
+            String largeValue = "x".repeat(5_000);
+            try (var insert = connection.prepareStatement(
+                    "INSERT INTO t_search_event "
+                            + "(id, msg, fields_json, ecs_json, tenant_id) "
+                            + "VALUES (?, ?, ?, ?, ?)")) {
+                insert.setString(1, "large-event");
+                insert.setString(2, largeValue);
+                insert.setString(3, largeValue);
+                insert.setString(4, largeValue);
+                insert.setString(5, "default");
+                assertEquals(1, insert.executeUpdate());
+            }
+            try (var lengths = connection.prepareStatement(
+                    "SELECT LENGTH(msg), LENGTH(fields_json), LENGTH(ecs_json) "
+                            + "FROM t_search_event WHERE id = 'large-event'")) {
+                try (var values = lengths.executeQuery()) {
+                    values.next();
+                    assertEquals(5_000, values.getInt(1));
+                    assertEquals(5_000, values.getInt(2));
+                    assertEquals(5_000, values.getInt(3));
+                }
+            }
         }
     }
 }

@@ -1,6 +1,7 @@
 package com.socp.search.config.service;
 
 import com.socp.platform.tenant.context.TenantContext;
+import com.socp.search.config.config.SearchRuntimeRole;
 import com.socp.search.config.domain.ParseRule;
 import com.socp.search.config.persistence.store.ParseRuleStore;
 import org.slf4j.Logger;
@@ -18,6 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * rules are used as a sparse-event compatibility fallback.
  */
 @Component
+@SearchRuntimeRole(SearchRuntimeRole.Role.API)
 public class ParsePipelineResolver {
 
     private static final Logger log = LoggerFactory.getLogger(ParsePipelineResolver.class);

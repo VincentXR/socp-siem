@@ -19,26 +19,33 @@ const typeLabel = computed(() => {
   const translated = t(labelKey)
   return translated === labelKey ? (meta.value?.label ?? nodeType) : translated
 })
-const DEFAULT_NAME_ALIASES: Record<string, readonly string[]> = {
-  START: ['Start', '开始'],
-  ACTION: ['Action', '动作'],
-  CONDITION: ['Condition', '条件'],
-  SWITCH: ['Switch', '开关分支'],
-  APPROVAL: ['Approval', '审批'],
-  END: ['Done', 'End', '完成', '结束'],
-  PARALLEL: ['Parallel', '并行'],
-  JOIN: ['Join', '汇聚'],
-  FOREACH: ['For each', '循环'],
-  MANUAL_TASK: ['Manual task', '人工任务'],
-  DELAY: ['Delay', '延时'],
-  SUB_PLAYBOOK: ['Sub-playbook', '子剧本'],
-  SET_VARIABLE: ['Set variable', '设置变量'],
+const DEFAULT_NAME_ALIAS_KEYS: Record<string, string> = {
+  START: 'soarV2.nodeAliases.START',
+  ACTION: 'soarV2.nodeAliases.ACTION',
+  CONDITION: 'soarV2.nodeAliases.CONDITION',
+  SWITCH: 'soarV2.nodeAliases.SWITCH',
+  APPROVAL: 'soarV2.nodeAliases.APPROVAL',
+  END: 'soarV2.nodeAliases.END',
+  PARALLEL: 'soarV2.nodeAliases.PARALLEL',
+  JOIN: 'soarV2.nodeAliases.JOIN',
+  FOREACH: 'soarV2.nodeAliases.FOREACH',
+  MANUAL_TASK: 'soarV2.nodeAliases.MANUAL_TASK',
+  DELAY: 'soarV2.nodeAliases.DELAY',
+  SUB_PLAYBOOK: 'soarV2.nodeAliases.SUB_PLAYBOOK',
+  SET_VARIABLE: 'soarV2.nodeAliases.SET_VARIABLE',
 }
+const defaultNameAliases = computed<Record<string, readonly string[]>>(() => {
+  const aliases: Record<string, readonly string[]> = {}
+  for (const [nodeType, key] of Object.entries(DEFAULT_NAME_ALIAS_KEYS)) {
+    aliases[nodeType] = t(key).split('|').map(alias => alias.trim()).filter(Boolean)
+  }
+  return aliases
+})
 const title = computed(() => {
   const name = raw.value?.name
   if (typeof name !== 'string' || !name.trim()) return String(raw.value?.id ?? '')
   const nodeType = String(props.data?.nodeType ?? '')
-  return DEFAULT_NAME_ALIASES[nodeType]?.includes(name.trim()) ? typeLabel.value : name
+  return defaultNameAliases.value[nodeType]?.includes(name.trim()) ? typeLabel.value : name
 })
 
 const acceptsTarget = computed(() => Boolean(props.data?.acceptsTarget))

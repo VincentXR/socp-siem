@@ -51,6 +51,9 @@ public class RuleChangePublisher {
     @Value("${socp.kafka.enabled:true}")
     private boolean enabled = true;
 
+    @Value("${socp.detect.runtime-role:all}")
+    private String runtimeRole = "all";
+
     @Value("${socp.kafka.rule-outbox.max-attempts:12}")
     private int maxAttempts = DEFAULT_MAX_ATTEMPTS;
 
@@ -105,6 +108,12 @@ public class RuleChangePublisher {
             initialDelayString = "${socp.kafka.rule-publish-initial-delay-ms:500}")
     @TenantSystemJob
     public void flush() {
+        if (!workerRole()) {
+            // The API process may append rule-change outbox rows, but only a
+            // worker is allowed to drain them to Kafka.
+            refreshBacklog();
+            return;
+        }
         if (!enabled) {
             refreshBacklog();
             return;
@@ -208,6 +217,7 @@ public class RuleChangePublisher {
             initialDelayString = "${socp.kafka.rule-outbox.cleanup-initial-delay-ms:60000}")
     @TenantSystemJob
     void cleanupPublished() {
+        if (!workerRole()) return;
         try {
             long safeRetention = Math.max(Duration.ofMinutes(1).toMillis(), retentionMs);
             int removed = 0;
@@ -261,6 +271,11 @@ public class RuleChangePublisher {
 
     private void lifecycle(String outcome, int count) {
         if (performanceMetrics != null) performanceMetrics.outboxLifecycle("rule_change", outcome, count);
+    }
+
+    private boolean workerRole() {
+        String role = runtimeRole == null ? "all" : runtimeRole.trim();
+        return role.isBlank() || "all".equalsIgnoreCase(role) || "worker".equalsIgnoreCase(role);
     }
 
     private KafkaProducer<String, String> kafkaProducer() {

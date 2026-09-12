@@ -3,6 +3,8 @@ package com.socp.detect.web.persistence.store;
 
 import com.socp.detect.web.persistence.repository.RuleRepository;
 import com.socp.detect.web.persistence.entity.RuleEntity;
+import com.socp.platform.error.exception.ApiException;
+import com.socp.platform.tenant.context.TenantContext;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -13,8 +15,12 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.dao.DataIntegrityViolationException;
 
 import java.util.Optional;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import static org.mockito.ArgumentMatchers.any;
 
@@ -76,6 +82,35 @@ class RuleSpecStoreTest {
                 .thenThrow(new DataIntegrityViolationException("concurrent insert"));
 
         assertDoesNotThrow(() -> new RuleSpecStore(repository));
+    }
+
+    @Test
+    void rejectsCrossEntityGroupingAsAClientContractError() {
+        RuleRepository repository = mock(RuleRepository.class);
+        RuleEntity userRule = entity("user-owned", "{\"id\":\"user-owned\",\"owner\":\"local-user\"}");
+        when(repository.findByRuleIdAndTenantId(any(), any())).thenReturn(Optional.of(userRule));
+        RuleSpecStore store = new RuleSpecStore(repository);
+
+        Map<String, Object> invalid = new LinkedHashMap<>();
+        invalid.put("id", "cross-entity");
+        invalid.put("name", "cross-entity");
+        invalid.put("type", "threshold");
+        invalid.put("severity", "HIGH");
+        invalid.put("version", "1");
+        invalid.put("owner", "analyst");
+        invalid.put("groupBy", "user");
+        invalid.put("routingField", "host");
+        invalid.put("threshold", 2);
+
+        TenantContext.set("default");
+        try {
+            ApiException failure = org.junit.jupiter.api.Assertions.assertThrows(ApiException.class,
+                    () -> store.save(invalid));
+            assertEquals(400, failure.getCode());
+            assertTrue(failure.getMessage().contains("cross-entity grouping is unsupported"));
+        } finally {
+            TenantContext.clear();
+        }
     }
 
     private static RuleEntity entity(String id, String spec) {

@@ -1,6 +1,7 @@
 package com.socp.detect.web.engine;
 
 import com.socp.rule.engine.EventAlertSink;
+import com.socp.rule.engine.DetectionResult;
 import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import org.springframework.stereotype.Component;
@@ -44,14 +45,42 @@ public class RecentAlertSink implements EventAlertSink {
 
     @Override
     public void publish(SecurityEvent event, List<Alert> alerts) {
+        publish(event, alerts, null);
+    }
+
+    @Override
+    public void publish(SecurityEvent event, List<Alert> alerts, Runnable durableCommitGuard) {
         List<Alert> safe = alerts == null ? List.of() : alerts;
         // Durable persistence is deliberately first. A failure propagates to
         // the Kafka completion future and prevents offset advancement.
-        if (forwarder != null) forwarder.forwardAll(event, safe);
+        if (forwarder != null) {
+            if (durableCommitGuard == null) forwarder.forwardAll(event, safe);
+            else forwarder.forwardAll(event, safe, durableCommitGuard);
+        } else if (durableCommitGuard != null) {
+            durableCommitGuard.run();
+        }
         for (Alert alert : safe) {
             if (alert == null || alert.id() == null || !remember(alert)) continue;
             if (streamHub != null) streamHub.broadcast(tenantOf(alert), alert);
         }
+        if (forwarder == null && durableCommitGuard != null) durableCommitGuard.run();
+    }
+
+    /** Preserve the complete calculation envelope for the durable outbox. */
+    @Override
+    public void publish(DetectionResult result, Runnable durableCommitGuard) {
+        if (result == null) throw new IllegalArgumentException("detection result is required");
+        List<Alert> safe = result.alerts();
+        if (forwarder != null) {
+            forwarder.forward(result, durableCommitGuard);
+        } else if (durableCommitGuard != null) {
+            durableCommitGuard.run();
+        }
+        for (Alert alert : safe) {
+            if (alert == null || alert.id() == null || !remember(alert)) continue;
+            if (streamHub != null) streamHub.broadcast(tenantOf(alert), alert);
+        }
+        if (forwarder == null && durableCommitGuard != null) durableCommitGuard.run();
     }
 
     public List<Alert> recent() {

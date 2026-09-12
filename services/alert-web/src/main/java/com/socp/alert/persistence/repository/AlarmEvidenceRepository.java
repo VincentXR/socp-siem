@@ -13,4 +13,7 @@ public interface AlarmEvidenceRepository extends TenantScopedRepository<AlarmEvi
     Optional<AlarmEvidence> findByIdAndTenantId(String id, String tenantId);
 
     List<AlarmEvidence> findByTenantIdAndAlarmIdOrderByEvidenceOrderAscIdAsc(String tenantId, String alarmId);
+
+    /** Reverse lookup used by event-to-alert investigation drill-down. */
+    List<AlarmEvidence> findByTenantIdAndEventId(String tenantId, String eventId);
 }

@@ -30,6 +30,7 @@ import java.time.Instant;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -290,6 +291,29 @@ public class AlarmService {
 
     public Alarm get(String id) {
         return queryService.get(id);
+    }
+
+    /**
+     * Reverse event lineage lookup. It consults both the explicit trigger id
+     * and the durable evidence table so correlated alerts remain discoverable
+     * even when the searched event is not the last event in the correlation.
+     */
+    @Transactional(readOnly = true)
+    public List<Alarm> byEvent(String eventId) {
+        String normalized = eventId == null ? "" : eventId.trim();
+        if (normalized.isBlank()) {
+            throw com.socp.platform.error.exception.ApiException.badRequest(
+                    "eventId is required for alarm lineage lookup");
+        }
+        String tenant = AlarmQueryService.tenant();
+        LinkedHashSet<String> alarmIds = new LinkedHashSet<>();
+        alarmIds.addAll(repository.findByTenantIdAndTriggerEventId(tenant, normalized).stream()
+                .map(Alarm::getId).filter(java.util.Objects::nonNull).toList());
+        alarmIds.addAll(evidenceRepository.findByTenantIdAndEventId(tenant, normalized).stream()
+                .map(AlarmEvidence::getAlarmId).filter(java.util.Objects::nonNull).toList());
+        if (alarmIds.isEmpty()) return List.of();
+        return repository.findByTenantIdAndIdInOrderByOccurredAtDescIdAsc(
+                tenant, List.copyOf(alarmIds));
     }
 
     /** Return bounded same-rule/entity candidates for an investigation drill-down. */

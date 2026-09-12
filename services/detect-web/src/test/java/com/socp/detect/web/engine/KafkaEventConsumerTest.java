@@ -4,6 +4,7 @@ import com.socp.detect.web.service.DetectEngineService;
 import com.socp.detect.web.persistence.store.DetectionEventClaim;
 import com.socp.detect.web.persistence.store.DetectionStateStore;
 import com.socp.rule.model.SecurityEvent;
+import com.socp.rule.model.Severity;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -11,9 +12,13 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.AbstractMap;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.time.Instant;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -188,5 +193,84 @@ class KafkaEventConsumerTest {
 
         verify(kafka).resume(eq(java.util.Set.of(partition)));
         consumer.stop();
+    }
+
+    @Test
+    void byteBudgetPausesAQuietPartitionBeforeAdmittingAnOversizedWorkItem() throws Exception {
+        KafkaEventConsumer consumer = new KafkaEventConsumer(engine);
+        KafkaConsumer<String, String> kafka = mock(KafkaConsumer.class);
+        TopicPartition partition = new TopicPartition("events", 7);
+        CountDownLatch completed = new CountDownLatch(1);
+
+        Field budget = KafkaEventConsumer.class.getDeclaredField("partitionMaxPendingBytes");
+        budget.setAccessible(true);
+        budget.setLong(consumer, 4L);
+        Method dispatch = KafkaEventConsumer.class.getDeclaredMethod(
+                "dispatchOrDefer", KafkaConsumer.class, TopicPartition.class, Runnable.class, long.class);
+        dispatch.setAccessible(true);
+        dispatch.invoke(consumer, kafka, partition, (Runnable) completed::countDown, 32L);
+
+        verify(kafka).pause(eq(java.util.Set.of(partition)));
+        assertTrue(!completed.await(100, TimeUnit.MILLISECONDS));
+
+        Method drain = KafkaEventConsumer.class.getDeclaredMethod("drainDeferred", KafkaConsumer.class);
+        drain.setAccessible(true);
+        drain.invoke(consumer, kafka);
+
+        assertTrue(completed.await(1, TimeUnit.SECONDS));
+        verify(kafka).resume(eq(java.util.Set.of(partition)));
+        consumer.stop();
+    }
+
+    @Test
+    void estimatesAndReleasesQueuedWorkWithoutLeakingTheByteBudget() throws Exception {
+        Method recordBytes = KafkaEventConsumer.class.getDeclaredMethod(
+                "estimateRecordBytes", org.apache.kafka.clients.consumer.ConsumerRecord.class);
+        recordBytes.setAccessible(true);
+        assertEquals(1L, recordBytes.invoke(null, new Object[]{null}));
+        var record = new org.apache.kafka.clients.consumer.ConsumerRecord<>(
+                "events", 1, 2L, "key", "payload");
+        assertEquals(256L + 3L + 7L, recordBytes.invoke(null, record));
+
+        Method eventBytes = KafkaEventConsumer.class.getDeclaredMethod(
+                "estimateEventBytes", SecurityEvent.class);
+        eventBytes.setAccessible(true);
+        assertEquals(1L, eventBytes.invoke(null, new Object[]{null}));
+        Map<String, String> fields = new LinkedHashMap<>();
+        fields.put(null, null);
+        fields.put("key", "value");
+        SecurityEvent event = new SecurityEvent("event-bytes", Instant.EPOCH, "auth", "host",
+                "raw", fields, Severity.INFO);
+        long expected = 256L + 3L + 3L + 5L;
+        assertEquals(expected, eventBytes.invoke(null, event));
+
+        Class<?> pendingType = KafkaEventConsumer.class.getDeclaredClasses()[0];
+        for (Class<?> nested : KafkaEventConsumer.class.getDeclaredClasses()) {
+            if (nested.getSimpleName().equals("PendingWork")) pendingType = nested;
+        }
+        AtomicLong counter = new AtomicLong(9L);
+        var pendingConstructor = pendingType.getDeclaredConstructor(Runnable.class, long.class, AtomicLong.class);
+        pendingConstructor.setAccessible(true);
+        Runnable delegate = () -> { };
+        Runnable pending = (Runnable) pendingConstructor.newInstance(delegate, 4L, counter);
+        pending.run();
+        assertEquals(5L, counter.get());
+
+        Runnable dropped = (Runnable) pendingConstructor.newInstance(delegate, 3L, counter);
+        Method releaseDropped = KafkaEventConsumer.class.getDeclaredMethod("releaseDropped", List.class);
+        releaseDropped.setAccessible(true);
+        releaseDropped.invoke(null, List.of(dropped));
+        assertEquals(2L, counter.get());
+
+        Runnable deferred = (Runnable) pendingConstructor.newInstance(delegate, 2L, counter);
+        Method releaseDeferred = KafkaEventConsumer.class.getDeclaredMethod(
+                "releaseDeferred", ArrayDeque.class);
+        releaseDeferred.setAccessible(true);
+        ArrayDeque<Runnable> queue = new ArrayDeque<>();
+        queue.add(deferred);
+        releaseDeferred.invoke(null, queue);
+        assertEquals(0L, counter.get());
+        releaseDeferred.invoke(null, new Object[]{null});
+        releaseDropped.invoke(null, new Object[]{null});
     }
 }

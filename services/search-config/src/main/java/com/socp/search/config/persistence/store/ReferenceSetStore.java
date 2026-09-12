@@ -2,6 +2,7 @@ package com.socp.search.config.persistence.store;
 
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.socp.search.config.config.SearchRuntimeRole;
 import com.socp.search.config.domain.ReferenceSet;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -12,6 +13,7 @@ import java.util.Locale;
 
 /** 查找表存储（集群无关内存实现）。生产由 CMDB/HR/威胁情报同步。 */
 @Component
+@SearchRuntimeRole(SearchRuntimeRole.Role.API)
 public class ReferenceSetStore {
 
     private final TenantCatalog<ReferenceSet> catalog;

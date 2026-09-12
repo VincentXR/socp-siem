@@ -1,6 +1,7 @@
 package com.socp.search.config.service;
 
 import com.socp.search.config.domain.ParseRule;
+import com.socp.search.config.config.SearchRuntimeRole;
 import com.socp.search.config.parser.ParserRegistry;
 import com.socp.search.config.persistence.store.ParseRuleStore;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -11,6 +12,7 @@ import java.util.Map;
 
 /** Validates a configured parser rule against one sample log line. */
 @Service
+@SearchRuntimeRole(SearchRuntimeRole.Role.API)
 public class ParsePreviewService {
 
     private final ParseRuleStore store;

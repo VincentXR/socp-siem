@@ -23,6 +23,8 @@ import jakarta.validation.Valid;
  * 用于事件富化与检测条件引用，对标大厂 SIEM 的 Lookup / Watchlist。
  */
 @RestController
+@com.socp.search.config.config.SearchRuntimeRole(
+        com.socp.search.config.config.SearchRuntimeRole.Role.API)
 @RequestMapping("/api/v1/reference-sets")
 public class ReferenceSetController {
 

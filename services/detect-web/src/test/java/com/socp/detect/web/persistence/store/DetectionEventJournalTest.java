@@ -5,6 +5,7 @@ import com.socp.detect.web.persistence.repository.DetectionEventRepository;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
+import com.socp.rule.engine.DetectionResult;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -118,6 +119,25 @@ class DetectionEventJournalTest {
         journal.markCompleted("tenant-a", "");
         journal.markDeadLettered("tenant-a", null, "ignored");
         verify(repository, never()).delete(any(DetectionEventEntity.class));
+    }
+
+    @Test
+    void storesTheCalculationSummaryWhenCompletingAZeroAlertEvent() {
+        DetectionEventEntity row = row("event-14", "tenant-a", "{}");
+        when(repository.findByTenantIdAndSourceEventId("tenant-a", "event-14"))
+                .thenReturn(Optional.of(row));
+        SecurityEvent event = event("event-14", "tenant-a", Instant.now(), Map.of());
+        DetectionResult result = new DetectionResult(event,
+                new DetectionResult.InputPosition("socp-events", 4, 9L),
+                Map.of("RULE-1", "v1"), List.of(), List.of(), List.of(),
+                DetectionResult.SuppressionDecision.none(List.of(), List.of()),
+                event.scopedId());
+
+        journal.markCompleted(result);
+
+        assertThat(row.getStatus()).isEqualTo(DetectionEventStatus.COMPLETED.name());
+        assertThat(row.getResultJson()).contains("event-14", "socp-events", "RULE-1");
+        verify(repository).saveAndFlush(row);
     }
 
     @Test

@@ -3,6 +3,7 @@ package com.socp.rule.config;
 import com.socp.rule.engine.Watchlists;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
+import com.socp.rule.partition.DetectionRoutingKey;
 import com.socp.rule.rules.BaselineRule;
 import com.socp.rule.rules.CorrelationRule;
 import com.socp.rule.rules.CorrelationSetRule;
@@ -10,9 +11,14 @@ import com.socp.rule.rules.PatternRule;
 import com.socp.rule.rules.RareValueRule;
 import com.socp.rule.rules.Rule;
 import com.socp.rule.rules.ThresholdRule;
+import com.socp.rule.state.StateRoutingKey;
+import com.socp.rule.util.Json;
+import com.socp.rule.time.EventTimePolicy;
 
+import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -32,6 +38,10 @@ public final class RuleSpec {
     public final String id;
     public final String name;
     public final String type;
+    /** Business rule version; changes are part of state compatibility. */
+    public final String version;
+    /** Pack/content version; changes can alter executable rule semantics. */
+    public final String contentVersion;
     public final Severity severity;
     public final String message;
     public final String alertTitle;
@@ -45,6 +55,10 @@ public final class RuleSpec {
      * persisted.
      */
     public final String routingField;
+    /** Explicit state grouping dimension; keyField remains a legacy alias. */
+    public final String groupBy;
+    /** Event-time watermark and late-record handling contract for stateful rules. */
+    public final EventTimePolicy eventTimePolicy;
     public final Integer threshold;   // 阈值规则的触发次数
     public final Duration window;     // 时间窗口
     /** 规则生命周期状态（2026-08-11）：DRAFT / TESTING / ACTIVE / DISABLED / ARCHIVED。
@@ -70,6 +84,8 @@ public final class RuleSpec {
         this.id = str(m, "id");
         this.name = str(m, "name");
         this.type = str(m, "type").toLowerCase();
+        this.version = str(m, "version");
+        this.contentVersion = str(m, "contentVersion");
         this.severity = Severity.valueOf(str(m, "severity").toUpperCase());
         Map<String, Object> alert = objectMap(m.get("alert"));
         String legacyMessage = str(m, "message");
@@ -79,13 +95,18 @@ public final class RuleSpec {
         this.message = this.alertDescription;
         this.mitre = str(m, "mitre");
         Object kf = m.get("keyField");
-        this.keyField = kf == null ? null : String.valueOf(kf);
+        Object gb = m.get("groupBy");
+        String legacyKey = kf == null ? null : String.valueOf(kf);
+        String declaredGroup = gb == null ? null : String.valueOf(gb);
+        this.groupBy = nullableFirstNonBlank(declaredGroup, legacyKey);
+        this.keyField = nullableFirstNonBlank(legacyKey, this.groupBy);
         Object rf = m.get("routingField");
-        this.routingField = rf == null ? this.keyField : String.valueOf(rf);
+        this.routingField = rf == null ? this.groupBy : String.valueOf(rf);
         Object th = m.get("threshold");
         this.threshold = th == null ? null : ((Number) th).intValue();
         Object w = m.get("window");
         this.window = w == null ? Duration.ofMinutes(1) : parseWindow(String.valueOf(w));
+        this.eventTimePolicy = EventTimePolicy.parse(m.get("lateEventPolicy"), this.window);
         Object en = m.get("enabled");
         boolean enB = en == null || Boolean.parseBoolean(String.valueOf(en));
         Object st = m.get("status");
@@ -123,17 +144,17 @@ public final class RuleSpec {
         return switch (type) {
             case "threshold" -> new ThresholdRule(
                     id, name, matcher(nonWhitelisted), keyExtractor(),
-                    threshold, window, severity, alertTitle, alertDescription);
+                    threshold, window, eventTimePolicy, severity, alertTitle, alertDescription);
             case "pattern" -> new PatternRule(id, name, matcher(nonWhitelisted), severity,
                     alertTitle, alertDescription);
             case "correlation" -> new CorrelationRule(
                     id, name, keyExtractor(),
                     steps.stream().map(conds -> and(conds).and(nonWhitelisted)).toList(),
-                    window, severity, alertTitle, alertDescription);
+                    window, eventTimePolicy, severity, alertTitle, alertDescription);
             case "correlation-set" -> new CorrelationSetRule(
                     id, name, keyExtractor(),
                     steps.stream().map(conds -> and(conds).and(nonWhitelisted)).toList(),
-                    window, severity, alertTitle, alertDescription);
+                    window, eventTimePolicy, severity, alertTitle, alertDescription);
             // UEBA：与实体自身历史水位比较的离群检测
             case "baseline" -> new BaselineRule(
                     id, name, matcher(nonWhitelisted), keyExtractor(),
@@ -153,9 +174,50 @@ public final class RuleSpec {
         };
     }
 
+    /**
+     * Fingerprint the executable state semantics, independently of the rule
+     * implementation's serialized-state format. A change to threshold,
+     * grouping, window, matcher, content/business version, or either routing
+     * plan therefore forces a cold replay instead of reusing an old window
+     * under a new meaning.
+     */
+    public String stateSemanticsFingerprint() {
+        Map<String, Object> semantics = new LinkedHashMap<>();
+        semantics.put("semanticsVersion", "state-semantics-v1");
+        semantics.put("detectionRoutingVersion", DetectionRoutingKey.VERSION);
+        semantics.put("stateRoutingVersion", StateRoutingKey.VERSION);
+        semantics.put("businessVersion", version);
+        semantics.put("contentVersion", contentVersion);
+        semantics.put("type", type);
+        semantics.put("keyField", keyField);
+        semantics.put("groupBy", groupBy);
+        semantics.put("routingField", routingField);
+        semantics.put("lateEventPolicy", eventTimePolicy.toMap());
+        semantics.put("threshold", threshold);
+        semantics.put("window", window.toString());
+        semantics.put("match", match);
+        semantics.put("matchAny", matchAny);
+        semantics.put("whitelist", whitelist);
+        semantics.put("steps", steps);
+        semantics.put("valueField", valueField);
+        semantics.put("sigma", sigma);
+        semantics.put("baselineWindows", baselineWindows);
+        semantics.put("warmup", warmup);
+        semantics.put("minCount", minCount);
+        try {
+            byte[] canonical = Json.mapper().writer()
+                    .with(com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
+                    .writeValueAsBytes(semantics);
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(canonical);
+            return "state-v1-" + HexFormat.of().formatHex(digest).substring(0, 32);
+        } catch (Exception failure) {
+            throw new IllegalStateException("unable to fingerprint rule state semantics", failure);
+        }
+    }
+
     /** 分组维度取值：host / source 走事件顶层字段，其余走 fields */
     private Function<SecurityEvent, String> keyExtractor() {
-        return fieldExtractor(keyField);
+        return fieldExtractor(groupBy);
     }
 
     /** 通用字段取值器，统一顶层字段与结构化字段的取法 */
@@ -170,6 +232,8 @@ public final class RuleSpec {
         out.put("id", id);
         out.put("name", name);
         out.put("type", type);
+        if (!version.isBlank()) out.put("version", version);
+        if (!contentVersion.isBlank()) out.put("contentVersion", contentVersion);
         out.put("severity", severity.name());
         out.put("message", message);
         Map<String, Object> alert = new LinkedHashMap<>();
@@ -178,9 +242,11 @@ public final class RuleSpec {
         out.put("alert", alert);
         if (mitre != null && !mitre.isBlank()) out.put("mitre", mitre);
         if (keyField != null) out.put("keyField", keyField);
+        if (groupBy != null) out.put("groupBy", groupBy);
         if (routingField != null) out.put("routingField", routingField);
         if (threshold != null) out.put("threshold", threshold);
         out.put("window", window.toSeconds() + "s");
+        if (isStatefulType()) out.put("lateEventPolicy", eventTimePolicy.toMap());
         out.put("enabled", enabled);
         if (status != null) out.put("status", status);
         if (valueField != null) out.put("valueField", valueField);
@@ -193,6 +259,10 @@ public final class RuleSpec {
         if (!whitelist.isEmpty()) out.put("whitelist", whitelist);
         if (!steps.isEmpty()) out.put("steps", steps);
         return out;
+    }
+
+    private boolean isStatefulType() {
+        return List.of("threshold", "correlation", "correlation-set", "baseline", "rare").contains(type);
     }
 
     private Predicate<SecurityEvent> and(List<Map<String, String>> conds) {
@@ -326,6 +396,13 @@ public final class RuleSpec {
             if (value != null && !value.isBlank()) return value;
         }
         return "";
+    }
+
+    private static String nullableFirstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) return value;
+        }
+        return null;
     }
 
     private static String str(Map<String, Object> m, String k) {

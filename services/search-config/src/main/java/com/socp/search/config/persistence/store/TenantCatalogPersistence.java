@@ -2,6 +2,7 @@ package com.socp.search.config.persistence.store;
 
 
 import com.socp.search.config.persistence.repository.TenantCatalogEntryRepository;
+import com.socp.search.config.config.SearchRuntimeRole;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -13,6 +14,7 @@ import java.util.List;
  * through another Search instance are immediately visible to this instance.
  */
 @Component
+@SearchRuntimeRole(SearchRuntimeRole.Role.API)
 public class TenantCatalogPersistence {
 
     private final TenantCatalogEntryRepository repository;

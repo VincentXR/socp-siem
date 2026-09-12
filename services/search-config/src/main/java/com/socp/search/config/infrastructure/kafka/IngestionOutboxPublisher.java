@@ -4,8 +4,10 @@ import com.socp.platform.data.outbox.OutboxRetryPolicy;
 
 import jakarta.annotation.PreDestroy;
 import com.socp.search.config.config.IngestRuntimeProperties;
+import com.socp.search.config.config.SearchRuntimeRole;
 import com.socp.search.config.domain.IngestionOutboxEvent;
 import com.socp.search.config.persistence.repository.IngestionOutboxRepository;
+import com.socp.search.config.service.port.IngestionPublicationTrigger;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.platform.tenant.persistence.TenantSystemJob;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -26,7 +28,8 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /** Reliably drains canonical-event publication intents to Kafka. */
 @Component
-public class IngestionOutboxPublisher {
+@SearchRuntimeRole(SearchRuntimeRole.Role.WORKER)
+public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
 
     private static final Logger log = LoggerFactory.getLogger(IngestionOutboxPublisher.class);
     private static final int DEFAULT_MAX_ATTEMPTS = 12;

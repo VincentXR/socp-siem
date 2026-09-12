@@ -44,6 +44,15 @@ def runtime_unit_membership() -> dict[str, str]:
     return membership
 
 
+def deployment_document(manifest: str, name: str) -> str:
+    """Return one Deployment document from a multi-workload manifest."""
+    for document in re.split(r"(?m)^---\s*$", manifest):
+        if (re.search(r"^kind:\s*Deployment\s*$", document, re.MULTILINE)
+                and re.search(rf"^  name:\s*{re.escape(name)}\s*$", document, re.MULTILINE)):
+            return document
+    return ""
+
+
 def main() -> int:
     errors: list[str] = []
     target_units = runtime_unit_membership()
@@ -96,7 +105,8 @@ def main() -> int:
             )
             if expected_unit is None:
                 errors.append(f"{path.relative_to(ROOT)} is not assigned to a target runtime unit")
-            elif actual_units != [expected_unit, expected_unit]:
+            elif (not actual_units or set(actual_units) != {expected_unit}
+                  or len(actual_units) % 2 != 0):
                 errors.append(
                     f"{path.relative_to(ROOT)} must declare socp.io/runtime-unit="
                     f"{expected_unit} on Deployment and Pod metadata"
@@ -117,6 +127,21 @@ def main() -> int:
                 elif not re.search(r"@sha256:(?:[0-9a-f]{64}|REPLACE_WITH_RELEASE_DIGEST)$", image):
                     errors.append(f"{path.relative_to(ROOT)} has malformed image digest: {image}")
 
+        search_manifest = (K8S_DIR / "search-config.yaml").read_text(encoding="utf-8")
+        for workload, role in (("search-config-api", "api"),
+                               ("search-config-worker", "worker")):
+            deployment = deployment_document(search_manifest, workload)
+            if not deployment:
+                errors.append(f"search-config.yaml lacks Deployment {workload}")
+            elif not re.search(
+                    rf"(?ms)^[ \t]+- name:\s*SOCP_SEARCH_RUNTIME_ROLE\s*$.*?"
+                    rf"^[ \t]+value:\s*{re.escape(role)}\s*$",
+                    deployment):
+                errors.append(
+                    f"search-config.yaml must set SOCP_SEARCH_RUNTIME_ROLE={role} "
+                    f"for {workload}"
+                )
+
         kustomization = (K8S_DIR / "kustomization.yaml").read_text(encoding="utf-8")
         for workload in ("api-gateway.yaml", "search-config.yaml", "detect-web.yaml", "alert-web.yaml"):
             if not re.search(rf"^\s*-\s+{re.escape(workload)}\s*$", kustomization, re.MULTILINE):
@@ -125,16 +150,18 @@ def main() -> int:
             errors.append("Kubernetes kustomization omits autoscaling.yaml")
 
         autoscaling = (K8S_DIR / "autoscaling.yaml").read_text(encoding="utf-8")
-        for workload in ("api-gateway", "search-config", "detect-web", "alert-web"):
+        for workload in ("api-gateway", "search-config-api", "search-config-worker",
+                         "detect-web-api", "detect-web-worker", "alert-web"):
             if not re.search(rf"kind:\s+HorizontalPodAutoscaler[\s\S]*?name:\s+{re.escape(workload)}\b", autoscaling):
                 errors.append(f"autoscaling.yaml lacks HPA for {workload}")
 
         runtime = (K8S_DIR / "runtime-config.yaml").read_text(encoding="utf-8")
         required_routes = {
             "SOCP_SSA_URI": "http://alert-web:8080",
-            "SOCP_GLS_URI": "http://search-config:8080",
-            "SOCP_GAS_WEB_URI": "http://detect-web:8080",
-            "SOCP_DETECT_URL": "http://detect-web:8080",
+            "SOCP_GLS_URI": "http://search-config-api:8080",
+            "SOCP_GAS_WEB_URI": "http://detect-web-api:8080",
+            "SOCP_GAS_WORKER_URI": "http://detect-web-worker:8080",
+            "SOCP_DETECT_URL": "http://detect-web-api:8080",
             "SOCP_ALERT_URL": "http://alert-web:8080",
         }
         for name, endpoint in required_routes.items():
@@ -151,6 +178,24 @@ def main() -> int:
                      "SOCP_DETECT_WEB_IMAGE", "SOCP_ALERT_WEB_IMAGE"):
             if not re.search(rf"\$\{{{name}:\?", compose):
                 errors.append(f"production Compose must require {name}")
+        for service, variable, role in (
+            ("search-config-api", "SOCP_SEARCH_RUNTIME_ROLE", "api"),
+            ("search-config-worker", "SOCP_SEARCH_RUNTIME_ROLE", "worker"),
+            ("detect-web-api", "SOCP_DETECT_RUNTIME_ROLE", "api"),
+            ("detect-web-worker", "SOCP_DETECT_RUNTIME_ROLE", "worker"),
+        ):
+            block = re.search(
+                rf"(?ms)^  {re.escape(service)}:\s*\n.*?(?=^  \S|\Z)",
+                compose,
+            )
+            if block is None or not re.search(
+                rf"^\s+{re.escape(variable)}:\s*{re.escape(role)}\s*$",
+                block.group(0),
+                re.MULTILINE,
+            ):
+                errors.append(
+                    f"production Compose must set {variable}={role} for {service}"
+                )
         for bad in ("PASSWORD: socp", "PASSWORD: admin", "PASSWORD: Socp@",
                     "TOKEN: dev-", ":latest"):
             if bad in compose:

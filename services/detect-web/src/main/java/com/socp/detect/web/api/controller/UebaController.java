@@ -1,6 +1,7 @@
 package com.socp.detect.web.api.controller;
 
 
+import com.socp.detect.web.config.DetectRuntimeRole;
 import com.socp.detect.web.persistence.store.WatchlistStore;
 import com.socp.detect.web.service.EntityRiskStore;
 import com.socp.rule.score.RiskScorer;
@@ -27,6 +28,7 @@ import jakarta.validation.constraints.Size;
  * 提供"最该看哪个实体"的排序视图，以及评分模型的可解释试算入口。
  */
 @RestController
+@DetectRuntimeRole(DetectRuntimeRole.Role.API)
 @RequestMapping("/api/v1")
 public class UebaController {
 

@@ -27,6 +27,10 @@ public interface AlarmRepository extends TenantScopedRepository<Alarm, String>, 
 
     Optional<Alarm> findByTenantIdAndSourceAlertId(String tenantId, String sourceAlertId);
 
+    List<Alarm> findByTenantIdAndTriggerEventId(String tenantId, String triggerEventId);
+
+    List<Alarm> findByTenantIdAndIdInOrderByOccurredAtDescIdAsc(String tenantId, List<String> ids);
+
     /**
      * Applies asynchronous TI enrichment without merging a detached Alarm and
      * overwriting fields changed concurrently by an analyst or another flow.

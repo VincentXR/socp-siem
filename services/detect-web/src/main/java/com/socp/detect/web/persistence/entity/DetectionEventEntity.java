@@ -67,6 +67,10 @@ public class DetectionEventEntity {
     @Column(name = "dead_lettered_at")
     private Instant deadLetteredAt;
 
+    /** Compact calculation/suppression summary; raw input remains in raw_event. */
+    @Column(name = "result_json", columnDefinition = "TEXT")
+    private String resultJson = "{}";
+
     public DetectionEventEntity() {
     }
 
@@ -121,4 +125,6 @@ public class DetectionEventEntity {
     public void setCompletedAt(Instant completedAt) { this.completedAt = completedAt; }
     public Instant getDeadLetteredAt() { return deadLetteredAt; }
     public void setDeadLetteredAt(Instant deadLetteredAt) { this.deadLetteredAt = deadLetteredAt; }
+    public String getResultJson() { return resultJson; }
+    public void setResultJson(String resultJson) { this.resultJson = resultJson == null ? "{}" : resultJson; }
 }

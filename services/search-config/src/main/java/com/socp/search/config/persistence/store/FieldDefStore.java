@@ -2,6 +2,7 @@ package com.socp.search.config.persistence.store;
 
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.socp.search.config.config.SearchRuntimeRole;
 import com.socp.search.config.domain.FieldDef;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -13,6 +14,7 @@ import java.util.List;
  * 种子为平台内置字段（与 com.siem 归一化事件对齐）。
  */
 @Component
+@SearchRuntimeRole(SearchRuntimeRole.Role.API)
 public class FieldDefStore {
 
     private final TenantCatalog<FieldDef> catalog;

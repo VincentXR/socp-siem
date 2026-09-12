@@ -5,6 +5,7 @@ import com.socp.rule.partition.DetectionRoutingKey;
 import com.socp.search.config.parser.CanonicalEvent;
 import com.socp.search.config.parser.ParserRegistry;
 import com.socp.search.config.domain.SearchEvent;
+import com.socp.search.config.config.SearchRuntimeRole;
 import com.socp.search.config.persistence.store.ParseRuleStore;
 import com.socp.search.config.persistence.store.ReferenceSetStore;
 import com.socp.search.config.schema.CanonicalEventSchema;
@@ -21,10 +22,12 @@ import java.util.UUID;
 
 /** Converts one vendor/raw log line into the canonical search/detection event contract. */
 @Component
+@SearchRuntimeRole(SearchRuntimeRole.Role.API)
 public class IngestEventNormalizer {
 
     /** Keep attacker-controlled parser output from creating unbounded maps. */
     private static final int MAX_NORMALIZED_FIELDS = 512;
+    private static final int MAX_INDEXED_DIMENSION_CHARS = 255;
 
     private final ReferenceSetStore referenceSets;
     private final ParserRegistry parsers;
@@ -66,7 +69,7 @@ public class IngestEventNormalizer {
                 : parsers.parse(line, sourceContext.format(), null);
         Map<String, String> canonical = new LinkedHashMap<>(parsed == null ? Map.of() : parsed);
         if (canonical.size() > MAX_NORMALIZED_FIELDS) {
-            throw new IllegalArgumentException("event contains too many fields (max "
+            throw new IngestParseException("event contains too many fields (max "
                     + MAX_NORMALIZED_FIELDS + ")");
         }
         if (sourceContext != null && sourceContext.resolved()
@@ -114,6 +117,10 @@ public class IngestEventNormalizer {
         if ((source.isBlank() || "sshd".equalsIgnoreCase(source))
                 && "authentication".equalsIgnoreCase(category)) source = "auth";
         String host = pick(fields, "host", "hostname", "device", CanonicalEvent.HOST_NAME);
+        source = source.isBlank() ? "unknown" : source;
+        host = host.isBlank() ? "unknown" : host;
+        requireIndexedDimensionLength("source", source);
+        requireIndexedDimensionLength("host", host);
         // Keep the producer-side envelope inside the canonical severity
         // vocabulary. Vendor parsers commonly emit WARN/WARNING, ERROR, or
         // DEBUG; forwarding those values unchanged would make the Kafka
@@ -123,9 +130,18 @@ public class IngestEventNormalizer {
         String eventId = firstNonBlank(canonical.get("eventId"), canonical.get("event.id"),
                 canonical.get("id"), fields.get("eventId"), fields.get("event_id"));
         if (eventId == null) {
-            eventId = fallbackEventId == null || fallbackEventId.isBlank()
-                    ? UUID.randomUUID().toString() : stableEventId(fallbackEventId);
+            String position = stableCollectorPosition(canonical);
+            if (position != null) {
+                String collector = firstNonBlank(collectorHint, canonical.get("collector"),
+                        canonical.get("collector_tag"), canonical.get("collectorTag"));
+                eventId = stableEventId("position|" + (collector == null ? "unknown" : collector)
+                        + "|" + position);
+            } else {
+                eventId = fallbackEventId == null || fallbackEventId.isBlank()
+                        ? UUID.randomUUID().toString() : stableEventId(fallbackEventId);
+            }
         }
+        requireIndexedDimensionLength("eventId", eventId);
 
         // Tenant identity comes from the authenticated request context, never
         // from a JSON field supplied by the collector.  Overwrite a spoofed
@@ -135,9 +151,23 @@ public class IngestEventNormalizer {
         fields.put("detection_routing_field", DetectionRoutingKey.field(source, host, routingFields));
         fields.put("detection_routing_value", DetectionRoutingKey.value(source, host, routingFields));
 
-        SearchEvent event = new SearchEvent(eventId, parseTimestamp(pick(fields, "timestamp", "@timestamp", "time")),
-                source.isBlank() ? "unknown" : source,
-                host.isBlank() ? "unknown" : host,
+        String timestampValue = pick(fields, "timestamp", "@timestamp", "time");
+        boolean generatedEventTime = !hasValidTimestamp(timestampValue);
+        if (generatedEventTime) {
+            // The event-time value remains useful for online detection, while
+            // the marker lets the durable identity ignore a different retry
+            // clock reading when the producer did not supply event time.
+            fields.put("event_time_generated", "true");
+        } else {
+            fields.remove("event_time_generated");
+        }
+        if (fields.size() > MAX_NORMALIZED_FIELDS) {
+            throw new IngestParseException("normalized event contains too many fields (max "
+                    + MAX_NORMALIZED_FIELDS + ")");
+        }
+
+        SearchEvent event = new SearchEvent(eventId, parseTimestamp(timestampValue),
+                source, host,
                 severity.toUpperCase(java.util.Locale.ROOT), rawLog,
                 Map.copyOf(stringValues(fields)), Map.copyOf(ecs));
         Map<String, Object> payload = new LinkedHashMap<>();
@@ -158,6 +188,30 @@ public class IngestEventNormalizer {
         String value = fallbackEventId.trim();
         if (value.length() > 512) value = value.substring(0, 512);
         return UUID.nameUUIDFromBytes(value.getBytes(StandardCharsets.UTF_8)).toString();
+    }
+
+    /** Prefer a collector's durable position over hashing the log body. */
+    private static String stableCollectorPosition(Map<String, String> canonical) {
+        String topic = firstNonBlank(canonical.get("topic"), canonical.get("source.topic"),
+                canonical.get("kafka_topic"));
+        String partition = firstNonBlank(canonical.get("partition"), canonical.get("source.partition"),
+                canonical.get("kafka_partition"));
+        String offset = firstNonBlank(canonical.get("offset"), canonical.get("source.offset"),
+                canonical.get("kafka_offset"));
+        if (topic != null && partition != null && offset != null) {
+            return "kafka|" + topic + "|" + partition + "|" + offset;
+        }
+
+        String file = firstNonBlank(canonical.get("file"), canonical.get("file_path"),
+                canonical.get("source.file"), canonical.get("log.file.path"));
+        if (file != null && offset != null) return "file|" + file + "|" + offset;
+
+        String batch = firstNonBlank(canonical.get("batch_id"), canonical.get("batchId"),
+                canonical.get("ingest_batch_id"));
+        String line = firstNonBlank(canonical.get("line_number"), canonical.get("lineNumber"),
+                canonical.get("batch_line"));
+        if (batch != null && line != null) return "batch|" + batch + "|" + line;
+        return null;
     }
 
     private static boolean isSparseBase(Map<String, String> canonical) {
@@ -258,11 +312,33 @@ public class IngestEventNormalizer {
         }
     }
 
+    private static boolean hasValidTimestamp(String value) {
+        if (value == null || value.isBlank()) return false;
+        try {
+            Instant.parse(value);
+            return true;
+        } catch (java.time.format.DateTimeParseException notInstant) {
+            try {
+                Instant.from(DateTimeFormatter.ISO_OFFSET_DATE_TIME.parse(value));
+                return true;
+            } catch (java.time.DateTimeException invalid) {
+                return false;
+            }
+        }
+    }
+
     private static String collector(Map<String, Object> fields, String fallback) {
         if (fallback != null && !fallback.isBlank()) return fallback;
         Object collector = fields.get("collector");
         return collector == null || String.valueOf(collector).isBlank()
                 ? "unknown" : String.valueOf(collector);
+    }
+
+    private static void requireIndexedDimensionLength(String field, String value) {
+        if (value != null && value.length() > MAX_INDEXED_DIMENSION_CHARS) {
+            throw new IngestParseException(field + " exceeds "
+                    + MAX_INDEXED_DIMENSION_CHARS + " characters");
+        }
     }
 
     private static String tenant() {

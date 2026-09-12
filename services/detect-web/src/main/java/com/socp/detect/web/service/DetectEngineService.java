@@ -2,9 +2,11 @@ package com.socp.detect.web.service;
 
 import com.socp.detect.web.engine.AlertForwarder;
 import com.socp.detect.web.engine.RecentAlertSink;
+import com.socp.detect.web.engine.TenantAdmission;
 import com.socp.detect.web.metrics.DetectionPerformanceMetrics;
 import com.socp.detect.web.persistence.store.DetectionStateStore;
 import com.socp.detect.web.persistence.store.DetectionEventClaim;
+import com.socp.detect.web.persistence.store.DetectionStateOwnership;
 import com.socp.detect.web.persistence.store.InMemoryDetectionStateStore;
 import com.socp.detect.web.persistence.store.RuleSpecStore;
 import com.socp.rule.config.RuleSpec;
@@ -18,6 +20,7 @@ import com.socp.rule.rules.Rule;
 import com.socp.rule.state.DetectionStateSnapshot;
 import com.socp.rule.state.DetectionStateSnapshotStore;
 import com.socp.rule.state.StateRoutingKey;
+import com.socp.rule.state.StatefulRule;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.springframework.beans.factory.annotation.Value;
@@ -65,12 +68,42 @@ public class DetectEngineService {
     private final Map<String, AtomicLong> snapshotCounters = new ConcurrentHashMap<>();
     /** Last durable Kafka position included in each tenant/shard snapshot. */
     private final Map<String, Map<Integer, Long>> snapshotOffsets = new ConcurrentHashMap<>();
+    /** Ownership leases are keyed by the actual Kafka state unit, not tenant. */
+    private final DetectionStateOwnership stateOwnership;
+    private final Map<String, DetectionStateOwnership.Lease> stateLeases = new ConcurrentHashMap<>();
+    private final Map<String, Object> stateLeaseLocks = new ConcurrentHashMap<>();
+    /** Per-tenant rate, pending-byte, and active-entity admission budgets. */
+    private final TenantAdmission tenantAdmission = new TenantAdmission();
+    /** Revoke wins over a concurrent pre-admission lease lookup. */
+    private final Set<Integer> revokedPartitions = ConcurrentHashMap.newKeySet();
     private final AtomicReference<Set<Integer>> assignedPartitions = new AtomicReference<>(Set.of());
     /** Starts READY for source-compatible unit callers; Spring invokes start before traffic. */
     private final AtomicReference<RecoveryStatus> recoveryStatus =
             new AtomicReference<>(RecoveryStatus.READY);
     private volatile String recoveryFailure;
     private final ReentrantReadWriteLock engineLifecycle = new ReentrantReadWriteLock(true);
+
+    @Value("${socp.detect.tenant.max-events-per-second:0}")
+    private long tenantMaxEventsPerSecond = 0L;
+
+    @Value("${socp.detect.tenant.rate-burst:100}")
+    private long tenantRateBurst = 100L;
+
+    @Value("${socp.detect.tenant.max-pending-bytes:67108864}")
+    private long tenantMaxPendingBytes = 64L * 1024 * 1024;
+
+    @Value("${socp.detect.tenant.max-active-entities:100000}")
+    private int tenantMaxActiveEntities = 100_000;
+
+    @Value("${socp.detect.tenant.entity-idle-ttl-ms:1800000}")
+    private long tenantEntityIdleTtlMs = 30 * 60 * 1000L;
+
+    @Value("${socp.kafka.topic:socp-events}")
+    private String inputTopic = "socp-events";
+
+    /** Management-only processes must not restore or rebuild detection state. */
+    @Value("${socp.detect.runtime-role:all}")
+    private String runtimeRole = "all";
 
     @Value("${socp.detect.engine.idle-ttl-ms:1800000}")
     private long engineIdleTtlMs = 30 * 60 * 1000L;
@@ -87,11 +120,20 @@ public class DetectEngineService {
     @Value("${socp.detect.state.shards:1}")
     private int stateShardCount = 1;
 
-    @org.springframework.beans.factory.annotation.Autowired
     public DetectEngineService(RuleSpecStore store, RecentAlertSink sink, AlertForwarder forwarder,
                                RuleChangePublisher rulePublisher, DetectionStateStore stateStore,
                                DetectionPerformanceMetrics performanceMetrics,
                                DetectionStateSnapshotStore snapshotStore) {
+        this(store, sink, forwarder, rulePublisher, stateStore, performanceMetrics,
+                snapshotStore, DetectionStateOwnership.noop());
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public DetectEngineService(RuleSpecStore store, RecentAlertSink sink, AlertForwarder forwarder,
+                               RuleChangePublisher rulePublisher, DetectionStateStore stateStore,
+                               DetectionPerformanceMetrics performanceMetrics,
+                               DetectionStateSnapshotStore snapshotStore,
+                               DetectionStateOwnership stateOwnership) {
         this.store = store;
         this.sink = sink;
         this.forwarder = forwarder;
@@ -99,6 +141,7 @@ public class DetectEngineService {
         this.stateStore = stateStore;
         this.processingObserver = performanceMetrics;
         this.snapshotStore = snapshotStore;
+        this.stateOwnership = stateOwnership == null ? DetectionStateOwnership.noop() : stateOwnership;
     }
 
     /** Source-compatible constructor for callers that do not configure snapshots. */
@@ -118,6 +161,7 @@ public class DetectEngineService {
         this.stateStore = stateStore;
         this.processingObserver = RuleProcessingObserver.NOOP;
         this.snapshotStore = null;
+        this.stateOwnership = DetectionStateOwnership.noop();
     }
 
     /** Unit-test/source compatibility constructor; production uses the JPA journal. */
@@ -157,6 +201,13 @@ public class DetectEngineService {
 
     @PostConstruct
     public void start() {
+        if (!workerRole()) {
+            // The API process owns rule/configuration writes only. The worker
+            // is the sole process allowed to restore state and create live
+            // rule engines, so an API restart cannot touch detection state.
+            markReady();
+            return;
+        }
         markRecovering();
         try {
             com.socp.platform.tenant.context.TenantContext.runWith(
@@ -177,24 +228,80 @@ public class DetectEngineService {
             snapshotCounters.clear();
             snapshotOffsets.clear();
             suppressor.close();
+            tenantAdmission.clear();
+            releaseAllStateLeases();
         } finally {
             engineLifecycle.writeLock().unlock();
         }
     }
 
+    /** Release only the fencing rows owned by this process on partition revoke. */
+    public synchronized void releaseForPartitions(Set<Integer> partitions) {
+        if (partitions == null || partitions.isEmpty()) return;
+        Set<Integer> revoked = Set.copyOf(partitions);
+        revokedPartitions.addAll(revoked);
+        assignedPartitions.updateAndGet(current -> {
+            Set<Integer> retained = new java.util.HashSet<>(current);
+            retained.removeAll(revoked);
+            return Set.copyOf(retained);
+        });
+        for (String key : stateLeases.keySet()) {
+            Object lock = stateLeaseLocks.get(key);
+            if (lock == null) continue;
+            synchronized (lock) {
+                DetectionStateOwnership.Lease lease = stateLeases.get(key);
+                if (lease != null && revoked.contains(lease.partition())
+                        && stateLeases.remove(key, lease)) {
+                    stateOwnership.release(lease);
+                }
+            }
+        }
+    }
+
+    private void releaseAllStateLeases() {
+        for (String key : stateLeases.keySet()) {
+            Object lock = stateLeaseLocks.get(key);
+            if (lock == null) continue;
+            synchronized (lock) {
+                DetectionStateOwnership.Lease lease = stateLeases.remove(key);
+                if (lease != null) stateOwnership.release(lease);
+            }
+        }
+    }
+
     private RuleEngine buildEngine(String tenant, List<SecurityEvent> history) {
-        List<Rule> rules = store.list(tenant).stream()
+        return buildEngine(tenant, history, null);
+    }
+
+    private RuleEngine buildEngine(String tenant, List<SecurityEvent> history,
+                                   Runnable durableCommitGuard) {
+        List<RuleSpec> specs = store.list(tenant).stream()
                 .map(RuleSpec::new)
                 .filter(spec -> spec.enabled)
-                .map(RuleSpec::toRule)
                 .toList();
+        List<Rule> rules = new java.util.ArrayList<>(specs.size());
+        Map<String, String> stateCompatibilityVersions = new LinkedHashMap<>();
+        for (RuleSpec spec : specs) {
+            Rule rule = spec.toRule();
+            rules.add(rule);
+            if (rule instanceof StatefulRule stateful) {
+                stateCompatibilityVersions.put(spec.id,
+                        stateful.stateVersion() + ":" + spec.stateSemanticsFingerprint());
+            } else {
+                // The result envelope needs a version for stateless rules as
+                // well. Keep the same semantic fingerprint so a result can
+                // be explained against the exact published content.
+                stateCompatibilityVersions.put(spec.id,
+                        "stateless-v1:" + spec.stateSemanticsFingerprint());
+            }
+        }
         RuleEngine engine = new RuleEngine(
                 rules, List.of(sink), suppressor, processingObserver,
                 event -> {
                     var tenantScope = com.socp.platform.tenant.context.TenantContext.open(
                             event.requireTenantId());
                     return tenantScope::close;
-                });
+                }, durableCommitGuard, stateCompatibilityVersions);
         // The journal itself clamps this to its configured retention. 24h
         // covers the bundled UEBA baselines while keeping restart bounded.
         // Any restore failure is propagated so readiness cannot claim a
@@ -244,6 +351,67 @@ public class DetectEngineService {
         return Math.max(1, Math.min(256, stateShardCount));
     }
 
+    private DetectionStateOwnership.Lease stateLeaseFor(int partition, int shard) {
+        if (partition < 0) return null;
+        if (revokedPartitions.contains(partition)) {
+            throw new DetectionStateOwnership.StaleStateOwnerException(
+                    "Kafka partition is no longer assigned: " + partition);
+        }
+        int resolvedShard = normalizeShard(shard);
+        String key = DetectionStateOwnership.unitKey(inputTopic, partition, resolvedShard);
+        Object lock = stateLeaseLocks.computeIfAbsent(key, ignored -> new Object());
+        synchronized (lock) {
+            if (revokedPartitions.contains(partition)) {
+                throw new DetectionStateOwnership.StaleStateOwnerException(
+                        "Kafka partition is no longer assigned: " + partition);
+            }
+            DetectionStateOwnership.Lease current = stateLeases.get(key);
+            if (current != null) {
+                try {
+                    stateOwnership.assertCurrent(current);
+                    return current;
+                } catch (DetectionStateOwnership.StaleStateOwnerException stale) {
+                    stateLeases.remove(key, current);
+                }
+            }
+            DetectionStateOwnership.Lease acquired = stateOwnership.acquire(
+                    inputTopic, partition, resolvedShard);
+            stateLeases.put(key, acquired);
+            return acquired;
+        }
+    }
+
+    private Runnable durableGuardFor(int partition, int shard) {
+        DetectionStateOwnership.Lease lease = stateLeaseFor(partition, shard);
+        return lease == null ? () -> { } : () -> stateOwnership.assertCurrent(lease);
+    }
+
+    private void acquireStateLeases(Set<Integer> partitions) {
+        if (partitions == null) return;
+        for (Integer partition : partitions) {
+            if (partition == null || partition < 0) continue;
+            for (int shard = 0; shard < effectiveShardCount(); shard++) {
+                stateLeaseFor(partition, shard);
+            }
+        }
+    }
+
+    private void releaseUnassignedStateLeases(Set<Integer> partitions) {
+        for (String key : stateLeases.keySet()) {
+            Object lock = stateLeaseLocks.get(key);
+            if (lock == null) continue;
+            synchronized (lock) {
+                DetectionStateOwnership.Lease lease = stateLeases.get(key);
+                boolean retained = lease != null && partitions != null
+                        && partitions.contains(lease.partition())
+                        && lease.shard() < effectiveShardCount();
+                if (!retained && lease != null && stateLeases.remove(key, lease)) {
+                    stateOwnership.release(lease);
+                }
+            }
+        }
+    }
+
     private static String engineKey(String tenant, int shard) {
         return tenant + "\u0000shard-" + shard;
     }
@@ -258,6 +426,7 @@ public class DetectEngineService {
 
     /** 规则热更新：原子替换引擎（旧引擎毒丸退出），无需重启进程 */
     public void reload() {
+        if (!workerRole()) return;
         markRecovering();
         try {
             replaceTenantEngine(store.tenant());
@@ -284,13 +453,19 @@ public class DetectEngineService {
     }
 
     private synchronized void restoreForPartitions(Set<Integer> partitions, boolean force) {
+        if (!workerRole()) return;
         if (partitions == null || partitions.isEmpty()) return;
         Set<Integer> normalized = Set.copyOf(partitions);
         if (!force && normalized.equals(assignedPartitions.get())) return;
         markRecovering();
+        revokedPartitions.removeAll(normalized);
         assignedPartitions.set(normalized);
         try {
+            acquireStateLeases(normalized);
             replaceAllEnginesFromState(normalized);
+            // Old engines have drained under the lifecycle write lock before
+            // revoked partition leases are released.
+            releaseUnassignedStateLeases(normalized);
             markReady();
         } catch (RuntimeException failure) {
             markDegraded(failure);
@@ -299,11 +474,14 @@ public class DetectEngineService {
 
     /** Used when Kafka is disabled or for an operational full-state replay. */
     public synchronized void restoreAll() {
+        if (!workerRole()) return;
         com.socp.platform.tenant.context.TenantContext.runAsSystem(() -> {
             markRecovering();
+            revokedPartitions.clear();
             assignedPartitions.set(Set.of());
             try {
                 replaceAllEnginesFromState(Set.of());
+                releaseUnassignedStateLeases(Set.of());
                 markReady();
             } catch (RuntimeException failure) {
                 markDegraded(failure);
@@ -319,6 +497,7 @@ public class DetectEngineService {
             java.time.Instant checkpoint = null;
             java.time.Instant referenceTimestamp = null;
             Map<Integer, Long> referenceOffsets = null;
+            Map<Integer, Long> referenceOwnerEpochs = null;
             boolean coherent = true;
             boolean complete = !statefulRuleIds.isEmpty();
             for (String ruleId : statefulRuleIds) {
@@ -339,6 +518,11 @@ public class DetectEngineService {
                 // double-applying the newer rows.
                 if (referenceOffsets == null) referenceOffsets = snapshot.partitionOffsets();
                 else if (!referenceOffsets.equals(snapshot.partitionOffsets())) coherent = false;
+                if (referenceOwnerEpochs == null) referenceOwnerEpochs = snapshot.partitionOwnerEpochs();
+                else if (!referenceOwnerEpochs.equals(snapshot.partitionOwnerEpochs())) coherent = false;
+                if (snapshot.inputTopic() != null && !inputTopic.equals(snapshot.inputTopic())) {
+                    coherent = false;
+                }
                 if (referenceTimestamp == null) referenceTimestamp = snapshot.snapshotTimestamp();
                 else if (!referenceTimestamp.equals(snapshot.snapshotTimestamp())) {
                     coherent = false;
@@ -606,11 +790,17 @@ public class DetectEngineService {
     public boolean ingest(SecurityEvent ev) {
         engineLifecycle.readLock().lock();
         try {
-            if (!isReady()) return false;
+            if (!workerRole() || !isReady()) return false;
             DetectionEventClaim claim = stateStore.claim(ev);
             if (claim == DetectionEventClaim.COMPLETED || claim == DetectionEventClaim.DEAD_LETTERED) {
                 return true;
             }
+            TenantAdmission.Decision admission = admit(ev);
+            if (!admission.admitted()) {
+                if (claim == DetectionEventClaim.NEW) stateStore.remove(ev);
+                return false;
+            }
+            TenantAdmission.Permit permit = admission.permit();
             RuleEngine.Submission submission;
             try {
                 RuleEngine target = engineFor(ev.tenantId(), shardFor(ev));
@@ -619,15 +809,18 @@ public class DetectEngineService {
                 // a worker callback here would count every event twice.
                 submission = target.submit(ev, true);
             } catch (RuntimeException recoveryFailure) {
+                tenantAdmission.rollback(permit);
                 markDegraded(recoveryFailure);
                 if (claim == DetectionEventClaim.NEW) stateStore.remove(ev);
                 return false;
             }
             if (!submission.accepted()) {
+                tenantAdmission.rollback(permit);
                 if (claim == DetectionEventClaim.NEW) stateStore.remove(ev);
                 return false;
             }
             submission.completion().whenComplete((ignored, failure) -> {
+                tenantAdmission.release(permit);
                 if (failure == null) {
                     stateStore.markCompleted(ev);
                     snapshotAfterDurable(ev, null, -1L);
@@ -656,22 +849,49 @@ public class DetectEngineService {
     /** Kafka ingestion with a position callback ordered before completion. */
     public CompletableFuture<Void> ingestFromKafkaAndAwait(SecurityEvent ev,
                                                            Integer partition, Long offset) {
+        return ingestFromKafkaAndAwait(ev, inputTopic, partition, offset);
+    }
+
+    /** Kafka ingestion carrying the source topic into the durable result envelope. */
+    public CompletableFuture<Void> ingestFromKafkaAndAwait(SecurityEvent ev, String topic,
+                                                           Integer partition, Long offset) {
         engineLifecycle.readLock().lock();
         try {
+            if (!workerRole()) {
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("detection runtime role is " + runtimeRole));
+            }
             if (!isReady()) {
                 return CompletableFuture.failedFuture(
                         new IllegalStateException("detection state recovery is " + recoveryStatus().name()));
             }
+            TenantAdmission.Decision admission = admit(ev);
+            if (!admission.admitted()) {
+                return CompletableFuture.failedFuture(new TenantAdmission.RejectedException(
+                        ev.requireTenantId(), admission.reason()));
+            }
+            TenantAdmission.Permit permit = admission.permit();
             try {
                 RuleEngine target = engineFor(ev.tenantId(), shardFor(ev));
-                CompletableFuture<Void> durable = target.ingestAndAwait(ev,
-                        () -> recordDurablePosition(ev, partition, offset));
+                int statePartition = partition == null ? -1 : partition;
+                int stateShard = shardFor(ev);
+                Runnable ownershipGuard = durableGuardFor(statePartition, stateShard);
+                Runnable durablePosition = () -> recordDurablePosition(ev, partition, offset);
+                com.socp.rule.engine.DetectionResult.InputPosition inputPosition =
+                        partition == null || offset == null
+                                ? com.socp.rule.engine.DetectionResult.InputPosition.unknown()
+                                : new com.socp.rule.engine.DetectionResult.InputPosition(
+                                topic, partition, offset);
+                CompletableFuture<Void> durable = target.ingestAndAwait(
+                        ev, inputPosition, durablePosition, ownershipGuard);
                 // Keep the snapshot tied to the engine instance that processed
                 // the event. A concurrent hot reload can replace the map entry
                 // before the caller observes completion; looking the engine up
                 // again there could checkpoint the fresh, empty replacement.
-                return durable.thenRun(() -> snapshotAfterDurable(target, ev, partition, offset));
+                return durable.thenRun(() -> snapshotAfterDurable(target, ev, partition, offset))
+                        .whenComplete((ignored, failure) -> tenantAdmission.release(permit));
             } catch (RuntimeException recoveryFailure) {
+                tenantAdmission.rollback(permit);
                 markDegraded(recoveryFailure);
                 return CompletableFuture.failedFuture(recoveryFailure);
             }
@@ -709,14 +929,18 @@ public class DetectEngineService {
         }
         if (count % every != 0) return;
         try {
+            // Snapshot writes are also a durable side effect. Do not let a
+            // revoked worker overwrite the replacement owner's checkpoint.
+            durableGuardFor(partition == null ? -1 : partition, shard).run();
             List<DetectionStateSnapshot> snapshots = engine.captureStateSnapshot(states -> {
                 java.time.Instant timestamp = java.time.Instant.now();
                 Map<Integer, Long> checkpoint = Map.copyOf(offsets);
+                Map<Integer, Long> ownerEpochs = ownerEpochsFor(checkpoint.keySet(), shard);
                 long processedOffset = offset == null ? -1L : offset;
                 return states.entrySet().stream()
                         .map(entry -> new DetectionStateSnapshot(entry.getKey(), entry.getValue().version(),
                                 tenant, shard, processedOffset, entry.getValue().serializedState(), timestamp,
-                                checkpoint))
+                                checkpoint, ownerEpochs, inputTopic))
                         .toList();
             });
             if (snapshotStore.supportsAtomicBatch()) snapshotStore.saveAll(snapshots);
@@ -729,13 +953,36 @@ public class DetectEngineService {
         }
     }
 
+    private Map<Integer, Long> ownerEpochsFor(Set<Integer> partitions, int shard) {
+        if (partitions == null || partitions.isEmpty()) return Map.of();
+        Map<Integer, Long> epochs = new LinkedHashMap<>();
+        for (Integer partition : partitions) {
+            if (partition == null || partition < 0) continue;
+            DetectionStateOwnership.Lease lease = stateLeaseFor(partition, shard);
+            if (lease == null) continue;
+            stateOwnership.assertCurrent(lease);
+            epochs.put(partition, lease.fencingEpoch());
+        }
+        return Map.copyOf(epochs);
+    }
+
     private boolean enqueue(SecurityEvent ev) {
         engineLifecycle.readLock().lock();
         try {
             if (!isReady()) return false;
+            TenantAdmission.Decision admission = admit(ev);
+            if (!admission.admitted()) return false;
+            TenantAdmission.Permit permit = admission.permit();
             try {
-                return engineFor(ev.tenantId(), shardFor(ev)).ingest(ev);
+                RuleEngine.Submission submission = engineFor(ev.tenantId(), shardFor(ev)).submit(ev, false);
+                if (!submission.accepted()) {
+                    tenantAdmission.rollback(permit);
+                    return false;
+                }
+                submission.completion().whenComplete((ignored, failure) -> tenantAdmission.release(permit));
+                return true;
             } catch (RuntimeException recoveryFailure) {
+                tenantAdmission.rollback(permit);
                 markDegraded(recoveryFailure);
                 return false;
             }
@@ -754,7 +1001,9 @@ public class DetectEngineService {
                 .filter(entry -> entry.getKey().startsWith(tenant + "\u0000shard-"))
                 .map(Map.Entry::getValue)
                 .toList();
-        if (tenantEngines.isEmpty() && isReady()) tenantEngines = List.of(engineFor(tenant, 0));
+        if (tenantEngines.isEmpty() && workerRole() && isReady()) {
+            tenantEngines = List.of(engineFor(tenant, 0));
+        }
         long eventCount = tenantEngines.stream().mapToLong(RuleEngine::eventCount).sum();
         long alertCount = tenantEngines.stream().mapToLong(RuleEngine::alertCount).sum();
         long dropCount = tenantEngines.stream().mapToLong(RuleEngine::dropCount).sum();
@@ -785,7 +1034,22 @@ public class DetectEngineService {
                 "store", snapshotStore == null ? "disabled" : snapshotStore.getClass().getSimpleName(),
                 "everyEvents", Math.max(1L, snapshotEveryEvents),
                 "shards", effectiveShardCount()));
+        m.put("runtimeRole", runtimeRole);
+        m.put("detectionWorkerEnabled", workerRole());
         m.put("cachedTenantEngines", engines.size());
+        m.put("tenantAdmission", tenantAdmission.stats(tenant));
+        m.put("tenantAdmissionRejections", tenantAdmission.rejectionStats(tenant));
         return m;
+    }
+
+    private TenantAdmission.Decision admit(SecurityEvent event) {
+        tenantAdmission.configure(tenantMaxEventsPerSecond, tenantRateBurst,
+                tenantMaxPendingBytes, tenantMaxActiveEntities, tenantEntityIdleTtlMs);
+        return tenantAdmission.tryAcquire(event, TenantAdmission.estimateBytes(event));
+    }
+
+    private boolean workerRole() {
+        String role = runtimeRole == null ? "all" : runtimeRole.trim();
+        return "all".equalsIgnoreCase(role) || "worker".equalsIgnoreCase(role);
     }
 }

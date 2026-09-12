@@ -3,6 +3,7 @@ package com.socp.detect.web.persistence.store;
 
 import com.socp.rule.util.Json;
 import com.socp.rule.model.Severity;
+import com.socp.rule.time.EventTimePolicy;
 
 import java.io.InputStream;
 import java.util.ArrayList;
@@ -70,7 +71,15 @@ public final class DetectionContentCatalog {
         // in every persisted/returned rule document.
         String type = String.valueOf(spec.getOrDefault("type", "")).toLowerCase();
         if (List.of("threshold", "correlation", "correlation-set", "baseline", "rare").contains(type)) {
-            copyIfMissing(spec, "routingField", spec.get("keyField"));
+            copyIfMissing(spec, "groupBy", spec.get("keyField"));
+            copyIfMissing(spec, "keyField", spec.get("groupBy"));
+            copyIfMissing(spec, "routingField", spec.get("groupBy"));
+            if (!spec.containsKey("lateEventPolicy")) {
+                Map<String, Object> policy = new LinkedHashMap<>();
+                policy.put("allowedLateness", spec.getOrDefault("window", "60s"));
+                policy.put("handling", "DROP");
+                spec.put("lateEventPolicy", policy);
+            }
         }
         // The lifecycle status is authoritative for the executable engine.
         // Expose the derived legacy flag as well so older API clients (and
@@ -105,20 +114,28 @@ public final class DetectionContentCatalog {
                 .contains(String.valueOf(status).toUpperCase())) {
             errors.add("invalid status " + status);
         }
-        if (("threshold".equals(type) || "correlation".equals(type) || "correlation-set".equals(type)
-                || "baseline".equals(type) || "rare".equals(type))
-                && (spec.get("keyField") == null || String.valueOf(spec.get("keyField")).isBlank())) {
-            errors.add("stateful rule requires keyField");
+        boolean stateful = List.of("threshold", "correlation", "correlation-set", "baseline", "rare")
+                .contains(type);
+        String groupBy = text(spec.get("groupBy"));
+        String keyField = text(spec.get("keyField"));
+        String routingField = text(spec.get("routingField"));
+        String grouping = groupBy == null ? keyField : groupBy;
+        if (stateful && grouping == null) errors.add("stateful rule requires groupBy");
+        if (groupBy != null && keyField != null && !groupBy.equals(keyField)) {
+            errors.add("cross-entity grouping is unsupported: groupBy and keyField must match for partition-local state");
         }
-        if (List.of("threshold", "correlation", "correlation-set", "baseline", "rare").contains(type)
-                && spec.get("keyField") != null && !String.valueOf(spec.get("keyField")).isBlank()
-                && (spec.get("routingField") == null || String.valueOf(spec.get("routingField")).isBlank())) {
+        if (stateful && grouping != null && routingField == null) {
             errors.add("stateful rule requires routingField");
         }
-        if (spec.get("keyField") != null && spec.get("routingField") != null
-                && !String.valueOf(spec.get("keyField")).trim()
-                .equals(String.valueOf(spec.get("routingField")).trim())) {
-            errors.add("keyField and routingField must match for partition-local state");
+        if (grouping != null && routingField != null && !grouping.equals(routingField)) {
+            errors.add("cross-entity grouping is unsupported: keyField and routingField must match for partition-local state (groupBy is canonical); explicit repartition/fan-out is required");
+        }
+        if (spec.containsKey("lateEventPolicy")) {
+            try {
+                EventTimePolicy.parse(spec.get("lateEventPolicy"), java.time.Duration.ofMinutes(1));
+            } catch (RuntimeException failure) {
+                errors.add("invalid lateEventPolicy: " + failure.getMessage());
+            }
         }
         if ("rare".equals(type)
                 && (spec.get("valueField") == null || String.valueOf(spec.get("valueField")).isBlank())) {
@@ -226,6 +243,11 @@ public final class DetectionContentCatalog {
 
     private static void copyIfMissing(Map<String, Object> target, String key, Object value) {
         if (!target.containsKey(key) && value != null) target.put(key, value);
+    }
+
+    private static String text(Object value) {
+        if (value == null || String.valueOf(value).isBlank()) return null;
+        return String.valueOf(value).trim();
     }
 
     @SuppressWarnings("unchecked")

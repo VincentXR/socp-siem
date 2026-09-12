@@ -1,14 +1,14 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: detect-web
+  name: detect-web-api
   namespace: socp-system
   labels:
-    app.kubernetes.io/name: detect-web
+    app.kubernetes.io/name: detect-web-api
     app.kubernetes.io/part-of: socp-siem
     socp.io/runtime-unit: detection
 spec:
-  replicas: 3
+  replicas: 2
   revisionHistoryLimit: 5
   strategy:
     type: RollingUpdate
@@ -17,12 +17,12 @@ spec:
       maxSurge: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: detect-web
+      app.kubernetes.io/name: detect-web-api
       app.kubernetes.io/part-of: socp-siem
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: detect-web
+        app.kubernetes.io/name: detect-web-api
         app.kubernetes.io/part-of: socp-siem
         socp.io/runtime-unit: detection
     spec:
@@ -36,7 +36,7 @@ spec:
                 topologyKey: topology.kubernetes.io/zone
                 labelSelector:
                   matchLabels:
-                    app.kubernetes.io/name: detect-web
+                    app.kubernetes.io/name: detect-web-api
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -44,7 +44,7 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       containers:
-        - name: detect-web
+        - name: detect-web-api
           image: ghcr.io/vincentxr/socp-detect-web@sha256:REPLACE_WITH_RELEASE_DIGEST
           imagePullPolicy: IfNotPresent
           ports:
@@ -56,6 +56,132 @@ spec:
             - secretRef:
                 name: socp-runtime-secrets
           env:
+            - name: SOCP_DETECT_RUNTIME_ROLE
+              value: api
+            - name: SOCP_DETECT_INSTANCE_ID
+              value: detect-api
+            - name: SOCP_HEALTH_REQUIRED_ENDPOINTS
+              value: kafka=kafka.socp-data.svc.cluster.local:9092,alert=alert-web:8080
+          readinessProbe:
+            httpGet:
+              path: /detect-web/actuator/health/readiness
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /detect-web/actuator/health/liveness
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /detect-web/actuator/health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          resources:
+            requests:
+              cpu: 200m
+              memory: 384Mi
+            limits:
+              cpu: "1"
+              memory: 1024Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: detect-web-api
+  namespace: socp-system
+spec:
+  selector:
+    app.kubernetes.io/name: detect-web-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  type: ClusterIP
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: detect-web-api
+  namespace: socp-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: detect-web-api
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: detect-web-worker
+  namespace: socp-system
+  labels:
+    app.kubernetes.io/name: detect-web-worker
+    app.kubernetes.io/part-of: socp-siem
+    socp.io/runtime-unit: detection
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: detect-web-worker
+      app.kubernetes.io/part-of: socp-siem
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: detect-web-worker
+        app.kubernetes.io/part-of: socp-siem
+        socp.io/runtime-unit: detection
+    spec:
+      serviceAccountName: socp-service
+      terminationGracePeriodSeconds: 45
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: topology.kubernetes.io/zone
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: detect-web-worker
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: detect-web-worker
+          image: ghcr.io/vincentxr/socp-detect-web@sha256:REPLACE_WITH_RELEASE_DIGEST
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: socp-runtime
+            - secretRef:
+                name: socp-runtime-secrets
+          env:
+            - name: SOCP_DETECT_RUNTIME_ROLE
+              value: worker
+            - name: SOCP_DETECT_INSTANCE_ID
+              value: detect-worker
             - name: SOCP_KAFKA_GROUP_ID
               value: socp-detect
             - name: SOCP_HEALTH_REQUIRED_ENDPOINTS
@@ -96,11 +222,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: detect-web
+  name: detect-web-worker
   namespace: socp-system
 spec:
   selector:
-    app.kubernetes.io/name: detect-web
+    app.kubernetes.io/name: detect-web-worker
   ports:
     - name: http
       port: 8080
@@ -110,10 +236,10 @@ spec:
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: detect-web
+  name: detect-web-worker
   namespace: socp-system
 spec:
   minAvailable: 2
   selector:
     matchLabels:
-      app.kubernetes.io/name: detect-web
+      app.kubernetes.io/name: detect-web-worker

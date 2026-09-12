@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.search.config.domain.LogSource;
 import com.socp.search.config.domain.ParseFormat;
+import com.socp.search.config.config.SearchRuntimeRole;
 import com.socp.search.config.persistence.store.LogSourceStore;
 import org.springframework.stereotype.Component;
 
@@ -18,6 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * authenticated request and parsing rules come from the persisted LogSource.
  */
 @Component
+@SearchRuntimeRole(SearchRuntimeRole.Role.API)
 public class IngestSourceResolver {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();

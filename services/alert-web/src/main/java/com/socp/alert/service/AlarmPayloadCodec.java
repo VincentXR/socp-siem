@@ -45,6 +45,8 @@ final class AlarmPayloadCodec {
         payload.put("alertCreatedAt", alarm.getAlertCreatedAt());
         payload.put("processingLatencyMs", alarm.getProcessingLatencyMs());
         payload.put("triggerEventId", alarm.getTriggerEventId());
+        Object detectionResult = readObject(alarm.getDetectionResultJson());
+        if (detectionResult != null) payload.put("detectionResult", detectionResult);
         payload.put("evidence", evidence == null ? List.of() : evidence);
         try {
             return MAPPER.writeValueAsString(payload);
@@ -83,7 +85,24 @@ final class AlarmPayloadCodec {
             alarm.setProcessingLatencyMs(number.longValue());
         }
         alarm.setTriggerEventId(text(values.get("triggerEventId")));
+        Object detectionResult = values.get("detectionResult");
+        if (detectionResult != null) {
+            try {
+                alarm.setDetectionResultJson(MAPPER.writeValueAsString(detectionResult));
+            } catch (JsonProcessingException failure) {
+                throw new IllegalArgumentException("invalid detection result summary", failure);
+            }
+        }
         return alarm;
+    }
+
+    private static Object readObject(String json) {
+        if (json == null || json.isBlank()) return null;
+        try {
+            return MAPPER.readValue(json, Object.class);
+        } catch (JsonProcessingException failure) {
+            throw new IllegalStateException("invalid persisted detection result summary", failure);
+        }
     }
 
     private static Instant instant(Object value) {

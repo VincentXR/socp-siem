@@ -29,6 +29,8 @@ import com.socp.platform.auth.security.RequireRole;
  * 统一前缀 /api/v1/meta，供控制台「元数据」模块使用。
  */
 @RestController
+@com.socp.search.config.config.SearchRuntimeRole(
+        com.socp.search.config.config.SearchRuntimeRole.Role.API)
 @RequestMapping("/api/v1/meta")
 public class MetaController {
 
@@ -58,9 +60,14 @@ public class MetaController {
     @RequireRole({"admin", "analyst"})
     @PutMapping("/data-source-types/{id}")
     public DataSourceType updateDataSourceType(@PathVariable String id, @Valid @RequestBody DataSourceTypeRequest body) {
-        DataSourceType existing = dsStore.get(id);
-        if (existing == null) throw new org.springframework.web.server.ResponseStatusException(
-                org.springframework.http.HttpStatus.NOT_FOUND, "data source type not found");
+        DataSourceType existing = dsStore.list().stream().filter(item -> item.id().equals(id)).findFirst()
+                .orElseThrow(() -> new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.NOT_FOUND, "data source type not found"));
+        if (!java.util.Objects.equals(existing.code(), body.code())) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.CONFLICT,
+                    "Existing identifiers and field types cannot be changed");
+        }
         return dsStore.save(new DataSourceType(id, body.code(), body.name(), body.description(), body.enabled(), existing.createdAt()));
     }
 
@@ -86,9 +93,14 @@ public class MetaController {
     @RequireRole({"admin", "analyst"})
     @PutMapping("/categories/{id}")
     public LogCategory updateCategory(@PathVariable String id, @Valid @RequestBody LogCategoryRequest body) {
-        LogCategory existing = catStore.get(id);
-        if (existing == null) throw new org.springframework.web.server.ResponseStatusException(
-                org.springframework.http.HttpStatus.NOT_FOUND, "log category not found");
+        LogCategory existing = catStore.list().stream().filter(item -> item.id().equals(id)).findFirst()
+                .orElseThrow(() -> new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.NOT_FOUND, "log category not found"));
+        if (!java.util.Objects.equals(existing.code(), body.code())) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.CONFLICT,
+                    "Existing identifiers and field types cannot be changed");
+        }
         return catStore.save(new LogCategory(id, body.code(), body.name(), body.description(), body.defaultSeverity(), body.enabled(), existing.createdAt()));
     }
 
@@ -114,9 +126,16 @@ public class MetaController {
     @RequireRole({"admin", "analyst"})
     @PutMapping("/fields/{id}")
     public FieldDef updateField(@PathVariable String id, @Valid @RequestBody FieldDefRequest body) {
-        FieldDef existing = fieldStore.get(id);
-        if (existing == null) throw new org.springframework.web.server.ResponseStatusException(
-                org.springframework.http.HttpStatus.NOT_FOUND, "field not found");
+        FieldDef existing = fieldStore.list().stream().filter(item -> item.id().equals(id)).findFirst()
+                .orElseThrow(() -> new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.NOT_FOUND, "field not found"));
+        if ("system".equals(existing.source()) || "system".equals(body.source())
+                || !java.util.Objects.equals(existing.fieldName(), body.fieldName())
+                || !java.util.Objects.equals(existing.fieldType(), body.fieldType())) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.CONFLICT,
+                    "Existing identifiers and field types cannot be changed");
+        }
         return fieldStore.save(new FieldDef(id, body.fieldName(), body.fieldLabel(), body.fieldType(), body.source(),
                 body.searchable(), body.aggregatable(), body.stored(), body.description(), existing.createdAt()));
     }
@@ -129,33 +148,14 @@ public class MetaController {
             throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.CONFLICT, "System fields are read-only");
         return Map.of("removed", fieldStore.delete(id));
     }
-    @RequireRole({"admin", "analyst"})
-    @org.springframework.web.bind.annotation.PutMapping("/data-source-types/{id}")
-    public DataSourceType updateDataSourceType(@PathVariable String id, @Valid @RequestBody DataSourceTypeRequest body) {
-        DataSourceType existing = dsStore.list().stream().filter(item -> item.id().equals(id)).findFirst()
-                .orElseThrow(() -> new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.NOT_FOUND));
-        if (!existing.code().equals(body.code())) throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.CONFLICT, "Existing identifiers and field types cannot be changed");
-        return dsStore.save(new DataSourceType(id, body.code(), body.name(), body.description(), body.enabled(), existing.createdAt()));
+
+    /** Source-compatible Java entry points retained for older callers; HTTP uses the methods above. */
+    public LogCategory updateLogCategory(String id, LogCategoryRequest body) {
+        return updateCategory(id, body);
     }
 
-    @RequireRole({"admin", "analyst"})
-    @org.springframework.web.bind.annotation.PutMapping("/categories/{id}")
-    public LogCategory updateLogCategory(@PathVariable String id, @Valid @RequestBody LogCategoryRequest body) {
-        LogCategory existing = catStore.list().stream().filter(item -> item.id().equals(id)).findFirst()
-                .orElseThrow(() -> new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.NOT_FOUND));
-        if (!existing.code().equals(body.code())) throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.CONFLICT, "Existing identifiers and field types cannot be changed");
-        return catStore.save(new LogCategory(id, body.code(), body.name(), body.description(), body.defaultSeverity(), body.enabled(), existing.createdAt()));
-    }
-
-    @RequireRole({"admin", "analyst"})
-    @org.springframework.web.bind.annotation.PutMapping("/fields/{id}")
-    public FieldDef updateFieldDef(@PathVariable String id, @Valid @RequestBody FieldDefRequest body) {
-        FieldDef existing = fieldStore.list().stream().filter(item -> item.id().equals(id)).findFirst()
-                .orElseThrow(() -> new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.NOT_FOUND));
-        if ("system".equals(existing.source()) || "system".equals(body.source()))
-            throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.CONFLICT, "System fields are read-only");
-        if (!existing.fieldName().equals(body.fieldName()) || !existing.fieldType().equals(body.fieldType())) throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.CONFLICT, "Existing identifiers and field types cannot be changed");
-        return fieldStore.save(new FieldDef(id, body.fieldName(), body.fieldLabel(), body.fieldType(), body.source(), body.searchable(), body.aggregatable(), body.stored(), body.description(), existing.createdAt()));
+    public FieldDef updateFieldDef(String id, FieldDefRequest body) {
+        return updateField(id, body);
     }
 
 }

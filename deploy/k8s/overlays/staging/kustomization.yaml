@@ -6,7 +6,28 @@ resources:
 patches:
   - target:
       kind: Deployment
-      name: detect-web
+      name: search-config-api
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+  - target:
+      kind: Deployment
+      name: search-config-worker
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+  - target:
+      kind: Deployment
+      name: detect-web-api
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+  - target:
+      kind: Deployment
+      name: detect-web-worker
     patch: |-
       - op: replace
         path: /spec/replicas

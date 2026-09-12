@@ -9,6 +9,7 @@ import com.socp.detect.web.persistence.store.RuleSpecStore;
 import com.socp.detect.web.service.EntityRiskStore;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.model.Alert;
+import com.socp.rule.engine.DetectionResult;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.score.RiskScorer;
 import org.slf4j.Logger;
@@ -61,12 +62,35 @@ public class AlertForwarder {
         forwardAll((SecurityEvent) null, alert == null ? List.of() : List.of(alert));
     }
 
+    /** Persist the explicit calculation result and its audit-safe metadata. */
+    @Transactional
+    public void forward(DetectionResult result, Runnable durableCommitGuard) {
+        if (result == null) throw new IllegalArgumentException("detection result is required");
+        forwardAll(result.event(), result.alerts(), durableCommitGuard, result);
+    }
+
     /**
      * Persist all alerts emitted by one source event and complete that event in
      * the same database transaction. An empty alert list is a valid result.
      */
     @Transactional
     public void forwardAll(SecurityEvent sourceEvent, List<Alert> alerts) {
+        forwardAll(sourceEvent, alerts, null);
+    }
+
+    /**
+     * Persist one event result while holding the Detection state-unit fence.
+     * The guard runs inside this transaction, so a rebalance cannot take over
+     * the owner row until the outbox and journal completion are committed.
+     */
+    @Transactional
+    public void forwardAll(SecurityEvent sourceEvent, List<Alert> alerts,
+                           Runnable durableCommitGuard) {
+        forwardAll(sourceEvent, alerts, durableCommitGuard, null);
+    }
+
+    private void forwardAll(SecurityEvent sourceEvent, List<Alert> alerts,
+                            Runnable durableCommitGuard, DetectionResult result) {
         if (alerts == null) alerts = List.of();
         String tenant = sourceEvent == null ? tenantFromAlerts(alerts) : sourceEvent.requireTenantId();
         try (TenantContext.Scope ignored = TenantContext.open(tenant)) {
@@ -76,9 +100,13 @@ public class AlertForwarder {
             // invoked by a sink. Per-alert scopes below still protect against
             // a malformed/mixed evidence list; the canonical source event is
             // authoritative for completion.
-            for (Alert alert : alerts) forwardOne(alert);
+            if (sourceEvent != null) validateAlertTenants(alerts, tenant);
+            if (durableCommitGuard != null) durableCommitGuard.run();
+            for (Alert alert : alerts) forwardOne(alert, result, sourceEvent == null ? null : tenant);
+            if (durableCommitGuard != null) durableCommitGuard.run();
             if (stateStore != null && sourceEvent != null) {
-                stateStore.markCompleted(tenant, sourceEvent.id());
+                if (result == null) stateStore.markCompleted(tenant, sourceEvent.id());
+                else stateStore.markCompleted(result);
             }
         }
     }
@@ -86,18 +114,21 @@ public class AlertForwarder {
     /** Compatibility overload for focused tests and non-Kafka callers. */
     public void forwardAll(String eventId, List<Alert> alerts) {
         if (alerts == null) alerts = List.of();
-        for (Alert alert : alerts) forwardOne(alert);
+        for (Alert alert : alerts) forwardOne(alert, null, null);
         if (stateStore != null && eventId != null && !eventId.isBlank()) {
             stateStore.markCompleted(TenantContext.require(), eventId);
         }
     }
 
-    private void forwardOne(Alert alert) {
+    private void forwardOne(Alert alert, DetectionResult result, String expectedTenant) {
         if (alert == null || alert.id() == null || alert.id().isBlank()) {
             log.warn("Cannot persist detection alert without a deterministic alert id");
             return;
         }
         String tenant = resolveTenant(alert);
+        if (expectedTenant != null && !expectedTenant.equals(tenant)) {
+            throw new IllegalStateException("alert tenant does not match source event tenant");
+        }
         try (TenantContext.Scope ignored = TenantContext.open(tenant)) {
             // Kafka callbacks run on a worker thread, so the HTTP request's
             // ThreadLocal tenant is not available here. The canonical event
@@ -139,9 +170,28 @@ public class AlertForwarder {
                     .limit(200)
                     .map(AlertForwarder::evidencePayload)
                     .toList());
+            if (result != null) payload.put("detectionResult", detectionResultPayload(result));
 
             outbox.enqueue(alert.id(), tenant, toJson(payload));
             log.debug("Detection alert payload persisted alertId={} tenant={}", alert.id(), tenant);
+        }
+    }
+
+    private static void validateAlertTenants(List<Alert> alerts, String expectedTenant) {
+        for (Alert alert : alerts) {
+            if (alert == null || alert.id() == null || alert.id().isBlank()
+                    || alert.evidence() == null) continue;
+            for (SecurityEvent event : alert.evidence()) {
+                if (event == null || event.fields() == null) continue;
+                String evidenceTenant = event.fields().get("tenant_id");
+                if (evidenceTenant == null || evidenceTenant.isBlank()) {
+                    evidenceTenant = event.fields().get("tenantId");
+                }
+                if (evidenceTenant != null && !evidenceTenant.isBlank()
+                        && !expectedTenant.equals(evidenceTenant)) {
+                    throw new IllegalStateException("alert tenant does not match source event tenant");
+                }
+            }
         }
     }
 
@@ -221,5 +271,9 @@ public class AlertForwarder {
             }
         }
         return null;
+    }
+
+    private static Map<String, Object> detectionResultPayload(DetectionResult result) {
+        return result.auditSummary();
     }
 }

@@ -4,6 +4,9 @@ import java.nio.charset.StandardCharsets;
 
 /** Stable routing contract for stateful detection rules. */
 public record StateRoutingKey(String tenantId, String routingField, String routingValue) {
+    /** Bump when the state-shard hash or tuple semantics change. */
+    public static final String VERSION = "state-routing-v1";
+
     public StateRoutingKey {
         if (tenantId == null || tenantId.isBlank()) throw new IllegalArgumentException("tenantId is required");
         if (routingField == null || routingField.isBlank()) throw new IllegalArgumentException("routingField is required");

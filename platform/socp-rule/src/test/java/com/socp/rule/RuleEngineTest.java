@@ -2,6 +2,7 @@ package com.socp.rule;
 
 import com.socp.rule.config.Rules;
 import com.socp.rule.engine.AlertSink;
+import com.socp.rule.engine.DetectionResult;
 import com.socp.rule.engine.EventAlertSink;
 import com.socp.rule.engine.RuleEngine;
 import com.socp.rule.engine.RuleExecutionScope;
@@ -9,6 +10,9 @@ import com.socp.rule.engine.Suppressor;
 import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
+import com.socp.rule.rules.PatternRule;
+import com.socp.rule.rules.Rule;
+import com.socp.rule.rules.ThresholdRule;
 import com.socp.rule.state.StatefulRule;
 import org.junit.jupiter.api.Test;
 
@@ -19,6 +23,7 @@ import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -197,6 +202,90 @@ class RuleEngineTest {
     }
 
     @Test
+    void failedDurableDeliveryRollsBackStateBeforeRetry() throws Exception {
+        AtomicBoolean fail = new AtomicBoolean(true);
+        List<Alert> delivered = new CopyOnWriteArrayList<>();
+        EventAlertSink sink = new EventAlertSink() {
+            @Override
+            public void publish(SecurityEvent event, List<Alert> alerts) {
+                if (fail.getAndSet(false)) throw new IllegalStateException("outbox unavailable");
+                delivered.addAll(alerts);
+            }
+
+            @Override public void close() { }
+        };
+        ThresholdRule rule = new ThresholdRule("ROLLBACK", "rollback", event -> true,
+                SecurityEvent::host, 2, Duration.ofMinutes(5), Severity.HIGH, "threshold");
+        try (RuleEngine engine = new RuleEngine(List.of(rule), List.of(sink))) {
+            engine.start();
+            SecurityEvent event = ev("auth", "failure", "rollback-host", null);
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> engine.ingestAndAwait(event).get(3, TimeUnit.SECONDS));
+
+            // The retried event must be the first item in the window again;
+            // otherwise the next event would fail to produce the threshold.
+            engine.ingestAndAwait(event).get(3, TimeUnit.SECONDS);
+            engine.ingestAndAwait(ev("auth", "failure-2", "rollback-host", null))
+                    .get(3, TimeUnit.SECONDS);
+            assertEquals(1, delivered.size());
+            assertEquals(2, delivered.getFirst().evidence().size());
+        }
+    }
+
+    @Test
+    void permanentlyBadRuleIsFusedWithoutBlockingHealthyRules() throws Exception {
+        AtomicInteger badInvocations = new AtomicInteger();
+        Rule bad = new Rule() {
+            @Override public String id() { return "BAD-RULE"; }
+            @Override public String name() { return "bad"; }
+            @Override public void accept(SecurityEvent event) {
+                badInvocations.incrementAndGet();
+                throw new IllegalArgumentException("invalid rule value");
+            }
+            @Override public List<Alert> drain() { return List.of(); }
+        };
+        PatternRule healthy = new PatternRule("HEALTHY", "healthy", ignored -> true,
+                Severity.INFO, "healthy", "healthy");
+        CollectingSink sink = new CollectingSink();
+        try (RuleEngine engine = new RuleEngine(List.of(bad, healthy), List.of(sink))) {
+            engine.start();
+            engine.ingestAndAwait(ev("system", "first", "bad-rule-host", null))
+                    .get(3, TimeUnit.SECONDS);
+            engine.ingestAndAwait(ev("system", "second", "bad-rule-host", null))
+                    .get(3, TimeUnit.SECONDS);
+
+            assertEquals(2, sink.alerts.size(), "healthy rules must continue after bad-rule isolation");
+            assertEquals(1, badInvocations.get(), "an isolated rule is not retried for every event");
+            Map<String, Object> stats = engine.ruleStats().stream()
+                    .filter(item -> "BAD-RULE".equals(item.get("id"))).findFirst().orElseThrow();
+            assertEquals("OPEN", stats.get("ruleCircuit"));
+            assertEquals(1L, stats.get("ruleFailures"));
+        }
+    }
+
+    @Test
+    void durableCommitGuardRunsBeforeAStaleWorkerCanPublish() throws Exception {
+        AtomicBoolean fenced = new AtomicBoolean(true);
+        List<Alert> delivered = new CopyOnWriteArrayList<>();
+        AlertSink sink = new AlertSink() {
+            @Override public void publish(Alert alert) { delivered.add(alert); }
+            @Override public void close() { }
+        };
+        try (RuleEngine engine = new RuleEngine(Rules.defaultRules(), List.of(sink), null,
+                null, null, () -> {
+                    if (fenced.getAndSet(false)) throw new IllegalStateException("stale owner");
+                })) {
+            engine.start();
+            SecurityEvent event = ev("web", "SQLi attempt", "10.0.0.200", null);
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> engine.ingestAndAwait(event).get(3, TimeUnit.SECONDS));
+            assertTrue(delivered.isEmpty());
+            engine.ingestAndAwait(event).get(3, TimeUnit.SECONDS);
+            assertTrue(delivered.stream().anyMatch(alert -> alert.ruleId().equals("WEB-ATTACK")));
+        }
+    }
+
+    @Test
     void durableCompletionIncludesZeroAlertEvents() throws Exception {
         List<List<Alert>> results = new CopyOnWriteArrayList<>();
         EventAlertSink sink = new EventAlertSink() {
@@ -215,6 +304,49 @@ class RuleEngineTest {
                     .get(3, TimeUnit.SECONDS);
             assertEquals(1, results.size());
             assertTrue(results.get(0).isEmpty());
+        }
+    }
+
+    @Test
+    void eventAwareSinkReceivesPositionVersionsStateAndSuppressionDecision() throws Exception {
+        java.util.concurrent.atomic.AtomicReference<DetectionResult> captured =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        EventAlertSink sink = new EventAlertSink() {
+            @Override
+            public void publish(SecurityEvent event, List<Alert> alerts) {
+                throw new AssertionError("the explicit result overload should be used");
+            }
+
+            @Override
+            public void publish(DetectionResult result, Runnable durableCommitGuard) {
+                captured.set(result);
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        ThresholdRule rule = new ThresholdRule("RESULT-RULE", "result", ignored -> true,
+                SecurityEvent::host, 1, Duration.ofMinutes(5), Severity.HIGH, "result");
+        try (RuleEngine engine = new RuleEngine(List.of(rule), List.of(sink), null,
+                null, RuleExecutionScope.NOOP, null, Map.of("RESULT-RULE", "v2"))) {
+            engine.start();
+            SecurityEvent event = ev("auth", "result-event", "result-host", null);
+            engine.ingestAndAwait(event,
+                    new DetectionResult.InputPosition("socp-events", 3, 17L), null, null)
+                    .get(3, TimeUnit.SECONDS);
+
+            DetectionResult result = captured.get();
+            assertEquals(event.id(), result.event().id());
+            assertEquals(new DetectionResult.InputPosition("socp-events", 3, 17L),
+                    result.inputPosition());
+            assertEquals("v2", result.ruleVersions().get("RESULT-RULE"));
+            assertEquals(1, result.candidates().size());
+            assertEquals(1, result.alerts().size());
+            assertEquals("NONE", result.suppression().policy());
+            assertEquals(1, result.stateChanges().size());
+            assertTrue(result.stateChanges().getFirst().changed());
+            assertEquals(event.scopedId(), result.idempotencyKey());
         }
     }
 
@@ -241,6 +373,18 @@ class RuleEngineTest {
 
             assertTrue(restored.isEmpty());
             assertEquals("old", first.state);
+        }
+    }
+
+    @Test
+    void explicitStateCompatibilityVersionControlsSnapshotRestore() {
+        TestStatefulRule rule = new TestStatefulRule("versioned", "old", false);
+        try (RuleEngine engine = new RuleEngine(List.of(rule), List.of(), null, null,
+                RuleExecutionScope.NOOP, null, Map.of("versioned", "v1:semantic-new"))) {
+            assertTrue(engine.restoreStates(Map.of("versioned",
+                    new RuleEngine.RuleState("versioned", "v1:semantic-old", bytes("new")))).isEmpty());
+            assertEquals("old", rule.state);
+            assertEquals("v1:semantic-new", engine.snapshotStates().get("versioned").version());
         }
     }
 

@@ -5,6 +5,7 @@ import com.socp.detect.web.persistence.repository.DetectionEventRepository;
 import com.socp.detect.web.persistence.entity.DetectionEventEntity;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.socp.rule.model.SecurityEvent;
+import com.socp.rule.engine.DetectionResult;
 import com.socp.rule.model.Severity;
 import com.socp.platform.tenant.persistence.TenantSystemJob;
 import com.socp.platform.tenant.context.TenantContext;
@@ -141,6 +142,17 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Override
     @Transactional
     public void markCompleted(String tenantId, String eventId) {
+        markCompletedInternal(tenantId, eventId, null);
+    }
+
+    @Override
+    @Transactional
+    public void markCompleted(DetectionResult result) {
+        if (result == null || result.event() == null) return;
+        markCompletedInternal(result.event().requireTenantId(), result.event().id(), result);
+    }
+
+    private void markCompletedInternal(String tenantId, String eventId, DetectionResult result) {
         if (eventId == null || eventId.isBlank()) return;
         repository.findByTenantIdAndSourceEventId(tenantId, eventId).ifPresent(row -> {
             if (DetectionEventStatus.DEAD_LETTERED.name().equals(row.getStatus())) return;
@@ -148,6 +160,14 @@ public class DetectionEventJournal implements DetectionStateStore {
             row.setStatus(DetectionEventStatus.COMPLETED.name());
             row.setCompletedAt(now);
             row.setStatusReason(null);
+            if (result != null) {
+                try {
+                    row.setResultJson(com.socp.rule.util.Json.mapper()
+                            .writeValueAsString(result.auditSummary()));
+                } catch (Exception failure) {
+                    throw new IllegalStateException("unable to persist detection result summary", failure);
+                }
+            }
             repository.saveAndFlush(row);
         });
     }

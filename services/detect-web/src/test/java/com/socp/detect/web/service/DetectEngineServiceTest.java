@@ -3,14 +3,18 @@ package com.socp.detect.web.service;
 import com.socp.detect.web.engine.AlertForwarder;
 import com.socp.detect.web.engine.RecentAlertSink;
 import com.socp.detect.web.persistence.store.DetectionStateStore;
+import com.socp.detect.web.persistence.store.DetectionStateOwnership;
+import com.socp.detect.web.persistence.store.InMemoryDetectionStateStore;
 import com.socp.detect.web.persistence.store.RuleSpecStore;
 import com.socp.detect.web.metrics.DetectionPerformanceMetrics;
+import com.socp.rule.config.RuleSpec;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.state.DetectionStateSnapshot;
 import com.socp.rule.state.DetectionStateSnapshotStore;
 import com.socp.rule.state.StateRoutingKey;
+import com.socp.rule.state.StatefulRule;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -29,6 +33,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -70,6 +76,32 @@ class DetectEngineServiceTest {
         try {
             service.start();
             assertNull(TenantContext.get());
+        } finally {
+            service.stop();
+        }
+    }
+
+    @Test
+    void apiRoleDoesNotRestoreOrRebuildDetectionState() {
+        when(store.list("default")).thenReturn(List.of());
+        when(store.tenant()).thenReturn("default");
+        DetectEngineService service = new DetectEngineService(
+                store, new RecentAlertSink(10, null, null), forwarder, rulePublisher, stateStore);
+        ReflectionTestUtils.setField(service, "runtimeRole", "api");
+        try {
+            service.start();
+
+            AtomicReference<Map<String, Object>> stats = new AtomicReference<>();
+            TenantContext.runWith("default", () -> stats.set(service.stats()));
+            assertTrue(service.isReady());
+            assertEquals("api", stats.get().get("runtimeRole"));
+            assertEquals(false, stats.get().get("detectionWorkerEnabled"));
+            assertEquals(0, stats.get().get("cachedTenantEngines"));
+            assertTrue(!service.ingest(event("default", "api-must-not-ingest")));
+            verify(stateStore, org.mockito.Mockito.never()).replayRecentForTenant(
+                    org.mockito.ArgumentMatchers.anyString(),
+                    org.mockito.ArgumentMatchers.any(Duration.class),
+                    org.mockito.ArgumentMatchers.any());
         } finally {
             service.stop();
         }
@@ -201,9 +233,9 @@ class DetectEngineServiceTest {
             sinkEntered.countDown();
             assertTrue(releaseSink.await(3, TimeUnit.SECONDS));
             return null;
-        }).when(forwarder).forwardAll(
-                org.mockito.ArgumentMatchers.any(SecurityEvent.class),
-                org.mockito.ArgumentMatchers.anyList());
+        }).when(forwarder).forward(
+                org.mockito.ArgumentMatchers.any(com.socp.rule.engine.DetectionResult.class),
+                org.mockito.ArgumentMatchers.any());
 
         DetectEngineService service = new DetectEngineService(
                 store, new RecentAlertSink(10, forwarder, null),
@@ -247,9 +279,9 @@ class DetectEngineServiceTest {
             sinkEntered.countDown();
             assertTrue(releaseSink.await(3, TimeUnit.SECONDS));
             return null;
-        }).when(forwarder).forwardAll(
-                org.mockito.ArgumentMatchers.any(SecurityEvent.class),
-                org.mockito.ArgumentMatchers.anyList());
+        }).when(forwarder).forward(
+                org.mockito.ArgumentMatchers.any(com.socp.rule.engine.DetectionResult.class),
+                org.mockito.ArgumentMatchers.any());
 
         DetectEngineService service = new DetectEngineService(
                 store, new RecentAlertSink(10, forwarder, null),
@@ -335,6 +367,40 @@ class DetectEngineServiceTest {
     }
 
     @Test
+    void kafkaCompletionChecksTheStateUnitFenceBeforeAndAfterDurableCommit() throws Exception {
+        when(store.list("tenant-a")).thenReturn(List.of());
+        AtomicInteger guardCalls = new AtomicInteger();
+        DetectionStateOwnership.Lease lease = new DetectionStateOwnership.Lease(
+                "socp-events", 4, 0, "node-a", 7L, Instant.now().plusSeconds(30));
+        DetectionStateOwnership ownership = new DetectionStateOwnership() {
+            @Override
+            public Lease acquire(String inputTopic, int partition, int shard) {
+                return lease;
+            }
+
+            @Override
+            public void assertCurrent(Lease current) {
+                guardCalls.incrementAndGet();
+            }
+
+            @Override
+            public void release(Lease current) {
+            }
+        };
+        DetectEngineService service = new DetectEngineService(
+                store, new RecentAlertSink(10, null, null), forwarder, rulePublisher,
+                new InMemoryDetectionStateStore(), performanceMetrics, null, ownership);
+        try {
+            service.ingestFromKafkaAndAwait(event("tenant-a", "fenced-event"), 4, 12L)
+                    .get(3, TimeUnit.SECONDS);
+            assertTrue(guardCalls.get() >= 3,
+                    "ownership must be checked before sink, after sink and before position completion");
+        } finally {
+            service.stop();
+        }
+    }
+
+    @Test
     void snapshotCheckpointUsesAtomicGenerationWhenStoreSupportsIt() {
         when(store.list(org.mockito.ArgumentMatchers.anyString())).thenReturn(List.of(thresholdRule()));
         when(stateStore.supportsCheckpointReplay()).thenReturn(false);
@@ -380,7 +446,7 @@ class DetectEngineServiceTest {
         when(store.list(org.mockito.ArgumentMatchers.anyString())).thenReturn(List.of(thresholdRule()));
         when(stateStore.supportsCheckpointReplay()).thenReturn(true);
         DetectionStateSnapshot snapshot = new DetectionStateSnapshot(
-                "THRESHOLD", "threshold-v1", "tenant-a", 0, 8L,
+                "THRESHOLD", thresholdRuleVersion(), "tenant-a", 0, 8L,
                 "{}".getBytes(java.nio.charset.StandardCharsets.UTF_8), Instant.now());
         when(snapshotStore.latest("default", "THRESHOLD", 0)).thenReturn(Optional.of(snapshot));
         doAnswer(invocation -> {
@@ -410,7 +476,7 @@ class DetectEngineServiceTest {
         when(store.list(org.mockito.ArgumentMatchers.anyString())).thenReturn(List.of(thresholdRule()));
         when(stateStore.supportsCheckpointReplay()).thenReturn(true);
         DetectionStateSnapshot snapshot = new DetectionStateSnapshot(
-                "THRESHOLD", "threshold-v1", "default", 0, 14L,
+                "THRESHOLD", thresholdRuleVersion(), "default", 0, 14L,
                 "{}".getBytes(java.nio.charset.StandardCharsets.UTF_8), Instant.now(),
                 Map.of(0, 8L, 2, 14L));
         when(snapshotStore.latest("default", "THRESHOLD", 0)).thenReturn(Optional.of(snapshot));
@@ -512,5 +578,11 @@ class DetectEngineServiceTest {
                 "keyField", "host",
                 "threshold", 5,
                 "window", "60s");
+    }
+
+    private static String thresholdRuleVersion() {
+        RuleSpec spec = new RuleSpec(thresholdRule());
+        StatefulRule stateful = (StatefulRule) spec.toRule();
+        return stateful.stateVersion() + ":" + spec.stateSemanticsFingerprint();
     }
 }

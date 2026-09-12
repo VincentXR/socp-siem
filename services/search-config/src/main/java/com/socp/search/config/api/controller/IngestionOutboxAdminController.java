@@ -19,6 +19,8 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 
 @RestController
+@com.socp.search.config.config.SearchRuntimeRole(
+        com.socp.search.config.config.SearchRuntimeRole.Role.API)
 @RequestMapping("/api/admin/outbox/ingestion")
 public class IngestionOutboxAdminController {
 

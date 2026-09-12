@@ -6,6 +6,7 @@ import com.socp.rule.model.Severity;
 import com.socp.rule.state.RuleStateMap;
 import com.socp.rule.state.StateSnapshotCodec;
 import com.socp.rule.state.StatefulRule;
+import com.socp.rule.time.EventTimePolicy;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -32,14 +33,21 @@ public final class ThresholdRule extends AbstractRule implements StatefulRule {
     private final String messageTemplate;
 
     // 每个实体维护一个时间戳窗口的事件队列
-    private final RuleStateMap<ArrayDeque<SecurityEvent>> buckets = new RuleStateMap<>();
+    private final RuleStateMap<BucketState> buckets = new RuleStateMap<>();
+    private final EventTimePolicy eventTimePolicy;
+
+    private static final class BucketState {
+        final ArrayDeque<SecurityEvent> events = new ArrayDeque<>();
+        Instant watermark;
+    }
 
     public ThresholdRule(String id, String name,
                          Predicate<SecurityEvent> matcher,
                          Function<SecurityEvent, String> keyOf,
                          int threshold, Duration window,
                          Severity severity, String messageTemplate) {
-        this(id, name, matcher, keyOf, threshold, window, severity, name, messageTemplate);
+        this(id, name, matcher, keyOf, threshold, window,
+                EventTimePolicy.defaultFor(window), severity, name, messageTemplate);
     }
 
     public ThresholdRule(String id, String name,
@@ -48,11 +56,23 @@ public final class ThresholdRule extends AbstractRule implements StatefulRule {
                          int threshold, Duration window,
                          Severity severity, String titleTemplate,
                          String messageTemplate) {
+        this(id, name, matcher, keyOf, threshold, window,
+                EventTimePolicy.defaultFor(window), severity, titleTemplate, messageTemplate);
+    }
+
+    public ThresholdRule(String id, String name,
+                         Predicate<SecurityEvent> matcher,
+                         Function<SecurityEvent, String> keyOf,
+                         int threshold, Duration window, EventTimePolicy eventTimePolicy,
+                         Severity severity, String titleTemplate,
+                         String messageTemplate) {
         super(id, name);
         this.matcher = matcher;
         this.keyOf = keyOf;
         this.threshold = threshold;
         this.window = window;
+        this.eventTimePolicy = eventTimePolicy == null
+                ? EventTimePolicy.defaultFor(window) : eventTimePolicy;
         this.severity = severity;
         this.titleTemplate = titleTemplate;
         this.messageTemplate = messageTemplate;
@@ -64,8 +84,16 @@ public final class ThresholdRule extends AbstractRule implements StatefulRule {
         String key = keyOf.apply(event);
         if (key == null || key.isBlank()) return;
 
-        ArrayDeque<SecurityEvent> q = buckets.get(key, ArrayDeque::new);
-        synchronized (q) {
+        BucketState state = buckets.get(key, BucketState::new);
+        synchronized (state) {
+            if (eventTimePolicy.isLate(event.timestamp(), state.watermark)
+                    && eventTimePolicy.handling() == EventTimePolicy.LateEventHandling.DROP) {
+                return;
+            }
+            if (state.watermark == null || state.watermark.isBefore(event.timestamp())) {
+                state.watermark = event.timestamp();
+            }
+            ArrayDeque<SecurityEvent> q = state.events;
             // 防御性内存保护：如果队列严重超出阈值上限，清理最旧事件防止内存膨胀
             int maxCap = Math.max(threshold * 2, 200);
             while (q.size() >= maxCap) {
@@ -76,9 +104,7 @@ public final class ThresholdRule extends AbstractRule implements StatefulRule {
             // observed from several partitions. Use the greatest event-time
             // watermark seen for this bucket so a late record cannot move the
             // window backwards or resurrect expired evidence.
-            Instant watermark = q.stream().map(SecurityEvent::timestamp)
-                    .max(Instant::compareTo).orElse(event.timestamp());
-            Instant cutoff = watermark.minus(window);
+            Instant cutoff = state.watermark.minus(window);
             q.removeIf(candidate -> candidate.timestamp().isBefore(cutoff));
             if (q.size() >= threshold) {
                 List<SecurityEvent> evidence = new ArrayList<>(q);
@@ -103,15 +129,18 @@ public final class ThresholdRule extends AbstractRule implements StatefulRule {
 
     @Override
     public String stateVersion() {
-        return "threshold-v1";
+        return "threshold-v2";
     }
 
     @Override
     public byte[] snapshotState() {
         Map<String, Object> out = new java.util.LinkedHashMap<>();
-        buckets.forEach((key, queue) -> {
-            synchronized (queue) {
-                out.put(key, queue.stream().map(StateSnapshotCodec::event).toList());
+        buckets.forEach((key, state) -> {
+            synchronized (state) {
+                Map<String, Object> value = new java.util.LinkedHashMap<>();
+                value.put("watermark", state.watermark == null ? null : state.watermark.toString());
+                value.put("events", state.events.stream().map(StateSnapshotCodec::event).toList());
+                out.put(key, value);
             }
         });
         return StateSnapshotCodec.write(out);
@@ -119,14 +148,43 @@ public final class ThresholdRule extends AbstractRule implements StatefulRule {
 
     @Override
     public void restoreState(byte[] serializedState) {
-        StateSnapshotCodec.read(serializedState).forEach((key, raw) -> {
-            if (!(raw instanceof List<?> items)) return;
-            ArrayDeque<SecurityEvent> queue = buckets.get(key, ArrayDeque::new);
-            synchronized (queue) {
-                queue.clear();
+        Map<String, Object> snapshot = StateSnapshotCodec.read(serializedState);
+        buckets.clear();
+        snapshot.forEach((key, raw) -> {
+            BucketState state = buckets.get(key, BucketState::new);
+            synchronized (state) {
+                state.events.clear();
+                List<?> items;
+                if (raw instanceof Map<?, ?> values) {
+                    state.watermark = parseInstant(values.get("watermark"));
+                    Object events = values.get("events");
+                    items = events instanceof List<?> list ? list : List.of();
+                } else if (raw instanceof List<?> legacy) {
+                    // Read v1 snapshots during an explicit compatibility
+                    // migration; newly written snapshots always carry the
+                    // watermark separately.
+                    state.watermark = null;
+                    items = legacy;
+                } else {
+                    return;
+                }
                 items.stream().map(StateSnapshotCodec::event).filter(java.util.Objects::nonNull)
-                        .limit(Math.max(threshold * 2, 200)).forEach(queue::addLast);
+                        .limit(Math.max(threshold * 2, 200)).forEach(event -> {
+                            state.events.addLast(event);
+                            if (state.watermark == null || state.watermark.isBefore(event.timestamp())) {
+                                state.watermark = event.timestamp();
+                            }
+                        });
             }
         });
+    }
+
+    private static Instant parseInstant(Object value) {
+        if (value == null) return null;
+        try {
+            return Instant.parse(String.valueOf(value));
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 }

@@ -201,7 +201,9 @@ public final class BaselineRule extends AbstractRule implements StatefulRule {
     @Override
     @SuppressWarnings("unchecked")
     public void restoreState(byte[] serializedState) {
-        StateSnapshotCodec.read(serializedState).forEach((key, raw) -> {
+        Map<String, Object> snapshot = StateSnapshotCodec.read(serializedState);
+        states.clear();
+        snapshot.forEach((key, raw) -> {
             if (!(raw instanceof Map<?, ?> values)) return;
             State state = states.get(key, State::new);
             synchronized (state) {

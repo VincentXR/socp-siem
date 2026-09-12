@@ -26,15 +26,21 @@ public class SearchEventEntity extends BaseEntity {
     /** Pipeline-stable event identifier used to link detections back to source events. */
     @Column(name = "event_id", length = 255)
     private String eventId;
+    /** SHA-256 of the canonical event content, excluding eventId. */
+    @Column(name = "payload_fingerprint", length = 64)
+    private String payloadFingerprint;
     private Instant timestamp;
+    @Column(length = 255)
     private String source;
+    @Column(length = 255)
     private String host;
+    @Column(length = 255)
     private String severity;
-    @Column(length = 2000)
+    @Column(columnDefinition = "TEXT")
     private String msg;
-    @Column(name = "fields_json", length = 4000)
+    @Column(name = "fields_json", columnDefinition = "TEXT")
     private String fieldsJson;
-    @Column(name = "ecs_json", length = 4000)
+    @Column(name = "ecs_json", columnDefinition = "TEXT")
     private String ecsJson;
 
     public SearchEventEntity() {
@@ -54,6 +60,14 @@ public class SearchEventEntity extends BaseEntity {
 
     public void setEventId(String eventId) {
         this.eventId = eventId;
+    }
+
+    public String getPayloadFingerprint() {
+        return payloadFingerprint;
+    }
+
+    public void setPayloadFingerprint(String payloadFingerprint) {
+        this.payloadFingerprint = payloadFingerprint;
     }
 
     public Instant getTimestamp() {

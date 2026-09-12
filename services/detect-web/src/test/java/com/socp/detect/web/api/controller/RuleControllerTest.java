@@ -30,7 +30,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@WebMvcTest(RuleController.class)
+@WebMvcTest({RuleController.class, DetectionRuntimeController.class})
 @AutoConfigureMockMvc(addFilters = false)
 @TestPropertySource(properties = {"socp.security.dev-bypass=true"})
 class RuleControllerTest {
@@ -90,6 +90,7 @@ class RuleControllerTest {
                                 {"id":"wrong-id","name":"Roundtrip","type":"pattern","severity":"HIGH",
                                  "evidence":{"fields":["host","msg"]},
                                  "alert":{"title":"Title","grouping":{"strategy":"source"}},
+                                 "lateEventPolicy":{"allowedLateness":"90s","handling":"ACCEPT","source":"content-pack"},
                                  "match":[{"field":"msg","op":"eq","value":" padded ","annotations":{"owner":"SOC"}}],
                                  "allowlist":[{"field":"host","op":"eq","value":"trusted","source":"import"}]}
                                 """))
@@ -97,6 +98,7 @@ class RuleControllerTest {
                 .andExpect(jsonPath("$.id").value("preserved"))
                 .andExpect(jsonPath("$.evidence.fields[1]").value("msg"))
                 .andExpect(jsonPath("$.alert.grouping.strategy").value("source"))
+                .andExpect(jsonPath("$.lateEventPolicy.source").value("content-pack"))
                 .andExpect(jsonPath("$.match[0].value").value(" padded "))
                 .andExpect(jsonPath("$.match[0].annotations.owner").value("SOC"))
                 .andExpect(jsonPath("$.whitelist[0].source").value("import"));

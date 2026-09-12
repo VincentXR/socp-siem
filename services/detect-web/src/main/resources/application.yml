@@ -35,10 +35,28 @@ socp:
   alert:
     url: ${SOCP_ALERT_URL:http://localhost:18080}
   detect:
+    # all keeps the local single-process profile; api exposes rule/query
+    # management while worker owns Kafka, rule-change and alert-outbox loops.
+    runtime-role: ${SOCP_DETECT_RUNTIME_ROLE:all}
+    # A JVM-unique id is the fallback identity for the database state-unit
+    # lease; set SOCP_DETECT_INSTANCE_ID when operators need a stable label.
+    instance-id: ${SOCP_DETECT_INSTANCE_ID:${random.uuid}}
     engine:
       idle-ttl-ms: ${SOCP_DETECT_ENGINE_IDLE_TTL_MS:1800000}
       max-tenants: ${SOCP_DETECT_ENGINE_MAX_TENANTS:1000}
       cleanup-interval-ms: ${SOCP_DETECT_ENGINE_CLEANUP_INTERVAL_MS:60000}
+    backpressure:
+      # Count the in-flight, lane-queued and deferred payload bytes per Kafka
+      # partition; one oversized record is admitted so a partition can drain.
+      partition-max-bytes: ${SOCP_DETECT_PARTITION_MAX_PENDING_BYTES:16777216}
+    tenant:
+      # Zero rate means unlimited; byte/entity defaults remain finite and are
+      # evaluated independently for every authenticated event tenant.
+      max-events-per-second: ${SOCP_DETECT_TENANT_MAX_EVENTS_PER_SECOND:0}
+      rate-burst: ${SOCP_DETECT_TENANT_RATE_BURST:100}
+      max-pending-bytes: ${SOCP_DETECT_TENANT_MAX_PENDING_BYTES:67108864}
+      max-active-entities: ${SOCP_DETECT_TENANT_MAX_ACTIVE_ENTITIES:100000}
+      entity-idle-ttl-ms: ${SOCP_DETECT_TENANT_ENTITY_IDLE_TTL_MS:1800000}
     watchlists:
       # Shared database state is refreshed on this bounded interval so a
       # mutation made through another Detection instance becomes effective
@@ -47,6 +65,8 @@ socp:
       cache-max-entries: ${SOCP_DETECT_WATCHLIST_CACHE_MAX_ENTRIES:10000}
       cache-cleanup-interval-ms: ${SOCP_DETECT_WATCHLIST_CACHE_CLEANUP_INTERVAL_MS:60000}
     state:
+      shards: ${SOCP_DETECT_STATE_SHARDS:1}
+      owner-lease: ${SOCP_DETECT_STATE_OWNER_LEASE:30s}
       retention: ${SOCP_DETECT_STATE_RETENTION:24h}
       # Replay retention is separate from cleanup retention. Completed rows
       # support state rebuild; terminal DLQ rows are retained longer as failure

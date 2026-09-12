@@ -6,6 +6,7 @@ import com.socp.rule.model.Severity;
 import com.socp.rule.state.RuleStateMap;
 import com.socp.rule.state.StateSnapshotCodec;
 import com.socp.rule.state.StatefulRule;
+import com.socp.rule.time.EventTimePolicy;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -26,10 +27,12 @@ public final class CorrelationSetRule extends AbstractRule implements StatefulRu
     private final Severity severity;
     private final String titleTemplate;
     private final String messageTemplate;
+    private final EventTimePolicy eventTimePolicy;
 
     private static final class State {
         final BitSet bits = new BitSet();
         Instant firstTs;
+        Instant watermark;
         final Map<Integer, SecurityEvent> evidence = new LinkedHashMap<>();
     }
 
@@ -47,11 +50,23 @@ public final class CorrelationSetRule extends AbstractRule implements StatefulRu
                               List<Predicate<SecurityEvent>> conds,
                               Duration window, Severity severity,
                               String titleTemplate, String messageTemplate) {
+        this(id, name, keyOf, conds, window, EventTimePolicy.defaultFor(window),
+                severity, titleTemplate, messageTemplate);
+    }
+
+    public CorrelationSetRule(String id, String name,
+                              Function<SecurityEvent, String> keyOf,
+                              List<Predicate<SecurityEvent>> conds,
+                              Duration window, EventTimePolicy eventTimePolicy,
+                              Severity severity,
+                              String titleTemplate, String messageTemplate) {
         super(id, name);
         if (conds.isEmpty()) throw new IllegalArgumentException("correlation-set requires a condition");
         this.keyOf = keyOf;
         this.conds = List.copyOf(conds);
         this.window = window;
+        this.eventTimePolicy = eventTimePolicy == null
+                ? EventTimePolicy.defaultFor(window) : eventTimePolicy;
         this.severity = severity;
         this.titleTemplate = titleTemplate;
         this.messageTemplate = messageTemplate;
@@ -64,7 +79,14 @@ public final class CorrelationSetRule extends AbstractRule implements StatefulRu
 
         State st = states.get(key, State::new);
         synchronized (st) {
-            if (st.firstTs != null && event.timestamp().minus(window).isAfter(st.firstTs)) {
+            if (eventTimePolicy.isLate(event.timestamp(), st.watermark)
+                    && eventTimePolicy.handling() == EventTimePolicy.LateEventHandling.DROP) {
+                return;
+            }
+            if (st.watermark == null || st.watermark.isBefore(event.timestamp())) {
+                st.watermark = event.timestamp();
+            }
+            if (st.firstTs != null && st.watermark.minus(window).isAfter(st.firstTs)) {
                 st.bits.clear();
                 st.evidence.clear();
                 st.firstTs = null;
@@ -103,7 +125,7 @@ public final class CorrelationSetRule extends AbstractRule implements StatefulRu
 
     @Override
     public String stateVersion() {
-        return "correlation-set-v1";
+        return "correlation-set-v2";
     }
 
     @Override
@@ -114,6 +136,7 @@ public final class CorrelationSetRule extends AbstractRule implements StatefulRu
                 Map<String, Object> value = new java.util.LinkedHashMap<>();
                 value.put("bits", state.bits.toLongArray());
                 value.put("firstTs", state.firstTs == null ? null : state.firstTs.toString());
+                value.put("watermark", state.watermark == null ? null : state.watermark.toString());
                 Map<String, Object> evidence = new java.util.LinkedHashMap<>();
                 state.evidence.forEach((index, event) -> evidence.put(String.valueOf(index), StateSnapshotCodec.event(event)));
                 value.put("evidence", evidence);
@@ -125,7 +148,9 @@ public final class CorrelationSetRule extends AbstractRule implements StatefulRu
 
     @Override
     public void restoreState(byte[] serializedState) {
-        StateSnapshotCodec.read(serializedState).forEach((key, raw) -> {
+        Map<String, Object> snapshot = StateSnapshotCodec.read(serializedState);
+        states.clear();
+        snapshot.forEach((key, raw) -> {
             if (!(raw instanceof Map<?, ?> values)) return;
             State state = states.get(key, State::new);
             synchronized (state) {
@@ -142,6 +167,8 @@ public final class CorrelationSetRule extends AbstractRule implements StatefulRu
                     }
                 }
                 state.firstTs = parseInstant(values.get("firstTs"));
+                state.watermark = parseInstant(values.get("watermark"));
+                if (state.watermark == null) state.watermark = state.firstTs;
                 state.evidence.clear();
                 Object evidence = values.get("evidence");
                 if (evidence instanceof Map<?, ?> map) {

@@ -52,6 +52,14 @@ class DetectionContentCatalogTest {
             Map<String, Object> spec = (Map<String, Object>) item.get("spec");
             Map<String, Object> enriched = DetectionContentCatalog.enrich(spec);
             assertTrue(DetectionContentCatalog.validateSpec(enriched).isEmpty(), String.valueOf(item.get("id")));
+            String type = String.valueOf(enriched.get("type"));
+            if (List.of("threshold", "correlation", "correlation-set", "baseline", "rare")
+                    .contains(type.toLowerCase())) {
+                assertFalse(String.valueOf(enriched.getOrDefault("groupBy", "")).isBlank(),
+                        String.valueOf(item.get("id")) + " must declare groupBy");
+                assertTrue(enriched.containsKey("lateEventPolicy"),
+                        String.valueOf(item.get("id")) + " must declare lateEventPolicy");
+            }
             assertEquals("ACTIVE".equalsIgnoreCase(String.valueOf(enriched.get("status"))),
                     enriched.get("enabled"), String.valueOf(item.get("id")) + " lifecycle projection");
             @SuppressWarnings("unchecked")
@@ -105,7 +113,20 @@ class DetectionContentCatalogTest {
         Map<String, Object> invalid = new LinkedHashMap<>(legacy);
         invalid.put("routingField", "user");
         assertTrue(DetectionContentCatalog.validateSpec(invalid).stream()
-                .anyMatch(error -> error.contains("keyField and routingField must match")));
+                .anyMatch(error -> error.contains("cross-entity grouping is unsupported")
+                        && error.contains("keyField and routingField must match")));
+
+        Map<String, Object> explicit = new LinkedHashMap<>(legacy);
+        explicit.remove("keyField");
+        explicit.put("groupBy", "host");
+        explicit.put("routingField", "host");
+        explicit.put("lateEventPolicy", Map.of("allowedLateness", "10s", "handling", "DROP"));
+        assertTrue(DetectionContentCatalog.validateSpec(explicit).isEmpty());
+
+        Map<String, Object> mismatchedGrouping = new LinkedHashMap<>(explicit);
+        mismatchedGrouping.put("keyField", "user");
+        assertTrue(DetectionContentCatalog.validateSpec(mismatchedGrouping).stream()
+                .anyMatch(error -> error.contains("groupBy and keyField")));
     }
 
     @SuppressWarnings("unchecked")

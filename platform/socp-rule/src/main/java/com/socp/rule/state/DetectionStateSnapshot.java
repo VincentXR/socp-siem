@@ -13,7 +13,18 @@ public record DetectionStateSnapshot(
         long lastProcessedOffset,
         byte[] serializedState,
         Instant snapshotTimestamp,
-        Map<Integer, Long> partitionOffsets) {
+        Map<Integer, Long> partitionOffsets,
+        Map<Integer, Long> partitionOwnerEpochs,
+        String inputTopic) {
+
+    /** Compatibility constructor for the checkpoint-vector format. */
+    public DetectionStateSnapshot(String ruleId, String ruleVersion, String tenantId,
+                                  int shardId, long lastProcessedOffset,
+                                  byte[] serializedState, Instant snapshotTimestamp,
+                                  Map<Integer, Long> partitionOffsets) {
+        this(ruleId, ruleVersion, tenantId, shardId, lastProcessedOffset, serializedState,
+                snapshotTimestamp, partitionOffsets, Map.of(), null);
+    }
 
     /**
      * Compatibility constructor for snapshots written before the checkpoint
@@ -24,7 +35,7 @@ public record DetectionStateSnapshot(
                                   int shardId, long lastProcessedOffset,
                                   byte[] serializedState, Instant snapshotTimestamp) {
         this(ruleId, ruleVersion, tenantId, shardId, lastProcessedOffset,
-                serializedState, snapshotTimestamp, Map.of());
+                serializedState, snapshotTimestamp, Map.of(), Map.of(), null);
     }
 
     public DetectionStateSnapshot {
@@ -43,8 +54,34 @@ public record DetectionStateSnapshot(
             normalizedOffsets.put(partition, offset);
         });
         partitionOffsets = Map.copyOf(normalizedOffsets);
+        if (partitionOwnerEpochs == null) partitionOwnerEpochs = Map.of();
+        Map<Integer, Long> normalizedEpochs = new LinkedHashMap<>();
+        partitionOwnerEpochs.forEach((partition, epoch) -> {
+            if (partition == null || partition < 0) {
+                throw new IllegalArgumentException("owner epoch partition key must not be negative");
+            }
+            if (epoch == null || epoch < 0) {
+                throw new IllegalArgumentException("owner epoch must not be negative");
+            }
+            normalizedEpochs.put(partition, epoch);
+        });
+        if (!normalizedOffsets.keySet().containsAll(normalizedEpochs.keySet())) {
+            throw new IllegalArgumentException("owner epoch partition must have a checkpoint offset");
+        }
+        partitionOwnerEpochs = Map.copyOf(normalizedEpochs);
+        inputTopic = inputTopic == null || inputTopic.isBlank() ? null : inputTopic.trim();
         serializedState = serializedState == null ? new byte[0] : serializedState.clone();
         snapshotTimestamp = snapshotTimestamp == null ? Instant.now() : snapshotTimestamp;
+    }
+
+    /** Compatibility constructor for snapshots with owner epochs but no topic binding. */
+    public DetectionStateSnapshot(String ruleId, String ruleVersion, String tenantId,
+                                  int shardId, long lastProcessedOffset,
+                                  byte[] serializedState, Instant snapshotTimestamp,
+                                  Map<Integer, Long> partitionOffsets,
+                                  Map<Integer, Long> partitionOwnerEpochs) {
+        this(ruleId, ruleVersion, tenantId, shardId, lastProcessedOffset, serializedState,
+                snapshotTimestamp, partitionOffsets, partitionOwnerEpochs, null);
     }
 
     @Override
@@ -55,5 +92,10 @@ public record DetectionStateSnapshot(
     @Override
     public Map<Integer, Long> partitionOffsets() {
         return partitionOffsets;
+    }
+
+    @Override
+    public Map<Integer, Long> partitionOwnerEpochs() {
+        return partitionOwnerEpochs;
     }
 }

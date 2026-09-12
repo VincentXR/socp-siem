@@ -21,6 +21,8 @@ import com.socp.platform.auth.security.RequireRole;
  * 输出目标 API：CRUD。
  */
 @RestController
+@com.socp.search.config.config.SearchRuntimeRole(
+        com.socp.search.config.config.SearchRuntimeRole.Role.API)
 @RequestMapping("/api/v1/outputs")
 public class SinkTargetController {
 

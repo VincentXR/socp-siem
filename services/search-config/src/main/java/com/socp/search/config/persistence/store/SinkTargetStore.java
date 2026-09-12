@@ -2,6 +2,7 @@ package com.socp.search.config.persistence.store;
 
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.socp.search.config.config.SearchRuntimeRole;
 import com.socp.search.config.domain.SinkTarget;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -13,6 +14,7 @@ import java.util.List;
  * 默认种子：SEARCH 自身 ingest（渲染器兜底目标）。
  */
 @Component
+@SearchRuntimeRole(SearchRuntimeRole.Role.API)
 public class SinkTargetStore {
 
     private final TenantCatalog<SinkTarget> catalog;

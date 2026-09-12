@@ -5,6 +5,7 @@ import com.socp.search.config.domain.SearchEvent;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.socp.search.config.config.OpenSearchProperties;
+import com.socp.search.config.config.SearchRuntimeRole;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -24,6 +25,7 @@ import java.util.List;
  * durable index acknowledgement or a broker-acknowledged diagnostic DLQ write.
  */
 @Component
+@SearchRuntimeRole(SearchRuntimeRole.Role.WORKER)
 public class OsEventWriter {
 
     private static final Logger log = LoggerFactory.getLogger(OsEventWriter.class);
@@ -82,7 +84,11 @@ public class OsEventWriter {
         }
     }
 
-    /** Asynchronous compatibility path used only when no Kafka indexing path is configured. */
+    /**
+     * Legacy direct-write API retained for source compatibility. Production
+     * callers use {@link com.socp.search.config.infrastructure.kafka.OsIndexerConsumer}
+     * so OpenSearch writes remain replayable from Kafka.
+     */
     public void writeEvents(List<SearchEvent> es) {
         if (!properties.isEnabled() || es == null || es.isEmpty()) return;
         Thread.startVirtualThread(() -> doWrite(es));

@@ -52,9 +52,18 @@ def main() -> int:
     downstream = set(services) - {"api-gateway"}
     if not downstream.issubset(route_ids):
         errors.append(f"gateway misses default routes: {sorted(downstream - route_ids)}")
+    # The split detection deployment has one deliberate auxiliary route.  It
+    # is not a legacy URL alias: the browser still addresses /detect-web/**,
+    # while the runtime-only paths must reach the worker.  Keep that route in
+    # the contract explicitly so this check does not confuse it with the two
+    # historical collector aliases.
+    auxiliary_route_ids = {"detect-web-runtime"}
     legacy_route_ids = {"asset-collect", "hips-collect"}
-    if route_ids - downstream != legacy_route_ids:
-        errors.append(f"unexpected legacy routes: {sorted(route_ids - downstream)}")
+    unexpected_routes = route_ids - downstream - auxiliary_route_ids
+    if unexpected_routes != legacy_route_ids:
+        errors.append(f"unexpected non-default routes: {sorted(unexpected_routes)}")
+    if "detect-web-runtime" not in route_ids:
+        errors.append("gateway runtime route missing: detect-web-runtime")
     for legacy, owner in (("asset-collect", "asset-web"), ("hips-collect", "hips-web")):
         expected = f"RewritePath=/{legacy}/?(?<segment>.*), /{owner}/$\\{{segment}}"
         if expected not in gateway:

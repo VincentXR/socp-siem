@@ -1,6 +1,7 @@
 package com.socp.detect.web.engine;
 
 import com.socp.platform.data.outbox.OutboxRetryPolicy;
+import com.socp.detect.web.config.DetectRuntimeRole;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -41,6 +42,7 @@ import java.util.concurrent.Semaphore;
  * Alert Web request to be retried as a new alert.</p>
  */
 @Component
+@DetectRuntimeRole(DetectRuntimeRole.Role.WORKER)
 public class DetectionAlertOutboxPublisher {
 
     private static final Logger log = LoggerFactory.getLogger(DetectionAlertOutboxPublisher.class);

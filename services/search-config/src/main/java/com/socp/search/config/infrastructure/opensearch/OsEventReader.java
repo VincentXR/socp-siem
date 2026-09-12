@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.search.config.config.OpenSearchProperties;
+import com.socp.search.config.config.SearchRuntimeRole;
 import com.socp.search.config.domain.SearchEvent;
 import com.socp.search.config.query.OpenSearchQueryCompiler;
 import com.socp.search.config.query.PipelineCommand;
@@ -25,6 +26,7 @@ import java.util.UUID;
 
 /** OpenSearch adapter for the storage-independent SPL AST. */
 @Component
+@SearchRuntimeRole(SearchRuntimeRole.Role.API)
 public class OsEventReader {
     private static final Logger log = LoggerFactory.getLogger(OsEventReader.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();

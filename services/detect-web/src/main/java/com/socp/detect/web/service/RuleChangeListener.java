@@ -1,5 +1,6 @@
 package com.socp.detect.web.service;
 
+import com.socp.detect.web.config.DetectRuntimeRole;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.client.kafka.KafkaClientSupport;
@@ -19,6 +20,7 @@ import java.util.Map;
 
 /** Per-instance, tenant-aware rule cache invalidation consumer. */
 @Component
+@DetectRuntimeRole(DetectRuntimeRole.Role.WORKER)
 public class RuleChangeListener {
 
     private static final Logger log = LoggerFactory.getLogger(RuleChangeListener.class);

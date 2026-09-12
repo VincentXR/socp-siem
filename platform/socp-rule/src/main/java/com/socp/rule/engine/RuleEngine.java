@@ -40,7 +40,10 @@ public final class RuleEngine implements AutoCloseable {
     private final Suppressor suppressor;
     private final RuleProcessingObserver observer;
     private final RuleExecutionScope executionScope;
+    private final Runnable durableCommitGuard;
+    private final Map<String, String> stateCompatibilityVersions;
     private final BlockingQueue<WorkItem> queue = new ArrayBlockingQueue<>(100_000);
+    private final Map<String, RuleCircuitState> ruleCircuits = new java.util.concurrent.ConcurrentHashMap<>();
     private final ReentrantReadWriteLock lifecycle = new ReentrantReadWriteLock();
     private volatile boolean running = true;
     private Thread worker;
@@ -50,13 +53,18 @@ public final class RuleEngine implements AutoCloseable {
     private final AtomicLong dropCount = new AtomicLong();
     /** Serializes rule mutation, durable position callbacks, and snapshots. */
     private final Object stateLock = new Object();
+    private static final int RULE_FAILURE_THRESHOLD = Math.max(1,
+            Integer.getInteger("socp.rule.failure-threshold", 3));
+    private static final long RULE_FUSE_COOLDOWN_NANOS = TimeUnit.SECONDS.toNanos(
+            Math.max(1L, Long.getLong("socp.rule.fuse-cooldown-seconds", 60L)));
 
     /** Immediate queue admission plus an optional durable completion signal. */
     public record Submission(boolean accepted, CompletableFuture<Void> completion) {
     }
 
     private record WorkItem(SecurityEvent event, CompletableFuture<Void> completion,
-                            boolean durable, Runnable onDurable) {
+                            boolean durable, Runnable onDurable, Runnable durableCommitGuard,
+                            DetectionResult.InputPosition inputPosition) {
     }
 
     public RuleEngine(List<Rule> rules, List<AlertSink> sinks) {
@@ -74,11 +82,36 @@ public final class RuleEngine implements AutoCloseable {
 
     public RuleEngine(List<Rule> rules, List<AlertSink> sinks, Suppressor suppressor,
                       RuleProcessingObserver observer, RuleExecutionScope executionScope) {
+        this(rules, sinks, suppressor, observer, executionScope, null);
+    }
+
+    /**
+     * Create an engine with a guard that is evaluated around the durable sink
+     * boundary. The Detection service uses this hook for a database fencing
+     * token while the shared rule engine remains storage-agnostic.
+     */
+    public RuleEngine(List<Rule> rules, List<AlertSink> sinks, Suppressor suppressor,
+                      RuleProcessingObserver observer, RuleExecutionScope executionScope,
+                      Runnable durableCommitGuard) {
+        this(rules, sinks, suppressor, observer, executionScope, durableCommitGuard, Map.of());
+    }
+
+    /**
+     * Create an engine with explicit per-rule state compatibility versions.
+     * Detection supplies a semantic fingerprint so configuration changes do
+     * not reuse a state window merely because the serialized format is stable.
+     */
+    public RuleEngine(List<Rule> rules, List<AlertSink> sinks, Suppressor suppressor,
+                      RuleProcessingObserver observer, RuleExecutionScope executionScope,
+                      Runnable durableCommitGuard, Map<String, String> stateCompatibilityVersions) {
         this.rulesRef = new AtomicReference<>(List.copyOf(rules));
         this.sinks = List.copyOf(sinks);
         this.suppressor = suppressor;
         this.observer = observer == null ? RuleProcessingObserver.NOOP : observer;
         this.executionScope = executionScope == null ? RuleExecutionScope.NOOP : executionScope;
+        this.durableCommitGuard = durableCommitGuard;
+        this.stateCompatibilityVersions = stateCompatibilityVersions == null
+                ? Map.of() : Map.copyOf(stateCompatibilityVersions);
     }
 
     public void start() {
@@ -134,31 +167,66 @@ public final class RuleEngine implements AutoCloseable {
     private void process(WorkItem item) {
         synchronized (stateLock) {
             SecurityEvent event = item.event();
-            try (RuleExecutionScope.Scope ignored = executionScope.open(event)) {
-                processInScope(item, event);
+            Map<StatefulRule, byte[]> before = item.durable() ? snapshotMutableStates() : Map.of();
+            try {
+                try (RuleExecutionScope.Scope ignored = executionScope.open(event)) {
+                    processInScope(item, event, before);
+                }
+                // Position bookkeeping is deliberately inside the same
+                // critical section as state mutation. A checkpoint can
+                // therefore never capture rule bytes ahead of its watermark.
+                if (item.onDurable() != null) item.onDurable().run();
+            } catch (RuntimeException | Error failure) {
+                if (item.durable() && !before.isEmpty()) {
+                    try {
+                        restoreMutableStates(before);
+                    } catch (RuntimeException rollbackFailure) {
+                        failure.addSuppressed(rollbackFailure);
+                        log.error("Unable to roll back detection state eventId={}: {}",
+                                event.id(), rollbackFailure.getMessage(), rollbackFailure);
+                    }
+                }
+                throw failure;
             }
-            // Position bookkeeping is deliberately inside the same critical
-            // section as state mutation. A checkpoint can therefore never
-            // capture rule bytes ahead of the Kafka watermark it records.
-            if (item.onDurable() != null) item.onDurable().run();
         }
     }
 
-    private void processInScope(WorkItem item, SecurityEvent event) {
+    private void processInScope(WorkItem item, SecurityEvent event,
+                                Map<StatefulRule, byte[]> before) {
         eventCount.incrementAndGet();
         List<Rule> rules = rulesRef.get();
-        for (Rule rule : rules) rule.accept(event);
+        for (Rule rule : rules) {
+            if (ruleCircuitOpen(rule)) {
+                log.warn("Skipping isolated detection rule ruleId={} eventId={}", rule.id(), event.id());
+                continue;
+            }
+            acceptRule(rule, event);
+        }
 
         List<Alert> candidates = new ArrayList<>();
         for (Rule rule : rules) candidates.addAll(rule.drain());
         try (Suppressor.Batch batch = suppressor == null ? null : suppressor.begin(candidates)) {
             List<Alert> emitted = batch == null ? List.copyOf(candidates) : batch.alerts();
             notifyEvaluationCompleted(event, emitted.size());
+            DetectionResult result = new DetectionResult(
+                    event,
+                    item.inputPosition(),
+                    ruleVersions(rules),
+                    stateChanges(before, rules),
+                    candidates,
+                    emitted,
+                    batch == null
+                            ? DetectionResult.SuppressionDecision.none(candidates, emitted)
+                            : DetectionResult.SuppressionDecision.window(candidates, emitted),
+                    event.scopedId());
             boolean delivered = true;
+            boolean eventAwareBoundary = false;
+            runCommitGuard(item);
             for (AlertSink sink : sinks) {
                 try {
                     if (sink instanceof EventAlertSink eventSink) {
-                        eventSink.publish(event, emitted);
+                        eventAwareBoundary = true;
+                        eventSink.publish(result, commitGuard(item));
                     } else {
                         for (Alert alert : emitted) sink.publish(alert);
                     }
@@ -170,11 +238,108 @@ public final class RuleEngine implements AutoCloseable {
                 }
             }
             if (delivered) {
+                // Event-aware sinks own the transaction that contains the
+                // second fence check and journal completion. Legacy sinks do
+                // not have that boundary, so retain the post-sink check for
+                // them before committing suppression state.
+                if (!eventAwareBoundary) runCommitGuard(item);
                 if (batch != null) batch.commit();
                 alertCount.addAndGet(emitted.size());
                 notifyDurableSinksCompleted(event, emitted.size());
             }
         }
+    }
+
+    /**
+     * Evaluate one rule with its own rollback boundary. A permanently bad
+     * rule must not prevent healthy rules from producing a durable result for
+     * the same event; transient failures still escape to the caller so the
+     * event remains retryable.
+     */
+    private void acceptRule(Rule rule, SecurityEvent event) {
+        byte[] before = rule instanceof StatefulRule stateful ? stateful.snapshotState() : null;
+        try {
+            rule.accept(event);
+            ruleCircuits.computeIfAbsent(rule.id(), ignored -> new RuleCircuitState()).success();
+        } catch (RuntimeException failure) {
+            if (before != null && rule instanceof StatefulRule stateful) {
+                try {
+                    stateful.restoreState(before);
+                } catch (RuntimeException rollbackFailure) {
+                    failure.addSuppressed(rollbackFailure);
+                    throw failure;
+                }
+            }
+            // A failed rule may have emitted a candidate before throwing. It
+            // must not leak that candidate into the next event.
+            rule.drain();
+            RuleCircuitState circuit = ruleCircuits.computeIfAbsent(
+                    rule.id(), ignored -> new RuleCircuitState());
+            boolean opened = circuit.failure(failure,
+                    failure instanceof IllegalArgumentException);
+            if (opened) {
+                log.error("Detection rule isolated ruleId={} eventId={} failures={} reason={}",
+                        rule.id(), event.id(), circuit.failures(), failure.getMessage());
+                return;
+            }
+            throw failure;
+        }
+    }
+
+    private boolean ruleCircuitOpen(Rule rule) {
+        RuleCircuitState circuit = ruleCircuits.get(rule.id());
+        return circuit != null && circuit.open();
+    }
+
+    private Map<StatefulRule, byte[]> snapshotMutableStates() {
+        Map<StatefulRule, byte[]> before = new java.util.LinkedHashMap<>();
+        for (Rule rule : rulesRef.get()) {
+            if (rule instanceof StatefulRule stateful) before.put(stateful, stateful.snapshotState());
+        }
+        return before;
+    }
+
+    private Map<String, String> ruleVersions(List<Rule> rules) {
+        Map<String, String> versions = new java.util.LinkedHashMap<>();
+        for (Rule rule : rules) {
+            if (rule == null) continue;
+            if (stateCompatibilityVersions.containsKey(rule.id())) {
+                versions.put(rule.id(), stateCompatibilityVersions.get(rule.id()));
+            } else if (rule instanceof StatefulRule stateful) {
+                versions.put(rule.id(), stateful.stateVersion());
+            } else {
+                versions.put(rule.id(), "stateless-v1");
+            }
+        }
+        return Map.copyOf(versions);
+    }
+
+    private List<DetectionResult.StateChange> stateChanges(Map<StatefulRule, byte[]> before,
+                                                            List<Rule> rules) {
+        if (before == null || before.isEmpty()) return List.of();
+        List<DetectionResult.StateChange> changes = new ArrayList<>();
+        for (Rule rule : rules) {
+            if (!(rule instanceof StatefulRule stateful)) continue;
+            byte[] original = before.get(stateful);
+            byte[] current = stateful.snapshotState();
+            changes.add(new DetectionResult.StateChange(rule.id(),
+                    DetectionResult.digest(original), DetectionResult.digest(current),
+                    !java.util.Arrays.equals(original, current)));
+        }
+        return List.copyOf(changes);
+    }
+
+    private void restoreMutableStates(Map<StatefulRule, byte[]> before) {
+        before.forEach(StatefulRule::restoreState);
+    }
+
+    private Runnable commitGuard(WorkItem item) {
+        return item.durableCommitGuard() == null ? durableCommitGuard : item.durableCommitGuard();
+    }
+
+    private void runCommitGuard(WorkItem item) {
+        Runnable guard = commitGuard(item);
+        if (guard != null) guard.run();
     }
 
     private void notifyEvaluationCompleted(SecurityEvent event, int emittedAlerts) {
@@ -213,7 +378,22 @@ public final class RuleEngine implements AutoCloseable {
 
     /** Submit an event and run the callback before the completion signal. */
     public CompletableFuture<Void> ingestAndAwait(SecurityEvent event, Runnable onDurable) {
-        return submit(event, true, onDurable).completion();
+        return ingestAndAwait(event, onDurable, null);
+    }
+
+    /** Submit a durable event with an ownership guard specific to its state unit. */
+    public CompletableFuture<Void> ingestAndAwait(SecurityEvent event, Runnable onDurable,
+                                                  Runnable durableCommitGuard) {
+        return ingestAndAwait(event, DetectionResult.InputPosition.unknown(), onDurable,
+                durableCommitGuard);
+    }
+
+    /** Submit a durable event with its transport position attached to the result. */
+    public CompletableFuture<Void> ingestAndAwait(SecurityEvent event,
+                                                  DetectionResult.InputPosition inputPosition,
+                                                  Runnable onDurable,
+                                                  Runnable durableCommitGuard) {
+        return submit(event, true, onDurable, durableCommitGuard, inputPosition).completion();
     }
 
     public Submission submit(SecurityEvent event, boolean durable) {
@@ -221,8 +401,23 @@ public final class RuleEngine implements AutoCloseable {
     }
 
     public Submission submit(SecurityEvent event, boolean durable, Runnable onDurable) {
+        return submit(event, durable, onDurable, null);
+    }
+
+    /** Submit with both a durable-position callback and a per-event fence. */
+    public Submission submit(SecurityEvent event, boolean durable, Runnable onDurable,
+                             Runnable durableCommitGuard) {
+        return submit(event, durable, onDurable, durableCommitGuard,
+                DetectionResult.InputPosition.unknown());
+    }
+
+    /** Submit with a transport position retained in the calculation result. */
+    public Submission submit(SecurityEvent event, boolean durable, Runnable onDurable,
+                             Runnable durableCommitGuard,
+                             DetectionResult.InputPosition inputPosition) {
         CompletableFuture<Void> completion = new CompletableFuture<>();
-        WorkItem item = new WorkItem(event, completion, durable, onDurable);
+        WorkItem item = new WorkItem(event, completion, durable, onDurable, durableCommitGuard,
+                inputPosition == null ? DetectionResult.InputPosition.unknown() : inputPosition);
         lifecycle.readLock().lock();
         try {
             if (!running) {
@@ -261,7 +456,8 @@ public final class RuleEngine implements AutoCloseable {
             running = false;
             for (;;) {
                 try {
-                    queue.put(new WorkItem(POISON_EVENT, null, false, null));
+                    queue.put(new WorkItem(POISON_EVENT, null, false, null, null,
+                            DetectionResult.InputPosition.unknown()));
                     break;
                 } catch (InterruptedException interruption) {
                     // Closing without the marker can strand every accepted
@@ -292,13 +488,67 @@ public final class RuleEngine implements AutoCloseable {
         List<Rule> replacement = List.copyOf(newRules);
         synchronized (stateLock) {
             List<Rule> old = rulesRef.getAndSet(replacement);
+            ruleCircuits.clear();
             old.forEach(Rule::close);
             log.info("Detection rules reloaded count={}", replacement.size());
         }
     }
 
     public List<Map<String, Object>> ruleStats() {
-        return rulesRef.get().stream().map(Rule::stats).toList();
+        return rulesRef.get().stream().map(rule -> {
+            Map<String, Object> stats = new java.util.LinkedHashMap<>(rule.stats());
+            RuleCircuitState circuit = ruleCircuits.get(rule.id());
+            if (circuit != null) stats.putAll(circuit.stats());
+            else {
+                stats.put("ruleFailures", 0L);
+                stats.put("ruleCircuit", "CLOSED");
+            }
+            return stats;
+        }).toList();
+    }
+
+    private static final class RuleCircuitState {
+        private long failures;
+        private int consecutiveFailures;
+        private long openUntilNanos;
+        private String lastFailure;
+
+        private synchronized void success() {
+            if (openUntilNanos == 0L) consecutiveFailures = 0;
+        }
+
+        private synchronized boolean failure(Throwable failure, boolean permanent) {
+            failures++;
+            consecutiveFailures++;
+            lastFailure = failure == null ? "unknown" : String.valueOf(failure.getMessage());
+            if (permanent || consecutiveFailures >= RULE_FAILURE_THRESHOLD) {
+                openUntilNanos = System.nanoTime() + RULE_FUSE_COOLDOWN_NANOS;
+                return true;
+            }
+            return false;
+        }
+
+        private synchronized boolean open() {
+            if (openUntilNanos == 0L) return false;
+            if (System.nanoTime() < openUntilNanos) return true;
+            openUntilNanos = 0L;
+            consecutiveFailures = 0;
+            return false;
+        }
+
+        private synchronized long failures() {
+            return failures;
+        }
+
+        private synchronized Map<String, Object> stats() {
+            boolean isOpen = open();
+            Map<String, Object> out = new java.util.LinkedHashMap<>();
+            out.put("ruleFailures", failures);
+            out.put("ruleConsecutiveFailures", consecutiveFailures);
+            out.put("ruleCircuit", isOpen ? "OPEN" : "CLOSED");
+            if (lastFailure != null) out.put("ruleLastFailure", lastFailure);
+            return out;
+        }
     }
 
     /** Portable state checkpoint payloads keyed by rule id. */
@@ -312,7 +562,8 @@ public final class RuleEngine implements AutoCloseable {
             Map<String, RuleState> out = new java.util.LinkedHashMap<>();
             for (Rule rule : rulesRef.get()) {
                 if (!(rule instanceof StatefulRule stateful)) continue;
-                out.put(rule.id(), new RuleState(rule.id(), stateful.stateVersion(), stateful.snapshotState()));
+                out.put(rule.id(), new RuleState(rule.id(), stateCompatibilityVersion(stateful),
+                        stateful.snapshotState()));
             }
             return capture.apply(Map.copyOf(out));
         }
@@ -339,7 +590,7 @@ public final class RuleEngine implements AutoCloseable {
             for (Rule rule : rulesRef.get()) {
                 if (!(rule instanceof StatefulRule stateful)) continue;
                 RuleState snapshot = states.get(rule.id());
-                if (snapshot == null || !stateful.stateVersion().equals(snapshot.version())) continue;
+                if (snapshot == null || !stateCompatibilityVersion(stateful).equals(snapshot.version())) continue;
                 try {
                     stateful.restoreState(snapshot.serializedState());
                     restored.add(rule.id());
@@ -364,6 +615,10 @@ public final class RuleEngine implements AutoCloseable {
             }
             return List.copyOf(restored);
         }
+    }
+
+    private String stateCompatibilityVersion(StatefulRule stateful) {
+        return stateCompatibilityVersions.getOrDefault(stateful.id(), stateful.stateVersion());
     }
 
     public record RuleState(String ruleId, String version, byte[] serializedState) {

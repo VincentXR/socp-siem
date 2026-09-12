@@ -5,6 +5,7 @@ import com.socp.platform.data.outbox.OutboxAdminResult;
 import com.socp.platform.error.exception.ApiException;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.search.config.domain.IngestionOutboxEvent;
+import com.socp.search.config.config.SearchRuntimeRole;
 import com.socp.search.config.persistence.repository.IngestionOutboxRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.stereotype.Service;
@@ -15,6 +16,7 @@ import java.util.List;
 
 /** Tenant-scoped, auditable operational closure for ingestion outbox failures. */
 @Service
+@SearchRuntimeRole(SearchRuntimeRole.Role.API)
 public class IngestionOutboxAdminService {
 
     private final IngestionOutboxRepository repository;

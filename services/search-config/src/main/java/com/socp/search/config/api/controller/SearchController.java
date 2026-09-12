@@ -25,6 +25,8 @@ import java.util.List;
  * cache is only an explicitly marked degraded fallback and is never merged with it.
  */
 @RestController
+@com.socp.search.config.config.SearchRuntimeRole(
+        com.socp.search.config.config.SearchRuntimeRole.Role.API)
 @RequestMapping("/api/v1/search")
 public class SearchController {
 

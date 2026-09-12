@@ -45,6 +45,14 @@ public class DetectionStateSnapshotEntity {
     @Column(name = "partition_offsets_json", nullable = false, columnDefinition = "TEXT")
     private String partitionOffsetsJson = "{}";
 
+    /** JSON object of Kafka partition -> owner fencing epoch for this generation. */
+    @Column(name = "partition_owner_epochs_json", nullable = false, columnDefinition = "TEXT")
+    private String partitionOwnerEpochsJson = "{}";
+
+    /** Input topic bound to this checkpoint generation; null means legacy unknown. */
+    @Column(name = "input_topic", length = 255)
+    private String inputTopic;
+
     /** Optimistic concurrency guard for two detection instances checkpointing the same shard. */
     @Version
     @Column(name = "row_version", nullable = false)
@@ -71,6 +79,13 @@ public class DetectionStateSnapshotEntity {
         this.partitionOffsetsJson = partitionOffsetsJson == null || partitionOffsetsJson.isBlank()
                 ? "{}" : partitionOffsetsJson;
     }
+    public String getPartitionOwnerEpochsJson() { return partitionOwnerEpochsJson; }
+    public void setPartitionOwnerEpochsJson(String partitionOwnerEpochsJson) {
+        this.partitionOwnerEpochsJson = partitionOwnerEpochsJson == null || partitionOwnerEpochsJson.isBlank()
+                ? "{}" : partitionOwnerEpochsJson;
+    }
+    public String getInputTopic() { return inputTopic; }
+    public void setInputTopic(String inputTopic) { this.inputTopic = inputTopic; }
     public long getRowVersion() { return rowVersion; }
     public void setRowVersion(long rowVersion) { this.rowVersion = rowVersion; }
 }

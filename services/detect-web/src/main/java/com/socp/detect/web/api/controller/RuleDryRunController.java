@@ -1,6 +1,7 @@
 package com.socp.detect.web.api.controller;
 
 import com.socp.detect.web.api.request.RuleDryRunRequest;
+import com.socp.detect.web.config.DetectRuntimeRole;
 import com.socp.detect.web.service.RuleDryRunService;
 import com.socp.platform.auth.security.RequireRole;
 import com.socp.platform.ratelimit.api.RateLimit;
@@ -13,6 +14,7 @@ import java.util.List;
 import java.util.Map;
 
 @RestController
+@DetectRuntimeRole(DetectRuntimeRole.Role.API)
 @RequestMapping("/api/v1/rules")
 public class RuleDryRunController {
     private final RuleDryRunService service;

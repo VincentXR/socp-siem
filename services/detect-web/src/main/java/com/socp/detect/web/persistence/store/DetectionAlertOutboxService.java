@@ -6,6 +6,7 @@ import com.socp.detect.web.persistence.entity.DetectionAlertOutboxEntity;
 import com.socp.detect.web.engine.DetectionAlertOutboxPublisher;
 import com.socp.platform.tenant.context.TenantContext;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,13 +24,20 @@ public class DetectionAlertOutboxService {
 
     @Autowired
     public DetectionAlertOutboxService(DetectionAlertOutboxRepository repository,
+                                       ObjectProvider<DetectionAlertOutboxPublisher> publisher) {
+        this.repository = repository;
+        this.publisher = publisher.getIfAvailable();
+    }
+
+    /** Source-compatible constructor used by tests and embedded callers. */
+    public DetectionAlertOutboxService(DetectionAlertOutboxRepository repository,
                                        DetectionAlertOutboxPublisher publisher) {
         this.repository = repository;
         this.publisher = publisher;
     }
 
     public DetectionAlertOutboxService(DetectionAlertOutboxRepository repository) {
-        this(repository, null);
+        this(repository, (DetectionAlertOutboxPublisher) null);
     }
 
     /**

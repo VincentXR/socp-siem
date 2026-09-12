@@ -3,6 +3,7 @@ package com.socp.detect.web.persistence.store;
 
 import com.socp.detect.web.persistence.repository.RuleRepository;
 import com.socp.detect.web.persistence.entity.RuleEntity;
+import com.socp.platform.error.exception.ApiException;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.util.Json;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -100,7 +101,7 @@ public class RuleSpecStore {
         }
         List<String> errors = DetectionContentCatalog.validateSpec(spec);
         if (!errors.isEmpty()) {
-            throw new IllegalArgumentException("规则内容校验失败: " + String.join(", ", errors));
+            throw ApiException.badRequest("rule contract validation failed: " + String.join(", ", errors));
         }
         String ruleId = String.valueOf(spec.get("id"));
         RuleEntity e = repo.findByRuleIdAndTenantId(ruleId, tenant).orElseGet(RuleEntity::new);

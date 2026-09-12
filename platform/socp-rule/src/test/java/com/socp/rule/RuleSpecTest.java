@@ -14,6 +14,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -118,6 +119,40 @@ class RuleSpecTest {
                 """));
         assertEquals("host", spec.routingField);
         assertEquals("host", spec.toMap().get("routingField"));
+    }
+
+    @Test
+    void statefulSpecCarriesExplicitGroupingAndLateEventPolicy() {
+        RuleSpec spec = new RuleSpec(Json.parseObject("""
+                {"id":"R-LATE","name":"n","type":"threshold","severity":"HIGH",
+                 "groupBy":"host","routingField":"host","threshold":2,"window":"60s",
+                 "lateEventPolicy":{"allowedLateness":"10s","handling":"DROP"}}
+                """));
+        assertEquals("host", spec.groupBy);
+        assertEquals(java.time.Duration.ofSeconds(10), spec.eventTimePolicy.allowedLateness());
+        assertEquals("DROP", spec.eventTimePolicy.handling().name());
+        assertEquals("host", spec.toMap().get("groupBy"));
+        assertEquals(Map.of("allowedLateness", "10s", "handling", "DROP"),
+                spec.toMap().get("lateEventPolicy"));
+    }
+
+    @Test
+    void stateSemanticsFingerprintChangesWhenExecutableConfigurationChanges() {
+        RuleSpec base = new RuleSpec(Json.parseObject("""
+                {"id":"R3","name":"n","type":"threshold","severity":"HIGH",
+                 "version":"1.0.0","contentVersion":"pack-1","keyField":"host",
+                 "threshold":3,"window":"60s","match":[{"field":"msg","op":"contains","value":"fail"}]}
+                """));
+        RuleSpec changed = new RuleSpec(Json.parseObject("""
+                {"id":"R3","name":"n","type":"threshold","severity":"HIGH",
+                 "version":"1.0.0","contentVersion":"pack-1","keyField":"host",
+                 "threshold":4,"window":"60s","match":[{"field":"msg","op":"contains","value":"fail"}]}
+                """));
+
+        assertNotEquals(base.stateSemanticsFingerprint(), changed.stateSemanticsFingerprint());
+        assertTrue(base.stateSemanticsFingerprint().length() <= 64);
+        assertEquals("1.0.0", base.toMap().get("version"));
+        assertEquals("pack-1", base.toMap().get("contentVersion"));
     }
 
     @Test

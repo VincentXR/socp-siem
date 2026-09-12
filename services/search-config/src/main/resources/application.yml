@@ -30,6 +30,9 @@ socp:
     required-endpoints: ${SOCP_HEALTH_REQUIRED_ENDPOINTS:kafka=localhost:9092,opensearch=localhost:9200,detect=localhost:18082}
     connect-timeout-ms: ${SOCP_HEALTH_CONNECT_TIMEOUT_MS:500}
   search:
+    # all keeps the local single-process profile; api and worker can be
+    # deployed separately while sharing the durable event/outbox database.
+    runtime-role: ${SOCP_SEARCH_RUNTIME_ROLE:all}
     local-cache:
       idle-ttl-ms: ${SOCP_SEARCH_CACHE_IDLE_TTL_MS:1800000}
       max-tenants: ${SOCP_SEARCH_CACHE_MAX_TENANTS:100}

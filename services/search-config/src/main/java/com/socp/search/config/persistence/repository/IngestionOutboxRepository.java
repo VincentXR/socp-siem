@@ -9,12 +9,14 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
 public interface IngestionOutboxRepository extends TenantScopedRepository<IngestionOutboxEvent, String> {
     List<IngestionOutboxEvent> findByTenantId(String tenantId);
     Optional<IngestionOutboxEvent> findByIdAndTenantId(String id, String tenantId);
+    List<IngestionOutboxEvent> findByTenantIdAndEventIdIn(String tenantId, Collection<String> eventIds);
 
     List<IngestionOutboxEvent> findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
             String status, Instant nextAttemptAt);

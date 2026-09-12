@@ -85,6 +85,42 @@ class IngestPipelineTest {
     }
 
     @Test
+    void sourceResolutionFailureIs503InsteadOfAParseSkip() {
+        IngestEventNormalizer normalizer = mock(IngestEventNormalizer.class);
+        IngestionCommitService commit = mock(IngestionCommitService.class);
+        IngestTaskMonitor monitor = mock(IngestTaskMonitor.class);
+        when(normalizer.normalize("event", "collector-1"))
+                .thenThrow(new IllegalStateException("source database unavailable"));
+        when(monitor.runtime("collector-1", true)).thenReturn(Map.of("eps1m", 0.0));
+        IngestPipeline pipeline = new IngestPipeline(normalizer, commit, monitor,
+                mock(DetectClient.class), new SimpleMeterRegistry());
+
+        ApiException failure = assertThrows(ApiException.class,
+                () -> pipeline.process("event", "collector-1"));
+
+        assertEquals(503, failure.getCode());
+        verify(monitor).record(eq("collector-1"), eq(0), eq(0), eq(0), anyLong());
+    }
+
+    @Test
+    void expectedLineBudgetFailureIsCountedAsAParseSkip() {
+        IngestEventNormalizer normalizer = mock(IngestEventNormalizer.class);
+        IngestionCommitService commit = mock(IngestionCommitService.class);
+        IngestTaskMonitor monitor = mock(IngestTaskMonitor.class);
+        when(normalizer.normalize("event", "collector-1"))
+                .thenThrow(new IngestParseException("event contains too many fields"));
+        when(monitor.runtime("collector-1", true)).thenReturn(Map.of("eps1m", 0.0));
+        IngestPipeline pipeline = new IngestPipeline(normalizer, commit, monitor,
+                mock(DetectClient.class), new SimpleMeterRegistry());
+
+        Map<String, Object> result = pipeline.process("event", "collector-1");
+
+        assertEquals(0, result.get("accepted"));
+        assertEquals(1, result.get("skipped"));
+        verify(monitor).record(eq("collector-1"), eq(0), eq(1), eq(0), anyLong());
+    }
+
+    @Test
     void idempotencyFingerprintChangesWhenSameKeyCarriesDifferentPayload() {
         IngestEventNormalizer normalizer = mock(IngestEventNormalizer.class);
         IngestionCommitService commit = mock(IngestionCommitService.class);

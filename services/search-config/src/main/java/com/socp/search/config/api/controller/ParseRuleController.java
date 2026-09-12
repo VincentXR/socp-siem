@@ -28,6 +28,8 @@ import com.socp.platform.auth.security.RequireRole;
  * 解析规则 API：CRUD + 实时预览。
  */
 @RestController
+@com.socp.search.config.config.SearchRuntimeRole(
+        com.socp.search.config.config.SearchRuntimeRole.Role.API)
 @RequestMapping("/api/v1/parse-rules")
 public class ParseRuleController {
 

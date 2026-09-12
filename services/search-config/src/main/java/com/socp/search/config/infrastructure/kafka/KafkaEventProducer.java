@@ -1,6 +1,7 @@
 package com.socp.search.config.infrastructure.kafka;
 
 import com.socp.search.config.config.KafkaProperties;
+import com.socp.search.config.config.SearchRuntimeRole;
 import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
@@ -20,6 +21,7 @@ import java.util.concurrent.TimeUnit;
  * fire-and-forget sends are deliberately not part of this boundary.
  */
 @Component
+@SearchRuntimeRole(SearchRuntimeRole.Role.WORKER)
 public class KafkaEventProducer {
 
     private static final Logger log = LoggerFactory.getLogger(KafkaEventProducer.class);

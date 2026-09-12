@@ -27,7 +27,7 @@ import EmptyState from '../components/EmptyState.vue'
 import PageHeader from '../components/PageHeader.vue'
 import SevBadge from '../components/SevBadge.vue'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
-import { exportSearch, listFields, splSearch, type FieldDef, type SearchEvent, type SearchResult } from '../api'
+import { exportSearch, listAlarmsByEvent, listFields, splSearch, type Alarm, type FieldDef, type SearchEvent, type SearchResult } from '../api'
 import { useI18n } from '../composables/useI18n'
 
 const { t } = useI18n()
@@ -70,6 +70,10 @@ const fieldKeyword = ref('')
 const fieldsLoading = ref(false)
 const fieldsError = ref('')
 const selectedEvent = ref<SearchEvent | null>(null)
+const relatedAlarms = ref<Alarm[]>([])
+const relatedAlarmsLoading = ref(false)
+const relatedAlarmsError = ref('')
+let eventLineageToken = 0
 const savedQueries = ref<Array<{ id: string; name: string; query: string; range: TimeRangeKey }>>([])
 const selectedSavedQueryId = ref('')
 const saveDialogVisible = ref(false)
@@ -197,7 +201,47 @@ function appendFilter(field: string, value?: string): void {
   syncUrl()
 }
 
-function openEvent(event: SearchEvent): void { selectedEvent.value = event }
+async function openEvent(event: SearchEvent): Promise<void> {
+  selectedEvent.value = event
+  relatedAlarms.value = []
+  relatedAlarmsError.value = ''
+  const token = ++eventLineageToken
+  if (!event.eventId?.trim()) return
+  relatedAlarmsLoading.value = true
+  try {
+    const alarms = await listAlarmsByEvent(event.eventId)
+    if (token === eventLineageToken) relatedAlarms.value = alarms
+  } catch (cause) {
+    if (token === eventLineageToken) relatedAlarmsError.value = cause instanceof Error ? cause.message : String(cause)
+  } finally {
+    if (token === eventLineageToken) relatedAlarmsLoading.value = false
+  }
+}
+
+function closeEvent(): void {
+  eventLineageToken += 1
+  selectedEvent.value = null
+  relatedAlarms.value = []
+  relatedAlarmsError.value = ''
+  relatedAlarmsLoading.value = false
+}
+
+function formatRuleVersions(alarm: Alarm): string {
+  const versions = alarm.detectionResult?.ruleVersions
+  if (!versions) return ''
+  return Object.entries(versions).map(([ruleId, version]) => `${ruleId}: ${version}`).join(' · ')
+}
+
+function formatResultPosition(alarm: Alarm): string {
+  const position = alarm.detectionResult?.inputPosition
+  if (!position || position.partition == null || position.offset == null) return ''
+  return `${position.topic ? `${position.topic} · ` : ''}p${position.partition} @ ${position.offset}`
+}
+
+function openRelatedAlarm(alarmId: string): void {
+  if (!alarmId) return
+  void router.push({ name: 'alarms', query: { q: selectedEvent.value?.eventId || undefined, alarmId } })
+}
 
 function saveQuery(): void {
   const name = savedQueryName.value.trim()
@@ -389,11 +433,25 @@ onMounted(() => {
 
     <el-dialog v-model="saveDialogVisible" :title="t('search.saveQuery')" width="420px"><el-input v-model="savedQueryName" autofocus :placeholder="t('search.saveQueryPlaceholder')" @keyup.enter="saveQuery" /><template #footer><el-button @click="saveDialogVisible = false">{{ t('common.cancel') }}</el-button><el-button type="primary" :disabled="!savedQueryName.trim()" @click="saveQuery">{{ t('common.save') }}</el-button></template></el-dialog>
 
-    <el-drawer :model-value="Boolean(selectedEvent)" :title="t('search.eventDetails')" size="620px" @close="selectedEvent = null">
+    <el-drawer :model-value="Boolean(selectedEvent)" :title="t('search.eventDetails')" size="620px" @close="closeEvent">
       <template v-if="selectedEvent">
         <div class="search-event-summary"><SevBadge :value="selectedEvent.severity" /><span class="mono">{{ selectedEvent.timestamp }}</span><span>{{ selectedEvent.host || t('time.notAvailable') }}</span></div>
         <div class="search-event-message">{{ selectedEvent.msg || t('time.notAvailable') }}</div>
         <div class="search-event-fields"><div v-for="(value, key) in selectedEvent.fields" :key="key" class="search-event-field"><div class="search-event-field-head"><span><b>{{ key }}</b><small>{{ availableFields.find(field => field.fieldName === key)?.fieldType || 'string' }}</small></span><el-button link type="primary" size="small" @click="appendFilter(key, String(value))">{{ t('search.filterValue') }}</el-button></div><code>{{ value }}</code></div></div>
+        <div class="search-event-lineage">
+          <div class="search-event-lineage-head"><div><strong>{{ t('search.relatedAlarms') }}</strong><span>{{ t('search.relatedAlarmsHint') }}</span></div><code class="mono">{{ t('search.eventId') }}: {{ selectedEvent.eventId }}</code></div>
+          <el-alert v-if="relatedAlarmsError" :title="t('search.relatedAlarmsFailed')" :description="relatedAlarmsError" type="error" :closable="false" show-icon />
+          <div v-else-if="relatedAlarmsLoading" class="search-event-lineage-loading">{{ t('search.relatedAlarmsLoading') }}</div>
+          <div v-else-if="!relatedAlarms.length" class="search-event-lineage-empty">{{ t('search.noRelatedAlarms') }}</div>
+          <div v-else class="search-event-lineage-list">
+            <div v-for="alarm in relatedAlarms" :key="alarm.id" class="search-event-lineage-item">
+              <div class="search-event-lineage-item-main"><SevBadge :value="alarm.severity" /><div><strong>{{ alarm.title || alarm.ruleName || alarm.ruleId }}</strong><small class="mono">{{ alarm.id }} · {{ alarm.status || 'OPEN' }}</small></div></div>
+              <el-button link type="primary" size="small" @click="openRelatedAlarm(alarm.id)">{{ t('search.openRelatedAlarm') }}</el-button>
+              <div v-if="formatRuleVersions(alarm)" class="search-event-lineage-meta"><span>{{ t('search.ruleVersions') }}</span><code>{{ formatRuleVersions(alarm) }}</code></div>
+              <div v-if="formatResultPosition(alarm)" class="search-event-lineage-meta"><span>{{ t('search.resultPosition') }}</span><code>{{ formatResultPosition(alarm) }}</code></div>
+            </div>
+          </div>
+        </div>
         <details class="search-event-raw" open><summary>{{ t('search.rawEvent') }}</summary><pre>{{ JSON.stringify(selectedEvent, null, 2) }}</pre></details>
       </template>
     </el-drawer>

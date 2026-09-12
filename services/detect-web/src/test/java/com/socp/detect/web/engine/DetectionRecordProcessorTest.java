@@ -30,6 +30,32 @@ class DetectionRecordProcessorTest {
     }
 
     @Test
+    void bridgesEcsFieldsIntoDetectionRuleFieldMap() {
+        DetectionRecordProcessor processor = new DetectionRecordProcessor(
+                mock(DetectEngineService.class), new InMemoryDetectionStateStore(), null);
+
+        DetectionRecordProcessor.NormalizedDetectionRecord record = processor.parse(
+                "ignored", """
+                        {"eventId":"evt-ecs","tenantId":"default","timestamp":"2026-08-23T00:00:00Z",
+                         "source":"auth","host":"web-1","severity":"high","msg":"login failed",
+                         "fields":{"src_ip":"198.51.100.10"},
+                         "ecs":{"event.category":"authentication","source.ip":"198.51.100.10"}}
+                        """);
+
+        assertEquals("authentication", record.event().fields().get("event.category"));
+        assertEquals("198.51.100.10", record.event().fields().get("source.ip"));
+    }
+
+    @Test
+    void rejectsNonObjectEcsAsTerminalPayload() {
+        DetectionRecordProcessor processor = new DetectionRecordProcessor(
+                mock(DetectEngineService.class), new InMemoryDetectionStateStore(), null);
+
+        assertThrows(DetectionRecordProcessor.MalformedDetectionRecordException.class,
+                () -> processor.parse("key", "{\"eventId\":\"evt-bad-ecs\",\"tenantId\":\"default\",\"ecs\":[]}"));
+    }
+
+    @Test
     void rejectsNonObjectFieldsAsTerminalPayload() {
         DetectionRecordProcessor processor = new DetectionRecordProcessor(
                 mock(DetectEngineService.class), new InMemoryDetectionStateStore(), null);

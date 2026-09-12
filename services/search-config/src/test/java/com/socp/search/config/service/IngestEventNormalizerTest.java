@@ -20,6 +20,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -157,6 +158,50 @@ class IngestEventNormalizerTest {
     }
 
     @Test
+    void missingEventTimeDoesNotMakeAnIdempotentRetryLookLikeDifferentContent() {
+        ParserRegistry parsers = mock(ParserRegistry.class);
+        ReferenceSetStore references = mock(ReferenceSetStore.class);
+        when(references.matchedSets(anyString())).thenReturn(List.of());
+        when(parsers.parse(anyString(), anyString())).thenReturn(Map.of(
+                CanonicalEvent.EVENT_MESSAGE, "event without timestamp"));
+        IngestEventNormalizer normalizer = new IngestEventNormalizer(
+                mock(ParsePreviewService.class), mock(ParseRuleStore.class), references, parsers);
+        TenantContext.set("tenant-a");
+
+        var first = normalizer.normalize("event without timestamp", "collector-1", "batch-42:0");
+        var retry = normalizer.normalize("event without timestamp", "collector-1", "batch-42:0");
+
+        assertEquals("true", first.event().fields().get("event_time_generated"));
+        assertEquals(IngestionEventIdentity.fingerprint(first.event()),
+                IngestionEventIdentity.fingerprint(retry.event()));
+    }
+
+    @Test
+    void usesCollectorPositionInsteadOfBodyHashForMissingProducerIdentity() {
+        ParserRegistry parsers = mock(ParserRegistry.class);
+        ReferenceSetStore references = mock(ReferenceSetStore.class);
+        when(references.matchedSets(anyString())).thenReturn(List.of());
+        when(parsers.parse(anyString(), anyString())).thenReturn(Map.of(
+                CanonicalEvent.EVENT_MESSAGE, "identical log body",
+                "file", "/var/log/auth.log",
+                "offset", "42"));
+        IngestEventNormalizer normalizer = new IngestEventNormalizer(
+                mock(ParsePreviewService.class), mock(ParseRuleStore.class), references, parsers);
+        TenantContext.set("tenant-a");
+
+        var first = normalizer.normalize("identical log body", "collector-1");
+        var retry = normalizer.normalize("identical log body", "collector-1");
+        when(parsers.parse(anyString(), anyString())).thenReturn(Map.of(
+                CanonicalEvent.EVENT_MESSAGE, "identical log body",
+                "file", "/var/log/auth.log",
+                "offset", "43"));
+        var nextLine = normalizer.normalize("identical log body", "collector-1");
+
+        assertEquals(first.event().eventId(), retry.event().eventId());
+        assertNotEquals(first.event().eventId(), nextLine.event().eventId());
+    }
+
+    @Test
     void rejectsParserOutputWithTooManyFields() {
         ParserRegistry parsers = mock(ParserRegistry.class);
         ReferenceSetStore references = mock(ReferenceSetStore.class);
@@ -169,6 +214,52 @@ class IngestEventNormalizerTest {
         TenantContext.set("tenant-a");
 
         org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> normalizer.normalize("wide event", "collector-1"));
+    }
+
+    @Test
+    void rejectsIndexedDimensionsThatWouldOverflowPostgresFacts() {
+        ParserRegistry parsers = mock(ParserRegistry.class);
+        ReferenceSetStore references = mock(ReferenceSetStore.class);
+        when(references.matchedSets(anyString())).thenReturn(List.of());
+        when(parsers.parse(anyString(), anyString())).thenReturn(Map.of(
+                CanonicalEvent.EVENT_MESSAGE, "event",
+                "source", "s".repeat(256)));
+        IngestEventNormalizer normalizer = new IngestEventNormalizer(
+                mock(ParsePreviewService.class), mock(ParseRuleStore.class), references, parsers);
+        TenantContext.set("tenant-a");
+
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> normalizer.normalize("oversized source", "collector-1"));
+
+        org.junit.jupiter.api.Assertions.assertTrue(failure.getMessage().contains("source"));
+    }
+
+    @Test
+    void rejectsFieldsAddedByParsePipelineAfterTheBaseFieldBudget() {
+        TenantContext.set("tenant-a");
+        ReferenceSetStore references = mock(ReferenceSetStore.class);
+        when(references.matchedSets(anyString())).thenReturn(List.of());
+        ParserRegistry parsers = mock(ParserRegistry.class);
+        Map<String, String> base = new LinkedHashMap<>();
+        for (int index = 0; index < 510; index++) base.put("base_" + index, "value");
+        when(parsers.parse(anyString(), anyString())).thenReturn(base);
+        when(parsers.parse(anyString(), any(ParseFormat.class), isNull())).thenReturn(base);
+        IngestSourceResolver sourceResolver = mock(IngestSourceResolver.class);
+        ParsePipelineResolver pipeline = mock(ParsePipelineResolver.class);
+        when(sourceResolver.resolve(anyString(), anyString())).thenReturn(new IngestSourceContext(
+                "collector-1", "source-1", ParseFormat.AUTO, List.of("rule-1"), true));
+        Map<String, String> additions = new LinkedHashMap<>();
+        additions.put("added_1", "value");
+        additions.put("added_2", "value");
+        additions.put("added_3", "value");
+        when(pipeline.apply(any(IngestSourceContext.class), anyString(), anyString(), anyBoolean()))
+                .thenReturn(new ParsePipelineResolver.Result(true, "rule-1", additions, null));
+
+        IngestEventNormalizer normalizer = new IngestEventNormalizer(
+                references, parsers, sourceResolver, pipeline);
+
+        assertThrows(IllegalArgumentException.class,
                 () -> normalizer.normalize("wide event", "collector-1"));
     }
 

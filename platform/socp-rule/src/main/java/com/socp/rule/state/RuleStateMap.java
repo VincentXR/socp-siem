@@ -60,6 +60,11 @@ public final class RuleStateMap<V> {
         return evictions.get();
     }
 
+    /** Remove every state key, used when restoring a complete snapshot. */
+    public void clear() {
+        entries.clear();
+    }
+
     public Map<String, Object> stats() {
         return Map.of("stateKeys", size(), "stateMaxKeys", maxKeys,
                 "stateIdleTtlMs", idleNanos / 1_000_000L, "stateEvictions", evictions());

@@ -1,6 +1,7 @@
 package com.socp.search.config.service;
 
 import com.socp.search.config.domain.SearchEvent;
+import com.socp.search.config.config.SearchRuntimeRole;
 import com.socp.search.config.query.LocalQueryExecutor;
 import com.socp.search.config.query.SearchQueryAst;
 import com.socp.search.config.query.SplParser;
@@ -15,6 +16,7 @@ import java.util.List;
  * implementation of the shared AST and is also the explicit degraded path.
  */
 @Service
+@SearchRuntimeRole(SearchRuntimeRole.Role.API)
 public class SplEngine {
     private static final int DEFAULT_PAGE_SIZE = 200;
 

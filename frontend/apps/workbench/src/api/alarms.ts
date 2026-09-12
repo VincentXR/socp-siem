@@ -6,6 +6,8 @@ import type {
 import { withQuery } from '../lib/query'
 
 export const listAlarms = (q?: string, options?: ApiRequestOptions) => get<Alarm[]>(withQuery('/alert-web/api/alarms', { q }), options)
+export const listAlarmsByEvent = (eventId: string) =>
+  get<Alarm[]>(withQuery('/alert-web/api/alarms/by-event', { eventId }))
 export const listAlarmsPaged = (
   page: number, size: number, q?: string, severity?: string, status?: string, rule?: string,
   sort: 'occurredAt' | 'severity' | 'ruleName' | 'entity' | 'status' | 'riskScore' = 'occurredAt',

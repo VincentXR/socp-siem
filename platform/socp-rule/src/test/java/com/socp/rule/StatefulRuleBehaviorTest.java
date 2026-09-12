@@ -8,6 +8,7 @@ import com.socp.rule.rules.CorrelationRule;
 import com.socp.rule.rules.CorrelationSetRule;
 import com.socp.rule.rules.RareValueRule;
 import com.socp.rule.rules.ThresholdRule;
+import com.socp.rule.time.EventTimePolicy;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -131,6 +132,28 @@ class StatefulRuleBehaviorTest {
         rule.accept(event("t-late", 0, "h", "yes"));
 
         assertTrue(rule.drain().isEmpty());
+    }
+
+    @Test
+    void thresholdDropsRecordsBeyondConfiguredAllowedLateness() {
+        ThresholdRule rule = new ThresholdRule("threshold", "Threshold", ignored -> true,
+                SecurityEvent::host, 2, Duration.ofMinutes(5),
+                new EventTimePolicy(Duration.ofSeconds(10), EventTimePolicy.LateEventHandling.DROP),
+                Severity.HIGH, "threshold", "threshold");
+        rule.accept(event("t-1", 100, "h", "yes"));
+        rule.accept(event("t-too-late", 89, "h", "yes"));
+        assertTrue(rule.drain().isEmpty(), "a record outside the lateness bound must not mutate state");
+
+        rule.accept(event("t-within-bound", 95, "h", "yes"));
+        assertEquals(1, rule.drain().size(), "a record inside the lateness bound remains eligible");
+
+        ThresholdRule restored = new ThresholdRule("threshold", "Threshold", ignored -> true,
+                SecurityEvent::host, 2, Duration.ofMinutes(5),
+                new EventTimePolicy(Duration.ofSeconds(10), EventTimePolicy.LateEventHandling.DROP),
+                Severity.HIGH, "threshold", "threshold");
+        restored.restoreState(rule.snapshotState());
+        restored.accept(event("t-very-old-after-restore", 1, "h", "yes"));
+        assertTrue(restored.drain().isEmpty(), "restored watermark must retain late-event protection");
     }
 
     @Test

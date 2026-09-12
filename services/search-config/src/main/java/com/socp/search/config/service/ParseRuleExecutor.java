@@ -3,6 +3,7 @@ package com.socp.search.config.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.search.config.domain.ParseFormat;
 import com.socp.search.config.domain.ParseRule;
+import com.socp.search.config.config.SearchRuntimeRole;
 import com.socp.search.config.parser.CanonicalEvent;
 import com.socp.search.config.parser.ParserRegistry;
 import org.springframework.stereotype.Component;
@@ -28,6 +29,7 @@ import java.util.regex.Pattern;
  * never recompiles a regular expression or reads the database.</p>
  */
 @Component
+@SearchRuntimeRole(SearchRuntimeRole.Role.API)
 public class ParseRuleExecutor {
 
     private static final int MAX_REGEX_PATTERN_CHARS = 8 * 1024;

@@ -1,5 +1,6 @@
 package com.socp.detect.web.engine;
 
+import com.socp.detect.web.config.DetectRuntimeRole;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
@@ -17,6 +18,7 @@ import java.util.concurrent.TimeUnit;
 
 /** Publishes the original alert stream consumed by detect-model. */
 @Component
+@DetectRuntimeRole(DetectRuntimeRole.Role.WORKER)
 public class AlarmKafkaProducer {
 
     private static final Logger log = LoggerFactory.getLogger(AlarmKafkaProducer.class);

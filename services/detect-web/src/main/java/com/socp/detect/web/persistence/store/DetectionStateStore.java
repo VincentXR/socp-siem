@@ -2,6 +2,7 @@ package com.socp.detect.web.persistence.store;
 
 
 import com.socp.rule.model.SecurityEvent;
+import com.socp.rule.engine.DetectionResult;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -37,6 +38,11 @@ public interface DetectionStateStore {
 
     default void markCompleted(SecurityEvent event) {
         if (event != null) markCompleted(event.tenantId(), event.id());
+    }
+
+    /** Mark completion and persist the compact calculation result when supported. */
+    default void markCompleted(DetectionResult result) {
+        if (result != null) markCompleted(result.event());
     }
 
     default void markCompleted(String tenantId, String eventId) {

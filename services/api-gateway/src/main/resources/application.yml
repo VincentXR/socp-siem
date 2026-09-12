@@ -23,6 +23,14 @@ spring:
               uri: ${SOCP_GLS_URI:http://localhost:18081}
               predicates:
                 - Path=/search-config/**
+            # Detection management remains on the API process, while the
+            # runtime read/ingest surfaces are owned by the worker in split
+            # deployments. Keep the browser contract stable and route only
+            # those paths to the worker.
+            - id: detect-web-runtime
+              uri: ${SOCP_GAS_WORKER_URI:http://localhost:18082}
+              predicates:
+                - Path=/detect-web/api/v1/stats,/detect-web/api/v1/alerts,/detect-web/api/v1/stream,/detect-web/api/v1/ingest,/detect-web/api/v1/ingest/**
             - id: detect-web
               uri: ${SOCP_GAS_WEB_URI:http://localhost:18082}
               predicates:

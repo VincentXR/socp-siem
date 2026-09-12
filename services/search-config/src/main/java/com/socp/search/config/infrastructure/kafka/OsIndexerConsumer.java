@@ -6,6 +6,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.socp.platform.client.kafka.KafkaClientSupport;
 import com.socp.search.config.config.KafkaProperties;
 import com.socp.search.config.config.OpenSearchIndexerProperties;
+import com.socp.search.config.config.SearchRuntimeRole;
 import com.socp.search.config.domain.SearchEvent;
 import com.socp.search.config.infrastructure.opensearch.BulkWriteResult;
 import com.socp.search.config.infrastructure.opensearch.OsEventWriter;
@@ -45,6 +46,7 @@ import java.util.Map;
  * tenant-scoped.</p>
  */
 @Component
+@SearchRuntimeRole(SearchRuntimeRole.Role.WORKER)
 public class OsIndexerConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(OsIndexerConsumer.class);

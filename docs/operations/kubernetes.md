@@ -1,9 +1,15 @@
 # Kubernetes release contract
 
-`deploy/k8s/base` is the minimal four-service event plane. `overlays/dev`,
+`deploy/k8s/base` is the minimal event-plane baseline. `overlays/dev`,
 `overlays/staging` and `overlays/prod` choose replica topology without changing
 API contracts. Images remain digest-addressed; a release process must replace
 the `REPLACE_WITH_RELEASE_DIGEST` placeholders and apply signed manifests.
+
+The two continuously active application paths have separate Kubernetes
+workloads: `search-config-api` serves management, ingest and query traffic,
+while `search-config-worker` drains the ingestion Outbox and indexes Kafka
+events into OpenSearch. The gateway routes to `search-config-api`; it never
+uses the worker Service. Detection follows the same API/Worker split.
 
 Every core Deployment carries `socp.io/runtime-unit`, validated against
 `build/runtime-topology.json`. The labels describe ownership in the six-unit

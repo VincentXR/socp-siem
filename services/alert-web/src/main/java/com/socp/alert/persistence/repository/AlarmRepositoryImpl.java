@@ -1,6 +1,7 @@
 package com.socp.alert.persistence.repository;
 
 import com.socp.alert.domain.Alarm;
+import com.socp.alert.domain.AlarmEvidence;
 import com.socp.alert.domain.AlarmQuery;
 import com.socp.alert.domain.Severity;
 
@@ -15,6 +16,7 @@ import jakarta.persistence.criteria.Order;
 import jakarta.persistence.criteria.Path;
 import jakarta.persistence.criteria.Predicate;
 import jakarta.persistence.criteria.Root;
+import jakarta.persistence.criteria.Subquery;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
@@ -40,7 +42,7 @@ public class AlarmRepositoryImpl implements AlarmRepositoryCustom {
         CriteriaBuilder cb = entityManager.getCriteriaBuilder();
         CriteriaQuery<Alarm> contentQuery = cb.createQuery(Alarm.class);
         Root<Alarm> root = contentQuery.from(Alarm.class);
-        contentQuery.where(predicates(cb, root, tenant, query));
+        contentQuery.where(predicates(cb, contentQuery, root, tenant, query));
         contentQuery.orderBy(orders(cb, root, query));
 
         TypedQuery<Alarm> typed = entityManager.createQuery(contentQuery);
@@ -51,7 +53,7 @@ public class AlarmRepositoryImpl implements AlarmRepositoryCustom {
         CriteriaQuery<Long> countQuery = cb.createQuery(Long.class);
         Root<Alarm> countRoot = countQuery.from(Alarm.class);
         countQuery.select(cb.count(countRoot));
-        countQuery.where(predicates(cb, countRoot, tenant, query));
+        countQuery.where(predicates(cb, countQuery, countRoot, tenant, query));
         long total = entityManager.createQuery(countQuery).getSingleResult();
         return new PageImpl<>(content, pageable, total);
     }
@@ -61,12 +63,13 @@ public class AlarmRepositoryImpl implements AlarmRepositoryCustom {
         CriteriaBuilder cb = entityManager.getCriteriaBuilder();
         CriteriaQuery<Alarm> contentQuery = cb.createQuery(Alarm.class);
         Root<Alarm> root = contentQuery.from(Alarm.class);
-        contentQuery.where(predicates(cb, root, tenant, query));
+        contentQuery.where(predicates(cb, contentQuery, root, tenant, query));
         contentQuery.orderBy(orders(cb, root, query));
         return entityManager.createQuery(contentQuery).getResultList();
     }
 
-    private static Predicate[] predicates(CriteriaBuilder cb, Root<Alarm> root,
+    private static Predicate[] predicates(CriteriaBuilder cb, jakarta.persistence.criteria.CriteriaQuery<?> owner,
+                                          Root<Alarm> root,
                                           String tenant, AlarmQuery query) {
         List<Predicate> predicates = new ArrayList<>();
         predicates.add(cb.equal(root.<String>get("tenantId"), tenant));
@@ -81,11 +84,20 @@ public class AlarmRepositoryImpl implements AlarmRepositoryCustom {
         }
         if (query.text() != null) {
             String pattern = "%" + escapeLike(query.text().toLowerCase(Locale.ROOT)) + "%";
+            Subquery<Integer> evidenceMatch = owner.subquery(Integer.class);
+            Root<AlarmEvidence> evidence = evidenceMatch.from(AlarmEvidence.class);
+            evidenceMatch.select(cb.literal(1));
+            evidenceMatch.where(
+                    cb.equal(evidence.<String>get("tenantId"), tenant),
+                    cb.equal(evidence.<String>get("alarmId"), root.<String>get("id")),
+                    cb.like(cb.lower(evidence.<String>get("eventId")), pattern, '\\'));
             predicates.add(cb.or(
                     cb.like(cb.lower(root.<String>get("entity")), pattern, '\\'),
                     cb.like(cb.lower(root.<String>get("title")), pattern, '\\'),
                     cb.like(cb.lower(root.<String>get("ruleName")), pattern, '\\'),
-                    cb.like(cb.lower(root.<String>get("message")), pattern, '\\')));
+                    cb.like(cb.lower(root.<String>get("message")), pattern, '\\'),
+                    cb.like(cb.lower(root.<String>get("triggerEventId")), pattern, '\\'),
+                    cb.exists(evidenceMatch)));
         }
         return predicates.toArray(Predicate[]::new);
     }

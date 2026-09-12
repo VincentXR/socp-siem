@@ -144,6 +144,32 @@ class AlarmServiceTest {
     }
 
     @Test
+    void resolvesAlertsFromAnEventAcrossTriggerAndCorrelationEvidence() {
+        TenantContext.set("tenant-a");
+        Alarm direct = new Alarm("R-1", "Rule 1", Severity.HIGH, "direct", "host-1");
+        direct.setId("alarm-direct");
+        Alarm correlated = new Alarm("R-2", "Rule 2", Severity.MEDIUM, "correlated", "host-2");
+        correlated.setId("alarm-correlated");
+        correlated.setTriggerEventId("other-event");
+        AlarmEvidence evidence = AlarmEvidence.from("alarm-correlated", "tenant-a", 0,
+                new AlarmEvidenceInput("event-1", Instant.parse("2026-08-18T10:00:00Z"),
+                        "auth", "host-2", "MEDIUM", "correlated", Map.of()));
+        given(repository.findByTenantIdAndTriggerEventId("tenant-a", "event-1"))
+                .willReturn(List.of(direct));
+        given(evidenceRepository.findByTenantIdAndEventId("tenant-a", "event-1"))
+                .willReturn(List.of(evidence));
+        given(repository.findByTenantIdAndIdInOrderByOccurredAtDescIdAsc("tenant-a",
+                List.of("alarm-direct", "alarm-correlated")))
+                .willReturn(List.of(direct, correlated));
+
+        List<Alarm> alarms = service.byEvent("event-1");
+
+        assertEquals(List.of(direct, correlated), alarms);
+        verify(repository).findByTenantIdAndIdInOrderByOccurredAtDescIdAsc("tenant-a",
+                List.of("alarm-direct", "alarm-correlated"));
+    }
+
+    @Test
     void repeatedSourceAlertIsIdempotent() {
         TenantContext.set("tenant-a");
         Alarm existing = new Alarm("AUTH-PRIVESC", "Privilege escalation", Severity.HIGH,

@@ -11,7 +11,7 @@ flowchart LR
   S[Vector / NDJSON / collectors] --> P[search-config<br/>parse + normalize + enrich]
   P --> IO[(Ingestion Outbox<br/>same DB transaction)]
   IO --> K[(Kafka<br/>socp-events)]
-  K --> D[detect-web<br/>rule engine + UEBA]
+  K --> D[detect-web-worker<br/>rule engine + UEBA]
   K --> IX[OpenSearch index consumer]
   IX --> OS[(OpenSearch<br/>raw event search)]
   D --> DO[(Detection Alert Outbox<br/>PostgreSQL/H2)]
@@ -58,7 +58,7 @@ analytics consumers.
 | Ingestion and parsing | Vector, collectors, `search-config` | Vendor formats stay outside detection rules |
 | Ingestion publication | `t_ingestion_outbox` | Event persistence and Kafka publication intent commit atomically |
 | Event transport | Kafka `socp-events`, rule-change, alarm topics | Separates ingestion, detection, indexing, and fan-out |
-| Detection | `socp-rule` embedded in `detect-web` | Rules, hot reload, suppression, windows, backpressure |
+| Detection | `socp-rule` embedded in `detect-web-worker` (`detect-web-api` owns management) | Rules, hot reload, suppression, windows, backpressure |
 | Detection recovery | `t_detection_event` | Event lifecycle, partition ownership, time-bounded paginated replay |
 | Detection alert hand-off | `t_detection_alert_outbox` | Durable Alert Web delivery and retry |
 | Entity risk | `t_entity_risk_profile`, `t_entity_risk_alert` | Shared, idempotent projection across Detection instances |

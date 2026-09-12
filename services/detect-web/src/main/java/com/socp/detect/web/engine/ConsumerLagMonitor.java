@@ -1,5 +1,6 @@
 package com.socp.detect.web.engine;
 
+import com.socp.detect.web.config.DetectRuntimeRole;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import io.micrometer.core.instrument.Gauge;
@@ -28,6 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * lag 持续增长 = 消费跟不上生产，需扩容消费者或优化处理。
  */
 @Component
+@DetectRuntimeRole(DetectRuntimeRole.Role.WORKER)
 public class ConsumerLagMonitor {
 
     private static final Logger log = LoggerFactory.getLogger(ConsumerLagMonitor.class);

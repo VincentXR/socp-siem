@@ -1,11 +1,13 @@
 package com.socp.detect.web.engine;
 
 import com.socp.platform.client.kafka.KafkaClientSupport;
+import com.socp.detect.web.config.DetectRuntimeRole;
 import com.socp.detect.web.service.DetectEngineService;
 import com.socp.detect.web.metrics.DetectionPerformanceMetrics;
 import com.socp.detect.web.persistence.store.DetectionStateStore;
 import com.socp.detect.web.persistence.store.InMemoryDetectionStateStore;
 import com.socp.detect.web.persistence.store.PendingDetectionEvent;
+import com.socp.rule.model.SecurityEvent;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -34,6 +36,7 @@ import java.util.concurrent.RejectedExecutionHandler;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
 
 /**
@@ -42,6 +45,7 @@ import java.util.function.BiConsumer;
  * completed its durable Detection result (or durable DLQ hand-off).
  */
 @Component
+@DetectRuntimeRole(DetectRuntimeRole.Role.WORKER)
 public class KafkaEventConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(KafkaEventConsumer.class);
@@ -68,7 +72,9 @@ public class KafkaEventConsumer {
     private static final int LANE_RESUME_THRESHOLD = LANE_QUEUE_CAPACITY / 2;
     private final Map<Integer, ThreadPoolExecutor> partitionLanes = new ConcurrentHashMap<>();
     /** Consumer-thread-owned tasks which could not yet enter their partition lane. */
-    private final Map<TopicPartition, ArrayDeque<Runnable>> deferredWork = new ConcurrentHashMap<>();
+    private final Map<TopicPartition, ArrayDeque<PendingWork>> deferredWork = new ConcurrentHashMap<>();
+    /** In-flight, lane-queued and deferred bytes for each Kafka partition. */
+    private final Map<TopicPartition, AtomicLong> pendingBytes = new ConcurrentHashMap<>();
     /** Partitions paused because their lane or deferred buffer is saturated. */
     private final Set<TopicPartition> pausedPartitions = ConcurrentHashMap.newKeySet();
     private final BlockingQueue<RecordCompletion> completions = new LinkedBlockingQueue<>();
@@ -77,6 +83,9 @@ public class KafkaEventConsumer {
     private BiConsumer<String, String> dlqSink = this::publishDlq;
     private volatile boolean customDlqSink;
     private Thread consumerThread;
+
+    @Value("${socp.detect.backpressure.partition-max-bytes:16777216}")
+    private long partitionMaxPendingBytes = 16L * 1024 * 1024;
 
     @org.springframework.beans.factory.annotation.Autowired
     public KafkaEventConsumer(DetectEngineService engine, DetectionStateStore stateStore,
@@ -111,9 +120,11 @@ public class KafkaEventConsumer {
     public void stop() {
         running.set(false);
         if (consumerThread != null) consumerThread.interrupt();
-        partitionLanes.values().forEach(ThreadPoolExecutor::shutdownNow);
+        partitionLanes.values().forEach(lane -> releaseDropped(lane.shutdownNow()));
         partitionLanes.clear();
+        deferredWork.values().forEach(KafkaEventConsumer::releaseDeferred);
         deferredWork.clear();
+        pendingBytes.clear();
         pausedPartitions.clear();
         var producer = dlqProducer;
         if (producer != null) producer.close(Duration.ofSeconds(5));
@@ -184,11 +195,16 @@ public class KafkaEventConsumer {
                     log.info("Detection partitions revoked: {}", partitions);
                     for (TopicPartition partition : partitions) {
                         ThreadPoolExecutor lane = partitionLanes.remove(partition.partition());
-                        if (lane != null) lane.shutdownNow();
-                        deferredWork.remove(partition);
+                        if (lane != null) releaseDropped(lane.shutdownNow());
+                        ArrayDeque<PendingWork> deferred = deferredWork.remove(partition);
+                        if (deferred != null) releaseDeferred(deferred);
+                        pendingBytes.remove(partition);
                         pausedPartitions.remove(partition);
                         completionTracker.remove(partition.partition());
                     }
+                    engine.releaseForPartitions(partitions.stream()
+                            .map(TopicPartition::partition)
+                            .collect(java.util.stream.Collectors.toUnmodifiableSet()));
                 }
 
                 @Override
@@ -210,7 +226,8 @@ public class KafkaEventConsumer {
                 for (var record : records) {
                     long epoch = completionTracker.register(record.partition(), record.offset());
                     TopicPartition partition = new TopicPartition(record.topic(), record.partition());
-                    dispatchOrDefer(consumer, partition, () -> processWithRetry(record, epoch));
+                    dispatchOrDefer(consumer, partition, () -> processWithRetry(record, epoch),
+                            estimateRecordBytes(record));
                 }
                 drainCompletions(consumer);
                 drainDeferred(consumer);
@@ -218,9 +235,11 @@ public class KafkaEventConsumer {
         } catch (Exception ex) {
             if (running.get()) log.warn("Kafka consumer stopped: {}", ex.getMessage());
         } finally {
-            partitionLanes.values().forEach(ThreadPoolExecutor::shutdownNow);
+            partitionLanes.values().forEach(lane -> releaseDropped(lane.shutdownNow()));
             partitionLanes.clear();
+            deferredWork.values().forEach(KafkaEventConsumer::releaseDeferred);
             deferredWork.clear();
+            pendingBytes.clear();
             pausedPartitions.clear();
         }
     }
@@ -263,10 +282,45 @@ public class KafkaEventConsumer {
     private void dispatchOrDefer(KafkaConsumer<String, String> consumer,
                                  TopicPartition partition,
                                  Runnable task) {
-        if (tryDispatch(partition.partition(), task)) return;
-        deferredWork.computeIfAbsent(partition, ignored -> new ArrayDeque<>()).addLast(task);
+        dispatchOrDefer(consumer, partition, task, 1L);
+    }
+
+    private void dispatchOrDefer(KafkaConsumer<String, String> consumer,
+                                 TopicPartition partition,
+                                 Runnable task,
+                                 long estimatedBytes) {
+        long bytes = Math.max(1L, estimatedBytes);
+        AtomicLong partitionBytes = pendingBytes.computeIfAbsent(partition,
+                ignored -> new AtomicLong());
+        boolean overBudget = reserveBytes(partitionBytes, bytes);
+        PendingWork work = new PendingWork(task, bytes, partitionBytes);
+        if (!overBudget && tryDispatch(partition.partition(), work)) return;
+        // A poll may already contain more records than the byte budget. Keep
+        // those records losslessly in the bounded deferred batch, but stop
+        // polling the partition so the overshoot cannot continue indefinitely.
+        deferredWork.computeIfAbsent(partition, ignored -> new ArrayDeque<>()).addLast(work);
         pausedPartitions.add(partition);
         if (consumer != null) consumer.pause(Set.of(partition));
+    }
+
+    private boolean reserveBytes(AtomicLong current, long bytes) {
+        long limit = Math.max(1L, partitionMaxPendingBytes);
+        for (;;) {
+            long before = current.get();
+            long after;
+            try {
+                after = Math.addExact(before, bytes);
+            } catch (ArithmeticException overflow) {
+                after = Long.MAX_VALUE;
+            }
+            // Allow one oversized record through when the partition is idle;
+            // otherwise it could never make progress under a too-small limit.
+            if (after > limit && before > 0L) {
+                current.addAndGet(bytes);
+                return true;
+            }
+            if (current.compareAndSet(before, after)) return after > limit;
+        }
     }
 
     /**
@@ -277,9 +331,9 @@ public class KafkaEventConsumer {
     private void drainDeferred(KafkaConsumer<String, String> consumer) {
         var iterator = deferredWork.entrySet().iterator();
         while (iterator.hasNext()) {
-            Map.Entry<TopicPartition, ArrayDeque<Runnable>> entry = iterator.next();
+            Map.Entry<TopicPartition, ArrayDeque<PendingWork>> entry = iterator.next();
             TopicPartition partition = entry.getKey();
-            ArrayDeque<Runnable> deferred = entry.getValue();
+            ArrayDeque<PendingWork> deferred = entry.getValue();
             ThreadPoolExecutor lane = lane(partition.partition());
 
             while (!deferred.isEmpty() && tryDispatch(partition.partition(), deferred.peekFirst())) {
@@ -289,17 +343,19 @@ public class KafkaEventConsumer {
             if (deferred.isEmpty() && lane.getQueue().size() <= LANE_RESUME_THRESHOLD) {
                 deferredWork.remove(partition, deferred);
                 pausedPartitions.remove(partition);
-                consumer.resume(Set.of(partition));
+                if (consumer != null) consumer.resume(Set.of(partition));
             } else {
                 pausedPartitions.add(partition);
-                consumer.pause(Set.of(partition));
+                if (consumer != null) consumer.pause(Set.of(partition));
             }
         }
 
         // A partition can be paused while its deferred entry is being removed
         // by a concurrent lifecycle callback. Re-apply the set before poll so
         // no already-fetched records refill a saturated lane.
-        if (!pausedPartitions.isEmpty()) consumer.pause(new HashSet<>(pausedPartitions));
+        if (consumer != null && !pausedPartitions.isEmpty()) {
+            consumer.pause(new HashSet<>(pausedPartitions));
+        }
     }
 
     private void replayPending(Set<Integer> partitions) {
@@ -308,7 +364,7 @@ public class KafkaEventConsumer {
         for (PendingDetectionEvent row : pending) {
             if (row == null || row.event() == null || row.partition() == null) continue;
             dispatchOrDefer(null, new TopicPartition(topic, row.partition()),
-                    () -> processPendingWithRetry(row));
+                    () -> processPendingWithRetry(row), estimateEventBytes(row.event()));
         }
         if (!pending.isEmpty()) {
             log.info("Queued pending Detection journal rows for replay count={}", pending.size());
@@ -329,7 +385,7 @@ public class KafkaEventConsumer {
                 // ownership. DetectionRecordProcessor installs that scope
                 // after parsing, so a Kafka header can never re-home a row.
 
-                processOne(record.partition(), record.offset(), record.key(), record.value());
+                processOne(record.topic(), record.partition(), record.offset(), record.key(), record.value());
                 completions.offer(new RecordCompletion(record.partition(), record.offset(), epoch));
                 return;
             } catch (DetectionRecordProcessor.MalformedDetectionRecordException terminal) {
@@ -429,6 +485,10 @@ public class KafkaEventConsumer {
         recordProcessor.process(partition, offset, key, raw);
     }
 
+    private void processOne(String topic, Integer partition, Long offset, String key, String raw) {
+        recordProcessor.process(topic, partition, offset, key, raw);
+    }
+
     private void rebuildOwnedState(int failedPartition) {
         Set<Integer> owned = engine.assignedPartitions();
         // RuleEngine is instance-wide, not partition-local. Replacing it from
@@ -452,6 +512,74 @@ public class KafkaEventConsumer {
                     eventId == null ? "unknown" : eventId, raw));
         } catch (Exception ex) {
             log.warn("Failed to write event to DLQ eventId={}: {}", eventId, ex.getMessage());
+        }
+    }
+
+    private static long estimateRecordBytes(
+            org.apache.kafka.clients.consumer.ConsumerRecord<String, String> record) {
+        if (record == null) return 1L;
+        long bytes = 256L;
+        if (record.key() != null) {
+            bytes += record.key().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        }
+        if (record.value() != null) {
+            bytes += record.value().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        }
+        return Math.max(1L, bytes);
+    }
+
+    private static long estimateEventBytes(SecurityEvent event) {
+        if (event == null) return 1L;
+        long bytes = 256L + (event.raw() == null ? 0L
+                : event.raw().getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+        if (event.fields() != null) {
+            for (Map.Entry<String, String> field : event.fields().entrySet()) {
+                bytes += field.getKey() == null ? 0L
+                        : field.getKey().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+                bytes += field.getValue() == null ? 0L
+                        : field.getValue().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            }
+        }
+        return Math.max(1L, bytes);
+    }
+
+    private static void releaseDropped(List<Runnable> dropped) {
+        if (dropped == null) return;
+        for (Runnable task : dropped) {
+            if (task instanceof PendingWork work) work.release();
+        }
+    }
+
+    private static void releaseDeferred(ArrayDeque<PendingWork> deferred) {
+        if (deferred == null) return;
+        PendingWork work;
+        while ((work = deferred.pollFirst()) != null) work.release();
+    }
+
+    /** Counts a task until it finishes or is explicitly discarded on revoke. */
+    private static final class PendingWork implements Runnable {
+        private final Runnable delegate;
+        private final long bytes;
+        private final AtomicLong counter;
+        private final AtomicBoolean released = new AtomicBoolean();
+
+        private PendingWork(Runnable delegate, long bytes, AtomicLong counter) {
+            this.delegate = delegate;
+            this.bytes = bytes;
+            this.counter = counter;
+        }
+
+        @Override
+        public void run() {
+            try {
+                delegate.run();
+            } finally {
+                release();
+            }
+        }
+
+        private void release() {
+            if (released.compareAndSet(false, true)) counter.addAndGet(-bytes);
         }
     }
 

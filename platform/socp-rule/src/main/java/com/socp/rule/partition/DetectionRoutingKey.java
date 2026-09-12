@@ -21,6 +21,8 @@ import java.util.Map;
  */
 public final class DetectionRoutingKey {
 
+    /** Bump when the canonical event-key dimension or encoding changes. */
+    public static final String VERSION = "detection-routing-v1";
     public static final String TENANT_FIELD = "tenant_id";
     public static final String ROUTING_FIELD = "detection_routing_field";
     public static final String ROUTING_VALUE = "detection_routing_value";

@@ -142,6 +142,19 @@ class AlarmControllerTest {
     }
 
     @Test
+    void eventLineageEndpointReturnsAlertsForAnEvent() throws Exception {
+        Alarm alarm = new Alarm("AUTH-BRUTE", "SSH brute force", Severity.HIGH,
+                "failed login", "203.0.113.10");
+        alarm.setId("alarm-1");
+        given(service.byEvent("evt-1")).willReturn(List.of(alarm));
+
+        mvc.perform(get("/api/alarms/by-event").param("eventId", "evt-1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()" ).value(1))
+                .andExpect(jsonPath("$.data[0].id").value("alarm-1"));
+    }
+
+    @Test
     void similarEndpointReturnsBoundedCandidates() throws Exception {
         given(service.similar("alarm-1", 20)).willReturn(List.of(new Alarm()));
 

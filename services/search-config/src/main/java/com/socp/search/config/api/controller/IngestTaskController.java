@@ -32,6 +32,8 @@ import jakarta.validation.Valid;
  * </ul>
  */
 @RestController
+@com.socp.search.config.config.SearchRuntimeRole(
+        com.socp.search.config.config.SearchRuntimeRole.Role.API)
 @RequestMapping("/api/v1")
 public class IngestTaskController {
 

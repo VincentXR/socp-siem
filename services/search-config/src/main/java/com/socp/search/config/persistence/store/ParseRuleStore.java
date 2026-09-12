@@ -2,6 +2,7 @@ package com.socp.search.config.persistence.store;
 
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.socp.search.config.config.SearchRuntimeRole;
 import com.socp.search.config.domain.ParseRule;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -13,6 +14,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * 解析规则存储——进程内；生产替换为 PG search.t_parse_rule，接口不变。
  */
 @Component
+@SearchRuntimeRole(SearchRuntimeRole.Role.API)
 public class ParseRuleStore {
 
     private final TenantCatalog<ParseRule> catalog;

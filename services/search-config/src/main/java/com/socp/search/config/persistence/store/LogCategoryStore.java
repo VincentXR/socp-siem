@@ -2,6 +2,7 @@ package com.socp.search.config.persistence.store;
 
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.socp.search.config.config.SearchRuntimeRole;
 import com.socp.search.config.domain.LogCategory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -12,6 +13,7 @@ import java.util.List;
  * 日志类别存储（元数据）。进程内；生产替换为 PG search.t_log_category。
  */
 @Component
+@SearchRuntimeRole(SearchRuntimeRole.Role.API)
 public class LogCategoryStore {
 
     private final TenantCatalog<LogCategory> catalog;

@@ -5,6 +5,12 @@ condition reads a canonical field (`source`, `host`, `severity`, `raw`) or any
 normalized/custom field in `event.fields` such as `src_ip`, `user`, `action`,
 or `http_method`.
 
+Stateful rule grouping is partition-local. Use the same field for `groupBy`
+and `routingField` (with `keyField` retained as a compatibility alias). The
+validation endpoint reports cross-entity grouping as invalid, and create/update
+requests return HTTP 400 until an explicit repartition/fan-out plan is
+available.
+
 ## Alert templates
 
 `message` remains supported for compatibility. New rules should use an

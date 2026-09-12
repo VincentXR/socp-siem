@@ -6,6 +6,7 @@ import com.socp.rule.model.Severity;
 import com.socp.rule.state.RuleStateMap;
 import com.socp.rule.state.StateSnapshotCodec;
 import com.socp.rule.state.StatefulRule;
+import com.socp.rule.time.EventTimePolicy;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -29,6 +30,7 @@ public final class CorrelationRule extends AbstractRule implements StatefulRule 
     private final Severity severity;
     private final String titleTemplate;
     private final String messageTemplate;
+    private final EventTimePolicy eventTimePolicy;
 
     private static final class State {
         int step = 0;
@@ -51,11 +53,23 @@ public final class CorrelationRule extends AbstractRule implements StatefulRule 
                            List<Predicate<SecurityEvent>> steps,
                            Duration window, Severity severity,
                            String titleTemplate, String messageTemplate) {
+        this(id, name, keyOf, steps, window, EventTimePolicy.defaultFor(window),
+                severity, titleTemplate, messageTemplate);
+    }
+
+    public CorrelationRule(String id, String name,
+                           Function<SecurityEvent, String> keyOf,
+                           List<Predicate<SecurityEvent>> steps,
+                           Duration window, EventTimePolicy eventTimePolicy,
+                           Severity severity,
+                           String titleTemplate, String messageTemplate) {
         super(id, name);
         if (steps.isEmpty()) throw new IllegalArgumentException("关联规则至少需要一个步骤");
         this.keyOf = keyOf;
         this.steps = List.copyOf(steps);
         this.window = window;
+        this.eventTimePolicy = eventTimePolicy == null
+                ? EventTimePolicy.defaultFor(window) : eventTimePolicy;
         this.severity = severity;
         this.titleTemplate = titleTemplate;
         this.messageTemplate = messageTemplate;
@@ -71,12 +85,19 @@ public final class CorrelationRule extends AbstractRule implements StatefulRule 
             // Sequence order follows the serialized processing order. Event
             // time only bounds the correlation window, using the greatest
             // timestamp seen so a late record cannot move the window back.
+            if (eventTimePolicy.isLate(event.timestamp(), st.lastTs)
+                    && eventTimePolicy.handling() == EventTimePolicy.LateEventHandling.DROP) {
+                return;
+            }
             Instant watermark = st.lastTs == null || st.lastTs.isBefore(event.timestamp())
                     ? event.timestamp() : st.lastTs;
             if (st.firstTs != null && watermark.minus(window).isAfter(st.firstTs)) {
                 reset(st);
-                watermark = event.timestamp();
             }
+            // Keep the watermark across partial-sequence resets and events
+            // that do not match a step, so an old record cannot start a new
+            // sequence after the active window has expired.
+            st.lastTs = watermark;
 
             boolean matched;
             if (st.step == 0) {
@@ -100,8 +121,6 @@ public final class CorrelationRule extends AbstractRule implements StatefulRule 
             }
             st.evidence.add(event);
             st.step++;
-            st.lastTs = watermark;
-
             if (st.step == steps.size()) {
                 Map<String, Object> context = Map.of(
                         "key", key,
@@ -118,7 +137,6 @@ public final class CorrelationRule extends AbstractRule implements StatefulRule 
     private static void reset(State st) {
         st.step = 0;
         st.firstTs = null;
-        st.lastTs = null;
         st.evidence.clear();
     }
 
@@ -131,7 +149,7 @@ public final class CorrelationRule extends AbstractRule implements StatefulRule 
 
     @Override
     public String stateVersion() {
-        return "correlation-v1";
+        return "correlation-v2";
     }
 
     @Override
@@ -152,7 +170,9 @@ public final class CorrelationRule extends AbstractRule implements StatefulRule 
 
     @Override
     public void restoreState(byte[] serializedState) {
-        StateSnapshotCodec.read(serializedState).forEach((key, raw) -> {
+        Map<String, Object> snapshot = StateSnapshotCodec.read(serializedState);
+        states.clear();
+        snapshot.forEach((key, raw) -> {
             if (!(raw instanceof Map<?, ?> values)) return;
             State state = states.get(key, State::new);
             synchronized (state) {

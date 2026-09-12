@@ -6,6 +6,7 @@ import com.socp.detect.web.persistence.store.RuleSpecStore;
 import com.socp.detect.web.service.EntityRiskStore;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.model.Alert;
+import com.socp.rule.engine.DetectionResult;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.rule.score.RiskScorer;
@@ -22,12 +23,14 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.mock;
 
@@ -120,6 +123,35 @@ class AlertForwarderTest {
     }
 
     @Test
+    void retainsCalculationMetadataAlongsideTheAlertOutboxPayload() {
+        when(ruleStore.get("AUTH-PRIVESC")).thenReturn(Map.of());
+        when(riskStore.recordForAlert(anyString(), anyString(), eq(Severity.HIGH), eq(null),
+                eq("AUTH-PRIVESC"), eq("Privilege escalation"), anyInt()))
+                .thenReturn(new RiskScorer.Score(45, "MEDIUM", Map.of()));
+        SecurityEvent event = new SecurityEvent(
+                "event-result-payload", Instant.now(), "auth", "host-1", "probe",
+                Map.of("tenant_id", "default"), Severity.HIGH);
+        Alert alert = new Alert("AUTH-PRIVESC", "Privilege escalation", Severity.HIGH,
+                "probe", "host-1", List.of(event));
+        DetectionResult result = new DetectionResult(event,
+                new DetectionResult.InputPosition("socp-events", 2, 33L),
+                Map.of("AUTH-PRIVESC", "v4"),
+                List.of(new DetectionResult.StateChange("AUTH-PRIVESC", "before", "after", true)),
+                List.of(alert), List.of(alert),
+                new DetectionResult.SuppressionDecision("NONE", 1, 1, List.of()),
+                event.scopedId());
+
+        new AlertForwarder(ruleStore, riskStore, outbox).forward(result, null);
+
+        ArgumentCaptor<String> payload = ArgumentCaptor.forClass(String.class);
+        verify(outbox).enqueue(eq(alert.id()), eq("default"), payload.capture());
+        assertTrue(payload.getValue().contains("\"detectionResult\":"));
+        assertTrue(payload.getValue().contains("\"topic\":\"socp-events\""));
+        assertTrue(payload.getValue().contains("\"AUTH-PRIVESC\":\"v4\""));
+        assertTrue(payload.getValue().contains("\"idempotencyKey\":\"default|event-result-payload\""));
+    }
+
+    @Test
     void restoresSourceTenantAcrossZeroAlertDurableCompletion() {
         DetectionStateStore stateStore = mock(DetectionStateStore.class);
         org.mockito.Mockito.doAnswer(invocation -> {
@@ -136,6 +168,24 @@ class AlertForwarderTest {
 
         verify(stateStore).markCompleted("tenant-worker", "event-zero-alert");
         assertNull(TenantContext.get());
+    }
+
+    @Test
+    void checksOwnerFenceAroundTransactionalJournalCompletion() {
+        DetectionStateStore stateStore = mock(DetectionStateStore.class);
+        List<String> order = new java.util.ArrayList<>();
+        org.mockito.Mockito.doAnswer(invocation -> {
+            order.add("completed");
+            return null;
+        }).when(stateStore).markCompleted("tenant-worker", "event-fenced");
+        SecurityEvent event = new SecurityEvent(
+                "event-fenced", Instant.now(), "system", "host-1", "heartbeat",
+                Map.of("tenant_id", "tenant-worker"), Severity.INFO);
+
+        new AlertForwarder(ruleStore, riskStore, outbox, stateStore)
+                .forwardAll(event, List.of(), () -> order.add("fence"));
+
+        assertEquals(List.of("fence", "fence", "completed"), order);
     }
 
     @Test
@@ -156,5 +206,24 @@ class AlertForwarderTest {
 
         verify(outbox).enqueue(eq(alert.id()), eq("tenant-request"), anyString());
         assertEquals("tenant-request", TenantContext.get());
+    }
+
+    @Test
+    void rejectsAlertEvidenceFromAnotherTenantBeforePersisting() {
+        SecurityEvent source = new SecurityEvent(
+                "event-source-tenant", Instant.now(), "auth", "host-source", "probe",
+                Map.of("tenant_id", "tenant-source"), Severity.HIGH);
+        SecurityEvent foreignEvidence = new SecurityEvent(
+                "event-foreign-tenant", Instant.now(), "auth", "host-foreign", "probe",
+                Map.of("tenant_id", "tenant-foreign"), Severity.HIGH);
+        Alert alert = new Alert("AUTH-PRIVESC", "Privilege escalation", Severity.HIGH,
+                "probe", "host-source", List.of(foreignEvidence));
+
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> new AlertForwarder(ruleStore, riskStore, outbox)
+                        .forwardAll(source, List.of(alert)));
+
+        assertEquals("alert tenant does not match source event tenant", error.getMessage());
+        verifyNoInteractions(outbox, ruleStore, riskStore);
     }
 }

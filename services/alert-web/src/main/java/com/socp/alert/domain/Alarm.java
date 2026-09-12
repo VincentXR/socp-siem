@@ -1,6 +1,10 @@
 package com.socp.alert.domain;
 
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.data.domain.BaseEntity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -13,6 +17,7 @@ import jakarta.persistence.Table;
 import org.hibernate.annotations.DynamicUpdate;
 
 import java.time.Instant;
+import java.util.Map;
 
 /**
  * 告警实体（对应架构 §8.2 的 alert.t_alarm + t_alarm_hist）。
@@ -25,6 +30,9 @@ import java.time.Instant;
                 columnNames = {"tenant_id", "source_alert_id"})
 })
 public class Alarm extends BaseEntity {
+    private static final ObjectMapper DETECTION_RESULT_MAPPER = new ObjectMapper()
+            .findAndRegisterModules();
+
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
     private String id;
@@ -85,6 +93,10 @@ public class Alarm extends BaseEntity {
 
     @Column(name = "trigger_event_id", length = 128)
     private String triggerEventId;
+
+    /** Raw-payload-free DetectionResult summary retained for investigation lineage. */
+    @Column(name = "detection_result_json", columnDefinition = "TEXT")
+    private String detectionResultJson;
 
     public Alarm() {
     }
@@ -254,5 +266,30 @@ public class Alarm extends BaseEntity {
 
     public void setTriggerEventId(String triggerEventId) {
         this.triggerEventId = triggerEventId;
+    }
+
+    /** Persistence accessor; the API exposes the parsed, safe summary below. */
+    @JsonIgnore
+    public String getDetectionResultJson() {
+        return detectionResultJson;
+    }
+
+    public void setDetectionResultJson(String detectionResultJson) {
+        this.detectionResultJson = detectionResultJson;
+    }
+
+    /**
+     * Return the compact calculation metadata without exposing the raw event
+     * payload that is stored in the separate evidence rows.
+     */
+    @JsonProperty("detectionResult")
+    public Map<String, Object> getDetectionResult() {
+        if (detectionResultJson == null || detectionResultJson.isBlank()) return null;
+        try {
+            return DETECTION_RESULT_MAPPER.readValue(detectionResultJson,
+                    new TypeReference<Map<String, Object>>() {});
+        } catch (Exception ignored) {
+            return Map.of("available", false);
+        }
     }
 }

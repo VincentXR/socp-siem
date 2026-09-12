@@ -144,6 +144,13 @@ public class AlarmController {
         return ApiResult.ok(service.get(id));
     }
 
+    /** Reverse lookup used to connect a log event to alert/case/SOAR context. */
+    @RateLimit(permits = 20, seconds = 1)
+    @GetMapping("/by-event")
+    public ApiResult<List<Alarm>> byEvent(@RequestParam String eventId) {
+        return ApiResult.ok(service.byEvent(eventId));
+    }
+
     /** Return source-event snapshots captured when the alert was created. */
     @RateLimit(permits = 20, seconds = 1)
     @GetMapping("/{id}/evidence")

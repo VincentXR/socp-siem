@@ -1,9 +1,12 @@
 package com.socp.detect.web.persistence.store;
 
 import com.socp.detect.web.persistence.entity.DetectionStateSnapshotEntity;
+import com.socp.detect.web.persistence.entity.DetectionStateOwnerEntity;
+import com.socp.detect.web.persistence.repository.DetectionStateOwnerRepository;
 import com.socp.detect.web.persistence.repository.DetectionStateSnapshotRepository;
 import com.socp.rule.state.DetectionStateSnapshot;
 import com.socp.rule.state.DetectionStateSnapshotStore;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -20,9 +23,21 @@ import java.util.UUID;
 public class JpaDetectionStateSnapshotStore implements DetectionStateSnapshotStore {
 
     private final DetectionStateSnapshotRepository repository;
+    private final DetectionStateOwnerRepository ownerRepository;
+    private final String inputTopic;
 
+    /** Compatibility constructor for focused tests and direct callers. */
     public JpaDetectionStateSnapshotStore(DetectionStateSnapshotRepository repository) {
+        this(repository, null, "socp-events");
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public JpaDetectionStateSnapshotStore(DetectionStateSnapshotRepository repository,
+                                         DetectionStateOwnerRepository ownerRepository,
+                                         @Value("${socp.kafka.topic:socp-events}") String inputTopic) {
         this.repository = repository;
+        this.ownerRepository = ownerRepository;
+        this.inputTopic = inputTopic == null || inputTopic.isBlank() ? "socp-events" : inputTopic;
     }
 
     @Override
@@ -43,6 +58,8 @@ public class JpaDetectionStateSnapshotStore implements DetectionStateSnapshotSto
     public void saveAll(List<DetectionStateSnapshot> snapshots) {
         if (snapshots == null || snapshots.isEmpty()) return;
         DetectionCheckpointPolicy.validateGeneration(snapshots);
+        for (DetectionStateSnapshot snapshot : snapshots) validateInputTopic(snapshot);
+        assertOwnerFences(snapshots);
         List<DetectionStateSnapshotEntity> rows = new ArrayList<>(snapshots.size());
         for (DetectionStateSnapshot snapshot : snapshots) {
             if (snapshot == null) throw new IllegalArgumentException("snapshot is required");
@@ -70,9 +87,12 @@ public class JpaDetectionStateSnapshotStore implements DetectionStateSnapshotSto
             row.setLastProcessedOffset(snapshot.lastProcessedOffset());
             row.setSerializedState(Base64.getEncoder().encodeToString(snapshot.serializedState()));
             row.setSnapshotTimestamp(snapshot.snapshotTimestamp());
+            row.setInputTopic(snapshot.inputTopic() == null ? inputTopic : snapshot.inputTopic());
             try {
                 row.setPartitionOffsetsJson(com.socp.rule.util.Json.mapper()
                         .writeValueAsString(snapshot.partitionOffsets()));
+                row.setPartitionOwnerEpochsJson(com.socp.rule.util.Json.mapper()
+                        .writeValueAsString(snapshot.partitionOwnerEpochs()));
             } catch (Exception failure) {
                 throw new IllegalStateException("invalid detection checkpoint offsets", failure);
             }
@@ -86,7 +106,36 @@ public class JpaDetectionStateSnapshotStore implements DetectionStateSnapshotSto
         return repository.findByTenantIdAndRuleIdAndShardId(tenantId, ruleId, shardId)
                 .map(row -> new DetectionStateSnapshot(row.getRuleId(), row.getRuleVersion(), row.getTenantId(),
                         row.getShardId(), row.getLastProcessedOffset(), decode(row.getSerializedState()),
-                        row.getSnapshotTimestamp(), decodeOffsets(row.getPartitionOffsetsJson())));
+                        row.getSnapshotTimestamp(), decodeOffsets(row.getPartitionOffsetsJson()),
+                        decodeOffsets(row.getPartitionOwnerEpochsJson()), row.getInputTopic()));
+    }
+
+    private void validateInputTopic(DetectionStateSnapshot snapshot) {
+        if (snapshot == null) throw new IllegalArgumentException("snapshot is required");
+        if (snapshot.inputTopic() != null && !inputTopic.equals(snapshot.inputTopic())) {
+            throw new IllegalArgumentException("snapshot input topic does not match configured topic: "
+                    + snapshot.inputTopic());
+        }
+    }
+
+    private void assertOwnerFences(List<DetectionStateSnapshot> snapshots) {
+        if (ownerRepository == null) return;
+        for (DetectionStateSnapshot snapshot : snapshots) {
+            for (Map.Entry<Integer, Long> entry : snapshot.partitionOwnerEpochs().entrySet()) {
+                String topic = snapshot.inputTopic() == null ? inputTopic : snapshot.inputTopic();
+                String ownerKey = DetectionStateOwnership.unitKey(
+                        topic, entry.getKey(), snapshot.shardId());
+                DetectionStateOwnerEntity owner = ownerRepository.findByOwnerKeyForUpdate(ownerKey)
+                        .orElseThrow(() -> new DetectionStateOwnership.StaleStateOwnerException(
+                                "checkpoint owner fence is missing: " + ownerKey));
+                if (owner.getFencingEpoch() != entry.getValue()) {
+                    throw new DetectionStateOwnership.StaleStateOwnerException(
+                            "checkpoint owner fence was superseded: " + ownerKey
+                                    + " expected=" + entry.getValue()
+                                    + " actual=" + owner.getFencingEpoch());
+                }
+            }
+        }
     }
 
     private static byte[] decode(String value) {

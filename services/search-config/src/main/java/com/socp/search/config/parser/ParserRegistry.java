@@ -1,6 +1,7 @@
 package com.socp.search.config.parser;
 
 import com.socp.search.config.domain.ParseFormat;
+import com.socp.search.config.config.SearchRuntimeRole;
 import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
@@ -21,6 +22,7 @@ import java.util.Map;
  * </ol>
  */
 @Component
+@SearchRuntimeRole(SearchRuntimeRole.Role.API)
 public class ParserRegistry {
 
     private final List<EventParser> parsers;

@@ -17,7 +17,9 @@ vi.mock('../src/api', async importOriginal => ({ ...await importOriginal<object>
 describe('rule editor identity', () => {
   it('preserves extension fields and legacy exclusions through a visual save', async () => {
     const rule = { id: 'roundtrip', name: 'Roundtrip', type: 'correlation', severity: 'HIGH', enabled: false, status: 'DRAFT',
-      window: '60s', keyField: 'host', routingField: 'host', evidence: { fields: ['host', 'msg'] },
+      window: '60s', keyField: 'host', groupBy: 'host', routingField: 'host',
+      lateEventPolicy: { allowedLateness: '90s', handling: 'ACCEPT', source: 'content-pack' },
+      evidence: { fields: ['host', 'msg'] },
       steps: [[{ field: 'msg', op: 'eq', value: ' start ', annotation: { source: 'import' } }], [{ field: 'msg', op: 'eq', value: ' end ', flags: ['preserve'] }]],
       alert: { title: 'Title', description: 'Description', grouping: { strategy: 'source' } },
       allowlist: [{ field: 'host', op: 'eq', value: 'trusted', source: 'import' }],
@@ -33,6 +35,7 @@ describe('rule editor identity', () => {
     await flushPromises()
     expect(mocks.updateGasRule).toHaveBeenCalledWith('roundtrip', expect.objectContaining({
       evidence: rule.evidence, alert: rule.alert, steps: rule.steps, whitelist: rule.allowlist, match: [],
+      groupBy: 'host', lateEventPolicy: rule.lateEventPolicy,
     }))
     expect(mocks.updateGasRule.mock.calls[0][1]).not.toHaveProperty('allowlist')
     wrapper.unmount()

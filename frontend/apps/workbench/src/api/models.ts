@@ -1,3 +1,14 @@
+export interface DetectionResultSummary {
+  inputEventId?: string
+  inputPosition?: { topic?: string | null; partition?: number; offset?: number }
+  ruleVersions?: Record<string, string>
+  stateChanges?: Array<{ ruleId: string; beforeDigest?: string; afterDigest?: string; changed?: boolean }>
+  candidateAlertIds?: string[]
+  emittedAlertIds?: string[]
+  suppression?: { policy?: string; candidateCount?: number; emittedCount?: number; suppressedAlertIds?: string[] }
+  idempotencyKey?: string
+}
+
 export interface Alarm {
   id: string
   ruleId: string
@@ -12,6 +23,8 @@ export interface Alarm {
   tiHits?: string
   riskScore?: number
   riskLevel?: string
+  triggerEventId?: string
+  detectionResult?: DetectionResultSummary | null
 }
 
 export interface LogSource {
@@ -164,11 +177,17 @@ export interface SearchResult {
 }
 
 export interface RuleCondition { [extension: string]: unknown; field: string; op: string; value: string }
+export interface LateEventPolicy {
+  allowedLateness?: string
+  handling?: 'DROP' | 'ACCEPT' | string
+  [extension: string]: unknown
+}
 export interface RuleSpec {
   [extension: string]: unknown
   id: string; name: string; type: string; severity: string; message?: string
   alert?: { [extension: string]: unknown; title?: string; description?: string }
-  enabled: boolean; status?: string; window?: string; keyField?: string; routingField?: string; threshold?: number
+  enabled: boolean; status?: string; window?: string; keyField?: string; groupBy?: string; routingField?: string
+  lateEventPolicy?: LateEventPolicy | null; threshold?: number
   valueField?: string; warmup?: number; baselineWindows?: number; sigma?: number; minCount?: number
   match?: RuleCondition[]; matchAny?: RuleCondition[][]; whitelist?: RuleCondition[]; steps?: RuleCondition[][]; mitre?: string; version?: string
   owner?: string; contentPack?: string; contentVersion?: string
