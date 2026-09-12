@@ -1000,6 +1000,7 @@ export const enUS: LocaleMessages = {
     deleteSourceConfirm: 'Delete this log source? It must be configured again to restore it.',
     deleteOutputConfirm: 'Delete this output target?',
     deleteRuleConfirm: 'Delete this parse rule? New logs will no longer use it.',
+    readOnly: 'This role can view parse rules, but changes require analyst or administrator permission.',
   },
   meta: {
     title: 'Metadata & Schema',

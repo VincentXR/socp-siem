@@ -998,6 +998,7 @@ export const zhCN = {
     deleteSourceConfirm: '确认删除这个日志源？删除后需要重新配置才能恢复。',
     deleteOutputConfirm: '确认删除这个输出目标？',
     deleteRuleConfirm: '确认删除这条解析规则？删除后新日志将不再使用它。',
+    readOnly: '当前角色仅可查看解析规则；修改需要分析员或管理员权限。',
   },
   meta: {
     title: '字段元数据与规范',

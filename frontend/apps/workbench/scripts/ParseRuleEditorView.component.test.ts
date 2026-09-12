@@ -1,8 +1,9 @@
 import { mount, flushPromises } from '@vue/test-utils'
-import { h } from 'vue'
+import { h, ref } from 'vue'
 import { createRouter, createMemoryHistory, RouterView } from 'vue-router'
 import { describe, expect, it, vi } from 'vitest'
 import ParseRuleEditorView from '../src/views/ParseRuleEditorView.vue'
+import { WORKBENCH_STATE } from '../src/app/workbenchState'
 
 const mocks = vi.hoisted(() => ({
   listParseRules: vi.fn(), listSources: vi.fn().mockResolvedValue([]), listFields: vi.fn().mockResolvedValue([]),
@@ -17,7 +18,7 @@ async function openEditor(path: string) {
   ] })
   await router.push(path)
   await router.isReady()
-  const wrapper = mount({ render: () => h(RouterView) }, { global: { plugins: [router] } })
+  const wrapper = mount({ render: () => h(RouterView) }, { global: { plugins: [router], provide: { [WORKBENCH_STATE as symbol]: { currentRole: ref('admin') } } } })
   await flushPromises()
   return { router, wrapper }
 }

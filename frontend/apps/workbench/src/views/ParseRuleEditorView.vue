@@ -16,9 +16,11 @@ import ActionFeedback from '../components/ActionFeedback.vue'
 import { useI18n } from '../composables/useI18n'
 import { useMutation } from '../composables/useMutation'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges'
+import { useWriteAccess } from '../composables/useWriteAccess'
 import { createParseRule, updateParseRule, previewParseDraft, listParseRules, listSources, listFields, type ParseRule, type LogSource, type FieldDef } from '../api'
 
 const { t } = useI18n()
+const canWrite = useWriteAccess()
 const route = useRoute()
 const router = useRouter()
 const sources = ref<LogSource[]>([])
@@ -45,7 +47,7 @@ function payload(): Partial<ParseRule> {
   return { ...form.value, filters, mapping: form.value.mapping ?? [], setFields: form.value.setFields ?? [] }
 }
 async function save() {
-  if (loading.value || loadError.value) return
+  if (!canWrite.value || loading.value || loadError.value) return
   const generation = loadGeneration
   await mutation.run(async () => {
     const id = loadedId || ''
@@ -69,6 +71,7 @@ async function test() {
   })
 }
 function addMapping(fixed = false) {
+  if (!canWrite.value) return
   const key = fixed ? 'setFields' : 'mapping'
   form.value[key]!.push({ group: fixed ? 'fixed' : '', field: '', value: '' })
 }
@@ -107,21 +110,22 @@ watch(() => String(route.params.parserId || ''), id => {
       <template #actions><el-button @click="router.push({ name: 'ingest', query: { tab: 'rules' } })">{{ t('forms.back') }}</el-button></template>
     </PageHeader>
     <ActionFeedback :error="loadError || error" />
+    <div v-if="!canWrite" class="page-readonly-hint">{{ t('ingest.readOnly') }}</div>
     <el-button v-if="loadError" :loading="loading" @click="loadEditor">{{ t('common.refresh') }}</el-button>
     <div v-if="loading">{{ t('common.loading') }}</div>
     <div v-else-if="!loadError" class="parser-workspace">
-      <el-form label-position="top" :disabled="busy">
+      <el-form label-position="top" :disabled="busy || !canWrite">
         <el-form-item :label="t('common.name')" required><el-input v-model="form.name" maxlength="128" /></el-form-item>
         <el-form-item :label="t('ingest.parseFormat')"><el-select v-model="form.format"><el-option v-for="format in ['REGEX','JSON','KV','SYSLOG','CEF','LEEF','AUTO']" :key="format" :value="format" :label="format" /></el-select></el-form-item>
         <el-form-item :label="t('common.source')"><el-select v-model="form.sourceId" filterable clearable><el-option v-for="source in sources" :key="source.id" :value="source.id" :label="source.name" /><el-option v-if="form.sourceId && !sources.some(source => source.id === form.sourceId)" :value="form.sourceId" :label="form.sourceId" /></el-select></el-form-item>
         <el-form-item v-if="form.format === 'REGEX'" :label="t('ingest.patternDescription')"><el-input v-model="form.pattern" type="textarea" :rows="4" spellcheck="false" /></el-form-item>
         <section v-for="key in (['mapping', 'setFields'] as const)" :key="key" class="editor-section">
-          <div class="section-toolbar"><b>{{ t(key === 'mapping' ? 'forms.fields' : 'forms.fixedFields') }}</b><el-button size="small" @click="addMapping(key === 'setFields')">{{ t('common.add') }}</el-button></div>
+          <div class="section-toolbar"><b>{{ t(key === 'mapping' ? 'forms.fields' : 'forms.fixedFields') }}</b><el-button v-if="canWrite" size="small" @click="addMapping(key === 'setFields')">{{ t('common.add') }}</el-button></div>
           <div v-for="(mapping, index) in form[key]" :key="index" class="mapping-row">
             <el-input v-if="key === 'mapping'" v-model="mapping.group" :placeholder="t('meta.fieldName')" />
             <el-select v-model="mapping.field" filterable allow-create default-first-option :placeholder="t('forms.fields')"><el-option v-for="field in fields" :key="field.id" :value="field.fieldName" :label="field.fieldName" /></el-select>
             <el-input v-if="key === 'setFields'" v-model="mapping.value" :placeholder="t('ueba.watchlistValues')" />
-            <el-button link type="danger" @click="form[key]!.splice(index, 1)">{{ t('common.delete') }}</el-button>
+            <el-button v-if="canWrite" link type="danger" @click="form[key]!.splice(index, 1)">{{ t('common.delete') }}</el-button>
           </div>
         </section>
         <details class="editor-section"><summary>{{ t('forms.advanced') }}</summary><el-form-item :label="t('forms.filter')"><el-input v-model="filtersText" type="textarea" :rows="8" spellcheck="false" /></el-form-item><el-form-item label="Order"><el-input v-model.number="form.order" type="number" min="0" max="100000" /></el-form-item></details>
@@ -136,7 +140,7 @@ watch(() => String(route.params.parserId || ''), id => {
         <dl v-if="preview" class="preview-fields"><template v-for="(value, key) in preview.fields" :key="key"><dt>{{ key }}</dt><dd>{{ value }}</dd></template></dl>
       </aside>
     </div>
-    <footer v-if="!loadError" class="editor-footer"><el-button type="primary" :loading="busy" :disabled="loading" @click="save">{{ t('common.save') }}</el-button></footer>
+    <footer v-if="!loadError && canWrite" class="editor-footer"><el-button type="primary" :loading="busy" :disabled="loading" @click="save">{{ t('common.save') }}</el-button></footer>
   </div>
 </template>
 <style scoped>
