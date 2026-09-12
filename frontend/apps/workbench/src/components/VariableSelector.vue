@@ -13,9 +13,11 @@ const props = withDefaults(defineProps<{
   modelValue: string
   variables?: VariableOption[]
   placeholder?: string
+  disabled?: boolean
 }>(), {
   variables: () => [],
   placeholder: 'Select a variable',
+  disabled: false,
 })
 
 const emit = defineEmits<{ 'update:modelValue': [string] }>()
@@ -24,6 +26,7 @@ const emit = defineEmits<{ 'update:modelValue': [string] }>()
 <template>
   <el-select
     :model-value="props.modelValue"
+    :disabled="props.disabled"
     filterable
     allow-create
     default-first-option

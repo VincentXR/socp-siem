@@ -686,7 +686,7 @@ function subPlaybookVersionKnown(id: string): boolean {
 
       <label v-if="!unsupported">
         Name
-        <input :value="scalar(node, 'name')" placeholder="node name" @input="updateScalar('name', ($event.target as HTMLInputElement).value)" />
+        <input :value="scalar(node, 'name')" :disabled="props.readOnly" placeholder="node name" @input="updateScalar('name', ($event.target as HTMLInputElement).value)" />
       </label>
 
       <!-- START -->
@@ -700,6 +700,7 @@ function subPlaybookVersionKnown(id: string): boolean {
           Action ref
           <el-select
             :model-value="scalar(node, 'actionRef')"
+            :disabled="props.readOnly"
             filterable
             default-first-option
             clearable
@@ -724,6 +725,7 @@ function subPlaybookVersionKnown(id: string): boolean {
           Connection ref
           <el-select
             :model-value="scalar(node, 'connectionRef')"
+            :disabled="props.readOnly"
             filterable
             clearable
             placeholder="Search compatible connection"
@@ -745,40 +747,40 @@ function subPlaybookVersionKnown(id: string): boolean {
           <div v-if="actionInputFields.length" class="soar-flow-parameter-form">
             <label v-for="field in actionInputFields" :key="field.key">
               <span>{{ field.label }}<i v-if="field.required">*</i></span>
-              <el-select v-if="field.enum?.length" :model-value="parameterValue(field.key)" clearable @change="updateParameterValue(field, String($event ?? ''))">
+              <el-select v-if="field.enum?.length" :model-value="parameterValue(field.key)" :disabled="props.readOnly" clearable @change="updateParameterValue(field, String($event ?? ''))">
                 <el-option v-for="value in field.enum" :key="value" :label="value" :value="value" />
               </el-select>
-              <el-select v-else-if="field.type === 'boolean'" :model-value="parameterValue(field.key)" clearable @change="updateParameterValue(field, String($event ?? ''))"><el-option label="true" value="true" /><el-option label="false" value="false" /></el-select>
-              <VariableSelector v-else-if="field.type === 'string'" :model-value="parameterValue(field.key)" :variables="variableOptions" placeholder="Select or enter a value" @update:model-value="value => updateParameterValue(field, value)" />
-              <el-input v-else :model-value="parameterValue(field.key)" :type="field.type === 'number' || field.type === 'integer' ? 'number' : 'text'" @update:model-value="value => updateParameterValue(field, String(value ?? ''))" />
+              <el-select v-else-if="field.type === 'boolean'" :model-value="parameterValue(field.key)" :disabled="props.readOnly" clearable @change="updateParameterValue(field, String($event ?? ''))"><el-option label="true" value="true" /><el-option label="false" value="false" /></el-select>
+              <VariableSelector v-else-if="field.type === 'string'" :model-value="parameterValue(field.key)" :variables="variableOptions" :disabled="props.readOnly" placeholder="Select or enter a value" @update:model-value="value => updateParameterValue(field, value)" />
+              <el-input v-else :model-value="parameterValue(field.key)" :disabled="props.readOnly" :type="field.type === 'number' || field.type === 'integer' ? 'number' : 'text'" @update:model-value="value => updateParameterValue(field, String(value ?? ''))" />
               <small v-if="field.description">{{ field.description }}</small>
             </label>
           </div>
-          <details class="soar-flow-advanced-details"><summary>Advanced parameters JSON</summary><textarea v-model="parametersText" rows="4" spellcheck="false" /><el-button size="small" @click="commitParameters">Apply JSON</el-button></details>
+          <details class="soar-flow-advanced-details"><summary>Advanced parameters JSON</summary><textarea v-model="parametersText" :readonly="props.readOnly" rows="4" spellcheck="false" /><el-button v-if="!props.readOnly" size="small" @click="commitParameters">Apply JSON</el-button></details>
         </div>
         <div class="soar-flow-inspector-section">
           <span>Target</span>
           <label class="soar-flow-common-field">
             Common target path
-            <VariableSelector :model-value="targetPath()" :variables="variableOptions" placeholder="Select an event or node output" @update:model-value="updateTargetPath" />
+            <VariableSelector :model-value="targetPath()" :variables="variableOptions" :disabled="props.readOnly" placeholder="Select an event or node output" @update:model-value="updateTargetPath" />
             <small>Stored as <code>target.path</code>; use advanced JSON for connector-specific targets.</small>
           </label>
-          <details class="soar-flow-advanced-details" open><summary>Advanced target JSON</summary><textarea v-model="targetText" rows="4" spellcheck="false" /><el-button size="small" @click="commitTarget">Apply JSON</el-button></details>
+          <details class="soar-flow-advanced-details" open><summary>Advanced target JSON</summary><textarea v-model="targetText" :readonly="props.readOnly" rows="4" spellcheck="false" /><el-button v-if="!props.readOnly" size="small" @click="commitTarget">Apply JSON</el-button></details>
         </div>
 
         <div v-if="hasRetry()" class="soar-flow-retry-grid">
-          <label>maxAttempts<input type="number" min="1" max="10" :value="String(retryConfig?.maxAttempts ?? 1)" @input="updateRetry('maxAttempts', ($event.target as HTMLInputElement).value, 1, 10)" /></label>
-          <label>backoffSeconds<input type="number" min="0" max="300" :value="String(retryConfig?.backoffSeconds ?? 0)" @input="updateRetry('backoffSeconds', ($event.target as HTMLInputElement).value, 0, 300)" /></label>
-          <el-button size="small" plain @click="removeRetry">Remove retry</el-button>
+          <label>maxAttempts<input type="number" min="1" max="10" :disabled="props.readOnly" :value="String(retryConfig?.maxAttempts ?? 1)" @input="updateRetry('maxAttempts', ($event.target as HTMLInputElement).value, 1, 10)" /></label>
+          <label>backoffSeconds<input type="number" min="0" max="300" :disabled="props.readOnly" :value="String(retryConfig?.backoffSeconds ?? 0)" @input="updateRetry('backoffSeconds', ($event.target as HTMLInputElement).value, 0, 300)" /></label>
+          <el-button v-if="!props.readOnly" size="small" plain @click="removeRetry">Remove retry</el-button>
         </div>
-        <el-button v-else size="small" plain @click="addRetry">Add retry</el-button>
+        <el-button v-else-if="!props.readOnly" size="small" plain @click="addRetry">Add retry</el-button>
       </template>
 
       <!-- CONDITION -->
       <template v-if="nodeType === 'CONDITION'">
         <div class="soar-flow-inspector-section">
           <span>Visual condition</span>
-          <el-select v-if="conditionRows.length" :model-value="conditionRows[0]?.literalType || 'string'" @change="value => commitConditionRows(conditionRows.map(row => ({ ...row, literalType: value })))">
+          <el-select v-if="conditionRows.length" :model-value="conditionRows[0]?.literalType || 'string'" :disabled="props.readOnly" @change="value => commitConditionRows(conditionRows.map(row => ({ ...row, literalType: value })))">
             <el-option label="Text" value="string" /><el-option label="Integer" value="number" /><el-option label="Boolean" value="boolean" />
           </el-select>
           <FieldConditionBuilder
@@ -786,6 +788,7 @@ function subPlaybookVersionKnown(id: string): boolean {
             :operators="Object.keys(CONDITION_OPERATORS)"
             :max-conditions="1"
             :fields="conditionFields"
+            :read-only="props.readOnly"
             title="Field · operator · value"
             add-label="Add condition"
             empty-hint="This expression is complex; edit it in advanced mode."
@@ -798,7 +801,7 @@ function subPlaybookVersionKnown(id: string): boolean {
         </div>
         <label>
           Expression
-          <input :value="scalar(node, 'expression')" placeholder="trigger.severity == 'HIGH'" @input="updateScalar('expression', ($event.target as HTMLInputElement).value)" />
+          <input :value="scalar(node, 'expression')" :disabled="props.readOnly" placeholder="trigger.severity == 'HIGH'" @input="updateScalar('expression', ($event.target as HTMLInputElement).value)" />
         </label>
       </template>
 
@@ -806,16 +809,16 @@ function subPlaybookVersionKnown(id: string): boolean {
       <template v-if="nodeType === 'SWITCH'">
         <label>
           Expression
-          <input :value="scalar(node, 'expression')" placeholder="trigger.severity" @input="updateScalar('expression', ($event.target as HTMLInputElement).value)" />
+          <input :value="scalar(node, 'expression')" :disabled="props.readOnly" placeholder="trigger.severity" @input="updateScalar('expression', ($event.target as HTMLInputElement).value)" />
         </label>
         <div class="soar-flow-inspector-section">
           <span>Cases (value -&gt; branch port)</span>
           <div v-for="(row, index) in switchRows" :key="index" class="soar-flow-switch-case-row">
-            <input :value="row.value" placeholder="value" @input="updateSwitchValue(index, ($event.target as HTMLInputElement).value)" />
-            <input :value="row.port" placeholder="port" @input="updateSwitchPort(index, ($event.target as HTMLInputElement).value)" />
-            <el-button size="small" plain @click="removeSwitchCase(index)">Remove</el-button>
+            <input :value="row.value" :disabled="props.readOnly" placeholder="value" @input="updateSwitchValue(index, ($event.target as HTMLInputElement).value)" />
+            <input :value="row.port" :disabled="props.readOnly" placeholder="port" @input="updateSwitchPort(index, ($event.target as HTMLInputElement).value)" />
+            <el-button v-if="!props.readOnly" size="small" plain @click="removeSwitchCase(index)">Remove</el-button>
           </div>
-          <el-button size="small" plain @click="addSwitchCase">Add case</el-button>
+          <el-button v-if="!props.readOnly" size="small" plain @click="addSwitchCase">Add case</el-button>
           <p class="soar-flow-hint">The expression value is matched against each case value. A match leaves the case port handle; an unmatched value leaves the Default handle. Connect each case port and the Default port to their targets.</p>
         </div>
       </template>
@@ -823,7 +826,7 @@ function subPlaybookVersionKnown(id: string): boolean {
       <!-- END -->
       <label v-if="nodeType === 'END'">
         Outcome
-        <select :value="scalar(node, 'outcome') || 'SUCCEEDED'" @change="updateScalar('outcome', ($event.target as HTMLSelectElement).value)">
+        <select :value="scalar(node, 'outcome') || 'SUCCEEDED'" :disabled="props.readOnly" @change="updateScalar('outcome', ($event.target as HTMLSelectElement).value)">
           <option v-for="outcome in END_OUTCOMES" :key="outcome" :value="outcome">{{ outcome }}</option>
         </select>
       </label>
@@ -833,28 +836,28 @@ function subPlaybookVersionKnown(id: string): boolean {
         <div class="soar-flow-inspector-section">
           <span>Approval policy (config)</span>
           <label>timeoutSeconds
-            <input type="number" min="0" :max="7 * 24 * 3600" :value="approvalNumberValue('timeoutSeconds', 86400)" @input="updateApprovalConfigNumber('timeoutSeconds', ($event.target as HTMLInputElement).value, 7 * 24 * 3600)" />
+            <input type="number" min="0" :max="7 * 24 * 3600" :disabled="props.readOnly" :value="approvalNumberValue('timeoutSeconds', 86400)" @input="updateApprovalConfigNumber('timeoutSeconds', ($event.target as HTMLInputElement).value, 7 * 24 * 3600)" />
           </label>
           <label>requiredApprovals
-            <input type="number" min="1" :value="approvalNumberValue('requiredApprovals', 1)" @input="updateApprovalConfigNumber('requiredApprovals', ($event.target as HTMLInputElement).value)" />
+            <input type="number" min="1" :disabled="props.readOnly" :value="approvalNumberValue('requiredApprovals', 1)" @input="updateApprovalConfigNumber('requiredApprovals', ($event.target as HTMLInputElement).value)" />
           </label>
           <label>Allowed roles
-            <el-select multiple filterable default-first-option :model-value="approvalListValue('allowedRoles')" placeholder="Select roles" @change="updateApprovalList('allowedRoles', asStringList($event))">
+            <el-select multiple filterable default-first-option :disabled="props.readOnly" :model-value="approvalListValue('allowedRoles')" placeholder="Select roles" @change="updateApprovalList('allowedRoles', asStringList($event))">
               <el-option v-for="role in approvalRoleOptions" :key="role" :label="role" :value="role" />
             </el-select>
           </label>
           <label>Allowed groups
-            <el-select multiple filterable allow-create default-first-option :model-value="approvalListValue('allowedGroups')" placeholder="Select existing groups" @change="updateApprovalList('allowedGroups', asStringList($event))">
+            <el-select multiple filterable allow-create default-first-option :disabled="props.readOnly" :model-value="approvalListValue('allowedGroups')" placeholder="Select existing groups" @change="updateApprovalList('allowedGroups', asStringList($event))">
               <el-option v-for="group in approvalListValue('allowedGroups')" :key="group" :label="group" :value="group" />
             </el-select>
           </label>
           <label>Approver roles
-            <el-select multiple filterable default-first-option :model-value="approvalListValue('approverRoles')" placeholder="Select roles" @change="updateApprovalList('approverRoles', asStringList($event))">
+            <el-select multiple filterable default-first-option :disabled="props.readOnly" :model-value="approvalListValue('approverRoles')" placeholder="Select roles" @change="updateApprovalList('approverRoles', asStringList($event))">
               <el-option v-for="role in approvalRoleOptions" :key="role" :label="role" :value="role" />
             </el-select>
           </label>
           <label>Approver groups
-            <el-select multiple filterable allow-create default-first-option :model-value="approvalListValue('approverGroups')" placeholder="Select existing groups" @change="updateApprovalList('approverGroups', asStringList($event))">
+            <el-select multiple filterable allow-create default-first-option :disabled="props.readOnly" :model-value="approvalListValue('approverGroups')" placeholder="Select existing groups" @change="updateApprovalList('approverGroups', asStringList($event))">
               <el-option v-for="group in approvalListValue('approverGroups')" :key="group" :label="group" :value="group" />
             </el-select>
           </label>
@@ -866,28 +869,28 @@ function subPlaybookVersionKnown(id: string): boolean {
       <template v-if="nodeType === 'FOREACH'">
         <label>
           itemsPath
-          <VariableSelector :model-value="nestedTextValue('config', 'itemsPath')" :variables="variableOptions" placeholder="Select a collection output" @update:model-value="value => updateNested('config', 'itemsPath', value)" />
+          <VariableSelector :model-value="nestedTextValue('config', 'itemsPath')" :variables="variableOptions" :disabled="props.readOnly" placeholder="Select a collection output" @update:model-value="value => updateNested('config', 'itemsPath', value)" />
         </label>
         <label>
           itemVariable
-          <VariableSelector :model-value="nestedTextValue('config', 'itemVariable')" :variables="variableOptions" placeholder="vars.item" @update:model-value="value => updateNested('config', 'itemVariable', value)" />
+          <VariableSelector :model-value="nestedTextValue('config', 'itemVariable')" :variables="variableOptions" :disabled="props.readOnly" placeholder="vars.item" @update:model-value="value => updateNested('config', 'itemVariable', value)" />
         </label>
         <div class="soar-flow-retry-grid">
-          <label>concurrency<input type="number" min="1" max="10" :value="nestedNumberValue('limits', 'concurrency', 1)" @input="updateNestedNumber('limits', 'concurrency', ($event.target as HTMLInputElement).value, 1, 10)" /></label>
-          <label>maxItems<input type="number" min="1" max="100" :value="nestedNumberValue('limits', 'maxItems', 100)" @input="updateNestedNumber('limits', 'maxItems', ($event.target as HTMLInputElement).value, 1, 100)" /></label>
+          <label>concurrency<input type="number" min="1" max="10" :disabled="props.readOnly" :value="nestedNumberValue('limits', 'concurrency', 1)" @input="updateNestedNumber('limits', 'concurrency', ($event.target as HTMLInputElement).value, 1, 10)" /></label>
+          <label>maxItems<input type="number" min="1" max="100" :disabled="props.readOnly" :value="nestedNumberValue('limits', 'maxItems', 100)" @input="updateNestedNumber('limits', 'maxItems', ($event.target as HTMLInputElement).value, 1, 100)" /></label>
         </div>
       </template>
 
       <!-- PARALLEL -->
       <label v-if="nodeType === 'PARALLEL'">
         maxParallelism
-        <input type="number" min="1" max="10" :value="nestedNumberValue('limits', 'maxParallelism', 2)" @input="updateNestedNumber('limits', 'maxParallelism', ($event.target as HTMLInputElement).value, 1, 10)" />
+        <input type="number" min="1" max="10" :disabled="props.readOnly" :value="nestedNumberValue('limits', 'maxParallelism', 2)" @input="updateNestedNumber('limits', 'maxParallelism', ($event.target as HTMLInputElement).value, 1, 10)" />
       </label>
 
       <!-- JOIN -->
       <label v-if="nodeType === 'JOIN'">
         strategy
-        <select :value="scalar(node, 'strategy') || 'ALL_SUCCESS'" @change="updateScalar('strategy', ($event.target as HTMLSelectElement).value)">
+        <select :value="scalar(node, 'strategy') || 'ALL_SUCCESS'" :disabled="props.readOnly" @change="updateScalar('strategy', ($event.target as HTMLSelectElement).value)">
           <option v-for="strategy in ['ALL_SUCCESS', 'ALL_DONE', 'ANY_SUCCESS']" :key="strategy" :value="strategy">{{ strategy }}</option>
         </select>
       </label>
@@ -895,7 +898,7 @@ function subPlaybookVersionKnown(id: string): boolean {
       <!-- SUB_PLAYBOOK -->
       <label v-if="nodeType === 'SUB_PLAYBOOK'">
         playbookVersionId
-        <el-select :model-value="scalar(node, 'playbookVersionId')" filterable default-first-option clearable :loading="subPlaybookCatalogState === 'loading'" placeholder="Search published version" @change="updateScalar('playbookVersionId', String($event ?? ''))">
+        <el-select :model-value="scalar(node, 'playbookVersionId')" :disabled="props.readOnly" filterable default-first-option clearable :loading="subPlaybookCatalogState === 'loading'" placeholder="Search published version" @change="updateScalar('playbookVersionId', String($event ?? ''))">
           <el-option v-if="scalar(node, 'playbookVersionId') && !subPlaybookVersionKnown(scalar(node, 'playbookVersionId'))" :label="scalar(node, 'playbookVersionId')" :value="scalar(node, 'playbookVersionId')" />
           <el-option v-for="version in subPlaybookVersions" :key="version.id" :label="`${version.playbookName} · v${version.version}`" :value="version.id"><div class="soar-flow-option"><b>{{ version.playbookName }} · v{{ version.version }}</b><small>{{ version.id }} · {{ version.status }}</small></div></el-option>
         </el-select>
@@ -905,18 +908,18 @@ function subPlaybookVersionKnown(id: string): boolean {
       <!-- DELAY -->
       <label v-if="nodeType === 'DELAY'">
         durationSeconds
-        <input type="number" min="1" max="86400" :value="nestedNumberValue('config', 'durationSeconds', 60)" @input="updateNestedNumber('config', 'durationSeconds', ($event.target as HTMLInputElement).value, 1, 86400)" />
+        <input type="number" min="1" max="86400" :disabled="props.readOnly" :value="nestedNumberValue('config', 'durationSeconds', 60)" @input="updateNestedNumber('config', 'durationSeconds', ($event.target as HTMLInputElement).value, 1, 86400)" />
       </label>
 
       <!-- SET_VARIABLE -->
       <template v-if="nodeType === 'SET_VARIABLE'">
         <label>
           name (vars.*)
-          <input :value="nestedTextValue('config', 'name')" placeholder="vars.note" @input="updateNested('config', 'name', ($event.target as HTMLInputElement).value)" />
+          <input :value="nestedTextValue('config', 'name')" :disabled="props.readOnly" placeholder="vars.note" @input="updateNested('config', 'name', ($event.target as HTMLInputElement).value)" />
         </label>
         <label>
           value
-          <VariableSelector :model-value="nestedTextValue('config', 'value')" :variables="variableOptions" placeholder="Select a value or enter literal" @update:model-value="value => updateNested('config', 'value', value)" />
+          <VariableSelector :model-value="nestedTextValue('config', 'value')" :variables="variableOptions" :disabled="props.readOnly" placeholder="Select a value or enter literal" @update:model-value="value => updateNested('config', 'value', value)" />
         </label>
       </template>
 
@@ -924,22 +927,22 @@ function subPlaybookVersionKnown(id: string): boolean {
       <template v-if="nodeType === 'MANUAL_TASK'">
         <label>
           timeoutSeconds
-          <input type="number" min="0" :max="7 * 24 * 3600" :value="nestedNumberValue('config', 'timeoutSeconds', 86400)" @input="updateNestedNumber('config', 'timeoutSeconds', ($event.target as HTMLInputElement).value, 0, 7 * 24 * 3600)" />
+          <input type="number" min="0" :max="7 * 24 * 3600" :disabled="props.readOnly" :value="nestedNumberValue('config', 'timeoutSeconds', 86400)" @input="updateNestedNumber('config', 'timeoutSeconds', ($event.target as HTMLInputElement).value, 0, 7 * 24 * 3600)" />
         </label>
         <label>
           Assignee
-          <el-select :model-value="nestedTextValue('config', 'assignee')" filterable default-first-option clearable placeholder="Select an operator or workflow variable" @change="updateNested('config', 'assignee', String($event ?? ''))">
+          <el-select :model-value="nestedTextValue('config', 'assignee')" :disabled="props.readOnly" filterable default-first-option clearable placeholder="Select an operator or workflow variable" @change="updateNested('config', 'assignee', String($event ?? ''))">
             <el-option v-for="operator in operatorOptions" :key="`operator-${operator}`" :label="operator" :value="operator" />
             <el-option v-for="variable in variableOptions" :key="`variable-${variable.value}`" :label="`${variable.label} · variable`" :value="variable.value" />
           </el-select>
         </label>
         <div class="soar-flow-inspector-section manual-task-schema">
-          <div class="soar-flow-section-header"><span>Task fields</span><el-button size="small" plain @click="addManualField">Add field</el-button></div>
+          <div class="soar-flow-section-header"><span>Task fields</span><el-button v-if="!props.readOnly" size="small" plain @click="addManualField">Add field</el-button></div>
           <div v-for="field in manualFieldRows" :key="field.name" class="manual-task-field-row">
-            <input :value="field.title" :aria-label="`Label for ${field.name}`" @input="updateManualField(field.name, { title: ($event.target as HTMLInputElement).value })" />
-            <select :value="field.type" :aria-label="`Type for ${field.name}`" @change="updateManualField(field.name, { type: ($event.target as HTMLSelectElement).value })"><option value="string">Text</option><option value="number">Number</option><option value="boolean">Boolean</option></select>
-            <label class="manual-task-required"><input type="checkbox" :checked="field.required" @change="updateManualField(field.name, { required: ($event.target as HTMLInputElement).checked })" /> required</label>
-            <el-button link type="danger" :aria-label="`Remove ${field.name}`" @click="removeManualField(field.name)">×</el-button>
+            <input :value="field.title" :disabled="props.readOnly" :aria-label="`Label for ${field.name}`" @input="updateManualField(field.name, { title: ($event.target as HTMLInputElement).value })" />
+            <select :value="field.type" :disabled="props.readOnly" :aria-label="`Type for ${field.name}`" @change="updateManualField(field.name, { type: ($event.target as HTMLSelectElement).value })"><option value="string">Text</option><option value="number">Number</option><option value="boolean">Boolean</option></select>
+            <label class="manual-task-required"><input type="checkbox" :checked="field.required" :disabled="props.readOnly" @change="updateManualField(field.name, { required: ($event.target as HTMLInputElement).checked })" /> required</label>
+            <el-button v-if="!props.readOnly" link type="danger" :aria-label="`Remove ${field.name}`" @click="removeManualField(field.name)">×</el-button>
           </div>
           <p class="soar-flow-hint">Define the analyst input here; the complete schema remains available in advanced JSON.</p>
         </div>
@@ -956,8 +959,8 @@ function subPlaybookVersionKnown(id: string): boolean {
       <!-- Advanced node JSON -->
       <div class="soar-flow-inspector-section">
         <span>Advanced node JSON</span>
-        <textarea v-model="nodeConfigText" rows="8" spellcheck="false" @focus="showAdvanced" />
-        <el-button size="small" @click="applyNodeConfigJson">Apply node JSON</el-button>
+        <textarea v-model="nodeConfigText" :readonly="props.readOnly" rows="8" spellcheck="false" @focus="showAdvanced" />
+        <el-button v-if="!props.readOnly" size="small" @click="applyNodeConfigJson">Apply node JSON</el-button>
       </div>
 
       <!-- Selected node validation issues -->

@@ -336,6 +336,7 @@ export const enUS: LocaleMessages = {
     description: 'Incident response, full lifecycle triage workflow, and collaborative timeline.',
     createCase: 'Create Case',
     caseId: 'Case ID',
+    caseNo: 'Case No.',
     caseTitle: 'Case Title',
     severity: 'Severity',
     status: 'Status',

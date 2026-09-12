@@ -34,10 +34,14 @@ const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 type TimeRangeKey = '15m' | '30m' | '1h' | '6h' | '24h' | 'all'
+type EventSortOrder = 'ascending' | 'descending'
 
 const pendingQuery = typeof window === 'undefined' ? null : window.sessionStorage.getItem('socp.search.query')
 const routeQuery = typeof route.query.q === 'string' ? route.query.q : ''
 const routeRange = typeof route.query.range === 'string' ? route.query.range : ''
+const eventSortFields = ['timestamp', 'source', 'host', 'severity', 'msg'] as const
+const routeSort = typeof route.query.sort === 'string' && eventSortFields.includes(route.query.sort as typeof eventSortFields[number]) ? route.query.sort : ''
+const routeOrder = route.query.order === 'ascending' || route.query.order === 'descending' ? route.query.order as EventSortOrder : null
 const validTimeRanges: TimeRangeKey[] = ['15m', '30m', '1h', '6h', '24h', 'all']
 const query = ref(routeQuery || pendingQuery || '*')
 const result = ref<SearchResult | null>(null)
@@ -59,6 +63,8 @@ const timeRangeOptions: Array<{ key: TimeRangeKey; label: string; durationMs?: n
 const selectedTimeRange = ref<TimeRangeKey>(validTimeRanges.includes(routeRange as TimeRangeKey) ? routeRange as TimeRangeKey : '30m')
 const activeTimeRange = ref<TimeRangeKey>(selectedTimeRange.value)
 const activeQuery = ref('')
+const eventSortProp = ref<string>(routeSort)
+const eventSortOrder = ref<EventSortOrder | null>(routeOrder)
 const fieldDefs = ref<FieldDef[]>([])
 const fieldKeyword = ref('')
 const fieldsLoading = ref(false)
@@ -135,7 +141,30 @@ const activeTimeRangeLabel = computed(() => {
 })
 
 function syncUrl(page = 1): void {
-  void router.replace({ query: { ...route.query, q: query.value.trim() || '*', range: selectedTimeRange.value, page: page > 1 ? String(page) : undefined } })
+  void router.replace({ query: { ...route.query, q: query.value.trim() || '*', range: selectedTimeRange.value, sort: eventSortProp.value || undefined, order: eventSortOrder.value || undefined, page: page > 1 ? String(page) : undefined } })
+}
+
+function eventSortValue(event: SearchEvent, prop: string): string {
+  if (prop === 'timestamp' || prop === 'source' || prop === 'host' || prop === 'severity' || prop === 'msg') {
+    return String(event[prop] ?? '')
+  }
+  return String(event.fields?.[prop] ?? '')
+}
+
+const visibleEvents = computed(() => {
+  const rows = [...(result.value?.events ?? [])]
+  if (!eventSortProp.value || !eventSortOrder.value) return rows
+  rows.sort((left, right) => {
+    const comparison = eventSortValue(left, eventSortProp.value).localeCompare(eventSortValue(right, eventSortProp.value), undefined, { numeric: true, sensitivity: 'base' })
+    return eventSortOrder.value === 'ascending' ? comparison : -comparison
+  })
+  return rows
+})
+
+function onEventSortChange(change: { prop: string | null; order: string | null }): void {
+  eventSortProp.value = change.prop || ''
+  eventSortOrder.value = change.order === 'ascending' || change.order === 'descending' ? change.order : null
+  syncUrl(currentPage.value)
 }
 
 function readSavedQueries(): void {
@@ -344,12 +373,12 @@ onMounted(() => {
             </div>
             <div v-if="result.events.length" class="search-result-hint">{{ t('search.eventDetailHint') }} · {{ t('search.currentPageSortHint') }}</div>
             <EmptyState v-if="!result.events.length" :title="t('search.noResults')" :description="t('search.noResultsHint')" />
-            <el-table v-else class="search-events-table" :data="result.events" size="small" border allow-drag-last-column max-height="560" @header-dragend="onHeaderDragEnd" @row-click="openEvent">
-              <el-table-column prop="timestamp" column-key="timestamp" :label="t('common.timestamp')" :width="columnWidth('timestamp', 150)"><template #default="{ row }">{{ row.timestamp.slice(0, 19).replace('T', ' ') }}</template></el-table-column>
-              <el-table-column prop="source" column-key="source" :label="t('common.source')" :width="columnWidth('source', 90)" />
-              <el-table-column prop="host" column-key="host" :label="t('common.host')" :width="columnWidth('host', 90)" />
-              <el-table-column prop="severity" column-key="severity" :label="t('common.severity')" :width="columnWidth('severity', 80)"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
-              <el-table-column prop="msg" column-key="msg" :label="t('common.message')" :width="columnWidth('msg')" min-width="240" show-overflow-tooltip />
+            <el-table v-else class="search-events-table" :data="visibleEvents" size="small" border allow-drag-last-column max-height="560" @header-dragend="onHeaderDragEnd" @sort-change="onEventSortChange" @row-click="openEvent">
+              <el-table-column prop="timestamp" column-key="timestamp" sortable="custom" :label="t('common.timestamp')" :width="columnWidth('timestamp', 150)"><template #default="{ row }">{{ row.timestamp.slice(0, 19).replace('T', ' ') }}</template></el-table-column>
+              <el-table-column prop="source" column-key="source" sortable="custom" :label="t('common.source')" :width="columnWidth('source', 90)" />
+              <el-table-column prop="host" column-key="host" sortable="custom" :label="t('common.host')" :width="columnWidth('host', 90)" />
+              <el-table-column prop="severity" column-key="severity" sortable="custom" :label="t('common.severity')" :width="columnWidth('severity', 80)"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
+              <el-table-column prop="msg" column-key="msg" sortable="custom" :label="t('common.message')" :width="columnWidth('msg')" min-width="240" show-overflow-tooltip />
             </el-table>
             <div v-if="showPagination" class="search-pagination"><span class="search-page-summary">{{ t('common.pageSummary', { page: currentPage, total: pageCount }) }}</span><div class="search-page-controls"><span class="search-page-size-label">{{ t('common.pageSize') }}</span><el-select v-model="pageSize" size="small" style="width:92px" @change="changePageSize"><el-option v-for="size in pageSizes" :key="size" :label="String(size)" :value="size" /></el-select><el-button size="small" :disabled="currentPage <= 1 || loading" @click="previousPage">{{ t('common.previousPage') }}</el-button><el-button size="small" :disabled="!result.nextCursor || currentPage >= maxBrowsePages || loading" @click="nextPage">{{ t('common.nextPage') }}</el-button></div></div>
           </el-card>

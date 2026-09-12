@@ -56,6 +56,7 @@ const drawerVisible = ref(false)
 const createDialogVisible = ref(false)
 const caseForm = ref({ title: '', entity: '', severity: 'HIGH', assignee: '' })
 const newStatus = ref('')
+const detailAssignee = ref('')
 const statusFilter = ref('')
 const loadError = ref('')
 const caseSorters: Record<string, (item: CaseInfo) => unknown> = {
@@ -98,6 +99,7 @@ async function loadCases() {
 async function openCase(item: CaseInfo) {
   detail.value = item
   newStatus.value = item.status
+  detailAssignee.value = item.assignee ?? ''
   drawerVisible.value = true
   timeline.value = []; timelineError.value = ''
   try { timeline.value = (await caseApi.timeline(item.id)).timeline } catch (failure) { timelineError.value = String(failure) }
@@ -115,12 +117,18 @@ function openAlarm(id: string): void {
   void router.push({ name: 'alarms', query: { alarmId: id } })
 }
 
+function openRule(id: string): void {
+  if (!id.trim()) return
+  void router.push({ name: 'rule-edit', params: { ruleId: id } })
+}
+
 async function updateStatus() {
   return mutation.run(async () => {
   if (!detail.value || !newStatus.value) return
   try {
-    const result = await caseApi.updateStatus(detail.value.id, newStatus.value)
+    const result = await caseApi.updateStatus(detail.value.id, newStatus.value, detailAssignee.value.trim() || undefined)
     detail.value = result.case
+    detailAssignee.value = result.case.assignee ?? detailAssignee.value
     await loadCases()
   } catch (error) {
     throw error
@@ -219,10 +227,20 @@ watch(drawerVisible, visible => {
       <template v-if="detail">
         <el-descriptions :column="2" size="small" border>
           <el-descriptions-item :label="t('cases.caseId')">{{ detail.id }}</el-descriptions-item>
+          <el-descriptions-item v-if="detail.caseNo" :label="t('cases.caseNo')">{{ detail.caseNo }}</el-descriptions-item>
           <el-descriptions-item :label="t('common.entity')">{{ detail.entity }}</el-descriptions-item>
           <el-descriptions-item :label="t('common.severity')"><SevBadge :value="detail.severity" /></el-descriptions-item>
           <el-descriptions-item :label="t('common.status')">{{ t('statuses.' + detail.status) || detail.status }}</el-descriptions-item>
-          <el-descriptions-item :label="t('cases.linkedRules')" :span="2">{{ detail.ruleIds.join(', ') || '—' }}</el-descriptions-item>
+          <el-descriptions-item :label="t('cases.assignee')">
+            <el-select v-if="canWrite" v-model="detailAssignee" filterable default-first-option clearable :placeholder="t('cases.assigneePlaceholder')" style="width:100%">
+              <el-option v-for="assignee in assigneeOptions" :key="assignee" :label="assignee" :value="assignee" />
+            </el-select>
+            <span v-else>{{ detail.assignee || '—' }}</span>
+          </el-descriptions-item>
+          <el-descriptions-item :label="t('cases.linkedRules')" :span="2">
+            <div v-if="detail.ruleIds.length" class="case-object-list"><button v-for="ruleId in detail.ruleIds" :key="ruleId" type="button" class="case-object-link mono" @click="openRule(ruleId)">{{ ruleId }}</button></div>
+            <span v-else>—</span>
+          </el-descriptions-item>
           <el-descriptions-item :label="t('cases.associatedAlarms')" :span="2">
             <div v-if="detail.alarmIds.length" class="case-object-list"><button v-for="alarmId in detail.alarmIds" :key="alarmId" type="button" class="case-object-link mono" @click="openAlarm(alarmId)">{{ alarmId }}</button></div>
             <span v-else>—</span>

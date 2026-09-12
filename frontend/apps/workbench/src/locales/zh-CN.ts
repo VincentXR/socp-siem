@@ -334,6 +334,7 @@ export const zhCN = {
     description: '安全事件调查、处置全流程闭环与协作时间线。',
     createCase: '新建案件',
     caseId: '案件 ID',
+    caseNo: '案件编号',
     caseTitle: '案件名称',
     severity: '案件级别',
     status: '案件状态',
