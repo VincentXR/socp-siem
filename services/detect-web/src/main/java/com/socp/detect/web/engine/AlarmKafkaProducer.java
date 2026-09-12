@@ -63,9 +63,21 @@ public class AlarmKafkaProducer {
         Thread.startVirtualThread(() -> sendAndAwait(alarm, alertId));
     }
 
-    /** Send with a bounded acknowledgement wait for the Detection outbox. */
+    /**
+     * Send with a bounded acknowledgement wait for the Detection outbox.
+     *
+     * <p>The return value is a delivery acknowledgement, not a feature flag. A disabled
+     * producer therefore returns {@code false}; otherwise the durable outbox could mark a
+     * record PUBLISHED even though nothing was delivered to Kafka.</p>
+     */
     public boolean sendAndAwait(Map<String, Object> alarm, String alertId) {
-        if (!enabled || alarm == null) return true;
+        if (alarm == null) {
+            throw new IllegalArgumentException("alarm must not be null");
+        }
+        if (!enabled) {
+            log.warn("Original alert Kafka publish is disabled; keeping outbox record retryable alertId={}", alertId);
+            return false;
+        }
         try {
             String value = MAPPER.writeValueAsString(alarm);
             ProducerRecord<String, String> record = new ProducerRecord<>(topic,
