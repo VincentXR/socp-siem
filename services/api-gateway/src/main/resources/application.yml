@@ -122,6 +122,9 @@ socp:
     locales: ${SOCP_AUTH_LOCALES:}
     cookie-secure: ${SOCP_AUTH_COOKIE_SECURE:false}
     allowed-origins: ${SOCP_AUTH_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:18092}
+    revocation:
+      backend: ${SOCP_AUTH_REVOCATION_BACKEND:redis}
+      redis-key-prefix: ${SOCP_AUTH_REVOCATION_REDIS_PREFIX:socp:auth:revoked:}
     rate-limit:
       login-permits: ${SOCP_AUTH_LOGIN_PERMITS:5}
       service-permits: ${SOCP_AUTH_SERVICE_PERMITS:10}
@@ -148,8 +151,11 @@ socp:
 management:
   endpoints:
     web:
+      # Gateway route tables and Prometheus samples can disclose internal topology
+      # and runtime labels. The public application port exposes health only;
+      # metrics should be scraped through a dedicated internal management path/port.
       exposure:
-        include: health,info,gateway,prometheus
+        include: health
   endpoint:
     health:
       show-details: never
