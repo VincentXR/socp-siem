@@ -50,6 +50,7 @@ public class KafkaEventConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(KafkaEventConsumer.class);
     private static final Duration RETRY_MAX = Duration.ofSeconds(30);
+    private static final Duration CONSUMER_RESTART_MAX = Duration.ofSeconds(30);
 
     @Value("${socp.kafka.bootstrap:localhost:9092}")
     private String bootstrap;
@@ -62,6 +63,14 @@ public class KafkaEventConsumer {
 
     @Value("${socp.kafka.enabled:true}")
     private boolean enabled;
+
+    /**
+     * Bounds repeated execution of a record whose failure is deterministic.
+     * The terminal hand-off itself is still retried until the durable DLQ is
+     * available, so an offset is never skipped merely because Kafka DLQ is down.
+     */
+    @Value("${socp.kafka.processing-max-attempts:8}")
+    private int processingMaxAttempts;
 
     private final DetectEngineService engine;
     private final DetectionStateStore stateStore;
@@ -120,12 +129,7 @@ public class KafkaEventConsumer {
     public void stop() {
         running.set(false);
         if (consumerThread != null) consumerThread.interrupt();
-        partitionLanes.values().forEach(lane -> releaseDropped(lane.shutdownNow()));
-        partitionLanes.clear();
-        deferredWork.values().forEach(KafkaEventConsumer::releaseDeferred);
-        deferredWork.clear();
-        pendingBytes.clear();
-        pausedPartitions.clear();
+        cleanupConsumerSession();
         var producer = dlqProducer;
         if (producer != null) producer.close(Duration.ofSeconds(5));
     }
@@ -185,7 +189,31 @@ public class KafkaEventConsumer {
         this.dlqSink = sink == null ? this::publishDlq : sink;
     }
 
+    /**
+     * Supervise the Kafka consumer session. A broker/client failure must not
+     * permanently kill the only polling thread while the JVM stays healthy.
+     */
     private void run() {
+        long restartDelay = 1_000;
+        while (running.get() && !Thread.currentThread().isInterrupted()) {
+            try {
+                runConsumerSession();
+                restartDelay = 1_000;
+            } catch (Exception ex) {
+                if (!running.get() || Thread.currentThread().isInterrupted()) break;
+                log.error("Kafka consumer session failed; restarting in {}ms: {}",
+                        restartDelay, ex.getMessage(), ex);
+            } finally {
+                cleanupConsumerSession();
+            }
+
+            if (!running.get()) break;
+            if (!sleepRetry(restartDelay)) break;
+            restartDelay = Math.min(CONSUMER_RESTART_MAX.toMillis(), restartDelay * 2);
+        }
+    }
+
+    private void runConsumerSession() {
         var props = KafkaClientSupport.reliableConsumer(bootstrap, groupId, "earliest", 200);
         props.put(ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG, 1_800_000);
         try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props)) {
@@ -220,7 +248,7 @@ public class KafkaEventConsumer {
                     log.info("Detection state restored for partitions={}", assigned);
                 }
             });
-            while (running.get()) {
+            while (running.get() && !Thread.currentThread().isInterrupted()) {
                 drainDeferred(consumer);
                 var records = consumer.poll(Duration.ofMillis(250));
                 for (var record : records) {
@@ -232,15 +260,27 @@ public class KafkaEventConsumer {
                 drainCompletions(consumer);
                 drainDeferred(consumer);
             }
-        } catch (Exception ex) {
-            if (running.get()) log.warn("Kafka consumer stopped: {}", ex.getMessage());
-        } finally {
-            partitionLanes.values().forEach(lane -> releaseDropped(lane.shutdownNow()));
-            partitionLanes.clear();
-            deferredWork.values().forEach(KafkaEventConsumer::releaseDeferred);
-            deferredWork.clear();
-            pendingBytes.clear();
-            pausedPartitions.clear();
+        }
+    }
+
+    /** Clear all session-local work and relinquish fencing leases before rejoining. */
+    private void cleanupConsumerSession() {
+        Set<Integer> owned = engine.assignedPartitions();
+        partitionLanes.values().forEach(lane -> releaseDropped(lane.shutdownNow()));
+        partitionLanes.clear();
+        deferredWork.values().forEach(KafkaEventConsumer::releaseDeferred);
+        deferredWork.clear();
+        pendingBytes.clear();
+        pausedPartitions.clear();
+        completions.clear();
+        for (Integer partition : completionTracker.partitions()) completionTracker.remove(partition);
+        if (owned != null && !owned.isEmpty()) {
+            try {
+                engine.releaseForPartitions(Set.copyOf(owned));
+            } catch (Exception releaseFailure) {
+                log.warn("Detection state lease release failed during consumer cleanup: {}",
+                        releaseFailure.getMessage());
+            }
         }
     }
 
@@ -374,6 +414,7 @@ public class KafkaEventConsumer {
     private void processWithRetry(org.apache.kafka.clients.consumer.ConsumerRecord<String, String> record,
                                   long epoch) {
         long delay = 250;
+        int attempts = 0;
         String traceparent = extractHeader(record, "traceparent");
         String traceId = extractTraceId(traceparent);
 
@@ -384,41 +425,48 @@ public class KafkaEventConsumer {
                 // The normalized event is the source of truth for tenant
                 // ownership. DetectionRecordProcessor installs that scope
                 // after parsing, so a Kafka header can never re-home a row.
-
                 processOne(record.topic(), record.partition(), record.offset(), record.key(), record.value());
                 completions.offer(new RecordCompletion(record.partition(), record.offset(), epoch));
                 return;
             } catch (DetectionRecordProcessor.MalformedDetectionRecordException terminal) {
-                try {
-                    publishDlqAndAwait(terminal.eventId(), terminal.raw());
-                    stateStore.recordDeadLettered(terminal.eventId(), terminal.raw(),
-                            record.partition(), record.offset(), terminal.getMessage());
+                if (handoffToDlqUntilDurable(terminal.eventId(), terminal.raw(), record.partition(), record.offset(),
+                        terminal.getMessage())) {
                     completions.offer(new RecordCompletion(record.partition(), record.offset(), epoch));
-                    return;
-                } catch (Exception dlqFailure) {
-                    log.warn("Terminal record DLQ unavailable; retrying eventId={}: {}",
-                            terminal.eventId(), dlqFailure.getMessage());
                 }
-            } catch (Exception transientFailure) {
-                log.warn("Detection processing pending partition={} offset={} retry={} reason={}",
-                        record.partition(), record.offset(), delay, transientFailure.getMessage());
-                try {
-                    rebuildOwnedState(record.partition());
-                } catch (Exception rebuildFailure) {
-                    log.warn("Detection state rebuild deferred partition={}: {}",
-                            record.partition(), rebuildFailure.getMessage());
+                return;
+            } catch (Exception failure) {
+                attempts++;
+                int limit = Math.max(1, processingMaxAttempts);
+                log.warn("Detection processing failed partition={} offset={} attempt={}/{} reason={}",
+                        record.partition(), record.offset(), attempts, limit, failure.getMessage());
+
+                if (attempts >= limit) {
+                    String eventId = record.key() == null || record.key().isBlank()
+                            ? record.topic() + "-" + record.partition() + "-" + record.offset() : record.key();
+                    String reason = "processing attempts exhausted: " + failure.getMessage();
+                    if (handoffToDlqUntilDurable(eventId, record.value(), record.partition(), record.offset(), reason)) {
+                        completions.offer(new RecordCompletion(record.partition(), record.offset(), epoch));
+                    }
+                    return;
+                }
+
+                // RuleEngine state is instance-wide. Rebuild all currently
+                // owned partitions only once for this failed record; repeated
+                // full rebuilds turn a deterministic poison record into a storm.
+                if (attempts == 1) {
+                    try {
+                        rebuildOwnedState(record.partition());
+                    } catch (Exception rebuildFailure) {
+                        log.warn("Detection state rebuild deferred partition={}: {}",
+                                record.partition(), rebuildFailure.getMessage());
+                    }
                 }
             } finally {
                 if (traceId != null) org.slf4j.MDC.remove("traceId");
                 if (traceparent != null) org.slf4j.MDC.remove("traceparent");
                 com.socp.platform.tenant.context.TenantContext.clear();
             }
-            try {
-                Thread.sleep(delay);
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                return;
-            }
+            if (!sleepRetry(delay)) return;
             delay = Math.min(RETRY_MAX.toMillis(), delay * 2);
         }
     }
@@ -438,6 +486,7 @@ public class KafkaEventConsumer {
 
     private void processPendingWithRetry(PendingDetectionEvent row) {
         long delay = 250;
+        int attempts = 0;
         while (running.get() && !Thread.currentThread().isInterrupted()) {
             try {
                 String routingKey = com.socp.rule.partition.DetectionRoutingKey.forEvent(row.event());
@@ -446,23 +495,62 @@ public class KafkaEventConsumer {
                         () -> recordProcessor.processNormalized(row.partition(), row.offset(), routingKey, row.event()));
                 return;
             } catch (Exception failure) {
-                log.warn("Pending Detection replay deferred partition={} offset={} retry={} reason={}",
-                        row.partition(), row.offset(), delay, failure.getMessage());
-                try {
-                    com.socp.platform.tenant.context.TenantContext.runAsSystem(
-                            () -> rebuildOwnedState(row.partition()));
-                } catch (Exception rebuildFailure) {
-                    log.warn("Pending Detection state rebuild deferred partition={}: {}",
-                            row.partition(), rebuildFailure.getMessage());
-                }
-                try {
-                    Thread.sleep(delay);
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
+                attempts++;
+                int limit = Math.max(1, processingMaxAttempts);
+                log.warn("Pending Detection replay failed partition={} offset={} attempt={}/{} reason={}",
+                        row.partition(), row.offset(), attempts, limit, failure.getMessage());
+
+                if (attempts >= limit) {
+                    handoffToDlqUntilDurable(row.event().id(), row.event().raw(), row.partition(), row.offset(),
+                            "pending replay attempts exhausted: " + failure.getMessage());
                     return;
                 }
+
+                if (attempts == 1) {
+                    try {
+                        com.socp.platform.tenant.context.TenantContext.runAsSystem(
+                                () -> rebuildOwnedState(row.partition()));
+                    } catch (Exception rebuildFailure) {
+                        log.warn("Pending Detection state rebuild deferred partition={}: {}",
+                                row.partition(), rebuildFailure.getMessage());
+                    }
+                }
+                if (!sleepRetry(delay)) return;
                 delay = Math.min(RETRY_MAX.toMillis(), delay * 2);
             }
+        }
+    }
+
+    /**
+     * Once processing is deemed terminal, retry only the durable DLQ hand-off.
+     * This prevents repeated business side effects while still preserving the
+     * contiguous-offset guarantee when the DLQ broker is temporarily down.
+     */
+    private boolean handoffToDlqUntilDurable(String eventId, String raw,
+                                             Integer partition, Long offset, String reason) {
+        long delay = 1_000;
+        while (running.get() && !Thread.currentThread().isInterrupted()) {
+            try {
+                publishDlqAndAwait(eventId, raw);
+                stateStore.recordDeadLettered(eventId, raw, partition, offset, reason);
+                return true;
+            } catch (Exception dlqFailure) {
+                log.error("Detection DLQ hand-off unavailable partition={} offset={}; retrying in {}ms: {}",
+                        partition, offset, delay, dlqFailure.getMessage());
+                if (!sleepRetry(delay)) return false;
+                delay = Math.min(RETRY_MAX.toMillis(), delay * 2);
+            }
+        }
+        return false;
+    }
+
+    private static boolean sleepRetry(long delay) {
+        try {
+            Thread.sleep(delay);
+            return true;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return false;
         }
     }
 
