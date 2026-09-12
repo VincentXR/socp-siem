@@ -64,6 +64,25 @@ def wait_for(fn, timeout=40.0, interval=1.0):
     return last
 
 
+def envelope(payload):
+    """统一响应信封 {code,message,data}：code==0 取 data，非 0 报错；容忍未包裹的载荷。"""
+    if isinstance(payload, dict) and "code" in payload and "data" in payload:
+        if payload.get("code") != 0:
+            raise RuntimeError("API code=%s message=%s" % (payload.get("code"), payload.get("message")))
+        return payload["data"]
+    return payload
+
+
+def page_items(payload):
+    """分页对象 {items,total,page,size,totalPages} → (items, total)；裸列表原样透传。"""
+    data = envelope(payload)
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        return data["items"], data.get("total")
+    if isinstance(data, list):
+        return data, None
+    return [], None
+
+
 def login():
     global JWT
     if JWT:
@@ -147,7 +166,8 @@ check("Kafka 端口可达", kafka_topic_offsets() is not None)
 print("\n== 1. 基线计数 ==")
 base_offset = kafka_topic_offsets() or 0
 base_alarms, base_alarm_total = api("/alert-web/api/alarms?page=1&size=1")
-base_total = base_alarm_total.get("data", {}).get("total", 0) if isinstance(base_alarm_total, dict) else 0
+_, base_total = page_items(base_alarm_total)
+base_total = base_total or 0
 try:
     os_total = os_get("/socp-events-*/_count").get("count", 0)
 except Exception:
@@ -162,7 +182,7 @@ print(f"  基线: Kafka offset={base_offset} alarms={base_total} OS={os_total} C
 # ---- 2. 注入攻击事件（走 search-config 归一化管线 → Kafka + OpenSearch） ----
 print("\n== 2. 注入攻击事件（search-config ingest → Kafka/OpenSearch） ==")
 st, tasks = api("/search-config/api/v1/ingest/tasks")
-items = tasks.get("data", []) if isinstance(tasks, dict) else tasks
+items, _ = page_items(tasks)
 check("获取接入任务列表", st == 200 and len(items) > 0, f"st={st} n={len(items)}")
 if not items:
     print("无接入任务，退出"); sys.exit(1)
@@ -179,6 +199,7 @@ samples = [
     % (attack_host, attack_ip),
 ]
 st, r = api("/search-config/api/v1/ingest/tasks/%s/test" % tid, {"sample": samples[0]}, "POST")
+r = envelope(r) if st == 200 else {}
 check("注入 sudo 攻击事件走管线", st == 200 and r.get("ok") is True, r.get("pipeline"))
 
 # ---- 3. Kafka topic 出现事件 ----
@@ -224,13 +245,14 @@ check("OpenSearch 出现本次 raw event", new_os is not None, f"host={attack_ho
 print("\n== 5. 检测命中 → 告警持久化（PG t_alarm，API 查询验证） ==")
 def alarm_grew():
     _, a = api("/alert-web/api/alarms?page=1&size=500")
-    total = a.get("data", {}).get("total", 0) if isinstance(a, dict) else 0
+    _, total = page_items(a)
+    total = total or 0
     return total if total > base_total else None
 new_alarms = wait_for(alarm_grew, timeout=60)
 check("PG 出现新告警（alert-web API 查询）", new_alarms is not None, f"{base_total} -> {new_alarms}")
 if new_alarms:
     _, a = api("/alert-web/api/alarms?page=1&size=500")
-    items = a.get("data", {}).get("items", [])
+    items, _ = page_items(a)
     hit = [x for x in items if attack_host in str(x.get("entity", "")) or "ciattacker" in str(x.get("message", ""))]
     check("告警来自注入的攻击事件（规则命中）", len(hit) >= 1, [x.get("severity") for x in hit[:2]])
 
