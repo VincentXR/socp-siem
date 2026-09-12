@@ -44,7 +44,7 @@ class ServiceClientDelegationTest {
                 SocpHttpClient.NDJSON, 5000);
         verify(http).postJson(SocpService.HIPS, "/api/v1/endpoints/events", "hips");
         verify(http).postJson(SocpService.NOTIFY, "/api/v1/notify/alert", "notify");
-        verify(http).postJson(SocpService.SOAR, "/api/v2/events/evaluate", "soar");
+        verify(http).postJson(SocpService.SOAR, "/api/events/evaluate", "soar");
         verify(http).postJson(SocpService.THREAT, "/api/v1/iocs/match", "[\"1.2.3.4\"]");
         verify(http).get(SocpService.SEARCH, "/api/v1/search?q=host%20%3D%20%22web%201%22");
     }
