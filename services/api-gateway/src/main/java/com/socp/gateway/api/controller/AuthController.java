@@ -239,8 +239,8 @@ public class AuthController {
                         "Session is missing revocation claims"));
             }
             return revocations.revoke(jti, expiry.toInstant())
-                    .thenReturn(noContent(expired))
-                    .onErrorResume(failure -> Mono.just(authFailure(expired,
+                    .then(Mono.<ResponseEntity<?>>just(noContent(expired)))
+                    .onErrorResume(failure -> Mono.<ResponseEntity<?>>just(authFailure(expired,
                             HttpStatus.SERVICE_UNAVAILABLE, "Unable to revoke session")));
         } catch (JwtValidationException failure) {
             return Mono.just(authFailure(expired, HttpStatus.UNAUTHORIZED, "Invalid or expired session"));
