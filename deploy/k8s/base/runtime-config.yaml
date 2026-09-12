@@ -17,6 +17,7 @@ data:
   SOCP_PG_HOST: postgres.socp-data.svc.cluster.local
   SOCP_PG_PORT: "5432"
   SOCP_OPENSEARCH_URL: https://opensearch.socp-data.svc.cluster.local:9200
+  SOCP_CK_URL: http://clickhouse.socp-data.svc.cluster.local:8123
   SOCP_SSA_URI: http://alert-web:8080
   SOCP_GLS_URI: http://search-config-api:8080
   SOCP_GAS_WEB_URI: http://detect-web-api:8080
