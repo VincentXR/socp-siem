@@ -55,9 +55,12 @@ const { t } = useI18n()
 
 const DISP_STATUSES = ['OPEN', 'INVESTIGATING', 'RESOLVED', 'CLOSED']
 const disposition = ref<Disposition | null>(null)
+const dispositionError = ref('')
 const evidence = ref<AlarmEvidenceResponse | null>(null)
 const evidenceError = ref('')
 const relatedCase = ref<CaseInfo | null>(null)
+const relatedCaseError = ref('')
+const detailsLoading = ref(false)
 const newStatus = ref('OPEN')
 const newAssignee = ref('')
 const newNote = ref('')
@@ -87,20 +90,30 @@ function statusLabel(status: string): string {
 
 async function loadDetails(alarm: Alarm) {
   const token = ++loadToken
+  detailsLoading.value = true
   disposition.value = null
+  dispositionError.value = ''
   evidence.value = null
   evidenceError.value = ''
+  relatedCase.value = null
+  relatedCaseError.value = ''
   actionError.value = ''
   newStatus.value = alarm.status || 'OPEN'
   newAssignee.value = ''
   newNote.value = ''
   const [disp, ev, cases] = await Promise.allSettled([getDisposition(alarm.id), getAlarmEvidence(alarm.id), loadCases()])
   if (token !== loadToken) return
+  detailsLoading.value = false
   if (disp.status === 'fulfilled') disposition.value = disp.value
+  else dispositionError.value = t('drawer.loadDispositionFailed')
   if (ev.status === 'fulfilled') evidence.value = ev.value
   else evidenceError.value = t('drawer.loadEvidenceFailed')
   if (cases.status === 'fulfilled') relatedCase.value = cases.value.find(item => item.alarmIds.includes(alarm.id)) ?? null
-  else relatedCase.value = null
+  else relatedCaseError.value = t('drawer.loadCaseFailed')
+}
+
+function retryDetails(): void {
+  if (props.alarm) void loadDetails(props.alarm)
 }
 
 watch(() => [props.modelValue, props.alarm?.id] as const, ([visible]) => {
@@ -203,7 +216,10 @@ function openEvidenceSearch() {
       </div>
 
       <el-divider content-position="left">{{ t('drawer.evidence') }}</el-divider>
-      <el-alert v-if="evidenceError" :title="evidenceError" type="error" :closable="false" />
+      <el-alert v-if="detailsLoading" :title="t('common.loading')" type="info" :closable="false" />
+      <el-alert v-else-if="evidenceError" :title="evidenceError" type="error" :closable="false" show-icon>
+        <el-button size="small" type="primary" plain @click="retryDetails">{{ t('common.retry') }}</el-button>
+      </el-alert>
       <template v-else-if="evidence && evidence.items.length">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;font-size:12px;color:var(--ns-text-3)">
           <span>{{ t('drawer.evidenceCount', { count: evidence.total }) }}</span>
@@ -224,25 +240,31 @@ function openEvidenceSearch() {
       <el-empty v-else :description="t('drawer.noEvidence')" :image-size="50" />
 
       <el-divider content-position="left">{{ t('drawer.stateFlow') }}</el-divider>
-      <div v-if="props.canWrite" style="display:flex;gap:8px;margin-bottom:8px">
+      <div v-if="detailsLoading" class="drawer-loading-hint">{{ t('common.loading') }}</div>
+      <el-alert v-else-if="dispositionError" :title="dispositionError" type="error" :closable="false" show-icon>
+        <el-button size="small" type="primary" plain @click="retryDetails">{{ t('common.retry') }}</el-button>
+      </el-alert>
+      <div v-else-if="props.canWrite" style="display:flex;gap:8px;margin-bottom:8px">
         <el-select v-model="newStatus" style="flex:1"><el-option v-for="s in DISP_STATUSES" :key="s" :label="t('statuses.' + s) || s" :value="s" /></el-select>
         <el-button type="primary" @click="changeStatus">{{ t('common.update') }}</el-button>
       </div>
-      <div v-if="props.canWrite" style="display:flex;gap:8px;margin-bottom:14px">
+      <div v-if="props.canWrite && !detailsLoading && !dispositionError" style="display:flex;gap:8px;margin-bottom:14px">
         <el-select v-model="newAssignee" filterable default-first-option clearable :placeholder="t('drawer.assigneePlaceholder')" style="flex:1">
           <el-option v-for="assignee in assigneeOptions" :key="assignee" :label="assignee" :value="assignee" />
         </el-select><el-button @click="doAssign">{{ t('common.assign') }}</el-button>
       </div>
-      <div v-else class="drawer-readonly-hint">{{ t('drawer.readOnly') }}</div>
+      <div v-else-if="!detailsLoading && !dispositionError" class="drawer-readonly-hint">{{ t('drawer.readOnly') }}</div>
 
       <el-divider content-position="left">{{ t('drawer.notesTitle') }}</el-divider>
-      <div v-if="disposition && disposition.notes.length">
+      <div v-if="detailsLoading" class="drawer-loading-hint">{{ t('common.loading') }}</div>
+      <el-alert v-else-if="dispositionError" :title="dispositionError" type="error" :closable="false" />
+      <div v-else-if="disposition && disposition.notes.length">
         <div v-for="(note, index) in disposition.notes" :key="index" style="background:var(--ns-bg-subtle);border-radius:6px;padding:8px 12px;margin-bottom:8px">
           <div style="font-size:12px;color:var(--ns-text-3)">{{ note.author }} · {{ note.at }}</div><div style="margin-top:2px">{{ note.content }}</div>
         </div>
       </div>
-      <el-empty v-else :description="t('drawer.noNotes')" :image-size="50" />
-      <div v-if="props.canWrite" style="display:flex;gap:8px;margin-top:8px">
+      <el-empty v-else-if="disposition" :description="t('drawer.noNotes')" :image-size="50" />
+      <div v-if="props.canWrite && !detailsLoading && !dispositionError" style="display:flex;gap:8px;margin-top:8px">
         <el-input v-model="newNote" :placeholder="t('drawer.addNotePlaceholder')" @keyup.enter="doAddNote" /><el-button type="success" @click="doAddNote">{{ t('common.add') }}</el-button>
       </div>
 
@@ -253,6 +275,10 @@ function openEvidenceSearch() {
           <el-button link type="primary" size="small" @click="drawerVisible = false; props.goCase(relatedCase.id)">{{ t('drawer.goToCase') }}</el-button>
         </div>
       </el-card>
+      <el-alert v-else-if="detailsLoading" :title="t('common.loading')" type="info" :closable="false" />
+      <el-alert v-else-if="relatedCaseError" :title="relatedCaseError" type="error" :closable="false" show-icon>
+        <el-button size="small" type="primary" plain @click="retryDetails">{{ t('common.retry') }}</el-button>
+      </el-alert>
       <div v-else class="drawer-case-empty">
         <el-empty :description="t('drawer.noRelatedCase')" :image-size="50" />
         <el-button v-if="props.canWrite" type="primary" size="small" :loading="creatingCase" @click="createCase">{{ t('drawer.createCase') }}</el-button>

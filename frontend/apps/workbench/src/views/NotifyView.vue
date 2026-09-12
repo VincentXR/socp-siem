@@ -46,6 +46,19 @@ const targetPlaceholder = computed(() => form.value.type === 'EMAIL' ? 'soc@exam
 function channelTypeLabel(type: string): string {
   return t('notify.types.' + type) || type
 }
+function dispatchStatusLabel(status: string): string {
+  const value = String(status || '').toLowerCase()
+  const key = 'notify.dispatchStatuses.' + value
+  const translated = t(key)
+  return translated === key ? status : translated
+}
+function dispatchStatusType(status: string): 'success' | 'danger' | 'warning' | 'info' {
+  const value = String(status || '').toLowerCase()
+  if (value === 'sent' || value === 'succeeded' || value === 'success') return 'success'
+  if (value === 'failed' || value === 'error') return 'danger'
+  if (value === 'retrying' || value === 'pending' || value === 'queued') return 'warning'
+  return 'info'
+}
 function displayTarget(channel: Channel): string {
   if (channel.type === 'LOG') return t('notify.localDestination')
   if (channel.type === 'EMAIL') return channel.target
@@ -155,7 +168,7 @@ onMounted(loadNotify)
         <el-table-column prop="channel" :label="t('notify.channel')" width="120" />
         <el-table-column prop="type" :label="t('common.type')" width="90" />
         <el-table-column prop="ruleId" :label="t('notify.rule')" width="140" />
-        <el-table-column :label="t('common.status')" width="100"><template #default="{ row }"><el-tag :type="row.status === 'sent' ? 'success' : row.status === 'failed' ? 'danger' : 'info'" size="small">{{ row.status }}</el-tag></template></el-table-column>
+        <el-table-column :label="t('common.status')" width="100"><template #default="{ row }"><el-tag :type="dispatchStatusType(row.status)" size="small">{{ dispatchStatusLabel(row.status) }}</el-tag></template></el-table-column>
       </el-table>
     </el-card>
 

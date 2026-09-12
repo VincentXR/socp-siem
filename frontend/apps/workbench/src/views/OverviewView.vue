@@ -62,6 +62,11 @@ const timeOnly = (iso: string) => (iso?.length >= 19 ? iso.slice(11, 19) : '—'
 function getStatusLabel(status: string): string {
   return t('statuses.' + status) || status
 }
+function severityLabel(level: string): string {
+  const key = 'severities.' + level
+  const translated = t(key)
+  return translated === key ? level : translated
+}
 </script>
 
 <template>
@@ -87,7 +92,7 @@ function getStatusLabel(status: string): string {
       </MetricCard>
       <MetricCard :label="t('overview.highCriticalAlarms7d')" tone="danger" :interactive="Boolean(props.goAlarms)" @click="openHighRiskAlarms">
         <AnimatedNumber :value="highPending" />
-        <template #hint>CRITICAL <b class="mono">{{ stat.critical }}</b> · HIGH <b class="mono">{{ stat.high }}</b></template>
+        <template #hint>{{ severityLabel('CRITICAL') }} <b class="mono">{{ stat.critical }}</b> · {{ severityLabel('HIGH') }} <b class="mono">{{ stat.high }}</b></template>
       </MetricCard>
       <MetricCard :label="t('overview.activeCases')" tone="warning" :interactive="Boolean(props.goCases)" @click="openCases">
         <AnimatedNumber :value="stat.activeCases" />
@@ -111,12 +116,12 @@ function getStatusLabel(status: string): string {
             :key="level"
             class="ov-level-seg"
             :style="{ flex: (sitStats?.bySeverity?.[level] ?? 0) / maxLevel + 0.02, background: sevColor(level) }"
-            :title="`${level}: ${sitStats?.bySeverity?.[level] ?? 0}`"
+            :title="`${severityLabel(level)}: ${sitStats?.bySeverity?.[level] ?? 0}`"
           />
         </div>
         <div class="ov-level-legend">
           <span v-for="level in LEVELS" :key="level" class="ov-level-item">
-            <i class="ov-level-dot" :style="{ background: sevColor(level) }" />{{ level }}
+            <i class="ov-level-dot" :style="{ background: sevColor(level) }" />{{ severityLabel(level) }}
             <b class="mono">{{ sitStats?.bySeverity?.[level] ?? 0 }}</b>
           </span>
         </div>
@@ -125,7 +130,7 @@ function getStatusLabel(status: string): string {
 
     <div class="ov-low">
       <el-card shadow="never" class="ov-card">
-        <template #header><span>Top 5 {{ t('overview.riskEntities') }}</span></template>
+        <template #header><span>{{ t('overview.topRiskTitle', { value: t('overview.riskEntities') }) }}</span></template>
         <div v-if="topRisk.length" class="ov-risk">
             <div v-for="(risk, index) in topRisk" :key="risk.id" class="ov-risk-item" role="button" tabindex="0" @click="openRecentAlarm(risk)" @keydown.enter.prevent="openRecentAlarm(risk)">
             <span class="ov-rank mono">{{ index + 1 }}</span>
