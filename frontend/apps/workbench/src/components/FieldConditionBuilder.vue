@@ -6,6 +6,7 @@ import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import type { FieldDef, ReferenceSet, RuleCondition } from '../api'
+import { useI18n } from '../composables/useI18n'
 
 const props = withDefaults(defineProps<{
   modelValue: RuleCondition[]
@@ -33,6 +34,7 @@ const props = withDefaults(defineProps<{
 })
 
 const emit = defineEmits<{ 'update:modelValue': [RuleCondition[]] }>()
+const { t } = useI18n()
 
 const DEFAULT_OPERATORS = ['eq', 'ne', 'contains', 'startswith', 'endswith', 'regex', 'gt', 'gte', 'lt', 'lte', 'inlist', 'notinlist']
 
@@ -107,7 +109,7 @@ function isNumberField(fieldName: string): boolean {
 
 function fieldMeta(fieldName: string): string {
   const field = fieldInfo(fieldName)
-  if (!field) return fieldName ? 'Field is not in the current dictionary; it will be preserved.' : ''
+  if (!field) return fieldName ? t('common.notInDictionaryPreserved') : ''
   return [field.fieldLabel || field.fieldName, field.fieldType, field.description].filter(Boolean).join(' · ')
 }
 </script>
@@ -129,7 +131,7 @@ function fieldMeta(fieldName: string): string {
         @change="updateField(index, String($event ?? ''))"
       >
         <el-option v-if="condition.field && !fieldNames().has(condition.field)" :label="condition.field" :value="condition.field">
-          <div class="field-condition-option"><b>{{ condition.field }}</b><small>Not in current dictionary · preserved</small></div>
+          <div class="field-condition-option"><b>{{ condition.field }}</b><small>{{ t('common.notInDictionaryShort') }}</small></div>
         </el-option>
         <el-option v-for="field in fields" :key="field.fieldName" :label="field.fieldName" :value="field.fieldName">
           <div class="field-condition-option">
@@ -152,7 +154,7 @@ function fieldMeta(fieldName: string): string {
         <el-option label="false" value="false" />
       </el-select>
       <el-input v-else :model-value="condition.value" :disabled="props.readOnly" :type="isNumberField(condition.field) ? 'number' : 'text'" :placeholder="valuePlaceholder" @update:model-value="value => updateRow(index, { value: String(value ?? '') })" />
-      <el-button v-if="!props.readOnly" link type="danger" :aria-label="`Remove condition ${index + 1}`" @click="removeCondition(index)">×</el-button>
+      <el-button v-if="!props.readOnly" link type="danger" :aria-label="t('common.removeCondition', { index: index + 1 })" @click="removeCondition(index)">×</el-button>
       <small v-if="fieldMeta(condition.field)" class="field-condition-meta">{{ fieldMeta(condition.field) }}</small>
     </div>
     <div v-if="!modelValue.length" class="field-condition-empty">{{ emptyHint }}</div>

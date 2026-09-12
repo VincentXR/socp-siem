@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import 'element-plus/es/components/select/style/css.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
+import { useI18n } from '../composables/useI18n'
 
 export interface VariableOption {
   value: string
@@ -21,6 +22,7 @@ const props = withDefaults(defineProps<{
 })
 
 const emit = defineEmits<{ 'update:modelValue': [string] }>()
+const { t } = useI18n()
 </script>
 
 <template>
@@ -35,10 +37,10 @@ const emit = defineEmits<{ 'update:modelValue': [string] }>()
     @update:model-value="value => emit('update:modelValue', String(value ?? ''))"
   >
     <el-option v-if="props.modelValue && !props.variables.some(variable => variable.value === props.modelValue)" :label="props.modelValue" :value="props.modelValue">
-      <div class="variable-option"><b>{{ props.modelValue }}</b><small>Custom value · preserved</small></div>
+      <div class="variable-option"><b>{{ props.modelValue }}</b><small>{{ t('common.customValuePreserved') }}</small></div>
     </el-option>
     <el-option v-for="variable in props.variables" :key="variable.value" :label="variable.label" :value="variable.value">
-      <div class="variable-option"><b>{{ variable.label }}</b><small>{{ variable.kind || 'variable' }}<span v-if="variable.description"> · {{ variable.description }}</span></small></div>
+      <div class="variable-option"><b>{{ variable.label }}</b><small>{{ variable.kind || t('common.variable') }}<span v-if="variable.description"> · {{ variable.description }}</span></small></div>
     </el-option>
   </el-select>
 </template>

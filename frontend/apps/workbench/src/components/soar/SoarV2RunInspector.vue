@@ -76,7 +76,7 @@ const lastSequence = computed(() => events.value.reduce((max, item) => Math.max(
 const unknownNodes = computed(() => nodes.value.filter(node => ['ACTION_UNKNOWN', 'UNKNOWN'].includes(node.status)))
 
 function failureText(failure: unknown): string {
-  return failure instanceof Error ? failure.message : 'SOAR V2 request failed'
+  return failure instanceof Error ? failure.message : t('soarV2.requestFailed')
 }
 
 function newRequestId(): string {
@@ -100,7 +100,7 @@ async function loadPublishedVersions(): Promise<void> {
       .filter((result): result is PromiseFulfilledResult<Array<{ version: SoarV2Version; playbook: SoarV2Playbook }>> => result.status === 'fulfilled')
       .flatMap(result => result.value)
     if (!publishedVersions.value.length) {
-      queueError.value = 'No published playbook versions are available for execution.'
+      queueError.value = t('soarV2.noPublishedVersions')
       return
     }
     if (!publishedVersions.value.some(item => item.version.id === queueForm.value.playbookVersionId)) {
@@ -128,8 +128,8 @@ function openQueueDialog(): void {
 
 function parseObject(value: string, label: string): Record<string, unknown> {
   let parsed: unknown
-  try { parsed = JSON.parse(value.trim() || '{}') } catch { throw new Error(`${label} must be valid JSON`) }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error(`${label} must be a JSON object`)
+  try { parsed = JSON.parse(value.trim() || '{}') } catch { throw new Error(t('soarV2.invalidJson', { label })) }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error(t('soarV2.jsonObjectRequired', { label }))
   return parsed as Record<string, unknown>
 }
 
@@ -138,7 +138,7 @@ async function submitQueue(): Promise<void> {
   queueError.value = ''
   queueMessage.value = ''
   if (!queueForm.value.playbookVersionId) {
-    queueError.value = 'Choose a published playbook version first.'
+    queueError.value = t('soarV2.choosePublishedVersion')
     return
   }
   queueLoading.value = true
@@ -151,8 +151,8 @@ async function submitQueue(): Promise<void> {
     })
     queueDialogVisible.value = false
     queueMessage.value = result.duplicate
-      ? `Run ${result.runId} already exists (200 idempotent duplicate); tracking the existing durable execution.`
-      : `Run ${result.runId} accepted (202); tracking durable execution.`
+      ? t('soarV2.runDuplicate', { runId: result.runId })
+      : t('soarV2.runAccepted', { runId: result.runId })
     selectedRunId.value = result.runId
     await loadRuns()
   } catch (failure) {
@@ -197,7 +197,7 @@ async function loadRuns() {
     if (!selectedRunId.value && runs.value[0]) selectedRunId.value = runs.value[0].runId
     if (selectedRunId.value) await refreshRun()
   } catch (failure) {
-    errorMessage.value = failure instanceof Error ? failure.message : 'Unable to load SOAR runs'
+    errorMessage.value = failure instanceof Error ? failure.message : t('soarV2.unableLoadRuns')
   }
 }
 
@@ -222,7 +222,7 @@ async function refreshRun() {
     await loadAttempts()
     openStream()
   } catch (failure) {
-    errorMessage.value = failure instanceof Error ? failure.message : 'Unable to load run details'
+    errorMessage.value = failure instanceof Error ? failure.message : t('soarV2.unableLoadRunDetails')
   } finally {
     loading.value = false
   }
@@ -235,7 +235,7 @@ async function loadAttempts() {
     attempts.value = result.items
   } catch (failure) {
     attempts.value = []
-    errorMessage.value = failure instanceof Error ? failure.message : 'Unable to load action attempts'
+    errorMessage.value = failure instanceof Error ? failure.message : t('soarV2.unableLoadAttempts')
   }
 }
 
@@ -286,7 +286,7 @@ async function refreshProjection() {
 
 async function cancel() {
   if (!props.canWrite || !selectedRunId.value) return
-  const reason = window.prompt('Cancellation reason', 'Cancelled from Workbench')
+  const reason = window.prompt(t('soarV2.cancelReason'), '')
   if (reason === null) return
   errorMessage.value = ''
   controlBusy.value = 'cancel'
@@ -302,7 +302,7 @@ async function cancel() {
 
 async function retry() {
   if (!props.canWrite || !selectedRunId.value) return
-  const reason = window.prompt('Retry reason', 'Retry from Workbench')
+  const reason = window.prompt(t('soarV2.retryReason'), '')
   if (reason === null) return
   errorMessage.value = ''
   controlBusy.value = 'retry'
@@ -317,11 +317,11 @@ async function retry() {
 }
 
 async function rerun() {
-  if (!props.canWrite || !selectedRunId.value || !window.confirm('Create a new execution series with new idempotency keys?')) return
+  if (!props.canWrite || !selectedRunId.value || !window.confirm(t('soarV2.rerunConfirm'))) return
   errorMessage.value = ''
   controlBusy.value = 'rerun'
   try {
-    await rerunV2Run(selectedRunId.value, 'Explicit rerun from Workbench')
+    await rerunV2Run(selectedRunId.value, t('soarV2.rerunRun'))
     await loadRuns()
   } catch (failure) {
     errorMessage.value = failureText(failure)
@@ -332,9 +332,9 @@ async function rerun() {
 
 async function resolveUnknown(node: SoarV2NodeRun, resolution: 'CONFIRMED_SUCCEEDED' | 'CONFIRMED_NOT_EXECUTED') {
   if (!props.canWrite) return
-  const evidence = window.prompt('Evidence reference is required')
+  const evidence = window.prompt(t('soarV2.evidenceRequired'))
   if (!evidence) return
-  const reason = window.prompt('Resolution reason is required')
+  const reason = window.prompt(t('soarV2.resolutionReasonRequired'))
   if (!reason) return
   errorMessage.value = ''
   controlBusy.value = 'resolve'
@@ -360,7 +360,7 @@ async function viewArtifact(artifact: SoarV2Artifact) {
     anchor.click()
     URL.revokeObjectURL(url)
   } catch (failure) {
-    errorMessage.value = failure instanceof Error ? failure.message : 'Unable to download artifact'
+    errorMessage.value = failure instanceof Error ? failure.message : t('soarV2.unableDownloadArtifact')
   }
 }
 
@@ -375,6 +375,22 @@ onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
   closeStream()
 })
+
+function statusLabel(status: string): string {
+  const key = 'soarV2.status.' + status
+  const translated = t(key)
+  return translated === key ? status : translated
+}
+
+function nodeTypeLabel(type: string): string {
+  const key = 'soar.nodeType.' + type
+  const translated = t(key)
+  return translated === key ? type : translated
+}
+
+function streamLabel(state: 'closed' | 'live' | 'polling'): string {
+  return t('soarV2.streamState.' + state)
+}
 </script>
 
 <template>
@@ -382,17 +398,17 @@ onUnmounted(() => {
     <template #header>
       <div class="soar-v2-inspector-header">
         <div>
-          <strong>SOAR V2 · Run inspector</strong>
-          <span class="soar-v2-subtitle">durable projection · attempts · event stream · artifacts</span>
+          <strong>{{ t('soarV2.runInspectorTitle') }}</strong>
+          <span class="soar-v2-subtitle">{{ t('soarV2.runInspectorSubtitle') }}</span>
           <span v-if="!props.canWrite" class="soar-v2-readonly-note">{{ t('soarV2.readOnly') }}</span>
         </div>
         <div class="soar-v2-run-select">
-          <el-button v-if="props.canWrite" size="small" type="primary" plain @click="openQueueDialog">Queue run</el-button>
-          <select v-model="selectedRunId" aria-label="SOAR run">
-            <option value="">Select run</option>
-            <option v-for="item in runs" :key="item.runId" :value="item.runId">{{ item.runId }} · {{ item.status }}</option>
+          <el-button v-if="props.canWrite" size="small" type="primary" plain @click="openQueueDialog">{{ t('soarV2.queueRun') }}</el-button>
+          <select v-model="selectedRunId" :aria-label="t('soarV2.selectRun')">
+            <option value="">{{ t('soarV2.selectRun') }}</option>
+            <option v-for="item in runs" :key="item.runId" :value="item.runId">{{ item.runId }} · {{ statusLabel(item.status) }}</option>
           </select>
-          <el-button size="small" :loading="loading" @click="loadRuns">Refresh</el-button>
+          <el-button size="small" :loading="loading" @click="loadRuns">{{ t('common.refresh') }}</el-button>
         </div>
       </div>
     </template>
@@ -400,9 +416,9 @@ onUnmounted(() => {
     <div v-if="errorMessage" class="soar-v2-inspector-error" role="alert">{{ errorMessage }}</div>
     <template v-if="run">
       <div class="soar-v2-run-summary">
-        <el-tag size="small" :type="run.status === 'SUCCEEDED' ? 'success' : (['FAILED', 'ACTION_UNKNOWN', 'TIMED_OUT'].includes(run.status) ? 'danger' : 'warning')">{{ run.status }}</el-tag>
+        <el-tag size="small" :type="run.status === 'SUCCEEDED' ? 'success' : (['FAILED', 'ACTION_UNKNOWN', 'TIMED_OUT'].includes(run.status) ? 'danger' : 'warning')">{{ statusLabel(run.status) }}</el-tag>
         <span><b>{{ run.runId }}</b></span><span>v{{ run.playbookVersion }}</span><span>{{ run.triggerType }}</span>
-        <span class="soar-v2-stream-state" :class="streamState">● {{ streamState }}</span>
+        <span class="soar-v2-stream-state" :class="streamState">● {{ streamLabel(streamState) }}</span>
         <span class="soar-v2-toolbar-spacer" />
         <el-button
           size="small"
@@ -413,9 +429,9 @@ onUnmounted(() => {
           @click="openInEditor"
         >{{ t('soarV2.runHighlightOpen') }}</el-button>
         <template v-if="props.canWrite">
-          <el-button size="small" @click="cancel" :loading="controlBusy === 'cancel'" :disabled="Boolean(controlBusy) || ['SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'SUPPRESSED', 'DEAD', 'CANCELLING'].includes(run.status)">Cancel</el-button>
-          <el-button size="small" @click="retry" :loading="controlBusy === 'retry'" :disabled="Boolean(controlBusy) || !['FAILED', 'ACTION_UNKNOWN', 'TIMED_OUT', 'DEAD'].includes(run.status)">Retry</el-button>
-          <el-button size="small" type="warning" plain @click="rerun" :loading="controlBusy === 'rerun'" :disabled="Boolean(controlBusy)">Rerun</el-button>
+          <el-button size="small" @click="cancel" :loading="controlBusy === 'cancel'" :disabled="Boolean(controlBusy) || ['SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'SUPPRESSED', 'DEAD', 'CANCELLING'].includes(run.status)">{{ t('soarV2.cancelRun') }}</el-button>
+          <el-button size="small" @click="retry" :loading="controlBusy === 'retry'" :disabled="Boolean(controlBusy) || !['FAILED', 'ACTION_UNKNOWN', 'TIMED_OUT', 'DEAD'].includes(run.status)">{{ t('soarV2.retryRun') }}</el-button>
+          <el-button size="small" type="warning" plain @click="rerun" :loading="controlBusy === 'rerun'" :disabled="Boolean(controlBusy)">{{ t('soarV2.rerunRun') }}</el-button>
         </template>
       </div>
 
@@ -423,45 +439,45 @@ onUnmounted(() => {
 
       <div class="soar-v2-run-grid">
         <section class="soar-v2-run-panel">
-          <div class="soar-v2-panel-title">Node runs</div>
+          <div class="soar-v2-panel-title">{{ t('soarV2.nodeRuns') }}</div>
           <div class="soar-v2-table-scroll">
-            <table><thead><tr><th>Node</th><th>Type</th><th>Status</th><th>Iteration</th><th>Output</th></tr></thead>
+            <table><thead><tr><th>{{ t('soarV2.node') }}</th><th>{{ t('common.type') }}</th><th>{{ t('common.status') }}</th><th>{{ t('soarV2.iteration') }}</th><th>{{ t('soarV2.output') }}</th></tr></thead>
               <tbody><tr v-for="node in nodes" :key="node.id" :class="{ active: selectedNodeRunId === node.id }" @click="selectedNodeRunId = node.id">
-                <td><b>{{ node.nodeId }}</b><small>{{ node.id }}</small></td><td>{{ node.nodeType }}</td><td><el-tag size="small" :type="['FAILED', 'ACTION_UNKNOWN', 'UNKNOWN'].includes(node.status) ? 'danger' : (node.status === 'SUCCEEDED' ? 'success' : 'info')">{{ node.status }}</el-tag></td><td>{{ node.iterationPath || '-' }}</td><td class="mono">{{ json(node.output).slice(0, 180) }}</td>
+                <td><b>{{ node.nodeId }}</b><small>{{ node.id }}</small></td><td>{{ nodeTypeLabel(node.nodeType) }}</td><td><el-tag size="small" :type="['FAILED', 'ACTION_UNKNOWN', 'UNKNOWN'].includes(node.status) ? 'danger' : (node.status === 'SUCCEEDED' ? 'success' : 'info')">{{ statusLabel(node.status) }}</el-tag></td><td>{{ node.iterationPath || '-' }}</td><td class="mono">{{ json(node.output).slice(0, 180) }}</td>
               </tr></tbody>
             </table>
-            <div v-if="!nodes.length" class="soar-v2-empty">No node projection yet.</div>
+            <div v-if="!nodes.length" class="soar-v2-empty">{{ t('soarV2.noNodeProjection') }}</div>
           </div>
           <div v-if="unknownNodes.length" class="soar-v2-unknown-box">
-            <b>Unknown remote outcomes need evidence</b>
-            <div v-for="node in unknownNodes" :key="node.id" class="soar-v2-unknown-row"><span>{{ node.nodeId }}</span><el-button size="small" type="success" plain :loading="controlBusy === 'resolve'" :disabled="Boolean(controlBusy)" @click="resolveUnknown(node, 'CONFIRMED_SUCCEEDED')">Confirm succeeded</el-button><el-button size="small" type="warning" plain :loading="controlBusy === 'resolve'" :disabled="Boolean(controlBusy)" @click="resolveUnknown(node, 'CONFIRMED_NOT_EXECUTED')">Confirm not executed</el-button></div>
+            <b>{{ t('soarV2.unknownOutcome') }}</b>
+            <div v-for="node in unknownNodes" :key="node.id" class="soar-v2-unknown-row"><span>{{ node.nodeId }}</span><el-button size="small" type="success" plain :loading="controlBusy === 'resolve'" :disabled="Boolean(controlBusy)" @click="resolveUnknown(node, 'CONFIRMED_SUCCEEDED')">{{ t('soarV2.confirmSucceeded') }}</el-button><el-button size="small" type="warning" plain :loading="controlBusy === 'resolve'" :disabled="Boolean(controlBusy)" @click="resolveUnknown(node, 'CONFIRMED_NOT_EXECUTED')">{{ t('soarV2.confirmNotExecuted') }}</el-button></div>
           </div>
         </section>
 
         <section class="soar-v2-run-panel">
-          <div class="soar-v2-panel-title">Action attempts <span v-if="selectedNode">· {{ selectedNode.nodeId }}</span></div>
-          <div class="soar-v2-table-scroll"><table><thead><tr><th>#</th><th>Status</th><th>Remote receipt</th><th>Error</th></tr></thead><tbody><tr v-for="attempt in attempts" :key="attempt.id"><td>{{ attempt.attemptNo }}</td><td>{{ attempt.status }}</td><td class="mono">{{ attempt.remoteOperationId || json(attempt.receipt) || '-' }}</td><td>{{ attempt.errorCode || attempt.errorMessage || '-' }}</td></tr></tbody></table><div v-if="!attempts.length" class="soar-v2-empty">Select a node with action attempts.</div></div>
-          <div class="soar-v2-panel-title soar-v2-events-title">Event timeline · {{ events.length }} events</div>
-          <div class="soar-v2-event-list"><div v-for="event in [...events].reverse()" :key="event.id" class="soar-v2-event"><span class="soar-v2-event-seq">#{{ event.sequence }}</span><span><b>{{ event.eventType }}</b><small>{{ event.summary }}</small></span><time>{{ event.createdAt || '' }}</time></div><div v-if="!events.length" class="soar-v2-empty">No events yet.</div></div>
+          <div class="soar-v2-panel-title">{{ t('soarV2.actionAttempts') }} <span v-if="selectedNode">· {{ selectedNode.nodeId }}</span></div>
+          <div class="soar-v2-table-scroll"><table><thead><tr><th>#</th><th>{{ t('common.status') }}</th><th>{{ t('soarV2.remoteReceipt') }}</th><th>{{ t('common.error') }}</th></tr></thead><tbody><tr v-for="attempt in attempts" :key="attempt.id"><td>{{ attempt.attemptNo }}</td><td>{{ statusLabel(attempt.status) }}</td><td class="mono">{{ attempt.remoteOperationId || json(attempt.receipt) || '-' }}</td><td>{{ attempt.errorCode || attempt.errorMessage || '-' }}</td></tr></tbody></table><div v-if="!attempts.length" class="soar-v2-empty">{{ t('soarV2.noActionAttempts') }}</div></div>
+          <div class="soar-v2-panel-title soar-v2-events-title">{{ t('soarV2.eventTimeline') }} · {{ events.length }} {{ t('common.itemsSuffix') || 'events' }}</div>
+          <div class="soar-v2-event-list"><div v-for="event in [...events].reverse()" :key="event.id" class="soar-v2-event"><span class="soar-v2-event-seq">#{{ event.sequence }}</span><span><b>{{ event.eventType }}</b><small>{{ event.summary }}</small></span><time>{{ event.createdAt || '' }}</time></div><div v-if="!events.length" class="soar-v2-empty">{{ t('soarV2.noEvents') }}</div></div>
         </section>
 
         <section class="soar-v2-run-panel">
-          <div class="soar-v2-panel-title">Artifacts · {{ artifacts.length }}</div>
-          <div v-for="artifact in artifacts" :key="artifact.id" class="soar-v2-artifact"><div><b>{{ artifact.mediaType }}</b><small>{{ artifact.sizeBytes }} bytes · {{ artifact.classification }}</small></div><el-button link size="small" @click="viewArtifact(artifact)">Download</el-button></div>
-          <div v-if="!artifacts.length" class="soar-v2-empty">No artifacts attached.</div>
-          <div class="soar-v2-panel-title soar-v2-events-title">Projection metadata</div>
-          <dl class="soar-v2-metadata"><dt>Request</dt><dd>{{ run.requestId }}</dd><dt>Workflow</dt><dd>{{ run.temporalWorkflowId || '-' }}</dd><dt>Definition</dt><dd class="mono">{{ run.definitionHash }}</dd><dt>Events after</dt><dd>{{ lastSequence }}</dd></dl>
+          <div class="soar-v2-panel-title">{{ t('soarV2.artifacts') }} · {{ artifacts.length }}</div>
+          <div v-for="artifact in artifacts" :key="artifact.id" class="soar-v2-artifact"><div><b>{{ artifact.mediaType }}</b><small>{{ artifact.sizeBytes }} {{ t('soarV2.bytes') }} · {{ artifact.classification }}</small></div><el-button link size="small" @click="viewArtifact(artifact)">{{ t('soarV2.download') }}</el-button></div>
+          <div v-if="!artifacts.length" class="soar-v2-empty">{{ t('soarV2.noArtifacts') }}</div>
+          <div class="soar-v2-panel-title soar-v2-events-title">{{ t('soarV2.projectionMetadata') }}</div>
+          <dl class="soar-v2-metadata"><dt>{{ t('soarV2.request') }}</dt><dd>{{ run.requestId }}</dd><dt>{{ t('soarV2.workflow') }}</dt><dd>{{ run.temporalWorkflowId || '-' }}</dd><dt>{{ t('soarV2.definition') }}</dt><dd class="mono">{{ run.definitionHash }}</dd><dt>{{ t('soarV2.eventsAfter') }}</dt><dd>{{ lastSequence }}</dd></dl>
         </section>
       </div>
     </template>
-    <div v-else class="soar-v2-empty soar-v2-no-run">No V2 run selected. Queue a published version to inspect its durable execution.</div>
+    <div v-else class="soar-v2-empty soar-v2-no-run">{{ t('soarV2.noRunSelected') }}</div>
     <div v-if="queueMessage" class="soar-v2-queue-message" role="status">{{ queueMessage }}</div>
 
-    <el-dialog v-if="props.canWrite" v-model="queueDialogVisible" title="Queue a published SOAR run" width="560px">
-      <p class="soar-v2-dialog-hint">Queueing creates a durable asynchronous run. It never executes a draft; review the immutable version and input before accepting.</p>
+    <el-dialog v-if="props.canWrite" v-model="queueDialogVisible" :title="t('soarV2.queuePublishedRun')" width="560px">
+      <p class="soar-v2-dialog-hint">{{ t('soarV2.queueHint') }}</p>
       <el-form label-position="top">
-        <el-form-item label="Published playbook version" required>
-          <el-select v-model="queueForm.playbookVersionId" filterable :loading="publishedVersions.length === 0 && !queueError" placeholder="Select a published version" style="width: 100%">
+        <el-form-item :label="t('soarV2.publishedPlaybookVersion')" required>
+          <el-select v-model="queueForm.playbookVersionId" filterable :loading="publishedVersions.length === 0 && !queueError" :placeholder="t('soarV2.selectPublishedVersion')" style="width: 100%">
             <el-option
               v-for="item in publishedVersions"
               :key="item.version.id"
@@ -473,20 +489,20 @@ onUnmounted(() => {
             </el-option>
           </el-select>
         </el-form-item>
-        <el-form-item label="Request ID" required>
+        <el-form-item :label="t('soarV2.requestId')" required>
           <el-input v-model="queueForm.requestId" maxlength="128" show-word-limit />
         </el-form-item>
-        <el-form-item label="Subject JSON">
+        <el-form-item :label="t('soarV2.subjectJson')">
           <el-input v-model="queueForm.subject" type="textarea" :rows="3" spellcheck="false" />
         </el-form-item>
-        <el-form-item label="Inputs JSON" required>
+        <el-form-item :label="t('soarV2.inputsJson')" required>
           <el-input v-model="queueForm.inputs" type="textarea" :rows="5" spellcheck="false" />
         </el-form-item>
       </el-form>
       <div v-if="queueError" class="soar-v2-inspector-error" role="alert">{{ queueError }}</div>
       <template #footer>
-        <el-button @click="queueDialogVisible = false">Cancel</el-button>
-        <el-button type="primary" :loading="queueLoading" :disabled="!publishedVersions.length" @click="submitQueue">Accept and queue</el-button>
+        <el-button @click="queueDialogVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="queueLoading" :disabled="!publishedVersions.length" @click="submitQueue">{{ t('soarV2.acceptAndQueue') }}</el-button>
       </template>
     </el-dialog>
   </el-card>

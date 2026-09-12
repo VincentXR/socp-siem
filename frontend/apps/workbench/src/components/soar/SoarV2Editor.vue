@@ -164,7 +164,7 @@ watch(() => flow.dirty.value, (dirty) => {
 
 function discardGuard(): boolean {
   if (!flow.dirty.value) return true
-  return window.confirm('Discard unsaved changes?')
+  return window.confirm(t('forms.unsaved'))
 }
 
 /* ---------------- playbook/version API (unchanged clients) ---------------- */
@@ -183,7 +183,7 @@ async function loadCatalog() {
     if (wanted) await loadVersions()
     else flow.resetToEmpty()
   } catch (failure) {
-    errorMessage.value = failure instanceof Error ? failure.message : 'Unable to load SOAR V2 playbooks'
+    errorMessage.value = failure instanceof Error ? failure.message : t('soarV2.unableLoadPlaybooks')
   } finally {
     loading.value = false
   }
@@ -211,9 +211,9 @@ async function loadVersion(versionNo = selectedVersionNo.value ?? 0) {
     flow.applyDefinition(result.definition, result.layout)
     validation.value = null
     dryRunResult.value = null
-    message.value = `Loaded v${result.version}`
+    message.value = t('soarV2.loadedVersion', { version: result.version })
   } catch (failure) {
-    errorMessage.value = failure instanceof Error ? failure.message : 'Unable to load playbook version'
+    errorMessage.value = failure instanceof Error ? failure.message : t('soarV2.unableLoadVersion')
   } finally {
     loading.value = false
   }
@@ -256,14 +256,14 @@ async function handleOpenRunRequest(request: RunOpenRequest): Promise<void> {
     if (handledOpenRunToken.value !== request.token) return
     if (selectedVersionNo.value !== request.version) {
       handledOpenRunToken.value = ''
-      errorMessage.value = `Run version v${request.version} is not available for ${request.playbookId}`
+      errorMessage.value = t('soarV2.runVersionUnavailable', { version: request.version, playbookId: request.playbookId })
       return
     }
     flow.applyRunHighlights(request.rows)
-    message.value = `Loaded run path v${request.version}`
+    message.value = t('soarV2.loadedRunPath', { version: request.version })
   } catch (failure) {
     handledOpenRunToken.value = ''
-    errorMessage.value = failure instanceof Error ? failure.message : 'Unable to open run in the editor'
+    errorMessage.value = failure instanceof Error ? failure.message : t('soarV2.unableOpenRunInEditor')
   } finally {
     loading.value = false
   }
@@ -321,9 +321,9 @@ async function createVersion() {
     rowVersion.value = result.rowVersion
     flow.applyDefinition(result.definition)
     validation.value = null
-    message.value = `Created draft v${result.version}`
+    message.value = t('soarV2.versionCreated', { version: result.version })
   } catch (failure) {
-    errorMessage.value = failure instanceof Error ? failure.message : 'Unable to create version'
+    errorMessage.value = failure instanceof Error ? failure.message : t('soarV2.unableCreateVersion')
   } finally {
     loading.value = false
   }
@@ -344,9 +344,10 @@ function applyDefinitionJson() {
     syncDefinitionText()
     validation.value = null
     errorMessage.value = ''
-    message.value = 'Definition applied to the editor'
+    message.value = t('soarV2.definitionApplied')
   } catch (failure) {
-    errorMessage.value = `Definition JSON is invalid: ${failure instanceof Error ? failure.message : 'invalid JSON'}`
+    const detail = failure instanceof Error ? failure.message : t('soarV2.invalidJson')
+    errorMessage.value = `${t('soarV2.definitionInvalid')}: ${detail}`
   }
 }
 
@@ -363,10 +364,10 @@ async function save() {
     versions.value = versions.value.map(item => item.version === result.version ? result : item)
     flow.applyDefinition(result.definition, result.layout)
     validation.value = null
-    message.value = `Saved draft v${result.version}`
+    message.value = t('soarV2.draftSaved', { version: result.version })
     emit('saved', result)
   } catch (failure) {
-    errorMessage.value = failure instanceof Error ? failure.message : 'Unable to save draft'
+    errorMessage.value = failure instanceof Error ? failure.message : t('soarV2.unableSaveDraft')
   } finally {
     saving.value = false
   }
@@ -383,9 +384,9 @@ async function validate() {
     ]
     flow.applyIssues(issues)
     errorMessage.value = ''
-    message.value = result.valid ? 'Definition is publishable' : 'Definition needs attention'
+    message.value = result.valid ? t('soarV2.definitionPublishable') : t('soarV2.definitionNeedsAttention')
   } catch (failure) {
-    errorMessage.value = failure instanceof Error ? failure.message : 'Validation failed'
+    errorMessage.value = failure instanceof Error ? failure.message : t('soarV2.validationFailed')
   }
 }
 
@@ -396,7 +397,8 @@ async function dryRun() {
     dryRunResult.value = await dryRunV2Version(selectedPlaybookId.value, selectedVersionNo.value, contextSubject(), inputs) as JsonObject
     errorMessage.value = ''
   } catch (failure) {
-    errorMessage.value = `Dry-run failed: ${failure instanceof Error ? failure.message : 'invalid input'}`
+    const detail = failure instanceof Error ? failure.message : t('soarV2.invalidInput')
+    errorMessage.value = `${t('soarV2.dryRunFailed')}: ${detail}`
   }
 }
 
@@ -439,7 +441,7 @@ async function publish() {
     message.value = `Published v${result.version}`
     await loadVersions()
   } catch (failure) {
-    errorMessage.value = failure instanceof Error ? failure.message : 'Publish failed'
+    errorMessage.value = failure instanceof Error ? failure.message : t('soarV2.publishFailed')
   }
 }
 
@@ -516,6 +518,12 @@ function issueIsWarning(issue: ValidationIssue): boolean {
   return issue.severity === 'WARNING'
 }
 
+function statusLabel(status: string): string {
+  const key = 'soarV2.status.' + status
+  const translated = t(key)
+  return translated === key ? status : translated
+}
+
 watch(() => props.initialPlaybookId, (value) => {
   if (value && value !== selectedPlaybookId.value) {
     selectedPlaybookId.value = value
@@ -576,9 +584,9 @@ onUnmounted(() => {
         </div>
         <div class="soar-v2-editor-selects">
           <span>{{ playbooks.find(item => item.id === selectedPlaybookId)?.name || t('forms.blank') }}</span>
-          <el-select :model-value="selectedVersionNo" :disabled="loading" aria-label="Version" @change="changeVersion">
+          <el-select :model-value="selectedVersionNo" :disabled="loading" :aria-label="t('soarV2.version')" @change="changeVersion">
 
-            <el-option v-for="version in versions" :key="version.id" :value="version.version" :label="`v${version.version} · ${version.status}`" />
+            <el-option v-for="version in versions" :key="version.id" :value="version.version" :label="`v${version.version} · ${statusLabel(version.status)}`" />
           </el-select>
         </div>
       </div>
@@ -609,9 +617,9 @@ onUnmounted(() => {
         @click="flow.autoLayout()"
       >{{ t('soarV2.editorAutoLayout') }}</el-button>
       <span class="soar-v2-toolbar-spacer" />
-      <el-tag v-if="selectedVersion" size="small" :type="isDraft ? 'warning' : 'success'">v{{ selectedVersion.version }} · {{ selectedVersion.status }}</el-tag>
+      <el-tag v-if="selectedVersion" size="small" :type="isDraft ? 'warning' : 'success'">v{{ selectedVersion.version }} · {{ statusLabel(selectedVersion.status) }}</el-tag>
       <el-tag v-if="validation" size="small" :type="flow.validationStale.value ? 'info' : validation.valid ? 'success' : 'danger'">
-        {{ flow.validationStale.value ? 'OUTDATED' : validation.valid ? 'VALID' : 'INVALID' }}{{ issueCount ? ` · ${issueCount}` : '' }}
+        {{ flow.validationStale.value ? t('soarV2.validationOutdated') : validation.valid ? t('soarV2.validationValid') : t('soarV2.validationInvalid') }}{{ issueCount ? ` · ${issueCount}` : '' }}
       </el-tag>
       <el-button size="small" @click="validate" :disabled="!selectedVersionNo">{{ t('soarV2.validate') }}</el-button>
       <el-button size="small" @click="dryRun" :disabled="!selectedVersionNo">{{ t('soarV2.dryRun') }}</el-button>
@@ -633,7 +641,7 @@ onUnmounted(() => {
     <div class="soar-v2-editor-body">
       <SoarFlowPalette :flow="flow" :read-only="!props.canWrite" />
 
-      <section class="soar-v2-canvas-panel" aria-label="Playbook graph">
+      <section class="soar-v2-canvas-panel" :aria-label="t('soarV2.playbookGraph')">
         <div class="soar-v2-canvas" @dragover.prevent @drop="onCanvasDrop">
           <VueFlow
             id="soar-v2-flow"
@@ -666,9 +674,9 @@ onUnmounted(() => {
           </div>
         </div>
         <div class="soar-v2-canvas-footer">
-          <span>{{ flow.nodeCount.value }} nodes · {{ flow.edgeCount.value }} edges</span>
-          <span v-if="flowSelectionCount">{{ flowSelectionCount }} selected</span>
-          <el-button v-if="props.canWrite" size="small" type="danger" plain :disabled="!selectedRawNode || selectedRawNode.type === 'START'" @click="flow.removeSelected()">Remove selected</el-button>
+          <span>{{ flow.nodeCount.value }} {{ t('soarV2.nodes') }} · {{ flow.edgeCount.value }} {{ t('soarV2.edges') }}</span>
+          <span v-if="flowSelectionCount">{{ flowSelectionCount }} {{ t('soarV2.selected') }}</span>
+          <el-button v-if="props.canWrite" size="small" type="danger" plain :disabled="!selectedRawNode || selectedRawNode.type === 'START'" @click="flow.removeSelected()">{{ t('soarV2.removeSelected') }}</el-button>
         </div>
       </section>
 
@@ -688,21 +696,21 @@ onUnmounted(() => {
 
     <div class="soar-v2-editor-lower">
       <div class="soar-v2-json-panel">
-        <div class="soar-v2-panel-title">Definition JSON · advanced import/export</div>
-        <el-input type="textarea" v-model="definitionText" :rows="12" :readonly="!props.canWrite" spellcheck="false" aria-label="Definition JSON"  />
-        <el-button v-if="props.canWrite" size="small" @click="applyDefinitionJson">Apply JSON</el-button>
+        <div class="soar-v2-panel-title">{{ t('soarV2.definitionJson') }} · {{ t('soarV2.advancedImportExport') }}</div>
+        <el-input type="textarea" v-model="definitionText" :rows="12" :readonly="!props.canWrite" spellcheck="false" :aria-label="t('soarV2.definitionJson')"  />
+        <el-button v-if="props.canWrite" size="small" @click="applyDefinitionJson">{{ t('soarV2.applyJson') }}</el-button>
       </div>
       <div class="soar-v2-json-panel">
-        <div class="soar-v2-panel-title">Dry-run input</div>
-        <el-input type="textarea" v-model="dryRunText" :rows="5" spellcheck="false" aria-label="Dry-run input"  />
+        <div class="soar-v2-panel-title">{{ t('soarV2.dryRunInput') }}</div>
+        <el-input type="textarea" v-model="dryRunText" :rows="5" spellcheck="false" :aria-label="t('soarV2.dryRunInput')"  />
         <pre v-if="dryRunResult" class="soar-v2-result">{{ JSON.stringify(dryRunResult, null, 2) }}</pre>
       </div>
       <div v-if="validation" class="soar-v2-validation-panel">
-        <div class="soar-v2-panel-title">Validation result</div>
+        <div class="soar-v2-panel-title">{{ t('soarV2.validationResult') }}</div>
         <div v-for="issue in [...(validation.errors || []), ...(validation.warnings || [])]" :key="`${issue.code}-${issue.path}-${issue.message}`" class="soar-v2-issue" :class="{ warning: issueIsWarning(issue) }" role="button" tabindex="0" @click="onIssueClick(issue)" @keydown.enter="onIssueClick(issue)">
-          <b>{{ issue.code || 'ISSUE' }}</b><span>{{ issue.nodeId ? `${issue.nodeId} · ` : '' }}{{ issue.path || '' }}</span><p>{{ issue.message }}</p>
+          <b>{{ issue.code || t('soarV2.issue') }}</b><span>{{ issue.nodeId ? `${issue.nodeId} · ` : '' }}{{ issue.path || '' }}</span><p>{{ issue.message }}</p>
         </div>
-        <div v-if="validation.definitionHash" class="soar-v2-hash">definition hash: {{ validation.definitionHash }}</div>
+        <div v-if="validation.definitionHash" class="soar-v2-hash">{{ t('soarV2.definitionHash') }}: {{ validation.definitionHash }}</div>
       </div>
     </div>
   </el-card>

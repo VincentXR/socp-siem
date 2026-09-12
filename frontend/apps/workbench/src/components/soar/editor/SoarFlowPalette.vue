@@ -37,7 +37,7 @@ function onDragEnd(): void {
 </script>
 
 <template>
-  <aside class="soar-flow-palette" aria-label="Node palette">
+  <aside class="soar-flow-palette" :aria-label="t('soar.paletteTitle')">
     <div class="soar-v2-panel-title">{{ t('soar.paletteTitle') }}</div>
     <button
       v-for="item in items"

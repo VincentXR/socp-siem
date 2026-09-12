@@ -204,6 +204,12 @@ function runTag(status?: string): 'success' | 'warning' | 'danger' | 'info' | 'p
   return 'info'
 }
 
+function statusLabel(status: string): string {
+  const key = 'soarV2.status.' + status
+  const translated = t(key)
+  return translated === key ? status : translated
+}
+
 const v2StatusSummary = computed(() => {
   const summary: Record<string, number> = {}
   for (const run of v2Runs.value) summary[run.status] = (summary[run.status] || 0) + 1
@@ -262,7 +268,7 @@ onMounted(loadPlaybooks)
               </el-table-column>
               <el-table-column :label="t('common.status')" width="120">
                 <template #default="{ row }">
-                  <el-tag size="small" :type="row.status === 'ACTIVE' ? 'success' : row.status === 'ARCHIVED' ? 'info' : 'warning'">{{ row.status }}</el-tag>
+                  <el-tag size="small" :type="row.status === 'ACTIVE' ? 'success' : row.status === 'ARCHIVED' ? 'info' : 'warning'">{{ statusLabel(row.status) }}</el-tag>
                 </template>
               </el-table-column>
               <el-table-column :label="t('soarV2.versions')" width="150">
@@ -275,7 +281,7 @@ onMounted(loadPlaybooks)
               <el-table-column :label="t('soarV2.lastRun')" min-width="190">
                 <template #default="{ row }">
                   <template v-if="lastRun(row.id)">
-                    <el-tag size="small" :type="runTag(lastRun(row.id)?.status)">{{ lastRun(row.id)?.status }}</el-tag>
+                    <el-tag size="small" :type="runTag(lastRun(row.id)?.status)">{{ statusLabel(lastRun(row.id)?.status || '') }}</el-tag>
                     <small class="soar-version-note">{{ lastRun(row.id)?.createdAt || '—' }}</small>
                   </template>
                   <span v-else class="soar-text-muted">{{ t('soarV2.noRuns') }}</span>
@@ -325,15 +331,15 @@ onMounted(loadPlaybooks)
               </div>
             </template>
             <el-table :data="displayedApprovals" size="small" border class="soar-approval-table">
-              <el-table-column prop="runId" label="Run ID" min-width="180" show-overflow-tooltip />
-              <el-table-column prop="actionRef" label="Action" min-width="140" show-overflow-tooltip />
-              <el-table-column prop="reason" label="Reason" min-width="250" show-overflow-tooltip />
-              <el-table-column prop="status" label="Status" width="110">
+              <el-table-column prop="runId" :label="t('soar.runId')" min-width="180" show-overflow-tooltip />
+              <el-table-column prop="actionRef" :label="t('soar.action')" min-width="140" show-overflow-tooltip />
+              <el-table-column prop="reason" :label="t('soar.reason')" min-width="250" show-overflow-tooltip />
+              <el-table-column prop="status" :label="t('common.status')" width="110">
                 <template #default="{ row }">
-                  <el-tag size="small" :type="row.status === 'APPROVED' ? 'success' : row.status === 'REJECTED' ? 'danger' : 'warning'">{{ row.status }}</el-tag>
+                  <el-tag size="small" :type="row.status === 'APPROVED' ? 'success' : row.status === 'REJECTED' ? 'danger' : 'warning'">{{ statusLabel(row.status) }}</el-tag>
                 </template>
               </el-table-column>
-              <el-table-column prop="createdAt" label="Created At" width="180" />
+              <el-table-column prop="createdAt" :label="t('soar.createdAt')" width="180" />
               <el-table-column :label="t('common.actions')" width="160">
                 <template #default="{ row }">
                   <template v-if="row.status === 'PENDING'">
@@ -364,8 +370,8 @@ onMounted(loadPlaybooks)
     <!-- Approval Decision Dialog -->
     <el-dialog v-model="approvalModal.visible" :title="approvalModal.isApprove ? t('soar.approve') : t('soar.reject')" width="480px">
       <div class="soar-approval-dialog-body">
-        <p><strong>Run:</strong> {{ approvalModal.runId }}</p>
-        <p v-if="approvalModal.actionRef"><strong>Action:</strong> {{ approvalModal.actionRef }}</p>
+        <p><strong>{{ t('soar.runId') }}:</strong> {{ approvalModal.runId }}</p>
+        <p v-if="approvalModal.actionRef"><strong>{{ t('soar.action') }}:</strong> {{ approvalModal.actionRef }}</p>
         <el-form label-position="top">
           <el-form-item :label="t('soar.decisionReason')">
             <el-input v-model="approvalModal.reason" type="textarea" :rows="3" :placeholder="t('soarV2.decisionPlaceholder')" />

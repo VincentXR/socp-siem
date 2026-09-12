@@ -16,7 +16,13 @@ const title = computed(() => {
   const name = raw.value?.name
   return typeof name === 'string' && name.trim() ? name : String(raw.value?.id ?? '')
 })
-const typeLabel = computed(() => meta.value?.label ?? String(props.data?.nodeType ?? ''))
+const typeLabel = computed(() => {
+  const nodeType = String(props.data?.nodeType ?? '')
+  const labelKey = meta.value?.labelKey
+  if (!labelKey) return nodeType
+  const translated = t(labelKey)
+  return translated === labelKey ? (meta.value?.label ?? nodeType) : translated
+})
 
 const acceptsTarget = computed(() => Boolean(props.data?.acceptsTarget))
 
@@ -81,7 +87,14 @@ function portHandleId(port: PortSpec): string {
 }
 
 function portTitle(port: PortSpec): string {
-  return port.label || t('soar.port.default')
+  const translated = t(port.labelKey)
+  return translated === port.labelKey ? (port.label || t('soar.port.default')) : translated
+}
+
+function runStatusLabel(status: string): string {
+  const key = 'soarV2.status.' + status
+  const translated = t(key)
+  return translated === key ? status : translated
 }
 </script>
 
@@ -123,7 +136,7 @@ function portTitle(port: PortSpec): string {
         v-if="runStatus"
         class="soar-flow-node-run-chip"
         :title="runChipTitle"
-      >{{ runStatus }}</span>
+      >{{ runStatusLabel(runStatus) }}</span>
     </span>
     <span v-if="issueTotal" class="soar-flow-node-issue-badge" :class="{ warning: hasWarningsOnly }">{{ issueTotal }}</span>
     <strong>{{ title }}</strong>
