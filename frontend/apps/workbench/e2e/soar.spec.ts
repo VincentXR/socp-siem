@@ -239,7 +239,7 @@ test('SOAR workbench covers draft lifecycle, run inspection and human controls',
   const approvalTable = page.locator('.soar-approval-table')
   await expect(approvalTable).toContainText('run-1')
   await approvalTable.getByRole('button', { name: 'Approve' }).click()
-  const approvalDialog = page.locator('.el-dialog').filter({ hasText: 'Run: run-1' })
+  const approvalDialog = page.locator('.el-dialog').filter({ hasText: 'run-1' })
   await approvalDialog.locator('textarea').fill('Reviewed by browser test')
   await approvalDialog.getByRole('button', { name: 'Approve' }).click()
   await expect(approvalTable).not.toContainText('approval-1')
