@@ -45,11 +45,6 @@ def read(relative: str) -> str:
 def main() -> int:
     print("SOAR 2.0 contract gate")
 
-    design = read("docs/soar-2.0-design.md")
-    check("design document exists", len(design) > 20_000)
-    for heading in ("20.", "P0", "Temporal", "Connector", "17.", "23."):
-        check(f"design covers {heading}", heading in design)
-
     migration_dir = ROOT / "services/soar-web/src/main/resources/db/migration"
     migrations = sorted(migration_dir.glob("V*.sql"), key=lambda path: int(re.match(r"V(\d+)", path.name).group(1)))
     versions = [int(re.match(r"V(\d+)", path.name).group(1)) for path in migrations]

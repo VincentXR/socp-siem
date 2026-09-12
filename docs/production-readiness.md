@@ -70,8 +70,9 @@ Keep Maven/bounded-context boundaries for ownership and testing. The reviewed
 target is the six-unit contract in `build/runtime-topology.json`; it is not a
 claim that the current 15-process compatibility topology has already been
 collapsed. Keep Gateway, Search, Detection, Alert, and reporting/event
-consumers independently scalable. Promote an aggregate only after the ADR 0004
-context, transaction, failure, and capacity evidence passes. Size Kafka
+consumers independently scalable. Promote an aggregate only after the
+[ADR 007](adr/007-runtime-deployment-units.md) context, transaction, failure,
+and capacity evidence passes. Size Kafka
 partitions, PostgreSQL pools, ClickHouse parts, and OpenSearch shards from
 measured load; do not infer production capacity from the single-node benchmark.
 

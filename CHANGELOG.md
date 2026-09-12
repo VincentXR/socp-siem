@@ -43,6 +43,8 @@
 
 ### Verification and documentation
 
+- Added a categorized documentation index, removed one-off remediation ledgers,
+  and separated durable repository contracts from local work notes.
 - Added an Alert Web restart chaos scenario and an opt-in multi-instance
   partition ownership/rebalance scenario.
 - Refreshed architecture, state semantics, testing, validation, benchmark,

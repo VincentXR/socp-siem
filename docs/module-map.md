@@ -70,7 +70,8 @@ default service exactly once to one of six target units:
 Run `python build/runtime-topology.py --check` to verify that module, process,
 compatibility, and target-unit registries still agree.
 The six-unit shape remains a target contract until aggregate applications pass
-the context, API, failure, and capacity gates required by ADR 0004.
+the context, API, failure, and capacity gates required by
+[ADR 007](adr/007-runtime-deployment-units.md).
 
 ## Platform modules
 

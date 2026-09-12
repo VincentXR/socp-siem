@@ -1,5 +1,6 @@
 # ---- Maven / Java ----
 **/target/
+.m2/
 *.class
 *.jar
 *.war
@@ -29,6 +30,8 @@ frontend/.pnpm-store/
 *.mv.db
 .trace.db
 .cache/
+docs/_local/
+infra/docker-compose.override.yml
 *.pid
 
 # ---- 系统 ----

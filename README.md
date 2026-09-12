@@ -180,16 +180,11 @@ the aggregate applications have already replaced the current launchers.
 
 ## Documentation
 
+- [Documentation index](docs/README.md)
 - [Architecture](docs/architecture.md)
-- [Detection state semantics](docs/detection-state-semantics.md)
-- [Module map](docs/module-map.md)
 - [Getting started](docs/getting-started.md)
 - [Testing guide](docs/testing.md)
 - [Validation matrix](docs/validation-matrix.md)
-- [Benchmark guide](docs/benchmark/README.md)
-- [Chaos guide](docs/chaos/README.md)
-- [Golden Demo checklist](docs/demo-checklist.md)
-- [Architecture decision records](docs/adr/)
 
 ## License
 
