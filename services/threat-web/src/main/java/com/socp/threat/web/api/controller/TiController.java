@@ -1,6 +1,7 @@
 package com.socp.threat.web.api.controller;
 
 import com.socp.threat.web.api.request.IocImportRequest;
+import com.socp.threat.web.api.request.IocLifecycleRequest;
 import com.socp.threat.web.api.request.IocRequest;
 import com.socp.platform.audit.api.AuditOperation;
 import com.socp.platform.auth.security.RequireRole;
@@ -13,6 +14,8 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -54,6 +57,35 @@ public class TiController {
         Ioc ioc = Ioc.of(
                 body.type(), body.value(), body.severity(), body.source(), body.description(), body.tags());
         return store.add(ioc);
+    }
+
+    @RequireRole({"admin", "analyst"})
+    @AuditOperation(action = "UPDATE_IOC", target = "threat")
+    @PutMapping("/iocs/{id}")
+    public Ioc update(@PathVariable String id, @Valid @RequestBody IocRequest body) {
+        Ioc existing = store.get(id);
+        if (existing == null) throw new org.springframework.web.server.ResponseStatusException(
+                org.springframework.http.HttpStatus.NOT_FOUND, "IOC not found");
+        Ioc incoming = Ioc.of(body.type(), body.value(), body.severity(), body.source(), body.description(), body.tags());
+        Ioc updated = new Ioc(existing.id(), incoming.type(), incoming.value(), incoming.severity(), incoming.source(),
+                incoming.description(), incoming.tags(), existing.firstSeen(), existing.lastSeen(), existing.feed(),
+                existing.externalId(), existing.confidence(), existing.tlp(), existing.validFrom(), existing.validUntil(),
+                existing.expiration(), existing.revoked(), existing.provenance());
+        return store.add(updated);
+    }
+
+    @RequireRole({"admin", "analyst"})
+    @AuditOperation(action = "UPDATE_IOC_LIFECYCLE", target = "threat")
+    @PatchMapping("/iocs/{id}/lifecycle")
+    public Ioc lifecycle(@PathVariable String id, @Valid @RequestBody IocLifecycleRequest body) {
+        Ioc existing = store.get(id);
+        if (existing == null) throw new org.springframework.web.server.ResponseStatusException(
+                org.springframework.http.HttpStatus.NOT_FOUND, "IOC not found");
+        Ioc updated = new Ioc(existing.id(), existing.type(), existing.value(), existing.severity(), existing.source(),
+                existing.description(), existing.tags(), existing.firstSeen(), existing.lastSeen(), existing.feed(),
+                existing.externalId(), existing.confidence(), existing.tlp(), existing.validFrom(), existing.validUntil(),
+                existing.expiration(), body.revoked(), existing.provenance());
+        return store.add(updated);
     }
 
     /** 批量导入 IOC：单条格式错误不会阻断同一批次的其他指标。 */

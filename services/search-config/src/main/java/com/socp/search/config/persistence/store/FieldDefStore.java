@@ -57,6 +57,10 @@ public class FieldDefStore {
         return catalog.list();
     }
 
+    public FieldDef get(String id) {
+        return catalog.get(id);
+    }
+
     public FieldDef save(FieldDef f) {
         if (seeding) {
             catalog.registerTemplate(f);

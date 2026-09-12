@@ -98,6 +98,11 @@ public class IocStore {
         return all.stream().filter(i -> i.type().equalsIgnoreCase(type)).toList();
     }
 
+    public Ioc get(String id) {
+        if (id == null || id.isBlank()) return null;
+        return repo.findByIdAndTenantId(id, tenant()).map(IocStore::fromEntity).orElse(null);
+    }
+
     public boolean delete(String id) {
         var entity = repo.findByIdAndTenantId(id, tenant());
         if (entity.isEmpty()) return false;

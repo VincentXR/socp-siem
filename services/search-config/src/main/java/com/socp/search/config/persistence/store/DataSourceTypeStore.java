@@ -52,6 +52,10 @@ public class DataSourceTypeStore {
         return catalog.list();
     }
 
+    public DataSourceType get(String id) {
+        return catalog.get(id);
+    }
+
     public DataSourceType save(DataSourceType t) {
         if (seeding) {
             catalog.registerTemplate(t);

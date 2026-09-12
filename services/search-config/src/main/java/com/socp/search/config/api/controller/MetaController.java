@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -55,6 +56,15 @@ public class MetaController {
     }
 
     @RequireRole({"admin", "analyst"})
+    @PutMapping("/data-source-types/{id}")
+    public DataSourceType updateDataSourceType(@PathVariable String id, @Valid @RequestBody DataSourceTypeRequest body) {
+        DataSourceType existing = dsStore.get(id);
+        if (existing == null) throw new org.springframework.web.server.ResponseStatusException(
+                org.springframework.http.HttpStatus.NOT_FOUND, "data source type not found");
+        return dsStore.save(new DataSourceType(id, body.code(), body.name(), body.description(), body.enabled(), existing.createdAt()));
+    }
+
+    @RequireRole({"admin", "analyst"})
     @DeleteMapping("/data-source-types/{id}")
     public Map<String, Object> deleteDataSourceType(@PathVariable String id) {
         return Map.of("removed", dsStore.delete(id));
@@ -74,6 +84,15 @@ public class MetaController {
     }
 
     @RequireRole({"admin", "analyst"})
+    @PutMapping("/categories/{id}")
+    public LogCategory updateCategory(@PathVariable String id, @Valid @RequestBody LogCategoryRequest body) {
+        LogCategory existing = catStore.get(id);
+        if (existing == null) throw new org.springframework.web.server.ResponseStatusException(
+                org.springframework.http.HttpStatus.NOT_FOUND, "log category not found");
+        return catStore.save(new LogCategory(id, body.code(), body.name(), body.description(), body.defaultSeverity(), body.enabled(), existing.createdAt()));
+    }
+
+    @RequireRole({"admin", "analyst"})
     @DeleteMapping("/categories/{id}")
     public Map<String, Object> deleteCategory(@PathVariable String id) {
         return Map.of("removed", catStore.delete(id));
@@ -90,6 +109,16 @@ public class MetaController {
     @PostMapping("/fields")
     public FieldDef createField(@Valid @RequestBody FieldDefRequest f) {
         return fieldStore.save(f.toDomain());
+    }
+
+    @RequireRole({"admin", "analyst"})
+    @PutMapping("/fields/{id}")
+    public FieldDef updateField(@PathVariable String id, @Valid @RequestBody FieldDefRequest body) {
+        FieldDef existing = fieldStore.get(id);
+        if (existing == null) throw new org.springframework.web.server.ResponseStatusException(
+                org.springframework.http.HttpStatus.NOT_FOUND, "field not found");
+        return fieldStore.save(new FieldDef(id, body.fieldName(), body.fieldLabel(), body.fieldType(), body.source(),
+                body.searchable(), body.aggregatable(), body.stored(), body.description(), existing.createdAt()));
     }
 
     @RequireRole({"admin", "analyst"})

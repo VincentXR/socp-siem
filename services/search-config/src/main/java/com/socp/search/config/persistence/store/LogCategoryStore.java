@@ -46,6 +46,10 @@ public class LogCategoryStore {
         return catalog.list();
     }
 
+    public LogCategory get(String id) {
+        return catalog.get(id);
+    }
+
     public LogCategory save(LogCategory c) {
         if (seeding) {
             catalog.registerTemplate(c);
