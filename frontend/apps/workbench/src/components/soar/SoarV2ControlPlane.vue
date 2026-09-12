@@ -131,6 +131,7 @@ const suppressionSettings = computed<Record<string, unknown>>(() => {
   try { return parseJson(ruleForm.suppression) as Record<string, unknown> } catch { return {} }
 })
 function updateSuppression(key: string, value: unknown) {
+  if (!props.canWrite) return
   try { ruleForm.suppression = JSON.stringify({ ...parseJson(ruleForm.suppression) as Record<string, unknown>, [key]: value }, null, 2) }
   catch (failure) { errorMessage.value = failureText(failure) }
 }
@@ -196,6 +197,7 @@ function syncRuleConditionRows(): void {
 }
 
 function commitRuleConditionRows(rows: RuleCondition[]): void {
+  if (!props.canWrite) return
   ruleConditionRows.value = rows.map(row => ({ ...row }))
   const existing = parseJson(ruleForm.conditions) as Record<string, unknown>
   const advanced = Object.fromEntries(Object.entries(existing).filter(([, value]) => typeof value !== 'string'))
@@ -268,7 +270,7 @@ function openTask(task: SoarV2ManualTask) {
 }
 
 async function testRules() {
-  if (saving.value) return
+  if (!props.canWrite || saving.value) return
   saving.value = true
   try {
   clearFeedback()
@@ -418,8 +420,8 @@ onMounted(() => { void load() })
           <small v-if="versionOptionsError" class="soar-v2-field-warning">{{ versionOptionsError }}</small>
         </label>
         <div class="soar-v2-condition-builder">
-          <FieldConditionBuilder :model-value="ruleConditionRows" :fields="automationFields" title="Conditions" add-label="Add condition" empty-hint="No simple conditions; use advanced JSON for nested logic." field-placeholder="Select event field" value-placeholder="Expected value" @update:model-value="commitRuleConditionRows" />
-          <details class="soar-v2-inline-details"><summary>Advanced conditions JSON</summary><el-input type="textarea" v-model="ruleForm.conditions" :rows="3" spellcheck="false"  /></details>
+          <FieldConditionBuilder :model-value="ruleConditionRows" :read-only="!props.canWrite" :fields="automationFields" title="Conditions" add-label="Add condition" empty-hint="No simple conditions; use advanced JSON for nested logic." field-placeholder="Select event field" value-placeholder="Expected value" @update:model-value="commitRuleConditionRows" />
+          <details class="soar-v2-inline-details"><summary>Advanced conditions JSON</summary><el-input type="textarea" v-model="ruleForm.conditions" :readonly="!props.canWrite" :rows="3" spellcheck="false"  /></details>
         </div>
         <label>{{ t('forms.dedupWindow') }}<el-input-number :model-value="suppressionSettings.dedupWindowSeconds as number | undefined" :min="0" @change="value => updateSuppression('dedupWindowSeconds', value)" /></label>
         <label>{{ t('forms.conflictStrategy') }}<el-select :model-value="suppressionSettings.conflictStrategy as string | undefined" @change="value => updateSuppression('conflictStrategy', value)"><el-option v-for="strategy in ['QUEUE', 'SUPPRESS']" :key="strategy" :value="strategy" :label="strategy" /></el-select></label>
