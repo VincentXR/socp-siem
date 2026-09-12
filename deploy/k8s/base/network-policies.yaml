@@ -35,6 +35,27 @@ spec:
           port: 6379
         - protocol: TCP
           port: 8080
+        - protocol: TCP
+          port: 8123
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: socp-service-ingress
+  namespace: socp-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: socp-siem
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: socp-siem
+      ports:
+        - protocol: TCP
+          port: 8080
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
