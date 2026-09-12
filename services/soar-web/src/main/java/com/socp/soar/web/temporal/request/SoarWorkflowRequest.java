@@ -1,0 +1,91 @@
+package com.socp.soar.web.temporal.request;
+
+/** Immutable payload used to start a SOAR workflow. */
+public record SoarWorkflowRequest(
+        String tenantId,
+        String runId,
+        String versionId,
+        String definitionJson,
+        String inputJson,
+        String executionSeriesId,
+        String resumeFromNodeId,
+        boolean topLevelProjection,
+        String initialIterationPath,
+        String stopAtNodeId,
+        /** Root run-wide node budget. Zero keeps old wire/test payloads compatible. */
+        int executionBudgetLimit,
+        /** Number of SUB_PLAYBOOK edges traversed before this workflow. */
+        int playbookDepth
+) {
+    /** Backward-compatible wire constructor used by existing dispatch callers. */
+    public SoarWorkflowRequest(String tenantId, String runId, String versionId,
+                                 String definitionJson, String inputJson,
+                                 String executionSeriesId, String resumeFromNodeId,
+                                 boolean topLevelProjection) {
+        this(tenantId, runId, versionId, definitionJson, inputJson, executionSeriesId,
+                resumeFromNodeId, topLevelProjection, "", null, 0, 0);
+    }
+
+    public SoarWorkflowRequest(String tenantId, String runId, String versionId,
+                                 String definitionJson, String inputJson) {
+        this(tenantId, runId, versionId, definitionJson, inputJson, runId, null,
+                true, "", null, 0, 0);
+    }
+
+    public SoarWorkflowRequest(String tenantId, String runId, String versionId, String definitionJson,
+                                 String inputJson, String executionSeriesId, String resumeFromNodeId) {
+        this(tenantId, runId, versionId, definitionJson, inputJson, executionSeriesId,
+                resumeFromNodeId, true, "", null, 0, 0);
+    }
+
+    /** Sub-playbook children share the parent run projection and must not complete it. */
+    public static SoarWorkflowRequest childOf(SoarWorkflowRequest parent, String definitionJson) {
+        return childOf(parent, definitionJson, "{}");
+    }
+
+    /**
+     * Build a child request with an immutable snapshot of the parent's
+     * variables.  Child workflows are separate Temporal histories, so they
+     * cannot read the parent's in-memory state implicitly.  Keeping this
+     * payload explicit also makes replay and redaction rules auditable.
+     */
+    public static SoarWorkflowRequest childOf(SoarWorkflowRequest parent,
+                                                String definitionJson,
+                                                String inputJson) {
+        return childOf(parent, definitionJson, inputJson, "");
+    }
+
+    /**
+     * Child projection path prevents node-id collisions when a nested
+     * playbook reuses IDs from its parent.  The path is observability-only;
+     * tenant/run identity remains inherited from the parent request.
+     */
+    public static SoarWorkflowRequest childOf(SoarWorkflowRequest parent,
+                                                String definitionJson,
+                                                String inputJson,
+                                                String iterationPath) {
+        return new SoarWorkflowRequest(parent.tenantId(), parent.runId(), parent.versionId(),
+                definitionJson, inputJson == null ? "{}" : inputJson,
+                parent.executionSeriesId(), null, false,
+                iterationPath == null ? "" : iterationPath, null,
+                parent.executionBudgetLimit(), parent.playbookDepth() + 1);
+    }
+
+    /**
+     * Build a deterministic child request for one parallel/foreach branch.
+     * Branches use the same run projection and execution series but carry an
+     * immutable copy of the parent variables and stop before the converge node.
+     */
+    public static SoarWorkflowRequest branchOf(SoarWorkflowRequest parent,
+                                                 String definitionJson,
+                                                 String inputJson,
+                                                 String resumeFromNodeId,
+                                                 String iterationPath,
+                                                 String stopAtNodeId) {
+        return new SoarWorkflowRequest(parent.tenantId(), parent.runId(), parent.versionId(),
+                definitionJson, inputJson == null ? "{}" : inputJson,
+                parent.executionSeriesId(), resumeFromNodeId, false,
+                iterationPath == null ? "" : iterationPath, stopAtNodeId,
+                parent.executionBudgetLimit(), parent.playbookDepth());
+    }
+}

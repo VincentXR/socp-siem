@@ -3,7 +3,7 @@ package com.socp.soar.web.api.controller;
 import com.socp.soar.web.config.SoarRuntimeProperties;
 import com.socp.soar.web.connector.SecretResolver;
 import com.socp.soar.web.connector.SoarConnectorRegistry;
-import com.socp.soar.web.service.SoarV2Service;
+import com.socp.soar.web.service.SoarService;
 import com.socp.soar.web.service.TemporalExecutor;
 import com.socp.platform.error.api.ApiResult;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -21,7 +21,7 @@ public class HealthController {
     private final SoarRuntimeProperties properties;
     private final ObjectProvider<HealthEndpoint> healthEndpoint;
     private final ObjectProvider<TemporalExecutor> temporal;
-    private final ObjectProvider<SoarV2Service> soar;
+    private final ObjectProvider<SoarService> soar;
     private final ObjectProvider<SoarConnectorRegistry> connectors;
     private final ObjectProvider<SecretResolver> secrets;
 
@@ -31,7 +31,7 @@ public class HealthController {
 
     public HealthController(SoarRuntimeProperties properties, ObjectProvider<HealthEndpoint> healthEndpoint,
                              ObjectProvider<TemporalExecutor> temporal,
-                             ObjectProvider<SoarV2Service> soar,
+                             ObjectProvider<SoarService> soar,
                              ObjectProvider<SoarConnectorRegistry> connectors) {
         this(properties, healthEndpoint, temporal, soar, connectors, null);
     }
@@ -39,7 +39,7 @@ public class HealthController {
     @org.springframework.beans.factory.annotation.Autowired
     public HealthController(SoarRuntimeProperties properties, ObjectProvider<HealthEndpoint> healthEndpoint,
                              ObjectProvider<TemporalExecutor> temporal,
-                             ObjectProvider<SoarV2Service> soar,
+                             ObjectProvider<SoarService> soar,
                              ObjectProvider<SoarConnectorRegistry> connectors,
                              ObjectProvider<SecretResolver> secrets) {
         this.properties = properties;

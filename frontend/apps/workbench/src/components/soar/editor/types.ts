@@ -1,5 +1,5 @@
 /**
- * Canonical types for the SOAR V2 definition <-> Vue Flow mapping.
+ * Canonical types for the SOAR definition <-> Vue Flow mapping.
  *
  * The definition object is the single source of truth; the Vue Flow layer is a
  * derived view. Raw node/edge JSON is carried by identity on the Vue Flow
@@ -72,7 +72,7 @@ export interface EditorEdge extends Record<string, unknown> {
   when?: string
 }
 
-/** Raw definition document (`schemaVersion: 'soar.playbook/v2'`). */
+/** Raw definition document (`schemaVersion: 'soar.playbook'`). */
 export interface EditorDefinition extends Record<string, unknown> {
   schemaVersion: string
   entryNodeId: string

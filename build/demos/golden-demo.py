@@ -46,6 +46,17 @@ COLLECTOR = COLLECTOR or "golden-demo"
 INGEST_TOKEN = COLLECTOR_TOKEN or os.environ.get("SOCP_INGEST_TOKEN", VECTOR_TOKEN).strip()
 DEMO_CHANNEL = "SOCP Golden Demo (logged)"
 TIMEOUT = float(os.environ.get("GOLDEN_DEMO_TIMEOUT", "90"))
+DEMO_PLAYBOOK_NAME = "SOCP Golden Demo Response"
+DEMO_RULE_NAME = "SOCP Golden Demo Automation"
+DEMO_PLAYBOOK_DEFINITION = {
+    "schemaVersion": "soar.playbook",
+    "entryNodeId": "start",
+    "nodes": [
+        {"id": "start", "type": "START", "name": "Start"},
+        {"id": "end", "type": "END", "name": "End", "outcome": "SUCCEEDED"},
+    ],
+    "edges": [{"from": "start", "to": "end"}],
+}
 
 SERVICES = {
     "search": "search-config",
@@ -221,30 +232,135 @@ def detection_ready(token):
     return data if status == 200 and partitions else None
 
 
+def page_items(value):
+    data = unwrap(value)
+    if isinstance(data, dict):
+        items = data.get("items", [])
+        return items if isinstance(items, list) else []
+    return data if isinstance(data, list) else []
+
+
 def ensure_playbook(token):
-    status, result, _ = request("soar", "/api/v1/playbooks", token=token)
-    items = result if isinstance(result, list) else unwrap(result)
-    items = items if isinstance(items, list) else []
-    name = "SOCP Golden Demo Response"
-    existing = next((item for item in items if item.get("name") == name), None)
+    status, result, _ = request("soar", "/api/playbooks?page=0&size=100", token=token)
+    if status != 200:
+        raise RuntimeError(f"读取 SOAR Demo 剧本失败 status={status} body={result}")
+    existing = next((item for item in page_items(result) if item.get("name") == DEMO_PLAYBOOK_NAME), None)
     if existing:
-        if not existing.get("enabled", True):
-            request("soar", f"/api/v1/playbooks/{existing.get('id')}/toggle", token=token)
-        return existing
-    status, result, _ = request(
-        "soar",
-        "/api/v1/playbooks",
-        token=token,
-        body={
-            "name": name,
-            "trigger": "AUTH-BRUTE-SUCCESS",
-            "actions": ["notify"],
-            "enabled": True,
+        playbook_id = existing.get("id")
+        if existing.get("status") == "ARCHIVED":
+            status, result, _ = request(
+                "soar", f"/api/playbooks/{playbook_id}", token=token,
+                method="PATCH", body={"status": "ACTIVE"},
+            )
+            if status != 200:
+                raise RuntimeError(f"恢复 SOAR Demo 剧本失败 status={status} body={result}")
+    else:
+        status, result, _ = request(
+            "soar", "/api/playbooks/import", token=token,
+            body={
+                "name": DEMO_PLAYBOOK_NAME,
+                "description": "Golden Demo response path; no external connector side effect.",
+                "tags": ["demo", "golden-path"],
+                "definition": DEMO_PLAYBOOK_DEFINITION,
+                "layout": {},
+            },
+        )
+        created = unwrap(result)
+        if status not in (200, 201) or not isinstance(created, dict):
+            raise RuntimeError(f"创建 SOAR Demo 剧本失败 status={status} body={result}")
+        playbook_id = created.get("playbookId")
+    if not playbook_id:
+        raise RuntimeError("SOAR Demo 剧本响应缺少 playbookId")
+
+    status, result, _ = request("soar", f"/api/playbooks/{playbook_id}/versions", token=token)
+    if status != 200:
+        raise RuntimeError(f"读取 SOAR Demo 版本失败 status={status} body={result}")
+    versions = page_items(result)
+    published = next((item for item in versions if item.get("status") == "PUBLISHED"), None)
+    if published is None:
+        draft = next((item for item in versions if item.get("status") == "DRAFT"), None)
+        if draft is None:
+            status, result, _ = request(
+                "soar", f"/api/playbooks/{playbook_id}/versions", token=token,
+                method="POST",
+            )
+            draft = unwrap(result)
+        if not isinstance(draft, dict) or not draft.get("id"):
+            raise RuntimeError(f"SOAR Demo 草稿响应无效 status={status} body={result}")
+        version_no = int(draft.get("version", 1))
+        status, result, _ = request(
+            "soar", f"/api/playbooks/{playbook_id}/versions/{version_no}",
+            token=token, method="PUT",
+            body={
+                "definition": DEMO_PLAYBOOK_DEFINITION,
+                "layout": {},
+                "rowVersion": draft.get("rowVersion"),
+            },
+        )
+        if status != 200:
+            raise RuntimeError(f"保存 SOAR Demo 草稿失败 status={status} body={result}")
+        status, result, _ = request(
+            "soar", f"/api/playbooks/{playbook_id}/versions/{version_no}/validate",
+            token=token, method="POST",
+        )
+        validation = unwrap(result)
+        if status != 200 or not isinstance(validation, dict) or not validation.get("valid"):
+            raise RuntimeError(f"校验 SOAR Demo 草稿失败 status={status} body={result}")
+        status, result, _ = request(
+            "soar", f"/api/playbooks/{playbook_id}/versions/{version_no}/publish",
+            token=token, method="POST",
+        )
+        published = unwrap(result)
+        if status != 200 or not isinstance(published, dict) or published.get("status") != "PUBLISHED":
+            raise RuntimeError(f"发布 SOAR Demo 版本失败 status={status} body={result}")
+
+    status, result, _ = request("soar", f"/api/playbooks/{playbook_id}", token=token)
+    playbook = unwrap(result)
+    if not isinstance(playbook, dict):
+        playbook = {"id": playbook_id, "name": DEMO_PLAYBOOK_NAME}
+    playbook["_publishedVersionId"] = published.get("id")
+    return playbook
+
+
+def ensure_automation_rule(token, playbook):
+    version_id = playbook.get("_publishedVersionId")
+    if not version_id:
+        raise RuntimeError("SOAR Demo 剧本缺少已发布版本")
+    status, result, _ = request("soar", "/api/automation-rules?page=0&size=100", token=token)
+    if status != 200:
+        raise RuntimeError(f"读取 SOAR Demo 自动化规则失败 status={status} body={result}")
+    existing = next((item for item in page_items(result) if item.get("name") == DEMO_RULE_NAME), None)
+    body = {
+        "name": DEMO_RULE_NAME,
+        "triggerType": "alert.created",
+        "priority": 10,
+        "enabled": True,
+        "conditions": {
+            "field": "data.ruleId",
+            "operator": "equals",
+            "value": "AUTH-BRUTE-SUCCESS",
         },
-    )
-    if status not in (200, 201):
-        raise RuntimeError(f"创建 SOAR Demo 剧本失败 status={status} body={result}")
-    return result
+        "actions": [{"playbookVersionId": version_id}],
+        "suppression": {},
+    }
+    if existing is None:
+        status, result, _ = request("soar", "/api/automation-rules", token=token, body=body)
+    else:
+        same_trigger = str(existing.get("triggerType", "")).lower() == "alert.created"
+        same_condition = existing.get("conditions") == body["conditions"]
+        same_target = existing.get("actions") == body["actions"]
+        if not (same_trigger and same_condition and same_target and existing.get("enabled", False)):
+            body["rowVersion"] = existing.get("rowVersion")
+            status, result, _ = request(
+                "soar", f"/api/automation-rules/{existing.get('id')}",
+                token=token, method="PATCH", body=body,
+            )
+        else:
+            status, result = 200, existing
+    rule = unwrap(result)
+    if status not in (200, 201) or not isinstance(rule, dict) or not rule.get("id"):
+        raise RuntimeError(f"配置 SOAR Demo 自动化规则失败 status={status} body={result}")
+    return rule
 
 
 def ensure_channel(token):
@@ -304,11 +420,13 @@ def main():
 
     try:
         playbook = ensure_playbook(token)
+        automation_rule = ensure_automation_rule(token, playbook)
         channel = ensure_channel(token)
     except RuntimeError as error:
         print(f"[FAIL] Demo prerequisites: {error}")
         return 1
     check("SOAR demo playbook ready", bool(playbook.get("id")), playbook.get("name"))
+    check("SOAR demo automation rule ready", bool(automation_rule.get("id")), automation_rule.get("name"))
     check("local notification channel ready", bool(channel.get("id")), channel.get("name"))
 
     # Spring health can become UP before the Kafka group has completed its first
@@ -469,15 +587,14 @@ def main():
         return 1
 
     def soar_execution():
-        status, result, _ = request("soar", "/api/v1/playbooks/executions", token=token)
-        executions = result if isinstance(result, list) else unwrap(result)
-        executions = executions if isinstance(executions, list) else []
+        status, result, _ = request("soar", "/api/runs?page=0&size=100", token=token)
+        executions = page_items(result) if status == 200 else []
         return next(
             (
                 item
                 for item in reversed(executions)
-                if item.get("trigger") == "AUTH-BRUTE-SUCCESS"
-                and item.get("playbook") == "SOCP Golden Demo Response"
+                if item.get("playbookId") == playbook.get("id")
+                and (item.get("subject") or {}).get("id") == compromise.get("id")
             ),
             None,
         )

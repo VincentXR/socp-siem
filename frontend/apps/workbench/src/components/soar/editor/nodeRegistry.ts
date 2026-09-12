@@ -1,5 +1,5 @@
 /**
- * Node registry for the SOAR V2 graph editor.
+ * Node registry for the SOAR graph editor.
  *
  * Keyed by every SoarNodeType (13 values). All 13 are creation-capable:
  * every interpreter path now has workflow-level evidence, including SWITCH

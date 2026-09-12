@@ -32,7 +32,7 @@ class VerifySoarLiveTest(unittest.TestCase):
 
     def test_definition_is_side_effect_free_and_bounded(self):
         definition = MODULE.definition()
-        self.assertEqual(definition["schemaVersion"], "soar.playbook/v2")
+        self.assertEqual(definition["schemaVersion"], "soar.playbook")
         self.assertEqual(definition["limits"]["maxNodeExecutions"], 20)
         self.assertEqual([node["type"] for node in definition["nodes"]], ["START", "DELAY", "END"])
         self.assertEqual(definition["nodes"][1]["config"]["durationSeconds"], 5)
@@ -78,7 +78,7 @@ class VerifySoarLiveTest(unittest.TestCase):
             with patch.dict("os.environ", {"SOAR_LIVE_EVIDENCE_PATH": str(target)}):
                 MODULE.write_evidence("http://primary", "http://secondary", "tenant-a")
             report = json.loads(target.read_text(encoding="utf-8"))
-        self.assertEqual(report["schemaVersion"], "soar.live-evidence/v1")
+        self.assertEqual(report["schemaVersion"], "soar.live-evidence")
         self.assertEqual(report["status"], "PASS")
         self.assertTrue(report["secondaryConfigured"])
         self.assertNotIn("token", json.dumps(report).lower())

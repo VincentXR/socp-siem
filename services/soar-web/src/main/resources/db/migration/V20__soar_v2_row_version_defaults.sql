@@ -1,4 +1,4 @@
--- New V2 entities are inserted through Spring Data save() with an assigned
+-- New SOAR entities are inserted through Spring Data save() with an assigned
 -- UUID and no optimistic-lock version yet (Persistable.isNew is version-based).
 -- A NOT NULL row_version column therefore needs a DEFAULT so the insert that
 -- Hibernate performs for a brand-new versioned row never fails on H2/PostgreSQL.

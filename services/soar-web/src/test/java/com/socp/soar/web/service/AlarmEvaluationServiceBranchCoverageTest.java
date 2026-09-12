@@ -24,7 +24,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.verify;
 
-/** Coverage for the V1/V2 evaluation paths, in-progress guard, and failure redaction. */
+/** Coverage for event evaluation, the in-progress guard, and failure redaction. */
 @ExtendWith(MockitoExtension.class)
 class AlarmEvaluationServiceBranchCoverageTest {
 
@@ -33,7 +33,7 @@ class AlarmEvaluationServiceBranchCoverageTest {
     @Mock
     private AlarmEvaluationRepository repository;
     @Mock
-    private SoarV2AutomationRuleService automationRules;
+    private SoarAutomationRuleService automationRules;
 
     @BeforeEach
     void setUp() {
@@ -47,9 +47,9 @@ class AlarmEvaluationServiceBranchCoverageTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void v2EvaluationBuildsEnvelopeAndDelegatesToAutomationRules() {
+    void evaluationBuildsEnvelopeAndDelegatesToAutomationRules() {
         SoarRuntimeProperties properties = new SoarRuntimeProperties();
-        properties.setV2EvaluationEnabled(true);
+        properties.setEvaluationEnabled(true);
         AlarmEvaluationService service = new AlarmEvaluationService(executor, repository,
                 automationRules, properties);
         given(repository.findByIdAndTenantIdForUpdate(any(), any())).willReturn(Optional.empty());
@@ -72,7 +72,7 @@ class AlarmEvaluationServiceBranchCoverageTest {
         ArgumentCaptor<Map<String, Object>> envelopeCaptor = ArgumentCaptor.forClass(Map.class);
         verify(automationRules).evaluate(envelopeCaptor.capture());
         Map<String, Object> envelope = envelopeCaptor.getValue();
-        assertThat(envelope).containsEntry("schemaVersion", "soar.event/v1")
+        assertThat(envelope).containsEntry("schemaVersion", "soar.event")
                 .containsEntry("eventId", "alert:AL-1:created:1")
                 .containsEntry("eventType", "alert.created")
                 .containsEntry("tenantId", "tenant-a")
@@ -88,9 +88,9 @@ class AlarmEvaluationServiceBranchCoverageTest {
     }
 
     @Test
-    void v2FailureIsRecordedWithRedactedErrorAndRethrown() {
+    void evaluationFailureIsRecordedWithRedactedErrorAndRethrown() {
         SoarRuntimeProperties properties = new SoarRuntimeProperties();
-        properties.setV2EvaluationEnabled(true);
+        properties.setEvaluationEnabled(true);
         AlarmEvaluationService service = new AlarmEvaluationService(executor, repository,
                 automationRules, properties);
         given(repository.findByIdAndTenantIdForUpdate(any(), any())).willReturn(Optional.empty());
@@ -135,12 +135,11 @@ class AlarmEvaluationServiceBranchCoverageTest {
     }
 
     @Test
-    void legacyEvaluationIsRejectedWhenTheMigrationFlagIsClosed() {
+    void eventEvaluationIsRejectedWhenDisabled() {
         SoarRuntimeProperties properties = new SoarRuntimeProperties();
-        properties.setV2EvaluationEnabled(false);
-        properties.setLegacyExecutionEnabled(false);
+        properties.setEvaluationEnabled(false);
         AlarmEvaluationService service = new AlarmEvaluationService(executor, repository,
-                null, properties);
+                automationRules, properties);
         given(repository.findByIdAndTenantIdForUpdate(any(), any())).willReturn(Optional.empty());
         given(repository.findByIdAndTenantId(any(), any())).willReturn(Optional.empty());
         given(repository.saveAndFlush(any(AlarmEvaluationEntity.class)))
@@ -148,11 +147,11 @@ class AlarmEvaluationServiceBranchCoverageTest {
         given(repository.save(any(AlarmEvaluationEntity.class)))
                 .willAnswer(invocation -> invocation.getArgument(0));
 
-        assertThatThrownBy(() -> service.evaluate(Map.<String, Object>of("id", "AL-LEGACY-OFF")))
+        assertThatThrownBy(() -> service.evaluate(Map.<String, Object>of("id", "AL-EVALUATION-OFF")))
                 .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
                 .satisfies(failure -> assertThat(((org.springframework.web.server.ResponseStatusException) failure)
-                        .getStatusCode()).isEqualTo(org.springframework.http.HttpStatus.GONE));
-        verify(executor, org.mockito.Mockito.never()).evaluate(any());
+                        .getStatusCode()).isEqualTo(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE));
+        verify(automationRules, org.mockito.Mockito.never()).evaluate(any());
     }
 
     @Test

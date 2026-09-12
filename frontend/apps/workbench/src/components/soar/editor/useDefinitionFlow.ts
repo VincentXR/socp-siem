@@ -1,5 +1,5 @@
 /**
- * Reactive graph model for the SOAR V2 editor (definition <-> Vue Flow).
+ * Reactive graph model for the SOAR editor (definition <-> Vue Flow).
  *
  * `rawRoot` (the definition document) and `positions` are the only state that
  * is mutated. Vue Flow nodes/edges are a derived view that is pushed into the
@@ -57,7 +57,7 @@ export function fallbackPosition(index: number): GraphPosition {
 
 export function emptyDefinition(): EditorDefinition {
   return {
-    schemaVersion: 'soar.playbook/v2',
+    schemaVersion: 'soar.playbook',
     entryNodeId: 'start',
     nodes: [
       { id: 'start', type: 'START', name: 'Start' },
@@ -139,7 +139,7 @@ export function normalizeDefinition(value: unknown): EditorDefinition {
     .filter((item): item is EditorEdge => Boolean(item && typeof item === 'object'))
     .filter(edge => String(edge.from ?? '') && String(edge.to ?? ''))
 
-  if (typeof candidate.schemaVersion !== 'string') candidate.schemaVersion = 'soar.playbook/v2'
+  if (typeof candidate.schemaVersion !== 'string') candidate.schemaVersion = 'soar.playbook'
   if (typeof candidate.entryNodeId !== 'string') candidate.entryNodeId = 'start'
   candidate.nodes = nodes.length ? nodes : emptyDefinition().nodes
   candidate.edges = edges

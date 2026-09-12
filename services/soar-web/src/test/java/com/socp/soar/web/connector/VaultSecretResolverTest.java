@@ -37,7 +37,7 @@ class VaultSecretResolverTest {
     }
 
     @Test
-    void readsKvV2FieldAndObservesRotation() {
+    void readsKvFieldAndObservesRotation() {
         SoarSecretProperties properties = properties("http://127.0.0.1:" + server.getAddress().getPort());
         VaultSecretResolver resolver = new VaultSecretResolver(properties, new ObjectMapper(),
                 reference -> Optional.of("vault-token"));

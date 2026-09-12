@@ -1,5 +1,5 @@
 -- Durable execution controls: trigger receipts, attempts, human tasks and signals.
--- Additive migration; the V1-V9 schema is intentionally left untouched.
+-- Additive migration; the preceding schema is intentionally left untouched.
 
 CREATE TABLE IF NOT EXISTS t_soar_trigger_receipt (
     id VARCHAR(64) PRIMARY KEY,

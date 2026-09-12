@@ -1,7 +1,7 @@
 /**
  * Validator-error -> node-border mapping.
  *
- * `validateV2Version` returns issues where each entry is
+ * `validateVersion` returns issues where each entry is
  * `{ severity: 'ERROR'|'WARNING', code, nodeId, path, message }`. `nodeId` may
  * be null for document-scope errors; `path` may name a nodes-array index.
  */

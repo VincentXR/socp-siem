@@ -189,7 +189,7 @@ jobs:
           -pl platform/socp-test,platform/socp-tenant,services/incident-web,services/search-config,services/alert-web,services/detect-web,services/soar-web
           -am test
           -Dsurefire.failIfNoSpecifiedTests=false
-          -Dtest=MiddlewareSemanticsContainerTest,ContainerIdempotencyContractTest,TenantRlsPostgresTest,CaseTimelinePostgresTest,DetectionSnapshotPostgresConcurrencyTest,AlarmEnrichmentPostgresConcurrencyTest,OsEventReaderOpenSearchContainerTest,OsIndexerFailureContainerTest,SoarV2PostgresMigrationContractTest,SoarV2WorkflowLinearTest,SoarV2WorkflowFanOutTest,SoarV2WorkflowHumanGateTest,SoarV2WorkflowPrimitiveTest,SoarV2WorkflowSwitchTest
+          -Dtest=MiddlewareSemanticsContainerTest,ContainerIdempotencyContractTest,TenantRlsPostgresTest,CaseTimelinePostgresTest,DetectionSnapshotPostgresConcurrencyTest,AlarmEnrichmentPostgresConcurrencyTest,OsEventReaderOpenSearchContainerTest,OsIndexerFailureContainerTest,SoarPostgresMigrationContractTest,SoarWorkflowLinearTest,SoarWorkflowFanOutTest,SoarWorkflowHumanGateTest,SoarWorkflowPrimitiveTest,SoarWorkflowSwitchTest
 
       - name: Upload middleware test reports
         if: always()

@@ -1,4 +1,4 @@
--- Enforce the ownership graph for SOAR V2 projections at the database edge.
+-- Enforce the ownership graph for SOAR projections at the database edge.
 -- Every reference includes tenant_id.  The application still performs the
 -- explicit tenant checks (and PostgreSQL RLS remains the outer boundary), but
 -- these constraints prevent partial transactions or manual SQL from leaving

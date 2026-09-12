@@ -11,25 +11,24 @@ class SoarDefinitionValidatorTest {
 
     @Test
     void acceptsNamespacedActionAndRejectsUnsafeExpression() {
-        String valid = "{\"schemaVersion\":\"soar.playbook/v2\",\"entryNodeId\":\"s\","
-                + "\"nodes\":[{\"id\":\"s\",\"type\":\"START\"},{\"id\":\"a\",\"type\":\"ACTION\",\"actionRef\":\"socp.notify/send@v1\"},{\"id\":\"e\",\"type\":\"END\",\"outcome\":\"SUCCEEDED\"}],"
+        String valid = "{\"schemaVersion\":\"soar.playbook\",\"entryNodeId\":\"s\","
+                + "\"nodes\":[{\"id\":\"s\",\"type\":\"START\"},{\"id\":\"a\",\"type\":\"ACTION\",\"actionRef\":\"socp.notify/send@1\"},{\"id\":\"e\",\"type\":\"END\",\"outcome\":\"SUCCEEDED\"}],"
                 + "\"edges\":[{\"from\":\"s\",\"to\":\"a\"},{\"from\":\"a\",\"to\":\"e\"}]}";
         assertTrue(validator.validate(valid).valid());
 
-        String unsafe = valid.replace("socp.notify/send@v1", "socp.notify/send@v1")
-                .replace("\"a\",\"type\":\"ACTION\",\"actionRef\":\"socp.notify/send@v1\"",
+        String unsafe = valid.replace("\"a\",\"type\":\"ACTION\",\"actionRef\":\"socp.notify/send@1\"",
                         "\"a\",\"type\":\"CONDITION\",\"expression\":\"java.lang.Runtime.exec()\"");
         assertFalse(validator.validate(unsafe).valid());
     }
 
     @Test
     void rejectsCyclesUnlessForeachIsPresent() {
-        String cycle = "{\"schemaVersion\":\"soar.playbook/v2\",\"entryNodeId\":\"s\","
+        String cycle = "{\"schemaVersion\":\"soar.playbook\",\"entryNodeId\":\"s\","
                 + "\"nodes\":[{\"id\":\"s\",\"type\":\"START\"},{\"id\":\"e\",\"type\":\"END\",\"outcome\":\"SUCCEEDED\"}],"
                 + "\"edges\":[{\"from\":\"s\",\"to\":\"s\"},{\"from\":\"s\",\"to\":\"e\"}]}";
         assertFalse(validator.validate(cycle).valid());
 
-        String reachableUnboundedCycle = "{\"schemaVersion\":\"soar.playbook/v2\",\"entryNodeId\":\"s\","
+        String reachableUnboundedCycle = "{\"schemaVersion\":\"soar.playbook\",\"entryNodeId\":\"s\","
                 + "\"nodes\":[{\"id\":\"s\",\"type\":\"START\"},{\"id\":\"a\",\"type\":\"ACTION\",\"actionRef\":\"socp.alert/get@1\"},"
                 + "{\"id\":\"b\",\"type\":\"ACTION\",\"actionRef\":\"socp.alert/get@1\"},{\"id\":\"e\",\"type\":\"END\",\"outcome\":\"SUCCEEDED\"}],"
                 + "\"edges\":[{\"from\":\"s\",\"to\":\"a\"},{\"from\":\"a\",\"to\":\"b\"},{\"from\":\"b\",\"to\":\"a\"},{\"from\":\"b\",\"to\":\"e\"}]}";
@@ -38,12 +37,12 @@ class SoarDefinitionValidatorTest {
 
     @Test
     void enforcesPublishedBranchAndActionContracts() {
-        String conditionWithoutPorts = "{\"schemaVersion\":\"soar.playbook/v2\",\"entryNodeId\":\"s\","
+        String conditionWithoutPorts = "{\"schemaVersion\":\"soar.playbook\",\"entryNodeId\":\"s\","
                 + "\"nodes\":[{\"id\":\"s\",\"type\":\"START\"},{\"id\":\"c\",\"type\":\"CONDITION\",\"expression\":\"true\"},{\"id\":\"e\",\"type\":\"END\",\"outcome\":\"SUCCEEDED\"}],"
                 + "\"edges\":[{\"from\":\"s\",\"to\":\"c\"},{\"from\":\"c\",\"port\":\"true\",\"to\":\"e\"}]}";
         assertFalse(validator.validate(conditionWithoutPorts).valid());
 
-        String documentedAction = "{\"schemaVersion\":\"soar.playbook/v2\",\"entryNodeId\":\"s\","
+        String documentedAction = "{\"schemaVersion\":\"soar.playbook\",\"entryNodeId\":\"s\","
                 + "\"nodes\":[{\"id\":\"s\",\"type\":\"START\"},{\"id\":\"a\",\"type\":\"ACTION\",\"actionRef\":\"endpoint/isolate-host@1\"},{\"id\":\"e\",\"type\":\"END\",\"outcome\":\"SUCCEEDED\"}],"
                 + "\"edges\":[{\"from\":\"s\",\"to\":\"a\"},{\"from\":\"a\",\"to\":\"e\"}]}";
         assertTrue(validator.validate(documentedAction).valid());
@@ -51,9 +50,9 @@ class SoarDefinitionValidatorTest {
 
     @Test
     void rejectsInlineActionSecrets() {
-        String definition = "{\"schemaVersion\":\"soar.playbook/v2\",\"entryNodeId\":\"s\","
+        String definition = "{\"schemaVersion\":\"soar.playbook\",\"entryNodeId\":\"s\","
                 + "\"nodes\":[{\"id\":\"s\",\"type\":\"START\"},"
-                + "{\"id\":\"a\",\"type\":\"ACTION\",\"actionRef\":\"socp.notify/send@v1\","
+                + "{\"id\":\"a\",\"type\":\"ACTION\",\"actionRef\":\"socp.notify/send@1\","
                 + "\"parameters\":{\"token\":\"do-not-store\"}},"
                 + "{\"id\":\"e\",\"type\":\"END\",\"outcome\":\"SUCCEEDED\"}],"
                 + "\"edges\":[{\"from\":\"s\",\"to\":\"a\"},{\"from\":\"a\",\"to\":\"e\"}]}";
@@ -62,13 +61,13 @@ class SoarDefinitionValidatorTest {
 
     @Test
     void rejectsMalformedBoundsAndDeadEndBranches() {
-        String malformed = "{\"schemaVersion\":\"soar.playbook/v2\",\"entryNodeId\":\"s\","
+        String malformed = "{\"schemaVersion\":\"soar.playbook\",\"entryNodeId\":\"s\","
                 + "\"limits\":{\"maxNodeExecutions\":\"500\"},"
                 + "\"nodes\":[{\"id\":\"s\",\"type\":\"START\"},{\"id\":\"a\",\"type\":\"ACTION\",\"actionRef\":\"socp.alert/get@1\",\"retry\":{\"maxAttempts\":1.5}},{\"id\":\"e\",\"type\":\"END\",\"outcome\":\"SUCCEEDED\"}],"
                 + "\"edges\":[{\"from\":\"s\",\"to\":\"a\"},{\"from\":\"a\",\"to\":\"e\"}]}";
         assertFalse(validator.validate(malformed).valid());
 
-        String deadEnd = "{\"schemaVersion\":\"soar.playbook/v2\",\"entryNodeId\":\"s\","
+        String deadEnd = "{\"schemaVersion\":\"soar.playbook\",\"entryNodeId\":\"s\","
                 + "\"nodes\":[{\"id\":\"s\",\"type\":\"START\"},{\"id\":\"a\",\"type\":\"ACTION\",\"actionRef\":\"socp.alert/get@1\"},{\"id\":\"e\",\"type\":\"END\",\"outcome\":\"SUCCEEDED\"}],"
                 + "\"edges\":[{\"from\":\"s\",\"to\":\"a\"}]}";
         assertFalse(validator.validate(deadEnd).valid());
@@ -76,12 +75,12 @@ class SoarDefinitionValidatorTest {
 
     @Test
     void rejectsUnknownPortsAndRequiresExplicitApprovalOutcomes() {
-        String unknownActionPort = "{\"schemaVersion\":\"soar.playbook/v2\",\"entryNodeId\":\"s\"," 
+        String unknownActionPort = "{\"schemaVersion\":\"soar.playbook\",\"entryNodeId\":\"s\","
                 + "\"nodes\":[{\"id\":\"s\",\"type\":\"START\"},{\"id\":\"a\",\"type\":\"ACTION\",\"actionRef\":\"socp.alert/get@1\"},{\"id\":\"e\",\"type\":\"END\",\"outcome\":\"SUCCEEDED\"}],"
                 + "\"edges\":[{\"from\":\"s\",\"to\":\"a\"},{\"from\":\"a\",\"port\":\"succes\",\"to\":\"e\"}]}";
         assertFalse(validator.validate(unknownActionPort).valid());
 
-        String incompleteApproval = "{\"schemaVersion\":\"soar.playbook/v2\",\"entryNodeId\":\"s\","
+        String incompleteApproval = "{\"schemaVersion\":\"soar.playbook\",\"entryNodeId\":\"s\","
                 + "\"nodes\":[{\"id\":\"s\",\"type\":\"START\"},{\"id\":\"a\",\"type\":\"APPROVAL\"},{\"id\":\"e\",\"type\":\"END\",\"outcome\":\"SUCCEEDED\"}],"
                 + "\"edges\":[{\"from\":\"s\",\"to\":\"a\"},{\"from\":\"a\",\"port\":\"approved\",\"to\":\"e\"}]}";
         assertFalse(validator.validate(incompleteApproval).valid());
@@ -89,7 +88,7 @@ class SoarDefinitionValidatorTest {
 
     @Test
     void validatesApprovalRoleAndGroupAllowLists() {
-        String base = "{\"schemaVersion\":\"soar.playbook/v2\",\"entryNodeId\":\"s\","
+        String base = "{\"schemaVersion\":\"soar.playbook\",\"entryNodeId\":\"s\","
                 + "\"nodes\":[{\"id\":\"s\",\"type\":\"START\"},{\"id\":\"a\",\"type\":\"APPROVAL\","
                 + "\"policy\":{\"approvalsRequired\":1,\"allowedRoles\":[\"soc-approver\"],"
                 + "\"allowedGroups\":[\"incident-command\"]}},{\"id\":\"e\",\"type\":\"END\",\"outcome\":\"SUCCEEDED\"}],"
@@ -102,7 +101,7 @@ class SoarDefinitionValidatorTest {
 
     @Test
     void rejectsScalarControlPoliciesInsteadOfApplyingRuntimeDefaults() {
-        String retryScalar = "{\"schemaVersion\":\"soar.playbook/v2\",\"entryNodeId\":\"s\","
+        String retryScalar = "{\"schemaVersion\":\"soar.playbook\",\"entryNodeId\":\"s\","
                 + "\"nodes\":[{\"id\":\"s\",\"type\":\"START\"},{\"id\":\"a\",\"type\":\"ACTION\","
                 + "\"actionRef\":\"socp.alert/get@1\",\"retry\":\"unbounded\"},{\"id\":\"e\",\"type\":\"END\",\"outcome\":\"SUCCEEDED\"}],"
                 + "\"edges\":[{\"from\":\"s\",\"to\":\"a\"},{\"from\":\"a\",\"to\":\"e\"}]}";
@@ -114,7 +113,7 @@ class SoarDefinitionValidatorTest {
 
     @Test
     void validatesRootApprovalPolicyAliasesAndPrincipalListsWithoutQuorumField() {
-        String base = "{\"schemaVersion\":\"soar.playbook/v2\",\"entryNodeId\":\"s\","
+        String base = "{\"schemaVersion\":\"soar.playbook\",\"entryNodeId\":\"s\","
                 + "\"policy\":{\"allowedRoles\":[\"soc-approver\"]},"
                 + "\"nodes\":[{\"id\":\"s\",\"type\":\"START\"},{\"id\":\"e\",\"type\":\"END\",\"outcome\":\"SUCCEEDED\"}],"
                 + "\"edges\":[{\"from\":\"s\",\"to\":\"e\"}]}";

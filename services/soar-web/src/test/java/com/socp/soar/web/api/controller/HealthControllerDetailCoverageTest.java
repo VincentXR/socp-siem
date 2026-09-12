@@ -5,7 +5,7 @@ import com.socp.soar.web.config.SoarRuntimeProperties;
 import com.socp.soar.web.connector.SecretResolver;
 import com.socp.soar.web.connector.ConnectorDescriptor;
 import com.socp.soar.web.connector.SoarConnectorRegistry;
-import com.socp.soar.web.service.SoarV2Service;
+import com.socp.soar.web.service.SoarService;
 import com.socp.soar.web.service.TemporalExecutor;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -31,7 +31,7 @@ class HealthControllerDetailCoverageTest {
     @Mock
     private ObjectProvider<TemporalExecutor> temporalProvider;
     @Mock
-    private ObjectProvider<SoarV2Service> soarProvider;
+    private ObjectProvider<SoarService> soarProvider;
     @Mock
     private ObjectProvider<SoarConnectorRegistry> connectorProvider;
     @Mock
@@ -39,7 +39,7 @@ class HealthControllerDetailCoverageTest {
     @Mock
     private TemporalExecutor temporal;
     @Mock
-    private SoarV2Service soar;
+    private SoarService soar;
     @Mock
     private SoarConnectorRegistry registry;
     @Mock

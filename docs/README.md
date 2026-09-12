@@ -37,9 +37,9 @@ directory instead of source control.
 
 ## SOAR
 
-- [SOAR 2.0 design](soar-2.0-design.md)
-- [SOAR 2.0 OpenAPI](soar-2.0-openapi.yaml)
-- [SOAR 2.0 runbook](soar-2.0-runbook.md)
+- [SOAR design](soar-design.md)
+- [SOAR OpenAPI](soar-openapi.yaml)
+- [SOAR runbook](soar-runbook.md)
 - [Action connector contract](soar-action-connectors.md)
 
 ## Verification and operations

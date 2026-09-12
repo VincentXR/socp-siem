@@ -6,7 +6,7 @@ SOCP 故障注入测试（P4，2026-08-12）：验证核心中间件故障下服
 场景（每个都「注入 → 断言 → 恢复 → 断言」）：
   1. 断 Kafka   → search-config ingest 仍由本地事务接收并写入 durable outbox → Kafka 恢复后重放到 OpenSearch
   2. 停 OpenSearch → search-config 检索回退 H2（API 仍返回）→ 恢复
-  3. 停 Temporal → SOAR V2 仍接受 durable Run 并保持排队，不执行进程内副作用 → 恢复
+  3. 停 Temporal → SOAR 仍接受 durable Run 并保持排队，不执行进程内副作用 → 恢复
   4. 停 PostgreSQL → alert-web 查询失败但不崩（进程存活、健康转 DOWN）→ 恢复后查询正常
 
 前提：后端全栈 + 中间件在跑（bash build/run-all.sh backend + docker compose up -d）。
@@ -269,7 +269,7 @@ def main():
     print("\n== 3. Temporal 故障：SOAR 保留 durable Run，不执行进程内回退 ==")
     docker("stop", "socp-temporal")
     time.sleep(8)  # 等 TemporalExecutor 缓存（5s）过期并重新探测到不可达
-    st, payload = api("/soar-web/api/v2/playbooks?size=100", "GET")
+    st, payload = api("/soar-web/api/playbooks?size=100", "GET")
     listing = api_data(payload)
     playbooks = listing.get("items", []) if isinstance(listing, dict) else listing
     playbooks = playbooks if isinstance(playbooks, list) else []
@@ -278,7 +278,7 @@ def main():
         playbook_id = item.get("id") if isinstance(item, dict) else None
         if not playbook_id:
             continue
-        _, versions_payload = api(f"/soar-web/api/v2/playbooks/{playbook_id}/versions", "GET")
+        _, versions_payload = api(f"/soar-web/api/playbooks/{playbook_id}/versions", "GET")
         versions = api_data(versions_payload)
         if isinstance(versions, dict):
             versions = versions.get("items", [])
@@ -289,7 +289,7 @@ def main():
     d = published
     pb = d if isinstance(d, dict) and d else None
     if pb:
-        st2, run_payload = api("/soar-web/api/v2/runs", "POST", {
+        st2, run_payload = api("/soar-web/api/runs", "POST", {
             "requestId": "failure-temporal-" + str(int(time.time())),
             "playbookVersionId": pb.get("id"),
             "subject": {"type": "failure-test", "id": "temporal-down"},
@@ -297,14 +297,14 @@ def main():
         })
         run = api_data(run_payload)
         status = run.get("status") if isinstance(run, dict) else None
-        # V2 contract: accepting a run while Temporal is unavailable only
+        # SOAR contract: accepting a run while Temporal is unavailable only
         # commits a durable QUEUED/WAITING_APPROVAL projection.  No action is
         # executed in-process and the dispatcher will resume after recovery.
         ex = {"executionId": "queued" if status in ("QUEUED", "WAITING_APPROVAL") else None}
         st2 = 200 if st2 == 202 else st2
-        check("Temporal 停时 durable V2 Run 保持排队", st2 == 200 and ex.get("executionId"), f"st={st2} status={status}")
+        check("Temporal 停时 durable Run 保持排队", st2 == 200 and ex.get("executionId"), f"st={st2} status={status}")
     else:
-        check("Temporal 停时 durable V2 Run 保持排队", False, "无已发布剧本")
+        check("Temporal 停时 durable Run 保持排队", False, "无已发布剧本")
     docker("start", "socp-temporal")
     time.sleep(8)
 

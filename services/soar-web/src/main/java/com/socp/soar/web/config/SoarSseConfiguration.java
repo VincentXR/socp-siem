@@ -25,7 +25,7 @@ public class SoarSseConfiguration {
     public ScheduledExecutorService soarSseScheduler(SoarRuntimeProperties properties) {
         int threads = Math.max(1, Math.min(32, properties.getSseSchedulerThreads()));
         ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(threads,
-                namedThreadFactory("soar-v2-sse"));
+                namedThreadFactory("soar-sse"));
         executor.setRemoveOnCancelPolicy(true);
         executor.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
         executor.setContinueExistingPeriodicTasksAfterShutdownPolicy(false);

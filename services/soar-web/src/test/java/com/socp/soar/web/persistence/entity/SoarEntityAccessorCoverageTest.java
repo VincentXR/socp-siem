@@ -197,7 +197,7 @@ class SoarEntityAccessorCoverageTest {
         entity.setPlaybookId("pb-1");
         entity.setVersionNo(1);
         entity.setStatus("PUBLISHED");
-        entity.setSchemaVersion("soar.playbook/v2");
+        entity.setSchemaVersion("soar.playbook");
         entity.setDefinitionJson("{}");
         entity.setLayoutJson("{}");
         entity.setDefinitionHash("hash-1");
@@ -213,7 +213,7 @@ class SoarEntityAccessorCoverageTest {
         assertThat(entity.getPlaybookId()).isEqualTo("pb-1");
         assertThat(entity.getVersionNo()).isEqualTo(1);
         assertThat(entity.getStatus()).isEqualTo("PUBLISHED");
-        assertThat(entity.getSchemaVersion()).isEqualTo("soar.playbook/v2");
+        assertThat(entity.getSchemaVersion()).isEqualTo("soar.playbook");
         assertThat(entity.getDefinitionJson()).isEqualTo("{}");
         assertThat(entity.getLayoutJson()).isEqualTo("{}");
         assertThat(entity.getDefinitionHash()).isEqualTo("hash-1");

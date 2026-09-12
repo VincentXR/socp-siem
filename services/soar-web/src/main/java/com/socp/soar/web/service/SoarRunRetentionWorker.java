@@ -34,7 +34,7 @@ import java.util.Set;
  * <p>Defaults follow design 11.2: terminal Run/NodeRun/ActionAttempt rows are
  * purged 180 days after their last update, and the run-event timeline (the
  * operator-facing audit trace) is retained at least 365 days.  Both defaults
- * can be raised per deployment ({@code socp.soar.v2.retention.run-days} and
+ * can be raised per deployment ({@code socp.soar.retention.run-days} and
  * {@code ...event-days}); a value of 0 disables that pass.  Only terminal runs
  * are ever removed so an in-flight workflow can never lose its projections.
  *
@@ -66,10 +66,10 @@ public class SoarRunRetentionWorker {
     private final SoarSignalOutboxRepository signals;
     private final SoarArtifactRepository artifacts;
 
-    @Value("${socp.soar.v2.retention.run-days:180}")
+    @Value("${socp.soar.retention.run-days:180}")
     private long runDays;
 
-    @Value("${socp.soar.v2.retention.event-days:365}")
+    @Value("${socp.soar.retention.event-days:365}")
     private long eventDays;
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -97,8 +97,8 @@ public class SoarRunRetentionWorker {
         this(runs, nodes, attempts, events, null, null, null, null, null, null);
     }
 
-    @Scheduled(fixedDelayString = "${socp.soar.v2.run-retention-poll-ms:3600000}",
-            initialDelayString = "${socp.soar.v2.run-retention-initial-delay-ms:600000}")
+    @Scheduled(fixedDelayString = "${socp.soar.run-retention-poll-ms:3600000}",
+            initialDelayString = "${socp.soar.run-retention-initial-delay-ms:600000}")
     @TenantSystemJob
     @Transactional
     public void tick() {
@@ -155,7 +155,7 @@ public class SoarRunRetentionWorker {
 
         // Timeline and artifact retention have longer/independent lifetimes
         // than a run. Keep the parent row until those handles are gone; this
-        // both preserves the documented evidence window and satisfies V22's
+        // both preserves the documented evidence window and satisfies 2's
         // non-cascading foreign keys.
         Set<String> blocked = new HashSet<>();
         addAll(blocked, events.findRunIdsByRunIdIn(runIds));

@@ -11,7 +11,7 @@ correctness and recovery behavior, not a production capacity or HA claim.
 | Java modules | `bash build/mvnw.sh test -Dsurefire.failIfNoSpecifiedTests=false` | Reactor tests pass, including auth, rules, Detection, Alert, incident, and shared error handling | Every change |
 | Quality gate | `bash build/quality-gate.sh` | Coverage floor, SpotBugs, toolchain policy, migration/deployment contracts, detection content, and workbench checks | Every pull request |
 | Dependency audit | GitHub `Dependency Audit` workflow | No Java/frontend dependency at or above the configured high-severity threshold | Weekly/release candidate |
-| Workbench | `cd frontend/apps/workbench && pnpm test && pnpm test:e2e && pnpm verify` | API contracts, cookie login, navigation permissions/history, SOAR V2 draft/publish/run/human-gate flow, type check, production build, artifact assertions | Frontend change |
+| Workbench | `cd frontend/apps/workbench && pnpm test && pnpm test:e2e && pnpm verify` | API contracts, cookie login, navigation permissions/history, SOAR draft/publish/run/human-gate flow, type check, production build, artifact assertions | Frontend change |
 | Cross-cutting slice | `python build/verify-slice.py` | Authentication, tenancy, audit, rate limiting, and trace propagation | PR/release candidate |
 | Event pipeline | `python build/verify-pipeline.py` | Canonical event -> Kafka -> Detection -> Alert persistence -> OpenSearch/ClickHouse/report | Middleware change/scheduled |
 | Detection content | `python build/validate-detection-content.py` | Manifest schema, metadata, positive/negative vectors, ATT&CK references | Rule/content change |
@@ -31,7 +31,7 @@ correctness and recovery behavior, not a production capacity or HA claim.
 | Bulk baseline | `python build/benchmark-pipeline.py --count 100` | Detection HTTP accepted/rejected counters and latency percentiles | Manual |
 | Full API | `python build/verify-full.py` | Resource CRUD, tenancy, import/export, threat, and response contracts | Scheduled/release candidate |
 | OpenAPI SDK | `python build/verify-openapi-sdk.py` (add `SOAR_OPENAPI_REQUIRE_RUNTIME=true` and runtime URLs for deployment mode) | 71-operation TypeScript SDK generation, strict compilation, runtime `/v3/api-docs` parity, `SOCP_SESSION`, `X-Tenant-Id`, `ApiResult`, ETag/If-Match, status codes, and error envelopes | Every API change/release candidate |
-| SOAR V2 live | `python build/verify-soar-live.py` | Real PostgreSQL/Temporal Run completion, Alert-shaped V2 event admission, receipt idempotency, and two-instance capacity fence | Weekly/release candidate |
+| SOAR live | `python build/verify-soar-live.py` | Real PostgreSQL/Temporal Run completion, Alert-shaped event admission, receipt idempotency, and two-instance capacity fence | Weekly/release candidate |
 | Dependency failure | `python build/failure-tests.py` | Kafka, OpenSearch, Temporal, and PostgreSQL recovery assertions | Manual/scheduled |
 
 ## Reliability acceptance criteria

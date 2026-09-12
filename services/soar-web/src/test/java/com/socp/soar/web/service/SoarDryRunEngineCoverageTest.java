@@ -39,7 +39,7 @@ class SoarDryRunEngineCoverageTest {
     void startEntryNodeIsSimulatedWithoutSideEffects() {
         String definition = """
                 {
-                  "schemaVersion": "soar.playbook/v2",
+                  "schemaVersion": "soar.playbook",
                   "entryNodeId": "start",
                   "nodes": [
                     {"id": "start", "type": "START"},
@@ -89,7 +89,7 @@ class SoarDryRunEngineCoverageTest {
     void secretLikeInputsAreRedactedInTheVariableSnapshot() {
         String definition = """
                 {
-                  "schemaVersion": "soar.playbook/v2",
+                  "schemaVersion": "soar.playbook",
                   "entryNodeId": "start",
                   "nodes": [
                     {"id": "start", "type": "START"},
@@ -113,7 +113,7 @@ class SoarDryRunEngineCoverageTest {
     void rejectsDefinitionThatFailsValidation() {
         String missingEntry = """
                 {
-                  "schemaVersion": "soar.playbook/v2",
+                  "schemaVersion": "soar.playbook",
                   "nodes": [
                     {"id": "start", "type": "START"},
                     {"id": "end", "type": "END", "outcome": "SUCCEEDED"}

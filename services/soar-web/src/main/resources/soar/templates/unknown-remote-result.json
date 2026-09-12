@@ -9,7 +9,7 @@
   "attackTags": ["T response"],
   "testSample": {"eventId": "sample-unknown-1", "eventType": "alert.created"},
   "definition": {
-    "schemaVersion": "soar.playbook/v2", "entryNodeId": "start",
+    "schemaVersion": "soar.playbook", "entryNodeId": "start",
     "nodes": [
       {"id":"start","type":"START","name":"Start"},
       {"id":"remote","type":"ACTION","name":"Contain host","actionRef":"endpoint/isolate-host@1","connectionRef":"endpoint-connection","retry":{"maxAttempts":2,"backoffSeconds":2}},

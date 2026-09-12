@@ -20,19 +20,19 @@ const typeLabel = computed(() => {
   return translated === labelKey ? (meta.value?.label ?? nodeType) : translated
 })
 const DEFAULT_NAME_ALIAS_KEYS: Record<string, string> = {
-  START: 'soarV2.nodeAliases.START',
-  ACTION: 'soarV2.nodeAliases.ACTION',
-  CONDITION: 'soarV2.nodeAliases.CONDITION',
-  SWITCH: 'soarV2.nodeAliases.SWITCH',
-  APPROVAL: 'soarV2.nodeAliases.APPROVAL',
-  END: 'soarV2.nodeAliases.END',
-  PARALLEL: 'soarV2.nodeAliases.PARALLEL',
-  JOIN: 'soarV2.nodeAliases.JOIN',
-  FOREACH: 'soarV2.nodeAliases.FOREACH',
-  MANUAL_TASK: 'soarV2.nodeAliases.MANUAL_TASK',
-  DELAY: 'soarV2.nodeAliases.DELAY',
-  SUB_PLAYBOOK: 'soarV2.nodeAliases.SUB_PLAYBOOK',
-  SET_VARIABLE: 'soarV2.nodeAliases.SET_VARIABLE',
+  START: 'soar.nodeAliases.START',
+  ACTION: 'soar.nodeAliases.ACTION',
+  CONDITION: 'soar.nodeAliases.CONDITION',
+  SWITCH: 'soar.nodeAliases.SWITCH',
+  APPROVAL: 'soar.nodeAliases.APPROVAL',
+  END: 'soar.nodeAliases.END',
+  PARALLEL: 'soar.nodeAliases.PARALLEL',
+  JOIN: 'soar.nodeAliases.JOIN',
+  FOREACH: 'soar.nodeAliases.FOREACH',
+  MANUAL_TASK: 'soar.nodeAliases.MANUAL_TASK',
+  DELAY: 'soar.nodeAliases.DELAY',
+  SUB_PLAYBOOK: 'soar.nodeAliases.SUB_PLAYBOOK',
+  SET_VARIABLE: 'soar.nodeAliases.SET_VARIABLE',
 }
 const defaultNameAliases = computed<Record<string, readonly string[]>>(() => {
   const aliases: Record<string, readonly string[]> = {}
@@ -60,7 +60,7 @@ const runChipTitle = computed(() => {
   if (!runStatus.value) return ''
   const count = props.data?.runIterations ?? 1
   const paths = (props.data?.runIterationPaths ?? []).filter(path => Boolean(path))
-  const base = t('soarV2.runHighlightNodeTitle', { count })
+  const base = t('soar.runHighlightNodeTitle', { count })
   return paths.length ? `${base}: ${paths.join(', ')}` : base
 })
 
@@ -116,7 +116,7 @@ function portTitle(port: PortSpec): string {
 }
 
 function runStatusLabel(status: string): string {
-  const key = 'soarV2.status.' + status
+  const key = 'soar.status.' + status
   const translated = t(key)
   return translated === key ? status : translated
 }

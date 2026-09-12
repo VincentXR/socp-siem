@@ -4,8 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.soar.web.connector.ActionDescriptor;
 import com.socp.soar.web.connector.ConnectorDescriptor;
 import com.socp.soar.web.connector.SoarConnectorRegistry;
-import com.socp.soar.web.domain.v2.DefinitionIssue;
-import com.socp.soar.web.domain.v2.DefinitionValidationResult;
+import com.socp.soar.web.domain.DefinitionIssue;
+import com.socp.soar.web.domain.DefinitionValidationResult;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -33,7 +33,7 @@ class SoarRiskPolicyValidationTest {
                 throw new IllegalStateException(failure);
             }
         }
-        return "{\"schemaVersion\":\"soar.playbook/v2\",\"name\":\"risk\",\"version\":1,"
+        return "{\"schemaVersion\":\"soar.playbook\",\"name\":\"risk\",\"version\":1,"
                 + "\"entryNodeId\":\"n1\",\"nodes\":["
                 + "{\"id\":\"n1\",\"type\":\"START\"},"
                 + "{\"id\":\"n2\",\"type\":\"ACTION\",\"actionRef\":\"" + actionRef + "\","

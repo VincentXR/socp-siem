@@ -1,5 +1,5 @@
 /**
- * Bounded undo/redo history for the SOAR V2 graph editor.
+ * Bounded undo/redo history for the SOAR graph editor.
  *
  * The stack stores snapshots of {definition, layout}. record() deep-clones and
  * deep-freezes each snapshot so the live editor model can keep mutating the

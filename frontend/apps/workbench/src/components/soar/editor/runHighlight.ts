@@ -1,5 +1,5 @@
 /**
- * Run-path highlight model for the SOAR V2 graph editor (Slice 4).
+ * Run-path highlight model for the SOAR graph editor (Slice 4).
  *
  * The backend run-detail endpoint returns `/runs/{id}/nodes` rows with at least
  * `nodeId`, `nodeType`, `status`, `iterationPath`. A single definition node can

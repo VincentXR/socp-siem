@@ -16,7 +16,7 @@ class SoarActionCatalogCoverageTest {
         assertThat(SoarActionCatalog.toLegacyAction(" socp.notify/send ")).isEqualTo("notify");
         assertThat(SoarActionCatalog.toLegacyAction("SOCP.INCIDENT/CREATE")).isEqualTo("case");
         assertThat(SoarActionCatalog.toLegacyAction("net.firewall/block")).isEqualTo("firewall-block");
-        assertThat(SoarActionCatalog.toLegacyAction("endpoint/isolate-host@v2")).isEqualTo("network-isolate");
+        assertThat(SoarActionCatalog.toLegacyAction("endpoint/isolate-host@2")).isEqualTo("network-isolate");
         assertThat(SoarActionCatalog.toLegacyAction("endpoint/snapshot-host@3")).isEqualTo("snapshot");
         assertThat(SoarActionCatalog.toLegacyAction("http/webhook")).isEqualTo("webhook");
         assertThat(SoarActionCatalog.toLegacyAction("custom.family/thing")).isEqualTo("custom.family/thing");
@@ -43,9 +43,9 @@ class SoarActionCatalogCoverageTest {
         assertThat(SoarActionCatalog.isNamespaced("ab/cd")).isTrue();
         assertThat(SoarActionCatalog.isNamespaced("socp.alert/get")).isTrue();
         assertThat(SoarActionCatalog.isNamespaced("socp.alert/get@2")).isTrue();
-        assertThat(SoarActionCatalog.isNamespaced("socp.alert/get@v10")).isTrue();
+        assertThat(SoarActionCatalog.isNamespaced("socp.alert/get@10")).isTrue();
         assertThat(SoarActionCatalog.isNamespaced("socp.alert/get@01")).isTrue();
-        assertThat(SoarActionCatalog.isNamespaced("socp.alert/get@vX")).isFalse();
+        assertThat(SoarActionCatalog.isNamespaced("socp.alert/get@X")).isFalse();
         assertThat(SoarActionCatalog.isNamespaced("NoUpper/case")).isFalse();
         assertThat(SoarActionCatalog.isNamespaced("noslash")).isFalse();
         assertThat(SoarActionCatalog.isNamespaced("1bad/name")).isFalse();

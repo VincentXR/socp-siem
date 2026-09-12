@@ -5,7 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.soar.web.artifact.SoarArtifactStore;
-import com.socp.soar.web.domain.v2.SoarRunStatus;
+import com.socp.soar.web.domain.SoarRunStatus;
 import com.socp.soar.web.persistence.entity.SoarActionAttemptEntity;
 import com.socp.soar.web.persistence.entity.SoarApprovalDecisionEntity;
 import com.socp.soar.web.persistence.entity.SoarApprovalEntity;
@@ -50,7 +50,7 @@ import java.util.Locale;
  * <p>Run, evidence, approval and backlog reads are intentionally isolated
  * from the command service.  This keeps query pagination and redaction rules
  * in one application boundary while command transactions remain in
- * {@link SoarV2Service}.</p>
+ * {@link SoarService}.</p>
  */
 @Service
 public class SoarRunQueryService {

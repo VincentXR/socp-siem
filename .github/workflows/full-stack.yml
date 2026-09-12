@@ -83,14 +83,14 @@ jobs:
 
       - name: Start integration middleware
         # Full-stack verification does not require dashboards, Keycloak,
-        # Temporal UI, Loki, or Jaeger. Temporal itself is required: V2 must
+        # Temporal UI, Loki, or Jaeger. Temporal itself is required: SOAR must
         # prove durable dispatch rather than silently accepting a queued-only
         # run when the orchestration dependency is absent.
         run: >-
           docker compose -f infra/docker-compose.yml up -d
           postgres kafka opensearch redis clickhouse minio
 
-      - name: Start Temporal for SOAR V2 evidence
+      - name: Start Temporal for SOAR evidence
         run: >-
           docker compose -f infra/docker-compose.yml --profile extra up -d
           temporal
@@ -186,12 +186,12 @@ jobs:
               raise SystemExit("secondary SOAR instance did not become reachable")
           PY
 
-      - name: Run SOAR V2 live and multi-instance verification
+      - name: Run SOAR live and multi-instance verification
         env:
           SOAR_PRIMARY_URL: http://127.0.0.1:18092/soar-web
           SOAR_SECONDARY_URL: http://127.0.0.1:28083/soar-web
           SOAR_REQUIRE_SECONDARY: "true"
-          SOAR_LIVE_EVIDENCE_PATH: .cache/soar-v2-live.json
+          SOAR_LIVE_EVIDENCE_PATH: .cache/soar-live.json
           SOAR_VERIFY_USERNAME: admin
           SOAR_VERIFY_PASSWORD: admin123
         run: python3 build/verify-soar-live.py

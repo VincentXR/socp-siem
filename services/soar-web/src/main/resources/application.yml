@@ -31,20 +31,17 @@ socp:
     dev-bypass: ${SOCP_DEV_BYPASS:false}
     metrics-token: ${SOCP_SECURITY_METRICS_TOKEN:socp-demo-metrics-token}
   temporal:
-    # V2 语义（2026-09）：Temporal 不可达时只保留 durable backlog，不回退进程内副作用执行器。
+    # SOAR 语义（2026-09）：Temporal 不可达时只保留 durable backlog，不回退进程内副作用执行器。
     enabled: ${SOCP_TEMPORAL_ENABLED:true}
     target: ${SOCP_TEMPORAL_TARGET:localhost:7233}
     namespace: default
   soar:
     maturity: preview
-    # V2 rollout switches.  Empty tenant allow-list means every tenant;
-    # production can narrow admission during a staged migration.
-    v2-control-plane-enabled: ${SOCP_SOAR_V2_CONTROL_PLANE_ENABLED:true}
-    v2-execution-enabled: ${SOCP_SOAR_V2_EXECUTION_ENABLED:true}
-    v2-evaluation-enabled: ${SOCP_SOAR_V2_EVALUATION_ENABLED:true}
-    execution-tenant-allowlist: ${SOCP_SOAR_V2_TENANT_ALLOWLIST:}
-    legacy-mutation-enabled: ${SOCP_SOAR_LEGACY_MUTATION_ENABLED:true}
-    legacy-execution-enabled: ${SOCP_SOAR_LEGACY_EXECUTION_ENABLED:true}
+    # Runtime switches. Empty tenant allow-list means every tenant.
+    control-plane-enabled: ${SOCP_SOAR_CONTROL_PLANE_ENABLED:true}
+    execution-enabled: ${SOCP_SOAR_EXECUTION_ENABLED:true}
+    evaluation-enabled: ${SOCP_SOAR_EVALUATION_ENABLED:true}
+    execution-tenant-allowlist: ${SOCP_SOAR_TENANT_ALLOWLIST:}
     # Every node must interpret a schedule in the same zone.
     schedule-zone: ${SOCP_SOAR_SCHEDULE_ZONE:UTC}
     # Local/integration dry-runs remain visibly SIMULATED; application-prod.yml disables them.

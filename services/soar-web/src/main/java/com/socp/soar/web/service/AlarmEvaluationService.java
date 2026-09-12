@@ -28,17 +28,17 @@ public class AlarmEvaluationService {
 
     private final PlaybookExecutor executor;
     private final AlarmEvaluationRepository repository;
-    private final SoarV2AutomationRuleService automationRules;
+    private final SoarAutomationRuleService automationRules;
     private final com.socp.soar.web.config.SoarRuntimeProperties properties;
 
-    /** Legacy constructor used by unit tests: keeps the V1-only evaluation behaviour. */
+    /** Lightweight constructor used by isolated tests without the rule service. */
     public AlarmEvaluationService(PlaybookExecutor executor, AlarmEvaluationRepository repository) {
-        this(executor, repository, null, legacyOnlyProperties());
+        this(executor, repository, null, defaultProperties());
     }
 
     @org.springframework.beans.factory.annotation.Autowired
     public AlarmEvaluationService(PlaybookExecutor executor, AlarmEvaluationRepository repository,
-                                  SoarV2AutomationRuleService automationRules,
+                                  SoarAutomationRuleService automationRules,
                                   com.socp.soar.web.config.SoarRuntimeProperties properties) {
         this.executor = executor;
         this.repository = repository;
@@ -46,10 +46,8 @@ public class AlarmEvaluationService {
         this.properties = properties;
     }
 
-    private static com.socp.soar.web.config.SoarRuntimeProperties legacyOnlyProperties() {
-        com.socp.soar.web.config.SoarRuntimeProperties legacy = new com.socp.soar.web.config.SoarRuntimeProperties();
-        legacy.setV2EvaluationEnabled(false);
-        return legacy;
+    private static com.socp.soar.web.config.SoarRuntimeProperties defaultProperties() {
+        return new com.socp.soar.web.config.SoarRuntimeProperties();
     }
 
     @Transactional
@@ -88,12 +86,16 @@ public class AlarmEvaluationService {
 
         try {
             Map<String, Object> result = new LinkedHashMap<>();
-            // Single-path evaluation (design §8.1): V2 automation rules and the
+            // Single-path evaluation (design §8.1): SOAR automation rules and the
             // legacy executor must never both run for the same alarm, otherwise
             // one trigger fans out into duplicate response actions.
-            if (properties != null && properties.isV2EvaluationEnabled() && automationRules != null) {
+            if (automationRules != null) {
+                if (properties != null && !properties.isEvaluationEnabled()) {
+                    throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                            "SOAR event evaluation is disabled for this deployment");
+                }
                 Map<String, Object> envelope = new LinkedHashMap<>(alarm);
-                envelope.putIfAbsent("schemaVersion", "soar.event/v1");
+                envelope.putIfAbsent("schemaVersion", "soar.event");
                 envelope.putIfAbsent("eventId", "alert:" + alarmId + ":created:1");
                 envelope.putIfAbsent("eventType", "alert.created");
                 envelope.putIfAbsent("tenantId", tenant);
@@ -114,10 +116,6 @@ public class AlarmEvaluationService {
                 envelope.putIfAbsent("trace", trace);
                 result.put("automation", automationRules.evaluate(envelope));
             } else {
-                if (properties != null && !properties.isLegacyExecutionEnabled()) {
-                    throw new ResponseStatusException(HttpStatus.GONE,
-                            "legacy SOAR evaluation is disabled; use the /api/v2/events/evaluate route");
-                }
                 result.putAll(executor.evaluate(alarm));
             }
             receipt.setResultJson(MAPPER.writeValueAsString(result));

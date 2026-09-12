@@ -41,7 +41,7 @@ public final class SoarDryRunEngine {
         if (input != null) variables.putAll(input);
         variables.put("subject", subject == null ? Map.of() : new LinkedHashMap<>(subject));
         variables.put("trigger", new LinkedHashMap<>(variables));
-        // Keep expression namespaces aligned with a real V2 Workflow while
+        // Keep expression namespaces aligned with a real SOAR Workflow while
         // making it explicit that this is a simulation and has no durable
         // run identity or side effect capability.
         variables.put("run", Map.of("id", "dry-run", "runId", "dry-run",

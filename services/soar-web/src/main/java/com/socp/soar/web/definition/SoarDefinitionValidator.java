@@ -4,9 +4,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
-import com.socp.soar.web.domain.v2.DefinitionIssue;
-import com.socp.soar.web.domain.v2.DefinitionValidationResult;
-import com.socp.soar.web.domain.v2.SoarNodeType;
+import com.socp.soar.web.domain.DefinitionIssue;
+import com.socp.soar.web.domain.DefinitionValidationResult;
+import com.socp.soar.web.domain.SoarNodeType;
 import com.socp.soar.web.service.SoarActionCatalog;
 import com.socp.soar.web.connector.ActionDescriptor;
 import com.socp.soar.web.connector.SoarConnectorRegistry;
@@ -23,10 +23,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/** Structural validator for the safe V2 graph subset. */
+/** Structural validator for the safe SOAR graph subset. */
 @Component
 public class SoarDefinitionValidator {
-    public static final String SCHEMA_VERSION = "soar.playbook/v2";
+    public static final String SCHEMA_VERSION = "soar.playbook";
     public static final int MAX_BYTES = 256 * 1024;
     public static final int MAX_NODES = 200;
     public static final int MAX_NODE_EXECUTIONS = 500;

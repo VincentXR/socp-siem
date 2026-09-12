@@ -17,7 +17,7 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * 剧本存储——JPA + H2 文件库（Flyway V1 建表），重启不丢；接口与原内存版一致。
+ * 历史剧本存储——JPA + H2 文件库（由 Flyway 建表），重启不丢；保留接口以读取历史数据。
  * 种子剧本仅在空库时写入；actions 以 JSON 字符串持久化。
  */
 @Component

@@ -156,7 +156,7 @@ public class PlaybookExecutor {
             return requestApproval(pb, alarm);
         }
         // 双模式（2026-08-12）：Temporal 可用走分布式编排，不可用回退进程内
-        // Legacy V1 compatibility only: V2 admission never enters this
+        // Historical playbook compatibility only: admission never enters this
         // synchronous path when Temporal is unavailable.
         if (temporalExecutor.isAvailable()) {
             Map<String, Object> exec = temporalExecutor.run(pb, alarm);

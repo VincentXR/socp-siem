@@ -11,19 +11,21 @@ http://localhost:18080/alert-web/v3/api-docs       # direct Alert service
 ```
 
 The generated document is the source for client generation and review. The
-checked-in [`soar-2.0-openapi.yaml`](soar-2.0-openapi.yaml) is a reviewed V2
+checked-in [`soar-openapi.yaml`](soar-openapi.yaml) is a reviewed
 snapshot for design review and offline clients; it must be refreshed whenever
-the running V2 routes or schemas change, and it is not a substitute for the
+the running SOAR routes or schemas change, and it is not a substitute for the
 runtime document. `build/verify-soar.py` checks the snapshot's route and schema
-sentinels without pretending to generate OpenAPI from source. Both documents
-use the `v1` API contract version and describe the JWT bearer and
-`X-Tenant-Id` security schemes. A route is not considered a new contract just
-because the implementation moved between deployment units; preserve the
-context path and response envelope while migrating.
+sentinels without pretending to generate OpenAPI from source. SOAR keeps one
+unversioned `/api/...` surface and the `soar.*` schema identifiers; other
+platform services may retain their own compatibility policy. Both documents
+describe the JWT bearer and `X-Tenant-Id` security schemes. A route is not
+considered a new contract just because the implementation moved between
+deployment units; preserve the context path and response envelope.
 
 ## Compatibility policy
 
-- New public endpoints use `/api/v1/...`.
+- Services outside SOAR retain their existing compatibility policy. SOAR uses
+  the single unversioned `/api/...` surface described above.
 - Existing `/api/alarms` is retained as a compatibility route until clients
   have migrated; it must remain tenant- and role-protected.
 - Breaking request or response changes require a new version and a migration
@@ -37,7 +39,7 @@ Builds must include the OpenAPI dependency through `socp-starter` (servlet
 services) or the gateway's WebFlux dependency. A deployment smoke test should
 fetch the documents from every enabled service and fail if an expected document
 is unavailable. OpenAPI generation does not replace authorization tests: the
-negative RBAC and tenant-isolation tests remain the security oracle. V2 mutation
+negative RBAC and tenant-isolation tests remain the security oracle. Mutation
 requests use bounded DTOs; only event and rule-extension payloads intentionally
 remain JSON objects because their schemas are supplied by the connector/content
 boundary.

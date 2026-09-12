@@ -17,7 +17,7 @@ SPEC.loader.exec_module(MODULE)
 class VerifyOpenApiSdkTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.document = MODULE.load_yaml(ROOT / "docs" / "soar-2.0-openapi.yaml")
+        cls.document = MODULE.load_yaml(ROOT / "docs" / "soar-openapi.yaml")
 
     def test_snapshot_has_no_unresolved_references_and_required_contract(self):
         self.assertEqual(MODULE.validate_document(self.document), [])
@@ -26,14 +26,14 @@ class VerifyOpenApiSdkTest(unittest.TestCase):
         operations = MODULE.extract_operations(self.document)
         names = [operation.name for operation in operations]
         self.assertEqual(len(names), len(set(names)))
-        self.assertIn("postApiV2PlaybooksImport", names)
-        self.assertIn("putApiV2PlaybooksPlaybookIdVersionsVersion", names)
+        self.assertIn("postApiPlaybooksImport", names)
+        self.assertIn("putApiPlaybooksPlaybookIdVersionsVersion", names)
 
     def test_generated_client_contains_models_and_all_operations(self):
         source, operations = MODULE.generate_client(self.document)
         self.assertEqual(len(operations), 71)
         self.assertIn("export interface SoarApiResult", source)
-        self.assertIn("export class GeneratedSoarV2Client", source)
+        self.assertIn("export class GeneratedSoarClient", source)
         self.assertIn("credentials: 'include'", source)
         self.assertIn("Cookie", source)
         self.assertIn("If-Match", source)

@@ -254,7 +254,7 @@ services:
     mem_limit: 512m
 
   # ── SOAR 编排引擎（Temporal Workflow + Activity） ─────
-  # SOAR V2 requires Temporal for durable Workflow/Activity dispatch. When
+  # SOAR requires Temporal for durable Workflow/Activity dispatch. When
   # Temporal is unavailable, runs remain durably queued; there is no local
   # side-effect executor fallback.
   # prod profile 禁止关闭 Temporal。该服务位于 extra profile，避免本地开发默认占用资源。

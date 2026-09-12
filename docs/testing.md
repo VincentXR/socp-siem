@@ -30,8 +30,8 @@ python build/verify-openapi-sdk.py
 expected production artifact structure. `pnpm test` covers frontend API,
 navigation, resource-list, and resource-import contracts. `pnpm test:e2e`
 uses Playwright to cover cookie-backed login, viewer navigation denial, deep
-links, browser history, and the SOAR V2 draft/publish, run-inspection,
-approval, and manual-task browser flow (`e2e/soar-v2.spec.ts`).
+links, browser history, and the SOAR draft/publish, run-inspection,
+approval, and manual-task browser flow (`e2e/soar.spec.ts`).
 
 The browser flows install a catch-all network guard before their explicit
 endpoint mocks. Any newly introduced gateway/service request that is not

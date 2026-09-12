@@ -85,7 +85,7 @@ class SoarConnectorRegistryCoverageTest {
     void descriptorForActionResolvesKnownRefs() {
         assertThat(registry.descriptorForAction("socp.alert/add-tag").orElseThrow().id()).isEqualTo("socp.alert");
         assertThat(registry.descriptorForAction("socp.alert/get@1").orElseThrow().id()).isEqualTo("socp.alert");
-        assertThat(registry.descriptorForAction("socp.alert/get@v1")).isPresent();
+        assertThat(registry.descriptorForAction("socp.alert/get")).isPresent();
         assertThat(registry.descriptorForAction("endpoint/isolate").orElseThrow().id()).isEqualTo("endpoint");
     }
 

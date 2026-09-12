@@ -5,8 +5,8 @@ import com.socp.platform.tenant.context.TenantContext;
 import com.socp.soar.web.connector.ActionDescriptor;
 import com.socp.soar.web.connector.ConnectorDescriptor;
 import com.socp.soar.web.connector.SoarConnectorRegistry;
-import com.socp.soar.web.domain.v2.DefinitionIssue;
-import com.socp.soar.web.domain.v2.DefinitionValidationResult;
+import com.socp.soar.web.domain.DefinitionIssue;
+import com.socp.soar.web.domain.DefinitionValidationResult;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -29,7 +29,7 @@ import static org.mockito.Mockito.mock;
 class SoarDefinitionValidatorBranchesCoverageTest {
 
     private static final String START = "{\"id\":\"s\",\"type\":\"START\"}";
-    private static final String ACTION = "{\"id\":\"a\",\"type\":\"ACTION\",\"actionRef\":\"socp.notify/send@v1\"}";
+    private static final String ACTION = "{\"id\":\"a\",\"type\":\"ACTION\",\"actionRef\":\"socp.notify/send@1\"}";
     private static final String END = "{\"id\":\"e\",\"type\":\"END\",\"outcome\":\"SUCCEEDED\"}";
     private static final String SE_NODES = "[" + START + "," + ACTION + "," + END + "]";
     private static final String SE_EDGES = "[{\"from\":\"s\",\"to\":\"a\"},{\"from\":\"a\",\"to\":\"e\"}]";
@@ -56,12 +56,12 @@ class SoarDefinitionValidatorBranchesCoverageTest {
     // ---------------------------------------------------------------- helpers
 
     private static String definition(String nodes, String edges) {
-        return "{\"schemaVersion\":\"soar.playbook/v2\",\"entryNodeId\":\"s\",\"nodes\":" + nodes
+        return "{\"schemaVersion\":\"soar.playbook\",\"entryNodeId\":\"s\",\"nodes\":" + nodes
                 + ",\"edges\":" + edges + "}";
     }
 
     private static String definition(String limits, String nodes, String edges) {
-        return "{\"schemaVersion\":\"soar.playbook/v2\",\"entryNodeId\":\"s\",\"limits\":" + limits
+        return "{\"schemaVersion\":\"soar.playbook\",\"entryNodeId\":\"s\",\"limits\":" + limits
                 + ",\"nodes\":" + nodes + ",\"edges\":" + edges + "}";
     }
 
@@ -81,7 +81,7 @@ class SoarDefinitionValidatorBranchesCoverageTest {
     private static String parallelGraph(String parallelNodeExtras) {
         String p = "{\"id\":\"p\",\"type\":\"PARALLEL\"" + parallelNodeExtras + "}";
         String nodes = "[" + START + "," + p + "," + ACTION + ",{\"id\":\"b\",\"type\":\"ACTION\","
-                + "\"actionRef\":\"socp.notify/send@v1\"}," + END + "]";
+                + "\"actionRef\":\"socp.notify/send@1\"}," + END + "]";
         String edges = "[{\"from\":\"s\",\"to\":\"p\"},{\"from\":\"p\",\"to\":\"a\"},"
                 + "{\"from\":\"p\",\"to\":\"b\"},{\"from\":\"a\",\"to\":\"e\"},{\"from\":\"b\",\"to\":\"e\"}]";
         return definition(nodes, edges);
@@ -152,7 +152,7 @@ class SoarDefinitionValidatorBranchesCoverageTest {
 
     @Test
     void rejectsOversizedDefinition() {
-        String huge = "{\"schemaVersion\":\"soar.playbook/v2\",\"pad\":\"" + "x".repeat(300_000) + "\"}";
+        String huge = "{\"schemaVersion\":\"soar.playbook\",\"pad\":\"" + "x".repeat(300_000) + "\"}";
         assertHasError(huge, "DEFINITION_TOO_LARGE");
     }
 
@@ -169,7 +169,7 @@ class SoarDefinitionValidatorBranchesCoverageTest {
 
     @Test
     void rejectsUnsupportedSchemaVersion() {
-        assertHasError(definition(SE_NODES, SE_EDGES).replace("soar.playbook/v2", "soar.playbook/v1"),
+        assertHasError(definition(SE_NODES, SE_EDGES).replace("soar.playbook", "soar.playbook/unsupported"),
                 "UNSUPPORTED_SCHEMA_VERSION");
     }
 
@@ -181,7 +181,7 @@ class SoarDefinitionValidatorBranchesCoverageTest {
 
     @Test
     void requiresNonEmptyNodeArray() {
-        assertHasError("{\"schemaVersion\":\"soar.playbook/v2\",\"entryNodeId\":\"s\",\"edges\":[]}",
+        assertHasError("{\"schemaVersion\":\"soar.playbook\",\"entryNodeId\":\"s\",\"edges\":[]}",
                 "NODES_REQUIRED");
         assertHasError(definition("[]", "[]"), "NODES_REQUIRED");
         assertHasError(definition("{}", "[]"), "NODES_REQUIRED");
@@ -461,7 +461,7 @@ class SoarDefinitionValidatorBranchesCoverageTest {
 
     @Test
     void rejectsUnknownJoinStrategy() {
-        String nodes = "[" + START + ",{\"id\":\"a1\",\"type\":\"ACTION\",\"actionRef\":\"socp.notify/send@v1\"},"
+        String nodes = "[" + START + ",{\"id\":\"a1\",\"type\":\"ACTION\",\"actionRef\":\"socp.notify/send@1\"},"
                 + "{\"id\":\"j\",\"type\":\"JOIN\",\"strategy\":\"SOMETIMES\"}," + END + "]";
         String edges = "[{\"from\":\"s\",\"to\":\"a1\"},{\"from\":\"a1\",\"port\":\"success\",\"to\":\"j\"},"
                 + "{\"from\":\"a1\",\"port\":\"failure\",\"to\":\"j\"},{\"from\":\"j\",\"to\":\"e\"}]";
@@ -470,7 +470,7 @@ class SoarDefinitionValidatorBranchesCoverageTest {
 
     @Test
     void requiresTwoJoinBranches() {
-        String nodes = "[" + START + ",{\"id\":\"a1\",\"type\":\"ACTION\",\"actionRef\":\"socp.notify/send@v1\"},"
+        String nodes = "[" + START + ",{\"id\":\"a1\",\"type\":\"ACTION\",\"actionRef\":\"socp.notify/send@1\"},"
                 + "{\"id\":\"j\",\"type\":\"JOIN\"}," + END + "]";
         String edges = "[{\"from\":\"s\",\"to\":\"a1\"},{\"from\":\"a1\",\"to\":\"j\"},"
                 + "{\"from\":\"j\",\"to\":\"e\"}]";
@@ -650,7 +650,7 @@ class SoarDefinitionValidatorBranchesCoverageTest {
     void rejectsUndeclaredSwitchPort() {
         String nodes = "[" + START + ",{\"id\":\"sw\",\"type\":\"SWITCH\",\"expression\":\"true\","
                 + "\"cases\":[{\"port\":\"one\"}]},{\"id\":\"a1\",\"type\":\"ACTION\","
-                + "\"actionRef\":\"socp.notify/send@v1\"}," + END + "]";
+                + "\"actionRef\":\"socp.notify/send@1\"}," + END + "]";
         String edges = "[{\"from\":\"s\",\"to\":\"sw\"},{\"from\":\"sw\",\"port\":\"one\",\"to\":\"a1\"},"
                 + "{\"from\":\"sw\",\"port\":\"two\",\"to\":\"e\"},{\"from\":\"a1\",\"to\":\"e\"}]";
         assertHasError(definition(nodes, edges), "EDGE_PORT_NOT_ALLOWED");
@@ -680,7 +680,7 @@ class SoarDefinitionValidatorBranchesCoverageTest {
 
     @Test
     void rejectsBadJoinPort() {
-        String nodes = "[" + START + ",{\"id\":\"a1\",\"type\":\"ACTION\",\"actionRef\":\"socp.notify/send@v1\"},"
+        String nodes = "[" + START + ",{\"id\":\"a1\",\"type\":\"ACTION\",\"actionRef\":\"socp.notify/send@1\"},"
                 + "{\"id\":\"j\",\"type\":\"JOIN\"}," + END + "]";
         String edges = "[{\"from\":\"s\",\"to\":\"a1\"},{\"from\":\"a1\",\"port\":\"success\",\"to\":\"j\"},"
                 + "{\"from\":\"a1\",\"port\":\"failure\",\"to\":\"j\"},"
@@ -763,7 +763,7 @@ class SoarDefinitionValidatorBranchesCoverageTest {
 
     @Test
     void warnsWhenHighRiskActionLacksApprovalGate() {
-        String isolate = ACTION.replace("socp.notify/send@v1", "endpoint/isolate-host@1");
+        String isolate = ACTION.replace("socp.notify/send@1", "endpoint/isolate-host@1");
         String document = definition("[" + START + "," + isolate + "," + END + "]", SE_EDGES);
         assertHasWarning(document, "HIGH_RISK_ACTIONS_PRESENT");
         assertHasWarning(document, "HIGH_RISK_APPROVAL_GATE_RECOMMENDED");
@@ -771,7 +771,7 @@ class SoarDefinitionValidatorBranchesCoverageTest {
 
     @Test
     void highRiskActionCoveredByGateProducesNoCoverageWarning() {
-        String isolate = ACTION.replace("socp.notify/send@v1", "endpoint/isolate-host@1");
+        String isolate = ACTION.replace("socp.notify/send@1", "endpoint/isolate-host@1");
         String nodes = "[" + START + ",{\"id\":\"ap\",\"type\":\"APPROVAL\"}," + isolate + "," + END + "]";
         String edges = "[{\"from\":\"s\",\"to\":\"ap\"},{\"from\":\"ap\",\"port\":\"approved\",\"to\":\"a\"},"
                 + "{\"from\":\"ap\",\"port\":\"rejected\",\"to\":\"e\"},{\"from\":\"a\",\"to\":\"e\"}]";

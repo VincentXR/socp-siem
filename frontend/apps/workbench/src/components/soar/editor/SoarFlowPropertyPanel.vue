@@ -11,7 +11,7 @@ import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { CONDITION_OPERATORS, compileCondition, parseCondition, type ExpressionCondition } from './conditionExpression'
 import FieldConditionBuilder from '../../FieldConditionBuilder.vue'
 import VariableSelector, { type VariableOption } from '../../VariableSelector.vue'
-import { listV2Actions, listV2Connections, listV2Playbooks, listV2Versions, type SoarV2ActionDescriptor, type SoarV2Connection } from '../../../api'
+import { listActions, listConnections, listPlaybooks, listVersions, type SoarActionDescriptor, type SoarConnection } from '../../../api'
 import { NODE_TYPE_ORDER, SOAR_NODE_REGISTRY } from './nodeRegistry'
 import { rawNodeType, isUnsupportedNodeType, readSwitchCases, type SoarFlowApi } from './useDefinitionFlow'
 import type { FieldDef, RuleCondition } from '../../../api'
@@ -65,8 +65,8 @@ const conditionFields = computed<FieldDef[]>(() => variableOptions.value.map((op
 })))
 
 /* ---------- ACTION catalog (loaded lazily) ---------- */
-const actions = ref<SoarV2ActionDescriptor[]>([])
-const connections = ref<SoarV2Connection[]>([])
+const actions = ref<SoarActionDescriptor[]>([])
+const connections = ref<SoarConnection[]>([])
 const actionCatalogState = ref<'idle' | 'loading' | 'loaded' | 'error'>('idle')
 const subPlaybookVersions = ref<Array<{ id: string; playbookName: string; version: number; status: string }>>([])
 const subPlaybookCatalogState = ref<'idle' | 'loading' | 'loaded' | 'error'>('idle')
@@ -76,8 +76,8 @@ async function loadActionCatalog(): Promise<void> {
   actionCatalogState.value = 'loading'
   try {
     const [actionResult, connectionResult] = await Promise.allSettled([
-      listV2Actions(),
-      listV2Connections(0, 100),
+      listActions(),
+      listConnections(0, 100),
     ])
     if (actionResult.status === 'fulfilled') actions.value = actionResult.value
     if (connectionResult.status === 'fulfilled') connections.value = connectionResult.value.items
@@ -112,9 +112,9 @@ async function loadSubPlaybookCatalog(): Promise<void> {
   if (subPlaybookCatalogState.value === 'loading' || subPlaybookCatalogState.value === 'loaded') return
   subPlaybookCatalogState.value = 'loading'
   try {
-    const page = await listV2Playbooks(0, 100)
+    const page = await listPlaybooks(0, 100)
     const results = await Promise.allSettled(page.items.map(async playbook => {
-      const versions = await listV2Versions(playbook.id)
+      const versions = await listVersions(playbook.id)
       return versions
         .filter(version => version.status === 'PUBLISHED')
         .map(version => ({ id: version.id, playbookName: playbook.name, version: version.version, status: version.status }))
@@ -419,7 +419,7 @@ function showAdvanced(): void {
   syncJsonEditors()
 }
 
-const selectedAction = computed<SoarV2ActionDescriptor | undefined>(() => {
+const selectedAction = computed<SoarActionDescriptor | undefined>(() => {
   const ref = props.node ? String(props.node.actionRef ?? '') : ''
   return ref ? actions.value.find(action => action.actionRef === ref) : undefined
 })
@@ -657,8 +657,8 @@ function subPlaybookVersionKnown(id: string): boolean {
 
 <template>
   <aside class="soar-flow-inspector" :aria-label="t('soar.property.node')">
-    <div class="soar-v2-panel-title">{{ t('soar.propertyPanelTitle') }}</div>
-    <div v-if="props.readOnly" class="soar-flow-inspector-readonly">{{ t('soarV2.readOnly') }}</div>
+    <div class="soar-panel-title">{{ t('soar.propertyPanelTitle') }}</div>
+    <div v-if="props.readOnly" class="soar-flow-inspector-readonly">{{ t('soar.readOnly') }}</div>
 
     <div v-if="node" class="soar-flow-inspector-content" :class="{ 'soar-flow-inspector-content-readonly': props.readOnly }">
       <div class="soar-flow-inspector-head">
@@ -900,7 +900,7 @@ function subPlaybookVersionKnown(id: string): boolean {
         {{ t('soar.property.publishedVersion') }}
         <el-select :model-value="scalar(node, 'playbookVersionId')" :disabled="props.readOnly" filterable default-first-option clearable :loading="subPlaybookCatalogState === 'loading'" :placeholder="t('soar.property.searchPublishedVersion')" @change="updateScalar('playbookVersionId', String($event ?? ''))">
           <el-option v-if="scalar(node, 'playbookVersionId') && !subPlaybookVersionKnown(scalar(node, 'playbookVersionId'))" :label="scalar(node, 'playbookVersionId')" :value="scalar(node, 'playbookVersionId')" />
-          <el-option v-for="version in subPlaybookVersions" :key="version.id" :label="`${version.playbookName} · v${version.version}`" :value="version.id"><div class="soar-flow-option"><b>{{ version.playbookName }} · v{{ version.version }}</b><small>{{ version.id }} · {{ version.status }}</small></div></el-option>
+          <el-option v-for="version in subPlaybookVersions" :key="version.id" :label="`${version.playbookName} · Revision ${version.version}`" :value="version.id"><div class="soar-flow-option"><b>{{ version.playbookName }} · Revision {{ version.version }}</b><small>{{ version.id }} · {{ version.status }}</small></div></el-option>
         </el-select>
         <small v-if="subPlaybookCatalogState === 'error'" class="soar-flow-catalog-warning">{{ t('soar.property.versionCatalogUnavailable') }}</small>
       </label>

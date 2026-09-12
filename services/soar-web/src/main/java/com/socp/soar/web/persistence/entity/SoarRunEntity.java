@@ -11,7 +11,7 @@ import jakarta.persistence.Version;
 
 import java.time.Instant;
 
-/** Durable V2 run projection. */
+/** Durable SOAR run projection. */
 @Entity
 @Table(name = "t_soar_run", uniqueConstraints = @UniqueConstraint(
         name = "uq_soar_run_request", columnNames = {"tenant_id", "request_id"}))

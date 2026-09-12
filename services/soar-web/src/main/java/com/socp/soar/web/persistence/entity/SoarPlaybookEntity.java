@@ -10,7 +10,7 @@ import jakarta.persistence.Version;
 
 import java.time.Instant;
 
-/** SOAR 2.0 playbook metadata. Runtime logic lives in immutable version rows. */
+/** SOAR playbook metadata. Runtime logic lives in immutable version rows. */
 @Entity
 @Table(name = "t_soar_playbook")
 public class SoarPlaybookEntity implements Persistable<String> {

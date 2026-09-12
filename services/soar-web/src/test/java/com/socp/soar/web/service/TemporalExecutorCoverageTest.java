@@ -3,8 +3,8 @@ package com.socp.soar.web.service;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.soar.web.domain.Playbook;
 import com.socp.soar.web.temporal.PlaybookWorkflow;
-import com.socp.soar.web.temporal.request.SoarV2WorkflowRequest;
-import com.socp.soar.web.temporal.v2.SoarV2Workflow;
+import com.socp.soar.web.temporal.request.SoarWorkflowRequest;
+import com.socp.soar.web.temporal.SoarWorkflow;
 import io.temporal.api.enums.v1.WorkflowExecutionStatus;
 import io.temporal.client.WorkflowClient;
 import io.temporal.client.WorkflowExecutionDescription;
@@ -32,7 +32,7 @@ import static org.mockito.Mockito.verify;
 
 /**
  * Unit coverage for the Temporal dual-mode dispatcher: availability probe,
- * V2 signal routing and describe mapping. WorkflowClient/WorkflowStub are
+ *  signal routing and describe mapping. WorkflowClient/WorkflowStub are
  * Mockito mocks, so no Temporal server is required.
  */
 @ExtendWith(MockitoExtension.class)
@@ -41,7 +41,7 @@ class TemporalExecutorCoverageTest {
     @Mock
     private WorkflowClient workflowClient;
     @Mock
-    private SoarV2Workflow v2Stub;
+    private SoarWorkflow workflowStub;
     @Mock
     private WorkflowStub untypedStub;
 
@@ -65,32 +65,32 @@ class TemporalExecutorCoverageTest {
     @Test
     void unreachableTargetMarksExecutorUnavailableAndLogsWarning() {
         // Port 1 on loopback refuses the probe socket immediately; this covers
-        // the catch path (probe failure) and the warn log for the queued V2 dispatch.
+        // the catch path (probe failure) and the warn log for the queued SOAR dispatch.
         TemporalExecutor executor = new TemporalExecutor(workflowClient, true, "127.0.0.1:1");
 
         assertThat(executor.isAvailable()).isFalse();
     }
 
     @Test
-    void startV2ShortCircuitsWhenTemporalIsUnavailable() {
+    void startWorkflowShortCircuitsWhenTemporalIsUnavailable() {
         TemporalExecutor executor = new TemporalExecutor(workflowClient, false, "localhost:7233");
-        SoarV2WorkflowRequest request = new SoarV2WorkflowRequest(
+        SoarWorkflowRequest request = new SoarWorkflowRequest(
                 "tenant-a", "run-1", "ver-1", "{}", "{}");
 
-        assertThatThrownBy(() -> executor.startV2(request, "soar-v2-tenant-a-run-1"))
+        assertThatThrownBy(() -> executor.startWorkflow(request, "soar-tenant-a-run-1"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Temporal is not available");
     }
 
     @Test
-    void startV2BuildsDeterministicOptionsBeforeHandingOffToTemporal() {
+    void startWorkflowBuildsDeterministicOptionsBeforeHandingOffToTemporal() {
         TemporalExecutor executor = new TemporalExecutor(workflowClient, true, "localhost:7233");
         // Warm the availability cache so no socket probe is attempted.
         ReflectionTestUtils.setField(executor, "cachedAvailable", Boolean.TRUE);
         ReflectionTestUtils.setField(executor, "cachedAt", System.currentTimeMillis());
-        given(workflowClient.newWorkflowStub(eq(SoarV2Workflow.class), any(WorkflowOptions.class)))
-                .willReturn(v2Stub);
-        SoarV2WorkflowRequest request = new SoarV2WorkflowRequest(
+        given(workflowClient.newWorkflowStub(eq(SoarWorkflow.class), any(WorkflowOptions.class)))
+                .willReturn(workflowStub);
+        SoarWorkflowRequest request = new SoarWorkflowRequest(
                 "tenant-a", "run-1", "ver-1", "{}", "{}");
 
         // WorkflowClient.start hands off through the stub; with a Mockito
@@ -98,114 +98,114 @@ class TemporalExecutorCoverageTest {
         // gRPC traffic. Everything up to that hand-off (availability gate,
         // workflow id, task queue, execution timeout) is deterministic and
         // verified below.
-        executor.startV2(request, "soar-v2-tenant-a-run-1");
+        executor.startWorkflow(request, "soar-tenant-a-run-1");
 
         ArgumentCaptor<WorkflowOptions> options = ArgumentCaptor.forClass(WorkflowOptions.class);
-        verify(workflowClient).newWorkflowStub(eq(SoarV2Workflow.class), options.capture());
-        assertThat(options.getValue().getWorkflowId()).isEqualTo("soar-v2-tenant-a-run-1");
-        assertThat(options.getValue().getTaskQueue()).isEqualTo(SoarV2Workflow.TASK_QUEUE);
+        verify(workflowClient).newWorkflowStub(eq(SoarWorkflow.class), options.capture());
+        assertThat(options.getValue().getWorkflowId()).isEqualTo("soar-tenant-a-run-1");
+        assertThat(options.getValue().getTaskQueue()).isEqualTo(SoarWorkflow.TASK_QUEUE);
     }
 
     @Test
-    void cancelV2SendsCancellationSignalWithStableWorkflowId() {
-        given(workflowClient.newWorkflowStub(eq(SoarV2Workflow.class), any(WorkflowOptions.class)))
-                .willReturn(v2Stub);
+    void cancelWorkflowSendsCancellationSignalWithStableWorkflowId() {
+        given(workflowClient.newWorkflowStub(eq(SoarWorkflow.class), any(WorkflowOptions.class)))
+                .willReturn(workflowStub);
 
-        executor().cancelV2("wf-cancel");
+        executor().cancelWorkflow("wf-cancel");
 
-        verify(v2Stub).cancel();
+        verify(workflowStub).cancel();
         assertThat(capturedOptions().getWorkflowId()).isEqualTo("wf-cancel");
     }
 
     @Test
-    void decideV2RoutesApprovalAndRejectionSignals() {
-        given(workflowClient.newWorkflowStub(eq(SoarV2Workflow.class), any(WorkflowOptions.class)))
-                .willReturn(v2Stub);
+    void decideRoutesApprovalAndRejectionSignals() {
+        given(workflowClient.newWorkflowStub(eq(SoarWorkflow.class), any(WorkflowOptions.class)))
+                .willReturn(workflowStub);
 
-        executor().decideV2("wf-decide", true);
-        executor().decideV2("wf-decide", false);
+        executor().decide("wf-decide", true);
+        executor().decide("wf-decide", false);
 
-        verify(v2Stub).approve();
-        verify(v2Stub).reject();
+        verify(workflowStub).approve();
+        verify(workflowStub).reject();
     }
 
     @Test
-    void decideGateV2RoutesGateScopedSignalsIncludingExpiry() {
-        given(workflowClient.newWorkflowStub(eq(SoarV2Workflow.class), any(WorkflowOptions.class)))
-                .willReturn(v2Stub);
+    void decideGateRoutesGateScopedSignalsIncludingExpiry() {
+        given(workflowClient.newWorkflowStub(eq(SoarWorkflow.class), any(WorkflowOptions.class)))
+                .willReturn(workflowStub);
 
-        executor().decideGateV2("wf-gate", true, "gate-1", false);
-        executor().decideGateV2("wf-gate", false, "gate-1", false);
-        executor().decideGateV2("wf-gate", true, "gate-1", true);
+        executor().decideGate("wf-gate", true, "gate-1", false);
+        executor().decideGate("wf-gate", false, "gate-1", false);
+        executor().decideGate("wf-gate", true, "gate-1", true);
 
-        verify(v2Stub).approveGate("gate-1");
-        verify(v2Stub).rejectGate("gate-1");
-        verify(v2Stub).expireGate("gate-1");
+        verify(workflowStub).approveGate("gate-1");
+        verify(workflowStub).rejectGate("gate-1");
+        verify(workflowStub).expireGate("gate-1");
     }
 
     @Test
     void completeManualTaskDefaultsNullInputToEmptyJson() {
-        given(workflowClient.newWorkflowStub(eq(SoarV2Workflow.class), any(WorkflowOptions.class)))
-                .willReturn(v2Stub);
+        given(workflowClient.newWorkflowStub(eq(SoarWorkflow.class), any(WorkflowOptions.class)))
+                .willReturn(workflowStub);
 
         executor().completeManualTask("wf-task", null);
         executor().completeManualTask("wf-task", "{\"answer\":42}");
 
-        verify(v2Stub).completeManualTask("{}");
-        verify(v2Stub).completeManualTask("{\"answer\":42}");
+        verify(workflowStub).completeManualTask("{}");
+        verify(workflowStub).completeManualTask("{\"answer\":42}");
     }
 
     @Test
     void completeManualTaskForNodeSendsNodeScopedCompletion() {
-        given(workflowClient.newWorkflowStub(eq(SoarV2Workflow.class), any(WorkflowOptions.class)))
-                .willReturn(v2Stub);
+        given(workflowClient.newWorkflowStub(eq(SoarWorkflow.class), any(WorkflowOptions.class)))
+                .willReturn(workflowStub);
 
         executor().completeManualTaskForNode("wf-task", "node-7", null);
 
-        verify(v2Stub).completeManualTaskForNode("node-7", "{}");
+        verify(workflowStub).completeManualTaskForNode("node-7", "{}");
     }
 
     @Test
     void resolveUnknownSendsResolutionSignal() {
-        given(workflowClient.newWorkflowStub(eq(SoarV2Workflow.class), any(WorkflowOptions.class)))
-                .willReturn(v2Stub);
+        given(workflowClient.newWorkflowStub(eq(SoarWorkflow.class), any(WorkflowOptions.class)))
+                .willReturn(workflowStub);
 
         executor().resolveUnknown("wf-unknown", "node-2", "SUCCEEDED", "evidence-json", "operator proof");
 
-        verify(v2Stub).resolveUnknown("node-2", "SUCCEEDED", "evidence-json", "operator proof");
+        verify(workflowStub).resolveUnknown("node-2", "SUCCEEDED", "evidence-json", "operator proof");
     }
 
     @Test
-    void describeV2ReturnsUnknownForBlankIdsOrDisabledExecutor() {
+    void describeWorkflowReturnsUnknownForBlankIdsOrDisabledExecutor() {
         TemporalExecutor disabled = new TemporalExecutor(workflowClient, false, "localhost:7233");
 
-        assertThat(executor().describeV2(null)).isEqualTo(TemporalExecutor.V2WorkflowState.UNKNOWN);
-        assertThat(executor().describeV2("   ")).isEqualTo(TemporalExecutor.V2WorkflowState.UNKNOWN);
-        assertThat(disabled.describeV2("wf-1")).isEqualTo(TemporalExecutor.V2WorkflowState.UNKNOWN);
+        assertThat(executor().describeWorkflow(null)).isEqualTo(TemporalExecutor.WorkflowState.UNKNOWN);
+        assertThat(executor().describeWorkflow("   ")).isEqualTo(TemporalExecutor.WorkflowState.UNKNOWN);
+        assertThat(disabled.describeWorkflow("wf-1")).isEqualTo(TemporalExecutor.WorkflowState.UNKNOWN);
     }
 
     @Test
-    void describeV2MapsRunningAndPausedToOpenAndEverythingElseToClosed() {
+    void describeWorkflowMapsRunningAndPausedToOpenAndEverythingElseToClosed() {
         given(workflowClient.newUntypedWorkflowStub("wf-open")).willReturn(untypedStub);
         assertThat(describe(WorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_RUNNING))
-                .isEqualTo(TemporalExecutor.V2WorkflowState.OPEN);
+                .isEqualTo(TemporalExecutor.WorkflowState.OPEN);
         assertThat(describe(WorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_PAUSED))
-                .isEqualTo(TemporalExecutor.V2WorkflowState.OPEN);
+                .isEqualTo(TemporalExecutor.WorkflowState.OPEN);
         assertThat(describe(WorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_COMPLETED))
-                .isEqualTo(TemporalExecutor.V2WorkflowState.CLOSED);
+                .isEqualTo(TemporalExecutor.WorkflowState.CLOSED);
         assertThat(describe(WorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_TERMINATED))
-                .isEqualTo(TemporalExecutor.V2WorkflowState.CLOSED);
+                .isEqualTo(TemporalExecutor.WorkflowState.CLOSED);
         // A missing status is treated as CLOSED, never as a false "still open".
-        assertThat(describe(null)).isEqualTo(TemporalExecutor.V2WorkflowState.CLOSED);
+        assertThat(describe(null)).isEqualTo(TemporalExecutor.WorkflowState.CLOSED);
     }
 
     @Test
-    void describeV2StaysUnknownWhenDescribeFails() {
+    void describeWorkflowStaysUnknownWhenDescribeFails() {
         given(workflowClient.newUntypedWorkflowStub("wf-broken")).willReturn(untypedStub);
         given(untypedStub.describe()).willThrow(new IllegalStateException("temporal down"));
 
-        assertThat(executor().describeV2("wf-broken"))
-                .isEqualTo(TemporalExecutor.V2WorkflowState.UNKNOWN);
+        assertThat(executor().describeWorkflow("wf-broken"))
+                .isEqualTo(TemporalExecutor.WorkflowState.UNKNOWN);
     }
 
     @Test
@@ -233,16 +233,16 @@ class TemporalExecutorCoverageTest {
         return executor;
     }
 
-    private TemporalExecutor.V2WorkflowState describe(WorkflowExecutionStatus status) {
+    private TemporalExecutor.WorkflowState describe(WorkflowExecutionStatus status) {
         WorkflowExecutionDescription description = mock(WorkflowExecutionDescription.class);
         given(description.getStatus()).willReturn(status);
         given(untypedStub.describe()).willReturn(description);
-        return executor().describeV2("wf-open");
+        return executor().describeWorkflow("wf-open");
     }
 
     private WorkflowOptions capturedOptions() {
         ArgumentCaptor<WorkflowOptions> options = ArgumentCaptor.forClass(WorkflowOptions.class);
-        verify(workflowClient).newWorkflowStub(eq(SoarV2Workflow.class), options.capture());
+        verify(workflowClient).newWorkflowStub(eq(SoarWorkflow.class), options.capture());
         return options.getValue();
     }
 }

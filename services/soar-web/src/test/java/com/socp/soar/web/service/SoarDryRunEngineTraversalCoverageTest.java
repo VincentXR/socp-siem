@@ -44,7 +44,7 @@ class SoarDryRunEngineTraversalCoverageTest {
     void walksStartActionEnd() {
         Map<String, Object> output = engine.run("""
                 {
-                  "schemaVersion": "soar.playbook/v2",
+                  "schemaVersion": "soar.playbook",
                   "entryNodeId": "start",
                   "nodes": [
                     {"id": "start", "type": "START"},
@@ -74,7 +74,7 @@ class SoarDryRunEngineTraversalCoverageTest {
     void conditionRoutesTrueAndFalseBranches() {
         String definition = """
                 {
-                  "schemaVersion": "soar.playbook/v2",
+                  "schemaVersion": "soar.playbook",
                   "entryNodeId": "start",
                   "nodes": [
                     {"id": "start", "type": "START"},
@@ -112,7 +112,7 @@ class SoarDryRunEngineTraversalCoverageTest {
     void switchResolvesCasePortAndDeclaredDefaultPort() {
         String definition = """
                 {
-                  "schemaVersion": "soar.playbook/v2",
+                  "schemaVersion": "soar.playbook",
                   "entryNodeId": "start",
                   "nodes": [
                     {"id": "start", "type": "START"},
@@ -150,7 +150,7 @@ class SoarDryRunEngineTraversalCoverageTest {
     void parallelPlansBranchesAndJumpsToCommonJoin() {
         Map<String, Object> output = engine.run("""
                 {
-                  "schemaVersion": "soar.playbook/v2",
+                  "schemaVersion": "soar.playbook",
                   "entryNodeId": "start",
                   "nodes": [
                     {"id": "start", "type": "START"},
@@ -188,7 +188,7 @@ class SoarDryRunEngineTraversalCoverageTest {
     void forEachPlansBoundedIterationsAndTakesDonePort() {
         Map<String, Object> output = engine.run("""
                 {
-                  "schemaVersion": "soar.playbook/v2",
+                  "schemaVersion": "soar.playbook",
                   "entryNodeId": "start",
                   "nodes": [
                     {"id": "start", "type": "START"},
@@ -222,7 +222,7 @@ class SoarDryRunEngineTraversalCoverageTest {
     void setVariableWritesVarsNamespaceAndFeedsFollowingCondition() {
         Map<String, Object> output = engine.run("""
                 {
-                  "schemaVersion": "soar.playbook/v2",
+                  "schemaVersion": "soar.playbook",
                   "entryNodeId": "start",
                   "nodes": [
                     {"id": "start", "type": "START"},
@@ -259,7 +259,7 @@ class SoarDryRunEngineTraversalCoverageTest {
         // instead of spinning to the 500-step ceiling.
         Map<String, Object> output = engine.run("""
                 {
-                  "schemaVersion": "soar.playbook/v2",
+                  "schemaVersion": "soar.playbook",
                   "entryNodeId": "start",
                   "nodes": [
                     {"id": "start", "type": "START"},

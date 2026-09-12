@@ -17,7 +17,7 @@ import type { EditorDefinition, EditorNode, SoarNodeType, ValidationIssue } from
 /** Golden-template-like definition with CONDITION true/false + APPROVAL edges and a SWITCH case layout. */
 function sampleDefinition(): EditorDefinition {
   return {
-    schemaVersion: 'soar.playbook/v2',
+    schemaVersion: 'soar.playbook',
     entryNodeId: 'start',
     limits: { maxNodeExecutions: 500, maxParallelism: 10 },
     nodes: [
@@ -134,7 +134,7 @@ describe('definition <-> Vue Flow mapping', () => {
 
     // an engine-backed type is now an editable, connectable node
     const definition = normalizeDefinition({
-      schemaVersion: 'soar.playbook/v2',
+      schemaVersion: 'soar.playbook',
       entryNodeId: 'start',
       nodes: [
         { id: 'start', type: 'START', name: 'Start' },

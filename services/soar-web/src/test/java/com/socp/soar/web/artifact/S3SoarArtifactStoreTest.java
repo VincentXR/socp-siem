@@ -46,9 +46,9 @@ class S3SoarArtifactStoreTest {
         SoarArtifactStore.StoredArtifact saved = store.put("tenant/a", "run-1", "artifact-1",
                 "application/json", "{\"ok\":true}".getBytes(StandardCharsets.UTF_8));
 
-        assertThat(saved.storageRef()).isEqualTo("s3://soar-artifacts/soar/v2/x-584a11c77f870c594a006addb001b6af9cfb03baca2d4081942d67565a14a245/run-1/artifact-1");
+        assertThat(saved.storageRef()).isEqualTo("s3://soar-artifacts/soar/x-584a11c77f870c594a006addb001b6af9cfb03baca2d4081942d67565a14a245/run-1/artifact-1");
         assertThat(saved.sha256()).hasSize(64);
-        assertThat(requestPath.get()).isEqualTo("/soar-artifacts/soar/v2/x-584a11c77f870c594a006addb001b6af9cfb03baca2d4081942d67565a14a245/run-1/artifact-1");
+        assertThat(requestPath.get()).isEqualTo("/soar-artifacts/soar/x-584a11c77f870c594a006addb001b6af9cfb03baca2d4081942d67565a14a245/run-1/artifact-1");
         assertThat(authorization.get()).startsWith("AWS4-HMAC-SHA256 Credential=access-key/")
                 .contains("SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date");
         assertThat(new String(store.read(saved.storageRef()).orElseThrow(), StandardCharsets.UTF_8))

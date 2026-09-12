@@ -225,10 +225,9 @@ if new_alarm:
               alarm_evs[0].get("message", "")[:100] if alarm_evs else "")
 
     def my_execs():
-        # SOAR V2 is the production path.  Do not use the retired V1
-        # execution endpoint here: a passing full-stack check must prove that
-        # an alert reached the durable Run projection.
-        st_, payload = call(U["soar-web"] + "/soar-web/api/v2/runs?size=200")
+        # SOAR is the production path. A passing full-stack check must prove
+        # that an alert reached the durable Run projection.
+        st_, payload = call(U["soar-web"] + "/soar-web/api/runs?size=200")
         data = unwrap(payload)
         if isinstance(data, dict):
             data = data.get("items", [])
@@ -244,7 +243,7 @@ if new_alarm:
         return matched or None
 
     execs = wait_for(my_execs) or []
-    check("SOAR V2 durable Run 已接收", len(execs) > 0,
+    check("SOAR durable Run 已接收", len(execs) > 0,
           [e.get("status") for e in execs][:3])
 
 # ---------------------------------------------------------------- 6. 查找表 / 合规

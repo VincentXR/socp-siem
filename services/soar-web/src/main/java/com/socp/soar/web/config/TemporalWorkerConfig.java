@@ -1,9 +1,9 @@
 package com.socp.soar.web.config;
 import com.socp.soar.web.temporal.PlaybookActivity;
 import com.socp.soar.web.temporal.PlaybookWorkflowImpl;
-import com.socp.soar.web.temporal.v2.SoarV2Activity;
-import com.socp.soar.web.temporal.v2.SoarV2Workflow;
-import com.socp.soar.web.temporal.v2.SoarV2WorkflowImpl;
+import com.socp.soar.web.temporal.SoarActivity;
+import com.socp.soar.web.temporal.SoarWorkflow;
+import com.socp.soar.web.temporal.SoarWorkflowImpl;
 import io.temporal.client.WorkflowClient;
 import io.temporal.client.WorkflowClientOptions;
 import io.temporal.serviceclient.WorkflowServiceStubs;
@@ -20,7 +20,7 @@ import org.springframework.context.annotation.Configuration;
  *
  * <p>WorkflowClient 懒连接（连不上不抛错）；WorkerFactory.start() 即使服务端不可达
  * 也只是轮询线程空转，不阻塞 Spring 启动。真正的可用性判定在 {@link TemporalExecutor#isAvailable()}。
- * 开关：socp.temporal.enabled=false 时不启动 Worker；V2 运行仍保持持久化 QUEUED，不走进程内降级。
+ * 开关：socp.temporal.enabled=false 时不启动 Worker； 运行仍保持持久化 QUEUED，不走进程内降级。
  */
 @Configuration
 public class TemporalWorkerConfig {
@@ -39,26 +39,26 @@ public class TemporalWorkerConfig {
     }
 
     @Bean(destroyMethod = "shutdown")
-    public WorkerFactory workerFactory(WorkflowClient client, PlaybookActivity activity,
-                                       SoarV2Activity v2Activity,
+    public WorkerFactory workerFactory(WorkflowClient client, PlaybookActivity playbookActivity,
+                                       SoarActivity soarActivity,
                                        TemporalProperties properties) {
         if (!properties.isEnabled()) {
             log.info("socp.temporal.enabled=false，跳过 Temporal Worker");
             return WorkerFactory.newInstance(client);
         }
         WorkerFactory factory = WorkerFactory.newInstance(client);
-        Worker worker = factory.newWorker(com.socp.soar.web.temporal.PlaybookWorkflow.TASK_QUEUE);
-        worker.registerWorkflowImplementationTypes(PlaybookWorkflowImpl.class);
-        worker.registerActivitiesImplementations(activity);
-        Worker v2Worker = factory.newWorker(SoarV2Workflow.TASK_QUEUE);
-        v2Worker.registerWorkflowImplementationTypes(SoarV2WorkflowImpl.class);
-        v2Worker.registerActivitiesImplementations(v2Activity);
+        Worker playbookWorker = factory.newWorker(com.socp.soar.web.temporal.PlaybookWorkflow.TASK_QUEUE);
+        playbookWorker.registerWorkflowImplementationTypes(PlaybookWorkflowImpl.class);
+        playbookWorker.registerActivitiesImplementations(playbookActivity);
+        Worker soarWorker = factory.newWorker(SoarWorkflow.TASK_QUEUE);
+        soarWorker.registerWorkflowImplementationTypes(SoarWorkflowImpl.class);
+        soarWorker.registerActivitiesImplementations(soarActivity);
         try {
             factory.start();
             log.info("Temporal Worker 已启动（taskQueue={}）", com.socp.soar.web.temporal.PlaybookWorkflow.TASK_QUEUE);
         } catch (Exception e) {
             // Keep the worker bean alive so the durable dispatcher can retry later.
-            log.warn("Temporal Worker start failed; V2 runs remain queued: {}", e.getMessage());
+            log.warn("Temporal Worker start failed; SOAR runs remain queued: {}", e.getMessage());
         }
         return factory;
     }

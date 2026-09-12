@@ -37,8 +37,8 @@ public class SoarArtifactRetentionWorker {
         this.artifactStore = artifactStore;
     }
 
-    @Scheduled(fixedDelayString = "${socp.soar.v2.artifact-retention-poll-ms:3600000}",
-            initialDelayString = "${socp.soar.v2.artifact-retention-initial-delay-ms:60000}")
+    @Scheduled(fixedDelayString = "${socp.soar.artifact-retention-poll-ms:3600000}",
+            initialDelayString = "${socp.soar.artifact-retention-initial-delay-ms:60000}")
     @TenantSystemJob
     public void tick() {
         Instant now = Instant.now();

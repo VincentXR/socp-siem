@@ -9,7 +9,7 @@
   "attackTags": ["T1070"],
   "testSample": {"eventId": "sample-benign-1", "eventType": "alert.created"},
   "definition": {
-    "schemaVersion": "soar.playbook/v2", "entryNodeId": "start",
+    "schemaVersion": "soar.playbook", "entryNodeId": "start",
     "nodes": [
       {"id":"start","type":"START","name":"Start"},
       {"id":"condition","type":"CONDITION","name":"Benign?","expression":"data.alert.isBenign == true"},

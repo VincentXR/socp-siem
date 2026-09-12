@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live SOAR V2 integration and cross-instance admission verification.
+"""Live SOAR integration and cross-instance admission verification.
 
 The hermetic ``verify-soar.py`` gate proves source-level contracts.  This
 probe exercises the deployed HTTP/API, PostgreSQL-backed projections and a
@@ -13,7 +13,7 @@ Environment:
   SOAR_REQUIRE_SECONDARY  fail when the second instance is not configured
   SOAR_VERIFY_USERNAME/PASSWORD (default: admin/admin123)
   SOAR_VERIFY_TENANT     tenant header (default: default)
-  SOAR_LIVE_EVIDENCE_PATH secret-free JSON result path (default: .cache/soar-v2-live.json)
+  SOAR_LIVE_EVIDENCE_PATH secret-free JSON result path (default: .cache/soar-live.json)
 """
 
 from __future__ import annotations
@@ -41,15 +41,15 @@ WARN: list[str] = []
 
 def evidence_path() -> Path:
     """Return the CI artifact path without ever including credentials in it."""
-    value = os.environ.get("SOAR_LIVE_EVIDENCE_PATH", ".cache/soar-v2-live.json").strip()
-    return Path(value or ".cache/soar-v2-live.json")
+    value = os.environ.get("SOAR_LIVE_EVIDENCE_PATH", ".cache/soar-live.json").strip()
+    return Path(value or ".cache/soar-live.json")
 
 
 def write_evidence(primary: str, secondary: str, tenant: str) -> None:
     """Persist a small, secret-free result summary for CI retention."""
     target = evidence_path()
     report = {
-        "schemaVersion": "soar.live-evidence/v1",
+        "schemaVersion": "soar.live-evidence",
         "generatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "primaryConfigured": bool(primary),
         "secondaryConfigured": bool(secondary),
@@ -133,7 +133,7 @@ def stream_probe(base: str, token: str, tenant: str, run_id: str,
         "Last-Event-ID": str(max(0, last_event_id)),
         "Cache-Control": "no-cache",
     }
-    url = base.rstrip("/") + f"/api/v2/runs/{run_id}/stream"
+    url = base.rstrip("/") + f"/api/runs/{run_id}/stream"
     req = urllib.request.Request(url, method="GET", headers=headers)
     event_name = False
     event_id = False
@@ -172,7 +172,7 @@ def parse_response(raw: bytes) -> Any:
 
 def definition(delay_seconds: int = 5) -> dict[str, Any]:
     return {
-        "schemaVersion": "soar.playbook/v2",
+        "schemaVersion": "soar.playbook",
         "entryNodeId": "start",
         "limits": {"maxNodeExecutions": 20, "maxParallelism": 2},
         "nodes": [
@@ -191,7 +191,7 @@ def definition(delay_seconds: int = 5) -> dict[str, Any]:
 def event(event_id: str, event_type: str, tenant: str) -> dict[str, Any]:
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     return {
-        "schemaVersion": "soar.event/v1",
+        "schemaVersion": "soar.event",
         "eventId": event_id,
         "eventType": event_type,
         "tenantId": tenant,
@@ -205,7 +205,7 @@ def event(event_id: str, event_type: str, tenant: str) -> dict[str, Any]:
 
 
 def run_status(base: str, token: str, tenant: str, run_id: str) -> tuple[int, dict[str, Any]]:
-    status, body = request(base, f"/api/v2/runs/{run_id}", token, tenant)
+    status, body = request(base, f"/api/runs/{run_id}", token, tenant)
     value = unwrap(body)
     return status, value if isinstance(value, dict) else {}
 
@@ -241,7 +241,7 @@ def wait_for_run(base: str, token: str, tenant: str, run_id: str,
 
 
 def evaluate(base: str, token: str, tenant: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
-    status, body = request(base, "/api/v2/automation-rules/evaluate", token, tenant,
+    status, body = request(base, "/api/automation-rules/evaluate", token, tenant,
                            method="POST", body=payload)
     value = unwrap(body)
     return status, value if isinstance(value, dict) else {}
@@ -305,9 +305,9 @@ def main() -> int:
     playbook_id = version_id = rule_id = capacity_rule_id = None
     accepted_ids: list[str] = []
     try:
-        status, body = request(primary, "/api/v2/playbooks/import", token, tenant,
+        status, body = request(primary, "/api/playbooks/import", token, tenant,
                                method="POST", body={
-                                   "name": f"CI SOAR V2 live {suffix}",
+                                   "name": f"CI SOAR live {suffix}",
                                    "description": "automated live integration evidence",
                                    "tags": ["ci", "e2e"],
                                    "definition": definition(),
@@ -317,23 +317,23 @@ def main() -> int:
         playbook_id = created.get("playbookId") if isinstance(created, dict) else None
         version_id = created.get("id") if isinstance(created, dict) else None
         version_no = int(created.get("version", 1)) if isinstance(created, dict) else 1
-        check("create isolated V2 draft", status in (200, 201)
+        check("create isolated draft", status in (200, 201)
               and bool(playbook_id) and bool(version_id), body)
         if not playbook_id or not version_id:
             raise RuntimeError("draft response did not contain playbookId/id")
 
         status, body = request(primary,
-                               f"/api/v2/playbooks/{playbook_id}/versions/{version_no}/validate",
+                               f"/api/playbooks/{playbook_id}/versions/{version_no}/validate",
                                token, tenant, method="POST")
         validation = unwrap(body)
-        check("validate isolated V2 draft", status == 200 and validation.get("valid") is True,
+        check("validate isolated draft", status == 200 and validation.get("valid") is True,
               validation)
 
         status, body = request(primary,
-                               f"/api/v2/playbooks/{playbook_id}/versions/{version_no}/publish",
+                               f"/api/playbooks/{playbook_id}/versions/{version_no}/publish",
                                token, tenant, method="POST")
         published = unwrap(body)
-        check("publish isolated V2 version", status == 200 and published.get("status") == "PUBLISHED",
+        check("publish isolated version", status == 200 and published.get("status") == "PUBLISHED",
               published)
 
         action = [{"playbookVersionId": version_id}]
@@ -342,9 +342,9 @@ def main() -> int:
                 ("capacity", "soar.ci.capacity", {
                     "maxConcurrentRuns": 1, "conflictStrategy": "SUPPRESS"
                 })):
-            status, body = request(primary, "/api/v2/automation-rules", token, tenant,
+            status, body = request(primary, "/api/automation-rules", token, tenant,
                                    method="POST", body={
-                                       "name": f"CI SOAR V2 {label} {suffix}",
+                                       "name": f"CI SOAR {label} {suffix}",
                                        "triggerType": trigger_type,
                                        "priority": 1 if label == "alert" else 2,
                                        "enabled": True,
@@ -362,19 +362,19 @@ def main() -> int:
         if not rule_id or not capacity_rule_id:
             raise RuntimeError("automation rule creation failed")
 
-        # This is a user-authenticated V2 event evaluation.  The full-stack
+        # This is a user-authenticated event evaluation.  The full-stack
         # verifier separately proves Alert Web's service-signed event route.
         alert_event_id = f"soar-live-alert-{suffix}"
         status, result = evaluate(primary, token, tenant, event(alert_event_id, "alert.created", tenant))
         alert_runs = accepted_run_ids(result)
-        check("alert.created reaches a durable V2 Run", status == 200 and len(alert_runs) == 1,
+        check("alert.created reaches a durable Run", status == 200 and len(alert_runs) == 1,
               {"status": status, "matchedRuns": result.get("matchedRuns")})
         if alert_runs:
             completed = wait_for_run(primary, token, tenant, alert_runs[0])
-            check("alert-created V2 Run has a Temporal workflow identity",
+            check("alert-created Run has a Temporal workflow identity",
                   bool(completed.get("temporalWorkflowId")),
                   completed.get("temporalWorkflowId"))
-            check("alert-created V2 Run completes through Temporal",
+            check("alert-created Run completes through Temporal",
                   completed.get("status") == "SUCCEEDED", completed)
             sse_ok, sse_detail = stream_probe(primary, token, tenant, alert_runs[0])
             check("run-event SSE resumes from Last-Event-ID", sse_ok, sse_detail)
@@ -440,12 +440,12 @@ def main() -> int:
         # keeps receipt/run evidence while preventing future event matches.
         for rule in (capacity_rule_id, rule_id):
             if rule:
-                status, body = request(primary, f"/api/v2/automation-rules/{rule}", token, tenant,
+                status, body = request(primary, f"/api/automation-rules/{rule}", token, tenant,
                                        method="DELETE")
                 if status not in (200, 204):
                     warn("cleanup automation rule", {"status": status, "body": body})
         if playbook_id:
-            status, body = request(primary, f"/api/v2/playbooks/{playbook_id}", token, tenant,
+            status, body = request(primary, f"/api/playbooks/{playbook_id}", token, tenant,
                                    method="PATCH", body={"status": "ARCHIVED"})
             if status != 200:
                 warn("archive live verifier playbook", {"status": status, "body": body})

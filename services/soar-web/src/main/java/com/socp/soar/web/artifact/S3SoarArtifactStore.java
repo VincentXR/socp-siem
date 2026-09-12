@@ -194,7 +194,7 @@ public class S3SoarArtifactStore implements SoarArtifactStore {
     }
 
     private String key(String tenantId, String runId, String artifactId) {
-        return "soar/v2/" + safeSegment(tenantId) + "/" + safeSegment(runId) + "/" + safeSegment(artifactId);
+        return "soar/" + safeSegment(tenantId) + "/" + safeSegment(runId) + "/" + safeSegment(artifactId);
     }
 
     private static String safeSegment(String value) {

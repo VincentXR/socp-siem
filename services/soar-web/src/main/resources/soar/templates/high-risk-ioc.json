@@ -9,7 +9,7 @@
   "attackTags": ["TA0011", "T1595"],
   "testSample": {"eventId": "sample-alert-1", "eventType": "alert.created"},
   "definition": {
-    "schemaVersion": "soar.playbook/v2", "entryNodeId": "start",
+    "schemaVersion": "soar.playbook", "entryNodeId": "start",
     "nodes": [
       {"id":"start","type":"START","name":"Start"},
       {"id":"lookup","type":"ACTION","name":"Lookup IOC","actionRef":"socp.threat-intel/lookup-ioc@1"},

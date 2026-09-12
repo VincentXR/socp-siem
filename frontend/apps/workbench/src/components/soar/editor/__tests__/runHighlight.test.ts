@@ -12,7 +12,7 @@ import type { EditorDefinition } from '../types'
 
 function definition(): EditorDefinition {
   return normalizeDefinition({
-    schemaVersion: 'soar.playbook/v2',
+    schemaVersion: 'soar.playbook',
     entryNodeId: 'start',
     nodes: [
       { id: 'start', type: 'START', name: 'Start' },

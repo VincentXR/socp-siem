@@ -1,5 +1,5 @@
--- SOAR 2.0 control plane and durable execution projection.
--- This migration is additive; V1-V5 legacy tables remain untouched during migration.
+-- SOAR control plane and durable execution projection.
+-- This migration is additive; earlier tables remain untouched during migration.
 
 CREATE TABLE IF NOT EXISTS t_soar_playbook (
     id VARCHAR(64) PRIMARY KEY,

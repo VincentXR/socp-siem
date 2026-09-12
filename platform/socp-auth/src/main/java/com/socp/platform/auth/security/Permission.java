@@ -29,7 +29,7 @@ public enum Permission {
     public String wireName() { return wireName; }
 
     /**
-     * Role defaults follow the SOAR 2.0 design (docs/soar-2.0-design.md §13.1):
+     * Role defaults follow the SOAR design (docs/soar-design.md §13.1):
      * view -> viewer/analyst/admin; edit/execute/task:complete/connections:view ->
      * analyst/admin; publish/operations/connections:manage -> admin; approve -> approver/admin.
      */
