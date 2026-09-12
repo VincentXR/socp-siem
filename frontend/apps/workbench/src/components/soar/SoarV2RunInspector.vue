@@ -40,6 +40,7 @@ import {
   type SoarV2Run,
 } from '../../api'
 
+const props = withDefaults(defineProps<{ canWrite?: boolean }>(), { canWrite: true })
 const emit = defineEmits<{ 'open-in-editor': [payload: RunOpenRequest] }>()
 
 const { t } = useI18n()
@@ -112,6 +113,7 @@ async function loadPublishedVersions(): Promise<void> {
 }
 
 function openQueueDialog(): void {
+  if (!props.canWrite) return
   queueMessage.value = ''
   queueError.value = ''
   queueForm.value = {
@@ -132,6 +134,7 @@ function parseObject(value: string, label: string): Record<string, unknown> {
 }
 
 async function submitQueue(): Promise<void> {
+  if (!props.canWrite) return
   queueError.value = ''
   queueMessage.value = ''
   if (!queueForm.value.playbookVersionId) {
@@ -282,7 +285,7 @@ async function refreshProjection() {
 }
 
 async function cancel() {
-  if (!selectedRunId.value) return
+  if (!props.canWrite || !selectedRunId.value) return
   const reason = window.prompt('Cancellation reason', 'Cancelled from Workbench')
   if (reason === null) return
   errorMessage.value = ''
@@ -298,7 +301,7 @@ async function cancel() {
 }
 
 async function retry() {
-  if (!selectedRunId.value) return
+  if (!props.canWrite || !selectedRunId.value) return
   const reason = window.prompt('Retry reason', 'Retry from Workbench')
   if (reason === null) return
   errorMessage.value = ''
@@ -314,7 +317,7 @@ async function retry() {
 }
 
 async function rerun() {
-  if (!selectedRunId.value || !window.confirm('Create a new execution series with new idempotency keys?')) return
+  if (!props.canWrite || !selectedRunId.value || !window.confirm('Create a new execution series with new idempotency keys?')) return
   errorMessage.value = ''
   controlBusy.value = 'rerun'
   try {
@@ -328,6 +331,7 @@ async function rerun() {
 }
 
 async function resolveUnknown(node: SoarV2NodeRun, resolution: 'CONFIRMED_SUCCEEDED' | 'CONFIRMED_NOT_EXECUTED') {
+  if (!props.canWrite) return
   const evidence = window.prompt('Evidence reference is required')
   if (!evidence) return
   const reason = window.prompt('Resolution reason is required')
@@ -380,9 +384,10 @@ onUnmounted(() => {
         <div>
           <strong>SOAR V2 · Run inspector</strong>
           <span class="soar-v2-subtitle">durable projection · attempts · event stream · artifacts</span>
+          <span v-if="!props.canWrite" class="soar-v2-readonly-note">{{ t('soarV2.readOnly') }}</span>
         </div>
         <div class="soar-v2-run-select">
-          <el-button size="small" type="primary" plain @click="openQueueDialog">Queue run</el-button>
+          <el-button v-if="props.canWrite" size="small" type="primary" plain @click="openQueueDialog">Queue run</el-button>
           <select v-model="selectedRunId" aria-label="SOAR run">
             <option value="">Select run</option>
             <option v-for="item in runs" :key="item.runId" :value="item.runId">{{ item.runId }} · {{ item.status }}</option>
@@ -407,9 +412,11 @@ onUnmounted(() => {
           :title="t('soarV2.runHighlightOpenHint')"
           @click="openInEditor"
         >{{ t('soarV2.runHighlightOpen') }}</el-button>
-        <el-button size="small" @click="cancel" :loading="controlBusy === 'cancel'" :disabled="Boolean(controlBusy) || ['SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'SUPPRESSED', 'DEAD', 'CANCELLING'].includes(run.status)">Cancel</el-button>
-        <el-button size="small" @click="retry" :loading="controlBusy === 'retry'" :disabled="Boolean(controlBusy) || !['FAILED', 'ACTION_UNKNOWN', 'TIMED_OUT', 'DEAD'].includes(run.status)">Retry</el-button>
-        <el-button size="small" type="warning" plain @click="rerun" :loading="controlBusy === 'rerun'" :disabled="Boolean(controlBusy)">Rerun</el-button>
+        <template v-if="props.canWrite">
+          <el-button size="small" @click="cancel" :loading="controlBusy === 'cancel'" :disabled="Boolean(controlBusy) || ['SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'SUPPRESSED', 'DEAD', 'CANCELLING'].includes(run.status)">Cancel</el-button>
+          <el-button size="small" @click="retry" :loading="controlBusy === 'retry'" :disabled="Boolean(controlBusy) || !['FAILED', 'ACTION_UNKNOWN', 'TIMED_OUT', 'DEAD'].includes(run.status)">Retry</el-button>
+          <el-button size="small" type="warning" plain @click="rerun" :loading="controlBusy === 'rerun'" :disabled="Boolean(controlBusy)">Rerun</el-button>
+        </template>
       </div>
 
       <div v-if="run.errorCode" class="soar-v2-run-error"><b>{{ run.errorCode }}</b> {{ run.errorMessage }}</div>
@@ -450,7 +457,7 @@ onUnmounted(() => {
     <div v-else class="soar-v2-empty soar-v2-no-run">No V2 run selected. Queue a published version to inspect its durable execution.</div>
     <div v-if="queueMessage" class="soar-v2-queue-message" role="status">{{ queueMessage }}</div>
 
-    <el-dialog v-model="queueDialogVisible" title="Queue a published SOAR run" width="560px">
+    <el-dialog v-if="props.canWrite" v-model="queueDialogVisible" title="Queue a published SOAR run" width="560px">
       <p class="soar-v2-dialog-hint">Queueing creates a durable asynchronous run. It never executes a draft; review the immutable version and input before accepting.</p>
       <el-form label-position="top">
         <el-form-item label="Published playbook version" required>
@@ -489,6 +496,7 @@ onUnmounted(() => {
 .soar-v2-run-inspector { margin-top: 16px; border: 1px solid var(--ns-border); }
 .soar-v2-inspector-header { display: flex; justify-content: space-between; gap: 16px; align-items: center; }
 .soar-v2-subtitle { display: block; margin-top: 4px; color: var(--ns-text-3); font-size: 11px; }
+.soar-v2-readonly-note { display: block; margin-top: 6px; color: var(--ns-warning); font-size: 11px; line-height: 1.4; }
 .soar-v2-run-select { display: flex; gap: 8px; align-items: center; }
 .soar-v2-run-select select { min-width: 290px; min-height: 30px; padding: 5px 8px; border: 1px solid var(--ns-border); border-radius: 5px; background: var(--ns-bg); color: var(--ns-text); font: inherit; font-size: 11px; }
 .soar-v2-dialog-hint { margin: 0 0 14px; color: var(--ns-text-2); font-size: 12px; line-height: 1.5; }

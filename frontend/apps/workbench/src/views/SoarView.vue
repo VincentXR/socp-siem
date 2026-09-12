@@ -303,7 +303,7 @@ onMounted(loadPlaybooks)
       <el-tab-pane :label="t('soar.tabRuns')" name="runs">
         <div class="soar-tab-content">
           <!-- Interactive Inspector -->
-          <SoarV2RunInspector @open-in-editor="handleOpenRunInEditor" />
+          <SoarV2RunInspector :can-write="canWrite" @open-in-editor="handleOpenRunInEditor" />
         </div>
       </el-tab-pane>
 
