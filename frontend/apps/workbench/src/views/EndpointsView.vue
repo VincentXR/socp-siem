@@ -11,7 +11,8 @@ import { ElDropdown, ElDropdownItem, ElDropdownMenu } from 'element-plus/es/comp
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import DataTableCard from '../components/DataTableCard.vue'
 import FilterToolbar from '../components/FilterToolbar.vue'
 import MetricCard from '../components/MetricCard.vue'
@@ -24,6 +25,7 @@ import { useWriteAccess } from '../composables/useWriteAccess'
 
 const { t, d } = useI18n()
 const canWrite = useWriteAccess()
+const route = useRoute()
 
 const endpointStat = ref<{ total: number; online: number; byType?: Record<string, number>; eventByType?: Record<string, number>; events?: number } | null>(null)
 const loadError = ref('')
@@ -38,6 +40,12 @@ const endpointsList = useResourceList<Endpoint>({
 })
 const { items: endpoints, page, size, keyword, loading, filtered: endpointsFiltered, paged: endpointsPaged, setItems } = endpointsList
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('endpoints')
+
+function syncEndpointQuery(): void {
+  const query = typeof route.query.q === 'string' ? route.query.q : ''
+  if (keyword.value !== query) keyword.value = query
+  page.value = 1
+}
 const relatedAsset = computed(() => {
   const endpoint = detailEndpoint.value
   if (!endpoint) return null
@@ -117,7 +125,11 @@ async function removeEndpoint(id: string) {
   }
 }
 
-onMounted(loadEndpoints)
+onMounted(() => {
+  syncEndpointQuery()
+  void loadEndpoints()
+})
+watch(() => route.query.q, syncEndpointQuery)
 </script>
 
 <template>
