@@ -182,12 +182,18 @@ function onKeyFieldChange(value: unknown): void {
 }
 
 function openRuleEditor(row?: unknown): void {
+  if (!canManageRules.value) return
   const rule = row ? normalizeRuleSpec(row) : null
   void router.push(rule ? { name: 'rule-edit', params: { ruleId: String(rule.id) } } : { name: 'rule-new' })
 }
 async function syncEditorRoute() {
   if (!route.meta.editor) { showRuleEditor.value = false; return }
   const id = String(route.params.ruleId || route.query.copy || '')
+  if (!canManageRules.value && (!id || Boolean(route.query.copy))) {
+    showRuleEditor.value = false
+    await router.replace({ name: 'detect' })
+    return
+  }
   const rule = id ? allRules.value.find(item => String(item.id) === id) : null
   if (id && !rule) { loadError.value = 'Rule not found: ' + id; showRuleEditor.value = false; return }
   ruleEditingId.value = rule && !route.query.copy ? String(rule.id) : null
@@ -256,6 +262,7 @@ function buildRuleSpec(): Partial<RuleSpec> {
 }
 
 async function saveRule(): Promise<void> {
+  if (!canManageRules.value) return
   saveError.value = ''
   if (!ruleForm.value.name.trim()) { saveError.value = t('detect.nameRequired'); return }
   saving.value = true
@@ -273,6 +280,7 @@ async function saveRule(): Promise<void> {
 }
 
 function applyAdvancedJson(): void {
+  if (!canManageRules.value) return
   advancedError.value = ''
   try {
     const parsed = JSON.parse(advancedJson.value) as unknown
@@ -287,6 +295,7 @@ function ruleUpdateSpec(rule: RuleSpec, enabled: boolean, status: string): Parti
 }
 
 async function toggleRule(row: unknown): Promise<void> {
+  if (!canManageRules.value) return
   const rule = normalizeRuleSpec(row)
   if (!rule) return
   actionMessage.value = ''
@@ -303,6 +312,7 @@ async function toggleRule(row: unknown): Promise<void> {
 }
 
 async function removeRule(row: unknown): Promise<void> {
+  if (!canManageRules.value) return
   const rule = normalizeRuleSpec(row)
   if (!rule) return
   if (ruleStatus(rule) === 'ACTIVE') {
@@ -315,19 +325,21 @@ async function removeRule(row: unknown): Promise<void> {
 }
 
 function copyRuleAsDraft(row: unknown): void {
+  if (!canManageRules.value) return
   const rule = normalizeRuleSpec(row)
   if (rule) void router.push({ name: 'rule-new', query: { copy: String(rule.id) } })
 }
 
 function testSingleRule(row: unknown): void {
+  if (!canManageRules.value) return
   const rule = normalizeRuleSpec(row)
   if (!rule) return
   testRuleId.value = String(rule.id)
   showTest.value = true
 }
 
-function addMatchAnyGroup(): void { ruleForm.value.matchAny.push([emptyCondition()]) }
-function addStep(): void { ruleForm.value.steps.push([emptyCondition()]) }
+function addMatchAnyGroup(): void { if (canManageRules.value) ruleForm.value.matchAny.push([emptyCondition()]) }
+function addStep(): void { if (canManageRules.value) ruleForm.value.steps.push([emptyCondition()]) }
 function ruleStatus(row: unknown): string {
   const rule = row as Partial<RuleSpec>
   return textValue(rule.status).toUpperCase() || (rule.enabled ? 'ACTIVE' : 'DRAFT')
@@ -338,7 +350,7 @@ function statusTag(status: string): 'success' | 'warning' | 'danger' | 'info' | 
 function typeLabel(type: string): string { return ADVANCED_TYPES.includes(type) ? `${type} · ${t('detect.advancedType')}` : type }
 
 async function runIsolatedTest(): Promise<void> {
-  if (testing.value) return
+  if (!canManageRules.value || testing.value) return
   testError.value = ''; testResult.value = null; testing.value = true
   try {
     const parsed = JSON.parse(testInput.value.fieldsText) as unknown
@@ -371,6 +383,7 @@ onMounted(async () => { await loadRules(); await syncEditorRoute() })
     <PageHeader :eyebrow="t('menuGroup.detectAndResponse')" :title="t('detect.title')" :description="t('detect.workspaceDescription')">
       <template #actions><el-button v-if="showRuleEditor" @click="closeRuleEditor">{{ t('forms.back') }}</el-button><el-select v-if="!showRuleEditor" v-model="ruleStatusFilter" size="small" clearable :placeholder="t('common.filter')" style="width:150px"><el-option v-for="status in ['DRAFT', 'TESTING', 'ACTIVE', 'DISABLED', 'ARCHIVED']" :key="status" :label="status" :value="status" /></el-select><el-button size="small" :loading="loading" @click="loadRules">{{ t('common.refresh') }}</el-button><el-button v-if="canManageRules && !showRuleEditor" type="primary" size="small" @click="openRuleEditor()">{{ t('detect.createRule') }}</el-button></template>
     </PageHeader>
+    <div v-if="showRuleEditor && !canManageRules" class="page-readonly-hint">{{ t('detect.readOnly') }}</div>
 
     <div v-if="referenceLoadError" class="detect-feedback error" role="alert"><strong>{{ t('menu.refset') }}</strong><span>{{ referenceLoadError }}</span><el-button size="small" :loading="loading" @click="loadRules">{{ t('common.refresh') }}</el-button></div>
     <div v-if="loadError" class="detect-feedback error" role="alert"><strong>{{ t('detect.loadFailed') }}</strong><span>{{ loadError }}</span><el-button size="small" @click="loadRules">{{ t('common.refresh') }}</el-button></div>
@@ -384,33 +397,33 @@ onMounted(async () => { await loadRules(); await syncEditorRoute() })
     </div>
 
 
-    <section v-if="showRuleEditor" class="detect-editor-workspace">
+    <section v-if="showRuleEditor" class="detect-editor-workspace" :class="{ 'detect-editor-readonly': !canManageRules }">
       <div class="workspace-section-head"><div><div class="page-eyebrow">{{ t('detect.editorEyebrow') }}</div><h2>{{ ruleEditingId ? t('detect.editor.editRule') : t('detect.createRule') }}</h2><p>{{ t('detect.editorHint') }}</p></div><div class="workspace-section-actions"><el-tag v-if="ruleEditingId" :type="statusTag(ruleForm.status)" size="small">{{ ruleForm.status }}</el-tag><el-button size="small" @click="closeRuleEditor">{{ t('common.cancel') }}</el-button></div></div>
       <div v-if="saveError" class="detect-feedback error" role="alert">{{ saveError }}</div>
-      <el-form label-position="top" class="detect-editor-form">
+      <el-form label-position="top" class="detect-editor-form" :disabled="!canManageRules">
         <section class="detect-form-section"><div class="detect-form-section-title"><span>01</span><div><h3>{{ t('detect.dataScope') }}</h3><p>{{ t('detect.dataScopeHint') }}</p></div></div><div class="detect-form-grid"><el-form-item :label="t('common.name')" required><el-input v-model="ruleForm.name" :placeholder="t('detect.editor.namePlaceholder')" /></el-form-item><el-form-item :label="t('common.type')"><el-select v-model="ruleForm.type"><el-option v-if="rawOnlyRuleType" :label="typeLabel(ruleForm.type)" :value="ruleForm.type" /><el-option v-for="type in RULE_TYPES" :key="type" :label="typeLabel(type)" :value="type" /></el-select></el-form-item><el-form-item :label="t('common.severity')"><el-select v-model="ruleForm.severity"><el-option v-for="severity in SEVERITIES" :key="severity" :label="t('severities.' + severity) || severity" :value="severity" /></el-select></el-form-item><el-form-item :label="t('detect.editor.window')"><el-input v-model="ruleForm.window" :placeholder="t('detect.editor.windowPlaceholder')" /></el-form-item></div></section>
 
         <section class="detect-form-section">
           <div class="detect-form-section-title"><span>02</span><div><h3>{{ t('detect.detectionLogic') }}</h3><p>{{ t('detect.detectionLogicHint') }}</p></div></div>
           <template v-if="ruleForm.type === 'correlation'">
             <div class="condition-block">
-              <div class="condition-block-head"><b>{{ t('detect.correlationSteps') }}</b><el-button size="small" plain @click="addStep">{{ t('detect.addStep') }}</el-button></div>
+              <div class="condition-block-head"><b>{{ t('detect.correlationSteps') }}</b><el-button v-if="canManageRules" size="small" plain @click="addStep">{{ t('detect.addStep') }}</el-button></div>
               <div v-for="(step, stepIndex) in ruleForm.steps" :key="stepIndex" class="condition-group">
-                <div class="condition-group-head"><span>{{ t('detect.step') }} {{ stepIndex + 1 }}</span><el-button v-if="ruleForm.steps.length > 1" link type="danger" size="small" @click="ruleForm.steps.splice(stepIndex, 1)">{{ t('common.delete') }}</el-button></div>
-                <FieldConditionBuilder v-model="ruleForm.steps[stepIndex]" :fields="fieldDefs" :reference-sets="referenceSets" :add-label="t('detect.addCondition')" :empty-hint="t('detect.noConditions')" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" />
+                <div class="condition-group-head"><span>{{ t('detect.step') }} {{ stepIndex + 1 }}</span><el-button v-if="canManageRules && ruleForm.steps.length > 1" link type="danger" size="small" @click="ruleForm.steps.splice(stepIndex, 1)">{{ t('common.delete') }}</el-button></div>
+                <FieldConditionBuilder v-model="ruleForm.steps[stepIndex]" :read-only="!canManageRules" :fields="fieldDefs" :reference-sets="referenceSets" :add-label="t('detect.addCondition')" :empty-hint="t('detect.noConditions')" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" />
               </div>
               <EmptyState v-if="!ruleForm.steps.length" :title="t('detect.noSteps')" :description="t('detect.addStepHint')" />
             </div>
           </template>
           <template v-else>
             <div class="condition-block">
-              <FieldConditionBuilder v-model="ruleForm.match" :title="t('detect.allConditions')" :add-label="t('detect.addCondition')" :empty-hint="t('detect.noConditions')" :fields="fieldDefs" :reference-sets="referenceSets" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" />
+              <FieldConditionBuilder v-model="ruleForm.match" :read-only="!canManageRules" :title="t('detect.allConditions')" :add-label="t('detect.addCondition')" :empty-hint="t('detect.noConditions')" :fields="fieldDefs" :reference-sets="referenceSets" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" />
             </div>
             <div class="condition-block">
-              <div class="condition-block-head"><b>{{ t('detect.anyConditionGroup') }}</b><el-button size="small" plain @click="addMatchAnyGroup">{{ t('detect.addGroup') }}</el-button></div>
+              <div class="condition-block-head"><b>{{ t('detect.anyConditionGroup') }}</b><el-button v-if="canManageRules" size="small" plain @click="addMatchAnyGroup">{{ t('detect.addGroup') }}</el-button></div>
               <div v-for="(group, groupIndex) in ruleForm.matchAny" :key="groupIndex" class="condition-group">
-                <div class="condition-group-head"><span>{{ t('detect.conditionGroup') }} {{ groupIndex + 1 }}</span><el-button link type="danger" size="small" @click="ruleForm.matchAny.splice(groupIndex, 1)">{{ t('common.delete') }}</el-button></div>
-                <FieldConditionBuilder v-model="ruleForm.matchAny[groupIndex]" :fields="fieldDefs" :reference-sets="referenceSets" :add-label="t('detect.addCondition')" :empty-hint="t('detect.noConditions')" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" />
+                <div class="condition-group-head"><span>{{ t('detect.conditionGroup') }} {{ groupIndex + 1 }}</span><el-button v-if="canManageRules" link type="danger" size="small" @click="ruleForm.matchAny.splice(groupIndex, 1)">{{ t('common.delete') }}</el-button></div>
+                <FieldConditionBuilder v-model="ruleForm.matchAny[groupIndex]" :read-only="!canManageRules" :fields="fieldDefs" :reference-sets="referenceSets" :add-label="t('detect.addCondition')" :empty-hint="t('detect.noConditions')" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" />
               </div>
               <p v-if="!ruleForm.matchAny.length" class="form-hint">{{ t('detect.noAnyGroupHint') }}</p>
             </div>
@@ -424,13 +437,13 @@ onMounted(async () => { await loadRules(); await syncEditorRoute() })
           </div>
         </section>
 
-        <section class="detect-form-section"><div class="detect-form-section-title"><span>03</span><div><h3>{{ t('detect.alertContent') }}</h3><p>{{ t('detect.alertContentHint') }}</p></div></div><div class="detect-form-grid"><el-form-item :label="t('detect.editor.alertTitle')"><el-input v-model="ruleForm.alertTitle" :placeholder="t('detect.editor.alertTitlePlaceholder')" /></el-form-item><el-form-item :label="t('detect.editor.alertDescription')"><el-input v-model="ruleForm.alertDescription" :placeholder="t('detect.editor.alertDescriptionPlaceholder')" /></el-form-item><el-form-item :label="t('detect.compatMessage')"><el-input v-model="ruleForm.message" /></el-form-item><el-form-item :label="t('detect.mitre')"><el-select v-model="ruleForm.mitre" filterable default-first-option clearable placeholder="T1110"><el-option v-if="ruleForm.mitre && !techniques.some(item => item.id === ruleForm.mitre)" :label="ruleForm.mitre + ' (custom)'" :value="ruleForm.mitre" /><el-option v-for="technique in techniques" :key="technique.id" :label="`${technique.id} · ${technique.name}`" :value="technique.id" /></el-select><span v-if="techniqueLoadError" class="form-hint">{{ t('detect.fieldCatalogFallback') }}</span></el-form-item></div><div class="condition-block"><FieldConditionBuilder v-model="ruleForm.whitelist" :title="t('detect.editor.whitelist')" :add-label="t('detect.editor.addWhitelist')" :empty-hint="t('detect.noWhitelistHint')" :fields="fieldDefs" :reference-sets="referenceSets" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" /></div></section>
+        <section class="detect-form-section"><div class="detect-form-section-title"><span>03</span><div><h3>{{ t('detect.alertContent') }}</h3><p>{{ t('detect.alertContentHint') }}</p></div></div><div class="detect-form-grid"><el-form-item :label="t('detect.editor.alertTitle')"><el-input v-model="ruleForm.alertTitle" :placeholder="t('detect.editor.alertTitlePlaceholder')" /></el-form-item><el-form-item :label="t('detect.editor.alertDescription')"><el-input v-model="ruleForm.alertDescription" :placeholder="t('detect.editor.alertDescriptionPlaceholder')" /></el-form-item><el-form-item :label="t('detect.compatMessage')"><el-input v-model="ruleForm.message" /></el-form-item><el-form-item :label="t('detect.mitre')"><el-select v-model="ruleForm.mitre" filterable default-first-option clearable placeholder="T1110"><el-option v-if="ruleForm.mitre && !techniques.some(item => item.id === ruleForm.mitre)" :label="ruleForm.mitre + ' (custom)'" :value="ruleForm.mitre" /><el-option v-for="technique in techniques" :key="technique.id" :label="`${technique.id} · ${technique.name}`" :value="technique.id" /></el-select><span v-if="techniqueLoadError" class="form-hint">{{ t('detect.fieldCatalogFallback') }}</span></el-form-item></div><div class="condition-block"><FieldConditionBuilder v-model="ruleForm.whitelist" :read-only="!canManageRules" :title="t('detect.editor.whitelist')" :add-label="t('detect.editor.addWhitelist')" :empty-hint="t('detect.noWhitelistHint')" :fields="fieldDefs" :reference-sets="referenceSets" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" /></div></section>
 
-        <section class="detect-form-section"><div class="detect-form-section-title"><span>04</span><div><h3>{{ t('detect.advancedFields') }}</h3><p>{{ t('detect.advancedFieldsHint') }}</p></div></div><div v-if="ADVANCED_TYPES.includes(ruleForm.type) || rawOnlyRuleType" class="detect-advanced-warning"><b>{{ t('detect.advancedType') }}</b><span>{{ t('detect.advancedTypeHint') }}</span></div><div class="detect-form-grid compact-grid"><el-form-item :label="t('detect.routingField')"><el-select v-model="ruleForm.routingField" disabled :placeholder="t('detect.fieldPlaceholder')"><el-option v-if="ruleForm.routingField && !fieldDefs.some(field => field.fieldName === ruleForm.routingField)" :label="ruleForm.routingField" :value="ruleForm.routingField" /><el-option v-for="field in fieldDefs" :key="field.fieldName" :label="field.fieldName" :value="field.fieldName" /></el-select><span class="form-hint">{{ t('detect.routingField') }} = {{ t('detect.keyField') }}</span></el-form-item><el-form-item v-if="ruleForm.type === 'baseline'" :label="t('detect.warmup')"><el-input v-model.number="ruleForm.warmup" type="number" min="1" /></el-form-item><el-form-item v-if="ruleForm.type === 'baseline'" :label="t('detect.baselineWindows')"><el-input v-model.number="ruleForm.baselineWindows" type="number" min="1" /></el-form-item><el-form-item v-if="ruleForm.type === 'baseline'" :label="t('detect.sigma')"><el-input v-model.number="ruleForm.sigma" type="number" min="0" max="100" /></el-form-item><el-form-item :label="t('detect.ruleVersion')"><el-input v-model="ruleForm.version" /></el-form-item><el-form-item :label="t('detect.owner')"><el-input v-model="ruleForm.owner" /></el-form-item><el-form-item :label="t('detect.contentPack')"><el-input v-model="ruleForm.contentPack" /></el-form-item><el-form-item :label="t('detect.contentVersion')"><el-input v-model="ruleForm.contentVersion" /></el-form-item></div><details class="advanced-json"><summary>{{ t('detect.rawRuleJson') }}</summary><p>{{ t('detect.rawRuleJsonHint') }}</p><textarea v-model="advancedJson" rows="12" spellcheck="false" /><div v-if="advancedError" class="detect-feedback error">{{ advancedError }}</div><el-button size="small" @click="applyAdvancedJson">{{ t('detect.applyRawJson') }}</el-button></details></section>
+        <section class="detect-form-section"><div class="detect-form-section-title"><span>04</span><div><h3>{{ t('detect.advancedFields') }}</h3><p>{{ t('detect.advancedFieldsHint') }}</p></div></div><div v-if="ADVANCED_TYPES.includes(ruleForm.type) || rawOnlyRuleType" class="detect-advanced-warning"><b>{{ t('detect.advancedType') }}</b><span>{{ t('detect.advancedTypeHint') }}</span></div><div class="detect-form-grid compact-grid"><el-form-item :label="t('detect.routingField')"><el-select v-model="ruleForm.routingField" disabled :placeholder="t('detect.fieldPlaceholder')"><el-option v-if="ruleForm.routingField && !fieldDefs.some(field => field.fieldName === ruleForm.routingField)" :label="ruleForm.routingField" :value="ruleForm.routingField" /><el-option v-for="field in fieldDefs" :key="field.fieldName" :label="field.fieldName" :value="field.fieldName" /></el-select><span class="form-hint">{{ t('detect.routingField') }} = {{ t('detect.keyField') }}</span></el-form-item><el-form-item v-if="ruleForm.type === 'baseline'" :label="t('detect.warmup')"><el-input v-model.number="ruleForm.warmup" type="number" min="1" /></el-form-item><el-form-item v-if="ruleForm.type === 'baseline'" :label="t('detect.baselineWindows')"><el-input v-model.number="ruleForm.baselineWindows" type="number" min="1" /></el-form-item><el-form-item v-if="ruleForm.type === 'baseline'" :label="t('detect.sigma')"><el-input v-model.number="ruleForm.sigma" type="number" min="0" max="100" /></el-form-item><el-form-item :label="t('detect.ruleVersion')"><el-input v-model="ruleForm.version" /></el-form-item><el-form-item :label="t('detect.owner')"><el-input v-model="ruleForm.owner" /></el-form-item><el-form-item :label="t('detect.contentPack')"><el-input v-model="ruleForm.contentPack" /></el-form-item><el-form-item :label="t('detect.contentVersion')"><el-input v-model="ruleForm.contentVersion" /></el-form-item></div><details class="advanced-json"><summary>{{ t('detect.rawRuleJson') }}</summary><p>{{ t('detect.rawRuleJsonHint') }}</p><textarea v-model="advancedJson" :readonly="!canManageRules" rows="12" spellcheck="false" /><div v-if="advancedError" class="detect-feedback error">{{ advancedError }}</div><el-button v-if="canManageRules" size="small" @click="applyAdvancedJson">{{ t('detect.applyRawJson') }}</el-button></details></section>
 
         <section class="detect-form-section lifecycle-section"><div class="detect-form-section-title"><span>05</span><div><h3>{{ t('detect.testAndRelease') }}</h3><p>{{ t('detect.testAndReleaseHint') }}</p></div></div><div class="lifecycle-row"><div><span class="form-label">{{ t('detect.ruleStatus') }}</span><el-tag :type="statusTag(ruleForm.status)" size="small">{{ ruleForm.status }}</el-tag><span class="form-hint inline-hint">{{ ruleEditingId ? t('detect.lifecycleReadOnly') : t('detect.newRuleTesting') }}</span></div><div class="lifecycle-toggle"><span>{{ t('detect.executionToggle') }}</span><el-switch v-model="ruleForm.enabled" :disabled="!ruleEditingId || ruleForm.status !== 'ACTIVE'" /></div></div></section>
       </el-form>
-      <div class="detect-editor-footer"><el-button @click="showTest = true">{{ t('forms.test') }}</el-button><el-button @click="closeRuleEditor">{{ t('common.cancel') }}</el-button><el-button type="primary" :loading="saving" @click="saveRule">{{ t('common.save') }}</el-button></div>
+      <div class="detect-editor-footer"><el-button v-if="canManageRules" @click="showTest = true">{{ t('forms.test') }}</el-button><el-button @click="closeRuleEditor">{{ t('common.cancel') }}</el-button><el-button v-if="canManageRules" type="primary" :loading="saving" @click="saveRule">{{ t('common.save') }}</el-button></div>
     </section>
 
     <el-drawer v-model="showTest" :title="t('detect.testTitle')" size="min(1100px, 96vw)">

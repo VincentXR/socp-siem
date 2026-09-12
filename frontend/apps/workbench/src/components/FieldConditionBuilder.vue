@@ -18,6 +18,7 @@ const props = withDefaults(defineProps<{
   emptyHint?: string
   fieldPlaceholder?: string
   valuePlaceholder?: string
+  readOnly?: boolean
 }>(), {
   fields: () => [],
   referenceSets: () => [],
@@ -28,6 +29,7 @@ const props = withDefaults(defineProps<{
   emptyHint: 'No conditions',
   fieldPlaceholder: 'Search field',
   valuePlaceholder: 'Value',
+  readOnly: false,
 })
 
 const emit = defineEmits<{ 'update:modelValue': [RuleCondition[]] }>()
@@ -63,6 +65,7 @@ function fieldNames(): Set<string> {
 }
 
 function updateRow(index: number, patch: Partial<RuleCondition>): void {
+  if (props.readOnly) return
   const next = props.modelValue.map((condition, rowIndex) => rowIndex === index ? { ...condition, ...patch } : { ...condition })
   emit('update:modelValue', next)
 }
@@ -80,11 +83,13 @@ function updateOperator(index: number, operator: string): void {
 }
 
 function addCondition(): void {
+  if (props.readOnly) return
   if (props.modelValue.length >= props.maxConditions) return
   emit('update:modelValue', [...props.modelValue.map(condition => ({ ...condition })), { field: '', op: 'eq', value: '' }])
 }
 
 function removeCondition(index: number): void {
+  if (props.readOnly) return
   emit('update:modelValue', props.modelValue.filter((_, rowIndex) => rowIndex !== index).map(condition => ({ ...condition })))
 }
 
@@ -108,14 +113,15 @@ function fieldMeta(fieldName: string): string {
 </script>
 
 <template>
-  <div class="field-condition-builder">
+  <div class="field-condition-builder" :class="{ 'field-condition-builder-readonly': props.readOnly }">
     <div v-if="title" class="field-condition-builder-head">
       <b>{{ title }}</b>
-      <el-button v-if="modelValue.length < maxConditions" size="small" plain @click="addCondition">{{ addLabel }}</el-button>
+      <el-button v-if="!props.readOnly && modelValue.length < maxConditions" size="small" plain @click="addCondition">{{ addLabel }}</el-button>
     </div>
     <div v-for="(condition, index) in modelValue" :key="index" class="field-condition-row">
       <el-select
         :model-value="condition.field"
+        :disabled="props.readOnly"
         filterable
         default-first-option
         clearable
@@ -132,30 +138,31 @@ function fieldMeta(fieldName: string): string {
           </div>
         </el-option>
       </el-select>
-      <el-select :model-value="condition.op" @change="updateOperator(index, String($event ?? ''))">
+      <el-select :model-value="condition.op" :disabled="props.readOnly" @change="updateOperator(index, String($event ?? ''))">
         <el-option v-for="operator in fieldOperators(condition.field, condition.op)" :key="operator" :label="operator" :value="operator" />
       </el-select>
-      <el-select v-if="isReferenceOperator(condition.op)" :model-value="condition.value" filterable default-first-option clearable :placeholder="valuePlaceholder" @change="updateRow(index, { value: String($event ?? '') })">
+      <el-select v-if="isReferenceOperator(condition.op)" :model-value="condition.value" :disabled="props.readOnly" filterable default-first-option clearable :placeholder="valuePlaceholder" @change="updateRow(index, { value: String($event ?? '') })">
         <el-option v-if="condition.value && !referenceSets.some(refset => refset.name === condition.value)" :label="condition.value" :value="condition.value" />
         <el-option v-for="refset in referenceSets" :key="refset.id" :label="refset.name" :value="refset.name">
           <div class="field-condition-option"><b>{{ refset.name }}</b><small>{{ refset.entries.length }} entries · {{ refset.description }}</small></div>
         </el-option>
       </el-select>
-      <el-select v-else-if="isBooleanField(condition.field)" :model-value="condition.value" clearable :placeholder="valuePlaceholder" @change="updateRow(index, { value: String($event ?? '') })">
+      <el-select v-else-if="isBooleanField(condition.field)" :model-value="condition.value" :disabled="props.readOnly" clearable :placeholder="valuePlaceholder" @change="updateRow(index, { value: String($event ?? '') })">
         <el-option label="true" value="true" />
         <el-option label="false" value="false" />
       </el-select>
-      <el-input v-else :model-value="condition.value" :type="isNumberField(condition.field) ? 'number' : 'text'" :placeholder="valuePlaceholder" @update:model-value="value => updateRow(index, { value: String(value ?? '') })" />
-      <el-button link type="danger" :aria-label="`Remove condition ${index + 1}`" @click="removeCondition(index)">×</el-button>
+      <el-input v-else :model-value="condition.value" :disabled="props.readOnly" :type="isNumberField(condition.field) ? 'number' : 'text'" :placeholder="valuePlaceholder" @update:model-value="value => updateRow(index, { value: String(value ?? '') })" />
+      <el-button v-if="!props.readOnly" link type="danger" :aria-label="`Remove condition ${index + 1}`" @click="removeCondition(index)">×</el-button>
       <small v-if="fieldMeta(condition.field)" class="field-condition-meta">{{ fieldMeta(condition.field) }}</small>
     </div>
     <div v-if="!modelValue.length" class="field-condition-empty">{{ emptyHint }}</div>
-    <el-button v-if="!title && modelValue.length < maxConditions" size="small" plain @click="addCondition">{{ addLabel }}</el-button>
+    <el-button v-if="!props.readOnly && !title && modelValue.length < maxConditions" size="small" plain @click="addCondition">{{ addLabel }}</el-button>
   </div>
 </template>
 
 <style scoped>
 .field-condition-builder { display: grid; gap: 8px; }
+.field-condition-builder-readonly { opacity: .92; }
 .field-condition-builder-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .field-condition-builder-head b { color: var(--ns-text-2); font-size: 12px; }
 .field-condition-row { display: grid; grid-template-columns: minmax(150px, .9fr) 120px minmax(140px, 1fr) auto; gap: 6px; align-items: center; }

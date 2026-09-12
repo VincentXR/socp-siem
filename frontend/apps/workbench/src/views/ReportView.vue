@@ -20,9 +20,11 @@ import PageHeader from '../components/PageHeader.vue'
 import { archiveReport, dailyReport, downloadArchivedReport, listArchive, trend7d, type ReportSummary, type ReportTrend } from '../api'
 import { useI18n } from '../composables/useI18n'
 import { sevColor } from '../lib/ui'
+import { useWriteAccess } from '../composables/useWriteAccess'
 
 const props = defineProps<{ theme: 'light' | 'dark' }>()
 const { t, n, locale } = useI18n()
+const canWrite = useWriteAccess()
 
 const report = ref<ReportSummary | null>(null)
 const trend = ref<ReportTrend | null>(null)
@@ -83,7 +85,7 @@ async function loadArchive() {
 }
 
 async function doArchive() {
-  if (archiveBusy.value) return
+  if (!canWrite.value || archiveBusy.value) return
   archiveBusy.value = true
   try {
     const result = await archiveReport()
@@ -138,8 +140,9 @@ onUnmounted(() => {
 <template>
   <div class="page-pad view-enter">
     <PageHeader :title="t('report.title')" :description="t('report.description')">
-      <template #actions><el-button size="small" :loading="reportLoading" @click="loadReport">{{ t('common.refresh') }}</el-button><el-button type="primary" size="small" :loading="archiveBusy" @click="doArchive">{{ t('report.generateReport') }}</el-button></template>
+      <template #actions><el-button size="small" :loading="reportLoading" @click="loadReport">{{ t('common.refresh') }}</el-button><el-button v-if="canWrite" type="primary" size="small" :loading="archiveBusy" @click="doArchive">{{ t('report.generateReport') }}</el-button></template>
     </PageHeader>
+    <div v-if="!canWrite" class="page-readonly-hint">{{ t('report.readOnly') }}</div>
     <el-alert v-if="archiveError" :title="archiveError" type="error" :closable="false" />
     <div class="report-toolbar-meta">
       <span v-if="archiveInfo" style="font-size:12px;color:var(--ns-text-3)">{{ t('report.archivedObjects', { count: archiveInfo.count }) }}</span>

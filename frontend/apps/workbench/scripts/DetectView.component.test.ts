@@ -77,4 +77,18 @@ describe('rule editor identity', () => {
     expect(mocks.updateGasRule).not.toHaveBeenCalled()
     wrapper.unmount()
   })
+
+  it('keeps a directly opened rule editor read-only for viewers', async () => {
+    mocks.listRules.mockResolvedValueOnce([{ id: 'viewer-rule', name: 'Viewer rule', type: 'pattern', severity: 'HIGH', status: 'DISABLED', enabled: false, match: [{ field: 'msg', op: 'eq', value: 'alert' }] }])
+    mocks.updateGasRule.mockClear()
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/detect/rules/:ruleId/edit', name: 'rule-edit', component: DetectView, meta: { editor: true } }] })
+    await router.push('/detect/rules/viewer-rule/edit')
+    await router.isReady()
+    const wrapper = mount({ render: () => h(RouterView) }, { global: { plugins: [router], provide: { [WORKBENCH_STATE as symbol]: { currentRole: ref('viewer') } } } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('当前角色仅可查看规则和测试结果')
+    expect(wrapper.findAll('button').some(button => button.text() === '保存')).toBe(false)
+    expect(wrapper.find('textarea').attributes('readonly')).toBeDefined()
+    wrapper.unmount()
+  })
 })

@@ -517,6 +517,7 @@ export const enUS: LocaleMessages = {
   },
   detect: {
     workspaceDescription: 'Configure rules, run isolated tests, and manage the lifecycle in one workspace.',
+    readOnly: 'This role can view rules and test results, but rule changes and lifecycle actions require analyst or administrator permission.',
     queueLoad: 'Detection queue load',
     loadFailed: 'Failed to load rule data',
     editorEyebrow: 'Rule editing workspace',
@@ -1102,6 +1103,7 @@ export const enUS: LocaleMessages = {
     reportFile: 'Report',
     saveSuccess: 'Report generated and saved ({day}/{key})',
     title: 'Reporting & Analytics',
+    readOnly: 'This role can view reports and download saved files, but generating reports requires analyst or administrator permission.',
     description: 'Periodic security operations analytics, MTTD / MTTR performance metrics, and exports.',
     reportTemplates: 'Report Templates',
     generateReport: 'Generate Report',
