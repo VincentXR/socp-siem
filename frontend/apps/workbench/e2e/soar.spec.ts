@@ -99,9 +99,9 @@ async function installSoarMocks(page: Page): Promise<MockState> {
     let status = 200
     let data: unknown = {}
 
-    if (method === 'GET' && api === 'soar-web/api/playbooks' && parts.length === 4) {
+    if (method === 'GET' && api === 'soar-web/api/playbooks' && parts.length === 3) {
       data = pageData(state.playbooks)
-    } else if (method === 'POST' && api === 'soar-web/api/playbooks' && parts.length === 4) {
+    } else if (method === 'POST' && api === 'soar-web/api/playbooks' && parts.length === 3) {
       const body = request.postDataJSON() as { name?: string; description?: string; tags?: string[] }
       const playbook = {
         id: 'pb-browser', name: body.name || 'Browser response', description: body.description || '', owner: 'analyst', status: 'ACTIVE',
@@ -111,33 +111,33 @@ async function installSoarMocks(page: Page): Promise<MockState> {
       state.versions[playbook.id] = []
       data = playbook
       status = 201
-    } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'playbooks' && parts.length === 6 && parts[4] === 'versions') {
+    } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'playbooks' && parts.length === 5 && parts[4] === 'versions') {
       data = state.versions[parts[3]] || []
-    } else if (method === 'POST' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'playbooks' && parts.length === 6 && parts[4] === 'versions') {
+    } else if (method === 'POST' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'playbooks' && parts.length === 5 && parts[4] === 'versions') {
       const version = { id: 'ver-browser', playbookId: parts[3], version: 1, status: 'DRAFT', schemaVersion: 'soar.playbook', definition: SIMPLE_DEFINITION, layout: {}, definitionHash: 'browser-hash', riskSummary: { actionCount: 0, highRiskActionCount: 0 }, rowVersion: 1 }
       state.versions[parts[3]] = [version]
       data = version
       status = 201
-    } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'playbooks' && parts.length === 7 && parts[4] === 'versions') {
+    } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'playbooks' && parts.length === 6 && parts[4] === 'versions') {
       data = (state.versions[parts[3]] || []).find(version => String(version.version) === parts[5]) || {}
-    } else if (method === 'PUT' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'playbooks' && parts.length === 7 && parts[4] === 'versions') {
+    } else if (method === 'PUT' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'playbooks' && parts.length === 6 && parts[4] === 'versions') {
       const body = request.postDataJSON() as { definition?: unknown; layout?: unknown; rowVersion?: number }
       const versions = state.versions[parts[3]] || []
       const current = versions.find(version => String(version.version) === parts[5]) || { id: 'ver-browser', playbookId: parts[3], version: Number(parts[5]) }
       Object.assign(current, { status: 'DRAFT', schemaVersion: 'soar.playbook', definition: body.definition, layout: body.layout || {}, definitionHash: 'browser-saved-hash', riskSummary: { actionCount: 0, highRiskActionCount: 0 }, rowVersion: (body.rowVersion || 1) + 1 })
       state.versions[parts[3]] = [current]
       data = current
-    } else if (method === 'POST' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'playbooks' && parts.length === 8 && parts[4] === 'versions' && parts[6] === 'validate') {
+    } else if (method === 'POST' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'playbooks' && parts.length === 7 && parts[4] === 'versions' && parts[6] === 'validate') {
       data = { valid: true, errors: [], warnings: [], schemaVersion: 'soar.playbook', definitionHash: 'browser-saved-hash' }
-    } else if (method === 'POST' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'playbooks' && parts.length === 8 && parts[4] === 'versions' && parts[6] === 'publish') {
+    } else if (method === 'POST' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'playbooks' && parts.length === 7 && parts[4] === 'versions' && parts[6] === 'publish') {
       const version = (state.versions[parts[3]] || []).find(item => String(item.version) === parts[5])
       if (version) Object.assign(version, { status: 'PUBLISHED', publishedAt: '2026-01-01T00:00:00Z' })
       const playbook = state.playbooks.find(item => item.id === parts[3])
       if (playbook) Object.assign(playbook, { latestPublishedVersion: Number(parts[5]), draftVersion: null })
       data = version || {}
-    } else if (method === 'GET' && api === 'soar-web/api/runs' && parts.length === 4) {
+    } else if (method === 'GET' && api === 'soar-web/api/runs' && parts.length === 3) {
       data = pageData(state.runs)
-    } else if (method === 'POST' && api === 'soar-web/api/runs' && parts.length === 4) {
+    } else if (method === 'POST' && api === 'soar-web/api/runs' && parts.length === 3) {
       const body = request.postDataJSON() as { requestId?: string; playbookVersionId?: string; subject?: unknown; inputs?: unknown }
       const queued = {
         runId: 'run-browser-queued', requestId: body.requestId || 'workbench-request', playbookId: 'pb-existing',
@@ -148,38 +148,38 @@ async function installSoarMocks(page: Page): Promise<MockState> {
       state.runs = [queued, ...state.runs.filter(item => item.runId !== queued.runId)]
       data = queued
       status = 202
-    } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'runs' && parts.length === 5) {
+    } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'runs' && parts.length === 4) {
       data = state.runs.find(item => item.runId === parts[3]) || {}
-    } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'runs' && parts.length === 6 && parts[4] === 'nodes') {
+    } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'runs' && parts.length === 5 && parts[4] === 'nodes') {
       data = [{ id: 'node-run-1', runId: 'run-1', nodeId: 'start', nodeType: 'START', status: 'SUCCEEDED' }]
-    } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'runs' && parts.length === 6 && parts[4] === 'events') {
+    } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'runs' && parts.length === 5 && parts[4] === 'events') {
       data = pageData([])
-    } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'runs' && parts.length === 6 && parts[4] === 'artifacts') {
+    } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'runs' && parts.length === 5 && parts[4] === 'artifacts') {
       data = []
-    } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'node-runs' && parts.length === 6 && parts[4] === 'attempts') {
+    } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'node-runs' && parts.length === 5 && parts[4] === 'attempts') {
       data = pageData([])
-    } else if (method === 'GET' && api === 'soar-web/api/approvals' && parts.length === 4) {
+    } else if (method === 'GET' && api === 'soar-web/api/approvals' && parts.length === 3) {
       data = state.approvals
-    } else if (method === 'POST' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'approvals' && parts.length === 6) {
+    } else if (method === 'POST' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'approvals' && parts.length === 5) {
       const approval = state.approvals.find(item => item.id === parts[3])
       if (approval) Object.assign(approval, { status: parts[4] === 'approve' ? 'APPROVED' : 'REJECTED', decisionReason: 'Reviewed by browser test' })
       data = approval || {}
-    } else if (method === 'GET' && api === 'soar-web/api/templates' && parts.length === 4) {
+    } else if (method === 'GET' && api === 'soar-web/api/templates' && parts.length === 3) {
       data = []
-    } else if (method === 'GET' && api === 'soar-web/api/automation-rules' && parts.length === 4) {
+    } else if (method === 'GET' && api === 'soar-web/api/automation-rules' && parts.length === 3) {
       data = pageData([])
-    } else if (method === 'GET' && api === 'soar-web/api/connections' && parts.length === 4) {
+    } else if (method === 'GET' && api === 'soar-web/api/connections' && parts.length === 3) {
       data = pageData([])
-    } else if (method === 'GET' && api === 'soar-web/api/actions' && parts.length === 4) {
+    } else if (method === 'GET' && api === 'soar-web/api/actions' && parts.length === 3) {
       data = []
-    } else if (method === 'GET' && api === 'soar-web/api/manual-tasks' && parts.length === 4) {
+    } else if (method === 'GET' && api === 'soar-web/api/manual-tasks' && parts.length === 3) {
       data = pageData(state.tasks)
-    } else if (method === 'POST' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'manual-tasks' && parts.length === 6 && parts[4] === 'complete') {
+    } else if (method === 'POST' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'manual-tasks' && parts.length === 5 && parts[4] === 'complete') {
       state.tasks = state.tasks.filter(task => task.id !== parts[3])
       data = { id: parts[3], status: 'COMPLETED' }
-    } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'operations' && parts.length === 5 && parts[3] === 'dead-dispatches') {
+    } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'operations' && parts.length === 4 && parts[3] === 'dead-dispatches') {
       data = state.deadLetters
-    } else if (method === 'GET' && api === 'soar-web/api/stats' && parts.length === 4) {
+    } else if (method === 'GET' && api === 'soar-web/api/stats' && parts.length === 3) {
       data = { runsByStatus: { SUCCEEDED: 1 }, dispatchBacklog: 0, signalBacklog: 0, generatedAt: '2026-01-01T00:00:00Z' }
     } else {
       state.unknown.push(`${method} ${path}`)
