@@ -438,8 +438,8 @@ async function publish() {
     const result = await publishVersion(selectedPlaybookId.value, selectedVersionNo.value)
     versions.value = versions.value.map(item => item.version === result.version ? result : item)
     rowVersion.value = result.rowVersion
-    message.value = `Published revision ${result.version}`
     await loadVersions()
+    message.value = `Published revision ${result.version}`
   } catch (failure) {
     errorMessage.value = failure instanceof Error ? failure.message : t('soar.publishFailed')
   }
