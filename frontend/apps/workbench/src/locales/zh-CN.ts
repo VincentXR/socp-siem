@@ -618,7 +618,6 @@ export const zhCN = {
       variable: '变量',
       preserved: '已保留',
     },
-  },
     blankPlaybook: '新建空白剧本',
     newDraftVersion: '新建草稿版本',
     validate: '检查',
@@ -889,6 +888,7 @@ export const zhCN = {
       cancelled: '已取消',
       suppressed: '已抑制',
     },
+  },
   notify: {
     title: '通知与渠道集成',
     description: '配置告警通知渠道，并查看测试与投递结果。',

@@ -620,7 +620,6 @@ export const enUS: LocaleMessages = {
       variable: 'variable',
       preserved: 'preserved',
     },
-  },
     blankPlaybook: 'New blank playbook',
     newDraftVersion: 'New draft version',
     validate: 'Validate',
@@ -891,6 +890,7 @@ export const enUS: LocaleMessages = {
       cancelled: 'Cancelled',
       suppressed: 'Suppressed',
     },
+  },
   notify: {
     title: 'Notification Integrations',
     description: 'Configure alarm notification channels and review test and dispatch results.',

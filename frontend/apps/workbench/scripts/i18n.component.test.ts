@@ -58,6 +58,9 @@ describe('workbench i18n', () => {
     setLocale('en-US', false)
     expect(translate('assets.importSuccess', { count: 3 })).toContain('3')
     expect(translate('errors.UNAUTHORIZED')).toContain('Unauthorized')
+    expect(translate('soar.createBlankTitle')).toBe('Create blank playbook')
+    expect(translate('soar.queueRun')).toBe('Queue run')
+    expect(translate('soar.rerunRun')).toBe('Rerun')
   })
 
   it('sends the active locale to the API unless a request supplies one', async () => {
