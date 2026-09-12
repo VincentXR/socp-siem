@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import 'element-plus/es/components/button/style/css.mjs'
+import 'element-plus/es/components/alert/style/css.mjs'
 import 'element-plus/es/components/card/style/css.mjs'
 import 'element-plus/es/components/col/style/css.mjs'
 import 'element-plus/es/components/progress/style/css.mjs'
@@ -7,6 +8,7 @@ import 'element-plus/es/components/row/style/css.mjs'
 import 'element-plus/es/components/select/style/css.mjs'
 import 'element-plus/es/components/table/style/css.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
+import ElAlert from 'element-plus/es/components/alert/index.mjs'
 import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElCol from 'element-plus/es/components/col/index.mjs'
 import ElProgress from 'element-plus/es/components/progress/index.mjs'
@@ -19,6 +21,7 @@ import type { ECharts } from 'echarts/core'
 import { loadEcharts } from '../lib/echarts'
 import TrendChart from '../components/TrendChart.vue'
 import SevBadge from '../components/SevBadge.vue'
+import PageHeader from '../components/PageHeader.vue'
 import {
   alarmStats, currentSession, gasEngineStats, gasRecentAlerts, ingestSummary, isAbortError, SEVERITIES,
   type ApiRequestOptions,
@@ -54,11 +57,18 @@ const situationQuery = useQuery({
     for (const result of [stats, engine, recent, ingest]) {
       if (result.status === 'rejected' && isAbortError(result.reason)) throw result.reason
     }
+    const errors = [stats, engine, recent, ingest]
+      .filter(result => result.status === 'rejected')
+      .map(result => result.status === 'rejected'
+        ? (result.reason instanceof Error ? result.reason.message : String(result.reason))
+        : '')
+      .filter(Boolean)
     return {
       stats: stats.status === 'fulfilled' ? stats.value : null,
       engine: engine.status === 'fulfilled' ? engine.value : null,
       recent: recent.status === 'fulfilled' ? recent.value : [],
       ingest: ingest.status === 'fulfilled' ? ingest.value : null,
+      errors,
     }
   },
   refetchInterval: () => liveOn.value ? 4_000 : false,
@@ -67,6 +77,8 @@ const situationQuery = useQuery({
 const sitStats = computed<AlarmStats | null>(() => situationQuery.data.value?.stats ?? null)
 const sitEngine = computed<GasStats | null>(() => situationQuery.data.value?.engine ?? null)
 const sitIngest = computed<IngestSummary | null>(() => situationQuery.data.value?.ingest ?? null)
+const situationErrors = computed(() => situationQuery.data.value?.errors ?? [])
+const situationFetching = computed(() => situationQuery.isFetching.value)
 
 function cssToken(variable: string, fallback: string) {
   if (typeof document === 'undefined') return fallback
@@ -199,10 +211,23 @@ onUnmounted(() => {
 </script>
 
 <template>
-        <!-- 实时态势大屏 -->
   <div class="page-pad view-enter sit-wrap">
-          <!-- KPI 条 -->
-          <div class="sit-kpis">
+    <PageHeader :eyebrow="t('menuGroup.overview')" :title="t('situation.title')" :description="t('situation.description')">
+      <template #actions>
+        <el-button size="small" :loading="situationFetching" @click="loadSituation">{{ t('common.refresh') }}</el-button>
+      </template>
+    </PageHeader>
+    <el-alert
+      v-if="situationErrors.length"
+      :title="situationErrors.length === 4 ? t('situation.dataUnavailable') : t('situation.partialData')"
+      :description="situationErrors.join(' · ')"
+      type="warning"
+      :closable="false"
+      show-icon
+      class="situation-data-warning"
+    />
+
+    <div class="sit-kpis">
             <div class="sit-kpi">
               <div class="k-num">{{ sitEngine?.eventCount ?? 0 }}</div><div class="k-label">{{ t('situation.engineEvents') }}</div>
             </div>
@@ -269,7 +294,6 @@ onUnmounted(() => {
                       <el-option v-for="s in SEVERITIES" :key="s" :label="t('severities.' + s) || s" :value="s" />
                     </el-select>
                     <el-button size="small" @click="toggleLive">{{ liveOn ? t('situation.pause') : t('situation.resume') }}</el-button>
-                    <el-button size="small" @click="loadSituation">{{ t('common.refresh') }}</el-button>
                     <span style="margin-left:auto;font-size:12px;color:var(--ns-text-3)">{{ t('situation.eventCount', { count: feedView.length }) }}</span>
                   </div>
                 </template>
@@ -293,7 +317,7 @@ onUnmounted(() => {
             <el-col :span="11">
               <el-card shadow="never" class="sit-card">
                 <template #header>{{ t('situation.topRiskAlarms') }}</template>
-                <el-table :data="sitStats?.topRisk ?? []" size="small" height="368" @row-click="openRiskRow">
+                <el-table :data="sitStats?.topRisk ?? []" size="small" height="368" :empty-text="t('common.empty')" @row-click="openRiskRow">
                   <el-table-column :label="t('situation.score')" width="86">
                     <template #default="{ row }">
                       <span class="risk-pill" :class="`risk-${String(row.riskLevel || 'INFO').toLowerCase()}`">{{ row.riskScore }}</span>

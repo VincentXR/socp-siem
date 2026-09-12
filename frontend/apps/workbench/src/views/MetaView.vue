@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useWriteAccess } from '../composables/useWriteAccess'
+const canWrite = useWriteAccess()
 import { useFormDialog } from '../composables/useFormDialog'
 import { useMutation } from '../composables/useMutation'
 import ActionFeedback from '../components/ActionFeedback.vue'
@@ -28,6 +30,7 @@ import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { onMounted, ref } from 'vue'
 import SevBadge from '../components/SevBadge.vue'
+import PageHeader from '../components/PageHeader.vue'
 import {
   updateCategory, updateDataSourceType, updateField,
   createCategory, createDataSourceType, createField, deleteCategory, deleteDataSourceType, deleteField,
@@ -39,7 +42,10 @@ import { useI18n } from '../composables/useI18n'
 const { t } = useI18n()
 const metaTab = ref('ds')
 const editingId = ref('')
+const loading = ref(false)
+const loadError = ref('')
 function editMetadata(kind: 'ds' | 'category' | 'field', row: DataSourceType | LogCategory | FieldDef) {
+  if (!canWrite.value) return
   editingId.value = row.id
   if (kind === 'ds') { newDsType.value = { ...(row as DataSourceType) }; showDsDialog.value = true }
   if (kind === 'category') { newCategory.value = { ...(row as LogCategory) }; showCatDialog.value = true }
@@ -56,6 +62,7 @@ const newCategory = ref({ code: '', name: '', description: '', defaultSeverity: 
 const newField = ref({ fieldName: '', fieldLabel: '', fieldType: 'string', source: 'custom', searchable: true, aggregatable: true, stored: true, description: '' })
 
 function openNewMetadata(kind: 'ds' | 'category' | 'field') {
+  if (!canWrite.value) return
   editingId.value = ''
   actionError.value = ''
   if (kind === 'ds') { newDsType.value = { code: '', name: '', description: '', enabled: true }; showDsDialog.value = true }
@@ -64,14 +71,27 @@ function openNewMetadata(kind: 'ds' | 'category' | 'field') {
 }
 
 async function loadMeta() {
-  const [types, categories, fields] = await Promise.all([listDataSourceTypes(), listCategories(), listFields()])
-  dataSourceTypes.value = types
-  logCategories.value = categories
-  fieldDefs.value = fields
+  if (loading.value) return
+  loading.value = true
+  loadError.value = ''
+  try {
+    const [types, categories, fields] = await Promise.allSettled([listDataSourceTypes(), listCategories(), listFields()])
+    const failures: string[] = []
+    if (types.status === 'fulfilled') dataSourceTypes.value = types.value
+    else failures.push(types.reason instanceof Error ? types.reason.message : String(types.reason))
+    if (categories.status === 'fulfilled') logCategories.value = categories.value
+    else failures.push(categories.reason instanceof Error ? categories.reason.message : String(categories.reason))
+    if (fields.status === 'fulfilled') fieldDefs.value = fields.value
+    else failures.push(fields.reason instanceof Error ? fields.reason.message : String(fields.reason))
+    loadError.value = failures.length ? t('meta.loadFailed') + ': ' + failures.join(' · ') : ''
+  } finally {
+    loading.value = false
+  }
 }
 
 async function addDsType() {
   return mutation.run(async () => {
+  if (!canWrite.value) return
   if (!(newDsType.value.code.trim() && newDsType.value.name.trim())) throw new Error(t('forms.required'))
   if (editingId.value) await updateDataSourceType(editingId.value, newDsType.value)
   else await createDataSourceType(newDsType.value)
@@ -83,6 +103,7 @@ async function addDsType() {
 }
 async function removeDsType(id: string) {
   return mutation.run(async () => {
+  if (!canWrite.value) return
   if (!confirm(t('meta.deleteDataSourceTypeConfirm'))) return
   await deleteDataSourceType(id)
   await loadMeta()
@@ -90,6 +111,7 @@ async function removeDsType(id: string) {
 }
 async function addCategory() {
   return mutation.run(async () => {
+  if (!canWrite.value) return
   if (!(newCategory.value.code.trim() && newCategory.value.name.trim())) throw new Error(t('forms.required'))
   if (editingId.value) await updateCategory(editingId.value, newCategory.value)
   else await createCategory(newCategory.value)
@@ -101,6 +123,7 @@ async function addCategory() {
 }
 async function removeCategory(id: string) {
   return mutation.run(async () => {
+  if (!canWrite.value) return
   if (!confirm(t('meta.deleteCategoryConfirm'))) return
   await deleteCategory(id)
   await loadMeta()
@@ -108,6 +131,7 @@ async function removeCategory(id: string) {
 }
 async function addField() {
   return mutation.run(async () => {
+  if (!canWrite.value) return
   if (!(newField.value.fieldName.trim() && newField.value.fieldLabel.trim())) throw new Error(t('forms.required'))
   if (editingId.value) await updateField(editingId.value, newField.value)
   else await createField(newField.value)
@@ -119,6 +143,7 @@ async function addField() {
 }
 async function removeField(id: string) {
   return mutation.run(async () => {
+  if (!canWrite.value) return
   if (!confirm(t('meta.deleteFieldConfirm'))) return
   await deleteField(id)
   await loadMeta()
@@ -128,16 +153,23 @@ async function removeField(id: string) {
 const showDsDialogGuard = useFormDialog(showDsDialog, () => newDsType.value, () => actionBusy.value)
 const showCatDialogGuard = useFormDialog(showCatDialog, () => newCategory.value, () => actionBusy.value)
 const showFieldDialogGuard = useFormDialog(showFieldDialog, () => newField.value, () => actionBusy.value)
-onMounted(() => mutation.run(loadMeta))
+onMounted(() => { void loadMeta() })
 </script>
 
 <template>
   <div class="page-pad view-enter">
+    <PageHeader :eyebrow="t('menuGroup.ingestAndConfig')" :title="t('meta.title')" :description="t('meta.description')">
+      <template #actions>
+        <el-button size="small" :loading="loading" @click="loadMeta">{{ t('common.refresh') }}</el-button>
+      </template>
+    </PageHeader>
+    <div v-if="!canWrite" class="page-readonly-hint">{{ t('meta.readOnly') }}</div>
+    <ActionFeedback :error="loadError" />
     <ActionFeedback :error="actionError" />
     <el-tabs v-model="metaTab">
       <el-tab-pane :label="t('meta.dataSourceTypes')" name="ds">
         <div class="add-bar">
-          <el-button type="primary" @click="openNewMetadata('ds')">+ {{ t('meta.addDataSourceType') }}</el-button>
+          <el-button v-if="canWrite" type="primary" @click="openNewMetadata('ds')">+ {{ t('meta.addDataSourceType') }}</el-button>
           <span class="hint">{{ t('meta.registryHint') }}</span>
         </div>
         <el-dialog v-model="showDsDialog" :before-close="showDsDialogGuard.beforeClose" :title="editingId ? t('common.edit') : t('meta.addDataSourceType')" width="520px"><ActionFeedback :error="actionError" />
@@ -147,23 +179,23 @@ onMounted(() => mutation.run(loadMeta))
             <el-form-item :label="t('meta.explanation')"><el-input v-model="newDsType.description" :placeholder="t('meta.descriptionPlaceholder')" /></el-form-item>
             <el-form-item :label="t('meta.enabled')"><el-switch v-model="newDsType.enabled" /></el-form-item>
           </el-form>
-          <template #footer><el-button @click="showDsDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button type="success" :loading="actionBusy" @click="addDsType">{{ t('common.save') }}</el-button></template>
+          <template #footer><el-button @click="showDsDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="success" :loading="actionBusy" @click="addDsType">{{ t('common.save') }}</el-button></template>
         </el-dialog>
         <el-card shadow="never">
           <template #header>{{ t('meta.registryTitle') }}</template>
-          <el-table :data="dataSourceTypes" size="small" border>
+          <el-table :data="dataSourceTypes" size="small" border :loading="loading" :empty-text="t('common.empty')">
             <el-table-column prop="code" :label="t('meta.code')" width="130" />
             <el-table-column prop="name" :label="t('meta.name')" width="150" />
             <el-table-column prop="description" :label="t('meta.explanation')" min-width="300" show-overflow-tooltip />
             <el-table-column :label="t('meta.enabled')" width="65"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('meta.yes') : t('meta.no') }}</el-tag></template></el-table-column>
-            <el-table-column :label="t('meta.operation')" width="130"><template #default="{ row }"><el-button link size="small" @click="editMetadata('ds', row as DataSourceType)">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeDsType(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column>
+            <el-table-column v-if="canWrite" :label="t('meta.operation')" width="130"><template #default="{ row }"><el-button link size="small" @click="editMetadata('ds', row as DataSourceType)">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeDsType(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column>
           </el-table>
         </el-card>
       </el-tab-pane>
 
       <el-tab-pane :label="t('meta.logCategories')" name="cats">
         <div class="add-bar">
-          <el-button type="primary" @click="openNewMetadata('category')">+ {{ t('meta.addLogCategory') }}</el-button>
+          <el-button v-if="canWrite" type="primary" @click="openNewMetadata('category')">+ {{ t('meta.addLogCategory') }}</el-button>
           <span class="hint">{{ t('meta.taxonomyHint') }}</span>
         </div>
         <el-dialog v-model="showCatDialog" :before-close="showCatDialogGuard.beforeClose" :title="editingId ? t('common.edit') : t('meta.addLogCategory')" width="520px"><ActionFeedback :error="actionError" />
@@ -174,24 +206,24 @@ onMounted(() => mutation.run(loadMeta))
             <el-form-item :label="t('meta.explanation')"><el-input v-model="newCategory.description" :placeholder="t('meta.descriptionPlaceholder')" /></el-form-item>
             <el-form-item :label="t('meta.enabled')"><el-switch v-model="newCategory.enabled" /></el-form-item>
           </el-form>
-          <template #footer><el-button @click="showCatDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button type="success" :loading="actionBusy" @click="addCategory">{{ t('common.save') }}</el-button></template>
+          <template #footer><el-button @click="showCatDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="success" :loading="actionBusy" @click="addCategory">{{ t('common.save') }}</el-button></template>
         </el-dialog>
         <el-card shadow="never">
           <template #header>{{ t('meta.taxonomyTitle') }}</template>
-          <el-table :data="logCategories" size="small" border>
+          <el-table :data="logCategories" size="small" border :loading="loading" :empty-text="t('common.empty')">
             <el-table-column prop="code" :label="t('meta.code')" width="120" />
             <el-table-column prop="name" :label="t('meta.name')" width="130" />
             <el-table-column prop="description" :label="t('meta.explanation')" min-width="260" show-overflow-tooltip />
             <el-table-column :label="t('meta.baselineSeverity')" width="100"><template #default="{ row }"><SevBadge :value="row.defaultSeverity" /></template></el-table-column>
             <el-table-column :label="t('meta.enabled')" width="65"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('meta.yes') : t('meta.no') }}</el-tag></template></el-table-column>
-            <el-table-column :label="t('meta.operation')" width="130"><template #default="{ row }"><el-button link size="small" @click="editMetadata('category', row as LogCategory)">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeCategory(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column>
+            <el-table-column v-if="canWrite" :label="t('meta.operation')" width="130"><template #default="{ row }"><el-button link size="small" @click="editMetadata('category', row as LogCategory)">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeCategory(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column>
           </el-table>
         </el-card>
       </el-tab-pane>
 
       <el-tab-pane :label="t('meta.fieldDictionary')" name="fields">
         <div class="add-bar">
-          <el-button type="primary" @click="openNewMetadata('field')">+ {{ t('meta.addField') }}</el-button>
+          <el-button v-if="canWrite" type="primary" @click="openNewMetadata('field')">+ {{ t('meta.addField') }}</el-button>
           <span class="hint">{{ t('meta.fieldHint') }}</span>
         </div>
         <el-dialog v-model="showFieldDialog" :before-close="showFieldDialogGuard.beforeClose" :title="editingId ? t('common.edit') : t('meta.addField')" width="540px"><ActionFeedback :error="actionError" />
@@ -199,22 +231,22 @@ onMounted(() => mutation.run(loadMeta))
             <el-form-item :label="t('meta.fieldName')"><el-input :disabled="Boolean(editingId)" v-model="newField.fieldName" :placeholder="t('meta.fieldNamePlaceholder')" /></el-form-item>
             <el-form-item :label="t('meta.fieldLabel')"><el-input v-model="newField.fieldLabel" :placeholder="t('meta.fieldLabelPlaceholder')" /></el-form-item>
             <el-form-item :label="t('meta.dataType')"><el-select :disabled="Boolean(editingId)" v-model="newField.fieldType" style="width:160px"><el-option v-for="fieldType in ['string', 'int', 'long', 'float', 'ip', 'date', 'bool', 'json']" :key="fieldType" :label="fieldType" :value="fieldType" /></el-select></el-form-item>
-            <el-form-item :label="t('meta.source')"><el-select v-model="newField.source" style="width:160px"><el-option label="parse" value="parse" /><el-option label="custom" value="custom" /></el-select></el-form-item>
+            <el-form-item :label="t('meta.source')"><el-select v-model="newField.source" style="width:160px"><el-option :label="t('meta.sourceParse')" value="parse" /><el-option :label="t('meta.sourceCustom')" value="custom" /></el-select></el-form-item>
             <el-form-item :label="t('meta.indexStrategy')"><el-checkbox v-model="newField.searchable">{{ t('common.search') }}</el-checkbox><el-checkbox v-model="newField.aggregatable">{{ t('meta.aggregation') }}</el-checkbox><el-checkbox v-model="newField.stored">{{ t('meta.storage') }}</el-checkbox></el-form-item>
             <el-form-item :label="t('meta.explanation')"><el-input v-model="newField.description" :placeholder="t('meta.descriptionPlaceholder')" /></el-form-item>
           </el-form>
-          <template #footer><el-button @click="showFieldDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button type="success" :loading="actionBusy" @click="addField">{{ t('common.save') }}</el-button></template>
+          <template #footer><el-button @click="showFieldDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="success" :loading="actionBusy" @click="addField">{{ t('common.save') }}</el-button></template>
         </el-dialog>
         <el-card shadow="never">
           <template #header>{{ t('meta.fieldDictionaryTitle') }}</template>
-          <el-table :data="fieldDefs" size="small" border>
+          <el-table :data="fieldDefs" size="small" border :loading="loading" :empty-text="t('common.empty')">
             <el-table-column prop="fieldName" :label="t('meta.fieldName')" width="130" />
             <el-table-column prop="fieldLabel" :label="t('meta.fieldLabel')" width="110" />
             <el-table-column prop="fieldType" :label="t('meta.dataType')" width="80" />
-            <el-table-column prop="source" :label="t('meta.source')" width="80" />
+            <el-table-column :label="t('meta.source')" width="100"><template #default="{ row }"><el-tag size="small" :type="row.source === 'system' ? 'info' : row.source === 'parse' ? 'success' : 'warning'">{{ row.source === 'system' ? t('meta.sourceSystem') : row.source === 'parse' ? t('meta.sourceParse') : t('meta.sourceCustom') }}</el-tag></template></el-table-column>
             <el-table-column :label="t('meta.indexStrategy')" width="150"><template #default="{ row }"><el-tag v-if="row.searchable" size="small" type="success" style="margin-right:4px">{{ t('common.search') }}</el-tag><el-tag v-if="row.aggregatable" size="small" type="warning" style="margin-right:4px">{{ t('meta.aggregation') }}</el-tag><el-tag v-if="row.stored" size="small" type="info">{{ t('meta.storage') }}</el-tag></template></el-table-column>
             <el-table-column prop="description" :label="t('meta.explanation')" min-width="200" show-overflow-tooltip />
-            <el-table-column :label="t('meta.operation')" width="130"><template #default="{ row }"><el-button v-if="row.source !== 'system'" link size="small" @click="editMetadata('field', row as FieldDef)">{{ t('common.edit') }}</el-button><el-button v-if="row.source !== 'system'" link type="danger" size="small" @click="removeField(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column>
+            <el-table-column v-if="canWrite" :label="t('meta.operation')" width="130"><template #default="{ row }"><el-button v-if="row.source !== 'system'" link size="small" @click="editMetadata('field', row as FieldDef)">{{ t('common.edit') }}</el-button><el-button v-if="row.source !== 'system'" link type="danger" size="small" @click="removeField(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column>
           </el-table>
         </el-card>
       </el-tab-pane>
