@@ -266,3 +266,39 @@ export function createNode(type: SoarNodeType, id: string): EditorNode {
   const meta = SOAR_NODE_REGISTRY[type]
   return meta.defaultCreate(id)
 }
+
+/**
+ * Node fields the validator accepts independently of the node type
+ * (`SoarDefinitionValidator` reads `onError` on ACTION/JOIN/FOREACH, either at
+ * the node top level or under `config`). A type change must keep them.
+ */
+const TYPE_AGNOSTIC_FIELDS: readonly string[] = ['onError']
+
+/**
+ * Body for an existing node after an explicit type change: the target type's
+ * creation template plus identity and the type-agnostic policy fields.
+ *
+ * Fields owned by the previous type (`expression`, `parameters`, `target`,
+ * `retry`, `outcome`, `strategy`, type-specific `config`/`limits` keys, …) are
+ * deliberately dropped: the new type does not read them and leaving them behind
+ * misleads both the operator and the validator.
+ */
+export function retypeNode(raw: EditorNode, type: string): EditorNode {
+  const meta = nodeTypeMeta(type)
+  const template = meta ? meta.defaultCreate(raw.id) : ({ id: raw.id, type } as EditorNode)
+  const next: EditorNode = { ...template, id: raw.id, type }
+  const name = typeof raw.name === 'string' && raw.name.trim() ? raw.name : template.name
+  if (name) next.name = name
+  for (const field of TYPE_AGNOSTIC_FIELDS) {
+    if (raw[field] !== undefined) next[field] = raw[field]
+  }
+  // `config.onError` is the alternate spelling accepted by the validator.
+  const rawConfig = raw.config
+  if (rawConfig && typeof rawConfig === 'object' && !Array.isArray(rawConfig) && 'onError' in rawConfig) {
+    const config = next.config && typeof next.config === 'object' && !Array.isArray(next.config)
+      ? { ...(next.config as Record<string, unknown>) } : {}
+    config.onError = (rawConfig as Record<string, unknown>).onError
+    next.config = config
+  }
+  return next
+}

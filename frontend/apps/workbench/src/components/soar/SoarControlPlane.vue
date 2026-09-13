@@ -150,7 +150,7 @@ function updateSuppression(key: string, value: unknown) {
 function clearFeedback() { message.value = ''; errorMessage.value = '' }
 function failureText(failure: unknown) { return failure instanceof Error ? failure.message : t('soar.requestFailed') }
 function parseJson(value: string, fallback: unknown = {}) {
-  try { return value.trim() ? JSON.parse(value) : fallback } catch { throw new Error('JSON payload is invalid') }
+  try { return value.trim() ? JSON.parse(value) : fallback } catch { throw new Error(t('soar.invalidJsonPayload')) }
 }
 
 async function load() {

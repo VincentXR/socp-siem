@@ -11,7 +11,7 @@ import {
   serializeLayout,
 } from '../useDefinitionFlow'
 import { mapIssuesToNodes } from '../validation'
-import { SOAR_NODE_REGISTRY, CREATION_TYPES } from '../nodeRegistry'
+import { SOAR_NODE_REGISTRY, CREATION_TYPES, retypeNode } from '../nodeRegistry'
 import type { EditorDefinition, EditorNode, SoarNodeType, ValidationIssue } from '../types'
 
 /** Golden-template-like definition with CONDITION true/false + APPROVAL edges and a SWITCH case layout. */
@@ -219,5 +219,29 @@ describe('mapIssuesToNodes', () => {
       .find(item => item.id === 'manual')!
     expect(node.data.raw.formSchema).toMatchObject({ required: ['note'] })
     expect(node.data.unsupported).toBe(false)
+  })
+
+  it('rebuilds a node body on type change so the old type cannot leak its fields', () => {
+    const condition: EditorNode = {
+      id: 'n1',
+      type: 'CONDITION',
+      name: 'Severity gate',
+      expression: "trigger.severity == 'HIGH'",
+      onError: 'CONTINUE',
+    }
+    const action = retypeNode(condition, 'ACTION')
+    expect(action.id).toBe('n1')
+    expect(action.type).toBe('ACTION')
+    expect(action.expression).toBeUndefined()
+    expect(action.name).toBe('Severity gate')
+    // onError is accepted on ACTION/JOIN/FOREACH whatever its spelling
+    expect(action.onError).toBe('CONTINUE')
+    expect(action.actionRef).toBe('')
+    expect(action.parameters).toEqual({})
+
+    const join: EditorNode = { id: 'n2', type: 'JOIN', name: 'Join', strategy: 'ANY_SUCCESS', config: { onError: 'FAIL_RUN' } }
+    const foreach = retypeNode(join, 'FOREACH')
+    expect(foreach.strategy).toBeUndefined()
+    expect(foreach.config).toMatchObject({ onError: 'FAIL_RUN', itemsPath: 'vars.items' })
   })
 })

@@ -12,8 +12,9 @@
 import { computed, nextTick, ref, type ComputedRef, type Ref } from 'vue'
 import { MarkerType, type Connection, type Edge, type NodeDragEvent, type NodeMouseEvent, type VueFlowStore } from '@vue-flow/core'
 import { createHistory, deepClone } from './history'
-import { isCreationType, nodeTypeMeta, uniqueNodeId } from './nodeRegistry'
+import { isCreationType, nodeTypeMeta, retypeNode, uniqueNodeId } from './nodeRegistry'
 import { mapIssuesToNodes } from './validation'
+import { translate } from '../../../i18n'
 import {
   mergeRunHighlights,
   preferredRunStatus,
@@ -355,7 +356,6 @@ export interface SoarFlowApi {
   addNode: (type: string, at?: { x: number; y: number }) => string | null
   addFromDrop: (type: string, clientPoint: { x: number; y: number }) => string | null
   addAtViewportCenter: (type: string) => string | null
-  removeSelected: () => void
   removeNode: (id: string) => void
   deleteSelection: () => void
   getDefinition: () => EditorDefinition
@@ -495,7 +495,10 @@ export function useDefinitionFlow(
     rawRoot.value = normalizeDefinition(value)
     positions.value = completePositions(rawRoot.value, layout)
     nodeIssueMap.value = {}
-    validationStale.value = false
+    // The previously displayed verdict belongs to another graph state: the
+    // shell must show it as outdated instead of a fresh "valid" (undo/redo and
+    // apply-JSON all pass through here).
+    validationStale.value = true
     validationIssues.value = []
     // Run highlights describe a specific executed run; they never survive a
     // definition load (undo/redo, version switch, apply-JSON all clear them).
@@ -575,11 +578,11 @@ export function useDefinitionFlow(
   function addNode(type: string, at?: { x: number; y: number }): string | null {
     const upper = type.trim().toUpperCase()
     if (!isCreationType(upper)) {
-      error('This node type is not available yet (coming soon).')
+      error(translate('soar.editorErrors.nodeTypeUnavailable'))
       return null
     }
     if (upper === 'START' && rawRoot.value.nodes.some(node => rawNodeType(node) === 'START')) {
-      error('A definition can contain only one START node')
+      error(translate('soar.editorErrors.singleStart'))
       return null
     }
     const id = uniqueNodeId(upper, rawRoot.value.nodes.map(node => node.id))
@@ -645,10 +648,10 @@ export function useDefinitionFlow(
     if (!raw) return
     const upper = rawNodeType(raw)
     if (upper === 'START') {
-      error('START cannot be removed; replace it instead')
+      error(translate('soar.editorErrors.startNotRemovable'))
       return
     }
-    if (!isCreationType(upper) && !window.confirm(`Delete read-only node “${raw.name || id}” and its edges?`)) return
+    if (!isCreationType(upper) && !window.confirm(translate('soar.editorErrors.deleteReadOnlyNode', { name: String(raw.name || id) }))) return
     removeNodeRaw(id)
     markStale()
     rebuild()
@@ -656,15 +659,12 @@ export function useDefinitionFlow(
     pushHistory()
   }
 
-  function removeSelected(): void {
-    if (!selectedNodeId.value) return
-    removeNode(selectedNodeId.value)
-  }
-
   /**
-   * Deletes the current Vue Flow selection (nodes + edges) with the usual
-   * guards: START is refused, unsupported nodes require a confirm, and edges
-   * incident to an unsupported node are never touched.
+   * Deletes the current Vue Flow selection (nodes + edges). Guards: START is
+   * refused, read-only node types need an explicit confirm, and edges that hang
+   * off a read-only node are not deletable on their own (`deletable: false`).
+   * Deleting a read-only node itself does cascade to its edges — the confirm
+   * text says so.
    */
   function deleteSelection(): void {
     const selectedNodes = [...store.getSelectedNodes.value]
@@ -673,7 +673,7 @@ export function useDefinitionFlow(
 
     const typeById = new Map(rawRoot.value.nodes.map(node => [node.id, rawNodeType(node)]))
     if (selectedNodes.some(node => typeById.get(node.id) === 'START')) {
-      error('START cannot be removed; replace it instead')
+      error(translate('soar.editorErrors.startNotRemovable'))
       return
     }
     const unsupported = selectedNodes.filter(node => {
@@ -682,7 +682,7 @@ export function useDefinitionFlow(
     })
     for (const node of unsupported) {
       const name = String(node.data?.raw?.name ?? node.id)
-      if (!window.confirm(`Delete read-only node “${name}” and its edges?`)) return
+      if (!window.confirm(translate('soar.editorErrors.deleteReadOnlyNode', { name }))) return
     }
 
     let changed = false
@@ -798,22 +798,27 @@ export function useDefinitionFlow(
 
   /* ---------------- field/type edits ---------------- */
 
+  /**
+   * Explicit type change: rebuilds the node from the target type's template so
+   * fields owned by the previous type cannot linger, and records the change so
+   * it stays undoable like every other structural edit.
+   */
   function updateNodeType(id: string, type: string): void {
     const upper = type.trim().toUpperCase()
     if (!isCreationType(upper)) return
-    const raw = rawRoot.value.nodes.find(node => node.id === id)
-    if (!raw) return
-    const meta = nodeTypeMeta(upper)
-    if (upper === 'START' && rawRoot.value.nodes.some(node => node.id !== id && rawNodeType(node) === 'START')) {
-      error('A definition can contain only one START node')
+    const nodes = rawRoot.value.nodes
+    const index = nodes.findIndex(node => node.id === id)
+    if (index === -1) return
+    if (rawNodeType(nodes[index]) === upper) return
+    if (upper === 'START' && nodes.some(node => node.id !== id && rawNodeType(node) === 'START')) {
+      error(translate('soar.editorErrors.singleStart'))
       return
     }
-    raw.type = upper
-    const name = typeof raw.name === 'string' && raw.name.trim() ? raw.name : meta?.label ?? upper
-    raw.name = name
+    nodes[index] = retypeNode(nodes[index], upper)
     markStale()
     rebuild()
     refreshSelectionInStore()
+    pushHistory()
   }
 
   /** Node card fields are read straight from the reactive raw object; just clear stale validation. */
@@ -834,6 +839,9 @@ export function useDefinitionFlow(
     nodeIssueMap.value = mapIssuesToNodes(issues, rawRoot.value.nodes)
     validationStale.value = false
     rebuild()
+    // rebuild() replaces the node descriptors, so the canvas selection has to be
+    // restored or the highlighted node loses its ring while the panel keeps it.
+    refreshSelectionInStore()
   }
 
   function nodeIssues(id: string): { errors: ValidationIssue[]; warnings: ValidationIssue[] } {
@@ -921,30 +929,30 @@ export function useDefinitionFlow(
   /* ---------------- connection validation ---------------- */
 
   function validateNewEdge(source: string, target: string, token: string): { ok: boolean; message: string } {
-    if (!source || !target) return { ok: false, message: 'Both ends of an edge are required' }
-    if (source === target) return { ok: false, message: 'An edge cannot connect a node to itself' }
+    if (!source || !target) return { ok: false, message: translate('soar.editorErrors.edgeEndsRequired') }
+    if (source === target) return { ok: false, message: translate('soar.editorErrors.edgeSelfLoop') }
     const sourceRaw = rawRoot.value.nodes.find(node => node.id === source)
     const targetRaw = rawRoot.value.nodes.find(node => node.id === target)
-    if (!sourceRaw || !targetRaw) return { ok: false, message: 'Edge references a node that does not exist' }
+    if (!sourceRaw || !targetRaw) return { ok: false, message: translate('soar.editorErrors.edgeUnknownNode') }
     const sourceType = rawNodeType(sourceRaw)
     const targetType = rawNodeType(targetRaw)
-    if (sourceType === 'END') return { ok: false, message: 'No edge may leave an END node' }
-    if (targetType === 'START') return { ok: false, message: 'No edge may enter the START node' }
+    if (sourceType === 'END') return { ok: false, message: translate('soar.editorErrors.edgeFromEnd') }
+    if (targetType === 'START') return { ok: false, message: translate('soar.editorErrors.edgeIntoStart') }
     if (isUnsupportedNodeType(sourceRaw) || isUnsupportedNodeType(targetRaw)) {
-      return { ok: false, message: 'Read-only node types cannot take part in new connections' }
+      return { ok: false, message: translate('soar.editorErrors.edgeReadOnly') }
     }
     if (sourceType === 'START' && rawRoot.value.edges.some(edge => edge.from === source)) {
-      return { ok: false, message: 'START may only have one outgoing edge' }
+      return { ok: false, message: translate('soar.editorErrors.edgeStartSingle') }
     }
     // Port allowance is the node's actual handle set (registry plus dynamic
     // SWITCH case ports), not just the static registry list.
     if (token) {
       const allowed = resolveSourcePorts(sourceRaw, rawRoot.value).some(port => port.token === token)
-      if (!allowed) return { ok: false, message: `Port “${token}” is not valid for a ${sourceType} node` }
+      if (!allowed) return { ok: false, message: translate('soar.editorErrors.edgeInvalidPort', { port: token, type: sourceType }) }
     }
     const duplicate = rawRoot.value.edges.some(edge =>
       edge.from === source && edge.to === target && edgePortKey(edge) === token)
-    if (duplicate) return { ok: false, message: 'This connection already exists' }
+    if (duplicate) return { ok: false, message: translate('soar.editorErrors.edgeDuplicate') }
     return { ok: true, message: '' }
   }
 
@@ -968,6 +976,7 @@ export function useDefinitionFlow(
     rawRoot.value.edges.push(rawEdge)
     markStale()
     rebuild()
+    refreshSelectionInStore()
     pushHistory()
   })
 
@@ -1004,12 +1013,12 @@ export function useDefinitionFlow(
       if (!raw) continue
       const upper = rawNodeType(raw)
       if (upper === 'START') {
-        error('START cannot be removed; replace it instead')
+        error(translate('soar.editorErrors.startNotRemovable'))
         restoreNodeInStore(id)
         continue
       }
       if (!isCreationType(upper)) {
-        if (!window.confirm(`Delete read-only node “${raw.name || id}” and its edges?`)) {
+        if (!window.confirm(translate('soar.editorErrors.deleteReadOnlyNode', { name: String(raw.name || id) }))) {
           restoreNodeInStore(id)
           continue
         }
@@ -1042,6 +1051,7 @@ export function useDefinitionFlow(
     if (mutated) {
       markStale()
       rebuild()
+      refreshSelectionInStore()
       pushHistory()
     }
   })
@@ -1077,7 +1087,6 @@ export function useDefinitionFlow(
     addNode,
     addFromDrop,
     addAtViewportCenter,
-    removeSelected,
     removeNode,
     deleteSelection,
     getDefinition,

@@ -353,17 +353,31 @@ async function changeVersion(version: number): Promise<void> {
 /* ---------------- apply JSON ---------------- */
 function applyDefinitionJson() {
   if (!props.canWrite) return
+  let parsed: unknown
   try {
-    const parsed = JSON.parse(definitionText.value)
-    flow.applyWorkingCopy(parsed)
-    syncDefinitionText()
-    validation.value = null
-    errorMessage.value = ''
-    message.value = t('soar.definitionApplied')
+    parsed = JSON.parse(definitionText.value)
   } catch (failure) {
     const detail = failure instanceof Error ? failure.message : t('soar.invalidJson')
     errorMessage.value = `${t('soar.definitionInvalid')}: ${detail}`
+    return
   }
+  // A definition always carries a nodes array: refusing anything else stops a
+  // stray `{}` (or an array) from silently replacing the canvas with the empty
+  // start→end template while keeping the old edges.
+  const incomingNodes = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+    ? (parsed as { nodes?: unknown }).nodes
+    : undefined
+  if (!Array.isArray(incomingNodes)) {
+    errorMessage.value = `${t('soar.definitionInvalid')}: ${t('soar.applyJsonInvalidShape')}`
+    return
+  }
+  const current = flow.nodeCount.value
+  if (incomingNodes.length < current && !window.confirm(t('soar.applyJsonConfirmNodes', { current, next: incomingNodes.length }))) return
+  flow.applyWorkingCopy(parsed)
+  syncDefinitionText()
+  validation.value = null
+  errorMessage.value = ''
+  message.value = t('soar.definitionApplied')
 }
 
 /* ---------------- save / validate / dry-run / publish ---------------- */
@@ -703,7 +717,7 @@ onUnmounted(() => {
         <div class="soar-canvas-footer">
           <span>{{ flow.nodeCount.value }} {{ t('soar.nodes') }} · {{ flow.edgeCount.value }} {{ t('soar.edges') }}</span>
           <span v-if="flowSelectionCount">{{ flowSelectionCount }} {{ t('soar.selected') }}</span>
-          <el-button v-if="props.canWrite" size="small" type="danger" plain :disabled="!selectedRawNode || selectedRawNode.type === 'START'" @click="flow.removeSelected()">{{ t('soar.removeSelected') }}</el-button>
+          <el-button v-if="props.canWrite" size="small" type="danger" plain :disabled="!flowSelectionCount" @click="flow.deleteSelection()">{{ t('soar.removeSelected') }}</el-button>
         </div>
       </section>
 

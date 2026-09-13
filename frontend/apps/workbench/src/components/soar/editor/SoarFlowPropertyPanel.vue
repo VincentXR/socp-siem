@@ -87,26 +87,17 @@ async function loadActionCatalog(): Promise<void> {
   }
 }
 
+/**
+ * Loads the action catalog when an ACTION node is selected. Selecting a node
+ * must never write to the definition: auto-binding the first catalog entry used
+ * to bind an action silently, dirty the draft and clear the validation marks.
+ */
 watch(nodeType, (type) => {
   if (type !== 'ACTION') return
-  const node = props.node
-  if (node && typeof node.actionRef === 'string' && node.actionRef === '' && actions.value.length) {
-    node.actionRef = actions.value[0].actionRef
-    props.flow.touchAfterNodeEdit()
-  }
   if (actionCatalogState.value !== 'loading' && actions.value.length === 0) {
     void loadActionCatalog()
   }
 }, { immediate: true })
-
-watch(actions, (catalog) => {
-  const node = props.node
-  if (!node || nodeType.value !== 'ACTION') return
-  if (typeof node.actionRef === 'string' && node.actionRef === '' && catalog.length) {
-    node.actionRef = catalog[0].actionRef
-    props.flow.touchAfterNodeEdit()
-  }
-})
 
 async function loadSubPlaybookCatalog(): Promise<void> {
   if (subPlaybookCatalogState.value === 'loading' || subPlaybookCatalogState.value === 'loaded') return
@@ -220,10 +211,17 @@ function updateNested(area: 'config' | 'limits', field: string, value: string): 
   props.flow.touchAfterNodeEdit()
 }
 
+/** Validated integer written into a nested container; numbers stay numbers. */
 function updateNestedNumber(area: 'config' | 'limits', field: string, raw: string, min: number, max: number): void {
+  if (props.readOnly) return
   const parsed = Number(raw)
   if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < min || parsed > max) return
-  updateNested(area, field, String(parsed))
+  const node = props.node
+  if (!node) return
+  const current = { ...nestedOf(area) }
+  current[field] = parsed
+  node[area] = current
+  props.flow.touchAfterNodeEdit()
 }
 
 function nestedNumberValue(area: 'config' | 'limits', field: string, fallback: number): string {
@@ -442,6 +440,14 @@ function syncConditionRows(): void {
 
 function commitConditionRows(rows: ExpressionCondition[]): void {
   if (props.readOnly) return
+  const current = props.node ? scalar(props.node, 'expression') : ''
+  // A complex expression cannot be represented by the single-comparison
+  // builder: an empty builder emission must not silently turn it into a dead
+  // `false` branch, so the operator is pointed at the expression field instead.
+  if (!rows.length && current.trim() && parseCondition(current).length === 0) {
+    conditionError.value = t('soar.conditionErrors.complexNotEditable')
+    return
+  }
   conditionRows.value = rows.map(row => ({ ...row }))
   try {
     const expression = compileCondition(conditionRows.value)
@@ -451,6 +457,19 @@ function commitConditionRows(rows: ExpressionCondition[]): void {
   } catch (error) {
     conditionError.value = error instanceof Error ? error.message : String(error)
   }
+}
+
+// The expression field and the visual builder are two views of the same value:
+// re-parse whenever the field changes so a hand-edited expression is reflected
+// instead of being overwritten by stale builder rows.
+watch(() => (props.node ? scalar(props.node, 'expression') : '').trim(), (expression) => {
+  if (expression === compiledRows()) return
+  conditionRows.value = parseCondition(expression)
+})
+
+/** Compiled form of the current builder rows ('' when the rows are incomplete). */
+function compiledRows(): string {
+  try { return compileCondition(conditionRows.value).trim() } catch { return '' }
 }
 
 watch(() => props.node, syncConditionRows, { immediate: true })
@@ -757,7 +776,7 @@ function subPlaybookVersionKnown(id: string): boolean {
                 <el-option v-for="value in field.enum" :key="value" :label="value" :value="value" />
               </el-select>
               <el-select v-else-if="field.type === 'boolean'" :model-value="parameterValue(field.key)" :disabled="props.readOnly" clearable @change="updateParameterValue(field, String($event ?? ''))"><el-option label="true" value="true" /><el-option label="false" value="false" /></el-select>
-              <VariableSelector v-else-if="field.type === 'string'" :model-value="parameterValue(field.key)" :variables="variableOptions" :disabled="props.readOnly" placeholder="Select or enter a value" @update:model-value="value => updateParameterValue(field, value)" />
+              <VariableSelector v-else-if="field.type === 'string'" :model-value="parameterValue(field.key)" :variables="variableOptions" :disabled="props.readOnly" :placeholder="t('soar.actionParameterPlaceholder')" @update:model-value="value => updateParameterValue(field, value)" />
               <el-input v-else :model-value="parameterValue(field.key)" :disabled="props.readOnly" :type="field.type === 'number' || field.type === 'integer' ? 'number' : 'text'" @update:model-value="value => updateParameterValue(field, String(value ?? ''))" />
               <small v-if="field.description">{{ field.description }}</small>
             </label>
