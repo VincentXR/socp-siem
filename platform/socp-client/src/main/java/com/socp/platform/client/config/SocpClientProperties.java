@@ -35,6 +35,14 @@ public class SocpClientProperties {
     /** 响应体日志截断长度，避免一条 WARN 刷屏。 */
     private int bodyLogLimit = 300;
 
+    /**
+     * 响应体字节上限。内部扇出与外部出口都从这里读响应体，无上限时一个失控的下游
+     * （或被诱导访问的外部端点）返回超大响应就能把堆吃满。默认 10MB；&lt;=0 表示不限制。
+     */
+    public static final int DEFAULT_RESPONSE_BODY_LIMIT_BYTES = 10 * 1024 * 1024;
+
+    private int responseBodyLimitBytes = DEFAULT_RESPONSE_BODY_LIMIT_BYTES;
+
     /** 服务间调用换 token 用的账号（网关 /auth/login）。 */
     private String username = "demo";
 
@@ -86,6 +94,14 @@ public class SocpClientProperties {
 
     public void setBodyLogLimit(int bodyLogLimit) {
         this.bodyLogLimit = bodyLogLimit;
+    }
+
+    public int getResponseBodyLimitBytes() {
+        return responseBodyLimitBytes;
+    }
+
+    public void setResponseBodyLimitBytes(int responseBodyLimitBytes) {
+        this.responseBodyLimitBytes = responseBodyLimitBytes;
     }
 
     public String getUsername() {

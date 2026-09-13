@@ -2,7 +2,9 @@ package com.socp.ai.infrastructure.llm;
 
 import com.socp.ai.config.LlmProperties;
 import com.socp.platform.client.config.SocpClientProperties;
+import com.socp.platform.client.http.BoundedBodyHandlers;
 import com.socp.platform.client.http.ExternalEndpointPolicy;
+import com.socp.platform.client.http.PinnedEndpoint;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -67,12 +69,13 @@ public class HttpLlmChatClient implements LlmChatClient {
         if (!properties.isEnabled() || question == null || question.isBlank()) {
             return Optional.empty();
         }
-        try {
-            String url = normalizeBaseUrl(properties.getBaseUrl()) + "/v1/chat/completions";
-            String policyError = endpointPolicy.validate(url, properties.getAllowedHosts(),
-                    properties.isHttpsOnly(), properties.isAllowPrivateNetworks());
-            if (policyError != null) {
-                log.warn("LLM endpoint blocked by outbound policy: {}", policyError);
+        String url = normalizeBaseUrl(properties.getBaseUrl()) + "/v1/chat/completions";
+        // 校验通过后把解析结果钉住到当前线程，建连时的隐式解析只会拿到已校验地址；
+        // URL 保持原主机名，SNI 与证书域名校验不受影响
+        try (PinnedEndpoint pinned = endpointPolicy.validatePinned(url,
+                properties.getAllowedHosts(), properties.isHttpsOnly(), properties.isAllowPrivateNetworks())) {
+            if (pinned.isRejected()) {
+                log.warn("LLM endpoint blocked by outbound policy: {}", pinned.rejectionReason());
                 return Optional.empty();
             }
             var requestBody = Map.of(
@@ -95,7 +98,8 @@ public class HttpLlmChatClient implements LlmChatClient {
                 requestBuilder.header("Authorization", "Bearer " + properties.getApiKey());
             }
 
-            HttpResponse<String> response = httpClient.send(requestBuilder.build(), HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = httpClient.send(requestBuilder.build(),
+                    BoundedBodyHandlers.ofString(SocpClientProperties.DEFAULT_RESPONSE_BODY_LIMIT_BYTES));
             if (response.statusCode() >= 200 && response.statusCode() < 300) {
                 JsonNode root = MAPPER.readTree(response.body());
                 JsonNode choices = root.path("choices");

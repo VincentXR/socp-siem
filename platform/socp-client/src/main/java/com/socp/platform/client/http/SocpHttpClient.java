@@ -169,16 +169,20 @@ public class SocpHttpClient {
     /** POST to an approved external endpoint using a connection-level host allowlist. */
     public ServiceCall postExternal(String absoluteUrl, String body, String contentType, int timeoutMs,
                                     Map<String, String> headers, List<String> allowedHosts) {
-        String policyError = externalEndpointPolicy.validate(absoluteUrl, allowedHosts,
-                props.isExternalHttpsOnly(), props.isExternalAllowPrivateNetworks());
-        if (policyError != null) {
-            ServiceCall denied = new ServiceCall(null, absoluteUrl, false, -1, "",
-                    "External endpoint blocked: " + policyError, 0, false, 0);
-            record(denied);
-            return denied;
+        // 校验通过后把解析结果钉住到当前线程：execute() 建连时的隐式 DNS 解析只会拿到
+        // 已校验地址，消除 validate-then-connect 的重绑定窗口；URL 主机名不变，
+        // SNI / 证书域名校验保持原样
+        try (PinnedEndpoint pinned = externalEndpointPolicy.validatePinned(absoluteUrl, allowedHosts,
+                props.isExternalHttpsOnly(), props.isExternalAllowPrivateNetworks())) {
+            if (pinned.isRejected()) {
+                ServiceCall denied = new ServiceCall(null, absoluteUrl, false, -1, "",
+                        "External endpoint blocked: " + pinned.rejectionReason(), 0, false, 0);
+                record(denied);
+                return denied;
+            }
+            return execute("POST", null, absoluteUrl, body, contentType == null ? JSON : contentType, timeoutMs,
+                    headers == null ? Map.of() : headers);
         }
-        return execute("POST", null, absoluteUrl, body, contentType == null ? JSON : contentType, timeoutMs,
-                headers == null ? Map.of() : headers);
     }
 
     /** 解析服务地址（少数场景需要自己拼 URL，例如 SSE 长连接）。 */
@@ -203,7 +207,7 @@ public class SocpHttpClient {
             attempts++;
             try {
                 HttpRequest req = build(method, target, url, body, contentType, timeoutMs, headers);
-                HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+                HttpResponse<String> resp = http.send(req, stringBodyHandler());
                 status = resp.statusCode();
                 respBody = resp.body() == null ? "" : resp.body();
                 error = null;
@@ -224,8 +228,9 @@ public class SocpHttpClient {
                 status = -1;
                 respBody = "";
                 error = e.getClass().getSimpleName() + ": " + e.getMessage();
-                // 连不上 / 超时 / 连接被重置，都属于「过一会儿可能就好了」
-                retryable = true;
+                // 连不上 / 超时 / 连接被重置，都属于「过一会儿可能就好了」；
+                // 响应体超限是永久性失败，重试只会再次超限
+                retryable = !isResponseBodyTooLarge(e);
             }
             if (attempts < max && retryable) {
                 sleep(props.getRetryBackoffMs());
@@ -239,6 +244,20 @@ public class SocpHttpClient {
         ServiceCall call = new ServiceCall(target, url, ok, status, respBody, error, durationMs, retryable, attempts);
         record(call);
         return call;
+    }
+
+    /** 响应体读取：强制字节上限（socp.client.response-body-limit-bytes，<=0 表示不限制）。 */
+    private HttpResponse.BodyHandler<String> stringBodyHandler() {
+        int limit = props.getResponseBodyLimitBytes();
+        return limit > 0 ? new BoundedStringBodyHandler(limit) : HttpResponse.BodyHandlers.ofString();
+    }
+
+    private static boolean isResponseBodyTooLarge(Throwable failure) {
+        for (Throwable current = failure; current != null; current = current.getCause()) {
+            if (current instanceof ResponseBodyTooLargeException) return true;
+            if (current.getCause() == current) break;
+        }
+        return false;
     }
 
     private HttpRequest build(String method, SocpService target, String url,

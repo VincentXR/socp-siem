@@ -9,9 +9,11 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.core.env.StandardEnvironment;
 
+import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -62,6 +64,50 @@ class SocpHttpClientExternalTest {
             assertThat(authorization.get()).isNull();
             assertThat(tenant.get()).isNull();
             verifyNoInteractions(tokens, signer);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void oversizedResponseBodiesFailWithoutReadingThemAndAreNotRetried() throws Exception {
+        AtomicInteger hits = new AtomicInteger();
+        byte[] payload = new byte[8192];
+        payload[0] = 'o';
+        HttpServer server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+        server.createContext("/hook", exchange -> {
+            hits.incrementAndGet();
+            exchange.sendResponseHeaders(200, payload.length);
+            try (OutputStream output = exchange.getResponseBody()) {
+                output.write(payload);
+            }
+        });
+        server.start();
+        try {
+            SocpClientProperties properties = new SocpClientProperties();
+            properties.setExternalAllowedHosts(List.of("localhost"));
+            properties.setExternalHttpsOnly(false);
+            properties.setExternalAllowPrivateNetworks(true);
+            properties.setResponseBodyLimitBytes(1024);
+            properties.setMaxAttempts(3);
+            properties.setRetryBackoffMs(0);
+            ServiceTokenProvider tokens = mock(ServiceTokenProvider.class);
+            ServiceRequestSigner signer = mock(ServiceRequestSigner.class);
+            ObjectProvider registry = mock(ObjectProvider.class);
+            when(registry.getIfAvailable()).thenReturn(null);
+            SocpHttpClient client = new SocpHttpClient(new ServiceEndpoints(new StandardEnvironment()), tokens,
+                    properties, registry, signer, new ExternalEndpointPolicy(properties));
+
+            ServiceCall result = client.postExternal("http://localhost:" + server.getAddress().getPort()
+                    + "/hook", "{}", SocpHttpClient.JSON, 2000);
+
+            assertThat(result.ok()).isFalse();
+            assertThat(result.status()).isEqualTo(-1);
+            assertThat(result.error()).contains("exceeds");
+            assertThat(result.retryable()).isFalse();
+            assertThat(result.attempts()).isEqualTo(1);
+            assertThat(hits.get()).isEqualTo(1);
         } finally {
             server.stop(0);
         }
