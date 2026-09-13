@@ -505,20 +505,23 @@ interface ManualFieldRow {
   required: boolean
 }
 
-function manualSchema(): { schema: Record<string, unknown>; inConfig: boolean } {
+function manualSchema(): Record<string, unknown> {
   const node = props.node
+  // Contract location: validator, engine and golden templates read the
+  // top-level `formSchema`. Drafts written by older builds stored it under
+  // `config.formSchema`, so that spelling is still honoured on read.
+  const topSchema = node?.formSchema && typeof node.formSchema === 'object' && !Array.isArray(node.formSchema)
+    ? node.formSchema as Record<string, unknown> : null
+  if (topSchema) return topSchema
   const config = node?.config && typeof node.config === 'object' ? node.config as Record<string, unknown> : {}
   const configSchema = config.formSchema && typeof config.formSchema === 'object' && !Array.isArray(config.formSchema)
     ? config.formSchema as Record<string, unknown> : null
-  if (configSchema) return { schema: configSchema, inConfig: true }
-  const topSchema = node?.formSchema && typeof node.formSchema === 'object' && !Array.isArray(node.formSchema)
-    ? node.formSchema as Record<string, unknown> : null
-  if (topSchema) return { schema: topSchema, inConfig: false }
-  return { schema: { type: 'object', properties: {}, required: [] }, inConfig: true }
+  if (configSchema) return configSchema
+  return { type: 'object', properties: {}, required: [] }
 }
 
 const manualFieldRows = computed<ManualFieldRow[]>(() => {
-  const { schema } = manualSchema()
+  const schema = manualSchema()
   const properties = schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)
     ? schema.properties as Record<string, unknown> : {}
   const required = new Set(Array.isArray(schema.required) ? schema.required.map(String) : [])
@@ -532,18 +535,21 @@ function writeManualSchema(schema: Record<string, unknown>): void {
   if (props.readOnly) return
   const node = props.node
   if (!node) return
-  const location = manualSchema()
-  if (location.inConfig) {
-    const config = node.config && typeof node.config === 'object' && !Array.isArray(node.config) ? { ...(node.config as Record<string, unknown>) } : {}
-    config.formSchema = schema
-    node.config = config
-  } else node.formSchema = schema
+  node.formSchema = schema
+  // Drop the legacy config copy so the two spellings cannot diverge again.
+  if (node.config && typeof node.config === 'object' && !Array.isArray(node.config)) {
+    const config = { ...(node.config as Record<string, unknown>) }
+    if ('formSchema' in config) {
+      delete config.formSchema
+      node.config = config
+    }
+  }
   props.flow.touchAfterNodeEdit()
 }
 
 function updateManualField(name: string, patch: Partial<ManualFieldRow>): void {
   if (props.readOnly) return
-  const { schema } = manualSchema()
+  const schema = manualSchema()
   const properties = schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)
     ? { ...(schema.properties as Record<string, unknown>) } : {}
   const current = properties[name] && typeof properties[name] === 'object' && !Array.isArray(properties[name])
@@ -563,7 +569,7 @@ function addManualField(): void {
   let index = 1
   while (existing.has(`field_${index}`)) index += 1
   const name = `field_${index}`
-  const { schema } = manualSchema()
+  const schema = manualSchema()
   const properties = schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)
     ? { ...(schema.properties as Record<string, unknown>) } : {}
   properties[name] = { title: name, type: 'string' }
@@ -572,7 +578,7 @@ function addManualField(): void {
 
 function removeManualField(name: string): void {
   if (props.readOnly) return
-  const { schema } = manualSchema()
+  const schema = manualSchema()
   const properties = schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)
     ? { ...(schema.properties as Record<string, unknown>) } : {}
   delete properties[name]

@@ -195,4 +195,29 @@ describe('mapIssuesToNodes', () => {
     // document-scoped issue has no border highlight
     expect(Object.keys(mapped)).toEqual(expect.not.arrayContaining(['DOC_SCOPE']))
   })
+
+  it('keeps the MANUAL_TASK form schema on the node, where the engine reads it', () => {
+    // The validator, the workflow engine and the golden templates all read
+    // `node.formSchema`; `config.formSchema` is a legacy spelling that the
+    // backend never sees, so creation must not emit it.
+    const created = SOAR_NODE_REGISTRY.MANUAL_TASK.defaultCreate('manual')
+    expect(created.formSchema).toMatchObject({ type: 'object', properties: {}, required: [] })
+    expect(created.config).toEqual({ timeoutSeconds: 86400 })
+
+    const definition = normalizeDefinition({
+      schemaVersion: 'soar.playbook',
+      entryNodeId: 'manual',
+      nodes: [{
+        id: 'manual',
+        type: 'MANUAL_TASK',
+        name: 'Review',
+        formSchema: { type: 'object', properties: { note: { type: 'string' } }, required: ['note'] },
+      }],
+      edges: [],
+    })
+    const node = buildFlowNodes(definition, completePositions(definition))
+      .find(item => item.id === 'manual')!
+    expect(node.data.raw.formSchema).toMatchObject({ required: ['note'] })
+    expect(node.data.unsupported).toBe(false)
+  })
 })

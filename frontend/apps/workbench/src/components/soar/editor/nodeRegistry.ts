@@ -201,11 +201,14 @@ export const SOAR_NODE_REGISTRY: Record<SoarNodeType, SoarNodeTypeMeta> = {
     comingSoon: false,
     sourcePorts: [DEFAULT_PORT, COMPLETED_PORT, TIMEOUT_PORT, FAILURE_PORT],
     acceptsTarget: true,
+    // formSchema stays at the node top level: the validator, the workflow engine
+    // and the golden templates all read `node.formSchema` (never config.formSchema).
     defaultCreate: (id) => ({
       id,
       type: 'MANUAL_TASK',
       name: 'Manual task',
-      config: { timeoutSeconds: 86400, formSchema: { type: 'object', properties: {}, required: [] } },
+      formSchema: { type: 'object', properties: {}, required: [] },
+      config: { timeoutSeconds: 86400 },
     }),
   },
   SUB_PLAYBOOK: {
