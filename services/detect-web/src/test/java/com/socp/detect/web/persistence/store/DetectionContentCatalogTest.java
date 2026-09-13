@@ -45,9 +45,25 @@ class DetectionContentCatalogTest {
         List<Map<String, Object>> rules = (List<Map<String, Object>>) manifest.get("rules");
         assertEquals(39, rules.size(), "content loss must fail the catalog contract");
         for (Map<String, Object> item : rules) {
-            for (String field : List.of("id", "version", "owner", "dataSources", "mitre", "spec", "tests")) {
+            for (String field : List.of("id", "version", "owner", "dataSources", "mitre", "spec", "tests",
+                    "description", "investigationGuide", "falsePositives")) {
                 assertTrue(item.containsKey(field), () -> item.get("id") + " missing " + field);
             }
+            // The investigation guide is what an analyst follows when the rule
+            // fires; without it the rule is content, not guidance.
+            assertFalse(String.valueOf(item.get("investigationGuide")).isBlank(),
+                    () -> item.get("id") + " has a blank investigation guide");
+            @SuppressWarnings("unchecked")
+            List<String> falsePositives = (List<String>) item.get("falsePositives");
+            assertFalse(falsePositives == null || falsePositives.stream().anyMatch(String::isBlank),
+                    () -> item.get("id") + " must declare its false-positive patterns");
+            @SuppressWarnings("unchecked")
+            List<String> dataSources = (List<String>) item.get("dataSources");
+            assertFalse(dataSources == null || dataSources.isEmpty(),
+                    () -> item.get("id") + " must declare its data sources");
+            @SuppressWarnings("unchecked")
+            List<String> mitre = (List<String>) item.get("mitre");
+            assertFalse(mitre == null || mitre.isEmpty(), () -> item.get("id") + " must map to ATT&CK");
             @SuppressWarnings("unchecked")
             Map<String, Object> spec = (Map<String, Object>) item.get("spec");
             Map<String, Object> enriched = DetectionContentCatalog.enrich(spec);

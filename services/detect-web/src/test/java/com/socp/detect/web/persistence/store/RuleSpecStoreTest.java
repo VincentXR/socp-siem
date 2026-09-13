@@ -38,6 +38,7 @@ class RuleSpecStoreTest {
 
     @Test
     void upgradesAnOlderPackagedRuleToTheCurrentContentVersion() {
+        String currentPackVersion = String.valueOf(DetectionContentCatalog.manifest().get("version"));
         RuleRepository repository = mock(RuleRepository.class);
         RuleEntity old = entity("AUTH-BRUTE", """
                 {"id":"AUTH-BRUTE","contentPack":"socp-core-detections","contentVersion":"2026.08.19"}
@@ -53,7 +54,7 @@ class RuleSpecStoreTest {
         org.junit.jupiter.api.Assertions.assertTrue(saved.getAllValues().stream()
                 .map(RuleEntity::getSpec)
                 .anyMatch(spec -> spec.contains("\"id\":\"AUTH-BRUTE\"")
-                        && spec.contains("\"contentVersion\":\"2026.08.30\"")));
+                        && spec.contains("\"contentVersion\":\"" + currentPackVersion + "\"")));
     }
 
     @Test
@@ -70,10 +71,10 @@ class RuleSpecStoreTest {
 
     @Test
     void concurrentPackagedRuleInstallIsIdempotent() {
+        String currentPackVersion = String.valueOf(DetectionContentCatalog.manifest().get("version"));
         RuleRepository repository = mock(RuleRepository.class);
-        RuleEntity installed = entity("AUTH-BRUTE", """
-                {"id":"AUTH-BRUTE","contentPack":"socp-core-detections","contentVersion":"2026.08.30"}
-                """);
+        RuleEntity installed = entity("AUTH-BRUTE", "{\"id\":\"AUTH-BRUTE\",\"contentPack\":\"socp-core-detections\",\"contentVersion\":\""
+                + currentPackVersion + "\"}");
         when(repository.countByTenantId("default")).thenReturn(1L);
         when(repository.findByRuleIdAndTenantId(any(), any()))
                 .thenReturn(Optional.empty(), Optional.of(installed))

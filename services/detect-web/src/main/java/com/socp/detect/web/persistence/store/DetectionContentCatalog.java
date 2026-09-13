@@ -57,6 +57,8 @@ public final class DetectionContentCatalog {
             copyIfMissing(spec, "dataSources", meta.get("dataSources"));
             copyIfMissing(spec, "mitreIds", meta.get("mitre"));
             copyIfMissing(spec, "references", meta.get("references"));
+            copyIfMissing(spec, "investigationGuide", meta.get("investigationGuide"));
+            copyIfMissing(spec, "falsePositives", meta.get("falsePositives"));
         } else {
             copyIfMissing(spec, "contentPack", MANIFEST.get("packId"));
             copyIfMissing(spec, "contentVersion", MANIFEST.get("version"));
