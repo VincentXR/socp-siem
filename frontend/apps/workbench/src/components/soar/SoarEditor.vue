@@ -45,7 +45,8 @@ import {
   type SoarPlaybook,
   type SoarVersion,
 } from '../../api'
-import { useDefinitionFlow } from './editor/useDefinitionFlow'
+import { useDefinitionFlow, normalizeDefinition } from './editor/useDefinitionFlow'
+import { diffDefinitions, type DefinitionDiff } from './editor/definitionDiff'
 import SoarFlowNode from './editor/SoarFlowNode.vue'
 import SoarFlowPalette from './editor/SoarFlowPalette.vue'
 import SoarFlowPropertyPanel from './editor/SoarFlowPropertyPanel.vue'
@@ -552,6 +553,34 @@ async function publish() {
   }
 }
 
+/* ---------------- draft vs published diff ---------------- */
+
+const diffVisible = ref(false)
+const diffResult = ref<DefinitionDiff | null>(null)
+/** Newest published revision of the open playbook (diff baseline). */
+const publishedVersion = computed(() => versions.value
+  .filter(version => version.status === 'PUBLISHED')
+  .sort((a, b) => b.version - a.version)[0])
+
+/** Diffs the open definition against the newest published revision. */
+async function openPublishedDiff(): Promise<void> {
+  if (!selectedPlaybookId.value || !publishedVersion.value || !selectedVersionNo.value) return
+  loading.value = true
+  errorMessage.value = ''
+  try {
+    const baseline = await getVersion(selectedPlaybookId.value, publishedVersion.value.version)
+    diffResult.value = diffDefinitions(
+      normalizeDefinition(baseline.definition),
+      normalizeDefinition(flow.getDefinition()),
+    )
+    diffVisible.value = true
+  } catch (failure) {
+    errorMessage.value = failure instanceof Error ? failure.message : t('soar.unableLoadVersion')
+  } finally {
+    loading.value = false
+  }
+}
+
 /** Retires a published revision; the server keeps it for audit but stops running it. */
 async function deprecateSelected(): Promise<void> {
   const version = selectedVersion.value
@@ -788,6 +817,12 @@ onUnmounted(() => {
         {{ flow.validationStale.value ? t('soar.validationOutdated') : validation.valid ? t('soar.validationValid') : t('soar.validationInvalid') }}{{ issueCount ? ` · ${issueCount}` : '' }}
       </el-tag>
       <el-button v-if="props.canWrite" size="small" @click="validate" :disabled="!selectedVersionNo">{{ t('soar.validate') }}</el-button>
+      <el-button
+        v-if="props.canWrite"
+        size="small"
+        :disabled="!publishedVersion || selectedVersionNo === publishedVersion.version"
+        @click="openPublishedDiff"
+      >{{ t('soar.diff.compareWithPublished') }}</el-button>
       <el-button v-if="props.canExecute" size="small" @click="dryRun" :disabled="!selectedVersionNo">{{ t('soar.dryRun') }}</el-button>
       <el-button v-if="props.canExecute" size="small" type="warning" plain :loading="runBusy" :disabled="selectedVersion?.status !== 'PUBLISHED'" @click="queueRun">{{ t('soar.queueRun') }}</el-button>
       <el-button
@@ -874,6 +909,49 @@ onUnmounted(() => {
       <template #footer><el-button @click="newPlaybookGuard.cancel">{{ t('common.cancel') }}</el-button><el-button type="primary" :loading="newPlaybookSaving" @click="createPlaybookAndVersion">{{ t('soar.openCanvas') }}</el-button></template>
     </el-dialog>
 
+    <el-dialog
+      v-model="diffVisible"
+      :title="t('soar.diff.title', { version: publishedVersion?.version ?? '' })"
+      width="680px"
+      :close-on-click-modal="false"
+    >
+      <p class="soar-dialog-hint">{{ t('soar.diff.hint') }}</p>
+      <div v-if="!diffResult || diffResult.unchanged" class="soar-dialog-hint">{{ t('soar.diff.unchanged') }}</div>
+      <template v-else>
+        <div v-if="diffResult.nodes.some(row => row.change === 'added')" class="soar-diff-section">
+          <span>{{ t('soar.diff.addedNodes') }}</span>
+          <div v-for="row in diffResult.nodes.filter(row => row.change === 'added')" :key="row.id" class="soar-diff-row added">
+            <b>+ {{ row.name || row.id }}</b><small>{{ row.type }} · {{ row.id }}</small>
+          </div>
+        </div>
+        <div v-if="diffResult.nodes.some(row => row.change === 'removed')" class="soar-diff-section">
+          <span>{{ t('soar.diff.removedNodes') }}</span>
+          <div v-for="row in diffResult.nodes.filter(row => row.change === 'removed')" :key="row.id" class="soar-diff-row removed">
+            <b>− {{ row.name || row.id }}</b><small>{{ row.type }} · {{ row.id }}</small>
+          </div>
+        </div>
+        <div v-if="diffResult.nodes.some(row => row.change === 'changed')" class="soar-diff-section">
+          <span>{{ t('soar.diff.changedNodes') }}</span>
+          <div v-for="row in diffResult.nodes.filter(row => row.change === 'changed')" :key="row.id" class="soar-diff-row changed">
+            <b>~ {{ row.name || row.id }}</b><small>{{ row.type }} · {{ row.id }}</small>
+            <div v-for="field in row.fields" :key="field.field" class="soar-diff-field">
+              {{ field.field }}: {{ field.before }} → {{ field.after }}
+            </div>
+          </div>
+        </div>
+        <div v-if="diffResult.edges.length" class="soar-diff-section">
+          <span>{{ t('soar.diff.edges') }}</span>
+          <div v-for="(row, index) in diffResult.edges" :key="index" class="soar-diff-row" :class="row.change">
+            <b>{{ row.change === 'added' ? '+' : '−' }} {{ row.from }} → {{ row.to }}</b>
+            <small v-if="row.port">{{ row.port }}</small>
+          </div>
+        </div>
+      </template>
+      <template #footer>
+        <el-button @click="diffVisible = false">{{ t('common.close') }}</el-button>
+      </template>
+    </el-dialog>
+
     <div class="soar-editor-lower">
       <div class="soar-json-panel">
         <div class="soar-panel-title">{{ t('soar.definitionJson') }} · {{ t('soar.advancedImportExport') }}</div>
@@ -910,6 +988,15 @@ onUnmounted(() => {
 .soar-editor-message { color: var(--ns-success); background: color-mix(in srgb, var(--ns-success) 10%, transparent); }
 .soar-editor-error { color: var(--ns-danger); background: color-mix(in srgb, var(--ns-danger) 10%, transparent); }
 .soar-dialog-hint { margin: 0 0 14px; color: var(--ns-text-2); font-size: 12px; line-height: 1.5; }
+.soar-diff-section { margin-bottom: 10px; }
+.soar-diff-section > span { display: block; margin-bottom: 4px; color: var(--ns-text-2); font-size: 11px; font-weight: 700; }
+.soar-diff-row { margin: 0 0 6px; padding: 5px 7px; border-left: 3px solid var(--ns-border); border-radius: 4px; background: var(--ns-bg-subtle); font-size: 11px; }
+.soar-diff-row.added { border-left-color: var(--ns-success); }
+.soar-diff-row.removed { border-left-color: var(--ns-danger); }
+.soar-diff-row.changed { border-left-color: var(--ns-warning); }
+.soar-diff-row b { margin-right: 6px; }
+.soar-diff-row small { color: var(--ns-text-3); }
+.soar-diff-field { margin-top: 3px; color: var(--ns-text-2); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 10px; overflow-wrap: anywhere; }
 .soar-editor-body { display: grid; grid-template-columns: 180px minmax(560px, 1fr) 260px; min-height: 570px; border: 1px solid var(--ns-border); border-radius: 6px; overflow: hidden; }
 .soar-canvas-panel { display: flex; min-width: 0; flex-direction: column; background: var(--ns-bg); }
 .soar-canvas { position: relative; min-height: 540px; flex: 1; background: var(--ns-bg); }
