@@ -41,6 +41,7 @@ import {
   publishVersion,
   saveVersion,
   validateVersion,
+  type SoarNodeRun,
   type SoarPlaybook,
   type SoarVersion,
 } from '../../api'
@@ -243,6 +244,8 @@ async function loadVersion(versionNo = selectedVersionNo.value ?? 0) {
 
 /** Run currently overlaid on the canvas; canvas retry/rerun target it. */
 const activeRunId = ref('')
+/** Raw node-run rows of that run; the property panel shows them per node. */
+const runRows = ref<SoarNodeRun[]>([])
 const runActionBusy = ref<'retry' | 'rerun' | ''>('')
 /** Node statuses the engine resumes from (mirrors the run inspector's rule). */
 const RETRYABLE_NODE_STATUSES = ['FAILED', 'DEAD', 'ACTION_UNKNOWN', 'TIMED_OUT']
@@ -252,13 +255,15 @@ const canRetryFromCanvas = computed(() => props.canExecute && Boolean(activeRunI
 
 function clearRunHighlights(): void {
   flow.applyRunHighlights(null)
+  runRows.value = []
   activeRunId.value = ''
 }
 
 /** Re-overlays the canvas with a run's node statuses and follows that run. */
 async function overlayRun(runId: string): Promise<void> {
   activeRunId.value = runId
-  flow.applyRunHighlights(await listNodes(runId))
+  runRows.value = await listNodes(runId)
+  flow.applyRunHighlights(runRows.value)
 }
 
 /** Resume the overlaid run from its failed nodes (engine keeps the variables snapshot). */
@@ -332,6 +337,9 @@ async function handleOpenRunRequest(request: RunOpenRequest): Promise<void> {
     }
     flow.applyRunHighlights(request.rows)
     activeRunId.value = request.runId
+    // The inspector payload only carries statuses; fetch the full rows so the
+    // property panel can show each node's input/output for this run.
+    runRows.value = await listNodes(request.runId)
     message.value = t('soar.loadedRunPath', { version: request.version })
   } catch (failure) {
     handledOpenRunToken.value = ''
@@ -852,7 +860,7 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <SoarFlowPropertyPanel :flow="flow" :node="selectedRawNode" :read-only="!props.canWrite" />
+      <SoarFlowPropertyPanel :flow="flow" :node="selectedRawNode" :run-rows="runRows" :read-only="!props.canWrite" />
     </div>
 
     <el-dialog v-if="props.canWrite" v-model="newPlaybookVisible" :before-close="newPlaybookGuard.beforeClose" :title="t('soar.createBlankTitle')" width="520px">

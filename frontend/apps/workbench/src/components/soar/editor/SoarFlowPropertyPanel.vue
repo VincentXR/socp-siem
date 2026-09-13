@@ -11,15 +11,22 @@ import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { CONDITION_OPERATORS, compileCondition, parseCondition, type ExpressionCondition } from './conditionExpression'
 import FieldConditionBuilder from '../../FieldConditionBuilder.vue'
 import VariableSelector, { type VariableOption } from '../../VariableSelector.vue'
-import { listActions, listConnections, listPlaybooks, listVersions, type SoarActionDescriptor, type SoarConnection } from '../../../api'
+import { listActions, listConnections, listPlaybooks, listVersions, type SoarActionDescriptor, type SoarConnection, type SoarNodeRun } from '../../../api'
 import { NODE_TYPE_ORDER, ON_ERROR_VALUES, readOnError, SOAR_NODE_REGISTRY, supportsOnError, writeOnError } from './nodeRegistry'
+import { runStatusTone } from './runHighlight'
 import { rawNodeType, isUnsupportedNodeType, readSwitchCases, type SoarFlowApi } from './useDefinitionFlow'
 import type { FieldDef, RuleCondition } from '../../../api'
 import type { EditorNode, ValidationIssue } from './types'
 import { useI18n } from '../../../composables/useI18n'
 import { WORKBENCH_STATE } from '../../../app/workbenchState'
 
-const props = withDefaults(defineProps<{ flow: SoarFlowApi; node: EditorNode | null; readOnly?: boolean }>(), { readOnly: false })
+const props = withDefaults(defineProps<{
+  flow: SoarFlowApi
+  node: EditorNode | null
+  /** Node-run rows of the run overlaid on the canvas (empty when none loaded). */
+  runRows?: SoarNodeRun[]
+  readOnly?: boolean
+}>(), { runRows: () => [], readOnly: false })
 
 const { t } = useI18n()
 const workbenchState = inject(WORKBENCH_STATE, null)
@@ -427,6 +434,44 @@ function onTypeChange(event: Event): void {
   const target = event.target as HTMLSelectElement
   if (!props.node) return
   props.flow.updateNodeType(props.node.id, target.value)
+}
+
+/* ---------- selected node's run rows (visible once a run is overlaid) ---------- */
+
+const nodeRunRows = computed<SoarNodeRun[]>(() => {
+  const id = props.node?.id
+  if (!id) return []
+  return props.runRows
+    .filter(row => row.nodeId === id)
+    .sort((a, b) => String(a.iterationPath ?? '').localeCompare(String(b.iterationPath ?? '')))
+})
+
+function runStatusTagType(status: string): 'success' | 'danger' | 'warning' | 'info' {
+  const tone = runStatusTone(status)
+  if (tone === 'succeeded') return 'success'
+  if (tone === 'failed' || tone === 'timeout') return 'danger'
+  if (tone === 'unknown' || tone === 'waiting') return 'warning'
+  return 'info'
+}
+
+function runStatusLabel(status: string): string {
+  const key = 'soar.status.' + status
+  const translated = t(key)
+  return translated === key ? status : translated
+}
+
+function hasRunDetail(row: SoarNodeRun): boolean {
+  return (row.input !== undefined && row.input !== null)
+    || (row.output !== undefined && row.output !== null)
+    || Boolean(row.errorCode)
+}
+
+function runDetail(row: SoarNodeRun): string {
+  const detail: Record<string, unknown> = {}
+  if (row.input !== undefined && row.input !== null) detail.input = row.input
+  if (row.output !== undefined && row.output !== null) detail.output = row.output
+  if (row.errorCode) detail.errorCode = row.errorCode
+  return JSON.stringify(detail, null, 2)
 }
 
 /* ---------- selected node's own validation issues ---------- */
@@ -1022,6 +1067,22 @@ function subPlaybookVersionKnown(id: string): boolean {
         </div>
       </template>
 
+      <!-- Selected node's rows for the run overlaid on the canvas -->
+      <div v-if="nodeRunRows.length" class="soar-flow-inspector-section soar-run-rows">
+        <span>{{ t('soar.property.runSection', { count: nodeRunRows.length }) }}</span>
+        <div v-for="row in nodeRunRows" :key="row.id" class="soar-run-node-row">
+          <div class="soar-run-node-head">
+            <el-tag size="small" :type="runStatusTagType(row.status)">{{ runStatusLabel(row.status) }}</el-tag>
+            <small v-if="row.iterationPath" class="soar-run-iteration">{{ row.iterationPath }}</small>
+          </div>
+          <p v-if="row.errorMessage" class="soar-run-error" role="alert">{{ row.errorMessage }}</p>
+          <details v-if="hasRunDetail(row)">
+            <summary>{{ t('soar.property.runDetail') }}</summary>
+            <pre class="soar-flow-raw-json">{{ runDetail(row) }}</pre>
+          </details>
+        </div>
+      </div>
+
       <!-- Advanced node JSON -->
       <div class="soar-flow-inspector-section">
         <span>{{ t('soar.property.advancedNodeJson') }}</span>
@@ -1106,6 +1167,11 @@ function subPlaybookVersionKnown(id: string): boolean {
   font-size: 10px;
   line-height: 1.45;
 }
+
+.soar-run-node-row { margin: 0 0 8px; padding: 6px 7px; border: 1px solid var(--ns-border); border-radius: 5px; background: var(--ns-bg); }
+.soar-run-node-head { display: flex; align-items: center; gap: 6px; }
+.soar-run-iteration { color: var(--ns-text-3); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 10px; overflow-wrap: anywhere; }
+.soar-run-error { margin: 4px 0 0; color: var(--ns-danger); font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
 
 .soar-flow-hint {
   margin: 2px 0 8px;

@@ -596,6 +596,8 @@ export const enUS: LocaleMessages = {
       onError: 'On error',
       onErrorDefault: 'Default (fail the run)',
       onErrorHint: 'CONTINUE keeps the success edge (the run may end PARTIALLY_SUCCEEDED); GOTO_ERROR_PORT takes the error port; COMPENSATE_THEN_FAIL compensates and then fails. JOIN/FOREACH support the first two only.',
+      runSection: 'This run ({count} node runs)',
+      runDetail: 'Input / output',
       publishedVersion: 'Playbook version',
       searchPublishedVersion: 'Search published version',
       versionCatalogUnavailable: 'Version catalog unavailable; paste a version ID if needed.',

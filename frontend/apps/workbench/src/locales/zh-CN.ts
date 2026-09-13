@@ -594,6 +594,8 @@ export const zhCN = {
       onError: '错误策略',
       onErrorDefault: '默认（失败即终止）',
       onErrorHint: 'CONTINUE：走成功边继续（终态可能为部分成功）；GOTO_ERROR_PORT：改走 error 端口；COMPENSATE_THEN_FAIL：先补偿再失败。JOIN/FOREACH 只支持前两种。',
+      runSection: '本次运行（{count} 条执行记录）',
+      runDetail: '输入 / 输出',
       publishedVersion: '剧本版本',
       searchPublishedVersion: '搜索已发布版本',
       versionCatalogUnavailable: '版本目录不可用；如需继续可粘贴版本 ID。',
