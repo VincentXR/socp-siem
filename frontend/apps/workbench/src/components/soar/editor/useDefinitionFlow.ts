@@ -964,9 +964,26 @@ export function useDefinitionFlow(
     return { ok: true, message: '' }
   }
 
+  /** True when the definition already holds exactly this from/to/port edge. */
+  function isStoredEdge(source: string, target: string, token: string): boolean {
+    return rawRoot.value.edges.some(edge =>
+      edge.from === source && edge.to === target && edgePortKey(edge) === token)
+  }
+
+  /**
+   * Vue Flow runs this predicate over every edge it builds (see
+   * `createGraphEdges`) and silently drops the ones it rejects. An edge that is
+   * already part of the definition must therefore stay valid — otherwise the
+   * duplicate rule rejects the graph's own edges and the canvas renders no
+   * connection lines at all. Genuinely new connections still go through the
+   * full rule set, and `onConnect` re-checks duplicates before inserting.
+   */
   function isValidConnection(connection: Connection): boolean {
     const token = connection.sourceHandle === 'default' || !connection.sourceHandle ? '' : String(connection.sourceHandle)
-    return validateNewEdge(String(connection.source ?? ''), String(connection.target ?? ''), token).ok
+    const source = String(connection.source ?? '')
+    const target = String(connection.target ?? '')
+    if (isStoredEdge(source, target, token)) return true
+    return validateNewEdge(source, target, token).ok
   }
 
   /* ---------------- Vue Flow event wiring ---------------- */
