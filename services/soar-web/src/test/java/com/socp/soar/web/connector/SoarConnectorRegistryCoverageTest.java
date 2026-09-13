@@ -187,7 +187,8 @@ class SoarConnectorRegistryCoverageTest {
     @Test
     void executeDispatchesToAssetCollection() {
         given(http.get(SocpService.ASSET, "/api/v1/assets"))
-                .willReturn(call(200, "[{\"id\":\"asset-1\",\"name\":\"web-1\",\"ip\":\"10.0.0.5\"}]"));
+                .willReturn(call(200, "{\"code\":0,\"message\":\"ok\",\"data\":{\"items\":"
+                        + "[{\"id\":\"asset-1\",\"name\":\"web-1\",\"ip\":\"10.0.0.5\"}]}}"));
 
         // target.id takes priority over parameters.entity in the selector, so
         // this request uses an empty target to exercise the entity selector
@@ -199,7 +200,8 @@ class SoarConnectorRegistryCoverageTest {
                 .containsEntry("truncated", false);
 
         given(http.get(SocpService.ASSET, "/api/v1/assets"))
-                .willReturn(call(200, "[{\"id\":\"asset-1\"},{\"id\":\"asset-2\"}]"));
+                .willReturn(call(200, "{\"code\":0,\"message\":\"ok\",\"data\":{\"items\":"
+                        + "[{\"id\":\"asset-1\"},{\"id\":\"asset-2\"}]}}"));
         ActionResult byId = registry.execute(request("socp.asset/get-asset", Map.of("assetId", "asset-2")));
         assertThat(byId.operationId()).isEqualTo("asset-2");
     }
@@ -221,9 +223,17 @@ class SoarConnectorRegistryCoverageTest {
         assertThat(failed.errorMessage()).isEqualTo("upstream down");
         assertThat(failed.retryable()).isTrue();
 
-        given(http.get(SocpService.ASSET, "/api/v1/assets")).willReturn(call(200, "{\"items\":\"nope\"}"));
+        given(http.get(SocpService.ASSET, "/api/v1/assets"))
+                .willReturn(call(200, "{\"code\":0,\"message\":\"ok\",\"data\":{\"items\":\"nope\"}}"));
         assertThat(registry.execute(request("socp.asset/get-asset")).errorCode())
                 .isEqualTo("MISSING_CONNECTOR_RECEIPT");
+
+        given(http.get(SocpService.ASSET, "/api/v1/assets"))
+                .willReturn(call(200, "{\"code\":403,\"message\":\"forbidden\",\"data\":null}"));
+        ActionResult businessFailure = registry.execute(request("socp.asset/get-asset"));
+        assertThat(businessFailure.errorCode()).isEqualTo("SERVICE_CALL_FAILED");
+        assertThat(businessFailure.errorMessage()).isEqualTo("forbidden");
+        assertThat(businessFailure.retryable()).isFalse();
 
         given(http.get(SocpService.ASSET, "/api/v1/assets")).willReturn(call(200, "not-json"));
         assertThat(registry.execute(request("socp.asset/get-asset")).errorCode())

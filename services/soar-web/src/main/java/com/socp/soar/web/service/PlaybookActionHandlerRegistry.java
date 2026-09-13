@@ -160,7 +160,7 @@ public class PlaybookActionHandlerRegistry {
             ServiceCall call = client.notifyAlert(context.payloadJson());
             Map<String, Object> result = verifiedCall("notify-web", call, false);
             if (PlaybookActionStatus.EXECUTED.wireValue().equals(result.get("status"))) {
-                Map<String, Object> response = jsonObject(call.body());
+                Map<String, Object> response = envelopeData(call.body());
                 Object failed = response.get("failed");
                 if (!(failed instanceof Number number)) {
                     result.put("status", PlaybookActionStatus.FAILED.wireValue());
@@ -200,7 +200,7 @@ public class PlaybookActionHandlerRegistry {
             ServiceCall call = client.createFromAlarm(context.payloadJson());
             Map<String, Object> result = verifiedCall("incident-web", call, false);
             if (PlaybookActionStatus.EXECUTED.wireValue().equals(result.get("status"))) {
-                Map<String, Object> response = jsonObject(call.body());
+                Map<String, Object> response = envelopeData(call.body());
                 Object caseId = response.get("caseId");
                 if (!(caseId instanceof String id) || id.isBlank()) {
                     result.put("status", PlaybookActionStatus.FAILED.wireValue());
@@ -284,6 +284,24 @@ public class PlaybookActionHandlerRegistry {
         } catch (Exception ignored) {
             return Map.of();
         }
+    }
+
+    /**
+     * Parses a service-to-service response body and unwraps the platform
+     * {@code ApiResult} envelope: for {@code code=0} the inner {@code data}
+     * map is returned; anything else (including non-envelope payloads) is
+     * returned as parsed so receipt checks keep their original semantics.
+     */
+    private static Map<String, Object> envelopeData(String body) {
+        Map<String, Object> root = jsonObject(body);
+        Object code = root.get("code");
+        Object data = root.get("data");
+        if (code instanceof Number number && number.intValue() == 0 && data instanceof Map<?, ?> map) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> payload = (Map<String, Object>) map;
+            return payload;
+        }
+        return root;
     }
 
     private static boolean accepted(Map<String, Object> receipt) {

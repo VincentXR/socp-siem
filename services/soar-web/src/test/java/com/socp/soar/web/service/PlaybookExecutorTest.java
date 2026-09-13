@@ -74,7 +74,7 @@ class PlaybookExecutorTest {
 
     private static ServiceCall successfulNotify() {
         return new ServiceCall(SocpService.NOTIFY, "http://notify", true,
-                200, "{\"dispatched\":1,\"failed\":0}", null, 1, false, 1);
+                200, "{\"code\":0,\"message\":\"ok\",\"data\":{\"dispatched\":1,\"failed\":0}}", null, 1, false, 1);
     }
 
     @Test
@@ -211,7 +211,8 @@ class PlaybookExecutorTest {
     @Test
     void notificationWithoutSuccessfulDeliveryReceiptFails() {
         given(notifyClient.notifyAlert(any())).willReturn(new ServiceCall(
-                SocpService.NOTIFY, "http://notify", true, 200, "{\"dispatched\":1,\"failed\":1}",
+                SocpService.NOTIFY, "http://notify", true, 200,
+                "{\"code\":0,\"message\":\"ok\",\"data\":{\"dispatched\":1,\"failed\":1}}",
                 null, 1, false, 1));
 
         Map<String, Object> result = executor.executeAction("notify security", Map.of("id", "AL-NOTIFY-1"), false);

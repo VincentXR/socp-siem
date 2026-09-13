@@ -376,7 +376,15 @@ public class SoarConnectorRegistry {
         if (call == null) return ActionResult.failed("SERVICE_NO_RESULT", "service returned no result", true);
         if (!call.ok()) return ActionResult.failed("SERVICE_CALL_FAILED", safe(call.failureReason()), call.retryable());
         try {
-            JsonNode payload = mapper.readTree(call.body() == null ? "[]" : call.body());
+            JsonNode root = mapper.readTree(call.body() == null ? "[]" : call.body());
+            JsonNode payload = root;
+            if (root != null && root.isObject() && root.has("code") && root.get("code").isNumber()) {
+                if (root.get("code").asInt() != 0) {
+                    return ActionResult.failed("SERVICE_CALL_FAILED",
+                            safe(root.path("message").asText(null)), call.retryable());
+                }
+                payload = root.path("data");
+            }
             JsonNode items = payload != null && payload.isArray() ? payload
                     : payload == null ? null : payload.path("items");
             if (items == null || !items.isArray()) {
@@ -423,7 +431,11 @@ public class SoarConnectorRegistry {
         if (requireBody && (call.body() == null || call.body().isBlank())) {
             return ActionResult.failed("MISSING_CONNECTOR_RECEIPT", "missing response body", false);
         }
-        Map<String, Object> body = parse(call.body());
+        Map<String, Object> body = unwrapEnvelope(parse(call.body()));
+        if (body == null) {
+            return ActionResult.failed("SERVICE_CALL_FAILED",
+                    "service returned a non-zero ApiResult envelope", call.retryable());
+        }
         if (requireBody && body.isEmpty()) {
             return ActionResult.failed("MISSING_CONNECTOR_RECEIPT",
                     "response did not contain a verifiable receipt", false);
@@ -589,6 +601,20 @@ public class SoarConnectorRegistry {
         if (body == null || body.isBlank()) return Map.of();
         try { return new ObjectMapper().readValue(body, new TypeReference<>() { }); }
         catch (Exception ignored) { return Map.of("raw", body.length() > 4096 ? body.substring(0, 4096) : body); }
+    }
+    /**
+     * Unwraps a platform {@code ApiResult} envelope ({@code {code,message,data}}).
+     * Returns the inner {@code data} map for {@code code=0}, the original map when
+     * the payload is not envelope-shaped (external connectors, legacy receipts),
+     * and {@code null} when the envelope reports a business failure (code != 0).
+     */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> unwrapEnvelope(Map<String, Object> body) {
+        if (body == null || !body.containsKey("code")) return body;
+        Object code = body.get("code");
+        if (code instanceof Number number && number.intValue() != 0) return null;
+        Object data = body.get("data");
+        return data instanceof Map<?, ?> map ? (Map<String, Object>) map : body;
     }
     private static String safe(String text) { return text == null ? "connector call failed" : text.substring(0, Math.min(1024, text.length())); }
     private static String errorCode(RuntimeException failure, String fallback) {

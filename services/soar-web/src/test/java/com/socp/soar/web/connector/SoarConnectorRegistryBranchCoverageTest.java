@@ -113,8 +113,9 @@ class SoarConnectorRegistryBranchCoverageTest {
     @Test
     void assetSelectorWithoutMatchReturnsEmptyCollection() {
         given(http.get(eq(SocpService.ASSET), eq("/api/v1/assets")))
-                .willReturn(ok("[{\"id\":\"a1\",\"name\":\"web\",\"ip\":\"1.2.3.4\","
-                        + "\"owner\":\"bob\",\"type\":\"server\",\"os\":\"linux\"}]"));
+                .willReturn(ok("{\"code\":0,\"message\":\"ok\",\"data\":{\"items\":"
+                        + "[{\"id\":\"a1\",\"name\":\"web\",\"ip\":\"1.2.3.4\","
+                        + "\"owner\":\"bob\",\"type\":\"server\",\"os\":\"linux\"}]}}"));
 
         ActionResult result = registry.execute(request("socp.asset/find-by-entity",
                 "entity", "no-such-host"));
