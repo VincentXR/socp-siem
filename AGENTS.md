@@ -39,7 +39,7 @@ stay beside the workbench code or in its `e2e/` directory.
 
 Use Java 21, Node.js 22, Corepack/pnpm 10, Python 3, and Docker Desktop. Run
 Bash scripts through Git Bash or WSL; native PowerShell may use the matching
-`build/mvnw.ps1` or `build/quality-gate.ps1` wrapper.
+`build/compose.ps1`, `build/mvnw.ps1`, or `build/quality-gate.ps1` wrapper.
 
 ```bash
 # Backend build and tests
@@ -53,12 +53,13 @@ cd frontend && corepack pnpm install --frozen-lockfile && corepack pnpm build
 cd frontend/apps/workbench && pnpm test && pnpm lint && pnpm format:check && pnpm verify
 
 # Middleware and application lifecycle
-docker compose -f infra/docker-compose.yml up -d
+bash build/compose.sh up -d
 bash build/run-all.sh start core       # core event path and workbench
 bash build/run-all.sh start ui         # business-page services and workbench
 bash build/run-all.sh start            # complete stack
 bash build/run-all.sh status full
 bash build/run-all.sh stop
+bash build/compose.sh down
 
 # Integration and failure checks; these require the relevant running services
 python build/verify-slice.py

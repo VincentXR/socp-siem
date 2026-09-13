@@ -3,6 +3,7 @@ package com.socp.incident.web.persistence;
 import com.socp.incident.web.domain.Case;
 import com.socp.incident.web.domain.TimelineEvent;
 import com.socp.incident.web.persistence.store.CaseStore;
+import com.socp.platform.test.MiddlewareImages;
 import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -33,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class CaseTimelinePostgresTest {
 
     @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:18")
+    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>(MiddlewareImages.postgres())
             .withDatabaseName("incident")
             .withUsername("socp")
             .withPassword("socp");

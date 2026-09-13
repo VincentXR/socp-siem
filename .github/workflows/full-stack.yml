@@ -93,12 +93,12 @@ jobs:
         # prove durable dispatch rather than silently accepting a queued-only
         # run when the orchestration dependency is absent.
         run: >-
-          docker compose -f infra/docker-compose.yml up -d
+          bash build/compose.sh up -d
           postgres kafka opensearch redis clickhouse minio
 
       - name: Start Temporal for SOAR evidence
         run: >-
-          docker compose -f infra/docker-compose.yml --profile extra up -d
+          bash build/compose.sh --profile extra up -d
           temporal
 
       - name: Wait for Temporal gRPC endpoint
@@ -269,7 +269,7 @@ jobs:
         if: always()
         run: |
           mkdir -p .cache
-          docker compose -f infra/docker-compose.yml logs --no-color > .cache/compose.log 2>&1 || true
+          bash build/compose.sh logs --no-color > .cache/compose.log 2>&1 || true
 
       - name: Collect commit-scoped full-stack evidence
         if: always()
@@ -298,4 +298,4 @@ jobs:
           fi
           bash build/detection-cluster.sh stop || true
           bash build/run-all.sh stop || true
-          docker compose -f infra/docker-compose.yml down || true
+          bash build/compose.sh down || true

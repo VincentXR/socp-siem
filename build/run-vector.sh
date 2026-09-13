@@ -16,8 +16,10 @@
 set -euo pipefail
 
 NAME="socp-vector"
-IMAGE="timberio/vector:0.57.0-alpine"
 ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../infra/middleware-images.env
+source "$ROOT/infra/middleware-images.env"
+IMAGE="${SOCP_VECTOR_IMAGE:?SOCP_VECTOR_IMAGE is missing from infra/middleware-images.env}"
 CONFIG="$ROOT/agents/vector-pipeline/vector.toml"
 TOKEN="${SOCP_VECTOR_TOKEN:-dev-vector-token}"
 

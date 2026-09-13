@@ -126,12 +126,21 @@ suite automatically; if Docker is unavailable they print an explicit warning
 and run the hermetic tests only. Set `SOCP_TESTCONTAINERS=true` to require the
 middleware suite (and fail if the Docker environment cannot satisfy it).
 
-The middleware image contract is checked by `build/verify-middleware-images.py`.
-PostgreSQL, Kafka, OpenSearch, Redis, and ClickHouse integration tests use the
-same image tags as `infra/docker-compose.yml`. The Kafka tests use the Apache-
-compatible Testcontainers adapter, which configures the same
-`apache/kafka:4.0.0` image in KRaft mode. The project pins Testcontainers 1.21.4
-because the Apache adapter is not available in the old 1.20.x line.
+The middleware image catalog is [infra/middleware-images.env](../infra/middleware-images.env).
+`bash build/compose.sh` passes it to Compose, and Testcontainers resolves
+PostgreSQL, Kafka, OpenSearch, Redis, and ClickHouse from the same file. CI
+starts its middleware through that wrapper as well; it does not maintain a
+second set of service image tags. `build/verify-middleware-images.py` fails if
+Compose, CI, probes, or tests bypass the catalog. The Kafka tests use the
+Apache-compatible Testcontainers adapter, which reads the catalog's Apache
+Kafka image in KRaft mode. The project pins Testcontainers 1.21.4 because the
+Apache adapter is not available in the old 1.20.x line.
+
+To upgrade a middleware image, change only the corresponding entry in the
+catalog, then run the catalog gate and the Docker-backed tests. On Windows,
+use `build/compose.ps1` for the same behavior. The wrappers clear inherited
+`SOCP_*_IMAGE` variables because Compose otherwise lets a stale shell export
+override `--env-file` and recreate version drift.
 
 The full-stack job runs `build/verify-actuator-auth.py` after all services are
 started. It treats a dependency-driven health `503` as valid, but fails if an

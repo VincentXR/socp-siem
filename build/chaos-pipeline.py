@@ -36,6 +36,7 @@ sys.path.insert(0, str(BUILD))
 
 from ports import GATEWAY_URL, health_url, port_of  # noqa: E402
 from auth_client import login_token  # noqa: E402
+from middleware_images import image  # noqa: E402
 
 
 BOOTSTRAP = os.environ.get("PIPELINE_KAFKA", "127.0.0.1:9092")
@@ -207,9 +208,8 @@ def control(action, service):
 
 
 CONTAINER_IMAGES = {
-    "socp-postgres": os.environ.get("SOCP_POSTGRES_IMAGE", "postgres:18"),
-    "socp-opensearch": os.environ.get(
-        "SOCP_OPENSEARCH_IMAGE", "opensearchproject/opensearch:2.19.6"),
+    "socp-postgres": image("postgres"),
+    "socp-opensearch": image("opensearch"),
 }
 
 

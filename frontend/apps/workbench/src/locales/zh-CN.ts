@@ -914,6 +914,7 @@ export const zhCN = {
     dispatchLogsLive: '分发日志（告警触发后实时写入）',
     dispatchStatuses: {
       sent: '已发送',
+      logged: '本地已记录',
       succeeded: '已成功',
       success: '成功',
       failed: '失败',

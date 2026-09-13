@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep middleware integration images aligned with the local Compose stack."""
+"""Verify that Compose, CI, probes, and Testcontainers use one image catalog."""
 
 from __future__ import annotations
 
@@ -8,24 +8,22 @@ from pathlib import Path
 import re
 import sys
 
+from middleware_images import (
+    CATALOG,
+    FIXTURE_IMAGE_KEYS,
+    SERVICE_IMAGE_KEYS,
+    load_catalog,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE = ROOT / "infra/docker-compose.yml"
 CI = ROOT / ".github/workflows/ci.yml"
-
-TEST_IMAGE_SERVICES = {
-    "postgres": "postgres",
-    "opensearch": "opensearchproject/opensearch",
-    "redis": "redis",
-    "clickhouse": "clickhouse/clickhouse-server",
-}
+FULL_STACK = ROOT / ".github/workflows/full-stack.yml"
 
 
 def service_image(compose: str, service: str) -> str | None:
-    """Return the image from a top-level Compose service block."""
-
     match = re.search(
-        rf"(?ms)^  {re.escape(service)}:\n(?:(?!^  \S).)*?^    image:\s+(\S+)\s*$",
+        rf"(?ms)^  {re.escape(service)}:\n(?:(?!^  \S).)*?^    image:\s+(.+?)\s*$",
         compose,
     )
     return match.group(1) if match else None
@@ -45,65 +43,86 @@ def java_test_files() -> list[Path]:
     return sorted(files)
 
 
+def image_repository(image: str) -> str:
+    reference = image.split("@", 1)[0]
+    return reference.rsplit(":", 1)[0]
+
+
 def main() -> int:
     errors: list[str] = []
+    try:
+        catalog = load_catalog()
+    except (OSError, ValueError) as error:
+        print(f"[FAIL] Cannot load middleware image catalog {CATALOG}: {error}", file=sys.stderr)
+        return 1
+
     compose = COMPOSE.read_text(encoding="utf-8")
     ci = CI.read_text(encoding="utf-8")
+    full_stack = FULL_STACK.read_text(encoding="utf-8")
 
-    runtime_images: dict[str, str] = {}
-    for service in ("postgres", "kafka", "opensearch", "redis", "clickhouse"):
-        image = service_image(compose, service)
-        if image is None:
+    for service, key in SERVICE_IMAGE_KEYS.items():
+        expected = catalog[key]
+        reference = service_image(compose, service)
+        if reference is None:
             errors.append(f"Compose service {service!r} has no image")
-        else:
-            runtime_images[service] = image
-            if image not in ci:
-                errors.append(f"CI does not use the Compose {service} image {image}")
+            continue
+        if re.fullmatch(rf"\$\{{{re.escape(key)}:\?.+\}}", reference) is None:
+            errors.append(
+                f"Compose service {service!r} must read {key} from the image catalog, found {reference}"
+            )
+        if expected.endswith(":latest"):
+            errors.append(f"{key} must not use the floating latest tag")
+
+    for workflow_name, workflow in (("CI", ci), ("full-stack", full_stack)):
+        if "bash build/compose.sh" not in workflow:
+            errors.append(f"{workflow_name} must start middleware through build/compose.sh")
+        if re.search(r"(?m)^\s+services:\s*$", workflow):
+            errors.append(f"{workflow_name} must not define a second GitHub service-container stack")
+        for key, expected in catalog.items():
+            if expected in workflow:
+                errors.append(
+                    f"{workflow_name} duplicates catalog value {key}={expected}; use build/compose.sh"
+                )
 
     for path in java_test_files():
         relative = path.relative_to(ROOT)
         text = path.read_text(encoding="utf-8")
-
-        for service, repository in TEST_IMAGE_SERVICES.items():
-            image_pattern = rf"{re.escape(repository)}:[^\s\"')]+"
-            images = set(re.findall(image_pattern, text))
-            expected = runtime_images.get(service)
-            if expected is not None:
-                for image in sorted(images):
-                    if image != expected:
-                        errors.append(f"{relative}: {service} test image {image} != {expected}")
-
-        kafka_images = set(re.findall(r"(?:apache/kafka|confluentinc/cp-kafka):[^\s\"')]+", text))
-        expected_kafka = runtime_images.get("kafka")
-        for image in sorted(kafka_images):
-            if expected_kafka is not None and image != expected_kafka:
-                errors.append(f"{relative}: Kafka test image {image} != {expected_kafka}")
-        if "new KafkaContainer" in text:
-            if expected_kafka is not None and expected_kafka not in text:
-                errors.append(f"{relative}: KafkaContainer does not use {expected_kafka}")
-            if "import org.testcontainers.kafka.KafkaContainer;" not in text:
-                errors.append(f"{relative}: KafkaContainer must use the Apache-compatible Testcontainers adapter")
+        for service, key in {**SERVICE_IMAGE_KEYS, **FIXTURE_IMAGE_KEYS}.items():
+            repository = image_repository(catalog[key])
+            direct_reference = re.search(
+                rf"{re.escape(repository)}[:@][^\s\"')]+", text
+            )
+            if direct_reference:
+                errors.append(
+                    f"{relative}: test must resolve {service} through MiddlewareImages, "
+                    f"not {direct_reference.group(0)}"
+                )
+        if "new PostgreSQLContainer" in text and "MiddlewareImages.postgres()" not in text:
+            errors.append(f"{relative}: PostgreSQLContainer must use MiddlewareImages.postgres()")
+        if "new KafkaContainer" in text and "MiddlewareImages.kafka()" not in text:
+            errors.append(f"{relative}: KafkaContainer must use MiddlewareImages.kafka()")
 
     chaos = (ROOT / "build/chaos-pipeline.py").read_text(encoding="utf-8")
-    for env_name, service in (
-        ("SOCP_POSTGRES_IMAGE", "postgres"),
-        ("SOCP_OPENSEARCH_IMAGE", "opensearch"),
-    ):
-        expected = runtime_images.get(service)
-        default_pattern = (
-            rf'os\.environ\.get\(\s*"{re.escape(env_name)}"\s*,\s*'
-            rf'"{re.escape(expected or "")}"\s*\)'
-        )
-        if expected is not None and re.search(default_pattern, chaos) is None:
-            errors.append(f"build/chaos-pipeline.py: {env_name} default is not {expected}")
+    for service in ("postgres", "opensearch"):
+        marker = f'image("{service}")'
+        if marker not in chaos:
+            errors.append(f"build/chaos-pipeline.py: missing catalog lookup {marker}")
+
+    vector = (ROOT / "build/run-vector.sh").read_text(encoding="utf-8")
+    if "SOCP_VECTOR_IMAGE" not in vector or "middleware-images.env" not in vector:
+        errors.append("build/run-vector.sh must read SOCP_VECTOR_IMAGE from the catalog")
+
+    compose_wrapper = (ROOT / "build/compose.sh").read_text(encoding="utf-8")
+    if "--env-file" not in compose_wrapper or "middleware-images.env" not in compose_wrapper:
+        errors.append("build/compose.sh must pass the middleware image catalog to Compose")
 
     if errors:
-        print("[FAIL] Middleware image contract drift detected:", file=sys.stderr)
+        print("[FAIL] Middleware image catalog contract violated:", file=sys.stderr)
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         return 1
 
-    print("[PASS] Middleware test and CI images match the Compose runtime versions")
+    print("[PASS] Compose, CI, probes, and Testcontainers use the middleware image catalog")
     return 0
 
 

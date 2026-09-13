@@ -1,5 +1,6 @@
 package com.socp.gateway.security;
 
+import com.socp.platform.test.MiddlewareImages;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -22,7 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class RedisTokenRevocationStoreContainerTest {
 
     @Container
-    static final GenericContainer<?> REDIS = new GenericContainer<>("redis:8")
+    static final GenericContainer<?> REDIS = new GenericContainer<>(MiddlewareImages.redis())
             .withExposedPorts(6379);
 
     private static LettuceConnectionFactory firstFactory;

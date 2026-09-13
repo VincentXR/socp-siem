@@ -87,6 +87,11 @@
             <artifactId>postgresql</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-test</artifactId>
+            <scope>test</scope>
+        </dependency>
         <!-- P3 Outbox：告警事件发 Kafka（socp-alarm-events）+ 下游消费者（原生客户端，同 detect-web） -->
         <dependency>
             <groupId>org.apache.kafka</groupId>

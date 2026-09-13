@@ -43,11 +43,11 @@ class MiddlewareSemanticsContainerTest {
 
     @Container
     static final KafkaContainer KAFKA = new KafkaContainer(
-            DockerImageName.parse("apache/kafka:4.0.0"));
+            DockerImageName.parse(MiddlewareImages.kafka()));
 
     @Container
     static final GenericContainer<?> CLICKHOUSE = new GenericContainer<>(
-            "clickhouse/clickhouse-server:25.3")
+            MiddlewareImages.clickhouse())
             .withEnv("CLICKHOUSE_USER", "default")
             .withEnv("CLICKHOUSE_PASSWORD", "socp")
             .withExposedPorts(8123)
@@ -55,7 +55,7 @@ class MiddlewareSemanticsContainerTest {
 
     @Container
     static final GenericContainer<?> OPENSEARCH = new GenericContainer<>(
-            "opensearchproject/opensearch:2.19.6")
+            MiddlewareImages.opensearch())
             .withEnv("discovery.type", "single-node")
             .withEnv("DISABLE_SECURITY_PLUGIN", "true")
             .withEnv("OPENSEARCH_JAVA_OPTS", "-Xms512m -Xmx512m")

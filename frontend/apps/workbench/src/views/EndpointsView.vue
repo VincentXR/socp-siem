@@ -161,9 +161,9 @@ watch(keyword, () => {
         </FilterToolbar>
       </template>
       <el-table :data="endpoints" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @row-click="openDetail">
-        <el-table-column prop="hostname" column-key="hostname" :label="t('endpoints.hostname')" :width="columnWidth('hostname', 140)" sortable="custom" show-overflow-tooltip />
+        <el-table-column prop="hostname" column-key="hostname" :label="t('endpoints.hostname')" :width="columnWidth('hostname')" min-width="180" sortable="custom" show-overflow-tooltip />
         <el-table-column prop="ip" column-key="ip" :label="t('common.ip')" :width="columnWidth('ip', 120)" sortable="custom" />
-        <el-table-column prop="os" column-key="os" :label="t('endpoints.os')" :width="columnWidth('os')" min-width="140" sortable="custom" show-overflow-tooltip />
+        <el-table-column prop="os" column-key="os" :label="t('endpoints.os')" :width="columnWidth('os', 170)" sortable="custom" show-overflow-tooltip />
         <el-table-column prop="agentVersion" column-key="agentVersion" :label="t('endpoints.agentVersion')" :width="columnWidth('agentVersion', 120)" sortable="custom" show-overflow-tooltip />
         <el-table-column prop="status" column-key="status" :label="t('common.status')" :width="columnWidth('status', 80)" sortable="custom">
           <template #default="{ row }"><el-tag :type="row.status === 'ONLINE' ? 'success' : 'info'" size="small">{{ t('statuses.' + row.status) || row.status }}</el-tag></template>

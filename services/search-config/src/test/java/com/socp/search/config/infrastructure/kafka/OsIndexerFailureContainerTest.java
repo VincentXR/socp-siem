@@ -3,6 +3,7 @@ package com.socp.search.config.infrastructure.kafka;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.client.kafka.KafkaClientSupport;
+import com.socp.platform.test.MiddlewareImages;
 import com.socp.search.config.config.KafkaProperties;
 import com.socp.search.config.config.OpenSearchIndexerProperties;
 import com.socp.search.config.config.OpenSearchProperties;
@@ -57,11 +58,11 @@ class OsIndexerFailureContainerTest {
 
     @Container
     static final KafkaContainer KAFKA = new KafkaContainer(
-            DockerImageName.parse("apache/kafka:4.0.0"));
+            DockerImageName.parse(MiddlewareImages.kafka()));
 
     @Container
     static final GenericContainer<?> OPENSEARCH = new GenericContainer<>(
-            DockerImageName.parse("opensearchproject/opensearch:2.19.6"))
+            DockerImageName.parse(MiddlewareImages.opensearch()))
             .withNetwork(NETWORK)
             .withNetworkAliases("opensearch")
             .withEnv("discovery.type", "single-node")
@@ -190,7 +191,7 @@ class OsIndexerFailureContainerTest {
                 }
                 """;
         try (GenericContainer<?> proxy = new GenericContainer<>(
-                DockerImageName.parse("nginx:1.27-alpine"))
+                DockerImageName.parse(MiddlewareImages.proxy()))
                 .withNetwork(NETWORK)
                 .withCopyToContainer(Transferable.of(nginx.getBytes(StandardCharsets.UTF_8)),
                         "/etc/nginx/conf.d/default.conf")
@@ -220,7 +221,7 @@ class OsIndexerFailureContainerTest {
     @Test
     void recordsRealCommitFailureAfterOpenSearchAcknowledgement() throws Exception {
         try (KafkaContainer failingKafka = new KafkaContainer(
-                DockerImageName.parse("apache/kafka:4.0.0"))) {
+                DockerImageName.parse(MiddlewareImages.kafka()))) {
             failingKafka.start();
             String suffix = UUID.randomUUID().toString().substring(0, 8);
             String topic = "indexer-commit-down-" + suffix;

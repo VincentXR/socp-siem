@@ -1,5 +1,6 @@
 package com.socp.rule;
 
+import com.socp.platform.test.MiddlewareImages;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.NewTopic;
@@ -53,7 +54,7 @@ class KafkaStreamsBrokerRecoveryComparisonTest {
 
     @Container
     static final KafkaContainer KAFKA = new KafkaContainer(
-            DockerImageName.parse("apache/kafka:4.0.0"));
+            DockerImageName.parse(MiddlewareImages.kafka()));
 
     @TempDir
     Path stateDirectory;

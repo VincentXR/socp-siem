@@ -77,9 +77,8 @@ stop_port() {
 }
 
 kafka_partition_count() {
-  local compose="$ROOT/infra/docker-compose.yml"
   if command -v docker >/dev/null 2>&1; then
-    MSYS_NO_PATHCONV=1 docker compose -f "$compose" exec -T kafka \
+    MSYS_NO_PATHCONV=1 bash "$ROOT/build/compose.sh" exec -T kafka \
       /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
       --describe --topic "$TOPIC" 2>/dev/null \
       | awk '/Partition:/{count++} END{if (count > 0) print count}'

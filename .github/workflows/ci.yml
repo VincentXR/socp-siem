@@ -231,24 +231,11 @@ jobs:
       SOCP_PG_RUNTIME_PASSWORD: ci-e2e-pg-runtime-password-0123456789abcdef
       SOCP_PG_MIGRATION_USER: socp_migrator
       SOCP_PG_MIGRATION_PASSWORD: ci-e2e-pg-migration-password-0123456789abcdef
-    services:
-      postgres:
-        image: postgres:18
-        env:
-          POSTGRES_USER: socp
-          POSTGRES_PASSWORD: ci-e2e-pg-admin-password-0123456789abcdef
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U socp"
-          --health-interval 5s --health-timeout 5s --health-retries 10
-      redis:
-        image: redis:8
-        ports: ["6379:6379"]
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
+
+      - name: Start E2E middleware from the image catalog
+        run: bash build/compose.sh up -d --wait postgres redis
 
       - name: Set up JDK 21
         uses: actions/setup-java@v5
@@ -267,7 +254,7 @@ jobs:
 
       - name: Prepare PostgreSQL databases
         run: |
-          pg_container="$(docker ps --filter 'ancestor=postgres:18' --format '{{.ID}}' | head -n 1)"
+          pg_container="$(bash build/compose.sh ps -q postgres)"
           test -n "$pg_container"
           docker cp infra/init-sql/pg/00_roles.sh "$pg_container:/tmp/00_roles.sh"
           docker cp infra/init-sql/pg/02_runtime_grants.sh "$pg_container:/tmp/02_runtime_grants.sh"
@@ -345,6 +332,10 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
 
+      - name: Stop E2E middleware
+        if: always()
+        run: bash build/compose.sh down -v
+
   e2e-pipeline:
     runs-on: ubuntu-latest
     needs: build
@@ -368,6 +359,7 @@ jobs:
       SOCP_COLLECTOR_CREDENTIALS: "ci-chaos|default|ci-chaos-collector-secret"
       SOCP_ALLOW_GLOBAL_INGEST_TOKEN: "false"
       SOCP_RUNTIME_PROFILES: pg
+      SOCP_OPENSEARCH_DISABLE_SECURITY_PLUGIN: "true"
       PIPELINE_INGEST_URL: http://127.0.0.1:18081/search-config/api/v1/ingest
       PIPELINE_COLLECTOR_ID: ci-chaos
       PIPELINE_COLLECTOR_TOKEN: ci-chaos-collector-secret
@@ -380,67 +372,15 @@ jobs:
       PIPELINE_CK: http://localhost:8123
       PIPELINE_CK_AUTH: "default:ci-test-ck-password-0123456789abcdef"
       PIPELINE_KAFKA: localhost:9092
-    services:
-      postgres:
-        image: postgres:18
-        env:
-          POSTGRES_USER: socp
-          POSTGRES_DB: socp
-          POSTGRES_PASSWORD: ci-test-pg-admin-password-0123456789abcdef
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U socp"
-          --health-interval 5s --health-timeout 5s --health-retries 10
-      redis:
-        image: redis:8
-        ports: ["6379:6379"]
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s --health-timeout 5s --health-retries 10
-      kafka:
-        image: apache/kafka:4.0.0
-        ports: ["9092:9092"]
-        env:
-          KAFKA_NODE_ID: "1"
-          KAFKA_PROCESS_ROLES: "broker,controller"
-          KAFKA_CONTROLLER_QUORUM_VOTERS: "1@localhost:9093"
-          KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
-          KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:9092"
-          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
-          KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
-          KAFKA_NUM_PARTITIONS: "3"
-          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
-          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
-          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
-          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
-        options: >-
-          --health-cmd "bash -c '/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1 || exit 1'"
-          --health-interval 10s --health-timeout 10s --health-retries 15
-      opensearch:
-        image: opensearchproject/opensearch:2.19.6
-        ports: ["9200:9200"]
-        env:
-          discovery.type: single-node
-          DISABLE_SECURITY_PLUGIN: "true"
-          OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
-        options: >-
-          --health-cmd "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\|yellow'"
-          --health-interval 10s --health-timeout 10s --health-retries 20
-      clickhouse:
-        image: clickhouse/clickhouse-server:25.3
-        env:
-          CLICKHOUSE_USER: default
-          CLICKHOUSE_PASSWORD: ci-test-ck-password-0123456789abcdef
-        ports: ["8123:8123"]
-        options: >-
-          --health-cmd "clickhouse-client --user default --password ci-test-ck-password-0123456789abcdef -q 'SELECT 1'"
-          --health-interval 5s --health-timeout 5s --health-retries 15
     steps:
       - uses: actions/checkout@v4
 
+      - name: Start pipeline middleware from the image catalog
+        run: bash build/compose.sh up -d --wait postgres redis kafka opensearch clickhouse
+
       - name: Prepare PostgreSQL databases
         run: |
-          pg_container="$(docker ps --filter 'ancestor=postgres:18' --format '{{.ID}}' | head -n 1)"
+          pg_container="$(bash build/compose.sh ps -q postgres)"
           test -n "$pg_container"
           docker cp infra/init-sql/pg/00_roles.sh "$pg_container:/tmp/00_roles.sh"
           docker cp infra/init-sql/pg/02_runtime_grants.sh "$pg_container:/tmp/02_runtime_grants.sh"
@@ -466,7 +406,7 @@ jobs:
 
       - name: Prepare ClickHouse schema
         run: |
-          ck_container="$(docker ps --filter 'ancestor=clickhouse/clickhouse-server:25.3' --format '{{.ID}}' | head -n 1)"
+          ck_container="$(bash build/compose.sh ps -q clickhouse)"
           test -n "$ck_container"
           docker exec -i "$ck_container" clickhouse-client \
             --user default --password "$SOCP_CK_PASSWORD" --multiquery \
@@ -563,10 +503,6 @@ jobs:
 
       - name: Run change chaos evidence (duplicate + Detection outbox replay)
         if: github.event_name == 'pull_request' || github.event_name == 'push'
-        env:
-          # Service containers have generated names. Pass the stable job ID to
-          # the probe instead of relying on Compose's socp-postgres name.
-          SOCP_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
         run: |
           mkdir -p .cache/chaos
           set +e
@@ -582,14 +518,10 @@ jobs:
             exit 1
           fi
 
-      # GitHub service containers do not share the Compose container names or
-      # process layout expected by dependency-outage chaos.  Keep the nightly
-      # job deterministic here; the Compose-backed weekly workflow owns
-      # process/database/OpenSearch outage experiments.
+      # Keep the nightly job deterministic here; the Compose-backed weekly
+      # workflow owns process/database/OpenSearch outage experiments.
       - name: Run nightly chaos evidence (deterministic replay invariants)
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-        env:
-          SOCP_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
         run: |
           mkdir -p .cache/chaos
           set +e
@@ -638,3 +570,7 @@ jobs:
           path: .cache/evidence/
           include-hidden-files: true
           if-no-files-found: ignore
+
+      - name: Stop pipeline middleware
+        if: always()
+        run: bash build/compose.sh down -v

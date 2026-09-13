@@ -59,7 +59,7 @@ services:
   # 默认使用文件 H2，并均由 Flyway 管理 schema。Apache AGE 为可选扩展，当前不承担主链路。
   postgres:
     <<: *socp-runtime
-    image: postgres:18
+    image: ${SOCP_POSTGRES_IMAGE:?load infra/middleware-images.env}
     container_name: socp-postgres
     environment:
       POSTGRES_USER: socp
@@ -97,7 +97,7 @@ services:
   kafka:
     <<: *socp-runtime
     # bitnami 镜像已从 Docker Hub 撤出，改用 Apache 官方镜像（KRaft 单节点）
-    image: apache/kafka:4.0.0
+    image: ${SOCP_KAFKA_IMAGE:?load infra/middleware-images.env}
     container_name: socp-kafka
     environment:
       KAFKA_NODE_ID: 1
@@ -143,10 +143,12 @@ services:
   # 不可用时按服务策略回退本地存储。
   opensearch:
     <<: *socp-runtime
-    image: opensearchproject/opensearch:2.19.6
+    image: ${SOCP_OPENSEARCH_IMAGE:?load infra/middleware-images.env}
     container_name: socp-opensearch
     environment:
       discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: ${SOCP_OPENSEARCH_DISABLE_SECURITY_PLUGIN:-false}
+      SOCP_OPENSEARCH_DISABLE_SECURITY_PLUGIN: ${SOCP_OPENSEARCH_DISABLE_SECURITY_PLUGIN:-false}
       OPENSEARCH_INITIAL_ADMIN_PASSWORD: ${SOCP_OPENSEARCH_PASSWORD:-Socp!Sec2026xK}
       bootstrap.memory_lock: "false"
       ES_JAVA_OPTS: "-Xms512m -Xmx512m"
@@ -162,7 +164,7 @@ services:
     mem_limit: 1024m
     healthcheck:
       # OS 2.x 默认启用 TLS，健康检查须走 https 且忽略自签证书
-      test: ["CMD-SHELL", "curl -skfS -u \"admin:$${OPENSEARCH_INITIAL_ADMIN_PASSWORD}\" 'https://localhost:9200/_cluster/health?wait_for_status=yellow' >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "if [ \"$${SOCP_OPENSEARCH_DISABLE_SECURITY_PLUGIN}\" = \"true\" ]; then curl -sfS 'http://localhost:9200/_cluster/health?wait_for_status=yellow' >/dev/null; else curl -skfS -u \"admin:$${OPENSEARCH_INITIAL_ADMIN_PASSWORD}\" 'https://localhost:9200/_cluster/health?wait_for_status=yellow' >/dev/null; fi"]
       interval: 15s
       timeout: 10s
       retries: 5
@@ -171,7 +173,7 @@ services:
     <<: *socp-runtime
     # 修正：镜像组织名为 opensearchproject（无连字符），与上方 opensearch 服务保持一致。
     # 原写法 opensearch-project/... 在 Docker Hub 不存在，会导致 pull 失败。
-    image: opensearchproject/opensearch-dashboards:2.19.6
+    image: ${SOCP_OPENSEARCH_DASHBOARDS_IMAGE:?load infra/middleware-images.env}
     container_name: socp-dashboards
     environment:
       OPENSEARCH_HOSTS: '["http://opensearch:9200"]'
@@ -187,7 +189,7 @@ services:
   # 当前 socp-ratelimit 默认使用进程内令牌桶；Redis 已纳入编排，生产多实例部署应接入共享配额。
   redis:
     <<: *socp-runtime
-    image: redis:8
+    image: ${SOCP_REDIS_IMAGE:?load infra/middleware-images.env}
     container_name: socp-redis
     command: ["redis-server", "--appendonly", "yes", "--maxmemory", "192mb", "--maxmemory-policy", "allkeys-lru"]
     ports:
@@ -210,7 +212,7 @@ services:
   # alert Outbox 事件由 AlarmEventConsumer 写入 alarm_detail；report-web 优先读取该聚合数据。
   clickhouse:
     <<: *socp-runtime
-    image: clickhouse/clickhouse-server:25.3
+    image: ${SOCP_CLICKHOUSE_IMAGE:?load infra/middleware-images.env}
     container_name: socp-clickhouse
     environment:
       # 25.x 镜像默认启用认证，显式固定密码（业务代码 socp.ck.url 使用）
@@ -241,7 +243,7 @@ services:
   # 当前用于本地基础设施预留；业务对象存储接入不是核心事件链路的一部分。
   minio:
     <<: *socp-runtime
-    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    image: ${SOCP_MINIO_IMAGE:?load infra/middleware-images.env}
     container_name: socp-minio
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
@@ -267,7 +269,7 @@ services:
   # prod profile 禁止关闭 Temporal。该服务位于 extra profile，避免本地开发默认占用资源。
   temporal:
     <<: *socp-runtime
-    image: temporalio/auto-setup:1.24.0
+    image: ${SOCP_TEMPORAL_IMAGE:?load infra/middleware-images.env}
     container_name: socp-temporal
     environment:
       DB: postgres12
@@ -291,7 +293,7 @@ services:
 
   temporal-ui:
     <<: *socp-runtime
-    image: temporalio/ui:2.26.0
+    image: ${SOCP_TEMPORAL_UI_IMAGE:?load infra/middleware-images.env}
     container_name: socp-temporal-ui
     environment:
       TEMPORAL_ADDRESS: temporal:7233
@@ -307,7 +309,7 @@ services:
   # 校验和 @RequireRole。未注入真实配置的本地服务仍可使用显式开发回退，生产由 ProdGuard 拒绝。
   keycloak:
     <<: *socp-runtime
-    image: quay.io/keycloak/keycloak:26.0
+    image: ${SOCP_KEYCLOAK_IMAGE:?load infra/middleware-images.env}
     container_name: socp-keycloak
     command: ["start-dev", "--import-realm"]
     environment:
@@ -331,7 +333,7 @@ services:
   # 开关控制，开启时由 extra profile 提供 Jaeger OTLP 接收端。
   prometheus:
     <<: *socp-runtime
-    image: prom/prometheus@sha256:508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69
+    image: ${SOCP_PROMETHEUS_IMAGE:?load infra/middleware-images.env}
     container_name: socp-prometheus
     command: ["--config.file=/etc/prometheus/prometheus.yml"]
     environment:
@@ -350,7 +352,7 @@ services:
 
   grafana:
     <<: *socp-runtime
-    image: grafana/grafana@sha256:ab5cb380e3ff3172d6c8bd2e7cfd31cce977d2881b260e1f5bc089bf0b759b43
+    image: ${SOCP_GRAFANA_IMAGE:?load infra/middleware-images.env}
     container_name: socp-grafana
     ports:
       - "3000:3000"
@@ -366,10 +368,10 @@ services:
           memory: 256M
     mem_limit: 256m
 
-  # ── 可选服务（默认不启动）：docker compose --profile extra up -d ──
+  # ── 可选服务（默认不启动）：bash build/compose.sh --profile extra up -d ──
   loki:
     <<: *socp-runtime
-    image: grafana/loki:3.5.0
+    image: ${SOCP_LOKI_IMAGE:?load infra/middleware-images.env}
     container_name: socp-loki
     ports:
       - "3100:3100"
@@ -381,7 +383,7 @@ services:
 
   jaeger:
     <<: *socp-runtime
-    image: jaegertracing/all-in-one@sha256:ab6f1a1f0fb49ea08bcd19f6b84f6081d0d44b364b6de148e1798eb5816bacac
+    image: ${SOCP_JAEGER_IMAGE:?load infra/middleware-images.env}
     container_name: socp-jaeger
     ports:
       - "16686:16686"

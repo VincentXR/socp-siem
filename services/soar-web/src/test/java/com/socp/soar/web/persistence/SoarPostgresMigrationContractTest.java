@@ -1,5 +1,6 @@
 package com.socp.soar.web.persistence;
 
+import com.socp.platform.test.MiddlewareImages;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -24,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class SoarPostgresMigrationContractTest {
 
     @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:18")
+    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>(MiddlewareImages.postgres())
             .withDatabaseName("soar_contract")
             .withUsername("socp")
             .withPassword("socp-test");

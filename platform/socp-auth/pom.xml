@@ -64,5 +64,10 @@
             <artifactId>postgresql</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-test</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

@@ -164,10 +164,10 @@ onMounted(loadNotify)
     <el-card shadow="never">
       <template #header>{{ t('notify.dispatchLogsLive') }}</template>
       <el-table :data="logs" size="small" border :loading="loading" :empty-text="t('common.empty')">
-        <el-table-column prop="ts" :label="t('common.timestamp')" width="220" />
-        <el-table-column prop="channel" :label="t('notify.channel')" width="120" />
-        <el-table-column prop="type" :label="t('common.type')" width="90" />
-        <el-table-column prop="ruleId" :label="t('notify.rule')" width="140" />
+        <el-table-column prop="ts" :label="t('common.timestamp')" width="210" />
+        <el-table-column prop="channel" :label="t('notify.channel')" min-width="150" show-overflow-tooltip />
+        <el-table-column prop="type" :label="t('common.type')" width="110"><template #default="{ row }">{{ channelTypeLabel(row.type) }}</template></el-table-column>
+        <el-table-column prop="ruleId" :label="t('notify.rule')" min-width="200" show-overflow-tooltip />
         <el-table-column :label="t('common.status')" width="100"><template #default="{ row }"><el-tag :type="dispatchStatusType(row.status)" size="small">{{ dispatchStatusLabel(row.status) }}</el-tag></template></el-table-column>
       </el-table>
     </el-card>

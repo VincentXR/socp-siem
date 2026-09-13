@@ -1,5 +1,6 @@
 package com.socp.platform.tenant.persistence;
 
+import com.socp.platform.test.MiddlewareImages;
 import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -23,7 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 class TenantRlsPostgresTest {
 
     @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:18")
+    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>(MiddlewareImages.postgres())
             .withDatabaseName("tenant_rls")
             .withUsername("socp_admin")
             .withPassword("admin-secret");

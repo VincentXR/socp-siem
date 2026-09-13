@@ -1,5 +1,6 @@
 package com.socp.detect.web.persistence.store;
 
+import com.socp.platform.test.MiddlewareImages;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.state.DetectionStateSnapshot;
 import org.junit.jupiter.api.AfterEach;
@@ -40,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 class DetectionSnapshotPostgresConcurrencyTest {
     @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:18")
+    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>(MiddlewareImages.postgres())
             .withDatabaseName("detect").withUsername("socp").withPassword("socp");
 
     @DynamicPropertySource

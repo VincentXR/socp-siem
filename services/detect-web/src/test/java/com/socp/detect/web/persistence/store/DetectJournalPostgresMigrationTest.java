@@ -1,5 +1,6 @@
 package com.socp.detect.web.persistence.store;
 
+import com.socp.platform.test.MiddlewareImages;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -17,7 +18,7 @@ class DetectJournalPostgresMigrationTest {
 
     @Test
     void populatedV4UpgradeCleansTerminalRowsInBatchesAndPreservesPending() throws Exception {
-        try (GenericContainer<?> postgres = new GenericContainer<>(DockerImageName.parse("postgres:18"))
+        try (GenericContainer<?> postgres = new GenericContainer<>(DockerImageName.parse(MiddlewareImages.postgres()))
                 .withEnv("POSTGRES_DB", "detect")
                 .withEnv("POSTGRES_USER", "socp")
                 .withEnv("POSTGRES_PASSWORD", "socp-test")

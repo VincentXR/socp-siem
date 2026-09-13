@@ -25,7 +25,7 @@ alert -> ClickHouse analytics
 ### Preparation
 
 ```bash
-docker compose -f infra/docker-compose.yml up -d
+bash build/compose.sh up -d
 bash build/run-all.sh start core
 bash build/run-vector.sh start
 ```
@@ -120,5 +120,5 @@ retain the response `X-Trace-Id` and service logs as the correlation evidence.
 
 ```bash
 bash build/run-all.sh stop
-docker compose -f infra/docker-compose.yml down
+bash build/compose.sh down
 ```

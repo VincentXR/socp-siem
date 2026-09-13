@@ -2,6 +2,7 @@ package com.socp.alert.persistence.repository;
 
 import com.socp.alert.domain.Alarm;
 import com.socp.alert.domain.Severity;
+import com.socp.platform.test.MiddlewareImages;
 import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -33,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AlarmEnrichmentPostgresConcurrencyTest {
 
     @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:18")
+    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>(MiddlewareImages.postgres())
             .withDatabaseName("alert")
             .withUsername("socp_test")
             .withPassword("socp_test_password");

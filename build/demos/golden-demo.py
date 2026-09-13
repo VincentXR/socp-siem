@@ -427,7 +427,7 @@ def main():
     if args.transport == "vector":
         if not check("Vector container is running", vector_running(), "start it with bash build/run-vector.sh start"):
             print("\nPrerequisites:")
-            print("  docker compose -f infra/docker-compose.yml up -d")
+            print("  bash build/compose.sh up -d")
             print("  bash build/run-all.sh start core")
             print("  bash build/run-vector.sh start")
             return 1

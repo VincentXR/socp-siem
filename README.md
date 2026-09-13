@@ -80,7 +80,7 @@ Requirements: JDK 21, Git Bash or WSL, Node.js 22, Corepack/pnpm 10, and
 Docker Desktop. A full local stack is most comfortable with at least 24 GB RAM.
 
 ```bash
-docker compose -f infra/docker-compose.yml up -d
+bash build/compose.sh up -d  # uses infra/middleware-images.env
 cd frontend && corepack pnpm install --frozen-lockfile && corepack pnpm build && cd ..
 bash build/mvnw.sh -DskipTests package
 bash build/run-all.sh start core

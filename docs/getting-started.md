@@ -42,8 +42,10 @@ cluster follows the same rule through `SOCP_DETECT_WEB_JVM_OPTS`.
 ## Start the local stack
 
 ```bash
-# PostgreSQL, Kafka, OpenSearch, ClickHouse and supporting middleware
-docker compose -f infra/docker-compose.yml up -d
+# PostgreSQL, Kafka, OpenSearch, ClickHouse and supporting middleware.
+# build/compose.sh injects the pinned image catalog for every service.
+bash build/compose.sh up -d
+# Native PowerShell equivalent: .\build\compose.ps1 up -d
 
 # Start the complete backend and the workbench dev server
 bash build/run-all.sh start
@@ -69,7 +71,7 @@ must not be reused outside development.
 Optional middleware for OIDC, Temporal, Jaeger, and dashboards:
 
 ```bash
-docker compose -f infra/docker-compose.yml --profile extra up -d
+bash build/compose.sh --profile extra up -d
 ```
 
 ## Runtime configuration
@@ -152,5 +154,5 @@ receipts, logical ClickHouse uniqueness, and assignment restoration.
 ```bash
 bash build/run-all.sh status
 bash build/run-all.sh stop
-docker compose -f infra/docker-compose.yml down
+bash build/compose.sh down
 ```

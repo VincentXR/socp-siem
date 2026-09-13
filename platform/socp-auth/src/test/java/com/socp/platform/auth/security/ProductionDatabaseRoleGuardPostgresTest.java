@@ -1,5 +1,6 @@
 package com.socp.platform.auth.security;
 
+import com.socp.platform.test.MiddlewareImages;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -27,7 +28,7 @@ class ProductionDatabaseRoleGuardPostgresTest {
     private static final String RUNTIME_PASSWORD = "runtime-secret";
 
     @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:18")
+    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>(MiddlewareImages.postgres())
             .withDatabaseName("role_guard")
             .withUsername("socp_admin")
             .withPassword("admin-secret");

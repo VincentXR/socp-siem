@@ -9,7 +9,7 @@ SOCP 故障注入测试（P4，2026-08-12）：验证核心中间件故障下服
   3. 停 Temporal → SOAR 仍接受 durable Run 并保持排队，不执行进程内副作用 → 恢复
   4. 停 PostgreSQL → alert-web 查询失败但不崩（进程存活、健康转 DOWN）→ 恢复后查询正常
 
-前提：后端全栈 + 中间件在跑（bash build/run-all.sh backend + docker compose up -d）。
+前提：后端全栈 + 中间件在跑（bash build/run-all.sh backend + bash build/compose.sh up -d）。
 用法：python build/failure-tests.py
 """
 import atexit

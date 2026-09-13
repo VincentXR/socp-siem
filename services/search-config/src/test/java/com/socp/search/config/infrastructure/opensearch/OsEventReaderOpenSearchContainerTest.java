@@ -2,6 +2,7 @@ package com.socp.search.config.infrastructure.opensearch;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.socp.platform.test.MiddlewareImages;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.search.config.config.OpenSearchProperties;
 import com.socp.search.config.domain.SearchEvent;
@@ -49,7 +50,7 @@ class OsEventReaderOpenSearchContainerTest {
 
     @Container
     static final GenericContainer<?> OPENSEARCH = new GenericContainer<>(
-            DockerImageName.parse("opensearchproject/opensearch:2.19.6"))
+            DockerImageName.parse(MiddlewareImages.opensearch()))
             .withEnv("discovery.type", "single-node")
             .withEnv("DISABLE_SECURITY_PLUGIN", "true")
             .withEnv("OPENSEARCH_JAVA_OPTS", "-Xms512m -Xmx512m")

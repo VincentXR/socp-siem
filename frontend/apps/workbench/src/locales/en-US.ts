@@ -916,6 +916,7 @@ export const enUS: LocaleMessages = {
     dispatchLogsLive: 'Dispatch Logs (Live Records)',
     dispatchStatuses: {
       sent: 'Sent',
+      logged: 'Logged locally',
       succeeded: 'Succeeded',
       success: 'Success',
       failed: 'Failed',
