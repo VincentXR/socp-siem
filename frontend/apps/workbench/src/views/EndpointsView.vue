@@ -17,7 +17,6 @@ import DataTableCard from '../components/DataTableCard.vue'
 import FilterToolbar from '../components/FilterToolbar.vue'
 import MetricCard from '../components/MetricCard.vue'
 import PageHeader from '../components/PageHeader.vue'
-import { useResourceList } from '../composables/useResourceList'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { assetApi, endpointApi, type Asset, type Endpoint, type EndpointEvent } from '../api/domains'
 import { useI18n } from '../composables/useI18n'
@@ -35,10 +34,13 @@ const endpointEvents = ref<EndpointEvent[]>([])
 const assets = ref<Asset[]>([])
 const detailOpen = ref(false)
 const detailEndpoint = ref<Endpoint | null>(null)
-const endpointsList = useResourceList<Endpoint>({
-  searchFields: endpoint => [endpoint.hostname, endpoint.ip, endpoint.os, endpoint.agentVersion, endpoint.status],
-})
-const { items: endpoints, page, size, keyword, loading, filtered: endpointsFiltered, paged: endpointsPaged, setItems } = endpointsList
+const endpoints = ref<Endpoint[]>([])
+const page = ref(1)
+const size = ref(10)
+const keyword = ref('')
+const loading = ref(false)
+const endpointTotal = ref(0)
+let loadSequence = 0
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('endpoints')
 
 function syncEndpointQuery(): void {
@@ -89,25 +91,27 @@ function onEndpointCommand(command: string, endpoint: Endpoint): void {
 }
 
 async function loadEndpoints() {
-  if (loading.value) return
+  const sequence = ++loadSequence
   loading.value = true
   loadError.value = ''
   eventsError.value = ''
   try {
     const [endpointResult, statResult, eventResult, assetResult] = await Promise.allSettled([
-      endpointApi.list(), endpointApi.stats(), endpointApi.events(),
+      endpointApi.list(page.value, size.value, keyword.value), endpointApi.stats(), endpointApi.events(1, 200),
       // Asset lookup enriches the drawer only; endpoint health remains usable if it is unavailable.
-      assetApi.list(),
+      assetApi.list(1, 500),
     ])
     if (endpointResult.status === 'fulfilled') {
-      setItems(endpointResult.value.items)
+      if (sequence !== loadSequence) return
+      endpoints.value = endpointResult.value.items
+      endpointTotal.value = endpointResult.value.total
     } else loadError.value = endpointResult.reason instanceof Error ? endpointResult.reason.message : String(endpointResult.reason)
     if (statResult.status === 'fulfilled') endpointStat.value = statResult.value
     if (eventResult.status === 'fulfilled') endpointEvents.value = eventResult.value.items
     else eventsError.value = eventResult.reason instanceof Error ? eventResult.reason.message : String(eventResult.reason)
     if (assetResult.status === 'fulfilled') assets.value = assetResult.value.items
   } finally {
-    loading.value = false
+    if (sequence === loadSequence) loading.value = false
   }
 }
 
@@ -130,6 +134,11 @@ onMounted(() => {
   void loadEndpoints()
 })
 watch(() => route.query.q, syncEndpointQuery)
+watch([page, size], () => { void loadEndpoints() })
+watch(keyword, () => {
+  if (page.value !== 1) page.value = 1
+  else void loadEndpoints()
+})
 </script>
 
 <template>
@@ -145,13 +154,13 @@ watch(() => route.query.q, syncEndpointQuery)
       <MetricCard :label="t('endpoints.runtimeEvents')" tone="neutral">{{ endpointStat.events ?? endpointEvents.length }}</MetricCard>
     </div>
 
-    <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="endpointsFiltered.length" :loading="loading" :error="loadError" :retry="loadEndpoints" :empty-title="t('endpoints.agentList')" :empty-description="t('endpoints.description')">
+    <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="endpointTotal" :loading="loading" :error="loadError" :retry="loadEndpoints" :empty-title="t('endpoints.agentList')" :empty-description="t('endpoints.description')">
       <template #toolbar>
-        <FilterToolbar :count="endpointsFiltered.length">
+        <FilterToolbar :count="endpointTotal">
         <el-input v-model="keyword" :placeholder="t('endpoints.searchPlaceholder')" clearable @input="page = 1" />
         </FilterToolbar>
       </template>
-      <el-table :data="endpointsPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @sort-change="endpointsList.onSortChange" @row-click="openDetail">
+      <el-table :data="endpoints" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @row-click="openDetail">
         <el-table-column prop="hostname" column-key="hostname" :label="t('endpoints.hostname')" :width="columnWidth('hostname', 140)" sortable="custom" show-overflow-tooltip />
         <el-table-column prop="ip" column-key="ip" :label="t('common.ip')" :width="columnWidth('ip', 120)" sortable="custom" />
         <el-table-column prop="os" column-key="os" :label="t('endpoints.os')" :width="columnWidth('os')" min-width="140" sortable="custom" show-overflow-tooltip />

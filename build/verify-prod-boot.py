@@ -23,7 +23,10 @@ PORTS = ROOT / "build" / "ports.env"
 LOG_DIR = ROOT / ".cache" / "prod-boot"
 STARTED = re.compile(r"\bStarted\s+\S+\s+in\s+[0-9.]+\s+seconds\b")
 REQUIRED_ENV = (
-    "SOCP_PG_PASSWORD",
+    "SOCP_PG_RUNTIME_USER",
+    "SOCP_PG_RUNTIME_PASSWORD",
+    "SOCP_PG_MIGRATION_USER",
+    "SOCP_PG_MIGRATION_PASSWORD",
     "SOCP_JWT_SECRET",
     "SOCP_LOGIN_SECRET",
     "SOCP_SECURITY_SERVICE_SECRET",
@@ -119,6 +122,11 @@ def main() -> int:
         return 2
 
     environment = os.environ.copy()
+    # The application datasource must use the restricted runtime role. Flyway
+    # receives the separate migration role through the normal Spring property
+    # mapping in each PostgreSQL profile.
+    environment["SOCP_PG_USER"] = environment["SOCP_PG_RUNTIME_USER"]
+    environment["SOCP_PG_PASSWORD"] = environment["SOCP_PG_RUNTIME_PASSWORD"]
     safe_defaults = {
         "SOCP_SECURITY_AUDIENCE": "socp-api",
         "SOCP_SECURITY_ALLOW_PROD_HMAC": "true",
@@ -132,6 +140,7 @@ def main() -> int:
         "SOCP_DEMO_DATA_ENABLED": "false",
         "SOCP_SOAR_SIMULATION_ENABLED": "false",
         "SOCP_TEMPORAL_ENABLED": "true",
+        "SOCP_SECURITY_REQUIRE_GATEWAY": "true",
     }
     for key, value in safe_defaults.items():
         environment.setdefault(key, value)

@@ -1,6 +1,7 @@
 package com.socp.asset.web.api.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.socp.asset.web.api.request.AssetCollectionRequest;
 import com.socp.asset.web.domain.Asset;
 import com.socp.asset.web.persistence.store.AssetStore;
 import org.junit.jupiter.api.Test;
@@ -47,8 +48,9 @@ class AssetControllerTest {
 
     @Test
     void listReturnsPagedEnvelope() throws Exception {
-        given(store.list()).willReturn(List.of(
-                Asset.create("web01", "SERVER", "10.0.0.5", "Ubuntu 22.04", "infra", "HIGH")));
+        given(store.page(1, 500, "")).willReturn(new org.springframework.data.domain.PageImpl<>(
+                List.of(Asset.create("web01", "SERVER", "10.0.0.5", "Ubuntu 22.04", "infra", "HIGH")),
+                org.springframework.data.domain.PageRequest.of(0, 500), 1));
 
         mvc.perform(get("/api/v1/assets")
                         .header(HttpHeaders.AUTHORIZATION, BEARER)
@@ -78,10 +80,9 @@ class AssetControllerTest {
     @Test
     void listPaginatesByExplicitPageAndSize() throws Exception {
         java.time.Instant createdAt = java.time.Instant.now();
-        given(store.list()).willReturn(List.of(
-                new Asset("a-1", "one", "SERVER", "10.0.0.1", "", "sec", "HIGH", createdAt),
-                new Asset("a-2", "two", "SERVER", "10.0.0.2", "", "sec", "HIGH", createdAt),
-                new Asset("a-3", "three", "SERVER", "10.0.0.3", "", "sec", "HIGH", createdAt)));
+        given(store.page(2, 2, "")).willReturn(new org.springframework.data.domain.PageImpl<>(
+                List.of(new Asset("a-3", "three", "SERVER", "10.0.0.3", "", "sec", "HIGH", createdAt)),
+                org.springframework.data.domain.PageRequest.of(1, 2), 3));
 
         mvc.perform(get("/api/v1/assets")
                         .header(HttpHeaders.AUTHORIZATION, BEARER)
@@ -140,6 +141,26 @@ class AssetControllerTest {
     }
 
     @Test
+    void collectUsesSafeDefaultsAndReturnsAcceptedEnvelope() throws Exception {
+        Asset saved = Asset.create("collector-1", "SERVER", "", "", "collect", "HIGH");
+        given(store.upsertByIp(any(Asset.class))).willReturn(saved);
+        given(store.count()).willReturn(1L);
+
+        mvc.perform(post("/api/v1/assets/collect")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(new AssetCollectionRequest("collector-1",
+                                null, null, null, null, null))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.accepted").value(true))
+                .andExpect(jsonPath("$.data.assetId").value(saved.id()))
+                .andExpect(jsonPath("$.data.total").value(1));
+
+        verify(store).upsertByIp(any(Asset.class));
+    }
+
+    @Test
     void deleteReportsWhetherAssetExisted() throws Exception {
         given(store.delete("known")).willReturn(true);
         given(store.delete("ghost")).willReturn(false);
@@ -182,11 +203,11 @@ class AssetControllerTest {
 
     @Test
     void statsNormalizesNullAndBlankDimensionsToUnknown() throws Exception {
-        java.time.Instant createdAt = java.time.Instant.now();
-        given(store.list()).willReturn(List.of(
-                new Asset("a-1", "one", null, "10.0.0.1", "", " ", "HIGH", createdAt),
-                new Asset("a-2", "two", "SERVER", "10.0.0.2", "", "sec", null, createdAt),
-                new Asset("a-3", "three", " SERVER ", "10.0.0.3", "", "sec", " ", createdAt)));
+        given(store.stats()).willReturn(Map.of(
+                "total", 3L,
+                "byType", Map.of("UNKNOWN", 1L, "SERVER", 2L),
+                "byOwner", Map.of("UNKNOWN", 1L, "sec", 2L),
+                "byCriticality", Map.of("UNKNOWN", 2L, "HIGH", 1L)));
 
         mvc.perform(get("/api/v1/assets/stats").header(HttpHeaders.AUTHORIZATION, BEARER))
                 .andExpect(status().isOk())

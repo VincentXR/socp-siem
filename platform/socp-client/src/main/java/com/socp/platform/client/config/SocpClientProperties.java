@@ -43,6 +43,9 @@ public class SocpClientProperties {
 
     private int responseBodyLimitBytes = DEFAULT_RESPONSE_BODY_LIMIT_BYTES;
 
+    // Setter values are clamped to at least one byte; zero never means
+    // unbounded because every outbound response must have a finite limit.
+
     /** 服务间调用换 token 用的账号（网关 /auth/login）。 */
     private String username = "demo";
 
@@ -101,7 +104,7 @@ public class SocpClientProperties {
     }
 
     public void setResponseBodyLimitBytes(int responseBodyLimitBytes) {
-        this.responseBodyLimitBytes = responseBodyLimitBytes;
+        this.responseBodyLimitBytes = Math.max(1, responseBodyLimitBytes);
     }
 
     public String getUsername() {

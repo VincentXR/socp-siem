@@ -23,6 +23,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.data.domain.Page;
 
 import java.util.List;
 import java.util.Map;
@@ -67,12 +68,13 @@ public class CaseController {
     /** 案件列表：租户级分页（page 从 1 起，size 上限 socp.web.list-max-size，默认 500）。 */
     @GetMapping("/incidents")
     public ApiResult<PageResponse<Case>> list(@RequestParam(defaultValue = "1") int page,
-                                              @RequestParam(defaultValue = "500") int size) {
+                                              @RequestParam(defaultValue = "500") int size,
+                                              @RequestParam(defaultValue = "") String q,
+                                              @RequestParam(required = false) String status) {
         requireValidRange(page, size);
-        List<Case> all = service.list();
-        int from = Math.min((page - 1) * size, all.size());
-        int to = Math.min(from + size, all.size());
-        return ApiResult.ok(PageResponse.of(all.subList(from, to), all.size(), page, size));
+        Page<Case> result = service.page(page, size, normalizeQuery(q), normalizeStatus(status));
+        return ApiResult.ok(PageResponse.of(result.getContent(), result.getTotalElements(),
+                result.getNumber() + 1, result.getSize(), result.getTotalPages()));
     }
 
     /** 归档导出：全部案件（含时间线）按 JSON 下载。 */
@@ -130,9 +132,21 @@ public class CaseController {
     }
 
     private void requireValidRange(int page, int size) {
-        if (page < 1 || size < 0 || size > maxListSize) {
+        if (page < 1 || size < 1 || size > maxListSize) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "分页参数非法：page 从 1 起，size 上限 " + maxListSize);
         }
+    }
+
+    private static String normalizeQuery(String query) {
+        String normalized = query == null ? "" : query.trim();
+        if (normalized.length() > 128) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "q length must not exceed 128 characters");
+        }
+        return normalized;
+    }
+
+    private static String normalizeStatus(String status) {
+        return status == null ? "" : status.trim();
     }
 
 }

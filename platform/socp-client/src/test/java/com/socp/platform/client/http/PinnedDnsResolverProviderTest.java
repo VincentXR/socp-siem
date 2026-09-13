@@ -4,8 +4,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.net.InetAddress;
+import java.net.spi.InetAddressResolver;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -71,6 +73,64 @@ class PinnedDnsResolverProviderTest {
         } finally {
             PinnedDnsResolverProvider.unpin(SCOPED_HOST);
         }
+    }
+
+    @Test
+    void providerUsesPinnedValuesAndDelegatesOtherLookupsToTheBuiltinResolver() throws Exception {
+        InetAddress pinnedAddress = pinnedAddressFor(PINNED_HOST);
+        InetAddress fallbackAddress = InetAddress.getByAddress(UNPINNED_HOST,
+                new byte[] {(byte) 203, 0, 113, 12});
+        InetAddressResolver fallback = new InetAddressResolver() {
+            @Override
+            public Stream<InetAddress> lookupByName(String host, LookupPolicy lookupPolicy) {
+                return Stream.of(fallbackAddress);
+            }
+
+            @Override
+            public String lookupByAddress(byte[] address) {
+                return "fallback.example";
+            }
+        };
+        PinnedDnsResolverProvider provider = new PinnedDnsResolverProvider();
+        InetAddressResolver resolver = PinnedDnsResolverProvider.resolver(fallback);
+
+        PinnedDnsResolverProvider.pin(PINNED_HOST, new InetAddress[] {pinnedAddress});
+        assertThat(provider.name()).isEqualTo("socp-pinned-dns");
+        assertThat(resolver.lookupByName(PINNED_HOST.toUpperCase(Locale.ROOT) + ".",
+                InetAddressResolver.LookupPolicy.of(InetAddressResolver.LookupPolicy.IPV4)).toList())
+                .containsExactly(pinnedAddress);
+        assertThat(resolver.lookupByName(UNPINNED_HOST,
+                InetAddressResolver.LookupPolicy.of(InetAddressResolver.LookupPolicy.IPV4)).toList())
+                .containsExactly(fallbackAddress);
+        assertThat(resolver.lookupByAddress(fallbackAddress.getAddress())).isEqualTo("fallback.example");
+    }
+
+    @Test
+    void ignoresInvalidPinsAndKeepsOtherHostsWhenOneHostIsUnpinned() throws Exception {
+        InetAddress address = pinnedAddressFor(PINNED_HOST);
+        PinnedDnsResolverProvider.pin(null, new InetAddress[] {address});
+        PinnedDnsResolverProvider.pin("   ", new InetAddress[] {address});
+        PinnedDnsResolverProvider.pin(PINNED_HOST, new InetAddress[0]);
+        assertThat(PinnedDnsResolverProvider.isPinned(PINNED_HOST)).isFalse();
+
+        PinnedDnsResolverProvider.pin(PINNED_HOST, new InetAddress[] {address});
+        PinnedDnsResolverProvider.pin(UNPINNED_HOST, new InetAddress[] {pinnedAddressFor(UNPINNED_HOST)});
+        PinnedDnsResolverProvider.unpin(PINNED_HOST);
+
+        assertThat(PinnedDnsResolverProvider.isPinned(PINNED_HOST)).isFalse();
+        assertThat(PinnedDnsResolverProvider.isPinned(UNPINNED_HOST)).isTrue();
+        assertThat(PinnedDnsResolverProvider.isPinned(null)).isFalse();
+        assertThat(PinnedDnsResolverProvider.isPinned("   ")).isFalse();
+    }
+
+    @Test
+    void endpointStringIdentifiesResolvedAndRejectedResults() throws Exception {
+        InetAddress address = pinnedAddressFor(PINNED_HOST);
+        PinnedEndpoint resolved = PinnedEndpoint.resolved(PINNED_HOST, new InetAddress[] {address});
+        PinnedEndpoint rejected = PinnedEndpoint.rejected("blocked");
+
+        assertThat(resolved.toString()).contains("host=" + PINNED_HOST, "addresses=");
+        assertThat(rejected.toString()).isEqualTo("PinnedEndpoint[rejected=blocked]");
     }
 
     private static InetAddress pinnedAddressFor(String host) {

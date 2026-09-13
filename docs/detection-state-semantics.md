@@ -179,7 +179,8 @@ should be chosen as:
 longest enabled rule window + allowed lateness + safety margin
 ```
 
-Cleanup uses separate clocks rather than treating every terminal row as
+The replay boundary is `SOCP_DETECT_STATE_RETENTION` and defaults to `24h`;
+it is independent from terminal-row cleanup. Cleanup uses separate clocks rather than treating every terminal row as
 interchangeable. `COMPLETED` rows default to seven days and are eligible for
 state-replay retention cleanup; `DEAD_LETTERED` rows default to 90 days so the
 durable failure evidence outlives the normal replay window. Both are

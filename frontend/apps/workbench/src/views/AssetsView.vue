@@ -35,7 +35,6 @@ import FilterToolbar from '../components/FilterToolbar.vue'
 import MetricCard from '../components/MetricCard.vue'
 import PageHeader from '../components/PageHeader.vue'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
-import { useResourceList } from '../composables/useResourceList'
 import { assetApi, endpointApi, type Asset, type Endpoint } from '../api/domains'
 import { readImportRows, type ImportRow } from '../lib/resource-import'
 import { useI18n } from '../composables/useI18n'
@@ -77,14 +76,13 @@ const rowValue = (row: ImportRow, ...keys: string[]) => {
   const key = keys.find(candidate => row[candidate] !== undefined)
   return key ? String(row[key] ?? '').trim() : ''
 }
-const assetsList = useResourceList<Asset>({
-  searchFields: asset => [
-    asset.name, asset.type, assetTypes.value.find(item => item.value === asset.type)?.label,
-    asset.ip, asset.os, asset.owner, asset.criticality,
-    criticalityOptions.value.find(item => item.value === asset.criticality)?.label,
-  ],
-})
-const { items: assets, page, size, keyword, loading, filtered: assetsFiltered, paged: assetsPaged, setItems } = assetsList
+const assets = ref<Asset[]>([])
+const page = ref(1)
+const size = ref(10)
+const keyword = ref('')
+const loading = ref(false)
+const assetTotal = ref(0)
+let loadSequence = 0
 const detailEndpoints = computed(() => {
   const asset = detailAsset.value
   if (!asset) return []
@@ -98,14 +96,22 @@ const detailEndpoints = computed(() => {
 })
 
 async function loadAssets() {
-  if (loading.value) return
+  const sequence = ++loadSequence
   loading.value = true
   loadError.value = ''
   endpointInventoryError.value = ''
   try {
-    const [listResult, statResult, endpointResult] = await Promise.allSettled([assetApi.list(), assetApi.stats(), endpointApi.list()])
+    const [listResult, statResult, endpointResult] = await Promise.allSettled([
+      assetApi.list(page.value, size.value, keyword.value),
+      assetApi.stats(),
+      // The drawer enrichment is intentionally bounded; the list itself is
+      // server-paged and never downloads the tenant inventory.
+      endpointApi.list(1, 500),
+    ])
     if (listResult.status === 'fulfilled') {
-      setItems(listResult.value.items)
+      if (sequence !== loadSequence) return
+      assets.value = listResult.value.items
+      assetTotal.value = listResult.value.total
       if (detailAsset.value) detailAsset.value = listResult.value.items.find(item => item.id === detailAsset.value?.id) ?? detailAsset.value
       openAssetFromQuery()
     }
@@ -114,7 +120,7 @@ async function loadAssets() {
     if (endpointResult.status === 'fulfilled') endpointInventory.value = endpointResult.value.items
     else endpointInventoryError.value = endpointResult.reason instanceof Error ? endpointResult.reason.message : String(endpointResult.reason)
   } finally {
-    loading.value = false
+    if (sequence === loadSequence) loading.value = false
   }
 }
 
@@ -232,6 +238,11 @@ async function importAssetFile(event: Event) {
 
 const showAssetDialogGuard = useFormDialog(showAssetDialog, () => assetForm.value, () => actionBusy.value)
 onMounted(loadAssets)
+watch([page, size], () => { void loadAssets() })
+watch(keyword, () => {
+  if (page.value !== 1) page.value = 1
+  else void loadAssets()
+})
 watch(() => route.query.assetId, openAssetFromQuery)
 watch(assetDetailOpen, visible => {
   if (!visible && route.query.assetId) {
@@ -261,13 +272,13 @@ watch(assetDetailOpen, visible => {
       <MetricCard :label="t('assets.assetTypes')" tone="neutral">{{ Object.keys(assetStat.byType || {}).length }}</MetricCard>
     </div>
 
-    <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="assetsFiltered.length" :loading="loading" :error="loadError" :retry="loadAssets" :empty-title="t('assets.assetList')" :empty-description="t('assets.description')">
+    <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="assetTotal" :loading="loading" :error="loadError" :retry="loadAssets" :empty-title="t('assets.assetList')" :empty-description="t('assets.description')">
       <template #toolbar>
-        <FilterToolbar :count="assetsFiltered.length">
+        <FilterToolbar :count="assetTotal">
         <el-input v-model="keyword" :placeholder="t('assets.searchPlaceholder')" clearable @input="page = 1" />
         </FilterToolbar>
       </template>
-      <el-table :data="assetsPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @sort-change="assetsList.onSortChange" @row-click="row => openAssetDetail(row as Asset)">
+      <el-table :data="assets" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @row-click="row => openAssetDetail(row as Asset)">
         <el-table-column prop="name" column-key="name" :label="t('common.name')" :width="columnWidth('name', 140)" sortable="custom" show-overflow-tooltip />
         <el-table-column prop="type" column-key="type" :label="t('common.type')" :width="columnWidth('type', 100)" sortable="custom">
           <template #default="{ row }">{{ assetTypes.find(item => item.value === row.type)?.label ?? row.type }}</template>

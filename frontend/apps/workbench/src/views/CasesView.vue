@@ -37,7 +37,6 @@ import FilterToolbar from '../components/FilterToolbar.vue'
 import MetricCard from '../components/MetricCard.vue'
 import PageHeader from '../components/PageHeader.vue'
 import SevBadge from '../components/SevBadge.vue'
-import { useResourceList } from '../composables/useResourceList'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { caseApi, type CaseInfo, type TimelineEvent } from '../api/domains'
 import { useI18n } from '../composables/useI18n'
@@ -59,23 +58,13 @@ const newStatus = ref('')
 const detailAssignee = ref('')
 const statusFilter = ref('')
 const loadError = ref('')
-const caseSorters: Record<string, (item: CaseInfo) => unknown> = {
-  alarmCount: item => item.alarmIds.length,
-  id: item => item.id,
-  title: item => item.title,
-  entity: item => item.entity,
-  severity: item => item.severity,
-  status: item => item.status,
-  assignee: item => item.assignee,
-  createdAt: item => item.createdAt ?? '',
-  updatedAt: item => item.updatedAt ?? '',
-}
-const casesList = useResourceList<CaseInfo>({
-  searchFields: item => [item.id, item.title, item.entity, item.severity, item.status],
-  filter: item => !statusFilter.value || item.status === statusFilter.value,
-  sortValue: (item, prop) => caseSorters[prop]?.(item) ?? '',
-})
-const { items: cases, page, size, keyword, loading, filtered: casesFiltered, paged: casesPaged, setItems } = casesList
+const cases = ref<CaseInfo[]>([])
+const page = ref(1)
+const size = ref(20)
+const total = ref(0)
+const keyword = ref('')
+const loading = ref(false)
+let loadSequence = 0
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('cases')
 const assigneeOptions = computed(() => Array.from(new Set([
   ...(workbenchState?.operatorOptions.value ?? []),
@@ -85,15 +74,26 @@ const assigneeOptions = computed(() => Array.from(new Set([
 
 async function loadCases() {
   if (loading.value) return
+  const sequence = ++loadSequence
   loading.value = true
   loadError.value = ''
   try {
-    const [caseResult, statResult] = await Promise.allSettled([caseApi.list(), caseApi.stats()])
-    if (caseResult.status === 'fulfilled') setItems(caseResult.value.items)
-    else loadError.value = caseResult.reason instanceof Error ? caseResult.reason.message : String(caseResult.reason)
+    const [caseResult, statResult] = await Promise.allSettled([
+      caseApi.list(page.value, size.value, keyword.value, statusFilter.value || undefined),
+      caseApi.stats(),
+    ])
+    if (sequence !== loadSequence) return
+    if (caseResult.status === 'fulfilled') {
+      cases.value = caseResult.value.items
+      total.value = caseResult.value.total
+    } else {
+      loadError.value = caseResult.reason instanceof Error ? caseResult.reason.message : String(caseResult.reason)
+    }
     if (statResult.status === 'fulfilled') stats.value = statResult.value
     openCaseFromQuery()
-  } finally { loading.value = false }
+  } finally {
+    if (sequence === loadSequence) loading.value = false
+  }
 }
 
 async function openCase(item: CaseInfo) {
@@ -164,6 +164,11 @@ async function saveCase() {
 
 const createDialogVisibleGuard = useFormDialog(createDialogVisible, () => caseForm.value, () => actionBusy.value)
 onMounted(loadCases)
+watch([page, size], () => { void loadCases() })
+watch([keyword, statusFilter], () => {
+  if (page.value !== 1) page.value = 1
+  else void loadCases()
+})
 watch(() => route.query.caseId, openCaseFromQuery)
 watch(drawerVisible, visible => {
   if (!visible && route.query.caseId) {
@@ -190,22 +195,22 @@ watch(drawerVisible, visible => {
       <MetricCard :label="t('cases.resolvedCases')" tone="success">{{ stats.resolved ?? 0 }}</MetricCard>
     </div>
 
-    <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="casesFiltered.length" :loading="loading" :error="loadError" :retry="loadCases" :empty-title="t('cases.emptyCases')" :empty-description="t('cases.description')">
+    <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="total" :loading="loading" :error="loadError" :retry="loadCases" :empty-title="t('cases.emptyCases')" :empty-description="t('cases.description')">
       <template #toolbar>
-        <FilterToolbar :count="casesFiltered.length">
+        <FilterToolbar :count="total">
         <el-input v-model="keyword" :placeholder="t('cases.searchPlaceholder')" clearable @input="page = 1" />
         <el-select v-model="statusFilter" :placeholder="t('cases.allStatuses')" clearable @change="page = 1">
           <el-option v-for="status in ['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']" :key="status" :label="t('statuses.' + status) || status" :value="status" />
         </el-select>
         </FilterToolbar>
       </template>
-      <el-table :data="casesPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @sort-change="casesList.onSortChange" @row-click="openCaseRow">
-        <el-table-column prop="id" column-key="id" :label="t('cases.caseId')" :width="columnWidth('id', 180)" sortable="custom" show-overflow-tooltip />
-        <el-table-column prop="title" column-key="title" :label="t('cases.caseTitle')" :width="columnWidth('title')" min-width="180" sortable="custom" show-overflow-tooltip />
-        <el-table-column prop="entity" column-key="entity" :label="t('common.entity')" :width="columnWidth('entity', 130)" sortable="custom" show-overflow-tooltip />
-        <el-table-column prop="severity" column-key="severity" :label="t('common.severity')" :width="columnWidth('severity', 90)" sortable="custom"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
-        <el-table-column prop="status" column-key="status" :label="t('common.status')" :width="columnWidth('status', 120)" sortable="custom"><template #default="{ row }"><el-tag :type="row.status === 'OPEN' ? 'danger' : row.status === 'RESOLVED' || row.status === 'CLOSED' ? 'success' : 'warning'" size="small">{{ t('statuses.' + row.status) || row.status }}</el-tag></template></el-table-column>
-        <el-table-column prop="alarmCount" column-key="alarmCount" :label="t('cases.associatedAlarms')" :width="columnWidth('alarmCount', 90)" sortable="custom"><template #default="{ row }">{{ row.alarmIds.length }}</template></el-table-column>
+      <el-table :data="cases" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @row-click="openCaseRow">
+        <el-table-column prop="id" column-key="id" :label="t('cases.caseId')" :width="columnWidth('id', 180)" show-overflow-tooltip />
+        <el-table-column prop="title" column-key="title" :label="t('cases.caseTitle')" :width="columnWidth('title')" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="entity" column-key="entity" :label="t('common.entity')" :width="columnWidth('entity', 130)" show-overflow-tooltip />
+        <el-table-column prop="severity" column-key="severity" :label="t('common.severity')" :width="columnWidth('severity', 90)"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
+        <el-table-column prop="status" column-key="status" :label="t('common.status')" :width="columnWidth('status', 120)"><template #default="{ row }"><el-tag :type="row.status === 'OPEN' ? 'danger' : row.status === 'RESOLVED' || row.status === 'CLOSED' ? 'success' : 'warning'" size="small">{{ t('statuses.' + row.status) || row.status }}</el-tag></template></el-table-column>
+        <el-table-column prop="alarmCount" column-key="alarmCount" :label="t('cases.associatedAlarms')" :width="columnWidth('alarmCount', 90)"><template #default="{ row }">{{ row.alarmIds.length }}</template></el-table-column>
         <el-table-column :label="t('common.actions')" width="100" :resizable="false"><template #default="{ row }"><el-button link type="primary" size="small" @click="openCaseRow(row)">{{ t('cases.detailsTimeline') }}</el-button></template></el-table-column>
       </el-table>
     </DataTableCard>

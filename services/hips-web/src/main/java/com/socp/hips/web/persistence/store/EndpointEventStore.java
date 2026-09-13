@@ -9,6 +9,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.tenant.context.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -48,10 +51,7 @@ public class EndpointEventStore {
         event.put("tenantId", tenant);
         repository.save(new EndpointEventEntity(eventId, tenant, hostname, receivedAt, writeJson(event)));
 
-        endpoints.list().stream()
-                .filter(endpoint -> endpoint.hostname().equals(hostname))
-                .findFirst()
-                .ifPresent(endpoint -> endpoints.heartbeat(endpoint.id()));
+        endpoints.heartbeatByHostname(hostname);
         return event;
     }
 
@@ -60,6 +60,18 @@ public class EndpointEventStore {
         return repository.findTop200ByTenantIdOrderByReceivedAtDesc(tenant()).stream()
                 .map(this::readRecord)
                 .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public Page<Map<String, Object>> page(int page, int size) {
+        return repository.findByTenantId(tenant(), PageRequest.of(page - 1, size,
+                        Sort.by(Sort.Order.desc("receivedAt"), Sort.Order.asc("eventId"))))
+                .map(this::readRecord);
+    }
+
+    @Transactional(readOnly = true)
+    public long count() {
+        return repository.countByTenantId(tenant());
     }
 
     private Map<String, Object> readRecord(EndpointEventEntity entity) {

@@ -19,7 +19,13 @@ jobs:
       SOCP_SECURITY_SERVICE_SECRET: ci-full-stack-service-secret-0123456789abcdef
       SOCP_SECURITY_METRICS_TOKEN: ci-full-stack-metrics-token-0123456789abcdef
       SOCP_SECURITY_ALLOW_PROD_HMAC: "true"
-      SOCP_PG_PASSWORD: ci-full-stack-pg-password-0123456789abcdef
+      SOCP_PG_BOOTSTRAP_PASSWORD: ci-full-stack-pg-admin-password-0123456789abcdef
+      SOCP_PG_USER: socp_runtime
+      SOCP_PG_PASSWORD: ci-full-stack-pg-runtime-password-0123456789abcdef
+      SOCP_PG_RUNTIME_USER: socp_runtime
+      SOCP_PG_RUNTIME_PASSWORD: ci-full-stack-pg-runtime-password-0123456789abcdef
+      SOCP_PG_MIGRATION_USER: socp_migrator
+      SOCP_PG_MIGRATION_PASSWORD: ci-full-stack-pg-migration-password-0123456789abcdef
       SOCP_CK_PASSWORD: ci-full-stack-ck-password-0123456789abcdef
       SOCP_MINIO_SECRET: ci-full-stack-minio-secret-0123456789abcdef
       SOCP_OPENSEARCH_PASSWORD: ci-full-stack-os-password-0123456789abcdef

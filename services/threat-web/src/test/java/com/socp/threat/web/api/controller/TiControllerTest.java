@@ -5,6 +5,10 @@ import com.socp.threat.web.api.request.IocRequest;
 import com.socp.threat.web.domain.Ioc;
 import com.socp.threat.web.persistence.store.IocStore;
 import org.junit.jupiter.api.Test;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import com.socp.platform.error.api.ApiResult;
+import com.socp.platform.error.api.PageResponse;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -28,7 +32,7 @@ class TiControllerTest {
         IocRequest request = new IocRequest(
                 "DOMAIN", "Example.COM", "HIGH", "manual", "suspicious domain", null);
 
-        Ioc created = new TiController(store).create(request);
+        Ioc created = new TiController(store).create(request).data();
 
         org.junit.jupiter.api.Assertions.assertEquals("example.com", created.value());
         org.junit.jupiter.api.Assertions.assertEquals("HIGH", created.severity());
@@ -39,20 +43,22 @@ class TiControllerTest {
     @Test
     void exposesListDeleteAndMatchResults() {
         Ioc hit = Ioc.of("IP", "203.0.113.10", "HIGH", "feed", "known C2", List.of("c2"));
-        given(store.list("IP")).willReturn(List.of(hit));
+        given(store.page("IP", 1, 500, "")).willReturn(new PageImpl<>(
+                List.of(hit), PageRequest.of(0, 500), 1));
         given(store.delete(hit.id())).willReturn(true);
         given(store.match(hit.value())).willReturn(hit);
         TiController controller = new TiController(store);
 
-        org.junit.jupiter.api.Assertions.assertEquals(List.of(hit), controller.list("IP"));
+        ApiResult<PageResponse<Ioc>> listed = controller.list("IP", 1, 500, "");
+        org.junit.jupiter.api.Assertions.assertEquals(List.of(hit), listed.data().items());
         org.junit.jupiter.api.Assertions.assertEquals(
-                Map.of("removed", true, "id", hit.id()), controller.delete(hit.id()));
-        Map<String, Object> matched = controller.matchOne(hit.value());
+                Map.of("removed", true, "id", hit.id()), controller.delete(hit.id()).data());
+        Map<String, Object> matched = controller.matchOne(hit.value()).data();
         org.junit.jupiter.api.Assertions.assertEquals(true, matched.get("matched"));
         org.junit.jupiter.api.Assertions.assertSame(hit, matched.get("ioc"));
 
         given(store.match("clean.example")).willReturn(null);
-        Map<String, Object> missed = controller.matchOne("clean.example");
+        Map<String, Object> missed = controller.matchOne("clean.example").data();
         org.junit.jupiter.api.Assertions.assertFalse((Boolean) missed.get("matched"));
         org.junit.jupiter.api.Assertions.assertFalse(missed.containsKey("ioc"));
     }
@@ -64,7 +70,7 @@ class TiControllerTest {
         given(store.count()).willReturn(3L);
         given(store.all()).willReturn(List.of(ip, ip, domain));
 
-        Map<String, Object> stats = new TiController(store).stats();
+        Map<String, Object> stats = new TiController(store).stats().data();
 
         org.junit.jupiter.api.Assertions.assertEquals(3L, stats.get("total"));
         org.junit.jupiter.api.Assertions.assertEquals(
@@ -78,7 +84,7 @@ class TiControllerTest {
                 new IocImportRequest("IP", "203.0.113.55", "HIGH", null, null, null),
                 new IocImportRequest("DOMAIN", null, null, null, null, null));
 
-        Map<String, Object> result = new TiController(store).importIocs(rows);
+        Map<String, Object> result = new TiController(store).importIocs(rows).data();
 
         org.junit.jupiter.api.Assertions.assertEquals(1, result.get("imported"));
         org.junit.jupiter.api.Assertions.assertEquals(1, result.get("skipped"));

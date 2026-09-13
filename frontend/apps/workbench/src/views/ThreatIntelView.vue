@@ -21,13 +21,12 @@ import ElMessage from 'element-plus/es/components/message/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import DataTableCard from '../components/DataTableCard.vue'
 import EmptyState from '../components/EmptyState.vue'
 import FilterToolbar from '../components/FilterToolbar.vue'
 import PageHeader from '../components/PageHeader.vue'
 import SevBadge from '../components/SevBadge.vue'
-import { useResourceList } from '../composables/useResourceList'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { threatIntelApi, type Ioc } from '../api/domains'
 import { SEVERITIES, type IocInput } from '../api'
@@ -52,11 +51,13 @@ const importPreviewRows = ref<IocInput[]>([])
 const importBusy = ref(false)
 const newIoc = ref({ type: 'IP', value: '', severity: 'HIGH', source: 'manual', description: '', tags: '' })
 const tiMatchResult = ref<{ value: string; matched: boolean; ioc?: Ioc } | null>(null)
-const iocList = useResourceList<Ioc>({
-  searchFields: ioc => [ioc.type, ioc.value, ioc.severity, ioc.source, ioc.description, ...(ioc.tags || [])],
-  filter: ioc => !iocType.value || ioc.type === iocType.value,
-})
-const { items: iocs, page: iocPage, size: iocSize, keyword: iocKeyword, loading, filtered: iocsFiltered, paged: iocsPaged, setItems, resetPage } = iocList
+const iocs = ref<Ioc[]>([])
+const iocPage = ref(1)
+const iocSize = ref(10)
+const iocKeyword = ref('')
+const loading = ref(false)
+const iocTotal = ref(0)
+let loadSequence = 0
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('threat-intel')
 const lifecycleLabel = (value: unknown) => {
   const ioc = value as Ioc
@@ -73,12 +74,19 @@ function rowValue(row: ImportRow, ...keys: string[]): string {
 }
 
 async function loadTi(): Promise<void> {
-  if (loading.value) return
+  const sequence = ++loadSequence
   loading.value = true
   loadError.value = ''
   try {
-    const [listResult, statResult] = await Promise.allSettled([threatIntelApi.list(iocType.value || undefined), threatIntelApi.stats()])
-    if (listResult.status === 'fulfilled') { setItems(listResult.value); resetPage() }
+    const [listResult, statResult] = await Promise.allSettled([
+      threatIntelApi.list(iocType.value || undefined, iocPage.value, iocSize.value, iocKeyword.value),
+      threatIntelApi.stats(),
+    ])
+    if (listResult.status === 'fulfilled') {
+      if (sequence !== loadSequence) return
+      iocs.value = listResult.value.items
+      iocTotal.value = listResult.value.total
+    }
     else loadError.value = listResult.reason instanceof Error ? listResult.reason.message : String(listResult.reason)
     if (statResult.status === 'fulfilled') tiStat.value = statResult.value
   } finally { loading.value = false }
@@ -164,6 +172,15 @@ async function confirmIocImport(): Promise<void> {
 }
 
 onMounted(loadTi)
+watch([iocPage, iocSize], () => { void loadTi() })
+watch(iocKeyword, () => {
+  if (iocPage.value !== 1) iocPage.value = 1
+  else void loadTi()
+})
+function onIocTypeChange(): void {
+  iocPage.value = 1
+  void loadTi()
+}
 </script>
 
 <template>
@@ -172,13 +189,13 @@ onMounted(loadTi)
     <div class="page-metrics ti-metrics"><el-card shadow="never"><div class="metric-card-label">{{ t('threat.total') }}</div><div class="metric-card-value">{{ tiStat.total ?? 0 }}</div></el-card><el-card v-for="(count, kind) in (tiStat.byType || {})" :key="kind" shadow="never"><div class="metric-card-label">{{ kind }}</div><div class="metric-card-value">{{ count }}</div></el-card></div>
 
     <div class="threat-query-layout">
-      <FilterToolbar class="ti-query-toolbar" :count="iocsFiltered.length"><el-input v-model="iocKeyword" :placeholder="t('threat.listSearchPlaceholder')" clearable @input="iocPage = 1" /><el-select v-model="iocType" :placeholder="t('threat.allTypes')" clearable @change="loadTi"><el-option v-for="type in IOC_TYPES" :key="type" :label="type" :value="type" /></el-select></FilterToolbar>
+      <FilterToolbar class="ti-query-toolbar" :count="iocTotal"><el-input v-model="iocKeyword" :placeholder="t('threat.listSearchPlaceholder')" clearable @input="iocPage = 1" /><el-select v-model="iocType" :placeholder="t('threat.allTypes')" clearable @change="onIocTypeChange"><el-option v-for="type in IOC_TYPES" :key="type" :label="type" :value="type" /></el-select></FilterToolbar>
       <div class="threat-match-tool"><div><strong>{{ t('threat.matchToolTitle') }}</strong><span>{{ t('threat.matchToolHint') }}</span></div><div class="threat-match-controls"><el-input v-model="matchValue" :placeholder="t('threat.matchPlaceholder')" @keyup.enter="doTiMatch" /><el-button type="primary" @click="doTiMatch">{{ t('threat.checkMatch') }}</el-button></div></div>
     </div>
     <el-alert v-if="tiMatchResult" :title="tiMatchResult.matched ? t('threat.matched', { value: tiMatchResult.ioc?.value ?? '-', severity: tiMatchResult.ioc?.severity ?? '-' }) : t('threat.noMatch')" :type="tiMatchResult.matched ? 'error' : 'info'" :closable="false" style="margin-bottom:14px" />
     <div class="add-bar"><el-button v-if="canWrite" type="primary" @click="openCreateIoc">{{ t('threat.addIoc') }}</el-button><el-button v-if="canWrite" @click="selectIocImport">{{ t('threat.batchImport') }}</el-button><input ref="iocImportInput" type="file" accept=".csv,.json,application/json,text/csv" hidden @change="importIocFile" /><span class="hint">{{ t('threat.descriptionHint') }}</span></div>
 
-    <DataTableCard v-model:current-page="iocPage" v-model:page-size="iocSize" :total="iocsFiltered.length" :loading="loading" :error="loadError" :retry="loadTi" :empty-title="t('threat.iocList')" :empty-description="t('threat.description')"><el-table :data="iocsPaged" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @sort-change="iocList.onSortChange" @row-click="openDetailRow"><el-table-column prop="type" column-key="type" :label="t('common.type')" :width="columnWidth('type', 90)" sortable="custom" /><el-table-column prop="value" column-key="value" :label="t('threat.iocValue')" :width="columnWidth('value')" min-width="180" sortable="custom" show-overflow-tooltip /><el-table-column prop="source" column-key="source" :label="t('common.source')" :width="columnWidth('source', 120)" sortable="custom" show-overflow-tooltip /><el-table-column prop="confidence" :label="t('threat.confidence')" width="100"><template #default="{ row }">{{ row.confidence == null ? t('time.notAvailable') : `${row.confidence}%` }}</template></el-table-column><el-table-column :label="t('common.status')" width="90"><template #default="{ row }"><el-tag :type="lifecycleLabel(row).type" size="small">{{ lifecycleLabel(row).text }}</el-tag></template></el-table-column><el-table-column :label="t('threat.validUntil')" width="155"><template #default="{ row }">{{ formatTime(row.validUntil || row.expiration) }}</template></el-table-column><el-table-column v-if="canWrite" :label="t('common.actions')" width="150" :resizable="false"><template #default="{ row }"><el-button v-if="canWrite" link type="primary" size="small" @click.stop="openEditIoc(row as Ioc)">{{ t('common.edit') }}</el-button><el-button v-if="canWrite" link :type="row.revoked ? 'success' : 'warning'" size="small" @click.stop="toggleLifecycle(row as Ioc)">{{ row.revoked ? t('threat.restore') : t('threat.revoke') }}</el-button></template></el-table-column></el-table></DataTableCard>
+    <DataTableCard v-model:current-page="iocPage" v-model:page-size="iocSize" :total="iocTotal" :loading="loading" :error="loadError" :retry="loadTi" :empty-title="t('threat.iocList')" :empty-description="t('threat.description')"><el-table :data="iocs" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @row-click="openDetailRow"><el-table-column prop="type" column-key="type" :label="t('common.type')" :width="columnWidth('type', 90)" sortable="custom" /><el-table-column prop="value" column-key="value" :label="t('threat.iocValue')" :width="columnWidth('value')" min-width="180" sortable="custom" show-overflow-tooltip /><el-table-column prop="source" column-key="source" :label="t('common.source')" :width="columnWidth('source', 120)" sortable="custom" show-overflow-tooltip /><el-table-column prop="confidence" :label="t('threat.confidence')" width="100"><template #default="{ row }">{{ row.confidence == null ? t('time.notAvailable') : `${row.confidence}%` }}</template></el-table-column><el-table-column :label="t('common.status')" width="90"><template #default="{ row }"><el-tag :type="lifecycleLabel(row).type" size="small">{{ lifecycleLabel(row).text }}</el-tag></template></el-table-column><el-table-column :label="t('threat.validUntil')" width="155"><template #default="{ row }">{{ formatTime(row.validUntil || row.expiration) }}</template></el-table-column><el-table-column v-if="canWrite" :label="t('common.actions')" width="150" :resizable="false"><template #default="{ row }"><el-button v-if="canWrite" link type="primary" size="small" @click.stop="openEditIoc(row as Ioc)">{{ t('common.edit') }}</el-button><el-button v-if="canWrite" link :type="row.revoked ? 'success' : 'warning'" size="small" @click.stop="toggleLifecycle(row as Ioc)">{{ row.revoked ? t('threat.restore') : t('threat.revoke') }}</el-button></template></el-table-column></el-table></DataTableCard>
 
     <el-dialog v-model="showIocDialog" :title="editingIocId ? t('threat.editIoc') : t('threat.addIoc')" width="560px"><el-form label-width="100px"><el-form-item :label="t('threat.iocValue')" required><el-input v-model="newIoc.value" :placeholder="t('threat.valuePlaceholder')" /></el-form-item><el-form-item :label="t('common.type')"><el-select v-model="newIoc.type" style="width:180px"><el-option v-for="type in IOC_TYPES" :key="type" :label="type" :value="type" /></el-select></el-form-item><el-form-item :label="t('common.severity')"><el-select v-model="newIoc.severity" style="width:180px"><el-option v-for="severity in SEVERITIES" :key="severity" :label="t('severities.' + severity) || severity" :value="severity" /></el-select></el-form-item><el-form-item :label="t('common.source')"><el-input v-model="newIoc.source" /></el-form-item><el-form-item :label="t('threat.tags')"><el-input v-model="newIoc.tags" :placeholder="t('threat.tagsPlaceholder')" /></el-form-item><el-form-item :label="t('common.description')"><el-input v-model="newIoc.description" type="textarea" :rows="3" /></el-form-item></el-form><template #footer><el-button @click="showIocDialog = false">{{ t('common.cancel') }}</el-button><el-button type="primary" :disabled="!newIoc.value.trim()" @click="saveIoc">{{ t('common.save') }}</el-button></template></el-dialog>
 

@@ -155,6 +155,11 @@ public class AuthInterceptor implements HandlerInterceptor {
             claimsGroups = claimGroups(claims);
         }
 
+        if (properties.isRequireGateway() && !jwtValidator.isDevBypass()
+                && !ingestCredential && authenticatedService == null) {
+            verifyGatewayIdentity(request, token, tenant);
+        }
+
         String delegatedTenant = verifyServiceIdentity(request);
         if (delegatedTenant != null) {
             String signedService = request.getHeader(ServiceRequestSignature.SERVICE_HEADER);
@@ -369,6 +374,46 @@ public class AuthInterceptor implements HandlerInterceptor {
             throw ApiException.of(503, "Service identity replay guard is unavailable");
         }
         return tenant;
+    }
+
+    private void verifyGatewayIdentity(HttpServletRequest request, String token, String tenant) {
+        String path = request.getHeader(ServiceRequestSignature.GATEWAY_PATH_HEADER);
+        String timestamp = request.getHeader(ServiceRequestSignature.GATEWAY_TIMESTAMP_HEADER);
+        String nonce = request.getHeader(ServiceRequestSignature.GATEWAY_NONCE_HEADER);
+        String signature = request.getHeader(ServiceRequestSignature.GATEWAY_SIGNATURE_HEADER);
+        if (isBlank(path) || isBlank(timestamp) || isBlank(nonce) || isBlank(signature)) {
+            throw ApiException.unauthorized("User tokens must arrive through the API gateway");
+        }
+        if (!path.startsWith("/") || path.length() > 2048 || path.contains("\n")
+                || path.contains("\r") || nonce.length() > 128) {
+            throw ApiException.unauthorized("Invalid gateway identity proof");
+        }
+        long signedAt;
+        try {
+            signedAt = Long.parseLong(timestamp);
+        } catch (NumberFormatException invalidTimestamp) {
+            throw ApiException.unauthorized("Invalid gateway identity timestamp");
+        }
+        long now = Instant.now().getEpochSecond();
+        if (Math.abs(now - signedAt) > properties.getServiceMaxSkewSeconds()) {
+            throw ApiException.unauthorized("Expired gateway identity proof");
+        }
+        String secret = properties.getServiceSecret();
+        if (secret == null || secret.isBlank() || !TenantContext.isValid(tenant)
+                || !ServiceRequestSignature.verify(secret, signature,
+                ServiceRequestSignature.GATEWAY_SERVICE, request.getMethod(),
+                ServiceRequestSignature.gatewayBinding(path, token), tenant, timestamp, nonce)) {
+            throw ApiException.unauthorized("Invalid gateway identity signature");
+        }
+        ServiceNonceStore.ClaimResult nonceResult = serviceNonces.claim(
+                ServiceRequestSignature.GATEWAY_SERVICE, nonce,
+                Duration.ofSeconds(properties.getServiceMaxSkewSeconds() * 2L));
+        if (nonceResult == ServiceNonceStore.ClaimResult.REPLAYED) {
+            throw ApiException.unauthorized("Replayed gateway identity proof");
+        }
+        if (nonceResult == ServiceNonceStore.ClaimResult.UNAVAILABLE) {
+            throw ApiException.of(503, "Gateway identity replay guard is unavailable");
+        }
     }
 
     private static boolean isBlank(String value) {

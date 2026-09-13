@@ -13,10 +13,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 import com.socp.platform.auth.security.RequireRole;
 import com.socp.platform.error.api.ApiResult;
 import com.socp.platform.error.api.PageResponse;
@@ -24,6 +22,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.data.domain.Page;
 import jakarta.validation.Valid;
 
 /**
@@ -48,12 +47,12 @@ public class EndpointController {
     @RequireRole({"admin", "analyst"})
     @GetMapping
     public ApiResult<PageResponse<Endpoint>> list(@RequestParam(defaultValue = "1") int page,
-                                                  @RequestParam(defaultValue = "500") int size) {
+                                                  @RequestParam(defaultValue = "500") int size,
+                                                  @RequestParam(defaultValue = "") String q) {
         requireValidRange(page, size);
-        List<Endpoint> all = store.list();
-        int from = Math.min((page - 1) * size, all.size());
-        int to = Math.min(from + size, all.size());
-        return ApiResult.ok(PageResponse.of(all.subList(from, to), all.size(), page, size));
+        Page<Endpoint> result = store.page(page, size, normalizeQuery(q));
+        return ApiResult.ok(PageResponse.of(result.getContent(), result.getTotalElements(),
+                result.getNumber() + 1, result.getSize(), result.getTotalPages()));
     }
 
     @RequireRole({"admin", "analyst"})
@@ -73,7 +72,7 @@ public class EndpointController {
     @PostMapping("/events")
     public ApiResult<Map<String, Object>> ingestEvent(@Valid @RequestBody EndpointEventRequest request) {
         Map<String, Object> record = events.add(request.asMap());
-        return ApiResult.ok(Map.of("accepted", true, "eventId", record.get("eventId"), "total", events.list().size()));
+        return ApiResult.ok(Map.of("accepted", true, "eventId", record.get("eventId"), "total", events.count()));
     }
 
     /** 最近收到的端点事件：租户级分页（page 从 1 起，size 上限 socp.web.list-max-size）。 */
@@ -81,27 +80,20 @@ public class EndpointController {
     public ApiResult<PageResponse<Map<String, Object>>> events(@RequestParam(defaultValue = "1") int page,
                                                                @RequestParam(defaultValue = "500") int size) {
         requireValidRange(page, size);
-        List<Map<String, Object>> all = events.list();
-        int from = Math.min((page - 1) * size, all.size());
-        int to = Math.min(from + size, all.size());
-        return ApiResult.ok(PageResponse.of(all.subList(from, to), all.size(), page, size));
+        Page<Map<String, Object>> result = events.page(page, size);
+        return ApiResult.ok(PageResponse.of(result.getContent(), result.getTotalElements(),
+                result.getNumber() + 1, result.getSize(), result.getTotalPages()));
     }
 
     /** 端点统计：在线数 / 事件数 / 事件类型分布。 */
     @GetMapping("/stats")
     public ApiResult<Map<String, Object>> stats() {
-        List<Endpoint> all = store.list();
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("total", all.size());
-        out.put("online", all.stream().filter(e -> "ONLINE".equals(e.status())).count());
-        out.put("byStatus", Map.of(
-                "ONLINE", all.stream().filter(e -> "ONLINE".equals(e.status())).count(),
-                "OFFLINE", all.stream().filter(e -> "OFFLINE".equals(e.status())).count()
-        ));
+        Map<String, Object> out = new java.util.LinkedHashMap<>(store.stats());
         List<Map<String, Object>> tenantEvents = events.list();
-        out.put("events", tenantEvents.size());
-        out.put("eventByType", tenantEvents.stream().collect(Collectors.groupingBy(
-                e -> String.valueOf(e.getOrDefault("type", "UNKNOWN")), Collectors.counting())));
+        out.put("events", events.count());
+        out.put("eventByType", tenantEvents.stream().collect(java.util.stream.Collectors.groupingBy(
+                e -> String.valueOf(e.getOrDefault("type", "UNKNOWN")),
+                java.util.stream.Collectors.counting())));
         return ApiResult.ok(out);
     }
 
@@ -112,9 +104,17 @@ public class EndpointController {
     }
 
     private void requireValidRange(int page, int size) {
-        if (page < 1 || size < 0 || size > maxListSize) {
+        if (page < 1 || size < 1 || size > maxListSize) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "分页参数非法：page 从 1 起，size 上限 " + maxListSize);
         }
+    }
+
+    private static String normalizeQuery(String query) {
+        String normalized = query == null ? "" : query.trim();
+        if (normalized.length() > 128) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "q length must not exceed 128 characters");
+        }
+        return normalized;
     }
 
 }

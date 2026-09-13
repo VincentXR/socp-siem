@@ -2,6 +2,7 @@ package com.socp.report.web.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.client.service.AlertClient;
+import com.socp.platform.client.http.BoundedBodyHandlers;
 import com.socp.platform.client.http.ServiceCall;
 import com.socp.platform.error.exception.ApiException;
 import com.socp.platform.tenant.context.TenantContext;
@@ -94,7 +95,8 @@ public class ReportService {
                     .POST(java.net.http.HttpRequest.BodyPublishers.ofString(sql, StandardCharsets.UTF_8))
                     .build();
 
-            var response = httpClient.send(request, java.net.http.HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            var response = httpClient.send(request,
+                    BoundedBodyHandlers.ofString(clickHouse.getResponseBodyLimitBytes()));
             int code = response.statusCode();
             if (code < 200 || code >= 300) {
                 log.debug("ClickHouse query returned HTTP {}", code);

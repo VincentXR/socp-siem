@@ -222,12 +222,19 @@ jobs:
     needs: build
     env:
       SOCP_JWT_SECRET: ci-test-jwt-secret-0123456789abcdef0123456789abcdef
+      SOCP_PG_BOOTSTRAP_PASSWORD: ci-e2e-pg-admin-password-0123456789abcdef
+      SOCP_PG_USER: socp_runtime
+      SOCP_PG_PASSWORD: ci-e2e-pg-runtime-password-0123456789abcdef
+      SOCP_PG_RUNTIME_USER: socp_runtime
+      SOCP_PG_RUNTIME_PASSWORD: ci-e2e-pg-runtime-password-0123456789abcdef
+      SOCP_PG_MIGRATION_USER: socp_migrator
+      SOCP_PG_MIGRATION_PASSWORD: ci-e2e-pg-migration-password-0123456789abcdef
     services:
       postgres:
         image: postgres:18
         env:
           POSTGRES_USER: socp
-          POSTGRES_PASSWORD: socp
+          POSTGRES_PASSWORD: ci-e2e-pg-admin-password-0123456789abcdef
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U socp"
@@ -260,12 +267,27 @@ jobs:
         run: |
           pg_container="$(docker ps --filter 'ancestor=postgres:18' --format '{{.ID}}' | head -n 1)"
           test -n "$pg_container"
+          docker cp infra/init-sql/pg/00_roles.sh "$pg_container:/tmp/00_roles.sh"
+          docker cp infra/init-sql/pg/02_runtime_grants.sh "$pg_container:/tmp/02_runtime_grants.sh"
+          docker exec \
+            -e POSTGRES_USER=socp \
+            -e POSTGRES_DB=socp \
+            -e SOCP_PG_RUNTIME_USER="$SOCP_PG_RUNTIME_USER" \
+            -e SOCP_PG_RUNTIME_PASSWORD="$SOCP_PG_RUNTIME_PASSWORD" \
+            -e SOCP_PG_MIGRATION_USER="$SOCP_PG_MIGRATION_USER" \
+            -e SOCP_PG_MIGRATION_PASSWORD="$SOCP_PG_MIGRATION_PASSWORD" \
+            "$pg_container" bash /tmp/00_roles.sh
           for database in alert; do
             exists="$(docker exec "$pg_container" psql -U socp -d socp -Atqc "SELECT 1 FROM pg_database WHERE datname = '$database'")"
             if [ "$exists" != "1" ]; then
               docker exec "$pg_container" createdb -U socp "$database"
             fi
           done
+          docker exec \
+            -e POSTGRES_USER=socp \
+            -e SOCP_PG_RUNTIME_USER="$SOCP_PG_RUNTIME_USER" \
+            -e SOCP_PG_MIGRATION_USER="$SOCP_PG_MIGRATION_USER" \
+            "$pg_container" bash /tmp/02_runtime_grants.sh
 
       - name: Start minimal slice (alert-web + gateway)
         run: |
@@ -327,7 +349,13 @@ jobs:
       SOCP_SECURITY_SERVICE_SECRET: ci-test-service-secret-0123456789abcdef
       SOCP_SECURITY_METRICS_TOKEN: ci-test-metrics-token-0123456789abcdef
       SOCP_SECURITY_ALLOW_PROD_HMAC: "true"
-      SOCP_PG_PASSWORD: ci-test-pg-password-0123456789abcdef
+      SOCP_PG_BOOTSTRAP_PASSWORD: ci-test-pg-admin-password-0123456789abcdef
+      SOCP_PG_USER: socp_runtime
+      SOCP_PG_PASSWORD: ci-test-pg-runtime-password-0123456789abcdef
+      SOCP_PG_RUNTIME_USER: socp_runtime
+      SOCP_PG_RUNTIME_PASSWORD: ci-test-pg-runtime-password-0123456789abcdef
+      SOCP_PG_MIGRATION_USER: socp_migrator
+      SOCP_PG_MIGRATION_PASSWORD: ci-test-pg-migration-password-0123456789abcdef
       SOCP_CK_PASSWORD: ci-test-ck-password-0123456789abcdef
       SOCP_MINIO_SECRET: ci-test-minio-secret-0123456789abcdef
       SOCP_AUTH_USERS: '{"admin":"admin123","demo":"demo123","viewer":"viewer123"}'
@@ -352,7 +380,8 @@ jobs:
         image: postgres:18
         env:
           POSTGRES_USER: socp
-          POSTGRES_PASSWORD: ci-test-pg-password-0123456789abcdef
+          POSTGRES_DB: socp
+          POSTGRES_PASSWORD: ci-test-pg-admin-password-0123456789abcdef
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U socp"
@@ -408,12 +437,27 @@ jobs:
         run: |
           pg_container="$(docker ps --filter 'ancestor=postgres:18' --format '{{.ID}}' | head -n 1)"
           test -n "$pg_container"
-          for database in alert report detect search incident threat asset audit; do
+          docker cp infra/init-sql/pg/00_roles.sh "$pg_container:/tmp/00_roles.sh"
+          docker cp infra/init-sql/pg/02_runtime_grants.sh "$pg_container:/tmp/02_runtime_grants.sh"
+          docker exec \
+            -e POSTGRES_USER=socp \
+            -e POSTGRES_DB=socp \
+            -e SOCP_PG_RUNTIME_USER="$SOCP_PG_RUNTIME_USER" \
+            -e SOCP_PG_RUNTIME_PASSWORD="$SOCP_PG_RUNTIME_PASSWORD" \
+            -e SOCP_PG_MIGRATION_USER="$SOCP_PG_MIGRATION_USER" \
+            -e SOCP_PG_MIGRATION_PASSWORD="$SOCP_PG_MIGRATION_PASSWORD" \
+            "$pg_container" bash /tmp/00_roles.sh
+          for database in soc asset alert search detect hips soar report audit ai platform incident threat attack notify detect_model; do
             exists="$(docker exec "$pg_container" psql -U socp -d socp -Atqc "SELECT 1 FROM pg_database WHERE datname = '$database'")"
             if [ "$exists" != "1" ]; then
               docker exec "$pg_container" createdb -U socp "$database"
             fi
           done
+          docker exec \
+            -e POSTGRES_USER=socp \
+            -e SOCP_PG_RUNTIME_USER="$SOCP_PG_RUNTIME_USER" \
+            -e SOCP_PG_MIGRATION_USER="$SOCP_PG_MIGRATION_USER" \
+            "$pg_container" bash /tmp/02_runtime_grants.sh
 
       - name: Prepare ClickHouse schema
         run: |

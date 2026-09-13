@@ -120,6 +120,10 @@ public class DetectEngineService {
     @Value("${socp.detect.state.shards:1}")
     private int stateShardCount = 1;
 
+    /** Replay boundary shared with the journal and pending-work recovery. */
+    @Value("${socp.detect.state.retention}")
+    private Duration recoveryWindow;
+
     public DetectEngineService(RuleSpecStore store, RecentAlertSink sink, AlertForwarder forwarder,
                                RuleChangePublisher rulePublisher, DetectionStateStore stateStore,
                                DetectionPerformanceMetrics performanceMetrics,
@@ -302,8 +306,8 @@ public class DetectEngineService {
                             event.requireTenantId());
                     return tenantScope::close;
                 }, durableCommitGuard, stateCompatibilityVersions);
-        // The journal itself clamps this to its configured retention. 24h
-        // covers the bundled UEBA baselines while keeping restart bounded.
+        // The journal itself clamps this to its configured retention. Keep the
+        // replay boundary configurable so rule windows can be sized safely.
         // Any restore failure is propagated so readiness cannot claim a
         // partially reconstructed detector is healthy.
         try {
@@ -562,11 +566,11 @@ public class DetectEngineService {
             snapshotOffsets.remove(engineKey(tenant, normalizeShard(shard)));
         }
         if (partitions == null || partitions.isEmpty()) {
-            stateStore.replayRecentForTenant(tenant, Duration.ofHours(24), events -> replacement.restore(
+            stateStore.replayRecentForTenant(tenant, configuredRecoveryWindow(), events -> replacement.restore(
                     events.stream().filter(event -> shardFor(event) == normalizeShard(shard)).toList()));
         } else {
             stateStore.replayRecentForPartitions(
-                    partitions, Duration.ofHours(24), events -> {
+                    partitions, configuredRecoveryWindow(), events -> {
                         List<SecurityEvent> owned = events.stream()
                                 .filter(event -> tenant.equals(event.tenantId()))
                                 .filter(event -> shardFor(event) == normalizeShard(shard))
@@ -647,9 +651,9 @@ public class DetectEngineService {
                 });
             };
             if (partitions == null || partitions.isEmpty()) {
-                stateStore.replayRecent(Duration.ofHours(24), restoreBatch);
+                stateStore.replayRecent(configuredRecoveryWindow(), restoreBatch);
             } else {
-                stateStore.replayRecentForPartitions(partitions, Duration.ofHours(24), restoreBatch);
+                stateStore.replayRecentForPartitions(partitions, configuredRecoveryWindow(), restoreBatch);
             }
             // Keep an empty default shard warm when no history exists. Do not
             // call engineFor() here: that path restores the journal again and
@@ -672,6 +676,15 @@ public class DetectEngineService {
         } finally {
             engineLifecycle.writeLock().unlock();
         }
+    }
+
+    /**
+     * Spring supplies this from the single retention property. Compatibility
+     * constructors used by unit tests intentionally fail closed to an empty
+     * replay window until configuration is injected.
+     */
+    private Duration configuredRecoveryWindow() {
+        return recoveryWindow == null ? Duration.ZERO : recoveryWindow;
     }
 
     @Scheduled(fixedDelayString = "${socp.detect.engine.cleanup-interval-ms:60000}")

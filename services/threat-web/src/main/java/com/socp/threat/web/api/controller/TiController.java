@@ -5,6 +5,8 @@ import com.socp.threat.web.api.request.IocLifecycleRequest;
 import com.socp.threat.web.api.request.IocRequest;
 import com.socp.platform.audit.api.AuditOperation;
 import com.socp.platform.auth.security.RequireRole;
+import com.socp.platform.error.api.ApiResult;
+import com.socp.platform.error.api.PageResponse;
 import com.socp.threat.web.domain.Ioc;
 import com.socp.threat.web.persistence.store.IocStore;
 import com.socp.threat.web.service.StixIndicatorImporter;
@@ -21,6 +23,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Size;
@@ -38,31 +41,43 @@ import java.util.Map;
 public class TiController {
 
     private final IocStore store;
+    private final int maxListSize;
     @Autowired(required = false)
     private TaxiiSyncService taxiiSyncService;
 
     public TiController(IocStore store) {
+        this(store, 500);
+    }
+
+    @Autowired
+    public TiController(IocStore store,
+                        @Value("${socp.web.list-max-size:500}") int maxListSize) {
         this.store = store;
+        this.maxListSize = maxListSize;
     }
 
     @GetMapping("/iocs")
-    public List<Ioc> list(@RequestParam(required = false) String type) {
-        return store.list(type);
+    public ApiResult<PageResponse<Ioc>> list(@RequestParam(required = false) String type,
+                                             @RequestParam(defaultValue = "1") int page,
+                                             @RequestParam(defaultValue = "500") int size,
+                                             @RequestParam(defaultValue = "") String q) {
+        requireValidRange(page, size);
+        return ApiResult.ok(toPageResponse(store.page(type, page, size, normalizeQuery(q))));
     }
 
     @RequireRole({"admin", "analyst"})
     @AuditOperation(action = "CREATE_IOC", target = "threat")
     @PostMapping("/iocs")
-    public Ioc create(@Valid @RequestBody IocRequest body) {
+    public ApiResult<Ioc> create(@Valid @RequestBody IocRequest body) {
         Ioc ioc = Ioc.of(
                 body.type(), body.value(), body.severity(), body.source(), body.description(), body.tags());
-        return store.add(ioc);
+        return ApiResult.ok(store.add(ioc));
     }
 
     @RequireRole({"admin", "analyst"})
     @AuditOperation(action = "UPDATE_IOC", target = "threat")
     @PutMapping("/iocs/{id}")
-    public Ioc update(@PathVariable String id, @Valid @RequestBody IocRequest body) {
+    public ApiResult<Ioc> update(@PathVariable String id, @Valid @RequestBody IocRequest body) {
         Ioc existing = store.get(id);
         if (existing == null) throw new org.springframework.web.server.ResponseStatusException(
                 org.springframework.http.HttpStatus.NOT_FOUND, "IOC not found");
@@ -71,13 +86,13 @@ public class TiController {
                 incoming.description(), incoming.tags(), existing.firstSeen(), existing.lastSeen(), existing.feed(),
                 existing.externalId(), existing.confidence(), existing.tlp(), existing.validFrom(), existing.validUntil(),
                 existing.expiration(), existing.revoked(), existing.provenance());
-        return store.add(updated);
+        return ApiResult.ok(store.add(updated));
     }
 
     @RequireRole({"admin", "analyst"})
     @AuditOperation(action = "UPDATE_IOC_LIFECYCLE", target = "threat")
     @PatchMapping("/iocs/{id}/lifecycle")
-    public Ioc lifecycle(@PathVariable String id, @Valid @RequestBody IocLifecycleRequest body) {
+    public ApiResult<Ioc> lifecycle(@PathVariable String id, @Valid @RequestBody IocLifecycleRequest body) {
         Ioc existing = store.get(id);
         if (existing == null) throw new org.springframework.web.server.ResponseStatusException(
                 org.springframework.http.HttpStatus.NOT_FOUND, "IOC not found");
@@ -85,14 +100,14 @@ public class TiController {
                 existing.description(), existing.tags(), existing.firstSeen(), existing.lastSeen(), existing.feed(),
                 existing.externalId(), existing.confidence(), existing.tlp(), existing.validFrom(), existing.validUntil(),
                 existing.expiration(), body.revoked(), existing.provenance());
-        return store.add(updated);
+        return ApiResult.ok(store.add(updated));
     }
 
     /** 批量导入 IOC：单条格式错误不会阻断同一批次的其他指标。 */
     @RequireRole({"admin", "analyst"})
     @AuditOperation(action = "IMPORT_IOC", target = "threat")
     @PostMapping("/iocs/import")
-    public Map<String, Object> importIocs(@Valid @Size(max = 1000) @RequestBody List<@Valid IocImportRequest> rows) {
+    public ApiResult<Map<String, Object>> importIocs(@Valid @Size(max = 1000) @RequestBody List<@Valid IocImportRequest> rows) {
         List<String> errors = new java.util.ArrayList<>();
         int imported = 0;
         for (int index = 0; index < (rows == null ? 0 : rows.size()); index++) {
@@ -107,7 +122,7 @@ public class TiController {
             store.add(ioc);
             imported++;
         }
-        return Map.of("imported", imported, "skipped", errors.size(), "errors", errors);
+        return ApiResult.ok(Map.of("imported", imported, "skipped", errors.size(), "errors", errors));
     }
 
     /** Import a STIX 2.1 bundle produced by a TAXII collection. */
@@ -116,30 +131,30 @@ public class TiController {
     @PostMapping(value = "/iocs/import/stix", consumes = {
             MediaType.APPLICATION_JSON_VALUE, "application/stix+json"
     })
-    public Map<String, Object> importStix(@RequestParam(defaultValue = "taxii") String feed,
-                                          @RequestBody String bundle) {
+    public ApiResult<Map<String, Object>> importStix(@RequestParam(defaultValue = "taxii") String feed,
+                                                     @RequestBody String bundle) {
         StixIndicatorImporter.ImportResult parsed = new StixIndicatorImporter().parse(bundle, feed);
         int imported = 0;
         for (Ioc indicator : parsed.indicators()) {
             store.add(indicator);
             imported++;
         }
-        return Map.of("imported", imported, "skipped", parsed.skipped(), "feed", feed,
-                "revoked", parsed.indicators().stream().filter(Ioc::revoked).count());
+        return ApiResult.ok(Map.of("imported", imported, "skipped", parsed.skipped(), "feed", feed,
+                "revoked", parsed.indicators().stream().filter(Ioc::revoked).count()));
     }
 
     /** Pull one TAXII 2.1 collection; credentials are supplied per request and never persisted. */
     @RequireRole("admin")
     @AuditOperation(action = "SYNC_TAXII", target = "threat")
     @PostMapping("/feeds/taxii/sync")
-    public Map<String, Object> syncTaxii(@Valid @RequestBody TaxiiSyncRequest request) {
+    public ApiResult<Map<String, Object>> syncTaxii(@Valid @RequestBody TaxiiSyncRequest request) {
         if (taxiiSyncService == null) {
             throw new org.springframework.web.server.ResponseStatusException(
                     org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, "TAXII sync is unavailable");
         }
         try {
-            return taxiiSyncService.sync(request.feed(), java.net.URI.create(request.collectionUrl()),
-                    request.authorization(), Boolean.TRUE.equals(request.allowHttp()));
+            return ApiResult.ok(taxiiSyncService.sync(request.feed(), java.net.URI.create(request.collectionUrl()),
+                    request.authorization(), Boolean.TRUE.equals(request.allowHttp())));
         } catch (IllegalArgumentException invalid) {
             throw new org.springframework.web.server.ResponseStatusException(
                     org.springframework.http.HttpStatus.BAD_REQUEST, invalid.getMessage(), invalid);
@@ -149,41 +164,41 @@ public class TiController {
     @RequireRole({"admin", "analyst"})
     @AuditOperation(action = "DELETE_IOC", target = "threat")
     @DeleteMapping("/iocs/{id}")
-    public Map<String, Object> delete(@PathVariable String id) {
-        return Map.of("removed", store.delete(id), "id", id);
+    public ApiResult<Map<String, Object>> delete(@PathVariable String id) {
+        return ApiResult.ok(Map.of("removed", store.delete(id), "id", id));
     }
 
     /** 单值精确匹配：命中返回 IOC，未命中返回空映射。 */
     @GetMapping("/iocs/match")
-    public Map<String, Object> matchOne(@RequestParam String value) {
+    public ApiResult<Map<String, Object>> matchOne(@RequestParam String value) {
         Ioc hit = store.match(value);
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("value", value);
         out.put("matched", hit != null);
         if (hit != null) out.put("ioc", hit);
-        return out;
+        return ApiResult.ok(out);
     }
 
     /** 批量匹配：请求体为候选值数组，返回命中映射。 */
     @RequireRole({"admin", "analyst", "viewer"})
     @PostMapping("/iocs/match")
-    public Map<String, Object> matchBulk(@Valid @Size(min = 1, max = 1000)
-                                         @RequestBody List<@Size(max = 512) String> values) {
+    public ApiResult<Map<String, Object>> matchBulk(@Valid @Size(min = 1, max = 1000)
+                                                    @RequestBody List<@Size(max = 512) String> values) {
         Map<String, Ioc> hits = store.matchAll(values);
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("checked", values.size());
         out.put("matched", hits.size());
         out.put("hits", hits);
-        return out;
+        return ApiResult.ok(out);
     }
 
     @GetMapping("/types")
-    public List<String> types() {
-        return List.of("IP", "DOMAIN", "URL", "SHA256", "MD5", "EMAIL");
+    public ApiResult<List<String>> types() {
+        return ApiResult.ok(List.of("IP", "DOMAIN", "URL", "SHA256", "MD5", "EMAIL"));
     }
 
     @GetMapping("/stats")
-    public Map<String, Object> stats() {
+    public ApiResult<Map<String, Object>> stats() {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("total", store.count());
         Map<String, Long> byType = new LinkedHashMap<>();
@@ -191,7 +206,30 @@ public class TiController {
             byType.merge(i.type(), 1L, Long::sum);
         }
         m.put("byType", byType);
-        return m;
+        return ApiResult.ok(m);
+    }
+
+    private PageResponse<Ioc> toPageResponse(org.springframework.data.domain.Page<Ioc> page) {
+        return PageResponse.of(page.getContent(), page.getTotalElements(),
+                page.getNumber() + 1, page.getSize(), page.getTotalPages());
+    }
+
+    private void requireValidRange(int page, int size) {
+        if (page < 1 || size < 1 || size > maxListSize) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST,
+                    "page must be >= 1 and size must be between 1 and " + maxListSize);
+        }
+    }
+
+    private static String normalizeQuery(String query) {
+        String normalized = query == null ? "" : query.trim();
+        if (normalized.length() > 128) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST,
+                    "q length must not exceed 128 characters");
+        }
+        return normalized;
     }
 
     private static String str(Map<String, Object> m, String k) {

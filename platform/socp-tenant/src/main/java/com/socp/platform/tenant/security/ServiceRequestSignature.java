@@ -12,6 +12,11 @@ public final class ServiceRequestSignature {
     public static final String TIMESTAMP_HEADER = "X-Socp-Service-Timestamp";
     public static final String NONCE_HEADER = "X-Socp-Service-Nonce";
     public static final String SIGNATURE_HEADER = "X-Socp-Service-Signature";
+    public static final String GATEWAY_PATH_HEADER = "X-Socp-Gateway-Path";
+    public static final String GATEWAY_TIMESTAMP_HEADER = "X-Socp-Gateway-Timestamp";
+    public static final String GATEWAY_NONCE_HEADER = "X-Socp-Gateway-Nonce";
+    public static final String GATEWAY_SIGNATURE_HEADER = "X-Socp-Gateway-Signature";
+    public static final String GATEWAY_SERVICE = "api-gateway";
 
     private ServiceRequestSignature() {
     }
@@ -36,6 +41,21 @@ public final class ServiceRequestSignature {
         String expected = sign(secret, service, method, path, tenant, timestamp, nonce);
         return MessageDigest.isEqual(expected.getBytes(StandardCharsets.US_ASCII),
                 signature.getBytes(StandardCharsets.US_ASCII));
+    }
+
+    /** Bind a gateway proof to both the original route and the exact bearer token. */
+    public static String gatewayBinding(String path, String bearerToken) {
+        return safe(path) + '\n' + sha256(bearerToken);
+    }
+
+    private static String sha256(String value) {
+        try {
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(
+                    MessageDigest.getInstance("SHA-256")
+                            .digest(safe(value).getBytes(StandardCharsets.UTF_8)));
+        } catch (Exception failure) {
+            throw new IllegalStateException("unable to hash gateway credential", failure);
+        }
     }
 
     private static String canonical(String service, String method, String path,

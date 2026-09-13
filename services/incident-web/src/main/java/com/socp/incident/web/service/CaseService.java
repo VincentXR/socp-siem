@@ -10,6 +10,7 @@ import com.socp.incident.web.persistence.entity.AlarmCaseLinkEntity;
 import com.socp.incident.web.persistence.repository.AlarmCaseLinkRepository;
 import com.socp.incident.web.persistence.entity.CaseTimelineEntity;
 import com.socp.platform.tenant.context.TenantContext;
+import org.springframework.data.domain.Page;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -129,6 +130,10 @@ public class CaseService {
         return store.list();
     }
 
+    public Page<Case> page(int page, int size, String query, String status) {
+        return store.page(page, size, query, status);
+    }
+
     /** 手动创建案件：不关联告警，后续可在调查过程中补充时间线和关联信息。 */
     public Case create(String title, String entity, String severity, String assignee) {
         Case created = Case.create(title.trim(), entity == null ? "" : entity.trim(),
@@ -181,11 +186,11 @@ public class CaseService {
 
     public Map<String, Object> stats() {
         Map<String, Object> out = new LinkedHashMap<>();
-        List<Case> all = store.list();
-        long open = all.stream().filter(c -> "OPEN".equals(c.status()) || "INVESTIGATING".equals(c.status())).count();
-        out.put("total", all.size());
+        long total = store.count();
+        long open = store.countByStatusIn(List.of("OPEN", "INVESTIGATING"));
+        out.put("total", total);
         out.put("open", open);
-        out.put("resolved", all.size() - open);
+        out.put("resolved", total - open);
         return out;
     }
 

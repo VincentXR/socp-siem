@@ -189,6 +189,37 @@ class ReportServiceTest {
         assertThat(trend.counts()).hasSize(7);
     }
 
+    @Test
+    void treatsOversizedClickHouseResponsesAsUnavailable() throws Exception {
+        AlertClient alerts = mock(AlertClient.class);
+        given(alerts.stats("today")).willReturn(new ServiceCall(
+                SocpService.ALERT, "http://alert", true, 200,
+                "{\"data\":{\"total\":1,\"bySeverity\":{\"HIGH\":1}}}",
+                null, 1, false, 1));
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", exchange -> {
+            byte[] response = "this response is deliberately larger than the configured limit"
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, response.length);
+            try (var output = exchange.getResponseBody()) {
+                output.write(response);
+            }
+        });
+        server.start();
+        try {
+            ClickHouseProperties properties = clickHouseProperties(server);
+            properties.setResponseBodyLimitBytes(8);
+
+            ReportSummary report = new ReportService(alerts, properties).dailyReport();
+
+            assertThat(report.source()).isEqualTo("alert-web");
+            assertThat(report.degraded()).isTrue();
+            assertThat(report.total()).isEqualTo(1);
+        } finally {
+            server.stop(0);
+        }
+    }
+
     private static ReportService serviceWithUnavailableClickHouse(AlertClient alerts) {
         return new ReportService(alerts, serviceProperties("http://127.0.0.1:1"));
     }

@@ -174,6 +174,49 @@ def main() -> int:
         errors.append("missing infra/docker-compose.prod.yml")
     else:
         compose = COMPOSE_PROD.read_text(encoding="utf-8")
+        for name in ("SOCP_PG_RUNTIME_USER", "SOCP_PG_RUNTIME_PASSWORD",
+                     "SOCP_PG_MIGRATION_USER", "SOCP_PG_MIGRATION_PASSWORD"):
+            if not re.search(rf"\$\{{{name}:\?", compose):
+                errors.append(f"production Compose must require {name}")
+        for path in (ROOT / "infra/init-sql/pg/00_roles.sh",
+                     ROOT / "infra/init-sql/pg/02_runtime_grants.sh",
+                     ROOT / "build/apply-postgres-roles.sh"):
+            if not path.is_file():
+                errors.append(f"missing PostgreSQL role contract: {path.relative_to(ROOT)}")
+        for service in ("search-config-api", "search-config-worker",
+                        "detect-web-api", "detect-web-worker", "alert-web"):
+            block = re.search(
+                rf"(?ms)^  {re.escape(service)}:\s*\n.*?(?=^  \S|\Z)",
+                compose,
+            )
+            if block is None or not re.search(
+                r"^\s+SOCP_PG_USER:\s*\$\{SOCP_PG_RUNTIME_USER:\?",
+                block.group(0),
+                re.MULTILINE,
+            ):
+                errors.append(f"production Compose must map {service} to SOCP_PG_RUNTIME_USER")
+            if block is None or not re.search(
+                r"^\s+SOCP_PG_PASSWORD:\s*\$\{SOCP_PG_RUNTIME_PASSWORD:\?",
+                block.group(0),
+                re.MULTILINE,
+            ):
+                errors.append(f"production Compose must map {service} to SOCP_PG_RUNTIME_PASSWORD")
+            for variable in ("SOCP_PG_MIGRATION_USER", "SOCP_PG_MIGRATION_PASSWORD"):
+                if block is None or not re.search(
+                    rf"^\s+{variable}:\s*\$\{{{variable}:\?",
+                    block.group(0),
+                    re.MULTILINE,
+                ):
+                    errors.append(f"production Compose must pass {variable} to {service}")
+            if block is None or not re.search(
+                r"^\s+SOCP_SECURITY_REQUIRE_GATEWAY:\s*['\"]?true['\"]?\s*$",
+                block.group(0),
+                re.MULTILINE,
+            ):
+                errors.append(f"production Compose must require gateway trust for {service}")
+        gateway_block = re.search(r"(?ms)^  api-gateway:\s*\n.*?(?=^  \S|\Z)", compose)
+        if gateway_block is None or "SOCP_SECURITY_SERVICE_SECRET" not in gateway_block.group(0):
+            errors.append("production Compose gateway must have the shared signing secret")
         for name in ("SOCP_API_GATEWAY_IMAGE", "SOCP_SEARCH_CONFIG_IMAGE",
                      "SOCP_DETECT_WEB_IMAGE", "SOCP_ALERT_WEB_IMAGE"):
             if not re.search(rf"\$\{{{name}:\?", compose):

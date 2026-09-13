@@ -4,6 +4,7 @@ import com.nimbusds.jwt.JWTClaimsSet;
 import com.socp.gateway.oidc.InMemoryOidcStateStore;
 import com.socp.gateway.oidc.OidcStateStore;
 import com.socp.gateway.security.OidcIdTokenValidator;
+import com.socp.gateway.security.BoundedBodyHandlers;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -54,6 +55,7 @@ public class OidcAuthController {
     @Value("${socp.oidc.client-id:socp-spa}") private String clientId;
     @Value("${socp.oidc.redirect-uri:}") private String redirectUri;
     @Value("${socp.oidc.frontend-url:http://localhost:5173}") private String frontendUrl;
+    @Value("${socp.oidc.response-body-limit-bytes:1048576}") private int responseBodyLimitBytes = 1_048_576;
 
     public OidcAuthController(AuthController authController,
                               OidcIdTokenValidator idTokenValidator) {
@@ -149,7 +151,8 @@ public class OidcAuthController {
                 .timeout(Duration.ofSeconds(10))
                 .POST(HttpRequest.BodyPublishers.ofString(form))
                 .build();
-        HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = http.send(request,
+                BoundedBodyHandlers.ofString(responseBodyLimitBytes));
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new IllegalStateException("OIDC token endpoint returned " + response.statusCode());
         }

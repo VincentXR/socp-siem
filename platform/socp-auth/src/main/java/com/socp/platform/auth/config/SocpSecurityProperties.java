@@ -60,6 +60,9 @@ public class SocpSecurityProperties {
     /** Shared HMAC key for signed tenant delegation between internal services. */
     private String serviceSecret;
 
+    /** In production, accept user JWTs only when the gateway supplied a proof. */
+    private boolean requireGateway;
+
     /** Maximum accepted clock skew for signed service requests. */
     private int serviceMaxSkewSeconds = 60;
 
@@ -212,6 +215,14 @@ public class SocpSecurityProperties {
 
     public void setServiceSecret(String serviceSecret) {
         this.serviceSecret = serviceSecret;
+    }
+
+    public boolean isRequireGateway() {
+        return requireGateway;
+    }
+
+    public void setRequireGateway(boolean requireGateway) {
+        this.requireGateway = requireGateway;
     }
 
     public int getServiceMaxSkewSeconds() {

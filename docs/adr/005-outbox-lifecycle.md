@@ -54,8 +54,15 @@ without the event payload. Explicitly discarded rows preserve the operator
 reason and previous failure for 30 days before cleanup; published/successful
 retention remains independent.
 
-The primary signals are `socp_ingestion_outbox_dead_count`,
-`socp_alert_outbox_dead_count`, and `socp_detection_outbox_dead_count`, plus
-their `oldest_dead_age_seconds` companions. A requeue is complete only after
-the current DEAD count falls and the relevant pending-age signal returns below
-its SLO; an HTTP 200 from the admin endpoint alone is not delivery evidence.
+The primary Prometheus gauges are emitted with the service namespace and an
+`outbox` tag. The canonical alert names are
+`socp.alert.outbox.dead.count` and
+`socp.alert.outbox.oldest.dead.age.seconds`; the canonical detection names are
+`socp.detection.outbox.dead.count` and
+`socp.detection.outbox.oldest.dead.age.seconds`. Search uses the same canonical
+dotted naming convention for its ingestion outbox, including
+`socp.ingestion.outbox.dead.count` and
+`socp.ingestion.outbox.oldest.dead.age.seconds`. A requeue is complete only
+after the current DEAD count falls and the relevant pending-age signal returns
+below its SLO; an HTTP 200 from the admin endpoint alone is not delivery
+evidence.

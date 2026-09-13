@@ -53,7 +53,7 @@ class AlarmDispositionControllerEdgeCoverageTest {
         given(disposition.addNote("a1", "operator", "enriched", "run-1:key-1")).willReturn(open());
         AlarmNoteRequest body = new AlarmNoteRequest(null, "enriched");
 
-        AlarmDispositionService.Disposition result = controller.addNote("a1", body, "run-1:key-1");
+        AlarmDispositionService.Disposition result = controller.addNote("a1", body, "run-1:key-1").data();
 
         assertThat(result.status()).isEqualTo("OPEN");
         verify(alarmService).get("a1");
@@ -64,7 +64,7 @@ class AlarmDispositionControllerEdgeCoverageTest {
         given(disposition.addNote("a1", "alice", "note", null)).willReturn(open());
         AlarmNoteRequest body = new AlarmNoteRequest("alice", "note");
 
-        AlarmDispositionService.Disposition result = controller.addNote("a1", body, null);
+        AlarmDispositionService.Disposition result = controller.addNote("a1", body, null).data();
 
         assertThat(result.status()).isEqualTo("OPEN");
         verify(alarmService).get("a1");
@@ -76,7 +76,7 @@ class AlarmDispositionControllerEdgeCoverageTest {
         assertThat(body.tag()).isEqualTo("prod");
         given(disposition.addTag("a1", "prod")).willReturn(open());
 
-        AlarmDispositionService.Disposition result = controller.addTag("a1", body);
+        AlarmDispositionService.Disposition result = controller.addTag("a1", body).data();
 
         assertThat(result.status()).isEqualTo("OPEN");
         verify(alarmService).get("a1");

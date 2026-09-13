@@ -84,7 +84,8 @@ public class ServiceTokenProvider {
                     .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(payload))
                     .build();
-            HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = http.send(request,
+                    BoundedBodyHandlers.ofString(properties.getResponseBodyLimitBytes()));
             if (response.statusCode() >= 200 && response.statusCode() < 300) {
                 String token = extractToken(response.body());
                 if (token != null) return token;

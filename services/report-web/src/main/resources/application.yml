@@ -24,6 +24,7 @@ socp:
     user: ${SOCP_CK_USER:default}
     password: ${SOCP_CK_PASSWORD:socp}
     enabled: ${SOCP_CK_ENABLED:true}
+    response-body-limit-bytes: ${SOCP_CK_RESPONSE_BODY_LIMIT_BYTES:1048576}
   minio:
     url: ${SOCP_MINIO_URL:http://localhost:9000}
     access-key: ${SOCP_MINIO_ACCESS:socp}

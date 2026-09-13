@@ -9,6 +9,10 @@ import com.socp.threat.web.domain.Ioc;
 import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Component;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.transaction.annotation.Transactional;
@@ -96,6 +100,16 @@ public class IocStore {
         for (IocEntity e : repo.findByTenantId(t)) all.add(fromEntity(e));
         if (type == null || type.isBlank()) return all;
         return all.stream().filter(i -> i.type().equalsIgnoreCase(type)).toList();
+    }
+
+    /** Reads a bounded tenant page; type and text filtering stay in the database. */
+    public Page<Ioc> page(String type, int page, int size, String query) {
+        Pageable pageable = PageRequest.of(page - 1, size,
+                Sort.by(Sort.Order.asc("type"), Sort.Order.asc("value"), Sort.Order.asc("id")));
+        String normalizedType = type == null ? "" : type.trim();
+        String normalizedQuery = query == null ? "" : query.trim();
+        return repo.searchPage(tenant(), normalizedType, normalizedQuery, pageable)
+                .map(IocStore::fromEntity);
     }
 
     public Ioc get(String id) {

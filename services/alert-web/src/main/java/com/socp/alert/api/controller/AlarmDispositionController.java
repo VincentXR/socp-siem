@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.socp.platform.auth.security.RequireRole;
 import com.socp.platform.auth.security.RequirePermission;
+import com.socp.platform.error.api.ApiResult;
 
 /**
  * 告警处置 API（工单化）：状态流转 / 分配 / 备注。
@@ -38,45 +39,45 @@ public class AlarmDispositionController {
     }
 
     @GetMapping("/disposition")
-    public AlarmDispositionService.Disposition get(@PathVariable String id) {
+    public ApiResult<AlarmDispositionService.Disposition> get(@PathVariable String id) {
         alarmService.get(id); // 校验存在
-        return disp.get(id);
+        return ApiResult.ok(disp.get(id));
     }
 
     @RequireRole({"admin", "analyst"})
     @RequirePermission("alarm:triage")
     @PutMapping("/status")
-    public AlarmDispositionService.Disposition setStatus(@PathVariable String id, @Valid @RequestBody AlarmStatusRequest body) {
+    public ApiResult<AlarmDispositionService.Disposition> setStatus(@PathVariable String id, @Valid @RequestBody AlarmStatusRequest body) {
         alarmService.get(id);
-        return disp.setStatus(id, body.status());
+        return ApiResult.ok(disp.setStatus(id, body.status()));
     }
 
     @RequireRole({"admin", "analyst"})
     @RequirePermission("alarm:triage")
     @PostMapping("/assign")
-    public AlarmDispositionService.Disposition assign(@PathVariable String id, @Valid @RequestBody AlarmAssignmentRequest body) {
+    public ApiResult<AlarmDispositionService.Disposition> assign(@PathVariable String id, @Valid @RequestBody AlarmAssignmentRequest body) {
         alarmService.get(id);
         String assignee = body.assignee();
         if (assignee == null || assignee.isBlank()) throw ApiException.badRequest("assignee 必填");
-        return disp.assign(id, assignee);
+        return ApiResult.ok(disp.assign(id, assignee));
     }
 
     @RequireRole({"admin", "analyst"})
     @RequirePermission("alarm:triage")
     @PostMapping("/notes")
-    public AlarmDispositionService.Disposition addNote(@PathVariable String id, @Valid @RequestBody AlarmNoteRequest body,
+    public ApiResult<AlarmDispositionService.Disposition> addNote(@PathVariable String id, @Valid @RequestBody AlarmNoteRequest body,
                                                        @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
         alarmService.get(id);
         String author = body.author() == null || body.author().isBlank() ? "operator" : body.author();
-        return disp.addNote(id, author, body.content(), idempotencyKey);
+        return ApiResult.ok(disp.addNote(id, author, body.content(), idempotencyKey));
     }
 
     @RequireRole({"admin", "analyst"})
     @RequirePermission("alarm:triage")
     @PostMapping("/tags")
-    public AlarmDispositionService.Disposition addTag(@PathVariable String id,
+    public ApiResult<AlarmDispositionService.Disposition> addTag(@PathVariable String id,
                                                        @Valid @RequestBody AlarmTagRequest body) {
         alarmService.get(id);
-        return disp.addTag(id, body.tag());
+        return ApiResult.ok(disp.addTag(id, body.tag()));
     }
 }

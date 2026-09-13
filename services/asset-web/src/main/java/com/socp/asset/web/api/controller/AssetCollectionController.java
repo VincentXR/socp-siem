@@ -22,6 +22,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 import com.socp.platform.error.api.ApiResult;
 import com.socp.platform.error.api.PageResponse;
+import org.springframework.data.domain.Page;
 import jakarta.validation.Valid;
 
 import java.time.Instant;
@@ -83,23 +84,27 @@ public class AssetCollectionController {
         return ApiResult.ok(Map.of(
                 "accepted", true,
                 "assetId", saved.id(),
-                "total", store.list().size(),
+                "total", store.count(),
                 "forwarded", forward.ok()));
     }
 
     /** 已采集资产列表：租户级分页（page 从 1 起，size 上限 socp.web.list-max-size）。 */
     @GetMapping({"/collected", "/discovered"})
     public ApiResult<PageResponse<Asset>> collected(@RequestParam(defaultValue = "1") int page,
-                                                    @RequestParam(defaultValue = "500") int size) {
+                                                    @RequestParam(defaultValue = "500") int size,
+                                                    @RequestParam(defaultValue = "") String q) {
         requireValidRange(page, size);
-        List<Asset> all = store.list();
-        int from = Math.min((page - 1) * size, all.size());
-        int to = Math.min(from + size, all.size());
-        return ApiResult.ok(PageResponse.of(all.subList(from, to), all.size(), page, size));
+        String normalized = q == null ? "" : q.trim();
+        if (normalized.length() > 128) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "q length must not exceed 128 characters");
+        }
+        Page<Asset> result = store.page(page, size, normalized);
+        return ApiResult.ok(PageResponse.of(result.getContent(), result.getTotalElements(),
+                result.getNumber() + 1, result.getSize(), result.getTotalPages()));
     }
 
     private void requireValidRange(int page, int size) {
-        if (page < 1 || size < 0 || size > maxListSize) {
+        if (page < 1 || size < 1 || size > maxListSize) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "分页参数非法：page 从 1 起，size 上限 " + maxListSize);
         }
     }

@@ -58,7 +58,7 @@ class EndpointCollectionControllerTest {
         Map<String, Object> event = Map.of(
                 "eventId", "event-1", "tenantId", "tenant-a", "hostname", "web-01");
         given(events.add(org.mockito.ArgumentMatchers.anyMap())).willReturn(event);
-        given(events.list()).willReturn(List.of(event));
+        given(events.count()).willReturn(1L);
         given(http.post(eq(SocpService.SEARCH), eq("/api/v1/ingest"),
                 org.mockito.ArgumentMatchers.anyString(), eq(SocpHttpClient.NDJSON), eq(5000)))
                 .willReturn(new ServiceCall(SocpService.SEARCH, "http://search", true, 202,
@@ -82,7 +82,8 @@ class EndpointCollectionControllerTest {
     @Test
     void eventsReturnsPagedEnvelopeAndRejectsInvalidRanges() throws Exception {
         Map<String, Object> event = Map.of("eventId", "event-1", "hostname", "web-01");
-        given(events.list()).willReturn(List.of(event));
+        given(events.page(1, 1)).willReturn(new org.springframework.data.domain.PageImpl<>(
+                List.of(event), org.springframework.data.domain.PageRequest.of(0, 1), 1));
 
         var result = controller.events(1, 1);
         assertThat(result.data().items()).containsExactly(event);

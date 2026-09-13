@@ -49,9 +49,11 @@ class EndpointControllerTest {
 
     @Test
     void listReturnsPagedEnvelope() throws Exception {
-        given(store.list()).willReturn(List.of(
-                Endpoint.register("web01", "10.0.0.5", "Ubuntu 22.04", "falco-0.39"),
-                Endpoint.register("web02", "10.0.0.6", "Ubuntu 22.04", "falco-0.39")));
+        given(store.page(1, 500, "")).willReturn(new org.springframework.data.domain.PageImpl<>(
+                List.of(
+                        Endpoint.register("web01", "10.0.0.5", "Ubuntu 22.04", "falco-0.39"),
+                        Endpoint.register("web02", "10.0.0.6", "Ubuntu 22.04", "falco-0.39")),
+                org.springframework.data.domain.PageRequest.of(0, 500), 2));
 
         mvc.perform(get("/api/v1/endpoints")
                         .header(HttpHeaders.AUTHORIZATION, BEARER)
@@ -123,7 +125,7 @@ class EndpointControllerTest {
     void ingestEventReturnsAcceptedRecord() throws Exception {
         Map<String, Object> event = Map.of("eventId", "event-1", "hostname", "web-01");
         given(events.add(any())).willReturn(event);
-        given(events.list()).willReturn(List.of(event));
+        given(events.count()).willReturn(1L);
 
         mvc.perform(post("/api/v1/endpoints/events")
                         .header(HttpHeaders.AUTHORIZATION, BEARER)
@@ -140,9 +142,16 @@ class EndpointControllerTest {
     void eventsAndStatsExposeEndpointData() throws Exception {
         Endpoint online = Endpoint.register("web01", "10.0.0.5", "Linux", "agent-1");
         Endpoint offline = new Endpoint("e-2", "web02", "10.0.0.6", "Linux", "agent-1", "OFFLINE", null);
-        given(store.list()).willReturn(List.of(online, offline));
+        given(store.stats()).willReturn(Map.of(
+                "total", 2L,
+                "online", 1L,
+                "byStatus", Map.of("ONLINE", 1L, "OFFLINE", 1L)));
         given(events.list()).willReturn(List.of(
                 Map.of("type", "process"), Map.of("type", "network"), Map.of("eventId", "event-3")));
+        given(events.count()).willReturn(3L);
+        given(events.page(1, 2)).willReturn(new org.springframework.data.domain.PageImpl<>(
+                List.of(Map.of("type", "process"), Map.of("type", "network")),
+                org.springframework.data.domain.PageRequest.of(0, 2), 3));
 
         mvc.perform(get("/api/v1/endpoints/events").param("page", "1").param("size", "2")
                         .header(HttpHeaders.AUTHORIZATION, BEARER)

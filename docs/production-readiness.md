@@ -17,13 +17,32 @@ dependencies and records the evidence listed below.
   Kubernetes baseline). Do not add a Secret manifest containing real values to
   Git.
 
-The reference deployments expect the secret keys `SOCP_SECURITY_SERVICE_SECRET`,
+The application pods expect `SOCP_PG_USER` and `SOCP_PG_PASSWORD` to contain
+the restricted runtime role, never the PostgreSQL bootstrap account. The
+Compose production overlay maps those values from
+`SOCP_PG_RUNTIME_USER`/`SOCP_PG_RUNTIME_PASSWORD`; Flyway uses the separate
+`SOCP_PG_MIGRATION_USER`/`SOCP_PG_MIGRATION_PASSWORD` account. The remaining
+reference-deployment secret keys are `SOCP_SECURITY_SERVICE_SECRET`,
 `SOCP_SECURITY_METRICS_TOKEN`, `SOCP_SECURITY_ISSUER_URI`,
-`SOCP_SECURITY_JWK_SET_URI`, `SOCP_LOGIN_SECRET`, `SOCP_PG_USER`,
-`SOCP_PG_PASSWORD`, `SOCP_OPENSEARCH_USERNAME`, `SOCP_OPENSEARCH_PASSWORD`,
-`SOCP_CK_USER`, `SOCP_CK_PASSWORD`, `SOCP_COLLECTOR_CREDENTIALS`,
-`SOCP_INGEST_TOKEN`, and `SOCP_VECTOR_TOKEN` where the corresponding service
-uses them. Secret keys are intentionally not populated in Git.
+`SOCP_SECURITY_JWK_SET_URI`, `SOCP_LOGIN_SECRET`, `SOCP_OPENSEARCH_USERNAME`,
+`SOCP_OPENSEARCH_PASSWORD`, `SOCP_CK_USER`, `SOCP_CK_PASSWORD`,
+`SOCP_COLLECTOR_CREDENTIALS`, `SOCP_INGEST_TOKEN`, and `SOCP_VECTOR_TOKEN`
+where the corresponding service uses them. Secret keys are intentionally not
+populated in Git.
+
+For local Compose, `SOCP_PG_BOOTSTRAP_PASSWORD` is the administrator password
+used only by PostgreSQL initialization. If it is omitted, the legacy
+`SOCP_PG_PASSWORD` value is used as the local fallback; production must set
+all four explicit role variables and must not reuse the bootstrap secret.
+
+In production, user JWTs are trusted by business services only when the API
+Gateway adds a short-lived, nonce-protected HMAC proof bound to the original
+HTTP method, path, tenant, and token digest. Set the same
+`SOCP_SECURITY_SERVICE_SECRET` on the Gateway and every protected service;
+`SOCP_SECURITY_REQUIRE_GATEWAY=true` is enabled by the production Compose and
+Kubernetes baselines. Internal service-token calls remain separately signed,
+and direct user-JWT calls to a business service are rejected when the proof is
+missing, expired, or replayed.
 
 ## Kubernetes rollout
 

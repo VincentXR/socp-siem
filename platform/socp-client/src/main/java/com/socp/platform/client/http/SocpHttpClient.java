@@ -248,8 +248,7 @@ public class SocpHttpClient {
 
     /** 响应体读取：强制字节上限（socp.client.response-body-limit-bytes，<=0 表示不限制）。 */
     private HttpResponse.BodyHandler<String> stringBodyHandler() {
-        int limit = props.getResponseBodyLimitBytes();
-        return limit > 0 ? new BoundedStringBodyHandler(limit) : HttpResponse.BodyHandlers.ofString();
+        return BoundedBodyHandlers.ofString(props.getResponseBodyLimitBytes());
     }
 
     private static boolean isResponseBodyTooLarge(Throwable failure) {

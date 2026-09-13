@@ -67,6 +67,17 @@ class HttpLlmChatClientTest {
         assertThat(new HttpLlmChatClient(properties).chat("question")).isEmpty();
     }
 
+    @Test
+    void rejectsAnEndpointThatIsNotAllowlistedBeforeConnecting() {
+        LlmProperties properties = new LlmProperties();
+        properties.setEnabled(true);
+        properties.setBaseUrl("http://localhost:1");
+        properties.setAllowedHosts(List.of("another-host.invalid"));
+        properties.setHttpsOnly(false);
+
+        assertThat(new HttpLlmChatClient(properties).chat("question")).isEmpty();
+    }
+
     private static void read(HttpExchange exchange) throws IOException {
         try (var input = exchange.getRequestBody()) {
             input.readAllBytes();

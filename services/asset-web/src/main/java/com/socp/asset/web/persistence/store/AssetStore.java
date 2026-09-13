@@ -7,10 +7,16 @@ import com.socp.asset.web.domain.Asset;
 import com.socp.platform.tenant.context.TenantContext;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -53,6 +59,32 @@ public class AssetStore {
 
     public List<Asset> list() {
         return repo.findByTenantId(tenant()).stream().map(AssetStore::fromEntity).toList();
+    }
+
+    /** Reads one bounded tenant page directly from the database. */
+    public Page<Asset> page(int page, int size, String query) {
+        Pageable pageable = PageRequest.of(page - 1, size,
+                Sort.by(Sort.Order.asc("name"), Sort.Order.asc("id")));
+        String normalized = query == null ? "" : query.trim();
+        Page<AssetEntity> result = normalized.isEmpty()
+                ? repo.findByTenantId(tenant(), pageable)
+                : repo.searchByTenantId(tenant(), normalized, pageable);
+        return result.map(AssetStore::fromEntity);
+    }
+
+    public long count() {
+        return repo.countByTenantId(tenant());
+    }
+
+    /** Computes dimensions in the database instead of materializing the tenant inventory. */
+    public Map<String, Object> stats() {
+        String tenant = tenant();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("total", repo.countByTenantId(tenant));
+        result.put("byType", aggregate(repo.countByTenantIdGroupByType(tenant)));
+        result.put("byCriticality", aggregate(repo.countByTenantIdGroupByCriticality(tenant)));
+        result.put("byOwner", aggregate(repo.countByTenantIdGroupByOwner(tenant)));
+        return result;
     }
 
     public Asset save(Asset a) {
@@ -107,5 +139,19 @@ public class AssetStore {
         e.setCreatedAt(a.createdAt() == null ? Instant.now() : a.createdAt());
         e.setTenantId(tenant);
         return e;
+    }
+
+    private static Map<String, Long> aggregate(List<Object[]> rows) {
+        Map<String, Long> result = new LinkedHashMap<>();
+        if (rows == null) return result;
+        for (Object[] row : rows) {
+            if (row == null || row.length < 2 || !(row[1] instanceof Number count)) continue;
+            result.merge(bucket(row[0] == null ? null : String.valueOf(row[0])), count.longValue(), Long::sum);
+        }
+        return result;
+    }
+
+    private static String bucket(String value) {
+        return value == null || value.isBlank() ? "UNKNOWN" : value.trim();
     }
 }

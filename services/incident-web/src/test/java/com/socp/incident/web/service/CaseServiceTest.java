@@ -11,6 +11,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.Map;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -99,6 +100,19 @@ class CaseServiceTest {
         assertEquals("OPEN", created.status());
         assertEquals("analyst", created.assignee());
         verify(store).save(any(Case.class));
+    }
+
+    @Test
+    void computesStatsWithDatabaseCounts() {
+        given(store.count()).willReturn(5L);
+        given(store.countByStatusIn(List.of("OPEN", "INVESTIGATING"))).willReturn(2L);
+        CaseService service = new CaseService(store, alarmLinks);
+
+        Map<String, Object> stats = service.stats();
+
+        assertEquals(5L, stats.get("total"));
+        assertEquals(2L, stats.get("open"));
+        assertEquals(3L, stats.get("resolved"));
     }
 
     private static Map<String, Object> alarm(String id) {

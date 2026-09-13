@@ -10,6 +10,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -46,6 +47,11 @@ class EndpointStoreTest {
             String tenant = invocation.getArgument(0);
             return rows.values().stream().filter(row -> tenant.equals(row.getTenantId())).toList();
         });
+        when(repo.countByTenantId(anyString())).thenAnswer(invocation -> rows.values().stream()
+                .filter(row -> invocation.getArgument(0, String.class).equals(row.getTenantId())).count());
+        when(repo.countOnlineByTenantId(anyString(), any(Instant.class))).thenAnswer(invocation -> rows.values().stream()
+                .filter(row -> invocation.getArgument(0, String.class).equals(row.getTenantId())
+                        && "ONLINE".equals(row.getStatus())).count());
         when(repo.findByTenantIdAndEndpointId(anyString(), anyString())).thenAnswer(invocation -> {
             String tenant = invocation.getArgument(0);
             String endpointId = invocation.getArgument(1);
@@ -126,5 +132,16 @@ class EndpointStoreTest {
         assertTrue(store.delete(e.id()));
         assertFalse(store.delete(e.id()));
         assertEquals(3, store.list().size(), "只剩种子端点");
+    }
+
+    @Test
+    void computesHealthCountsWithoutLoadingEndpointRows() {
+        EndpointStore store = freshStore();
+
+        Map<String, Object> stats = store.stats();
+
+        assertEquals(3L, stats.get("total"));
+        assertEquals(3L, stats.get("online"));
+        assertEquals(Map.of("ONLINE", 3L, "OFFLINE", 0L), stats.get("byStatus"));
     }
 }

@@ -79,6 +79,92 @@ def main() -> int:
     runtime = topology_report()
     errors.extend(f"runtime topology: {error}" for error in runtime["errors"])
 
+    k8s_runtime = (ROOT / "deploy/k8s/base/runtime-config.yaml").read_text(encoding="utf-8")
+    if not re.search(r"^\s*SOCP_SECURITY_REQUIRE_GATEWAY:\s*[\"']?true[\"']?\s*$",
+                     k8s_runtime, re.MULTILINE):
+        errors.append("Kubernetes runtime config must require gateway trust")
+
+    role_contracts = (
+        ROOT / "infra/init-sql/pg/00_roles.sh",
+        ROOT / "infra/init-sql/pg/02_runtime_grants.sh",
+        ROOT / "build/apply-postgres-roles.sh",
+    )
+    for path in role_contracts:
+        if not path.is_file():
+            errors.append(f"missing PostgreSQL role contract: {path.relative_to(ROOT)}")
+
+    flyway_role_profiles = (
+        "services/ai-assistant/src/main/resources/application-pg.yml",
+        "services/asset-web/src/main/resources/application-pg.yml",
+        "services/attack-web/src/main/resources/application-pg.yml",
+        "services/detect-model/src/main/resources/application-pg.yml",
+        "services/detect-web/src/main/resources/application-pg.yml",
+        "services/hips-web/src/main/resources/application-pg.yml",
+        "services/notify-web/src/main/resources/application-pg.yml",
+        "services/search-config/src/main/resources/application-pg.yml",
+        "services/alert-web/src/main/resources/application-pg.yml",
+        "services/incident-web/src/main/resources/application-pg.yml",
+        "services/soc-base/src/main/resources/application-pg.yml",
+        "services/threat-web/src/main/resources/application-pg.yml",
+    )
+    for relative in flyway_role_profiles:
+        path = ROOT / relative
+        if not path.is_file():
+            errors.append(f"missing PostgreSQL Flyway profile: {relative}")
+            continue
+        profile = path.read_text(encoding="utf-8")
+        for variable in ("SOCP_PG_MIGRATION_USER", "SOCP_PG_MIGRATION_PASSWORD"):
+            if variable not in profile:
+                errors.append(f"{relative} must configure Flyway with {variable}")
+
+    outbox_adr = (ROOT / "docs/adr/005-outbox-lifecycle.md").read_text(encoding="utf-8")
+    for metric in (
+        "socp.alert.outbox.dead.count",
+        "socp.alert.outbox.oldest.dead.age.seconds",
+        "socp.detection.outbox.dead.count",
+        "socp.detection.outbox.oldest.dead.age.seconds",
+    ):
+        if metric not in outbox_adr:
+            errors.append(f"outbox metric contract missing canonical name: {metric}")
+    for legacy in ("socp_ingestion_outbox_dead_count", "socp_alert_outbox_dead_count",
+                   "socp_detection_outbox_dead_count", "oldest_dead_age_seconds"):
+        if legacy in outbox_adr:
+            errors.append(f"outbox metric contract still contains legacy name: {legacy}")
+
+    detection_service = (
+        ROOT / "services/detect-web/src/main/java/com/socp/detect/web/service/DetectEngineService.java"
+    ).read_text(encoding="utf-8")
+    detection_consumer = (
+        ROOT / "services/detect-web/src/main/java/com/socp/detect/web/engine/KafkaEventConsumer.java"
+    ).read_text(encoding="utf-8")
+    if "socp.detect.state.retention" not in detection_service:
+        errors.append("DetectEngineService must use the configured state replay retention")
+    if "socp.detect.state.retention" not in detection_consumer:
+        errors.append("KafkaEventConsumer must use the configured state replay retention")
+    if "Duration.ofHours(24)" in detection_service or "Duration.ofHours(24)" in detection_consumer:
+        errors.append("detection replay code must not hard-code a 24-hour window")
+
+    bounded_response_clients = (
+        ROOT / "platform/socp-client/src/main/java/com/socp/platform/client/http/SocpHttpClient.java",
+        ROOT / "platform/socp-client/src/main/java/com/socp/platform/client/http/ServiceTokenProvider.java",
+        ROOT / "services/ai-assistant/src/main/java/com/socp/ai/infrastructure/llm/HttpLlmChatClient.java",
+        ROOT / "services/api-gateway/src/main/java/com/socp/gateway/api/controller/OidcAuthController.java",
+        ROOT / "services/report-web/src/main/java/com/socp/report/web/service/ReportService.java",
+        ROOT / "services/threat-web/src/main/java/com/socp/threat/web/service/TaxiiClient.java",
+    )
+    for path in bounded_response_clients:
+        source = path.read_text(encoding="utf-8")
+        if re.search(r"(?<!Bounded)BodyHandlers\\.ofString", source):
+            errors.append(f"{path.relative_to(ROOT)} must use the bounded response body handler")
+
+    clickhouse = (ROOT / "infra/init-sql/clickhouse/init.sql").read_text(encoding="utf-8")
+    idempotency = (ROOT / "docs/idempotency-contract.md").read_text(encoding="utf-8")
+    reporter = (ROOT / "services/alert-web/src/main/java/com/socp/alert/service/CkReporter.java").read_text(encoding="utf-8")
+    if "row_version UInt64 DEFAULT 1" not in clickhouse or 'values.put("row_version", 1L)' not in reporter:
+        errors.append("ClickHouse alarm detail row_version contract drifted")
+    if "uniqExact(tenant_id, alarm_id)" not in idempotency:
+        errors.append("ClickHouse logical dedup contract must require uniqExact")
+
     if errors:
         print("Contract gate failed:", file=sys.stderr)
         for error in errors:

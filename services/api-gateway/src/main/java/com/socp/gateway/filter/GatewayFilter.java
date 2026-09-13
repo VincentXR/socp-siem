@@ -40,18 +40,21 @@ public class GatewayFilter implements GlobalFilter, Ordered {
     private static final Pattern W3C_TRACE_ID = Pattern.compile("(?!0{32})[0-9a-f]{32}");
     private final JwtValidator jwtValidator;
     private final Set<String> allowedOrigins;
+    private final String serviceSecret;
 
     @Autowired
     public GatewayFilter(JwtValidator jwtValidator,
                          @Value("${socp.auth.allowed-origins:http://localhost:5173,http://localhost:18092}")
-                         String allowedOrigins) {
+                         String allowedOrigins,
+                         @Value("${socp.security.service-secret:}") String serviceSecret) {
         this.jwtValidator = jwtValidator;
         this.allowedOrigins = Arrays.stream(allowedOrigins.split(","))
                 .map(String::trim).filter(value -> !value.isBlank()).collect(Collectors.toUnmodifiableSet());
+        this.serviceSecret = serviceSecret == null ? "" : serviceSecret.trim();
     }
 
     GatewayFilter(JwtValidator jwtValidator) {
-        this(jwtValidator, "http://localhost:5173,http://localhost:18092");
+        this(jwtValidator, "http://localhost:5173,http://localhost:18092", "");
     }
 
     @Override
@@ -141,12 +144,27 @@ public class GatewayFilter implements GlobalFilter, Ordered {
         String resolvedLocale = locale;
         ServerWebExchange trusted = exchange.mutate().request(request -> request.headers(headers -> {
             stripServiceIdentity(headers);
+            stripGatewayIdentity(headers);
             headers.set("X-Trace-Id", traceId);
             headers.set(HttpHeaders.AUTHORIZATION, resolvedAuth);
             headers.set("X-Tenant-Id", resolvedTenant);
             headers.set("X-Socp-Role", resolvedRole);
             headers.set("X-Socp-User", resolvedSubject);
             headers.set("X-Socp-Locale", resolvedLocale);
+            if (!serviceSecret.isBlank()) {
+                String gatewayPath = exchange.getRequest().getURI().getRawPath();
+                String timestamp = String.valueOf(java.time.Instant.now().getEpochSecond());
+                String nonce = UUID.randomUUID().toString();
+                String token = resolvedAuth.substring(BEARER.length()).trim();
+                headers.set(ServiceRequestSignature.GATEWAY_PATH_HEADER, gatewayPath);
+                headers.set(ServiceRequestSignature.GATEWAY_TIMESTAMP_HEADER, timestamp);
+                headers.set(ServiceRequestSignature.GATEWAY_NONCE_HEADER, nonce);
+                headers.set(ServiceRequestSignature.GATEWAY_SIGNATURE_HEADER,
+                        ServiceRequestSignature.sign(serviceSecret,
+                                ServiceRequestSignature.GATEWAY_SERVICE, method,
+                                ServiceRequestSignature.gatewayBinding(gatewayPath, token),
+                                resolvedTenant, timestamp, nonce));
+            }
         })).build();
         return chain.filter(trusted);
     }
@@ -154,6 +172,7 @@ public class GatewayFilter implements GlobalFilter, Ordered {
     private static ServerWebExchange withTrace(ServerWebExchange exchange, String traceId) {
         return exchange.mutate().request(request -> request.headers(headers -> {
             stripServiceIdentity(headers);
+            stripGatewayIdentity(headers);
             headers.set("X-Trace-Id", traceId);
             headers.remove("X-Socp-Role");
             headers.remove("X-Socp-User");
@@ -167,6 +186,13 @@ public class GatewayFilter implements GlobalFilter, Ordered {
         headers.remove(ServiceRequestSignature.TIMESTAMP_HEADER);
         headers.remove(ServiceRequestSignature.NONCE_HEADER);
         headers.remove(ServiceRequestSignature.SIGNATURE_HEADER);
+    }
+
+    private static void stripGatewayIdentity(org.springframework.http.HttpHeaders headers) {
+        headers.remove(ServiceRequestSignature.GATEWAY_PATH_HEADER);
+        headers.remove(ServiceRequestSignature.GATEWAY_TIMESTAMP_HEADER);
+        headers.remove(ServiceRequestSignature.GATEWAY_NONCE_HEADER);
+        headers.remove(ServiceRequestSignature.GATEWAY_SIGNATURE_HEADER);
     }
 
     private static boolean isUnsafe(String method) {

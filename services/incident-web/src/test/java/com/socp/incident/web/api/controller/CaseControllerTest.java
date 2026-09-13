@@ -10,6 +10,8 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
 
 import java.util.List;
 import java.util.Map;
@@ -80,7 +82,8 @@ class CaseControllerTest {
     @Test
     void listReturnsPagedEnvelope() throws Exception {
         Case created = Case.create("SSH investigation", "203.0.113.10", "HIGH", "analyst");
-        given(service.list()).willReturn(List.of(created));
+        given(service.page(1, 500, "", ""))
+                .willReturn(new PageImpl<>(List.of(created), PageRequest.of(0, 500), 1));
 
         mvc.perform(get("/api/v1/incidents")
                         .header("Authorization", BEARER)
@@ -96,12 +99,31 @@ class CaseControllerTest {
     }
 
     @Test
+    void listRejectsZeroSize() throws Exception {
+        mvc.perform(get("/api/v1/incidents")
+                        .header("Authorization", BEARER)
+                        .header("X-Role", "analyst")
+                        .param("page", "1")
+                        .param("size", "0"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
     void listRejectsSizeAboveConfiguredLimit() throws Exception {
         mvc.perform(get("/api/v1/incidents")
                         .header("Authorization", BEARER)
                         .header("X-Role", "analyst")
                         .param("page", "1")
                         .param("size", "501"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void listRejectsAnUnboundedSearchQuery() throws Exception {
+        mvc.perform(get("/api/v1/incidents")
+                        .header("Authorization", BEARER)
+                        .header("X-Role", "analyst")
+                        .param("q", "x".repeat(129)))
                 .andExpect(status().isBadRequest());
     }
 

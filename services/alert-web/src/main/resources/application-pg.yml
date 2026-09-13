@@ -1,0 +1,4 @@
+spring:
+  flyway:
+    user: ${SOCP_PG_MIGRATION_USER:${SOCP_PG_USER:socp}}
+    password: ${SOCP_PG_MIGRATION_PASSWORD:${SOCP_PG_PASSWORD:socp}}

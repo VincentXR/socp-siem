@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -89,5 +90,23 @@ class AssetStoreTest {
         assertNotNull(a.createdAt());
         assertEquals("db-slave", a.name());
         assertEquals("HIGH", a.criticality());
+    }
+
+    @Test
+    void computesStatsWithDatabaseAggregates() {
+        when(repo.countByTenantId("default")).thenReturn(3L);
+        when(repo.countByTenantIdGroupByType("default")).thenReturn(List.<Object[]>of(
+                new Object[]{"SERVER", 2L}, new Object[]{null, 1L}));
+        when(repo.countByTenantIdGroupByCriticality("default")).thenReturn(List.<Object[]>of(
+                new Object[]{"HIGH", 3L}));
+        when(repo.countByTenantIdGroupByOwner("default")).thenReturn(List.<Object[]>of(
+                new Object[]{"sec", 2L}, new Object[]{" ", 1L}));
+
+        Map<String, Object> stats = store.stats();
+
+        assertEquals(3L, stats.get("total"));
+        assertEquals(Map.of("SERVER", 2L, "UNKNOWN", 1L), stats.get("byType"));
+        assertEquals(Map.of("HIGH", 3L), stats.get("byCriticality"));
+        assertEquals(Map.of("sec", 2L, "UNKNOWN", 1L), stats.get("byOwner"));
     }
 }

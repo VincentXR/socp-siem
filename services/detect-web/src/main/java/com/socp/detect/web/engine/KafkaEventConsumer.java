@@ -96,6 +96,9 @@ public class KafkaEventConsumer {
     @Value("${socp.detect.backpressure.partition-max-bytes:16777216}")
     private long partitionMaxPendingBytes = 16L * 1024 * 1024;
 
+    @Value("${socp.detect.state.retention}")
+    private Duration replayWindow;
+
     @org.springframework.beans.factory.annotation.Autowired
     public KafkaEventConsumer(DetectEngineService engine, DetectionStateStore stateStore,
                               DetectionPerformanceMetrics performanceMetrics) {
@@ -400,7 +403,7 @@ public class KafkaEventConsumer {
 
     private void replayPending(Set<Integer> partitions) {
         List<PendingDetectionEvent> pending = stateStore.pendingRecordsForPartitions(
-                partitions, Duration.ofHours(24));
+                partitions, configuredReplayWindow());
         for (PendingDetectionEvent row : pending) {
             if (row == null || row.event() == null || row.partition() == null) continue;
             dispatchOrDefer(null, new TopicPartition(topic, row.partition()),
@@ -409,6 +412,11 @@ public class KafkaEventConsumer {
         if (!pending.isEmpty()) {
             log.info("Queued pending Detection journal rows for replay count={}", pending.size());
         }
+    }
+
+    /** Compatibility constructors do not have Spring property injection. */
+    private Duration configuredReplayWindow() {
+        return replayWindow == null ? Duration.ZERO : replayWindow;
     }
 
     private void processWithRetry(org.apache.kafka.clients.consumer.ConsumerRecord<String, String> record,

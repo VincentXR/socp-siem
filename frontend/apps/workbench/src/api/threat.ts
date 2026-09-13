@@ -1,8 +1,9 @@
 import { del, get, patch, post, put, type ApiRequestOptions } from './core'
-import type { Ioc } from './models'
+import type { Ioc, Paged } from './models'
 import { withQuery } from '../lib/query'
 
-export const listIocs = (type?: string, options?: ApiRequestOptions) => get<Ioc[]>(withQuery('/threat-web/api/v1/iocs', { type }), options)
+export const listIocs = (type?: string, page = 1, size = 10, q?: string, options?: ApiRequestOptions) =>
+  get<Paged<Ioc>>(withQuery('/threat-web/api/v1/iocs', { type, page, size, q }), options)
 export type IocInput = { type: string; value: string; severity?: string; source?: string; description?: string; tags?: string[] }
 export const createIoc = (i: IocInput) => post<Ioc>('/threat-web/api/v1/iocs', i)
 export const updateIoc = (id: string, i: IocInput) => put<Ioc>(`/threat-web/api/v1/iocs/${encodeURIComponent(id)}`, i)

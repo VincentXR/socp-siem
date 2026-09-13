@@ -64,7 +64,11 @@ public final class PinnedDnsResolverProvider extends InetAddressResolverProvider
 
     @Override
     public InetAddressResolver get(Configuration configuration) {
-        InetAddressResolver fallback = configuration.builtinResolver();
+        return resolver(configuration.builtinResolver());
+    }
+
+    /** Package-private seam keeps resolver behavior deterministic in unit tests. */
+    static InetAddressResolver resolver(InetAddressResolver fallback) {
         return new InetAddressResolver() {
             @Override
             public Stream<InetAddress> lookupByName(String host, LookupPolicy lookupPolicy)

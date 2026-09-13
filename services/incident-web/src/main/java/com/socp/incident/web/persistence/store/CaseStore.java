@@ -14,6 +14,8 @@ import com.socp.platform.tenant.context.TenantContext;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -70,6 +72,25 @@ public class CaseStore {
         for (CaseEntity entity : repo.findByTenantId(tenant)) all.add(fromEntity(entity));
         all.sort((a, b) -> b.updatedAt().compareTo(a.updatedAt()));
         return all;
+    }
+
+    /** Reads one bounded tenant page without loading each case timeline. */
+    @Transactional(readOnly = true)
+    public Page<Case> page(int page, int size, String query, String status) {
+        Pageable pageable = PageRequest.of(page - 1, size,
+                Sort.by(Sort.Order.desc("updatedAt"), Sort.Order.asc("id")));
+        String normalizedQuery = query == null ? "" : query.trim();
+        String normalizedStatus = status == null ? "" : status.trim();
+        return repo.searchByTenantId(tenant(), normalizedQuery, normalizedStatus, pageable)
+                .map(entity -> fromEntity(entity, false));
+    }
+
+    public long count() {
+        return repo.countByTenantId(tenant());
+    }
+
+    public long countByStatusIn(List<String> statuses) {
+        return repo.countByTenantIdAndStatusIn(tenant(), statuses);
     }
 
     public Case get(String id) {
@@ -142,15 +163,22 @@ public class CaseStore {
     }
 
     private Case fromEntity(CaseEntity entity) {
+        return fromEntity(entity, true);
+    }
+
+    private Case fromEntity(CaseEntity entity, boolean includeTimeline) {
         List<String> ruleIds = readList(entity.getRuleIdsJson(), new TypeReference<>() { });
         List<String> alarmIds = readList(entity.getAlarmIdsJson(), new TypeReference<>() { });
-        List<TimelineEvent> timeline = timelineRepo == null ? null : timelineRepo
-                .findByTenantIdAndCaseIdOrderByTsAsc(entity.getTenantId(), entity.getId()).stream()
-                .limit(500)
-                .map(CaseStore::fromTimelineEntity)
-                .toList();
-        if (timeline == null || timeline.isEmpty()) {
-            timeline = readList(entity.getTimelineJson(), new TypeReference<>() { });
+        List<TimelineEvent> timeline = List.of();
+        if (includeTimeline) {
+            timeline = timelineRepo == null ? null : timelineRepo
+                    .findByTenantIdAndCaseIdOrderByTsAsc(entity.getTenantId(), entity.getId()).stream()
+                    .limit(500)
+                    .map(CaseStore::fromTimelineEntity)
+                    .toList();
+            if (timeline == null || timeline.isEmpty()) {
+                timeline = readList(entity.getTimelineJson(), new TypeReference<>() { });
+            }
         }
         return new Case(entity.getId(), entity.getCaseNo(), entity.getTitle(), entity.getEntity(),
                 entity.getSeverity(), entity.getStatus(),

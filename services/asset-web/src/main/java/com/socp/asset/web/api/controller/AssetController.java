@@ -14,11 +14,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.data.domain.Page;
 
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 import com.socp.platform.auth.security.RequireRole;
 import com.socp.platform.audit.api.AuditOperation;
 import com.socp.platform.error.api.ApiResult;
@@ -48,12 +47,12 @@ public class AssetController {
     @RequireRole({"admin", "analyst"})
     @GetMapping
     public ApiResult<PageResponse<Asset>> list(@RequestParam(defaultValue = "1") int page,
-                                               @RequestParam(defaultValue = "500") int size) {
+                                               @RequestParam(defaultValue = "500") int size,
+                                               @RequestParam(defaultValue = "") String q) {
         requireValidRange(page, size);
-        List<Asset> all = store.list();
-        int from = Math.min((page - 1) * size, all.size());
-        int to = Math.min(from + size, all.size());
-        return ApiResult.ok(PageResponse.of(all.subList(from, to), all.size(), page, size));
+        Page<Asset> result = store.page(page, size, normalizeQuery(q));
+        return ApiResult.ok(PageResponse.of(result.getContent(), result.getTotalElements(),
+                result.getNumber() + 1, result.getSize(), result.getTotalPages()));
     }
 
     @RequireRole({"admin", "analyst"})
@@ -101,19 +100,13 @@ public class AssetController {
         String owner = valueOr(request.owner(), "collect");
         String criticality = valueOr(request.criticality(), "HIGH");
         Asset saved = store.upsertByIp(Asset.create(name, type, ip, os, owner, criticality));
-        return ApiResult.ok(Map.of("accepted", true, "assetId", saved.id(), "total", store.list().size()));
+        return ApiResult.ok(Map.of("accepted", true, "assetId", saved.id(), "total", store.count()));
     }
 
     /** 资产统计：按类型/关键性/负责人分布。 */
     @GetMapping("/stats")
     public ApiResult<Map<String, Object>> stats() {
-        List<Asset> all = store.list();
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("total", all.size());
-        out.put("byType", countBy(all, Asset::type));
-        out.put("byCriticality", countBy(all, Asset::criticality));
-        out.put("byOwner", countBy(all, Asset::owner));
-        return ApiResult.ok(out);
+        return ApiResult.ok(store.stats());
     }
 
     @RequireRole({"admin", "analyst"})
@@ -123,18 +116,17 @@ public class AssetController {
     }
 
     private void requireValidRange(int page, int size) {
-        if (page < 1 || size < 0 || size > maxListSize) {
+        if (page < 1 || size < 1 || size > maxListSize) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "分页参数非法：page 从 1 起，size 上限 " + maxListSize);
         }
     }
 
-    private static Map<String, Object> countBy(List<Asset> all, java.util.function.Function<Asset, String> f) {
-        return all.stream().collect(Collectors.groupingBy(asset -> bucket(f.apply(asset)), Collectors.counting()))
-                .entrySet().stream().collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (a, b) -> a, LinkedHashMap::new));
-    }
-
-    private static String bucket(String value) {
-        return value == null || value.isBlank() ? "UNKNOWN" : value.trim();
+    private static String normalizeQuery(String query) {
+        String normalized = query == null ? "" : query.trim();
+        if (normalized.length() > 128) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "q length must not exceed 128 characters");
+        }
+        return normalized;
     }
 
     private static boolean blank(String value) {

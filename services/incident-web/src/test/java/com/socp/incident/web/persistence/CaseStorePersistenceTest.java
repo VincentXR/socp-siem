@@ -14,6 +14,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -44,6 +45,10 @@ class CaseStorePersistenceTest {
         assertThat(store.list()).extracting(Case::id).containsExactly(tenantACase.id());
         assertThat(store.get(tenantACase.id())).isNotNull();
         assertThat(store.openCaseId("host-1")).isEqualTo(tenantACase.id());
+        assertThat(store.count()).isEqualTo(1L);
+        assertThat(store.countByStatusIn(List.of("OPEN", "INVESTIGATING"))).isEqualTo(1L);
+        assertThat(store.page(1, 10, "suspicious", "OPEN").getContent())
+                .extracting(Case::id).containsExactly(tenantACase.id());
 
         TenantContext.set("tenant-b");
         assertThat(store.list()).isEmpty();

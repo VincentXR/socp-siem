@@ -63,8 +63,15 @@ services:
     container_name: socp-postgres
     environment:
       POSTGRES_USER: socp
-      POSTGRES_PASSWORD: ${SOCP_PG_PASSWORD:-socp}
+      # Keep the bootstrap administrator separate when callers provide a
+      # restricted runtime password. Local callers that only set the legacy
+      # SOCP_PG_PASSWORD still get a working single-password setup.
+      POSTGRES_PASSWORD: ${SOCP_PG_BOOTSTRAP_PASSWORD:-${SOCP_PG_PASSWORD:-socp}}
       POSTGRES_DB: socp
+      SOCP_PG_RUNTIME_USER: ${SOCP_PG_RUNTIME_USER:-socp_runtime}
+      SOCP_PG_RUNTIME_PASSWORD: ${SOCP_PG_RUNTIME_PASSWORD:-${SOCP_PG_PASSWORD:-socp}}
+      SOCP_PG_MIGRATION_USER: ${SOCP_PG_MIGRATION_USER:-socp_migrator}
+      SOCP_PG_MIGRATION_PASSWORD: ${SOCP_PG_MIGRATION_PASSWORD:-socp-migrator-local}
     ports:
       - "5432:5432"
     volumes:
@@ -265,8 +272,8 @@ services:
     environment:
       DB: postgres12
       DB_PORT: 5432
-      POSTGRES_USER: socp
-      POSTGRES_PWD: ${SOCP_PG_PASSWORD:-socp}
+      POSTGRES_USER: ${SOCP_PG_MIGRATION_USER:-socp_migrator}
+      POSTGRES_PWD: ${SOCP_PG_MIGRATION_PASSWORD:-socp-migrator-local}
       POSTGRES_SEEDS: postgres
       # Temporal starts several internal services, each with its own SQL pool.
       # The image defaults (20/10) can consume ~70 of PostgreSQL's 100 local

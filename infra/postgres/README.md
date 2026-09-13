@@ -1,4 +1,32 @@
-# PostgreSQL tenant RLS
+# PostgreSQL runtime roles and tenant RLS
+
+The PostgreSQL bootstrap account (`socp`) is an administrative account for
+initialization only. The init directory creates two separate accounts:
+
+- `SOCP_PG_MIGRATION_USER` owns the application databases and runs Flyway;
+- `SOCP_PG_RUNTIME_USER` is `NOSUPERUSER NOBYPASSRLS` and receives only schema
+  usage plus table/sequence DML privileges.
+
+The base Compose file supplies local-only development defaults. The production
+overlay requires all four role/password variables and maps every PostgreSQL
+application service to the runtime account. Do not reuse the bootstrap
+password for either account.
+
+For a fresh volume, `00_roles.sh`, `01_databases.sql`, and
+`02_runtime_grants.sh` run in that order. Existing volumes do not rerun init
+files; apply the auditable role/grant step once with an administrator:
+
+```bash
+PGHOST=postgres PGUSER=socp PGDATABASE=postgres PGPASSWORD="$SOCP_PG_PASSWORD" \
+SOCP_PG_RUNTIME_USER="$SOCP_PG_RUNTIME_USER" \
+SOCP_PG_RUNTIME_PASSWORD="$SOCP_PG_RUNTIME_PASSWORD" \
+SOCP_PG_MIGRATION_USER="$SOCP_PG_MIGRATION_USER" \
+SOCP_PG_MIGRATION_PASSWORD="$SOCP_PG_MIGRATION_PASSWORD" \
+  build/apply-postgres-roles.sh
+```
+
+Run Flyway with the migration account, not the runtime account. The runtime
+account must not be granted `CREATE` on `public`, `SUPERUSER`, or `BYPASSRLS`.
 
 Run `build/apply-tenant-rls.sh` once for each application database after its
 Flyway migrations have completed. The script requires `PGHOST`, `PGUSER`,
@@ -21,7 +49,7 @@ psql "$DATABASE_URL" -c \
      where relname in ('t_alarm','outbox_event');"
 ```
 
-Use a separate database role for application traffic and reserve the owner or
-`BYPASSRLS` privilege for controlled migrations only. RLS complements the
-`TenantScopedRepository`/write guard; it is not a replacement for explicit
-tenant predicates in service queries.
+RLS complements the `TenantScopedRepository`/write guard; it is not a
+replacement for explicit tenant predicates in service queries. The production
+startup guard also rejects a PostgreSQL connection whose current role is a
+superuser or has `BYPASSRLS`.

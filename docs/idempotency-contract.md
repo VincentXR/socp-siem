@@ -18,6 +18,16 @@ ClickHouse 写入均采用至少一次传输；“没有重复副作用”必须
 
 ## 约束
 
+### ClickHouse alarm detail version semantics
+
+`alert_agg.alarm_detail` intentionally uses `ReplacingMergeTree(row_version)`
+with `row_version = 1` for every immutable alarm fact. The version is not an
+update sequence: retries of the same `(tenant_id, alarm_id)` must converge to
+the same logical fact, while physical duplicate rows may remain until a merge.
+All report and verification queries therefore use
+`uniqExact(tenant_id, alarm_id)` (or an equivalent grouped logical key); raw
+physical row counts are diagnostic only.
+
 * `OpenSearch` 保存原始事件，是 Event → OpenSearch 的幂等边界（确定性
   `_id`）；当前没有 Alert → OpenSearch 事实链路，不为对称性新增一条链路。
 * `DEAD` 不是成功，也不是静默丢弃。它必须出现在告警、指标和结构化 Chaos

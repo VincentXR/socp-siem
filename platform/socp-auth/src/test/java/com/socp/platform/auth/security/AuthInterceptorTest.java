@@ -67,6 +67,103 @@ class AuthInterceptorTest {
     }
 
     @Test
+    void productionUserJwtRequiresAValidGatewayProof() throws Exception {
+        properties.setRequireGateway(true);
+        properties.setServiceSecret("a-long-shared-secret");
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .subject("user-1").claim("role", "analyst").claim("tenant", "tenant-a").build();
+        org.mockito.BDDMockito.given(validator.isDevBypass()).willReturn(false);
+        org.mockito.BDDMockito.given(validator.validate("signed-token")).willReturn(claims);
+        org.mockito.BDDMockito.given(validator.extractTenant(claims)).willReturn("tenant-a");
+
+        MockHttpServletRequest missingProof = request("signed-token", null, "spoofed-tenant");
+        missingProof.setRequestURI("/api/v1/write");
+        ApiException missing = assertThrows(ApiException.class,
+                () -> interceptor.preHandle(missingProof, new MockHttpServletResponse(), protectedHandler()));
+        assertEquals(401, missing.getCode());
+
+        MockHttpServletRequest trusted = request("signed-token", null, "spoofed-tenant");
+        trusted.setRequestURI("/api/v1/write");
+        signGateway(trusted, "tenant-a", "gateway-nonce");
+        assertTrue(interceptor.preHandle(trusted, new MockHttpServletResponse(), protectedHandler()));
+        assertEquals("tenant-a", TenantContext.get());
+    }
+
+    @Test
+    void gatewayProofRejectsUnsafePath() throws Exception {
+        configureGatewayUser();
+        MockHttpServletRequest request = gatewayRequest("relative/path", now(), "unsafe-path", "bad");
+
+        ApiException rejected = assertThrows(ApiException.class,
+                () -> interceptor.preHandle(request, new MockHttpServletResponse(), protectedHandler()));
+
+        assertEquals(401, rejected.getCode());
+    }
+
+    @Test
+    void gatewayProofRejectsMalformedTimestamp() throws Exception {
+        configureGatewayUser();
+        MockHttpServletRequest request = gatewayRequest("/api/v1/write", "not-a-timestamp",
+                "bad-timestamp", "bad");
+
+        ApiException rejected = assertThrows(ApiException.class,
+                () -> interceptor.preHandle(request, new MockHttpServletResponse(), protectedHandler()));
+
+        assertEquals(401, rejected.getCode());
+    }
+
+    @Test
+    void gatewayProofRejectsExpiredTimestamp() throws Exception {
+        configureGatewayUser();
+        String expired = String.valueOf(Long.parseLong(now()) - properties.getServiceMaxSkewSeconds() - 1L);
+        MockHttpServletRequest request = gatewayRequest("/api/v1/write", expired, "expired", "bad");
+
+        ApiException rejected = assertThrows(ApiException.class,
+                () -> interceptor.preHandle(request, new MockHttpServletResponse(), protectedHandler()));
+
+        assertEquals(401, rejected.getCode());
+    }
+
+    @Test
+    void gatewayProofRejectsInvalidSignature() throws Exception {
+        configureGatewayUser();
+        MockHttpServletRequest request = gatewayRequest("/api/v1/write", now(), "invalid-signature", "bad");
+
+        ApiException rejected = assertThrows(ApiException.class,
+                () -> interceptor.preHandle(request, new MockHttpServletResponse(), protectedHandler()));
+
+        assertEquals(401, rejected.getCode());
+    }
+
+    @Test
+    void gatewayProofRejectsReplay() throws Exception {
+        configureGatewayUser();
+        MockHttpServletRequest request = request("signed-token", null, "tenant-a");
+        request.setRequestURI("/api/v1/write");
+        signGateway(request, "tenant-a", "gateway-replay");
+        AuthInterceptor replayInterceptor = interceptorWithNonce(ServiceNonceStore.ClaimResult.REPLAYED);
+
+        ApiException rejected = assertThrows(ApiException.class,
+                () -> replayInterceptor.preHandle(request, new MockHttpServletResponse(), protectedHandler()));
+
+        assertEquals(401, rejected.getCode());
+    }
+
+    @Test
+    void gatewayProofFailsClosedWhenReplayGuardIsUnavailable() throws Exception {
+        configureGatewayUser();
+        MockHttpServletRequest request = request("signed-token", null, "tenant-a");
+        request.setRequestURI("/api/v1/write");
+        signGateway(request, "tenant-a", "gateway-unavailable");
+        AuthInterceptor unavailableInterceptor = interceptorWithNonce(ServiceNonceStore.ClaimResult.UNAVAILABLE);
+
+        ApiException rejected = assertThrows(ApiException.class,
+                () -> unavailableInterceptor.preHandle(request, new MockHttpServletResponse(), protectedHandler()));
+
+        assertEquals(503, rejected.getCode());
+    }
+
+    @Test
     void verifiedJwtPopulatesTrustedIdentityAndGroups() throws Exception {
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
                 .subject("alice")
@@ -311,6 +408,49 @@ class AuthInterceptorTest {
         request.addHeader(ServiceRequestSignature.TIMESTAMP_HEADER, timestamp);
         request.addHeader(ServiceRequestSignature.NONCE_HEADER, nonce);
         request.addHeader(ServiceRequestSignature.SIGNATURE_HEADER, signature);
+    }
+
+    private void signGateway(MockHttpServletRequest request, String tenant, String nonce) {
+        String timestamp = String.valueOf(java.time.Instant.now().getEpochSecond());
+        String path = request.getRequestURI();
+        String signature = ServiceRequestSignature.sign(properties.getServiceSecret(),
+                ServiceRequestSignature.GATEWAY_SERVICE, request.getMethod(),
+                ServiceRequestSignature.gatewayBinding(path, "signed-token"), tenant,
+                timestamp, nonce);
+        request.addHeader(ServiceRequestSignature.GATEWAY_PATH_HEADER, path);
+        request.addHeader(ServiceRequestSignature.GATEWAY_TIMESTAMP_HEADER, timestamp);
+        request.addHeader(ServiceRequestSignature.GATEWAY_NONCE_HEADER, nonce);
+        request.addHeader(ServiceRequestSignature.GATEWAY_SIGNATURE_HEADER, signature);
+    }
+
+    private void configureGatewayUser() {
+        properties.setRequireGateway(true);
+        properties.setServiceSecret("a-long-shared-secret");
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .subject("user-1").claim("role", "analyst").claim("tenant", "tenant-a").build();
+        org.mockito.BDDMockito.given(validator.isDevBypass()).willReturn(false);
+        org.mockito.BDDMockito.given(validator.validate("signed-token")).willReturn(claims);
+        org.mockito.BDDMockito.given(validator.extractTenant(claims)).willReturn("tenant-a");
+    }
+
+    private MockHttpServletRequest gatewayRequest(String path, String timestamp,
+                                                  String nonce, String signature) {
+        MockHttpServletRequest request = request("signed-token", null, "tenant-a");
+        request.setRequestURI("/api/v1/write");
+        request.addHeader(ServiceRequestSignature.GATEWAY_PATH_HEADER, path);
+        request.addHeader(ServiceRequestSignature.GATEWAY_TIMESTAMP_HEADER, timestamp);
+        request.addHeader(ServiceRequestSignature.GATEWAY_NONCE_HEADER, nonce);
+        request.addHeader(ServiceRequestSignature.GATEWAY_SIGNATURE_HEADER, signature);
+        return request;
+    }
+
+    private AuthInterceptor interceptorWithNonce(ServiceNonceStore.ClaimResult result) {
+        return new AuthInterceptor(validator, properties, new CollectorCredentialRegistry(properties),
+                (service, nonce, ttl) -> result);
+    }
+
+    private static String now() {
+        return String.valueOf(java.time.Instant.now().getEpochSecond());
     }
 
     static class ProtectedHandler {

@@ -8,6 +8,7 @@ import com.socp.alert.service.AlarmDispositionService;
 import com.socp.alert.service.AlarmService;
 import com.socp.platform.error.exception.ApiException;
 import com.socp.platform.tenant.context.TenantContext;
+import com.socp.platform.error.api.ApiResult;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -54,7 +55,7 @@ class AlarmDispositionControllerCoverageTest {
     void getVerifiesTheAlarmExistsThenReturnsTheDisposition() {
         given(disposition.get("a1")).willReturn(open());
 
-        AlarmDispositionService.Disposition result = controller.get("a1");
+        AlarmDispositionService.Disposition result = controller.get("a1").data();
 
         assertThat(result.status()).isEqualTo("OPEN");
         verify(alarmService).get("a1");
@@ -65,7 +66,7 @@ class AlarmDispositionControllerCoverageTest {
         given(disposition.setStatus("a1", "RESOLVED")).willReturn(open());
         AlarmStatusRequest body = new AlarmStatusRequest("RESOLVED");
 
-        AlarmDispositionService.Disposition result = controller.setStatus("a1", body);
+        AlarmDispositionService.Disposition result = controller.setStatus("a1", body).data();
 
         assertThat(result.status()).isEqualTo("OPEN");
         verify(alarmService).get("a1");
@@ -76,7 +77,7 @@ class AlarmDispositionControllerCoverageTest {
         given(disposition.assign("a1", "bob")).willReturn(open());
         AlarmAssignmentRequest body = new AlarmAssignmentRequest("bob");
 
-        AlarmDispositionService.Disposition result = controller.assign("a1", body);
+        AlarmDispositionService.Disposition result = controller.assign("a1", body).data();
 
         assertThat(result.status()).isEqualTo("OPEN");
         verify(alarmService).get("a1");
@@ -100,7 +101,7 @@ class AlarmDispositionControllerCoverageTest {
         given(disposition.addNote("a1", "operator", "enriched", "run-1:key-1")).willReturn(open());
         AlarmNoteRequest body = new AlarmNoteRequest("  ", "enriched");
 
-        AlarmDispositionService.Disposition result = controller.addNote("a1", body, "run-1:key-1");
+        AlarmDispositionService.Disposition result = controller.addNote("a1", body, "run-1:key-1").data();
 
         assertThat(result.status()).isEqualTo("OPEN");
         verify(alarmService).get("a1");
@@ -111,7 +112,7 @@ class AlarmDispositionControllerCoverageTest {
         given(disposition.addNote("a1", "alice", "note", null)).willReturn(open());
         AlarmNoteRequest body = new AlarmNoteRequest("alice", "note");
 
-        AlarmDispositionService.Disposition result = controller.addNote("a1", body, null);
+        AlarmDispositionService.Disposition result = controller.addNote("a1", body, null).data();
 
         assertThat(result.status()).isEqualTo("OPEN");
         verify(alarmService).get("a1");
@@ -122,7 +123,7 @@ class AlarmDispositionControllerCoverageTest {
         given(disposition.addTag("a1", "prod")).willReturn(open());
         AlarmTagRequest body = new AlarmTagRequest("prod");
 
-        AlarmDispositionService.Disposition result = controller.addTag("a1", body);
+        AlarmDispositionService.Disposition result = controller.addTag("a1", body).data();
 
         assertThat(result.status()).isEqualTo("OPEN");
         verify(alarmService).get("a1");

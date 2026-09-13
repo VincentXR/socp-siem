@@ -44,4 +44,14 @@ class SocpSecurityPropertiesTest {
 
         assertEquals(java.util.Set.of("socp-workbench", "socp-api"), properties.resolveAudiences());
     }
+
+    @Test
+    void gatewayTrustBoundaryIsExplicitlyConfigurable() {
+        SocpSecurityProperties properties = new SocpSecurityProperties();
+
+        assertFalse(properties.isRequireGateway());
+        properties.setRequireGateway(true);
+
+        assertTrue(properties.isRequireGateway());
+    }
 }
