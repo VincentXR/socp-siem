@@ -14,6 +14,7 @@ import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -273,10 +274,18 @@ public class SoarDefinitionValidator {
             if (type == SoarNodeType.ACTION || type == SoarNodeType.JOIN || type == SoarNodeType.FOREACH) {
                 String onError = text(node, "onError");
                 if (onError.isBlank()) onError = text(node.path("config"), "onError");
-                if (!onError.isBlank() && !Set.of("FAIL_RUN", "CONTINUE", "GOTO_ERROR_PORT",
-                        "COMPENSATE_THEN_FAIL").contains(onError.toUpperCase(java.util.Locale.ROOT))) {
+                // Mirror the engine exactly: the workflow honours every value on
+                // ACTION, but FOREACH only reacts to CONTINUE (SoarWorkflowImpl:415)
+                // and JOIN has no compensation step (SoarWorkflowImpl:364-381).
+                Set<String> allowedOnError = switch (type) {
+                    case ACTION -> Set.of("FAIL_RUN", "CONTINUE", "GOTO_ERROR_PORT", "COMPENSATE_THEN_FAIL");
+                    case JOIN -> Set.of("FAIL_RUN", "CONTINUE", "GOTO_ERROR_PORT");
+                    default -> Set.of("FAIL_RUN", "CONTINUE");
+                };
+                if (!onError.isBlank() && !allowedOnError.contains(onError.toUpperCase(java.util.Locale.ROOT))) {
                     errors.add(DefinitionIssue.error("NODE_ON_ERROR_INVALID", id,
-                            path + "/onError", "onError must be FAIL_RUN, CONTINUE, GOTO_ERROR_PORT or COMPENSATE_THEN_FAIL"));
+                            path + "/onError", "onError for " + type.name() + " must be one of "
+                                    + String.join(", ", allowedOnError)));
                 }
             }
             if (type == SoarNodeType.CONDITION && text(node, "expression").isBlank()) {
@@ -577,6 +586,44 @@ public class SoarDefinitionValidator {
                         "cycles are only supported by a bounded FOREACH construct"));
             }
         }
+        // The engine executes PARALLEL branches and FOREACH bodies as child
+        // workflows (SoarWorkflowBranchExecutor.runBranches), so a human gate
+        // inside them can never receive its approval signal and the run fails
+        // (CHILD_HUMAN_GATE_UNSUPPORTED) instead of pausing. Mirror that here so
+        // publication fails with an actionable message.
+        for (Map.Entry<String, SoarNodeType> node : types.entrySet()) {
+            if (node.getValue() == SoarNodeType.PARALLEL) {
+                List<String> branchStarts = graph.getOrDefault(node.getKey(), List.of());
+                if (branchStarts.size() < 2) continue; // PARALLEL_BRANCHES_REQUIRED already reported
+                String join = commonJoin(types, graph, branchStarts);
+                if (join == null) {
+                    errors.add(DefinitionIssue.error("PARALLEL_JOIN_REQUIRED", node.getKey(), "/edges",
+                            "PARALLEL branches must converge on a JOIN before continuing"));
+                    continue;
+                }
+                for (String gate : humanGatesInside(types, graph, branchStarts, Set.of(join))) {
+                    errors.add(DefinitionIssue.error("HUMAN_GATE_IN_CHILD_WORKFLOW", gate, "/nodes",
+                            "APPROVAL/MANUAL_TASK cannot wait inside a PARALLEL branch; move it after the JOIN"));
+                }
+            }
+            if (node.getValue() == SoarNodeType.FOREACH && edges != null && edges.isArray()) {
+                List<String> bodyStarts = new ArrayList<>();
+                Set<String> doneNodes = new HashSet<>();
+                for (JsonNode edge : edges) {
+                    if (!node.getKey().equals(text(edge, "from"))) continue;
+                    String port = text(edge, "port");
+                    if (port.isBlank()) port = text(edge, "when");
+                    String to = text(edge, "to");
+                    if (to.isBlank()) continue;
+                    if ("body".equalsIgnoreCase(port) || "each".equalsIgnoreCase(port)) bodyStarts.add(to);
+                    if ("done".equalsIgnoreCase(port) || "success".equalsIgnoreCase(port)) doneNodes.add(to);
+                }
+                for (String gate : humanGatesInside(types, graph, bodyStarts, doneNodes)) {
+                    errors.add(DefinitionIssue.error("HUMAN_GATE_IN_CHILD_WORKFLOW", gate, "/nodes",
+                            "APPROVAL/MANUAL_TASK cannot wait inside a FOREACH body; move it after the loop"));
+                }
+            }
+        }
         JsonNode limits = root.path("limits");
         if (!limits.isMissingNode() && !limits.isObject()) {
             errors.add(DefinitionIssue.error("LIMITS_INVALID", null, "/limits",
@@ -721,12 +768,75 @@ public class SoarDefinitionValidator {
         return SoarManualFormValidator.safePattern(regex);
     }
 
+    /**
+     * JOIN ids every PARALLEL branch can reach before leaving its own walk —
+     * the same traversal as {@code SoarWorkflowGraphSupport.commonJoin}, which
+     * the engine runs before spawning branch workflows. An empty result is what
+     * makes the engine fail with PARALLEL_JOIN_REQUIRED.
+     */
+    private static String commonJoin(Map<String, SoarNodeType> types,
+                                     Map<String, List<String>> graph, List<String> starts) {
+        Set<String> candidates = null;
+        for (String start : starts) {
+            Set<String> reachable = new HashSet<>();
+            ArrayDeque<String> queue = new ArrayDeque<>();
+            queue.add(start);
+            while (!queue.isEmpty()) {
+                String id = queue.removeFirst();
+                if (!reachable.add(id)) continue;
+                if (types.get(id) == SoarNodeType.JOIN) continue;
+                queue.addAll(graph.getOrDefault(id, List.of()));
+            }
+            if (candidates == null) candidates = reachable;
+            else candidates.retainAll(reachable);
+        }
+        return candidates == null ? null : candidates.stream()
+                .filter(id -> types.get(id) == SoarNodeType.JOIN)
+                .findFirst()
+                .orElse(null);
+    }
+
+    /**
+     * APPROVAL/MANUAL_TASK nodes reachable from child-workflow entry points
+     * before reaching the node where the child stops. Such gates pause a child
+     * workflow whose approval signal is only ever delivered to the root run, so
+     * the engine fails them instead of waiting.
+     */
+    private static Set<String> humanGatesInside(Map<String, SoarNodeType> types,
+                                                Map<String, List<String>> graph,
+                                                List<String> starts, Set<String> stopAt) {
+        Set<String> gates = new HashSet<>();
+        for (String start : starts) {
+            Set<String> visited = new HashSet<>();
+            ArrayDeque<String> queue = new ArrayDeque<>();
+            queue.add(start);
+            while (!queue.isEmpty()) {
+                String id = queue.removeFirst();
+                if (!visited.add(id) || stopAt.contains(id)) continue;
+                SoarNodeType type = types.get(id);
+                if (type == SoarNodeType.APPROVAL || type == SoarNodeType.MANUAL_TASK) gates.add(id);
+                queue.addAll(graph.getOrDefault(id, List.of()));
+            }
+        }
+        return gates;
+    }
+
+    /**
+     * DELAY reads its duration exclusively from {@code config.durationSeconds}
+     * (SoarWorkflowImpl DELAY branch), so a missing value must fail validation
+     * instead of silently executing a zero-second delay. The top-level spelling
+     * the old validator accepted is not read by the engine and is rejected too.
+     */
     private static void validateDurationSeconds(JsonNode node, String path,
                                                 List<DefinitionIssue> errors) {
         JsonNode config = node.path("config");
         JsonNode duration = config.isObject() && config.has("durationSeconds")
-                ? config.get("durationSeconds") : node.get("durationSeconds");
-        if (duration == null) return;
+                ? config.get("durationSeconds") : null;
+        if (duration == null) {
+            errors.add(DefinitionIssue.error("DELAY_DURATION_REQUIRED", node.path("id").asText(),
+                    path + "/config/durationSeconds", "DELAY requires config.durationSeconds"));
+            return;
+        }
         if (!isLongValue(duration)) {
             errors.add(DefinitionIssue.error("DELAY_DURATION_INVALID", node.path("id").asText(),
                     path + "/config/durationSeconds", "durationSeconds must be an integer"));

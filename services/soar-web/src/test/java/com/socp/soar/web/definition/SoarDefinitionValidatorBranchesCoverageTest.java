@@ -528,25 +528,38 @@ class SoarDefinitionValidatorBranchesCoverageTest {
 
     @Test
     void rejectsNonIntegerDelayDuration() {
-        String nodes = "[" + START + ",{\"id\":\"d\",\"type\":\"DELAY\",\"durationSeconds\":\"soon\"},"
-                + END + "]";
+        String nodes = "[" + START + ",{\"id\":\"d\",\"type\":\"DELAY\","
+                + "\"config\":{\"durationSeconds\":\"soon\"}}," + END + "]";
         assertHasError(definition(nodes, "[{\"from\":\"s\",\"to\":\"d\"},{\"from\":\"d\",\"to\":\"e\"}]"),
                 "DELAY_DURATION_INVALID");
     }
 
     @Test
     void rejectsDelayDurationOutOfRange() {
-        String nodes = "[" + START + ",{\"id\":\"d\",\"type\":\"DELAY\",\"durationSeconds\":90000},"
-                + END + "]";
+        String nodes = "[" + START + ",{\"id\":\"d\",\"type\":\"DELAY\","
+                + "\"config\":{\"durationSeconds\":90000}}," + END + "]";
         assertHasError(definition(nodes, "[{\"from\":\"s\",\"to\":\"d\"},{\"from\":\"d\",\"to\":\"e\"}]"),
                 "DELAY_DURATION_INVALID");
     }
 
     @Test
-    void delayWithoutDurationIsAccepted() {
+    void rejectsDelayWithoutDuration() {
+        // The engine reads only config.durationSeconds (SoarWorkflowImpl DELAY
+        // branch): a missing value would silently execute a zero-second delay.
         String nodes = "[" + START + ",{\"id\":\"d\",\"type\":\"DELAY\"}," + END + "]";
-        String document = definition(nodes, "[{\"from\":\"s\",\"to\":\"d\"},{\"from\":\"d\",\"to\":\"e\"}]");
-        assertNoError(document, "DELAY_DURATION_INVALID");
+        assertHasError(definition(nodes, "[{\"from\":\"s\",\"to\":\"d\"},{\"from\":\"d\",\"to\":\"e\"}]"),
+                "DELAY_DURATION_REQUIRED");
+    }
+
+    @Test
+    void rejectsTopLevelDelayDuration() {
+        // The old validator accepted a top-level durationSeconds the engine
+        // never read; keep that spelling rejected so definitions cannot pass
+        // validation while delaying for zero seconds.
+        String nodes = "[" + START + ",{\"id\":\"d\",\"type\":\"DELAY\",\"durationSeconds\":60},"
+                + END + "]";
+        assertHasError(definition(nodes, "[{\"from\":\"s\",\"to\":\"d\"},{\"from\":\"d\",\"to\":\"e\"}]"),
+                "DELAY_DURATION_REQUIRED");
     }
 
     // ------------------------------------------------------- SET_VARIABLE / SUB_PLAYBOOK
@@ -693,6 +706,63 @@ class SoarDefinitionValidatorBranchesCoverageTest {
         String edges = "[{\"from\":\"s\",\"to\":\"f\"},{\"from\":\"f\",\"port\":\"loop\",\"to\":\"a\"},"
                 + "{\"from\":\"a\",\"to\":\"e\"}]";
         assertHasError(foreachGraph("", edges), "EDGE_PORT_NOT_ALLOWED");
+    }
+
+    @Test
+    void rejectsParallelBranchesWithoutAConvergingJoin() {
+        // a → e / b → e never converge on a JOIN: the engine fails the run with
+        // PARALLEL_JOIN_REQUIRED, so publication must refuse it first.
+        assertHasError(parallelGraph(""), "PARALLEL_JOIN_REQUIRED");
+    }
+
+    @Test
+    void acceptsParallelBranchesThatConvergeOnAJoin() {
+        String nodes = "[" + START + ",{\"id\":\"p\",\"type\":\"PARALLEL\"}," + ACTION + ","
+                + "{\"id\":\"b\",\"type\":\"ACTION\",\"actionRef\":\"socp.notify/send@1\"},"
+                + "{\"id\":\"j\",\"type\":\"JOIN\"}," + END + "]";
+        String edges = "[{\"from\":\"s\",\"to\":\"p\"},{\"from\":\"p\",\"to\":\"a\"},"
+                + "{\"from\":\"p\",\"to\":\"b\"},{\"from\":\"a\",\"to\":\"j\"},"
+                + "{\"from\":\"b\",\"to\":\"j\"},{\"from\":\"j\",\"to\":\"e\"}]";
+        assertThat(validator.validate(definition(nodes, edges)).valid()).isTrue();
+    }
+
+    @Test
+    void rejectsHumanGateInsideAParallelBranch() {
+        String nodes = "[" + START + ",{\"id\":\"p\",\"type\":\"PARALLEL\"}," + ACTION + ","
+                + "{\"id\":\"gate\",\"type\":\"APPROVAL\"},"
+                + "{\"id\":\"b\",\"type\":\"ACTION\",\"actionRef\":\"socp.notify/send@1\"},"
+                + "{\"id\":\"j\",\"type\":\"JOIN\"}," + END + "]";
+        String edges = "[{\"from\":\"s\",\"to\":\"p\"},{\"from\":\"p\",\"to\":\"a\"},"
+                + "{\"from\":\"p\",\"to\":\"gate\"},{\"from\":\"p\",\"to\":\"b\"},"
+                + "{\"from\":\"a\",\"to\":\"j\"},"
+                + "{\"from\":\"gate\",\"port\":\"approved\",\"to\":\"j\"},"
+                + "{\"from\":\"gate\",\"port\":\"rejected\",\"to\":\"j\"},"
+                + "{\"from\":\"b\",\"to\":\"j\"},{\"from\":\"j\",\"to\":\"e\"}]";
+        assertHasError(definition(nodes, edges), "HUMAN_GATE_IN_CHILD_WORKFLOW");
+    }
+
+    @Test
+    void rejectsHumanGateInsideAForeachBody() {
+        String nodes = "[" + START + ","
+                + "{\"id\":\"f\",\"type\":\"FOREACH\",\"config\":{\"itemsPath\":\"vars.items\",\"itemVariable\":\"vars.item\"}},"
+                + "{\"id\":\"gate\",\"type\":\"MANUAL_TASK\"},"
+                + "{\"id\":\"done\",\"type\":\"ACTION\",\"actionRef\":\"socp.notify/send@1\"}," + END + "]";
+        String edges = "[{\"from\":\"s\",\"to\":\"f\"},"
+                + "{\"from\":\"f\",\"port\":\"each\",\"to\":\"gate\"},"
+                + "{\"from\":\"f\",\"port\":\"done\",\"to\":\"done\"},"
+                + "{\"from\":\"gate\",\"to\":\"e\"},{\"from\":\"done\",\"to\":\"e\"}]";
+        assertHasError(definition(nodes, edges), "HUMAN_GATE_IN_CHILD_WORKFLOW");
+    }
+
+    @Test
+    void rejectsOnErrorValuesTheEngineIgnores() {
+        // JOIN has no compensation step (SoarWorkflowImpl:364-381) and FOREACH
+        // only reacts to CONTINUE (:415): accepting those values would publish a
+        // definition that behaves differently from its validated shape.
+        String nodes = "[" + START + ",{\"id\":\"j\",\"type\":\"JOIN\",\"onError\":\"COMPENSATE_THEN_FAIL\"},"
+                + ACTION + "," + END + "]";
+        String edges = "[{\"from\":\"s\",\"to\":\"j\"},{\"from\":\"j\",\"to\":\"a\"},{\"from\":\"a\",\"to\":\"e\"}]";
+        assertHasError(definition(nodes, edges), "NODE_ON_ERROR_INVALID");
     }
 
     @Test
