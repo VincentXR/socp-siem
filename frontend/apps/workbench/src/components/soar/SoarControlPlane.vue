@@ -56,7 +56,7 @@ import {
   type SoarManualTask,
   type SoarStats,
 } from '../../api'
-import type { FieldDef, RuleCondition } from '../../api'
+import type { FieldDef, RuleCondition, SoarPage } from '../../api'
 
 export type SoarControlPlaneSection = 'rules' | 'connections' | 'tasks' | 'operations' | 'connections-and-ops' | 'all'
 type Tab = 'rules' | 'connections' | 'tasks' | 'operations'
@@ -66,11 +66,22 @@ const props = withDefaults(defineProps<{
   hideTabs?: boolean
   section?: SoarControlPlaneSection
   canWrite?: boolean
+  /** Fine-grained capabilities mirror the controller guards. */
+  canPublish?: boolean
+  canViewConnections?: boolean
+  canManageConnections?: boolean
+  canOperate?: boolean
+  canCompleteTasks?: boolean
 }>(), {
   initialTab: 'rules',
   hideTabs: false,
   section: 'all',
   canWrite: true,
+  canPublish: true,
+  canViewConnections: true,
+  canManageConnections: true,
+  canOperate: true,
+  canCompleteTasks: true,
 })
 
 const tab = ref<Tab>(
@@ -146,9 +157,16 @@ async function load() {
   if (loading.value) return
   loading.value = true
   clearFeedback()
+  const emptyConnections: SoarPage<SoarConnection> = {
+    page: 0, size: 100, total: 0, totalPages: 0, items: [],
+  }
   const results = await Promise.allSettled([
-    listAutomationRules(0, 100), listConnections(0, 100), listActions(),
-    listManualTasksPage(true, 0, 100), listDeadDispatches(), getStats(),
+    listAutomationRules(0, 100),
+    props.canViewConnections ? listConnections(0, 100) : Promise.resolve(emptyConnections),
+    listActions(),
+    listManualTasksPage(true, 0, 100),
+    props.canOperate ? listDeadDispatches() : Promise.resolve([] as SoarDeadLetter[]),
+    getStats(),
   ])
   const [ruleResult, connectionResult, actionResult, taskResult, deadResult, statsResult] = results
   if (ruleResult.status === 'fulfilled') rules.value = ruleResult.value.items
@@ -242,7 +260,7 @@ async function createRule() {
 }
 
 async function toggleRule(rule: SoarAutomationRule) {
-  if (!props.canWrite || saving.value) return
+  if (!props.canPublish || saving.value) return
   saving.value = true
   try {
   clearFeedback()
@@ -280,7 +298,7 @@ async function testRules() {
 }
 
 async function createConnection() {
-  if (!props.canWrite || saving.value) return
+  if (!props.canManageConnections || saving.value) return
   saving.value = true
   try {
   clearFeedback()
@@ -300,7 +318,7 @@ async function createConnection() {
 }
 
 async function toggleConnection(connection: SoarConnection) {
-  if (!props.canWrite || saving.value) return
+  if (!props.canManageConnections || saving.value) return
   saving.value = true
   try {
   clearFeedback()
@@ -310,7 +328,7 @@ async function toggleConnection(connection: SoarConnection) {
 }
 
 async function testConnection(connection: SoarConnection) {
-  if (!props.canWrite || saving.value) return
+  if (!props.canManageConnections || saving.value) return
   saving.value = true
   try {
   clearFeedback()
@@ -320,7 +338,7 @@ async function testConnection(connection: SoarConnection) {
 }
 
 async function removeConnection(connection: SoarConnection) {
-  if (!props.canWrite || saving.value) return
+  if (!props.canManageConnections || saving.value) return
   saving.value = true
   try {
   if (!window.confirm(t('soar.deleteConnectionConfirm', { name: connection.name }))) return
@@ -331,7 +349,7 @@ async function removeConnection(connection: SoarConnection) {
 }
 
 async function completeTask(task: SoarManualTask) {
-  if (!props.canWrite || saving.value) return
+  if (!props.canCompleteTasks || saving.value) return
   saving.value = true
   try {
   clearFeedback()
@@ -352,7 +370,7 @@ async function completeTask(task: SoarManualTask) {
 }
 
 async function requeue(letter: SoarDeadLetter) {
-  if (!props.canWrite || saving.value) return
+  if (!props.canOperate || saving.value) return
   saving.value = true
   try {
   clearFeedback()
@@ -362,7 +380,7 @@ async function requeue(letter: SoarDeadLetter) {
 }
 
 async function discard(letter: SoarDeadLetter) {
-  if (!props.canWrite || saving.value) return
+  if (!props.canOperate || saving.value) return
   saving.value = true
   try {
   if (!window.confirm(t('soar.discardDeadLetterConfirm'))) return
@@ -422,7 +440,7 @@ function controlSubtitle(): string {
     <div v-if="errorMessage" class="soar-feedback error">{{ errorMessage }}</div>
 
     <section v-if="tab === 'rules'" class="soar-control-section">
-      <div class="soar-section-toolbar"><div><b>{{ t('soar.eventRouting') }}</b><small>{{ t('soar.eventRoutingHint') }}</small></div><div><el-button v-if="props.canWrite" size="small" @click="toggleRuleForm">{{ showRuleForm ? t('soar.closeForm') : t('soar.newRule') }}</el-button><el-button size="small" @click="showRuleTest = true">{{ t('forms.test') }}</el-button></div></div>
+      <div class="soar-section-toolbar"><div><b>{{ t('soar.eventRouting') }}</b><small>{{ t('soar.eventRoutingHint') }}</small></div><div><el-button v-if="props.canWrite" size="small" @click="toggleRuleForm">{{ showRuleForm ? t('soar.closeForm') : t('soar.newRule') }}</el-button><el-button v-if="props.canWrite" size="small" @click="showRuleTest = true">{{ t('forms.test') }}</el-button></div></div>
       <el-drawer v-if="props.canWrite" v-model="showRuleForm" :before-close="ruleGuard.beforeClose" :title="editingRule ? t('forms.edit') : t('detect.createRule')" size="min(760px, 96vw)" :close-on-click-modal="false"><div v-if="errorMessage" role="alert" class="soar-feedback error">{{ errorMessage }}</div><div class="soar-form-grid">
         <label>{{ t('common.name') }}<el-input v-model="ruleForm.name" :placeholder="t('soar.namePlaceholder')" /></label>
         <label>{{ t('soar.triggerType') }}
@@ -448,8 +466,8 @@ function controlSubtitle(): string {
         <details><summary>{{ t('forms.advanced') }}</summary><el-input type="textarea" v-model="ruleForm.suppression" :rows="3" spellcheck="false" /></details>
         <div class="soar-form-actions"><el-button v-if="props.canWrite" type="primary" size="small" :loading="saving" @click="createRule">{{ t('common.save') }}</el-button></div>
       </div></el-drawer>
-      <el-dialog v-model="showRuleTest" :title="t('forms.test')" width="720px"><div v-if="errorMessage" role="alert">{{ errorMessage }}</div><div class="soar-test-box"><el-input type="textarea" v-model="ruleEventText" :rows="3" spellcheck="false" :aria-label="t('soar.actionTestEvent')"  /><pre v-if="ruleTestResult">{{ JSON.stringify(ruleTestResult, null, 2) }}</pre></div><template #footer><el-button :loading="saving" @click="testRules">{{ t('forms.test') }}</el-button></template></el-dialog>
-      <div class="soar-table-scroll"><table><thead><tr><th>{{ t('common.name') }}</th><th>{{ t('soar.triggerType') }}</th><th>{{ t('soar.priority') }}</th><th>{{ t('soar.revision') }}</th><th>{{ t('common.status') }}</th><th>{{ t('soar.publishedVersions') }}</th><th v-if="props.canWrite">{{ t('common.actions') }}</th></tr></thead><tbody><tr v-for="rule in rules" :key="rule.id"><td><b>{{ rule.name }}</b><small>{{ rule.id }}</small></td><td>{{ rule.triggerType }}</td><td>{{ rule.priority }}</td><td>{{ rule.revision || 1 }}</td><td><el-tag size="small" :type="rule.enabled ? 'success' : 'info'">{{ statusLabel(rule.enabled ? 'ENABLED' : 'DISABLED') }}</el-tag></td><td class="mono">{{ JSON.stringify(rule.actions) }}</td><td v-if="props.canWrite" class="nowrap"><el-button link size="small" @click="toggleRule(rule)">{{ rule.enabled ? t('common.disable') : t('common.enable') }}</el-button><el-button link size="small" @click="editRule(rule)">{{ t('common.edit') }}</el-button></td></tr></tbody></table><div v-if="!rules.length" class="soar-empty">{{ t('soar.noAutomationRules') }}</div></div>
+      <el-dialog v-if="props.canWrite" v-model="showRuleTest" :title="t('forms.test')" width="720px"><div v-if="errorMessage" role="alert">{{ errorMessage }}</div><div class="soar-test-box"><el-input type="textarea" v-model="ruleEventText" :rows="3" spellcheck="false" :aria-label="t('soar.actionTestEvent')"  /><pre v-if="ruleTestResult">{{ JSON.stringify(ruleTestResult, null, 2) }}</pre></div><template #footer><el-button :loading="saving" @click="testRules">{{ t('forms.test') }}</el-button></template></el-dialog>
+      <div class="soar-table-scroll"><table><thead><tr><th>{{ t('common.name') }}</th><th>{{ t('soar.triggerType') }}</th><th>{{ t('soar.priority') }}</th><th>{{ t('soar.revision') }}</th><th>{{ t('common.status') }}</th><th>{{ t('soar.publishedVersions') }}</th><th v-if="props.canWrite || props.canPublish">{{ t('common.actions') }}</th></tr></thead><tbody><tr v-for="rule in rules" :key="rule.id"><td><b>{{ rule.name }}</b><small>{{ rule.id }}</small></td><td>{{ rule.triggerType }}</td><td>{{ rule.priority }}</td><td>{{ rule.revision || 1 }}</td><td><el-tag size="small" :type="rule.enabled ? 'success' : 'info'">{{ statusLabel(rule.enabled ? 'ENABLED' : 'DISABLED') }}</el-tag></td><td class="mono">{{ JSON.stringify(rule.actions) }}</td><td v-if="props.canWrite || props.canPublish" class="nowrap"><el-button v-if="props.canPublish" link size="small" @click="toggleRule(rule)">{{ rule.enabled ? t('common.disable') : t('common.enable') }}</el-button><el-button v-if="props.canWrite" link size="small" @click="editRule(rule)">{{ t('common.edit') }}</el-button></td></tr></tbody></table><div v-if="!rules.length" class="soar-empty">{{ t('soar.noAutomationRules') }}</div></div>
     </section>
 
     <section v-else-if="tab === 'connections'" class="soar-control-section">
@@ -478,11 +496,11 @@ function controlSubtitle(): string {
     <section v-else class="soar-control-section">
       <div class="soar-stat-grid"><div><b>{{ stats?.dispatchBacklog ?? 0 }}</b><small>{{ t('soar.dispatchBacklog') }}</small></div><div><b>{{ stats?.signalBacklog ?? 0 }}</b><small>{{ t('soar.signalBacklog') }}</small></div><div><b>{{ deadLetters.length }}</b><small>{{ t('soar.deadLetters') }}</small></div><div><b>{{ Object.values(stats?.runsByStatus || {}).reduce((sum, value) => sum + value, 0) }}</b><small>{{ t('soar.projectedRuns') }}</small></div></div>
       <div class="soar-section-toolbar"><div><b>{{ t('soar.deadLetterOperations') }}</b><small>{{ t('soar.deadLetterHint') }}</small></div></div>
-      <div class="soar-table-scroll"><table><thead><tr><th>{{ t('common.type') }}</th><th>{{ t('soar.runNode').split(' / ')[0] }}</th><th>{{ t('soar.signalKey') }}</th><th>{{ t('soar.attempts') }}</th><th>{{ t('soar.lastError') }}</th><th v-if="props.canWrite">{{ t('common.actions') }}</th></tr></thead><tbody><tr v-for="letter in deadLetters" :key="`${letter.kind}-${letter.id}`"><td>{{ letter.kind || 'DISPATCH' }}<small>{{ letter.signalType || '' }}</small></td><td class="mono">{{ letter.runId }}</td><td class="mono">{{ letter.signalKey || '-' }}</td><td>{{ letter.attempts }}</td><td>{{ letter.lastError || '-' }}</td><td v-if="props.canWrite" class="nowrap"><el-button link size="small" @click="requeue(letter)">{{ t('soar.requeue') }}</el-button><el-button link type="danger" size="small" @click="discard(letter)">{{ t('soar.discard') }}</el-button></td></tr></tbody></table><div v-if="!deadLetters.length" class="soar-empty">{{ t('soar.noDeadLetters') }}</div></div>
+      <div class="soar-table-scroll"><table><thead><tr><th>{{ t('common.type') }}</th><th>{{ t('soar.runNode').split(' / ')[0] }}</th><th>{{ t('soar.signalKey') }}</th><th>{{ t('soar.attempts') }}</th><th>{{ t('soar.lastError') }}</th><th v-if="props.canOperate">{{ t('common.actions') }}</th></tr></thead><tbody><tr v-for="letter in deadLetters" :key="`${letter.kind}-${letter.id}`"><td>{{ letter.kind || 'DISPATCH' }}<small>{{ letter.signalType || '' }}</small></td><td class="mono">{{ letter.runId }}</td><td class="mono">{{ letter.signalKey || '-' }}</td><td>{{ letter.attempts }}</td><td>{{ letter.lastError || '-' }}</td><td v-if="props.canOperate" class="nowrap"><el-button link size="small" @click="requeue(letter)">{{ t('soar.requeue') }}</el-button><el-button link type="danger" size="small" @click="discard(letter)">{{ t('soar.discard') }}</el-button></td></tr></tbody></table><div v-if="!deadLetters.length" class="soar-empty">{{ t('soar.noDeadLetters') }}</div></div>
     </section>
     <el-drawer v-model="taskOpen" :before-close="taskGuard.beforeClose" :title="t('forms.task')" size="min(680px, 96vw)" :close-on-click-modal="false">
       <template v-if="selectedTask"><p>{{ selectedTask.runId }} · {{ selectedTask.nodeId }}</p><div v-if="errorMessage" role="alert" class="soar-feedback error">{{ errorMessage }}</div><SchemaInputForm :key="selectedTask.id" v-model="taskValue" :schema="selectedTask.formSchema" :disabled="saving" @valid="taskValid = $event" /></template>
-      <template #footer><el-button v-if="props.canWrite && selectedTask" type="primary" :loading="saving" :disabled="!taskValid" @click="completeTask(selectedTask)">{{ t('forms.complete') }}</el-button></template>
+      <template #footer><el-button v-if="props.canCompleteTasks && selectedTask" type="primary" :loading="saving" :disabled="!taskValid" @click="completeTask(selectedTask)">{{ t('forms.complete') }}</el-button></template>
     </el-drawer>
   </el-card>
 </template>

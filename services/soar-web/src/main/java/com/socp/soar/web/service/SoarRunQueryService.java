@@ -111,8 +111,8 @@ public class SoarRunQueryService {
                                               String playbookVersionId, String triggerType,
                                               String requestedBy, Instant createdFrom,
                                               Instant createdTo) {
-        return runs.searchByTenant(tenant(), normalize(status), normalize(playbookVersionId),
-                normalize(triggerType), normalize(requestedBy), createdFrom, createdTo, pageable)
+        return runs.searchByTenant(tenant(), normalizeUpper(status), normalize(playbookVersionId),
+                normalizeUpper(triggerType), normalizeLower(requestedBy), createdFrom, createdTo, pageable)
                 .map(this::runView);
     }
 
@@ -465,6 +465,16 @@ public class SoarRunQueryService {
         if (value == null) return null;
         String normalized = value.trim();
         return normalized.isBlank() ? null : normalized;
+    }
+
+    private static String normalizeUpper(String value) {
+        String normalized = normalize(value);
+        return normalized == null ? null : normalized.toUpperCase(Locale.ROOT);
+    }
+
+    private static String normalizeLower(String value) {
+        String normalized = normalize(value);
+        return normalized == null ? null : normalized.toLowerCase(Locale.ROOT);
     }
 
     private static String tenant() { return TenantContext.require(); }

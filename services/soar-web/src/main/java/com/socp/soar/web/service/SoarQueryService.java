@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
@@ -36,8 +37,11 @@ final class SoarQueryService {
 
     Page<Map<String, Object>> listPlaybooks(Pageable pageable, String status,
                                             String ownerName, String tag, String risk) {
-        String normalizedStatus = SoarService.normalizeFilter(status);
-        String normalizedOwner = SoarService.normalizeFilter(ownerName);
+        // The repository query applies case functions to the mapped columns.
+        // Normalize the bind values in Java so PostgreSQL never has to resolve
+        // upper/lower on a nullable, untyped parameter.
+        String normalizedStatus = normalizeUpper(status);
+        String normalizedOwner = normalizeLower(ownerName);
         String normalizedTag = SoarService.normalizeFilter(tag);
         String normalizedRisk = SoarService.normalizeFilter(risk);
         if (normalizedTag == null && normalizedRisk == null) {
@@ -102,9 +106,9 @@ final class SoarQueryService {
                                        String playbookVersionId, String triggerType,
                                        String requestedBy, Instant createdFrom,
                                        Instant createdTo) {
-        return owner.runs.searchByTenant(owner.tenant(), SoarService.normalizeFilter(status),
-                SoarService.normalizeFilter(playbookVersionId), SoarService.normalizeFilter(triggerType),
-                SoarService.normalizeFilter(requestedBy), createdFrom, createdTo, pageable)
+        return owner.runs.searchByTenant(owner.tenant(), normalizeUpper(status),
+                SoarService.normalizeFilter(playbookVersionId), normalizeUpper(triggerType),
+                normalizeLower(requestedBy), createdFrom, createdTo, pageable)
                 .map(owner::runView);
     }
 
@@ -255,5 +259,15 @@ final class SoarQueryService {
 
     private static String nullSafe(String value) {
         return value == null ? "" : value;
+    }
+
+    private static String normalizeUpper(String value) {
+        String normalized = SoarService.normalizeFilter(value);
+        return normalized == null ? null : normalized.toUpperCase(Locale.ROOT);
+    }
+
+    private static String normalizeLower(String value) {
+        String normalized = SoarService.normalizeFilter(value);
+        return normalized == null ? null : normalized.toLowerCase(Locale.ROOT);
     }
 }

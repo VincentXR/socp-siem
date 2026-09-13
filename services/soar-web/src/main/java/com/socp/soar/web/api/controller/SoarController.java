@@ -694,7 +694,10 @@ public class SoarController {
     }
 
     @GetMapping("/approvals")
-    @RequirePermission("soar:approve")
+    // Reading the approval queue is part of the SOAR view contract.  The
+    // approve permission is reserved for decision commands below; otherwise
+    // analysts/viewers receive a 403 while opening the read-only workbench.
+    @RequirePermission("soar:view")
     public ApiResult<Object> approvals(@RequestParam(required = false) Integer page,
                                        @RequestParam(required = false) Integer size) {
         if (page != null || size != null) {

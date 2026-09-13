@@ -40,7 +40,11 @@ import {
   type SoarRun,
 } from '../../api'
 
-const props = withDefaults(defineProps<{ canWrite?: boolean }>(), { canWrite: true })
+const props = withDefaults(defineProps<{
+  canWrite?: boolean
+  canExecute?: boolean
+  canOperate?: boolean
+}>(), { canWrite: true, canExecute: true, canOperate: true })
 const emit = defineEmits<{ 'open-in-editor': [payload: RunOpenRequest] }>()
 
 const { t } = useI18n()
@@ -113,7 +117,7 @@ async function loadPublishedVersions(): Promise<void> {
 }
 
 function openQueueDialog(): void {
-  if (!props.canWrite) return
+  if (!props.canExecute) return
   queueMessage.value = ''
   queueError.value = ''
   queueForm.value = {
@@ -134,7 +138,7 @@ function parseObject(value: string, label: string): Record<string, unknown> {
 }
 
 async function submitQueue(): Promise<void> {
-  if (!props.canWrite) return
+  if (!props.canExecute) return
   queueError.value = ''
   queueMessage.value = ''
   if (!queueForm.value.playbookVersionId) {
@@ -285,7 +289,7 @@ async function refreshProjection() {
 }
 
 async function cancel() {
-  if (!props.canWrite || !selectedRunId.value) return
+  if (!props.canExecute || !selectedRunId.value) return
   const reason = window.prompt(t('soar.cancelReason'), '')
   if (reason === null) return
   errorMessage.value = ''
@@ -301,7 +305,7 @@ async function cancel() {
 }
 
 async function retry() {
-  if (!props.canWrite || !selectedRunId.value) return
+  if (!props.canExecute || !selectedRunId.value) return
   const reason = window.prompt(t('soar.retryReason'), '')
   if (reason === null) return
   errorMessage.value = ''
@@ -317,7 +321,7 @@ async function retry() {
 }
 
 async function rerun() {
-  if (!props.canWrite || !selectedRunId.value || !window.confirm(t('soar.rerunConfirm'))) return
+  if (!props.canExecute || !selectedRunId.value || !window.confirm(t('soar.rerunConfirm'))) return
   errorMessage.value = ''
   controlBusy.value = 'rerun'
   try {
@@ -331,7 +335,7 @@ async function rerun() {
 }
 
 async function resolveUnknown(node: SoarNodeRun, resolution: 'CONFIRMED_SUCCEEDED' | 'CONFIRMED_NOT_EXECUTED') {
-  if (!props.canWrite) return
+  if (!props.canOperate) return
   const evidence = window.prompt(t('soar.evidenceRequired'))
   if (!evidence) return
   const reason = window.prompt(t('soar.resolutionReasonRequired'))
@@ -403,7 +407,7 @@ function streamLabel(state: 'closed' | 'live' | 'polling'): string {
           <span v-if="!props.canWrite" class="soar-readonly-note">{{ t('soar.readOnly') }}</span>
         </div>
         <div class="soar-run-select">
-          <el-button v-if="props.canWrite" size="small" type="primary" plain @click="openQueueDialog">{{ t('soar.queueRun') }}</el-button>
+          <el-button v-if="props.canExecute" size="small" type="primary" plain @click="openQueueDialog">{{ t('soar.queueRun') }}</el-button>
           <select v-model="selectedRunId" :aria-label="t('soar.selectRun')">
             <option value="">{{ t('soar.selectRun') }}</option>
             <option v-for="item in runs" :key="item.runId" :value="item.runId">{{ item.runId }} · {{ statusLabel(item.status) }}</option>
@@ -428,7 +432,7 @@ function streamLabel(state: 'closed' | 'live' | 'polling'): string {
           :title="t('soar.runHighlightOpenHint')"
           @click="openInEditor"
         >{{ t('soar.runHighlightOpen') }}</el-button>
-        <template v-if="props.canWrite">
+        <template v-if="props.canExecute">
           <el-button size="small" @click="cancel" :loading="controlBusy === 'cancel'" :disabled="Boolean(controlBusy) || ['SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'SUPPRESSED', 'DEAD', 'CANCELLING'].includes(run.status)">{{ t('soar.cancelRun') }}</el-button>
           <el-button size="small" @click="retry" :loading="controlBusy === 'retry'" :disabled="Boolean(controlBusy) || !['FAILED', 'ACTION_UNKNOWN', 'TIMED_OUT', 'DEAD'].includes(run.status)">{{ t('soar.retryRun') }}</el-button>
           <el-button size="small" type="warning" plain @click="rerun" :loading="controlBusy === 'rerun'" :disabled="Boolean(controlBusy)">{{ t('soar.rerunRun') }}</el-button>
@@ -450,7 +454,7 @@ function streamLabel(state: 'closed' | 'live' | 'polling'): string {
           </div>
           <div v-if="unknownNodes.length" class="soar-unknown-box">
             <b>{{ t('soar.unknownOutcome') }}</b>
-            <div v-for="node in unknownNodes" :key="node.id" class="soar-unknown-row"><span>{{ node.nodeId }}</span><el-button size="small" type="success" plain :loading="controlBusy === 'resolve'" :disabled="Boolean(controlBusy)" @click="resolveUnknown(node, 'CONFIRMED_SUCCEEDED')">{{ t('soar.confirmSucceeded') }}</el-button><el-button size="small" type="warning" plain :loading="controlBusy === 'resolve'" :disabled="Boolean(controlBusy)" @click="resolveUnknown(node, 'CONFIRMED_NOT_EXECUTED')">{{ t('soar.confirmNotExecuted') }}</el-button></div>
+            <div v-for="node in unknownNodes" :key="node.id" class="soar-unknown-row"><span>{{ node.nodeId }}</span><template v-if="props.canOperate"><el-button size="small" type="success" plain :loading="controlBusy === 'resolve'" :disabled="Boolean(controlBusy)" @click="resolveUnknown(node, 'CONFIRMED_SUCCEEDED')">{{ t('soar.confirmSucceeded') }}</el-button><el-button size="small" type="warning" plain :loading="controlBusy === 'resolve'" :disabled="Boolean(controlBusy)" @click="resolveUnknown(node, 'CONFIRMED_NOT_EXECUTED')">{{ t('soar.confirmNotExecuted') }}</el-button></template></div>
           </div>
         </section>
 
@@ -473,7 +477,7 @@ function streamLabel(state: 'closed' | 'live' | 'polling'): string {
     <div v-else class="soar-empty soar-no-run">{{ t('soar.noRunSelected') }}</div>
     <div v-if="queueMessage" class="soar-queue-message" role="status">{{ queueMessage }}</div>
 
-    <el-dialog v-if="props.canWrite" v-model="queueDialogVisible" :title="t('soar.queuePublishedRun')" width="560px">
+    <el-dialog v-if="props.canExecute" v-model="queueDialogVisible" :title="t('soar.queuePublishedRun')" width="560px">
       <p class="soar-dialog-hint">{{ t('soar.queueHint') }}</p>
       <el-form label-position="top">
         <el-form-item :label="t('soar.publishedPlaybookVersion')" required>

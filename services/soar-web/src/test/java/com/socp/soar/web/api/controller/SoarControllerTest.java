@@ -51,6 +51,7 @@ class SoarControllerTest {
 
     private static final String BEARER = "Bearer test-token";
     private static final String ROLE_ADMIN = "admin";
+    private static final String ROLE_ANALYST = "analyst";
     private static final String ROLE_VIEWER = "viewer";
 
     @Autowired
@@ -285,6 +286,17 @@ class SoarControllerTest {
                         .header("X-Role", "approver"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].id").value("appr-2"));
+    }
+
+    @Test
+    void analystRoleCanReachApprovalReadApiWithoutDecisionPermission() throws Exception {
+        given(service.listApprovals()).willReturn(List.of(Map.of("id", "appr-3", "status", "PENDING")));
+
+        mvc.perform(get("/api/approvals")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", ROLE_ANALYST))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].id").value("appr-3"));
     }
 
     @Test

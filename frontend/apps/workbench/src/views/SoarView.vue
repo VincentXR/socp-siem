@@ -36,10 +36,11 @@ import {
   type SoarTemplate,
 } from '../api'
 import { useI18n } from '../composables/useI18n'
-import { useWriteAccess } from '../composables/useWriteAccess'
+import { useSoarAccess } from '../composables/useSoarAccess'
 
 const { t } = useI18n()
-const canWrite = useWriteAccess()
+const soarAccess = useSoarAccess()
+const canWrite = soarAccess.canEdit
 const route = useRoute()
 const router = useRouter()
 const chooseTemplate = ref(false)
@@ -83,7 +84,7 @@ const approvalModal = ref({
 })
 
 function openApprovalModal(row: any, approve: boolean) {
-  if (!canWrite.value) return
+  if (!soarAccess.canApprove.value) return
   approvalModal.value = {
     visible: true,
     approvalId: String(row?.id || ''),
@@ -96,7 +97,7 @@ function openApprovalModal(row: any, approve: boolean) {
 }
 
 async function submitApprovalDecision() {
-  if (!canWrite.value || !approvalModal.value.reason.trim()) return
+  if (!soarAccess.canApprove.value || !approvalModal.value.reason.trim()) return
   approvalModal.value.loading = true
   try {
     if (approvalModal.value.isApprove) {
@@ -242,7 +243,7 @@ onMounted(loadPlaybooks)
     </div>
 
     <el-button v-if="showEditor" @click="router.push({ name: 'soar' })">{{ t('forms.back') }}</el-button>
-    <SoarEditor v-if="showEditor" ref="editorRef" :initial-playbook-id="selectedPlaybookId" :open-run="openRunRequest" :create-request="createRequestToken" :context-alarm-id="contextAlarmId" :can-write="canWrite" @created="id => router.replace({ name: 'playbook-edit', params: { playbookId: id } })" />
+    <SoarEditor v-if="showEditor" ref="editorRef" :initial-playbook-id="selectedPlaybookId" :open-run="openRunRequest" :create-request="createRequestToken" :context-alarm-id="contextAlarmId" :can-write="canWrite" :can-publish="soarAccess.canPublish.value" :can-execute="soarAccess.canExecute.value" @created="id => router.replace({ name: 'playbook-edit', params: { playbookId: id } })" />
     <el-dialog v-model="chooseTemplate" :title="t('forms.selectTemplate')" width="640px">
       <el-button v-if="canWrite" type="primary" @click="openEditorForCreate">{{ t('forms.blank') }}</el-button>
       <div v-for="template in templates" :key="template.id" class="template-choice"><div><b>{{ template.name }}</b><p>{{ template.description }}</p></div><el-button v-if="canWrite" @click="installTemplate(String(template.id))">{{ t('soar.installDraft') }}</el-button></div>
@@ -301,7 +302,7 @@ onMounted(loadPlaybooks)
       <!-- 14.2 自动化规则 (Automation Rules) -->
       <el-tab-pane :label="t('soar.tabRules')" name="rules">
         <div class="soar-tab-content">
-          <SoarControlPlane section="rules" :hide-tabs="true" :can-write="canWrite" />
+          <SoarControlPlane section="rules" :hide-tabs="true" :can-write="canWrite" :can-publish="soarAccess.canPublish.value" :can-view-connections="soarAccess.canViewConnections.value" :can-operate="soarAccess.canOperate.value" />
         </div>
       </el-tab-pane>
 
@@ -309,7 +310,7 @@ onMounted(loadPlaybooks)
       <el-tab-pane :label="t('soar.tabRuns')" name="runs">
         <div class="soar-tab-content">
           <!-- Interactive Inspector -->
-          <SoarRunInspector :can-write="canWrite" @open-in-editor="handleOpenRunInEditor" />
+          <SoarRunInspector :can-write="canWrite" :can-execute="soarAccess.canExecute.value" :can-operate="soarAccess.canOperate.value" @open-in-editor="handleOpenRunInEditor" />
         </div>
       </el-tab-pane>
 
@@ -343,8 +344,8 @@ onMounted(loadPlaybooks)
               <el-table-column :label="t('common.actions')" width="160">
                 <template #default="{ row }">
                   <template v-if="row.status === 'PENDING'">
-                    <el-button v-if="canWrite" link type="success" size="small" @click="openApprovalModal(row, true)">{{ t('soar.approve') }}</el-button>
-                    <el-button v-if="canWrite" link type="danger" size="small" @click="openApprovalModal(row, false)">{{ t('soar.reject') }}</el-button>
+                    <el-button v-if="soarAccess.canApprove.value" link type="success" size="small" @click="openApprovalModal(row, true)">{{ t('soar.approve') }}</el-button>
+                    <el-button v-if="soarAccess.canApprove.value" link type="danger" size="small" @click="openApprovalModal(row, false)">{{ t('soar.reject') }}</el-button>
                   </template>
                   <span v-else class="soar-text-muted">-</span>
                 </template>
@@ -353,14 +354,14 @@ onMounted(loadPlaybooks)
           </el-card>
 
           <!-- Manual Tasks -->
-          <SoarControlPlane section="tasks" :hide-tabs="true" :can-write="canWrite" />
+          <SoarControlPlane section="tasks" :hide-tabs="true" :can-write="canWrite" :can-complete-tasks="soarAccess.canCompleteTasks.value" :can-view-connections="soarAccess.canViewConnections.value" :can-operate="soarAccess.canOperate.value" />
         </div>
       </el-tab-pane>
 
       <!-- 14.5 连接与运维 (Connections & Ops) -->
       <el-tab-pane :label="t('soar.tabConnections')" name="connections">
         <div class="soar-tab-content">
-          <SoarControlPlane section="connections-and-ops" :can-write="canWrite" />
+          <SoarControlPlane section="connections-and-ops" :can-write="soarAccess.canManageConnections.value" :can-view-connections="soarAccess.canViewConnections.value" :can-manage-connections="soarAccess.canManageConnections.value" :can-operate="soarAccess.canOperate.value" />
         </div>
       </el-tab-pane>
     </el-tabs>
@@ -380,7 +381,7 @@ onMounted(loadPlaybooks)
       </div>
       <template #footer>
         <el-button @click="approvalModal.visible = false">{{ t('common.cancel') }}</el-button>
-        <el-button v-if="canWrite" :type="approvalModal.isApprove ? 'success' : 'danger'" :loading="approvalModal.loading" @click="submitApprovalDecision">
+        <el-button v-if="soarAccess.canApprove.value" :type="approvalModal.isApprove ? 'success' : 'danger'" :loading="approvalModal.loading" @click="submitApprovalDecision">
           {{ approvalModal.isApprove ? t('soar.approve') : t('soar.reject') }}
         </el-button>
       </template>

@@ -25,12 +25,18 @@ public interface SoarRunRepository extends TenantScopedRepository<SoarRunEntity,
     Page<SoarRunEntity> findByTenantIdOrderByCreatedAtDesc(String tenantId, Pageable pageable);
     @Query("select r from SoarRunEntity r "
             + "where r.tenantId = :tenantId "
-            + "and (:status is null or upper(r.status) = upper(:status)) "
+            // Do not apply upper/lower to nullable bind parameters. PostgreSQL
+            // may infer an untyped null as bytea and fail function resolution.
+            + "and (:status is null or upper(r.status) = :status) "
             + "and (:playbookVersionId is null or r.playbookVersionId = :playbookVersionId) "
-            + "and (:triggerType is null or upper(r.triggerType) = upper(:triggerType)) "
-            + "and (:requestedBy is null or lower(r.requestedBy) = lower(:requestedBy)) "
-            + "and (:createdFrom is null or r.createdAt >= :createdFrom) "
-            + "and (:createdTo is null or r.createdAt < :createdTo) "
+            + "and (:triggerType is null or upper(r.triggerType) = :triggerType) "
+            + "and (:requestedBy is null or lower(r.requestedBy) = :requestedBy) "
+            // Hibernate expands a named parameter used in both an IS NULL
+            // predicate and a comparison into separate JDBC placeholders.
+            // PostgreSQL cannot infer the type of the standalone nullable
+            // timestamp placeholder, so keep the null checks explicitly typed.
+            + "and (cast(:createdFrom as timestamp) is null or r.createdAt >= :createdFrom) "
+            + "and (cast(:createdTo as timestamp) is null or r.createdAt < :createdTo) "
             + "order by r.createdAt desc")
     Page<SoarRunEntity> searchByTenant(@Param("tenantId") String tenantId,
                                        @Param("status") String status,

@@ -82,9 +82,13 @@ const props = withDefaults(defineProps<{
   createRequest?: number
   /** Optional alert context passed from the alarm workbench. */
   contextAlarmId?: string
-  /** Whether the current operator can change the draft or execute a run. */
+  /** Whether the current operator can change the draft. */
   canWrite?: boolean
-}>(), { initialPlaybookId: '', openRun: null, createRequest: 0, contextAlarmId: '', canWrite: true })
+  /** Whether the current operator can execute a published run. */
+  canExecute?: boolean
+  /** Whether the current operator can publish or deprecate a version. */
+  canPublish?: boolean
+}>(), { initialPlaybookId: '', openRun: null, createRequest: 0, contextAlarmId: '', canWrite: true, canExecute: true, canPublish: true })
 const emit = defineEmits<{ saved: [SoarVersion]; created: [id: string]; 'dirty-change': [dirty: boolean] }>()
 
 const { t } = useI18n()
@@ -165,6 +169,17 @@ watch(() => flow.dirty.value, (dirty) => {
 function discardGuard(): boolean {
   if (!flow.dirty.value) return true
   return window.confirm(t('forms.unsaved'))
+}
+
+/**
+ * Validation, dry-run and publish all read the persisted revision, so they must
+ * refuse while the canvas holds unsaved edits: otherwise the operator would act
+ * on content the canvas no longer shows (stale validate/publish = fail-open).
+ */
+function unsavedDraftBlocks(): boolean {
+  if (!flow.dirty.value) return false
+  errorMessage.value = t('soar.saveBeforeValidatePublish')
+  return true
 }
 
 /* ---------------- playbook/version API (unchanged clients) ---------------- */
@@ -352,8 +367,8 @@ function applyDefinitionJson() {
 }
 
 /* ---------------- save / validate / dry-run / publish ---------------- */
-async function save() {
-  if (!props.canWrite || !selectedPlaybookId.value || !selectedVersionNo.value || !isDraft.value) return
+async function save(): Promise<boolean> {
+  if (!props.canWrite || !selectedPlaybookId.value || !selectedVersionNo.value || !isDraft.value) return false
   saving.value = true
   errorMessage.value = ''
   try {
@@ -366,15 +381,19 @@ async function save() {
     validation.value = null
     message.value = t('soar.draftSaved', { version: result.version })
     emit('saved', result)
+    return true
   } catch (failure) {
     errorMessage.value = failure instanceof Error ? failure.message : t('soar.unableSaveDraft')
+    return false
   } finally {
     saving.value = false
   }
 }
 
-async function validate() {
-  if (!selectedPlaybookId.value || !selectedVersionNo.value) return
+/** Returns true only when the server produced a verdict that marks the draft publishable. */
+async function validate(): Promise<boolean> {
+  if (!props.canWrite || !selectedPlaybookId.value || !selectedVersionNo.value) return false
+  if (unsavedDraftBlocks()) return false
   try {
     const result = await validateVersion(selectedPlaybookId.value, selectedVersionNo.value) as ValidationResult
     validation.value = result
@@ -385,13 +404,19 @@ async function validate() {
     flow.applyIssues(issues)
     errorMessage.value = ''
     message.value = result.valid ? t('soar.definitionPublishable') : t('soar.definitionNeedsAttention')
+    return result.valid === true
   } catch (failure) {
+    // Fail closed: without a server verdict the draft must not be publishable.
+    validation.value = null
+    flow.applyIssues([])
     errorMessage.value = failure instanceof Error ? failure.message : t('soar.validationFailed')
+    return false
   }
 }
 
 async function dryRun() {
-  if (!selectedPlaybookId.value || !selectedVersionNo.value) return
+  if (!props.canExecute || !selectedPlaybookId.value || !selectedVersionNo.value) return
+  if (unsavedDraftBlocks()) return
   try {
     const inputs = JSON.parse(dryRunText.value) as JsonObject
     dryRunResult.value = await dryRunVersion(selectedPlaybookId.value, selectedVersionNo.value, contextSubject(), inputs) as JsonObject
@@ -408,7 +433,7 @@ function contextSubject(): JsonObject {
 
 async function queueRun(): Promise<void> {
   const version = selectedVersion.value
-  if (!props.canWrite || !version || version.status !== 'PUBLISHED' || runBusy.value) return
+  if (!props.canExecute || !version || version.status !== 'PUBLISHED' || runBusy.value) return
   runBusy.value = true
   errorMessage.value = ''
   try {
@@ -431,15 +456,17 @@ async function queueRun(): Promise<void> {
 }
 
 async function publish() {
-  if (!props.canWrite || !selectedPlaybookId.value || !selectedVersionNo.value || !isDraft.value) return
-  await validate()
-  if (validation.value && validation.value.valid === false) return
+  if (!props.canPublish || !selectedPlaybookId.value || !selectedVersionNo.value || !isDraft.value) return
+  // Publish is only allowed once the canvas edits are saved and the stored
+  // revision has a fresh server verdict of "valid" — never on a stale result.
+  if (unsavedDraftBlocks()) return
+  if (!(await validate())) return
   try {
     const result = await publishVersion(selectedPlaybookId.value, selectedVersionNo.value)
     versions.value = versions.value.map(item => item.version === result.version ? result : item)
     rowVersion.value = result.rowVersion
     await loadVersions()
-    message.value = `Published revision ${result.version}`
+    message.value = t('soar.publishedRevision', { version: result.version })
   } catch (failure) {
     errorMessage.value = failure instanceof Error ? failure.message : t('soar.publishFailed')
   }
@@ -621,9 +648,9 @@ onUnmounted(() => {
       <el-tag v-if="validation" size="small" :type="flow.validationStale.value ? 'info' : validation.valid ? 'success' : 'danger'">
         {{ flow.validationStale.value ? t('soar.validationOutdated') : validation.valid ? t('soar.validationValid') : t('soar.validationInvalid') }}{{ issueCount ? ` · ${issueCount}` : '' }}
       </el-tag>
-      <el-button size="small" @click="validate" :disabled="!selectedVersionNo">{{ t('soar.validate') }}</el-button>
-      <el-button size="small" @click="dryRun" :disabled="!selectedVersionNo">{{ t('soar.dryRun') }}</el-button>
-      <el-button v-if="props.canWrite" size="small" type="warning" plain :loading="runBusy" :disabled="selectedVersion?.status !== 'PUBLISHED'" @click="queueRun">{{ t('soar.queueRun') }}</el-button>
+      <el-button v-if="props.canWrite" size="small" @click="validate" :disabled="!selectedVersionNo">{{ t('soar.validate') }}</el-button>
+      <el-button v-if="props.canExecute" size="small" @click="dryRun" :disabled="!selectedVersionNo">{{ t('soar.dryRun') }}</el-button>
+      <el-button v-if="props.canExecute" size="small" type="warning" plain :loading="runBusy" :disabled="selectedVersion?.status !== 'PUBLISHED'" @click="queueRun">{{ t('soar.queueRun') }}</el-button>
       <el-button
         v-if="props.canWrite"
         size="small"
@@ -632,7 +659,7 @@ onUnmounted(() => {
         :disabled="!isDraft || !hasUnsavedChanges"
         @click="save"
       >{{ t('soar.saveDraft') }}</el-button>
-      <el-button v-if="props.canWrite" size="small" type="success" @click="publish" :disabled="!isDraft">{{ t('soar.publish') }}</el-button>
+      <el-button v-if="props.canPublish" size="small" type="success" @click="publish" :disabled="!isDraft">{{ t('soar.publish') }}</el-button>
     </div>
 
     <div v-if="message" class="soar-editor-message">{{ message }}</div>

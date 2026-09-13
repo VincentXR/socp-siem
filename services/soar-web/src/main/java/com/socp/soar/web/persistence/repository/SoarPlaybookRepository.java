@@ -28,9 +28,13 @@ public interface SoarPlaybookRepository extends TenantScopedRepository<SoarPlayb
      */
     @Query("select p from SoarPlaybookEntity p "
             + "where p.tenantId = :tenantId "
-            + "and (:status is null or upper(p.status) = upper(:status)) "
-            + "and (:owner is null or lower(coalesce(p.owner, '')) = lower(:owner)) "
-            + "and (:tag is null or lower(coalesce(p.tagsJson, '')) like lower(concat('%', :tag, '%'))) "
+            // Keep functions on the mapped column, not on nullable bind
+            // parameters. PostgreSQL otherwise infers a null parameter as
+            // bytea and rejects upper(:status)/lower(:owner).
+            + "and (:status is null or upper(p.status) = :status) "
+            + "and (:owner is null or lower(coalesce(p.owner, '')) = :owner) "
+            + "and (cast(:tag as string) is null or lower(coalesce(p.tagsJson, '')) "
+            + "like concat('%', cast(:tag as string), '%')) "
             + "order by p.updatedAt desc")
     Page<SoarPlaybookEntity> searchByTenant(@Param("tenantId") String tenantId,
                                             @Param("status") String status,
