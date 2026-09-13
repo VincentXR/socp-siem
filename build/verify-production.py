@@ -32,13 +32,13 @@ REQUIRED_K8S = {
 }
 
 
-def runtime_unit_membership() -> dict[str, str]:
+def runtime_domain_membership() -> dict[str, str]:
     membership: dict[str, str] = {}
-    for unit in load_topology().get("units", []):
-        if not isinstance(unit, dict):
+    for domain in load_topology().get("logicalDomains", []):
+        if not isinstance(domain, dict):
             continue
-        name = unit.get("name")
-        for member in unit.get("members", []):
+        name = domain.get("name")
+        for member in domain.get("members", []):
             if isinstance(name, str) and isinstance(member, str):
                 membership[member] = name
     return membership
@@ -55,7 +55,7 @@ def deployment_document(manifest: str, name: str) -> str:
 
 def main() -> int:
     errors: list[str] = []
-    target_units = runtime_unit_membership()
+    runtime_domains = runtime_domain_membership()
     if not DOCKERFILE.is_file():
         errors.append("missing deploy/docker/Dockerfile.jvm")
     else:
@@ -97,25 +97,25 @@ def main() -> int:
                 if not re.search(pattern, text):
                     errors.append(f"{path.relative_to(ROOT)} lacks {label}")
             workload = path.stem
-            expected_unit = target_units.get(workload)
-            actual_units = re.findall(
-                r"^\s*socp\.io/runtime-unit:\s*([a-z0-9-]+)\s*$",
+            expected_domain = runtime_domains.get(workload)
+            actual_domains = re.findall(
+                r"^\s*socp\.io/runtime-domain:\s*([a-z0-9-]+)\s*$",
                 text,
                 re.MULTILINE,
             )
-            if expected_unit is None:
-                errors.append(f"{path.relative_to(ROOT)} is not assigned to a target runtime unit")
-            elif (not actual_units or set(actual_units) != {expected_unit}
-                  or len(actual_units) % 2 != 0):
+            if expected_domain is None:
+                errors.append(f"{path.relative_to(ROOT)} is not assigned to a logical runtime domain")
+            elif (not actual_domains or set(actual_domains) != {expected_domain}
+                  or len(actual_domains) % 2 != 0):
                 errors.append(
-                    f"{path.relative_to(ROOT)} must declare socp.io/runtime-unit="
-                    f"{expected_unit} on Deployment and Pod metadata"
+                    f"{path.relative_to(ROOT)} must declare socp.io/runtime-domain="
+                    f"{expected_domain} on Deployment and Pod metadata"
                 )
             selector = re.search(r"^  selector:\s*$([\s\S]*?)^  template:\s*$",
                                  text, re.MULTILINE)
-            if selector and "socp.io/runtime-unit" in selector.group(1):
+            if selector and "socp.io/runtime-domain" in selector.group(1):
                 errors.append(
-                    f"{path.relative_to(ROOT)} runtime-unit must not change the immutable selector"
+                    f"{path.relative_to(ROOT)} runtime-domain must not change the immutable selector"
                 )
             if path.name in {"search-config.yaml", "detect-web.yaml", "alert-web.yaml"}:
                 if "SOCP_HEALTH_REQUIRED_ENDPOINTS" not in text:
@@ -250,7 +250,7 @@ def main() -> int:
         return 1
     print(
         "Production deployment contract passed "
-        "(runtime units, digest images, non-root pods, probes, resources)"
+        "(runtime domains, digest images, non-root pods, probes, resources)"
     )
     return 0
 

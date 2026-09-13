@@ -1,59 +1,76 @@
-# ADR 007: separate code modules from runtime deployment units
+# ADR 007: separate code modules, logical domains, and runtime workloads
 
-Status: accepted for incremental migration
+Status: accepted; revised 2026-09-14
 
-SOCP keeps Maven modules aligned with domain ownership, but a local deployment
-of every thin CRUD module creates unnecessary JVM and connection-pool cost. The
-target runtime shape is six independently scalable units: gateway/frontend,
-ingest-search, detection, alert-incident, response-integration and report-ai.
+## Decision
 
-`build/runtime-topology.json` is the machine-readable source of truth for that
-target. `build/verify-contracts.py` rejects duplicate assignments, missing
-default services, unknown modules, or compatibility launchers placed into a
-target unit. The former `asset-collect` and `hips-collect` launchers have been
-retired because their ingress endpoints are owned by `asset-web` and
-`hips-web`. Gateway rewrites preserve both legacy URL prefixes.
+SOCP does not have a fixed target process count. In particular, the former
+goal of collapsing the repository into six JVMs is retired. A Maven module,
+logical product domain, deployable artifact, runtime role, and independently
+scaled workload are different boundaries and must not be forced into a single
+number.
 
-The migration is deliberately additive. Each aggregate application must keep
-the existing context paths and platform contracts, and may call a remote
-adapter when a module is still deployed separately. Database schemas remain
-separate until a measured latency/startup/memory comparison justifies a merge.
-Detection and ingest remain independently scalable because Kafka partition
-ownership and backpressure are correctness boundaries.
+`build/runtime-topology.json` records the current executable registry, logical
+domain ownership, completed consolidations, and a small list of candidates
+that may be evaluated. Logical domains are labels for ownership and
+observability; they are not instructions to colocate every member in one JVM.
+The policy deliberately sets `fixedTargetProcessCount` to `null`.
 
-The first Detection consolidation is implemented: `detect-model` is no longer
-an executable module or default process, and its secondary analyzer now runs
-only in the `detect-web` Worker role. The legacy `/detect-model/**` gateway
-route is rewritten to the Worker's internal `/detect-web/model/**` endpoint.
-The existing `detect_model` database and four migration files are reused with
-their original Flyway history; a second persistence unit and transaction
-manager prevent cross-schema transactions. The `socp-detect-model` Kafka group
-is also unchanged, so committed offsets survive the process cutover. This
-reduces the default full topology from 15 to 14 JVMs without a data migration.
+The default local topology currently starts 14 backend processes. Production
+may use more workloads because Search and Detection have independently scaled
+API and Worker roles. That is intentional: partition ownership, backpressure,
+long-running workers, and request latency are operational boundaries even when
+the roles share one artifact.
 
-For the remaining target units, single-purpose launchers stay supported until
-their aggregate has passed contract and failure tests. This avoids claiming a
-process-count reduction before it is measured.
+## Completed consolidation
 
-The Detection consolidation has context and compatibility coverage, but it
-does not by itself validate the complete six-unit target. The topology status
-therefore remains `contract-only-until-aggregate-apps-pass-integration-tests`;
-the remaining aggregates still require failure-isolation and capacity
-evidence.
+The former `detect-model` process was retired after its secondary-analysis
+capability moved into the `detect-web` Worker role. The legacy
+`/detect-model/**` gateway route, `detect_model` database, four-file Flyway
+history, independent transaction manager, and `socp-detect-model` Kafka group
+remain compatible. This reduced the default local topology from 15 to 14 JVMs
+without a data migration.
 
-`python build/verify-runtime-units.py` checks this assignment in normal CI.
-Release automation must additionally run it with `--require-evidence` after
-the topology status is changed to `validated`; the commit-matched manifest
-must contain passing context, transaction, failure-isolation, and capacity
-checks for all six units. A static topology check, a successful Maven build,
-or a single-node Compose run is not a substitute for that manifest.
+## Candidates, not roadmap commitments
 
-An aggregate is eligible to replace its launchers only after it proves all of
-the following with executable evidence:
+Only two combinations are registered for possible measurement:
 
-1. every legacy context path and authentication/tenant boundary is preserved;
-2. each owning schema retains an independent Flyway history and transaction
-   boundary;
-3. a dependency outage cannot make an unrelated member fail liveness;
-4. the grouped unit uses fewer JVM/connection-pool resources under the same
-   workload without regressing latency or recovery semantics.
+- `alert-incident`: `alert-web` with `incident-web`;
+- `soar-notify`: `soar-web` with `notify-web`.
+
+Registration does not authorize implementation and does not imply that either
+combination is beneficial. The existing processes remain the supported
+topology until one candidate has its own passing evidence.
+
+The former broad `response-integration` aggregate is not a deployment target.
+SOAR/Temporal work, notification I/O, endpoint ingestion, threat-feed sync,
+asset management, and ATT&CK content have different load and failure profiles.
+Likewise, `report-web`, `ai-assistant`, and `soc-base` are not planned as one
+JVM: batch analytics, external-model latency, and governance queries require
+different scaling and security controls.
+
+## Evidence gate
+
+A candidate may replace its launchers only after it proves all of the following
+for the current commit:
+
+1. every public context path and authentication/tenant boundary is preserved;
+2. each owning schema retains its Flyway history and transaction boundary;
+3. a member or dependency outage does not make an unrelated capability fail
+   liveness;
+4. measured JVM, connection-pool, and startup savings justify the larger
+   failure and release boundary without regressing latency or recovery.
+
+`python build/verify-runtime-consolidation.py` validates the standing policy.
+Evidence for one registered candidate can be checked explicitly with:
+
+```bash
+python build/verify-runtime-consolidation.py \
+  --candidate alert-incident \
+  --require-evidence \
+  --evidence .cache/runtime-consolidation/alert-incident/evidence.json
+```
+
+There is no repository-wide aggregate promotion and no process-count success
+metric. Capacity work should prioritize event throughput, lag, latency,
+recovery, and resource limits over reducing the number of service names.

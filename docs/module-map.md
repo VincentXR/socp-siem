@@ -40,7 +40,7 @@ tests and artifact checks are under `frontend/apps/workbench/scripts`.
 | `notify-web` | 18096 | Notification channels and delivery records | H2 |
 | `asset-web` | 18085 | Asset inventory, imports, and asset collection ingress | H2 |
 | `hips-web` | 18087 | Endpoint registration, heartbeat state, and event ingress | H2 |
-| `ai-assistant` | 18088 | Keyword-backed security knowledge assistant | H2 |
+| `ai-assistant` | 18088 | Evidence-bounded investigation with deterministic fallback and optional LLM analysis | H2 + optional external LLM |
 
 The services with `application-integration.yml` import their
 `application-pg.yml` overlay when the `integration` profile is active. Flyway
@@ -56,25 +56,27 @@ legacy `/detect-model/**` path, while the original database, Flyway history,
 Kafka consumer group, and transaction boundary are preserved.
 Production collection must come from managed Agent/Falco/CMDB inputs.
 
-Code-module ownership is deliberately separate from the target runtime shape.
-The executable contract in `build/runtime-topology.json` assigns every current
-default service exactly once to one of six target units:
+Code-module ownership is deliberately separate from runtime placement. The
+contract in `build/runtime-topology.json` assigns every current service to a
+logical domain for ownership and observability only:
 
-| Target unit | Current module ownership |
+| Logical domain | Current module ownership |
 |---|---|
 | `gateway-ui` | `api-gateway`, `frontend/apps/workbench` |
 | `ingest-search` | `search-config` |
 | `detection` | `detect-web` |
 | `alert-incident` | `alert-web`, `incident-web` |
-| `response-integration` | `soar-web`, `notify-web`, `asset-web`, `hips-web`, `threat-web`, `attack-web` |
-| `report-ai` | `report-web`, `ai-assistant`, `soc-base` |
+| `response-automation` | `soar-web`, `notify-web` |
+| `security-context` | `asset-web`, `hips-web`, `threat-web`, `attack-web` |
+| `reporting-governance` | `report-web`, `soc-base` |
+| `ai-assistance` | `ai-assistant` |
 
 Run `python build/runtime-topology.py --check` to verify that module, process,
-compatibility, and target-unit registries still agree.
-The Detection unit has completed its first process consolidation, but the
-six-unit shape remains a target contract until every aggregate application
-passes the context, API, failure, and capacity gates required by
-[ADR 007](adr/007-runtime-deployment-units.md).
+compatibility, domain, and candidate registries still agree. There is no fixed
+target process count. `alert-incident` and `soar-notify` are measurement
+candidates, not committed merges; each must independently pass the context,
+transaction, failure, and capacity gates in
+[ADR 007](adr/007-runtime-deployment-units.md) before runtime placement changes.
 
 ## Platform modules
 

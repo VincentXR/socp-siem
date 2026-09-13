@@ -1,9 +1,19 @@
 {
-  "schemaVersion": 1,
-  "status": "contract-only-until-aggregate-apps-pass-integration-tests",
+  "schemaVersion": 2,
+  "status": "current-layout-with-evidence-gated-consolidation",
   "frontend": "frontend/apps/workbench",
   "compatibilityModules": [],
-  "units": [
+  "deploymentPolicy": {
+    "mode": "evidence-gated-per-candidate",
+    "fixedTargetProcessCount": null,
+    "requiredChecks": [
+      "context",
+      "transaction",
+      "failure",
+      "capacity"
+    ]
+  },
+  "logicalDomains": [
     {
       "name": "gateway-ui",
       "members": [
@@ -31,10 +41,15 @@
       ]
     },
     {
-      "name": "response-integration",
+      "name": "response-automation",
       "members": [
         "soar-web",
-        "notify-web",
+        "notify-web"
+      ]
+    },
+    {
+      "name": "security-context",
+      "members": [
         "asset-web",
         "hips-web",
         "threat-web",
@@ -42,12 +57,42 @@
       ]
     },
     {
-      "name": "report-ai",
+      "name": "reporting-governance",
       "members": [
         "report-web",
-        "ai-assistant",
         "soc-base"
       ]
+    },
+    {
+      "name": "ai-assistance",
+      "members": [
+        "ai-assistant"
+      ]
+    }
+  ],
+  "consolidationCandidates": [
+    {
+      "name": "alert-incident",
+      "members": [
+        "alert-web",
+        "incident-web"
+      ],
+      "status": "evaluate"
+    },
+    {
+      "name": "soar-notify",
+      "members": [
+        "soar-web",
+        "notify-web"
+      ],
+      "status": "evaluate"
+    }
+  ],
+  "completedConsolidations": [
+    {
+      "name": "detect-secondary-analysis",
+      "owner": "detect-web",
+      "retiredProcess": "detect-model"
     }
   ]
 }

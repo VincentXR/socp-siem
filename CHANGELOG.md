@@ -8,6 +8,10 @@
   worker and removed its independent executable process, reducing the default
   full topology from 15 to 14 JVMs. The legacy gateway path, database, Flyway
   history, Kafka consumer group, and transaction boundary remain compatible.
+- Retired the fixed six-JVM target. Runtime topology now records logical
+  ownership domains and evaluates only explicitly registered consolidation
+  candidates with per-candidate context, transaction, failure, and capacity
+  evidence.
 
 ### Pipeline durability and performance
 

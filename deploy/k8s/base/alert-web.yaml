@@ -6,7 +6,7 @@ metadata:
   labels:
     app.kubernetes.io/name: alert-web
     app.kubernetes.io/part-of: socp-siem
-    socp.io/runtime-unit: alert-incident
+    socp.io/runtime-domain: alert-incident
 spec:
   replicas: 2
   revisionHistoryLimit: 5
@@ -24,7 +24,7 @@ spec:
       labels:
         app.kubernetes.io/name: alert-web
         app.kubernetes.io/part-of: socp-siem
-        socp.io/runtime-unit: alert-incident
+        socp.io/runtime-domain: alert-incident
     spec:
       serviceAccountName: socp-service
       terminationGracePeriodSeconds: 45

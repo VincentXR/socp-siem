@@ -86,17 +86,18 @@ or disaster recovery by themselves.
 ## Capacity and service grouping
 
 Keep Maven/bounded-context boundaries for ownership and testing. The reviewed
-target is the six-unit contract in `build/runtime-topology.json`; it is not a
-claim that the current 15-process compatibility topology has already been
-collapsed. Keep Gateway, Search, Detection, Alert, and reporting/event
-consumers independently scalable. Promote an aggregate only after the
+runtime policy has no fixed process-count target. The logical domains in
+`build/runtime-topology.json` describe ownership, not JVM colocation. Keep
+Gateway, Search, Detection, Alert, reporting, AI, and event consumers
+independently scalable where their load or failure profiles differ. Change
+runtime placement only for one registered candidate after the
 [ADR 007](adr/007-runtime-deployment-units.md) context, transaction, failure,
 and capacity evidence passes. Size Kafka
 partitions, PostgreSQL pools, ClickHouse parts, and OpenSearch shards from
 measured load; do not infer production capacity from the single-node benchmark.
-The release gate is `python build/verify-runtime-units.py --require-evidence`;
-it requires a commit-matched manifest for all six units and refuses promotion
-while the topology remains `contract-only-until-aggregate-apps-pass-integration-tests`.
+The standing-policy gate is `python build/verify-runtime-consolidation.py`.
+Candidate evidence is checked independently with `--candidate NAME
+--require-evidence`; there is no repository-wide aggregate promotion.
 
 Real notification/SOAR connectors require vendor sandbox acceptance, timeout
 and idempotency tests, credential rotation, and an operator approval policy

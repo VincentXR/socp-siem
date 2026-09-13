@@ -30,26 +30,53 @@ class RuntimeTopologyTest(unittest.TestCase):
 
         self.assertTrue(any("not executable modules" in error for error in errors))
 
-    def test_duplicate_assignment_is_rejected(self):
+    def test_duplicate_domain_assignment_is_rejected(self):
         modules, services = current_registry()
         topology = copy.deepcopy(load_topology())
-        topology["units"][1]["members"].append("api-gateway")
+        topology["logicalDomains"][1]["members"].append("api-gateway")
 
         errors = validate_topology(topology, modules, services)
 
-        self.assertTrue(any("multiple runtime units" in error for error in errors))
+        self.assertTrue(any("multiple logical domains" in error for error in errors))
 
-    def test_compatibility_launcher_cannot_become_a_target_member(self):
+    def test_compatibility_launcher_cannot_become_a_domain_member(self):
         modules, services = current_registry()
         topology = copy.deepcopy(load_topology())
         compatibility = "synthetic-compatibility-launcher"
         modules.append(compatibility)
         topology["compatibilityModules"].append(compatibility)
-        topology["units"][1]["members"].append(compatibility)
+        topology["logicalDomains"][1]["members"].append(compatibility)
 
         errors = validate_topology(topology, modules, services)
 
         self.assertTrue(any("compatibility launchers" in error for error in errors))
+
+    def test_fixed_process_target_is_rejected(self):
+        modules, services = current_registry()
+        topology = copy.deepcopy(load_topology())
+        topology["deploymentPolicy"]["fixedTargetProcessCount"] = 6
+
+        errors = validate_topology(topology, modules, services)
+
+        self.assertTrue(any("fixedTargetProcessCount must be null" in error for error in errors))
+
+    def test_candidate_with_unknown_service_is_rejected(self):
+        modules, services = current_registry()
+        topology = copy.deepcopy(load_topology())
+        topology["consolidationCandidates"][0]["members"].append("unknown-service")
+
+        errors = validate_topology(topology, modules, services)
+
+        self.assertTrue(any("contains unknown services" in error for error in errors))
+
+    def test_completed_consolidation_cannot_retire_a_current_module(self):
+        modules, services = current_registry()
+        topology = copy.deepcopy(load_topology())
+        topology["completedConsolidations"][0]["retiredProcess"] = "detect-web"
+
+        errors = validate_topology(topology, modules, services)
+
+        self.assertTrue(any("still lists executable module" in error for error in errors))
 
 
 if __name__ == "__main__":

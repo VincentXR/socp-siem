@@ -153,8 +153,8 @@ benchmark; retain machine-specific output outside source control.
   database isolation.
 - H2 is a local convenience profile. Use PostgreSQL and `prod` guard checks
   for production-like validation.
-- The AI assistant is a keyword-backed knowledge prototype; it is not an
-  external LLM or RAG service.
+- The AI assistant uses bounded evidence, a deterministic fallback, and an
+  optional external LLM; it is not yet a RAG platform or autonomous responder.
 
 ## Repository layout
 
@@ -171,15 +171,17 @@ docs/                     architecture, operating guides, tests, and ADRs
 The default full deployment currently runs 14 backend processes. The former
 `detect-model` process is embedded in the Detection worker; its database,
 Flyway history, Kafka consumer group, and transaction boundary remain
-independent. The reviewed target is still six deployment units. Verify that
-the current and target views have not drifted with:
+independent. There is no fixed target process count. Verify that the executable
+registry, logical ownership domains, and optional consolidation candidates
+have not drifted with:
 
 ```bash
 python build/runtime-topology.py --check
 ```
 
-The command validates `build/runtime-topology.json`; it does not claim that
-the aggregate applications have already replaced the current launchers.
+The command validates `build/runtime-topology.json`. Logical domains are not
+JVM placement instructions; a registered candidate needs its own failure and
+capacity evidence before launchers may be replaced.
 
 ## Documentation
 

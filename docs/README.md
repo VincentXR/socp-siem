@@ -58,4 +58,4 @@ directory instead of source control.
 - [ADR 004: runtime profiles](adr/004-runtime-profiles.md)
 - [ADR 005: outbox lifecycle](adr/005-outbox-lifecycle.md)
 - [ADR 006: detection runtime selection](adr/006-detection-runtime-selection.md)
-- [ADR 007: runtime deployment units](adr/007-runtime-deployment-units.md)
+- [ADR 007: logical domains and evidence-gated consolidation](adr/007-runtime-deployment-units.md)

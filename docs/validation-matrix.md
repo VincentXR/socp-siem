@@ -33,7 +33,8 @@ correctness and recovery behavior, not a production capacity or HA claim.
 | Full API | `python build/verify-full.py` | Resource CRUD, tenancy, import/export, threat, and response contracts | Scheduled/release candidate |
 | OpenAPI SDK | `python build/verify-openapi-sdk.py` (add `SOAR_OPENAPI_REQUIRE_RUNTIME=true` and runtime URLs for deployment mode) | 71-operation TypeScript SDK generation, strict compilation, runtime `/v3/api-docs` parity, `SOCP_SESSION`, `X-Tenant-Id`, `ApiResult`, ETag/If-Match, status codes, and error envelopes | Every API change/release candidate |
 | Actuator boundary | `python build/verify-actuator-auth.py` | Gateway health remains probeable while info, metrics, and route metadata return 401 without credentials | Full-stack/release candidate |
-| Six-unit promotion | `python build/verify-runtime-units.py --require-evidence` | Commit-matched aggregate-app manifest proves context, transaction, failure-isolation, and capacity checks for every target unit | Aggregate release only |
+| Runtime consolidation policy | `python build/verify-runtime-consolidation.py` | No fixed process target is configured and logical domains/candidates match the executable registry | Every topology change |
+| Candidate consolidation | `python build/verify-runtime-consolidation.py --candidate NAME --require-evidence --evidence PATH` | One registered candidate has commit-matched context, transaction, failure-isolation, and capacity evidence | Before changing that candidate's runtime placement |
 | SOAR live | `python build/verify-soar-live.py` | Real PostgreSQL/Temporal Run completion, Alert-shaped event admission, receipt idempotency, and two-instance capacity fence | Weekly/release candidate |
 | Dependency failure | `python build/failure-tests.py` | Kafka, OpenSearch, Temporal, and PostgreSQL recovery assertions | Manual/scheduled |
 

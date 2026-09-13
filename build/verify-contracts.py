@@ -270,10 +270,10 @@ def main() -> int:
         errors.append("missing deployment-backed Actuator authentication verifier")
     if "verify-actuator-auth.py" not in full_stack:
         errors.append("full-stack production evidence contract missing: verify-actuator-auth.py")
-    if not (ROOT / "build/verify-runtime-units.py").is_file():
-        errors.append("missing six-unit promotion evidence verifier")
-    if "verify-runtime-units.py" not in ci:
-        errors.append("CI deployment contract missing: verify-runtime-units.py")
+    if not (ROOT / "build/verify-runtime-consolidation.py").is_file():
+        errors.append("missing evidence-gated runtime consolidation verifier")
+    if "verify-runtime-consolidation.py" not in ci:
+        errors.append("CI deployment contract missing: verify-runtime-consolidation.py")
     for marker in ("chaos-pipeline.py --scenario all", "--scenario multi_instance", "verify-soar-live.py"):
         if marker not in full_stack:
             errors.append(f"full-stack production evidence contract missing: {marker}")
@@ -373,7 +373,9 @@ def main() -> int:
         return 1
     print(
         f"Contract gate passed: {len(modules)} modules, {len(services)} default processes, "
-        f"{runtime['targetDeploymentUnits']} target units, {len(route_ids)} gateway routes"
+        f"no fixed process target, {runtime['logicalDomainCount']} logical domains, "
+        f"{len(runtime['consolidationCandidates'])} consolidation candidates, "
+        f"{len(route_ids)} gateway routes"
     )
     return 0
 

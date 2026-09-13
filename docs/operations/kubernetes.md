@@ -11,10 +11,10 @@ while `search-config-worker` drains the ingestion Outbox and indexes Kafka
 events into OpenSearch. The gateway routes to `search-config-api`; it never
 uses the worker Service. Detection follows the same API/Worker split.
 
-Every core Deployment carries `socp.io/runtime-unit`, validated against
-`build/runtime-topology.json`. The labels describe ownership in the six-unit
-target; they do not imply that the other members of `alert-incident` or the
-remaining target units are already present in this minimal event-plane base.
+Every core Deployment carries `socp.io/runtime-domain`, validated against
+`build/runtime-topology.json`. The label describes product ownership and
+observability grouping only. It does not require members of the same domain to
+share an artifact, pod, JVM, replica count, or release lifecycle.
 
 The base includes default-deny network policy, non-root/read-only pods,
 dependency-aware probes, preferred zone anti-affinity, CPU-based HPA and
