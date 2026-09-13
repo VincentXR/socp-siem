@@ -313,7 +313,7 @@ async function createPlaybookAndVersion() {
     versions.value = [version]
     selectedVersionNo.value = version.version
     rowVersion.value = version.rowVersion
-    flow.applyDefinition(version.definition)
+    flow.applyDefinition(version.definition, version.layout)
     validation.value = null
     newPlaybookVisible.value = false
     emit('created', playbook.id)
@@ -334,7 +334,7 @@ async function createVersion() {
     versions.value = [result, ...versions.value.filter(item => item.version !== result.version)]
     selectedVersionNo.value = result.version
     rowVersion.value = result.rowVersion
-    flow.applyDefinition(result.definition)
+    flow.applyDefinition(result.definition, result.layout)
     validation.value = null
     message.value = t('soar.versionCreated', { version: result.version })
   } catch (failure) {
