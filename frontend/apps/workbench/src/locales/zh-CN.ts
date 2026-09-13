@@ -526,6 +526,12 @@ export const zhCN = {
       completed: '已完成',
       timeout: '超时',
     },
+    onErrorValues: {
+      FAIL_RUN: '失败并终止',
+      CONTINUE: '继续执行',
+      GOTO_ERROR_PORT: '转到 error 端口',
+      COMPENSATE_THEN_FAIL: '补偿后失败',
+    },
     property: {
       node: '节点',
       type: '类型',
@@ -585,6 +591,9 @@ export const zhCN = {
       maxItems: '最大条目数',
       maxParallelism: '最大并行数',
       strategy: '汇聚策略',
+      onError: '错误策略',
+      onErrorDefault: '默认（失败即终止）',
+      onErrorHint: 'CONTINUE：走成功边继续（终态可能为部分成功）；GOTO_ERROR_PORT：改走 error 端口；COMPENSATE_THEN_FAIL：先补偿再失败。JOIN/FOREACH 只支持前两种。',
       publishedVersion: '剧本版本',
       searchPublishedVersion: '搜索已发布版本',
       versionCatalogUnavailable: '版本目录不可用；如需继续可粘贴版本 ID。',

@@ -275,6 +275,49 @@ export function createNode(type: SoarNodeType, id: string): EditorNode {
 }
 
 /**
+ * `onError` values the execution engine actually honours per node type
+ * (SoarWorkflowImpl: ACTION 308-320, JOIN 364-372, FOREACH 415). Offering a
+ * value the engine ignores would ship a definition that validates but behaves
+ * differently at runtime.
+ */
+export const ON_ERROR_VALUES: Record<string, readonly string[]> = {
+  ACTION: ['FAIL_RUN', 'CONTINUE', 'GOTO_ERROR_PORT', 'COMPENSATE_THEN_FAIL'],
+  JOIN: ['FAIL_RUN', 'CONTINUE', 'GOTO_ERROR_PORT'],
+  FOREACH: ['FAIL_RUN', 'CONTINUE'],
+}
+
+export function supportsOnError(type: string): boolean {
+  return Object.prototype.hasOwnProperty.call(ON_ERROR_VALUES, type)
+}
+
+/** Reads `onError` in either accepted spelling (`SoarDefinitionValidator:274-280`). */
+export function readOnError(raw: EditorNode): string {
+  const top = raw.onError
+  if (typeof top === 'string' && top.trim()) return top
+  const config = raw.config
+  const nested = config && typeof config === 'object' && !Array.isArray(config)
+    ? (config as Record<string, unknown>).onError : undefined
+  return typeof nested === 'string' ? nested : ''
+}
+
+/** Writes `onError` back into the spelling the node already uses. */
+export function writeOnError(raw: EditorNode, value: string): void {
+  const trimmed = value.trim()
+  const top = raw.onError
+  const config = raw.config && typeof raw.config === 'object' && !Array.isArray(raw.config)
+    ? { ...(raw.config as Record<string, unknown>) } : null
+  const usesConfigSpelling = !(typeof top === 'string' && top.trim()) && Boolean(config && typeof config.onError === 'string')
+  if (usesConfigSpelling && config) {
+    if (trimmed) config.onError = trimmed
+    else delete config.onError
+    raw.config = config
+    return
+  }
+  if (trimmed) raw.onError = trimmed
+  else delete raw.onError
+}
+
+/**
  * Node fields the validator accepts independently of the node type
  * (`SoarDefinitionValidator` reads `onError` on ACTION/JOIN/FOREACH, either at
  * the node top level or under `config`). A type change must keep them.

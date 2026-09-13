@@ -12,7 +12,7 @@ import { CONDITION_OPERATORS, compileCondition, parseCondition, type ExpressionC
 import FieldConditionBuilder from '../../FieldConditionBuilder.vue'
 import VariableSelector, { type VariableOption } from '../../VariableSelector.vue'
 import { listActions, listConnections, listPlaybooks, listVersions, type SoarActionDescriptor, type SoarConnection } from '../../../api'
-import { NODE_TYPE_ORDER, SOAR_NODE_REGISTRY } from './nodeRegistry'
+import { NODE_TYPE_ORDER, ON_ERROR_VALUES, readOnError, SOAR_NODE_REGISTRY, supportsOnError, writeOnError } from './nodeRegistry'
 import { rawNodeType, isUnsupportedNodeType, readSwitchCases, type SoarFlowApi } from './useDefinitionFlow'
 import type { FieldDef, RuleCondition } from '../../../api'
 import type { EditorNode, ValidationIssue } from './types'
@@ -127,6 +127,32 @@ const actionRefKnown = computed(() => {
   const ref = props.node ? String(props.node.actionRef ?? '') : ''
   return !ref || actions.value.some(action => action.actionRef === ref)
 })
+
+/* ---------- node-level error policy (ACTION / JOIN / FOREACH) ---------- */
+
+const supportsErrorPolicy = computed(() => supportsOnError(nodeType.value))
+
+const errorPolicyOptions = computed<string[]>(() => {
+  const allowed = ON_ERROR_VALUES[nodeType.value] ?? []
+  const current = props.node ? readOnError(props.node) : ''
+  // A value outside the engine's set stays selectable so opening the panel
+  // never silently rewrites a hand-written definition.
+  return current && !allowed.includes(current) ? [current, ...allowed] : [...allowed]
+})
+
+function updateErrorPolicy(value: string): void {
+  if (props.readOnly) return
+  const node = props.node
+  if (!node) return
+  writeOnError(node, value)
+  props.flow.touchAfterNodeEdit()
+}
+
+function errorPolicyLabel(value: string): string {
+  const key = `soar.onErrorValues.${value}`
+  const translated = t(key)
+  return translated === key ? value : translated
+}
 
 /* ---------- scalar field helpers (empty trimmed string deletes) ---------- */
 function scalar(node: EditorNode, field: string): string {
@@ -712,6 +738,21 @@ function subPlaybookVersionKnown(id: string): boolean {
       <label v-if="!unsupported">
         {{ t('soar.property.name') }}
         <input :value="scalar(node, 'name')" :disabled="props.readOnly" :placeholder="t('soar.property.nodeNamePlaceholder')" @input="updateScalar('name', ($event.target as HTMLInputElement).value)" />
+      </label>
+
+      <!-- Node-level error policy: the engine reads it on ACTION/JOIN/FOREACH -->
+      <label v-if="!unsupported && supportsErrorPolicy">
+        {{ t('soar.property.onError') }}
+        <el-select
+          :model-value="props.node ? readOnError(props.node) : ''"
+          :disabled="props.readOnly"
+          clearable
+          :placeholder="t('soar.property.onErrorDefault')"
+          @change="updateErrorPolicy(String($event ?? ''))"
+        >
+          <el-option v-for="option in errorPolicyOptions" :key="option" :label="errorPolicyLabel(option)" :value="option" />
+        </el-select>
+        <small class="soar-flow-hint">{{ t('soar.property.onErrorHint') }}</small>
       </label>
 
       <!-- START -->

@@ -11,7 +11,7 @@ import {
   serializeLayout,
 } from '../useDefinitionFlow'
 import { mapIssuesToNodes } from '../validation'
-import { SOAR_NODE_REGISTRY, CREATION_TYPES, retypeNode } from '../nodeRegistry'
+import { SOAR_NODE_REGISTRY, CREATION_TYPES, readOnError, retypeNode, supportsOnError, writeOnError } from '../nodeRegistry'
 import type { EditorDefinition, EditorNode, SoarNodeType, ValidationIssue } from '../types'
 
 /** Golden-template-like definition with CONDITION true/false + APPROVAL edges and a SWITCH case layout. */
@@ -243,5 +243,28 @@ describe('mapIssuesToNodes', () => {
     const foreach = retypeNode(join, 'FOREACH')
     expect(foreach.strategy).toBeUndefined()
     expect(foreach.config).toMatchObject({ onError: 'FAIL_RUN', itemsPath: 'vars.items' })
+  })
+
+  it('reads and writes onError in the spelling the node already uses', () => {
+    // only ACTION/JOIN/FOREACH accept the policy (SoarDefinitionValidator:274)
+    expect(supportsOnError('ACTION')).toBe(true)
+    expect(supportsOnError('JOIN')).toBe(true)
+    expect(supportsOnError('FOREACH')).toBe(true)
+    expect(supportsOnError('CONDITION')).toBe(false)
+
+    const topLevel: EditorNode = { id: 'a', type: 'ACTION', name: 'A', onError: 'CONTINUE' }
+    expect(readOnError(topLevel)).toBe('CONTINUE')
+    writeOnError(topLevel, 'GOTO_ERROR_PORT')
+    expect(topLevel.onError).toBe('GOTO_ERROR_PORT')
+    writeOnError(topLevel, '')
+    expect(topLevel.onError).toBeUndefined()
+
+    const nested: EditorNode = { id: 'j', type: 'JOIN', name: 'J', config: { onError: 'CONTINUE' } }
+    expect(readOnError(nested)).toBe('CONTINUE')
+    writeOnError(nested, 'FAIL_RUN')
+    expect(nested.config).toEqual({ onError: 'FAIL_RUN' })
+    writeOnError(nested, '')
+    expect(nested.config).toEqual({})
+    expect(nested.onError).toBeUndefined()
   })
 })

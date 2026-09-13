@@ -528,6 +528,12 @@ export const enUS: LocaleMessages = {
       completed: 'Completed',
       timeout: 'Timeout',
     },
+    onErrorValues: {
+      FAIL_RUN: 'Fail the run',
+      CONTINUE: 'Continue',
+      GOTO_ERROR_PORT: 'Take the error port',
+      COMPENSATE_THEN_FAIL: 'Compensate, then fail',
+    },
     property: {
       node: 'Node',
       type: 'Type',
@@ -587,6 +593,9 @@ export const enUS: LocaleMessages = {
       maxItems: 'Max items',
       maxParallelism: 'Max parallelism',
       strategy: 'Join strategy',
+      onError: 'On error',
+      onErrorDefault: 'Default (fail the run)',
+      onErrorHint: 'CONTINUE keeps the success edge (the run may end PARTIALLY_SUCCEEDED); GOTO_ERROR_PORT takes the error port; COMPENSATE_THEN_FAIL compensates and then fails. JOIN/FOREACH support the first two only.',
       publishedVersion: 'Playbook version',
       searchPublishedVersion: 'Search published version',
       versionCatalogUnavailable: 'Version catalog unavailable; paste a version ID if needed.',
