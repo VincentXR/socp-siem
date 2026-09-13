@@ -64,6 +64,23 @@ object store are intentionally not bundled into this application baseline.
 They need managed services or separately reviewed operators with their own
 topology, replication, TLS, upgrade, and failure-domain policy.
 
+## AWS delivery environment
+
+`deploy/terraform/bootstrap` creates the state bucket and state KMS key with a
+lifecycle separate from disposable application infrastructure.
+`deploy/terraform/environments/dev` creates a two-AZ/one-NAT VPC, EKS managed
+node group, four immutable ECR repositories, GitHub OIDC roles, API-backed EKS
+access entries, encrypted control-plane logs, and a monthly budget. The
+environment is a cost-controlled reference deployment, not a production HA
+topology. Its explicit limitations and teardown procedure are documented in
+the [AWS infrastructure runbook](../deploy/terraform/README.md) and
+[ADR 008](adr/008-aws-delivery-environment.md).
+
+Infrastructure planning, infrastructure mutation, and application release use
+separate IAM roles. The release role has no VPC/IAM/EKS provisioning
+permission and its Kubernetes access is limited to the `socp-system`
+namespace. Application services have no AWS IAM permission by default.
+
 ## Backup, restore, and recovery evidence
 
 `build/backup-postgres.sh <directory>` creates a mode-0600 custom-format dump

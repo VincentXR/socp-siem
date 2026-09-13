@@ -44,6 +44,11 @@ jobs:
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
 
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.2
+
       - name: Build backend (Maven reactor)
         run: bash build/mvnw.sh -DskipTests package
 
@@ -69,6 +74,16 @@ jobs:
           python3 -m unittest discover -s build/tests -p 'test_*.py'
           python3 build/verify-frontend-i18n.py
           python3 build/verify-production.py
+
+      - name: Verify Terraform contracts
+        run: |
+          terraform fmt -check -recursive deploy/terraform
+          terraform -chdir=deploy/terraform/bootstrap init -backend=false -input=false
+          terraform -chdir=deploy/terraform/bootstrap validate
+          terraform -chdir=deploy/terraform/bootstrap test
+          terraform -chdir=deploy/terraform/environments/dev init -backend=false -input=false
+          terraform -chdir=deploy/terraform/environments/dev validate
+          terraform -chdir=deploy/terraform/environments/dev test
 
       - name: Run build policy and SpotBugs
         run: bash build/mvnw.sh verify -Pquality -DskipTests

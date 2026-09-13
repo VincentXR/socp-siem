@@ -1,0 +1,10 @@
+terraform {
+  backend "s3" {
+    bucket       = "REPLACE_WITH_STATE_BUCKET"
+    key          = "bootstrap/terraform.tfstate"
+    region       = "ap-southeast-1"
+    encrypt      = true
+    kms_key_id   = "REPLACE_WITH_STATE_KMS_KEY_ARN"
+    use_lockfile = true
+  }
+}

@@ -164,6 +164,7 @@ services/                 Spring Boot business services
 frontend/apps/workbench/  Vue 3 security operations workbench
 agents/                   Vector and Falco assets
 infra/                    Docker Compose and middleware initialization
+deploy/                   container, Kubernetes, and disposable AWS delivery assets
 build/                    startup, verification, benchmark, chaos, demos
 docs/                     architecture, operating guides, tests, and ADRs
 ```

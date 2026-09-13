@@ -12,6 +12,10 @@
   ownership domains and evaluates only explicitly registered consolidation
   candidates with per-candidate context, transaction, failure, and capacity
   evidence.
+- Added the disposable AWS infrastructure baseline: separately bootstrapped
+  encrypted Terraform state, a two-AZ EKS/ECR dev environment, GitHub OIDC
+  plan/apply/release roles, API-backed EKS access entries, control-plane
+  logging, cost guardrails, and mock-provider plan tests.
 
 ### Pipeline durability and performance
 
