@@ -262,10 +262,18 @@ export function buildFlowNodes(
 
 export function buildFlowEdges(def: EditorDefinition): VfEdgeInput[] {
   const nodeTypes = new Map(def.nodes.map(node => [node.id, rawNodeType(node)]))
+  const nodeById = new Map(def.nodes.map(node => [node.id, node]))
   return def.edges.map((rawEdge, index) => {
     const token = edgePortKey(rawEdge)
     const sourceUnsupported = isCreationType(nodeTypes.get(rawEdge.from) ?? '') ? false : true
     const targetUnsupported = isCreationType(nodeTypes.get(rawEdge.to) ?? '') ? false : true
+    // Vue Flow silently drops an edge whose handle id does not exist on the
+    // node, which is how a branch token with no matching port shows up as a
+    // missing connection line. Anchor such an edge on the default handle so the
+    // connection stays visible (the label still names the declared token).
+    const sourceRaw = nodeById.get(rawEdge.from)
+    const handles = sourceRaw ? resolveSourcePorts(sourceRaw, def) : []
+    const resolvedToken = token !== '' && !handles.some(port => port.token === token) ? '' : token
     const data: FlowEdgeData = {
       rawEdge,
       from: rawEdge.from,
@@ -277,7 +285,7 @@ export function buildFlowEdges(def: EditorDefinition): VfEdgeInput[] {
       type: 'default',
       source: rawEdge.from,
       target: rawEdge.to,
-      sourceHandle: token === '' ? 'default' : token,
+      sourceHandle: resolvedToken === '' ? 'default' : resolvedToken,
       targetHandle: 'in',
       ...(token ? { label: token } : {}),
       markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: '#94a3b8' },

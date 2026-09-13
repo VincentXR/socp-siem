@@ -20,6 +20,7 @@ const FALSE_PORT: PortSpec = { token: 'false', labelKey: 'soar.port.false', labe
 const APPROVED_PORT: PortSpec = { token: 'approved', labelKey: 'soar.port.approved', label: 'approved' }
 const REJECTED_PORT: PortSpec = { token: 'rejected', labelKey: 'soar.port.rejected', label: 'rejected' }
 const BODY_PORT: PortSpec = { token: 'body', labelKey: 'soar.port.body', label: 'body' }
+const EACH_PORT: PortSpec = { token: 'each', labelKey: 'soar.port.each', label: 'each' }
 const DONE_PORT: PortSpec = { token: 'done', labelKey: 'soar.port.done', label: 'done' }
 const COMPLETED_PORT: PortSpec = { token: 'completed', labelKey: 'soar.port.completed', label: 'completed' }
 const TIMEOUT_PORT: PortSpec = { token: 'timeout', labelKey: 'soar.port.timeout', label: 'timeout' }
@@ -167,7 +168,10 @@ export const SOAR_NODE_REGISTRY: Record<SoarNodeType, SoarNodeTypeMeta> = {
     tone: 'control',
     creationAllowed: true,
     comingSoon: false,
-    sourcePorts: [DEFAULT_PORT, BODY_PORT, DONE_PORT],
+    // Exactly the tokens SoarGraphValidator.validateEdgePort accepts for
+    // FOREACH (default/body/each/done/success): a token without a handle is
+    // silently undrawable, so the registry must not miss one.
+    sourcePorts: [DEFAULT_PORT, BODY_PORT, EACH_PORT, DONE_PORT, SUCCESS_PORT],
     acceptsTarget: true,
     defaultCreate: (id) => ({
       id,
@@ -186,7 +190,8 @@ export const SOAR_NODE_REGISTRY: Record<SoarNodeType, SoarNodeTypeMeta> = {
     tone: 'wait',
     creationAllowed: true,
     comingSoon: false,
-    sourcePorts: [DEFAULT_PORT, SUCCESS_PORT, FAILURE_PORT],
+    // validateEdgePort allows DELAY only default/success.
+    sourcePorts: [DEFAULT_PORT, SUCCESS_PORT],
     acceptsTarget: true,
     defaultCreate: (id) => ({ id, type: 'DELAY', name: 'Delay', config: { durationSeconds: 60 } }),
   },
@@ -199,7 +204,8 @@ export const SOAR_NODE_REGISTRY: Record<SoarNodeType, SoarNodeTypeMeta> = {
     tone: 'human',
     creationAllowed: true,
     comingSoon: false,
-    sourcePorts: [DEFAULT_PORT, COMPLETED_PORT, TIMEOUT_PORT, FAILURE_PORT],
+    // validateEdgePort allows MANUAL_TASK default/completed/success/timeout.
+    sourcePorts: [DEFAULT_PORT, COMPLETED_PORT, SUCCESS_PORT, TIMEOUT_PORT],
     acceptsTarget: true,
     // formSchema stays at the node top level: the validator, the workflow engine
     // and the golden templates all read `node.formSchema` (never config.formSchema).
@@ -233,7 +239,8 @@ export const SOAR_NODE_REGISTRY: Record<SoarNodeType, SoarNodeTypeMeta> = {
     tone: 'data',
     creationAllowed: true,
     comingSoon: false,
-    sourcePorts: [DEFAULT_PORT, SUCCESS_PORT, FAILURE_PORT],
+    // validateEdgePort allows SET_VARIABLE only default/success.
+    sourcePorts: [DEFAULT_PORT, SUCCESS_PORT],
     acceptsTarget: true,
     defaultCreate: (id) => ({ id, type: 'SET_VARIABLE', name: 'Set variable', config: { name: 'vars.note', value: '' } }),
   },

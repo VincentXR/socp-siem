@@ -523,6 +523,7 @@ export const enUS: LocaleMessages = {
       approved: 'Approved',
       rejected: 'Rejected',
       body: 'Body',
+      each: 'Each item',
       done: 'Done',
       completed: 'Completed',
       timeout: 'Timeout',

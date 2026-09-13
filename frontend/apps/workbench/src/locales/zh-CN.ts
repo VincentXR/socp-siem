@@ -521,6 +521,7 @@ export const zhCN = {
       approved: '已通过',
       rejected: '已驳回',
       body: '循环体',
+      each: '每项',
       done: '完成',
       completed: '已完成',
       timeout: '超时',
