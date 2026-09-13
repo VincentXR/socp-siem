@@ -31,11 +31,14 @@ import {
   dryRunVersion,
   getPlaybook,
   getVersion,
+  listNodes,
   listPlaybooks,
   listVersions,
   queueRun as queueRunApi,
-  publishVersion,
+  rerunRun,
+  retryRun,
   rollbackVersion,
+  publishVersion,
   saveVersion,
   validateVersion,
   type SoarPlaybook,
@@ -238,8 +241,59 @@ async function loadVersion(versionNo = selectedVersionNo.value ?? 0) {
 
 /* ---------------- run-path highlight (Slice 4) ---------------- */
 
+/** Run currently overlaid on the canvas; canvas retry/rerun target it. */
+const activeRunId = ref('')
+const runActionBusy = ref<'retry' | 'rerun' | ''>('')
+/** Node statuses the engine resumes from (mirrors the run inspector's rule). */
+const RETRYABLE_NODE_STATUSES = ['FAILED', 'DEAD', 'ACTION_UNKNOWN', 'TIMED_OUT']
+const canRetryFromCanvas = computed(() => props.canExecute && Boolean(activeRunId.value)
+  && Object.values(flow.runHighlights.value)
+    .some(entry => entry.statuses.some(status => RETRYABLE_NODE_STATUSES.includes(status))))
+
 function clearRunHighlights(): void {
   flow.applyRunHighlights(null)
+  activeRunId.value = ''
+}
+
+/** Re-overlays the canvas with a run's node statuses and follows that run. */
+async function overlayRun(runId: string): Promise<void> {
+  activeRunId.value = runId
+  flow.applyRunHighlights(await listNodes(runId))
+}
+
+/** Resume the overlaid run from its failed nodes (engine keeps the variables snapshot). */
+async function retryRunFromCanvas(): Promise<void> {
+  if (!props.canExecute || !activeRunId.value || runActionBusy.value) return
+  const reason = window.prompt(t('soar.retryReason'), '')
+  if (reason === null) return
+  runActionBusy.value = 'retry'
+  errorMessage.value = ''
+  try {
+    const result = await retryRun(activeRunId.value, reason)
+    await overlayRun(result.runId)
+    message.value = `${t('soar.runQueued')} ${result.runId}`
+  } catch (failure) {
+    errorMessage.value = failure instanceof Error ? failure.message : t('soar.runQueueFailed')
+  } finally {
+    runActionBusy.value = ''
+  }
+}
+
+/** Start a fresh execution series from the overlaid run. */
+async function rerunFromCanvas(): Promise<void> {
+  if (!props.canExecute || !activeRunId.value || runActionBusy.value) return
+  if (!window.confirm(t('soar.rerunConfirm'))) return
+  runActionBusy.value = 'rerun'
+  errorMessage.value = ''
+  try {
+    const result = await rerunRun(activeRunId.value, t('soar.rerunRun'))
+    await overlayRun(result.runId)
+    message.value = `${t('soar.runQueued')} ${result.runId}`
+  } catch (failure) {
+    errorMessage.value = failure instanceof Error ? failure.message : t('soar.runQueueFailed')
+  } finally {
+    runActionBusy.value = ''
+  }
 }
 
 /**
@@ -277,9 +331,11 @@ async function handleOpenRunRequest(request: RunOpenRequest): Promise<void> {
       return
     }
     flow.applyRunHighlights(request.rows)
+    activeRunId.value = request.runId
     message.value = t('soar.loadedRunPath', { version: request.version })
   } catch (failure) {
     handledOpenRunToken.value = ''
+    activeRunId.value = ''
     errorMessage.value = failure instanceof Error ? failure.message : t('soar.unableOpenRunInEditor')
   } finally {
     loading.value = false
@@ -772,6 +828,20 @@ onUnmounted(() => {
               <i class="soar-run-legend-dot" />
               <span>{{ t(RUN_TONE_KEY[entry.tone]) }} · {{ entry.count }}</span>
             </span>
+            <button
+              v-if="canRetryFromCanvas"
+              type="button"
+              class="soar-run-legend-clear"
+              :disabled="Boolean(runActionBusy)"
+              @click="retryRunFromCanvas"
+            >{{ t('soar.retryRun') }}</button>
+            <button
+              v-if="props.canExecute && activeRunId"
+              type="button"
+              class="soar-run-legend-clear"
+              :disabled="Boolean(runActionBusy)"
+              @click="rerunFromCanvas"
+            >{{ t('soar.rerunRun') }}</button>
             <button type="button" class="soar-run-legend-clear" @click="clearRunHighlights">{{ t('soar.runHighlightClear') }}</button>
           </div>
         </div>

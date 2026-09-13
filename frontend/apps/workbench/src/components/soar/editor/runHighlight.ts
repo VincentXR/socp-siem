@@ -50,6 +50,8 @@ export interface RunToneSummary {
 export interface RunOpenRequest {
   /** Opaque token so repeated identical requests are still processed. */
   token: string
+  /** The run being inspected; the editor offers retry/rerun against it. */
+  runId: string
   playbookId: string
   /** The exact immutable version the run executed. */
   version: number

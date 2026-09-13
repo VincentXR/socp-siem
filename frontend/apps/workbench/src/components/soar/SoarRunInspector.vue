@@ -178,6 +178,7 @@ function openInEditor(): void {
   if (!selected?.playbookId || !selected.playbookVersion) return
   emit('open-in-editor', {
     token: `${selected.runId}:${selected.playbookVersion}:${Date.now()}`,
+    runId: selected.runId,
     playbookId: selected.playbookId,
     version: selected.playbookVersion,
     rows: nodes.value.map(node => ({
