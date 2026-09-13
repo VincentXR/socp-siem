@@ -17,7 +17,7 @@ vi.mock('../src/api/alarms', () => ({
   ...mocks,
 }))
 vi.mock('../src/api/incidents', () => ({
-  listCases: vi.fn().mockResolvedValue([]),
+  listCases: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, size: 0, totalPages: 0 }),
 }))
 
 const alarm = {

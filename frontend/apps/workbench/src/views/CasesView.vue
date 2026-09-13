@@ -89,7 +89,7 @@ async function loadCases() {
   loadError.value = ''
   try {
     const [caseResult, statResult] = await Promise.allSettled([caseApi.list(), caseApi.stats()])
-    if (caseResult.status === 'fulfilled') setItems(caseResult.value)
+    if (caseResult.status === 'fulfilled') setItems(caseResult.value.items)
     else loadError.value = caseResult.reason instanceof Error ? caseResult.reason.message : String(caseResult.reason)
     if (statResult.status === 'fulfilled') stats.value = statResult.value
     openCaseFromQuery()
@@ -102,7 +102,7 @@ async function openCase(item: CaseInfo) {
   detailAssignee.value = item.assignee ?? ''
   drawerVisible.value = true
   timeline.value = []; timelineError.value = ''
-  try { timeline.value = (await caseApi.timeline(item.id)).timeline } catch (failure) { timelineError.value = String(failure) }
+  try { timeline.value = (await caseApi.timeline(item.id)).items } catch (failure) { timelineError.value = String(failure) }
 }
 function openCaseRow(row: unknown) { openCase(row as CaseInfo) }
 

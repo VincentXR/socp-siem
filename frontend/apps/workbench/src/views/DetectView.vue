@@ -180,7 +180,7 @@ async function loadRules(): Promise<void> {
     referenceLoadError.value = refsetResult.reason instanceof Error ? refsetResult.reason.message : String(refsetResult.reason)
   }
   if (techniqueResult.status === 'fulfilled') {
-    techniques.value = techniqueResult.value
+    techniques.value = techniqueResult.value.items
     techniqueLoadError.value = ''
   } else {
     techniqueLoadError.value = techniqueResult.reason instanceof Error ? techniqueResult.reason.message : String(techniqueResult.reason)

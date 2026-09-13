@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { useRequest } from '../src/composables/useRequest.ts'
-import { unwrapApiBody, type ApiEnvelope } from '../src/lib/api-response.ts'
+import { unwrapApiBody, ApiBusinessError, type ApiEnvelope } from '../src/lib/api-response.ts'
 import { withQuery } from '../src/lib/query.ts'
 import type { ReportSummary, ReportTrend, SearchResult } from '../src/api.ts'
 
@@ -17,6 +17,45 @@ test('raises the server message for failed API envelopes', () => {
     () => unwrapApiBody({ code: 1003, message: 'invalid query', data: null }),
     { message: 'invalid query' },
   )
+})
+
+test('raises a business error for failed envelopes serialized without a data key', () => {
+  // ApiResult serializes with NON_NULL, so fail() drops the null data key.
+  try {
+    unwrapApiBody({ code: 1003, message: 'invalid query', traceId: 'trace-1', timestamp: '2026-09-13T00:00:00Z' })
+    assert.fail('expected unwrapApiBody to throw')
+  } catch (error) {
+    assert.ok(error instanceof ApiBusinessError)
+    assert.equal(error.code, 1003)
+    assert.equal(error.message, 'invalid query')
+    assert.equal(error.traceId, 'trace-1')
+  }
+})
+
+test('raises a business error with the fallback message when the envelope omits message', () => {
+  try {
+    unwrapApiBody({ code: 500, message: null, data: null })
+    assert.fail('expected unwrapApiBody to throw')
+  } catch (error) {
+    assert.ok(error instanceof ApiBusinessError)
+    assert.equal(error.code, 500)
+    assert.equal(error.message, 'code=500')
+  }
+})
+
+test('unwraps Void success envelopes without a data key to undefined', () => {
+  const body = { code: 0, message: 'ok', traceId: null, timestamp: '2026-09-13T00:00:00Z' }
+  assert.equal(unwrapApiBody(body), undefined)
+})
+
+test('keeps bare bodies with a numeric domain code and no envelope markers unchanged', () => {
+  const body = { code: 404, detail: 'missing' }
+  assert.deepEqual(unwrapApiBody(body), body)
+})
+
+test('keeps bare bodies with a domain string code field unchanged', () => {
+  const body = { code: 'SYSLOG', name: 'syslog' }
+  assert.deepEqual(unwrapApiBody(body), body)
 })
 
 test('keeps non-envelope response bodies unchanged', () => {

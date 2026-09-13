@@ -47,8 +47,8 @@ async function loadAttack() {
   loadError.value = ''
   try {
     const [catalogTactics, catalogTechniques] = await Promise.all([listTactics(), listTechniques(attackTech.value || undefined)])
-    tactics.value = catalogTactics
-    techniques.value = catalogTechniques
+    tactics.value = catalogTactics.items
+    techniques.value = catalogTechniques.items
     await computeAttackCov()
   } catch (failure) { loadError.value = String(failure) }
 }

@@ -105,13 +105,13 @@ async function loadAssets() {
   try {
     const [listResult, statResult, endpointResult] = await Promise.allSettled([assetApi.list(), assetApi.stats(), endpointApi.list()])
     if (listResult.status === 'fulfilled') {
-      setItems(listResult.value)
-      if (detailAsset.value) detailAsset.value = listResult.value.find(item => item.id === detailAsset.value?.id) ?? detailAsset.value
+      setItems(listResult.value.items)
+      if (detailAsset.value) detailAsset.value = listResult.value.items.find(item => item.id === detailAsset.value?.id) ?? detailAsset.value
       openAssetFromQuery()
     }
     else loadError.value = listResult.reason instanceof Error ? listResult.reason.message : String(listResult.reason)
     if (statResult.status === 'fulfilled') assetStat.value = statResult.value
-    if (endpointResult.status === 'fulfilled') endpointInventory.value = endpointResult.value
+    if (endpointResult.status === 'fulfilled') endpointInventory.value = endpointResult.value.items
     else endpointInventoryError.value = endpointResult.reason instanceof Error ? endpointResult.reason.message : String(endpointResult.reason)
   } finally {
     loading.value = false

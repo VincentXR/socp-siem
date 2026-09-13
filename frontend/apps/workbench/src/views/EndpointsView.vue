@@ -100,12 +100,12 @@ async function loadEndpoints() {
       assetApi.list(),
     ])
     if (endpointResult.status === 'fulfilled') {
-      setItems(endpointResult.value)
+      setItems(endpointResult.value.items)
     } else loadError.value = endpointResult.reason instanceof Error ? endpointResult.reason.message : String(endpointResult.reason)
     if (statResult.status === 'fulfilled') endpointStat.value = statResult.value
-    if (eventResult.status === 'fulfilled') endpointEvents.value = eventResult.value
+    if (eventResult.status === 'fulfilled') endpointEvents.value = eventResult.value.items
     else eventsError.value = eventResult.reason instanceof Error ? eventResult.reason.message : String(eventResult.reason)
-    if (assetResult.status === 'fulfilled') assets.value = assetResult.value
+    if (assetResult.status === 'fulfilled') assets.value = assetResult.value.items
   } finally {
     loading.value = false
   }

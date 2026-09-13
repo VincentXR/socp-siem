@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
+import { workbenchOrigin } from './helpers'
 
-const WORKBENCH_ORIGIN = 'http://127.0.0.1:4173'
+const WORKBENCH_ORIGIN = workbenchOrigin()
 const MOCKED_BACKEND_PATH = /^\/(?:api|auth|alert-web|search-config|detect-web|soar-web|report-web|asset-web|soc-base|hips-web|ai-assistant|detect-model|asset-collect|hips-collect|threat-web|attack-web|notify-web|incident-web|actuator)(?:\/|$)/
 
 function isMockedBackendUrl(url: URL): boolean {

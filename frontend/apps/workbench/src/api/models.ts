@@ -113,6 +113,15 @@ export const SEVERITIES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'] as const
 export const SOURCE_TYPES = ['FILE', 'SOCKET', 'SYSLOG', 'KAFKA', 'WINDOWS_EVENT', 'AGENT', 'HTTP_API', 'DATABASE', 'CLOUD'] as const
 export const PARSE_FORMATS = ['AUTO', 'SYSLOG', 'JSON', 'KV', 'CEF', 'LEEF'] as const
 
+/** Shared paged-list envelope (backend PageResponse, 1-based page). */
+export interface Paged<T> {
+  items: T[]
+  total: number
+  page: number
+  size: number
+  totalPages: number | null
+}
+
 export interface AlarmPage { items: Alarm[]; total: number; page: number; size: number }
 export type AlarmSortField = 'occurredAt' | 'severity' | 'ruleName' | 'entity' | 'status' | 'riskScore'
 export type AlarmSortOrder = 'ascending' | 'descending'

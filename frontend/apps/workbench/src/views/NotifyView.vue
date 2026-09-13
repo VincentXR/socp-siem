@@ -94,9 +94,9 @@ async function loadNotify() {
   try {
     const [channelResult, logResult] = await Promise.allSettled([listChannels(), dispatchLog()])
     const failures: string[] = []
-    if (channelResult.status === 'fulfilled') channels.value = channelResult.value
+    if (channelResult.status === 'fulfilled') channels.value = channelResult.value.items
     else failures.push(String(channelResult.reason))
-    if (logResult.status === 'fulfilled') logs.value = logResult.value
+    if (logResult.status === 'fulfilled') logs.value = logResult.value.items
     else failures.push(String(logResult.reason))
     actionError.value = failures.join(' · ')
   } finally {

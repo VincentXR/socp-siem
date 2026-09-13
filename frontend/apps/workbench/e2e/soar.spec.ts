@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { workbenchOrigin } from './helpers'
 
 const SIMPLE_DEFINITION = {
   schemaVersion: 'soar.playbook',
@@ -71,7 +72,7 @@ async function installSoarMocks(page: Page): Promise<MockState> {
   await page.route('**/*', async route => {
     const request = route.request()
     const url = new URL(request.url())
-    if (url.origin !== 'http://127.0.0.1:4173') {
+    if (url.origin !== workbenchOrigin()) {
       await route.continue()
       return
     }

@@ -108,7 +108,7 @@ async function loadDetails(alarm: Alarm) {
   else dispositionError.value = t('drawer.loadDispositionFailed')
   if (ev.status === 'fulfilled') evidence.value = ev.value
   else evidenceError.value = t('drawer.loadEvidenceFailed')
-  if (cases.status === 'fulfilled') relatedCase.value = cases.value.find(item => item.alarmIds.includes(alarm.id)) ?? null
+  if (cases.status === 'fulfilled') relatedCase.value = cases.value.items.find(item => item.alarmIds.includes(alarm.id)) ?? null
   else relatedCaseError.value = t('drawer.loadCaseFailed')
 }
 
@@ -165,7 +165,7 @@ async function createCase(): Promise<void> {
   try {
     const result = await createCaseFromAlarm(props.alarm)
     const cases = await loadCases()
-    relatedCase.value = cases.find(item => item.id === result.caseId || item.caseNo === result.caseNo) ?? null
+    relatedCase.value = cases.items.find(item => item.id === result.caseId || item.caseNo === result.caseNo) ?? null
     if (result.duplicate) ElMessage.info(t('drawer.caseAlreadyLinked'))
     else ElMessage.success(t('drawer.caseCreated'))
     emit('updated')

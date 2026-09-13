@@ -53,7 +53,7 @@ async function loadUeba() {
   try {
   const [entities, summary, lists, techniques] = await Promise.allSettled([uebaEntities(riskLimit.value), uebaSummary(), listWatchlists(), listTechniques()])
   techniqueError.value = techniques.status === 'rejected' ? String(techniques.reason) : ''
-  if (techniques.status === 'fulfilled') attackTechniques.value = techniques.value.map(technique => ({ id: technique.id, name: technique.name }))
+  if (techniques.status === 'fulfilled') attackTechniques.value = techniques.value.items.map(technique => ({ id: technique.id, name: technique.name }))
   loadError.value = [entities, summary, lists].filter(item => item.status === 'rejected').map(item => String((item as PromiseRejectedResult).reason)).join(' · ')
   if (entities.status === 'fulfilled') riskEntities.value = entities.value
   if (summary.status === 'fulfilled') riskSummary.value = summary.value
