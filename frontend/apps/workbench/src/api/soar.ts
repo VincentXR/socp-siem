@@ -91,6 +91,9 @@ export const publishVersion = (playbookId: string, version: number) =>
   post<SoarVersion>(`/soar-web/api/playbooks/${encodeURIComponent(playbookId)}/versions/${version}/publish`)
 export const deprecateVersion = (playbookId: string, version: number) =>
   post<SoarVersion>(`/soar-web/api/playbooks/${encodeURIComponent(playbookId)}/versions/${version}/deprecate`)
+/** Restore an older revision as a new editable draft (published history stays immutable). */
+export const rollbackVersion = (playbookId: string, version: number) =>
+  post<SoarVersion>(`/soar-web/api/playbooks/${encodeURIComponent(playbookId)}/versions/${version}/rollback`)
 export const exportVersion = (playbookId: string, version: number) =>
   get<SoarVersion & { format?: string; exportedAt?: string }>(`/soar-web/api/playbooks/${encodeURIComponent(playbookId)}/versions/${version}/export`)
 export const getRun = (id: string) => get<SoarRun>(`/soar-web/api/runs/${encodeURIComponent(id)}`)

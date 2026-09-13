@@ -27,6 +27,7 @@ import type { NodeTypesObject } from '@vue-flow/core'
 import {
   createPlaybook,
   createVersion as createVersionApi,
+  deprecateVersion,
   dryRunVersion,
   getPlaybook,
   getVersion,
@@ -34,6 +35,7 @@ import {
   listVersions,
   queueRun as queueRunApi,
   publishVersion,
+  rollbackVersion,
   saveVersion,
   validateVersion,
   type SoarPlaybook,
@@ -486,6 +488,51 @@ async function publish() {
   }
 }
 
+/** Retires a published revision; the server keeps it for audit but stops running it. */
+async function deprecateSelected(): Promise<void> {
+  const version = selectedVersion.value
+  if (!props.canPublish || !selectedPlaybookId.value || !version || version.status !== 'PUBLISHED') return
+  if (!window.confirm(t('soar.deprecateConfirm', { version: version.version }))) return
+  loading.value = true
+  errorMessage.value = ''
+  try {
+    await deprecateVersion(selectedPlaybookId.value, version.version)
+    await loadVersions(version.version)
+    message.value = t('soar.versionDeprecated', { version: version.version })
+  } catch (failure) {
+    errorMessage.value = failure instanceof Error ? failure.message : t('soar.deprecateFailed')
+  } finally {
+    loading.value = false
+  }
+}
+
+/**
+ * Restores an older revision by deriving a new draft from it. Published history
+ * is immutable, so the rollback always lands as an editable draft the operator
+ * still has to review, validate and publish.
+ */
+async function rollbackSelected(): Promise<void> {
+  const version = selectedVersion.value
+  if (!props.canWrite || !selectedPlaybookId.value || !version || version.status === 'DRAFT') return
+  if (!discardGuard()) return
+  if (!window.confirm(t('soar.rollbackConfirm', { version: version.version }))) return
+  loading.value = true
+  errorMessage.value = ''
+  try {
+    const draft = await rollbackVersion(selectedPlaybookId.value, version.version)
+    versions.value = [draft, ...versions.value.filter(item => item.version !== draft.version)]
+    selectedVersionNo.value = draft.version
+    rowVersion.value = draft.rowVersion
+    flow.applyDefinition(draft.definition, draft.layout)
+    validation.value = null
+    message.value = t('soar.rollbackCreated', { source: version.version, version: draft.version })
+  } catch (failure) {
+    errorMessage.value = failure instanceof Error ? failure.message : t('soar.rollbackFailed')
+  } finally {
+    loading.value = false
+  }
+}
+
 /* ---------------- canvas interactions ---------------- */
 function onCanvasDrop(event: DragEvent): void {
   if (!props.canWrite) return
@@ -627,8 +674,22 @@ onUnmounted(() => {
           <span>{{ playbooks.find(item => item.id === selectedPlaybookId)?.name || t('forms.blank') }}</span>
           <el-select :model-value="selectedVersionNo" :disabled="loading" :aria-label="t('soar.version')" @change="changeVersion">
 
-            <el-option v-for="version in versions" :key="version.id" :value="version.version" :label="`Revision ${version.version} · ${statusLabel(version.status)}`" />
+            <el-option v-for="version in versions" :key="version.id" :value="version.version" :label="`${t('soar.revisionLabel', { version: version.version })} · ${statusLabel(version.status)}`" />
           </el-select>
+          <el-button
+            v-if="props.canPublish && selectedVersion?.status === 'PUBLISHED'"
+            size="small"
+            plain
+            :loading="loading"
+            @click="deprecateSelected"
+          >{{ t('soar.deprecateVersion') }}</el-button>
+          <el-button
+            v-if="props.canWrite && selectedVersion && selectedVersion.status !== 'DRAFT'"
+            size="small"
+            plain
+            :loading="loading"
+            @click="rollbackSelected"
+          >{{ t('soar.rollbackVersion') }}</el-button>
         </div>
       </div>
     </template>

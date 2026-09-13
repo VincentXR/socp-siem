@@ -122,6 +122,20 @@ final class SoarPlaybookCommandService {
     }
 
     Map<String, Object> createVersion(String playbookId) {
+        return createDraftVersion(playbookId, null);
+    }
+
+    /**
+     * Restores an older revision as a new editable draft. Published versions are
+     * immutable, so a rollback never rewrites history: it appends a draft that
+     * copies the selected revision's definition and layout, which the operator
+     * then reviews, validates and publishes.
+     */
+    Map<String, Object> rollbackToDraft(String playbookId, int versionNo) {
+        return createDraftVersion(playbookId, versionNo);
+    }
+
+    Map<String, Object> createDraftVersion(String playbookId, Integer baseVersionNo) {
         service.requireControlPlane();
         String tenant = service.tenant();
         service.playbooks.findByTenantIdAndIdForUpdate(tenant, playbookId)
@@ -134,8 +148,14 @@ final class SoarPlaybookCommandService {
             throw SoarService.error(HttpStatus.CONFLICT, "SOAR_DRAFT_ALREADY_EXISTS",
                     "the playbook already has an editable draft");
         }
-        PlaybookVersionEntity base = history.isEmpty() ? null : history.get(0);
-        int next = base == null ? 1 : base.getVersionNo() + 1;
+        PlaybookVersionEntity base = baseVersionNo == null
+                ? (history.isEmpty() ? null : history.get(0))
+                : history.stream()
+                        .filter(candidate -> candidate.getVersionNo() == baseVersionNo)
+                        .findFirst()
+                        .orElseThrow(() -> SoarService.error(HttpStatus.NOT_FOUND, "SOAR_VERSION_NOT_FOUND",
+                                "version not found"));
+        int next = history.isEmpty() ? 1 : history.get(0).getVersionNo() + 1;
         Instant now = Instant.now();
         PlaybookVersionEntity draft = new PlaybookVersionEntity();
         draft.setId(UUID.randomUUID().toString());

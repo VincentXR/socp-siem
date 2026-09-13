@@ -286,6 +286,13 @@ public class SoarService {
         return playbookCommands.deprecate(playbookId, versionNo);
     }
 
+    /** Restore an older revision as a new editable draft (history stays immutable). */
+    @Transactional
+    @AuditOperation(action = "SOAR_ROLLBACK_PLAYBOOK", target = "t_soar_playbook_version")
+    public Map<String, Object> rollbackToDraft(String playbookId, int versionNo) {
+        return playbookCommands.rollbackToDraft(playbookId, versionNo);
+    }
+
     @Transactional
     @AuditOperation(action = "SOAR_QUEUE_RUN", target = "t_soar_run")
     public Map<String, Object> queueManualRun(String requestId, String versionId, Map<String, Object> subject,

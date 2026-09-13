@@ -512,6 +512,56 @@ class SoarPlaybookLifecycleCoverageTest {
                 SoarDefinitionValidator.SCHEMA_VERSION, hash, nodes, actions, highRisk);
     }
 
+    // -------------------------------------------------------------- rollback
+
+    @Test
+    void rollbackRestoresAnOlderRevisionAsANewDraft() {
+        SoarPlaybookEntity playbook = playbook("pb-1", "Contain host");
+        PlaybookVersionEntity published = version("v-2", "pb-1", 2, SoarPlaybookVersionStatus.PUBLISHED);
+        PlaybookVersionEntity older = version("v-1", "pb-1", 1, SoarPlaybookVersionStatus.DEPRECATED,
+                SIMPLE_DEFINITION, "{\"highRiskActionCount\":0,\"actionCount\":2}");
+        older.setLayoutJson("{\"nodes\":[{\"id\":\"start\",\"x\":7,\"y\":9}]}");
+        given(playbooks.findByTenantIdAndIdForUpdate("tenant-a", "pb-1")).willReturn(Optional.of(playbook));
+        given(playbooks.findByTenantIdAndId("tenant-a", "pb-1")).willReturn(Optional.of(playbook));
+        given(versions.findByTenantIdAndPlaybookIdOrderByVersionNoDesc("tenant-a", "pb-1"))
+                .willReturn(new ArrayList<>(List.of(published, older)));
+        given(versions.findFirstByTenantIdAndPlaybookIdAndStatusOrderByVersionNoDesc(
+                "tenant-a", "pb-1", SoarPlaybookVersionStatus.DRAFT.name())).willReturn(Optional.empty());
+        given(validator.canonicalHash(anyString())).willReturn("rollback-hash");
+
+        Map<String, Object> restored = service.rollbackToDraft("pb-1", 1);
+
+        ArgumentCaptor<PlaybookVersionEntity> captor = ArgumentCaptor.forClass(PlaybookVersionEntity.class);
+        verify(versions).save(captor.capture());
+        PlaybookVersionEntity draft = captor.getValue();
+        // A rollback appends a draft; the published revision itself stays untouched.
+        assertThat(draft.getVersionNo()).isEqualTo(3);
+        assertThat(draft.getStatus()).isEqualTo(SoarPlaybookVersionStatus.DRAFT.name());
+        assertThat(draft.getDefinitionJson()).isEqualTo(SIMPLE_DEFINITION);
+        assertThat(draft.getLayoutJson()).isEqualTo("{\"nodes\":[{\"id\":\"start\",\"x\":7,\"y\":9}]}");
+        assertThat(draft.getRiskSummaryJson()).isEqualTo("{\"highRiskActionCount\":0,\"actionCount\":2}");
+        assertThat(draft.getDefinitionHash()).isEqualTo("rollback-hash");
+        assertThat(draft.getTenantId()).isEqualTo("tenant-a");
+        assertThat(restored).containsEntry("version", 3).containsEntry("status", "DRAFT");
+        assertThat(published.getStatus()).isEqualTo(SoarPlaybookVersionStatus.PUBLISHED.name());
+    }
+
+    @Test
+    void rollbackRejectsAnUnknownRevision() {
+        given(playbooks.findByTenantIdAndIdForUpdate("tenant-a", "pb-1"))
+                .willReturn(Optional.of(playbook("pb-1", "Contain host")));
+        given(versions.findByTenantIdAndPlaybookIdOrderByVersionNoDesc("tenant-a", "pb-1"))
+                .willReturn(new ArrayList<>());
+        given(versions.findFirstByTenantIdAndPlaybookIdAndStatusOrderByVersionNoDesc(
+                "tenant-a", "pb-1", SoarPlaybookVersionStatus.DRAFT.name())).willReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.rollbackToDraft("pb-1", 9))
+                .isInstanceOfSatisfying(ResponseStatusException.class, error -> {
+                    assertThat(error.getStatusCode().value()).isEqualTo(404);
+                    assertThat(error.getReason()).contains("SOAR_VERSION_NOT_FOUND");
+                });
+    }
+
     private SoarPlaybookEntity playbook(String id, String name) {
         return playbook(id, name, List.of());
     }

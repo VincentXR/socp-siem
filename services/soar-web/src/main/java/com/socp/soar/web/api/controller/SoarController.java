@@ -362,6 +362,13 @@ public class SoarController {
         return ApiResult.ok(service.deprecate(id, version));
     }
 
+    /** Restore an older revision as a new editable draft; published history is never rewritten. */
+    @PostMapping("/playbooks/{id}/versions/{version}/rollback")
+    @RequirePermission("soar:edit")
+    public ResponseEntity<ApiResult<Map<String, Object>>> rollback(@PathVariable String id, @PathVariable int version) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResult.ok(service.rollbackToDraft(id, version)));
+    }
+
     @PostMapping("/runs")
     @RequirePermission("soar:execute")
     public ResponseEntity<ApiResult<Map<String, Object>>> queueRun(@Valid @RequestBody RunRequest request) {
