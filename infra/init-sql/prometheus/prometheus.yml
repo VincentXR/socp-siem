@@ -3,18 +3,18 @@
 # ⚠️ 现状说明（重要）
 #   1) 端口→服务映射已按 build/run-all.sh 的 BACKENDS 数组校准（此前的注释映射全部是错的）。
 #
-#   2) `micrometer-registry-prometheus` 是 **15 个服务的编译依赖**，且各服务的
+#   2) `micrometer-registry-prometheus` 是 **14 个服务的编译依赖**，且各服务的
 #      `management.endpoints.web.exposure.include` 已含 `prometheus`：
 #      - api-gateway（18092）无 context-path，走根路径 `/actuator/prometheus`；
-#      - 其余 16 个业务服务有 `server.servlet.context-path: /{服务名}`，
+#      - 其余 13 个业务服务有 `server.servlet.context-path: /{服务名}`，
 #        指标真实路径为 `/{服务名}/actuator/prometheus`，由下方 `socp-services`
 #        job 的 relabel_configs 按 service 标签动态拼出 __metrics_path__。
 #      只要服务已用最新代码重新编译启动，两个 job 均能抓到数据。
 #
-#   3) 【已修正的路径 bug】16 个业务服务都配了 `server.servlet.context-path: /{服务名}`，
+#   3) 【已修正的路径 bug】13 个业务服务都配了 `server.servlet.context-path: /{服务名}`，
 #      其指标真实路径是 `/{服务名}/actuator/prometheus`；而 api-gateway 无 context-path，
 #      走根路径 `/actuator/prometheus`。原先单个 job 统一写死 `/actuator/prometheus`，
-#      即使端点启用了也会对 16 个服务全部 404。现拆成两个 job，业务服务用 relabel
+#      即使端点启用了也会对 13 个业务服务全部 404。现拆成两个 job，业务服务用 relabel
 #      按 service 标签动态拼出带 context-path 的 __metrics_path__。
 #
 #   另注：全局 tracing 由 socp-obs 控制，SOCP_TRACING_ENABLED=true 时可通过
@@ -64,8 +64,6 @@ scrape_configs:
         labels: { service: hips-web }       # 端点管理
       - targets: ['host.docker.internal:18088']
         labels: { service: ai-assistant }   # 安全问答
-      - targets: ['host.docker.internal:18090']
-        labels: { service: detect-model }      # 二次关联分析（未接 Kafka）
       - targets: ['host.docker.internal:18094']
         labels: { service: threat-web }         # 威胁情报（H2）
       - targets: ['host.docker.internal:18095']

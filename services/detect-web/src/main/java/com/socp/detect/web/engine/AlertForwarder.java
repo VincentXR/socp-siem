@@ -27,7 +27,7 @@ import java.util.Map;
  * Materializes detection alerts into the durable Detection -> Alert Web
  * outbox.  The detection worker never performs a remote HTTP call: the
  * scheduled outbox publisher owns retries, tenant propagation, and the
- * optional detect-model fan-out after Alert Web acknowledges the payload.
+ * optional secondary-analysis fan-out after Alert Web acknowledges the payload.
  */
 @Component
 public class AlertForwarder {

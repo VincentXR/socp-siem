@@ -20,3 +20,16 @@ spring:
     baseline-on-migrate: true
     baseline-version: 0
     locations: classpath:db/migration
+
+socp:
+  detect:
+    model:
+      datasource:
+        url: jdbc:postgresql://${SOCP_PG_HOST:localhost}:${SOCP_PG_PORT:5432}/detect_model
+        driver-class-name: org.postgresql.Driver
+        username: ${SOCP_PG_USER:socp}
+        password: ${SOCP_PG_PASSWORD:socp}
+      flyway:
+        url: jdbc:postgresql://${SOCP_PG_HOST:localhost}:${SOCP_PG_PORT:5432}/detect_model
+        user: ${SOCP_PG_MIGRATION_USER:${SOCP_PG_USER:socp}}
+        password: ${SOCP_PG_MIGRATION_PASSWORD:${SOCP_PG_PASSWORD:socp}}

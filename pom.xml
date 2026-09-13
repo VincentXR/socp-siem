@@ -82,13 +82,12 @@
         <module>platform/socp-client</module>
         <module>platform/socp-starter</module>
 
-        <!-- 15 个业务服务 -->
+        <!-- 14 个可执行服务；二次分析已并入 detect-web -->
         <module>services/soc-base</module>
         <module>services/asset-web</module>
         <module>services/alert-web</module>
         <module>services/search-config</module>
         <module>services/detect-web</module>
-        <module>services/detect-model</module>
         <module>services/hips-web</module>
         <module>services/soar-web</module>
         <module>services/report-web</module>

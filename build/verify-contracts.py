@@ -58,7 +58,7 @@ def main() -> int:
     # the contract explicitly so this check does not confuse it with the two
     # historical collector aliases.
     auxiliary_route_ids = {"detect-web-runtime"}
-    legacy_route_ids = {"asset-collect", "hips-collect"}
+    legacy_route_ids = {"asset-collect", "hips-collect", "detect-model"}
     unexpected_routes = route_ids - downstream - auxiliary_route_ids
     if unexpected_routes != legacy_route_ids:
         errors.append(f"unexpected non-default routes: {sorted(unexpected_routes)}")
@@ -68,6 +68,9 @@ def main() -> int:
         expected = f"RewritePath=/{legacy}/?(?<segment>.*), /{owner}/$\\{{segment}}"
         if expected not in gateway:
             errors.append(f"gateway compatibility rewrite missing: {legacy} -> {owner}")
+    model_rewrite = "RewritePath=/detect-model/?(?<segment>.*), /detect-web/model/$\\{segment}"
+    if model_rewrite not in gateway or "uri: ${SOCP_GAS_MODEL_URI:${SOCP_GAS_WORKER_URI:" not in gateway:
+        errors.append("gateway compatibility rewrite missing: detect-model -> detect-web worker")
 
     health_registry = (
         ROOT / "frontend/apps/workbench/src/api/health.ts"
@@ -279,7 +282,6 @@ def main() -> int:
         "services/ai-assistant/src/main/resources/application-pg.yml",
         "services/asset-web/src/main/resources/application-pg.yml",
         "services/attack-web/src/main/resources/application-pg.yml",
-        "services/detect-model/src/main/resources/application-pg.yml",
         "services/detect-web/src/main/resources/application-pg.yml",
         "services/hips-web/src/main/resources/application-pg.yml",
         "services/notify-web/src/main/resources/application-pg.yml",

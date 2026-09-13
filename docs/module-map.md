@@ -29,8 +29,7 @@ tests and artifact checks are under `frontend/apps/workbench/scripts`.
 |---|---:|---|---|
 | `api-gateway` | 18092 | Routing, login, JWT/RBAC, and trace propagation | Stateless |
 | `search-config` (`search-config-api` + `search-config-worker` in prod) | 18081 (API) | Source configuration, parsing, canonical event ingest, durable publication, and replayable indexing | H2/PG + Ingestion Outbox + Kafka + replayable OpenSearch indexer |
-| `detect-web` (`detect-web-api` + `detect-web-worker` in prod) | 18082 (API) | Rule CRUD, hot reload, detection, backpressure, partition restore, shared entity risk, and durable Alert Web hand-off | H2/PG + in-process hot engine + journal/outbox/risk projections |
-| `detect-model` | 18090 | Secondary alert analysis and correlation endpoint | H2 |
+| `detect-web` (`detect-web-api` + `detect-web-worker` in prod) | 18082 (API) | Rule CRUD, hot reload, detection, backpressure, partition restore, shared entity risk, durable Alert Web hand-off, and secondary alert analysis | Detection H2/PG + independent secondary-analysis H2/PG/Flyway persistence unit + in-process hot engine + journal/outbox/risk projections |
 | `alert-web` | 18080 | Alert facts, enrichment, disposition, idempotency, and Alert Outbox | PostgreSQL |
 | `incident-web` | 18097 | Incident creation, merge, and timeline | PostgreSQL |
 | `soar-web` | 18083 | Playbook CRUD and execution | H2 + durable execution projection + optional Temporal |
@@ -48,10 +47,13 @@ The services with `application-integration.yml` import their
 migrations are owned by the service that owns the corresponding schema. The
 production profile rejects H2.
 
-The default `full` deployment runs 15 JVMs. Asset and endpoint collection
+The default `full` deployment runs 14 JVMs. Asset and endpoint collection
 ingress are hosted by `asset-web` and `hips-web`; the gateway rewrites the
 legacy `/asset-collect/**` and `/hips-collect/**` paths so agents do not need to
 change URLs. The duplicate standalone collector modules are retired.
+Secondary analysis is hosted by `detect-web-worker`; the gateway rewrites the
+legacy `/detect-model/**` path, while the original database, Flyway history,
+Kafka consumer group, and transaction boundary are preserved.
 Production collection must come from managed Agent/Falco/CMDB inputs.
 
 Code-module ownership is deliberately separate from the target runtime shape.
@@ -62,15 +64,16 @@ default service exactly once to one of six target units:
 |---|---|
 | `gateway-ui` | `api-gateway`, `frontend/apps/workbench` |
 | `ingest-search` | `search-config` |
-| `detection` | `detect-web`, `detect-model` |
+| `detection` | `detect-web` |
 | `alert-incident` | `alert-web`, `incident-web` |
 | `response-integration` | `soar-web`, `notify-web`, `asset-web`, `hips-web`, `threat-web`, `attack-web` |
 | `report-ai` | `report-web`, `ai-assistant`, `soc-base` |
 
 Run `python build/runtime-topology.py --check` to verify that module, process,
 compatibility, and target-unit registries still agree.
-The six-unit shape remains a target contract until aggregate applications pass
-the context, API, failure, and capacity gates required by
+The Detection unit has completed its first process consolidation, but the
+six-unit shape remains a target contract until every aggregate application
+passes the context, API, failure, and capacity gates required by
 [ADR 007](adr/007-runtime-deployment-units.md).
 
 ## Platform modules

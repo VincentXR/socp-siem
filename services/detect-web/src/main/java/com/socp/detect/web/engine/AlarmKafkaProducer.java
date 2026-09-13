@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.TimeUnit;
 
-/** Publishes the original alert stream consumed by detect-model. */
+/** Publishes the original alert stream consumed by the embedded secondary analyzer. */
 @Component
 @DetectRuntimeRole(DetectRuntimeRole.Role.WORKER)
 public class AlarmKafkaProducer {

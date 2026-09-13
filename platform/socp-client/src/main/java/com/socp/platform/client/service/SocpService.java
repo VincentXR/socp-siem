@@ -30,7 +30,6 @@ public enum SocpService {
     SOC("soc-base", 18086),
     HIPS("hips-web", 18087),
     AI("ai-assistant", 18088),
-    DETECT_MODEL("detect-model", 18090),
     GATEWAY("api-gateway", 18092),
     THREAT("threat-web", 18094),
     ATTACK("attack-web", 18095),
@@ -44,7 +43,7 @@ public enum SocpService {
     SocpService(String serviceName, int defaultPort) {
         this.serviceName = serviceName;
         this.defaultPort = defaultPort;
-        // ALERT -> socp.alert.url / SOCP_ALERT_URL；DETECT_MODEL -> socp.detect-model.url
+        // ALERT -> socp.alert.url / SOCP_ALERT_URL；DETECT -> socp.detect.url
         this.urlProperty = "socp." + name().toLowerCase().replace('_', '-') + ".url";
     }
 

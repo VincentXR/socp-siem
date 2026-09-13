@@ -15,6 +15,12 @@ class DetectMigrationTest {
         String url = "jdbc:h2:mem:detect-migration;MODE=PostgreSQL;DB_CLOSE_DELAY=-1";
         Flyway.configure().dataSource(url, "sa", "").load().migrate();
 
+        String secondaryUrl = "jdbc:h2:mem:secondary-analysis-migration;MODE=PostgreSQL;DB_CLOSE_DELAY=-1";
+        Flyway.configure()
+                .dataSource(secondaryUrl, "sa", "")
+                .locations("classpath:db/secondary-analysis")
+                .load()
+                .migrate();
         try (var connection = DriverManager.getConnection(url, "sa", "");
              var statement = connection.prepareStatement(
                      "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES "
@@ -29,6 +35,14 @@ class DetectMigrationTest {
                              + "WHERE INDEX_NAME IN "
                              + "('IDX_DETECTION_EVENT_COMPLETED_RETENTION',"
                              + "'IDX_DETECTION_EVENT_DEAD_LETTER_RETENTION')");
+             var result = statement.executeQuery()) {
+            result.next();
+            assertEquals(2, result.getInt(1));
+        }
+        try (var connection = DriverManager.getConnection(secondaryUrl, "sa", "");
+             var statement = connection.prepareStatement(
+                     "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES "
+                             + "WHERE TABLE_NAME IN ('T_ANALYZED','T_ANALYSIS_RECEIPT')");
              var result = statement.executeQuery()) {
             result.next();
             assertEquals(2, result.getInt(1));

@@ -33,7 +33,7 @@ FRONTEND_PORT="$SOCP_PORT_FRONTEND_WORKBENCH"
 # JVM 内存：开发默认使用较小堆；完整启动时可用 SOCP_JVM_OPTS 覆盖。
 # 单个服务可用 SOCP_<SERVICE>_JVM_OPTS 覆盖（例如
 # SOCP_SEARCH_CONFIG_JVM_OPTS），避免为一个重型服务抬高所有 JVM 的预算。
-# 15 个默认进程同时启动时，降低 Xms/Xmx 能明显减少内存峰值和 GC 竞争。
+# 14 个默认进程同时启动时，降低 Xms/Xmx 能明显减少内存峰值和 GC 竞争。
 JVM_OPTS="${SOCP_JVM_OPTS:--Xms32m -Xmx256m}"
 START_BATCH_SIZE="${SOCP_START_BATCH_SIZE:-3}"
 START_HEALTH_TIMEOUT="${SOCP_START_HEALTH_TIMEOUT:-45}"
@@ -51,7 +51,7 @@ RUNTIME_PROFILES="${SOCP_RUNTIME_PROFILES:-dev,pg}"
 CORE_SERVICES="alert-web search-config detect-web incident-web soar-web notify-web report-web api-gateway"
 
 # ui：前端所有业务页面的服务依赖，不包含 asset/hips 采集器。
-UI_SERVICES="alert-web search-config detect-web detect-model soar-web report-web asset-web soc-base hips-web ai-assistant threat-web attack-web notify-web incident-web api-gateway"
+UI_SERVICES="alert-web search-config detect-web soar-web report-web asset-web soc-base hips-web ai-assistant threat-web attack-web notify-web incident-web api-gateway"
 
 # 开发密钥：本机启动注入（生产必须通过环境变量显式提供，禁止使用此默认值）
 # 签发与验签必须同值：login-secret 默认 = jwt-secret（否则 /auth/login 签发的 token 业务服务验签失败）

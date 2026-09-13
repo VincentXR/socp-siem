@@ -25,7 +25,7 @@ flowchart LR
   AO --> AK[(Kafka<br/>socp-alarm-events)]
   AK --> F[Incident / Notify / SOAR / ClickHouse]
   D --> DM[(Kafka<br/>socp-alarm-original)]
-  DM --> M[detect-model]
+  DM --> M[detect-web worker<br/>secondary analysis]
   UI[Vue Workbench] --> GW[api-gateway]
   GW --> D
   GW --> A
@@ -38,8 +38,9 @@ publication intent together. The Detection Alert Outbox is the hand-off
 boundary between the stateful rule engine and Alert Web: journal completion
 and every resulting Outbox row are committed atomically. A scheduled publisher
 retries Alert Web until it acknowledges the deterministic source ID, then
-publishes the optional detect-model event. Alert Web has another transactional
-Outbox for the Kafka fan-out hand-off.
+publishes the optional secondary-analysis event. The same Detection worker
+artifact consumes that event through an independent persistence unit. Alert
+Web has another transactional Outbox for the Kafka fan-out hand-off.
 
 ## Implemented capabilities
 
@@ -167,9 +168,11 @@ build/                    startup, verification, benchmark, chaos, demos
 docs/                     architecture, operating guides, tests, and ADRs
 ```
 
-The 15 executable service modules currently run as 15 processes, while the
-reviewed target is six deployment units. Verify that
-these two views have not drifted with:
+The default full deployment currently runs 14 backend processes. The former
+`detect-model` process is embedded in the Detection worker; its database,
+Flyway history, Kafka consumer group, and transaction boundary remain
+independent. The reviewed target is still six deployment units. Verify that
+the current and target views have not drifted with:
 
 ```bash
 python build/runtime-topology.py --check

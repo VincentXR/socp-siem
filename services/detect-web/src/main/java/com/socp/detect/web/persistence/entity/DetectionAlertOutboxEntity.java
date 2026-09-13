@@ -16,7 +16,7 @@ import java.time.Instant;
  * alert identities.  A replay therefore becomes an idempotent lookup instead
  * of another alert row. PENDING means Alert Web has not durably acknowledged
  * the payload, DELIVERED is the persisted retry point when Alert Web succeeded
- * but the optional detect-model event did not, PUBLISHED means both stages
+ * but the optional secondary-analysis event did not, PUBLISHED means both stages
  * have completed, and DEAD is terminal after the configured retry limit. The successful happy path may move directly from the
  * PROCESSING claim to PUBLISHED.</p>
  */

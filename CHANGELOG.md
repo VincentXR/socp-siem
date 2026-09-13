@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Runtime topology
+
+- Embedded the former `detect-model` secondary analyzer in the Detection
+  worker and removed its independent executable process, reducing the default
+  full topology from 15 to 14 JVMs. The legacy gateway path, database, Flyway
+  history, Kafka consumer group, and transaction boundary remain compatible.
+
 ### Pipeline durability and performance
 
 - Added an Ingestion Outbox so canonical event persistence and Kafka
@@ -10,7 +17,7 @@
   bulk item succeeds, failed partitions seek back, and stable document IDs
   make replay idempotent.
 - Added a durable Detection Alert Outbox with deterministic alert IDs,
-  tenant-aware retry, stale-claim recovery, and a separate detect-model
+  tenant-aware retry, stale-claim recovery, and a separate secondary-analysis
   publication stage.
 - Removed Detection's direct SOAR call; Alert Web's transactional Outbox is
   now the single durable Kafka hand-off boundary for downstream fan-out.

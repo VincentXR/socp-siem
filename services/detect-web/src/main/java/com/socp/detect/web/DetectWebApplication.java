@@ -6,8 +6,8 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Import;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
-/** Rule evaluation, detection state, and durable alert hand-off service. */
-@SpringBootApplication(scanBasePackages = "com.socp.detect.web")
+/** Rule evaluation, secondary analysis, detection state, and durable alert hand-off service. */
+@SpringBootApplication(scanBasePackages = {"com.socp.detect.web", "com.socp.detect.model"})
 @EnableScheduling
 @Import(SocpPlatformAutoConfiguration.class)
 public class DetectWebApplication {

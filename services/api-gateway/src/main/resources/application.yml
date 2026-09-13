@@ -60,9 +60,13 @@ spring:
               predicates:
                 - Path=/ai-assistant/**
             - id: detect-model
-              uri: ${SOCP_GAS_MODEL_URI:http://localhost:18090}
+              # Compatibility surface owned by the Detection worker. Keep the
+              # public path stable while avoiding a second JVM; persistence stays separate.
+              uri: ${SOCP_GAS_MODEL_URI:${SOCP_GAS_WORKER_URI:http://localhost:18082}}
               predicates:
                 - Path=/detect-model/**
+              filters:
+                - RewritePath=/detect-model/?(?<segment>.*), /detect-web/model/$\{segment}
             - id: asset-collect
               # Compatibility route: the collection ingress is hosted by asset-web.
               uri: ${SOCP_SAM_COLLECT_URI:http://localhost:18085}

@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.AtomicReference;
 public class HealthSnapshotService {
 
     public static final List<String> SERVICE_NAMES = List.of(
-            "alert-web", "search-config", "detect-web", "detect-model", "soar-web",
+            "alert-web", "search-config", "detect-web", "soar-web",
             "report-web", "asset-web", "soc-base", "hips-web", "ai-assistant",
             "threat-web", "attack-web", "notify-web", "incident-web", "api-gateway");
 

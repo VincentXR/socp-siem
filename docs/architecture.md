@@ -23,7 +23,7 @@ flowchart LR
   FAN --> I[incident-web]
   FAN --> R[soar-web / notify-web]
   D --> DM[(Kafka<br/>socp-alarm-original)]
-  DM --> M[detect-model]
+  DM --> M[detect-web-worker<br/>secondary analysis]
   UI[Vue workbench] --> GW[api-gateway]
   GW --> D
   GW --> A
@@ -47,9 +47,11 @@ materializes the alert payload and source identity in
 `t_detection_alert_outbox`. The scheduled publisher retries the HTTP hand-off
 with exponential backoff and carries the persisted tenant. Once Alert Web
 acknowledges the request, the publisher sends the optional
-`socp-alarm-original` event for `detect-model`. Alert Web then writes its own
-transactional Outbox row and fans out to incident, notification, SOAR, and
-analytics consumers.
+`socp-alarm-original` event for the secondary analyzer hosted by
+`detect-web-worker`. The analyzer retains the former `detect_model` database,
+Flyway history, consumer group, and transaction boundary. Alert Web then
+writes its own transactional Outbox row and fans out to incident,
+notification, SOAR, and analytics consumers.
 
 ## Responsibilities and storage
 
@@ -58,7 +60,7 @@ analytics consumers.
 | Ingestion and parsing | Vector, collectors, `search-config` | Vendor formats stay outside detection rules |
 | Ingestion publication | `t_ingestion_outbox` | Event persistence and Kafka publication intent commit atomically |
 | Event transport | Kafka `socp-events`, rule-change, alarm topics | Separates ingestion, detection, indexing, and fan-out |
-| Detection | `socp-rule` embedded in `detect-web-worker` (`detect-web-api` owns management) | Rules, hot reload, suppression, windows, backpressure |
+| Detection | `socp-rule` and the secondary analyzer embedded in `detect-web-worker` (`detect-web-api` owns management) | Rules, hot reload, suppression, windows, backpressure; secondary analysis uses its own persistence unit |
 | Detection recovery | `t_detection_event` | Event lifecycle, partition ownership, time-bounded paginated replay |
 | Detection alert hand-off | `t_detection_alert_outbox` | Durable Alert Web delivery and retry |
 | Entity risk | `t_entity_risk_profile`, `t_entity_risk_alert` | Shared, idempotent projection across Detection instances |

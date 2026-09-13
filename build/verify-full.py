@@ -2,7 +2,7 @@
 """SOCP 全栈端到端验证：默认后端进程健康 + 采集→检测→告警→情报富化→通知→建案→SOAR 全链路。
 
 用法： python socp/build/verify-full.py
-前置： bash socp/build/run-all.sh backend  （默认 15 个进程全部 UP）
+前置： bash socp/build/run-all.sh backend  （默认 14 个进程全部 UP）
 
 与 verify-slice.py 的分工：
   verify-slice.py  验证横切能力（鉴权/租户/审计/限流/追踪），只走网关 + alert-web。

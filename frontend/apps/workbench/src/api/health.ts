@@ -15,7 +15,6 @@ export const HEALTH_TARGETS = [
   { name: 'alert-web' },
   { name: 'search-config' },
   { name: 'detect-web' },
-  { name: 'detect-model' },
   { name: 'soar-web' },
   { name: 'report-web' },
   { name: 'asset-web' },

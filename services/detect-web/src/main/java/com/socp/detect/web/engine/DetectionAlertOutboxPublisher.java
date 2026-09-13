@@ -38,7 +38,7 @@ import java.util.concurrent.Semaphore;
  * instances sharing a database cannot publish the same outbox row at the same
  * time.  A stale PROCESSING row is returned to the correct stage after a
  * publisher crash.  Alert Web itself is idempotent by tenant + sourceAlertId.
- * The optional detect-model event is a second stage; it never causes a failed
+ * The optional secondary-analysis event is a second stage; it never causes a failed
  * Alert Web request to be retried as a new alert.</p>
  */
 @Component

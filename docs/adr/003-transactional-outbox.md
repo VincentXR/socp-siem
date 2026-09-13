@@ -14,7 +14,7 @@ SOCP uses three explicit Outbox boundaries:
 2. `detect-web` writes a fully materialized detection alert to
    `t_detection_alert_outbox` before the rule-engine worker continues. The
    publisher retries Alert Web, then publishes `socp-alarm-original` for
-   detect-model.
+   the secondary analyzer embedded in the Detection worker.
 3. `alert-web` writes `t_alarm` and its `outbox_event` row in the same
    database transaction. `OutboxPublisher` waits for a Kafka broker
    acknowledgement before marking the row `PUBLISHED`. It scans bounded
