@@ -188,6 +188,11 @@ def ingest(lines):
     )
     if status != 200:
         raise RuntimeError(f"ingest failed with HTTP {status}")
+    if isinstance(body, dict) and "code" in body:
+        if body.get("code") != 0:
+            raise RuntimeError("ingest rejected: code=%s message=%s"
+                               % (body.get("code"), body.get("message")))
+        body = body.get("data") or {}
     accepted = body.get("accepted", 0) if isinstance(body, dict) else 0
     if accepted <= 0:
         raise RuntimeError("ingest accepted no events")

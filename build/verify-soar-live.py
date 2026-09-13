@@ -91,9 +91,13 @@ def normalize_base(value: str, append_context: bool = True) -> str:
 
 
 def unwrap(body: Any) -> Any:
-    """Unwrap the platform's ``{code,message,timestamp,data}`` envelope."""
+    """Unwrap the platform's ``{code,message,timestamp,data}`` envelope.
+
+    A non-zero ``code`` yields ``None`` so callers fail their status guards
+    instead of reading a successful-looking payload from an error envelope.
+    """
     if isinstance(body, dict) and "code" in body and "data" in body:
-        return body["data"]
+        return body["data"] if body.get("code") == 0 else None
     return body
 
 

@@ -127,6 +127,9 @@ def check(name, ok, detail=""):
 def api_data(payload):
     """Unwrap the platform ApiResult while accepting direct test fixtures."""
     if isinstance(payload, dict) and "code" in payload and "data" in payload:
+        if payload.get("code") != 0:
+            raise RuntimeError("API code=%s message=%s"
+                               % (payload.get("code"), payload.get("message")))
         return payload["data"]
     return payload
 
@@ -234,6 +237,7 @@ def main():
          "message": "sudo: failtest escalation",
          "src_ip": f"10.99.{uniq[:2]}.{uniq[2:4]}"}
     )
+    d = api_data(d) if st == 200 else d
     check("Kafka 断开时 ingest 仍 accepted", st == 200 and d.get("accepted") == 1, f"st={st} accepted={d.get('accepted')}")
     # Kafka is the publication dependency, not the synchronous ingest commit
     # boundary.  The accepted request is already durable in the local event
@@ -247,6 +251,7 @@ def main():
          "message": "sudo: failtest2",
          "src_ip": f"10.99.{uniq[:2]}.{uniq[2:4]}"}
     )
+    d = api_data(d) if st == 200 else d
     check("Kafka 恢复后 ingest 正常", st == 200 and d.get("accepted") == 1, f"st={st}")
     after = os_count()
     deadline = time.time() + 60
@@ -270,7 +275,7 @@ def main():
     docker("stop", "socp-temporal")
     time.sleep(8)  # 等 TemporalExecutor 缓存（5s）过期并重新探测到不可达
     st, payload = api("/soar-web/api/playbooks?size=100", "GET")
-    listing = api_data(payload)
+    listing = api_data(payload) if st == 200 else {}
     playbooks = listing.get("items", []) if isinstance(listing, dict) else listing
     playbooks = playbooks if isinstance(playbooks, list) else []
     published = None
@@ -278,8 +283,8 @@ def main():
         playbook_id = item.get("id") if isinstance(item, dict) else None
         if not playbook_id:
             continue
-        _, versions_payload = api(f"/soar-web/api/playbooks/{playbook_id}/versions", "GET")
-        versions = api_data(versions_payload)
+        vst, versions_payload = api(f"/soar-web/api/playbooks/{playbook_id}/versions", "GET")
+        versions = api_data(versions_payload) if vst == 200 else {}
         if isinstance(versions, dict):
             versions = versions.get("items", [])
         if isinstance(versions, list):
@@ -295,7 +300,7 @@ def main():
             "subject": {"type": "failure-test", "id": "temporal-down"},
             "inputs": {"source": "failure-tests"},
         })
-        run = api_data(run_payload)
+        run = api_data(run_payload) if st2 in (200, 201, 202) else run_payload
         status = run.get("status") if isinstance(run, dict) else None
         # SOAR contract: accepting a run while Temporal is unavailable only
         # commits a durable QUEUED/WAITING_APPROVAL projection.  No action is

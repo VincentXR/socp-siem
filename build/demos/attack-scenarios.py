@@ -128,10 +128,26 @@ def api(tok, path, body=None, method=None):
         return e.code, {}
 
 
+def unwrap(value):
+    """统一响应信封 {code,message,data}：code==0 返回 data，非 0 报错。"""
+    if isinstance(value, dict) and "code" in value and "data" in value:
+        if value.get("code") != 0:
+            raise RuntimeError("API code=%s message=%s"
+                               % (value.get("code"), value.get("message")))
+        return value["data"]
+    return value
+
+
+def list_items(value):
+    """data 兼容裸数组与统一分页对象 {items,total,...} 两种形状，返回列表。"""
+    if isinstance(value, dict) and isinstance(value.get("items"), list):
+        return value["items"]
+    return value if isinstance(value, list) else []
+
+
 def list_rules(tok):
     st, r = api(tok, "/detect-web/api/v1/rules")
-    items = r.get("data", r) if isinstance(r, dict) else r
-    return items if isinstance(items, list) else []
+    return list_items(unwrap(r)) if st == 200 else []
 
 
 def ensure_web_shell_rule(tok):
@@ -199,8 +215,11 @@ def main():
 
         # 3) 等待告警
         def alarm_hit():
-            st, a = api(tok, "/alert-web/api/alarms?page=1&size=500")
-            items = a.get("data", {}).get("items", []) if isinstance(a, dict) else []
+            try:
+                st, a = api(tok, "/alert-web/api/alarms?page=1&size=500")
+                items = list_items(unwrap(a)) if st == 200 else []
+            except RuntimeError:
+                return None
             for x in items:
                 if sc["check"](x):
                     return x
@@ -216,14 +235,15 @@ def main():
 
         # 4) 关联事件（自动建案/归并；若 SOAR 自动触发未就绪则调用 from-alarm 建案兜底）
         st, cases = api(tok, "/incident-web/api/v1/incidents")
-        cl = cases.get("data", cases) if isinstance(cases, dict) else cases
-        related = [c for c in (cl if isinstance(cl, list) else [])
+        cl = list_items(unwrap(cases)) if st == 200 else []
+        related = [c for c in cl
                    if alarm and str(alarm.get("id", "")) in str(c.get("alarmIds", []))]
         if not related and alarm:
             st2, cr = api(tok, "/incident-web/api/v1/incidents/from-alarm",
                           {"alarmId": alarm.get("id")}, "POST")
             if st2 == 200:
-                related = [cr.get("data", cr)] if isinstance(cr, dict) else []
+                created = unwrap(cr)
+                related = [created] if isinstance(created, dict) else []
         check("告警关联事件（自动建案/归并）", len(related) >= 1,
               related[0].get("title", "")[:60] if related else "")
         print()

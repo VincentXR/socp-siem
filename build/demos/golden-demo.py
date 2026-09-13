@@ -75,6 +75,12 @@ def ingest_url():
 
 
 def unwrap(value):
+    """Unwrap the platform ApiResult envelope {code,message,data}; non-zero code raises."""
+    if isinstance(value, dict) and "code" in value and "data" in value:
+        if value.get("code") != 0:
+            raise RuntimeError("API code=%s message=%s"
+                               % (value.get("code"), value.get("message")))
+        return value["data"]
     if isinstance(value, dict) and "data" in value:
         return value["data"]
     return value
@@ -190,7 +196,10 @@ def ingest_lines(lines):
 
 def list_alerts(token):
     status, result, _ = request("alert", "/api/alarms?page=1&size=500", token=token)
-    data = unwrap(result)
+    try:
+        data = unwrap(result)
+    except RuntimeError:
+        return status, []
     if isinstance(data, dict):
         data = data.get("items", [])
     return status, data if isinstance(data, list) else []
@@ -227,13 +236,19 @@ def matching_entity_alert(alerts, rule_id, entity, excluded_ids=None):
 
 def detection_ready(token):
     status, result, _ = request("detect", "/api/v1/stats", token=token)
-    data = unwrap(result)
+    try:
+        data = unwrap(result)
+    except RuntimeError:
+        return None
     partitions = data.get("assignedPartitions", []) if isinstance(data, dict) else []
     return data if status == 200 and partitions else None
 
 
 def page_items(value):
-    data = unwrap(value)
+    try:
+        data = unwrap(value)
+    except RuntimeError:
+        return []
     if isinstance(data, dict):
         items = data.get("items", [])
         return items if isinstance(items, list) else []
@@ -365,8 +380,7 @@ def ensure_automation_rule(token, playbook):
 
 def ensure_channel(token):
     status, result, _ = request("notify", "/api/v1/channels", token=token)
-    items = result if isinstance(result, list) else unwrap(result)
-    items = items if isinstance(items, list) else []
+    items = page_items(result)
     name = DEMO_CHANNEL
     existing = next((item for item in items if item.get("name") == name), None)
     if existing:
@@ -387,7 +401,7 @@ def ensure_channel(token):
     )
     if status not in (200, 201):
         raise RuntimeError(f"创建通知 Demo 渠道失败 status={status} body={result}")
-    return result
+    return unwrap(result)
 
 
 def main():
@@ -463,9 +477,12 @@ def main():
     query = urllib.parse.quote(f"source=auth host={host}", safe="")
 
     def canonical_event():
-        status, result, headers = request("search", f"/api/v1/search?q={query}", token=token)
-        data = result if isinstance(result, dict) else {}
-        events = data.get("events", [])
+        try:
+            status, result, headers = request("search", f"/api/v1/search?q={query}", token=token)
+            data = unwrap(result)
+        except RuntimeError:
+            return None
+        events = data.get("events", []) if isinstance(data, dict) else []
         for event in events if isinstance(events, list) else []:
             ecs = event.get("ecs", {}) or {}
             if (
@@ -547,7 +564,11 @@ def main():
 
     def entity_risk():
         encoded = urllib.parse.quote(source_ip, safe="")
-        status, result, _ = request("detect", f"/api/v1/ueba/entities/{encoded}", token=token)
+        try:
+            status, result, _ = request("detect", f"/api/v1/ueba/entities/{encoded}", token=token)
+            result = unwrap(result)
+        except RuntimeError:
+            return None
         return result if status == 200 and isinstance(result, dict) and result.get("alerts", 0) >= 2 else None
 
     risk = wait_for("entity risk projection", entity_risk)
@@ -555,9 +576,11 @@ def main():
         return 1
 
     def incident_for_alert():
-        status, result, _ = request("incident", "/api/v1/incidents", token=token)
-        incidents = result if isinstance(result, list) else unwrap(result)
-        incidents = incidents if isinstance(incidents, list) else []
+        try:
+            status, result, _ = request("incident", "/api/v1/incidents", token=token)
+        except RuntimeError:
+            return None
+        incidents = page_items(result)
         return next(
             (item for item in incidents if compromise.get("id") in str(item.get("alarmIds", []))), None
         )
@@ -567,9 +590,11 @@ def main():
         return 1
 
     def notification_for_alert():
-        status, result, _ = request("notify", "/api/v1/dispatch-log", token=token)
-        logs = result if isinstance(result, list) else unwrap(result)
-        logs = logs if isinstance(logs, list) else []
+        try:
+            status, result, _ = request("notify", "/api/v1/dispatch-log", token=token)
+        except RuntimeError:
+            return None
+        logs = page_items(result)
         return next(
             (
                 item

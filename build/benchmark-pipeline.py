@@ -121,7 +121,10 @@ def ingest_endpoint_and_headers(gateway, mode, user_token):
 
 
 def unwrap(body):
+    """Unwrap the ApiResult envelope {code,message,data}; a non-zero code yields None."""
     if isinstance(body, dict) and "data" in body:
+        if "code" in body and body.get("code") != 0:
+            return None
         return body["data"]
     return body
 
@@ -649,7 +652,8 @@ def choose_ingest_task(gateway, token):
     status, body, _ = request(
         gateway + "/search-config/api/v1/ingest/tasks",
         headers={"Authorization": "Bearer " + token})
-    items = unwrap(body)
+    data = unwrap(body)
+    items = data.get("items", []) if isinstance(data, dict) else data
     if status != 200 or not isinstance(items, list) or not items:
         raise RuntimeError(f"no search-config ingest task available (HTTP {status})")
     enabled = [item for item in items if item.get("enabled", True)]

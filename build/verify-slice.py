@@ -156,8 +156,18 @@ time.sleep(1.1)  # 让限流桶回满，避免污染本组断言
 _, _, t1 = call(tenant="t1")
 time.sleep(1.1)
 _, _, t2 = call(tenant="t2")
-t1_rules = [a["ruleId"] for a in (t1.get("data") or [])]
-t2_rules = [a["ruleId"] for a in (t2.get("data") or [])]
+
+
+def _alarm_rule_ids(body):
+    """列表 data 兼容裸数组与统一分页对象 {items,total,...} 两种形状。"""
+    data = body.get("data") or []
+    if isinstance(data, dict):
+        data = data.get("items") or []
+    return [a["ruleId"] for a in data]
+
+
+t1_rules = _alarm_rule_ids(t1)
+t2_rules = _alarm_rule_ids(t2)
 check("t1 看不到 t2 的告警", "R-T2" not in t1_rules, "t1=%s" % t1_rules)
 check("t2 只看到自己的告警", t2_rules and all(r == "R-T2" for r in t2_rules), "t2=%s" % t2_rules)
 

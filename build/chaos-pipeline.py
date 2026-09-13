@@ -107,6 +107,9 @@ def stop_auto_detection_cluster():
 
 
 def unwrap(body):
+    """Unwrap the ApiResult envelope {code,message,data}; a non-zero code yields None."""
+    if isinstance(body, dict) and "code" in body and "data" in body:
+        return body["data"] if body.get("code") == 0 else None
     return body.get("data") if isinstance(body, dict) and "data" in body else body
 
 
@@ -588,7 +591,8 @@ def scenario_detection_restart(token, count):
             "user": "root",
         } for i in range(count)]
         accepted = ingest(token, events)
-        accepted_count = int(accepted.get("accepted", count)) if isinstance(accepted, dict) else count
+        accepted_body = unwrap(accepted)
+        accepted_count = int(accepted_body.get("accepted", count)) if isinstance(accepted_body, dict) else count
 
         def queued_snapshot():
             snapshot = kafka_snapshot()

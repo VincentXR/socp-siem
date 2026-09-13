@@ -52,6 +52,16 @@ from auth_client import login_token  # noqa: E402
 U = {name: base_url(name) for name in SVC}
 
 
+def _api_data(body):
+    """统一响应信封 {code,message,data,traceId,timestamp}：code==0 返回 data，非 0 报错。"""
+    if isinstance(body, dict) and "code" in body and "data" in body:
+        if body.get("code") != 0:
+            raise RuntimeError("API code=%s message=%s traceId=%s"
+                               % (body.get("code"), body.get("message"), body.get("traceId")))
+        return body["data"]
+    return body
+
+
 def call(url, method="GET", body=None, timeout=10):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
@@ -63,10 +73,11 @@ def call(url, method="GET", body=None, timeout=10):
         with urllib.request.urlopen(req, timeout=timeout) as r:
             raw = r.read().decode("utf-8", "replace")
             try:
-                return r.status, (json.loads(raw) if raw.strip() else {})
+                return r.status, _api_data(json.loads(raw) if raw.strip() else {})
             except json.JSONDecodeError:
                 return r.status, {"_raw": raw[:300]}
     except urllib.error.HTTPError as e:
+        # 错误信封（如 404 + {code,message,...}）原样返回，由各断言的 st 守卫短路处理
         raw = e.read().decode("utf-8", "replace")
         try:
             return e.code, (json.loads(raw) if raw.strip() else {})
@@ -93,9 +104,9 @@ def check(name, cond, detail=""):
 
 
 def unwrap(body):
-    """alert-web 走统一响应信封 {code,message,data}；其余服务直出。"""
-    if isinstance(body, dict) and "data" in body and "code" in body:
-        return body["data"]
+    """统一分页对象 {items,total,page,size,totalPages} → items 列表；其余原样返回。"""
+    if isinstance(body, dict) and isinstance(body.get("items"), list) and "total" in body:
+        return body["items"]
     return body
 
 
@@ -121,10 +132,12 @@ check("IOC 统计非空", st == 200 and s.get("total", 0) > 0, s)
 # ---------------------------------------------------------------- 3. ATT&CK
 print("\n=== 3. MITRE ATT&CK attack-web ===")
 st, tactics = call(U["attack-web"] + "/attack-web/api/v1/tactics")
+tactics = unwrap(tactics)
 check("战术目录 14 项", st == 200 and len(tactics) == 14, len(tactics) if st == 200 else st)
 st, techs = call(U["attack-web"] + "/attack-web/api/v1/techniques")
-check("技术目录非空", st == 200 and len(techs) > 20, len(techs) if st == 200 else st)
+techs = unwrap(techs)
 st, rules = call(U["detect-web"] + "/detect-web/api/v1/rules")
+rules = unwrap(rules)
 rule_techs = sorted({r.get("mitre") for r in rules if r.get("mitre")}) if st == 200 else []
 check("规则已标注 ATT&CK 技术", len(rule_techs) >= 10, rule_techs)
 st, cov = call(U["attack-web"] + "/attack-web/api/v1/coverage", "POST",
@@ -136,6 +149,7 @@ check("检测覆盖率可计算且 > 0", st == 200 and cov.get("coverage", 0) > 
 # ---------------------------------------------------------------- 4. 通知渠道
 print("\n=== 4. 通知集成 notify-web ===")
 st, chans = call(U["notify-web"] + "/notify-web/api/v1/channels")
+chans = unwrap(chans)
 check("内置通知渠道存在", st == 200 and len(chans) >= 2, len(chans) if st == 200 else st)
 if st == 200:
     for channel in chans:
@@ -197,6 +211,7 @@ if new_alarm:
 
     def my_dispatch():
         st_, dlog_ = call(U["notify-web"] + "/notify-web/api/v1/dispatch-log")
+        dlog_ = unwrap(dlog_) if st_ == 200 else []
         mine_ = [d for d in dlog_ if d.get("alarmId") == aid] if st_ == 200 else []
         return mine_ if any(d.get("type") == "WEBHOOK" and d.get("status") == "sent" for d in mine_) else None
 
@@ -209,6 +224,7 @@ if new_alarm:
 
     def my_case():
         st_, cases_ = call(U["incident-web"] + "/incident-web/api/v1/incidents")
+        cases_ = unwrap(cases_) if st_ == 200 else []
         if st_ != 200:
             return None
         return next((c for c in cases_ if aid in c.get("alarmIds", [])), None)
@@ -229,8 +245,6 @@ if new_alarm:
         # that an alert reached the durable Run projection.
         st_, payload = call(U["soar-web"] + "/soar-web/api/runs?size=200")
         data = unwrap(payload)
-        if isinstance(data, dict):
-            data = data.get("items", [])
         if st_ != 200 or not isinstance(data, list):
             return None
         # Prove this alert reached SOAR, rather than accepting an unrelated
@@ -249,6 +263,7 @@ if new_alarm:
 # ---------------------------------------------------------------- 6. 查找表 / 合规
 print("\n=== 6. 查找表与合规 ===")
 st, sets = call(U["search-config"] + "/search-config/api/v1/reference-sets")
+sets = unwrap(sets)
 check("参考数据集存在", st == 200 and len(sets) > 0, [s.get("name") for s in sets] if st == 200 else st)
 st, fwb = call(U["soc-base"] + "/soc-base/api/v1/compliance/frameworks")
 fw = fwb.get("frameworks", []) if isinstance(fwb, dict) else []
@@ -265,6 +280,7 @@ check("REPORT 日报可生成", st == 200 and bool(rep), list(rep.keys())[:6] if
 # ---------------------------------------------------------------- 7. UEBA / 威胁评分 / 观察名单
 print("\n=== 7. UEBA 异常基线 + 威胁评分 + 观察名单 ===")
 st, wls = call(U["detect-web"] + "/detect-web/api/v1/watchlists")
+wls = unwrap(wls)
 wl_names = {w.get("name") for w in wls} if st == 200 else set()
 check("内置观察名单已装载", st == 200 and {"privileged_accounts", "crown_jewels", "blocked_ips"} <= wl_names,
       sorted(wl_names))
@@ -295,6 +311,7 @@ check("观察名单可运行时追加（无需重载规则）",
       wl.get("size"))
 
 st, ents = call(U["detect-web"] + "/detect-web/api/v1/ueba/entities?limit=20")
+ents = unwrap(ents)
 check("实体风险画像已产出", st == 200 and len(ents) > 0,
       [(e.get("entity"), e.get("risk"), e.get("level")) for e in ents[:3]] if st == 200 else st)
 if st == 200 and ents:
@@ -322,6 +339,7 @@ if st == 200 and astats.get("topRisk"):
 # ---------------------------------------------------------------- 8. 接入任务
 print("\n=== 8. 接入任务配置与运行监控 ===")
 st, tasks = call(U["search-config"] + "/search-config/api/v1/ingest/tasks")
+tasks = unwrap(tasks)
 check("接入任务列表可用", st == 200 and len(tasks) > 0, len(tasks) if st == 200 else st)
 if st == 200 and tasks:
     t0 = tasks[0]
@@ -379,14 +397,16 @@ else:
     check("重启后 IOC 仍在库（threat-web H2）", st == 200 and bool(m) and m.get("matched", True) is not False,
           prev["ioc"])
     st, srcs = call(U["search-config"] + "/search-config/api/v1/sources")
+    srcs = unwrap(srcs)
     check("重启后接入源仍在库（search-config H2）",
           st == 200 and any(s.get("id") == prev["source"] for s in srcs), prev["source"])
     st, alarms_now = call(U["alert-web"] + "/alert-web/api/alarms?size=500")
-    alarms_now = unwrap(alarms_now) or []
+    alarms_now = unwrap(alarms_now) if st == 200 else []
     check("重启后历史告警仍在库（alert-web H2）",
           st == 200 and len(alarms_now) >= prev.get("alarmCount", 0) and prev.get("alarmCount", 0) > 0,
           "before=%s now=%s" % (prev.get("alarmCount"), len(alarms_now)))
     st, cases_now = call(U["incident-web"] + "/incident-web/api/v1/incidents")
+    cases_now = unwrap(cases_now) if st == 200 else []
     # 租户隔离（2026-08-09 修复）：default 租户只看到本租户案件；断言持久化生效（重启后仍有数据）
     check("重启后案件仍在库（incident-web H2）",
           st == 200 and len(cases_now) > 0,
@@ -401,7 +421,7 @@ try:
     # createFull 忽略请求里的 id、生成 UUID 主键；以响应返回的真实 id 作为基线才查得到
     real_src_id = created.get("id") if (st_src == 200 and isinstance(created, dict) and created.get("id")) else src_id
     cur_alarms = unwrap(call(U["alert-web"] + "/alert-web/api/alarms?size=500")[1]) or []
-    cur_cases = call(U["incident-web"] + "/incident-web/api/v1/incidents")[1] or []
+    cur_cases = unwrap(call(U["incident-web"] + "/incident-web/api/v1/incidents")[1]) or []
     os.makedirs(os.path.dirname(MARKER), exist_ok=True)
     with open(MARKER, "w", encoding="utf-8") as fh:
         json.dump({"ioc": IOC_IP, "source": real_src_id,

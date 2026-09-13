@@ -41,6 +41,11 @@ def main():
         parser.error("--token or PIPELINE_COLLECTOR_TOKEN is required")
     sample = json.loads(args.sample.read_text(encoding="utf-8"))
     status, result = post(args.ingest_url, sample, args.token, args.collector)
+    if isinstance(result, dict) and "code" in result:
+        if result.get("code") != 0:
+            print(json.dumps({"status": status, "response": result}, indent=2), file=sys.stderr)
+            return 1
+        result = result.get("data") or {}
     if status < 200 or status >= 300 or result.get("accepted", 0) < 1:
         print(json.dumps({"status": status, "response": result}, indent=2), file=sys.stderr)
         return 1

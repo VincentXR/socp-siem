@@ -55,7 +55,9 @@ def login_token(gateway: str, username: str = "demo", password: str = "demo123",
             body = json.loads(raw) if raw.strip() else {}
             token = _cookie_token(response.headers)
             if not token and isinstance(body, dict):
-                token = body.get("token")
+                # Legacy JSON token fallback; tolerate the ApiResult envelope too.
+                payload = body.get("data") if isinstance(body.get("data"), dict) else body
+                token = payload.get("token")
             if response.status != 200 or not token:
                 raise RuntimeError(f"login returned HTTP {response.status} without session token")
             return token
