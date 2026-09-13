@@ -474,6 +474,11 @@ export const zhCN = {
     noApprovals: '暂无审批记录',
     paletteTitle: '节点面板',
     canvasHint: '从节点右侧的彩色圆点拖出连线到目标节点的左侧圆点；拖动节点调整布局。',
+    canvasSearchPlaceholder: '搜索节点…',
+    contextMenu: {
+      rename: '重命名',
+      renamePrompt: '节点名称',
+    },
     propertyPanelTitle: '节点属性',
     comingSoon: '即将推出',
     unsupportedNode: '不支持（只读）',

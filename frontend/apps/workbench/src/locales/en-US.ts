@@ -476,6 +476,11 @@ export const enUS: LocaleMessages = {
     noApprovals: 'No approval records',
     paletteTitle: 'Node palette',
     canvasHint: 'Drag from a colored dot on the right edge to the target dot on a node’s left edge to connect. Drag nodes to arrange the layout.',
+    canvasSearchPlaceholder: 'Search nodes…',
+    contextMenu: {
+      rename: 'Rename',
+      renamePrompt: 'Node name',
+    },
     propertyPanelTitle: 'Node properties',
     comingSoon: 'Coming soon',
     unsupportedNode: 'Not supported (read-only)',

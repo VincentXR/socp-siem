@@ -19,7 +19,7 @@ import { ElForm, ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { VueFlow, useVueFlow } from '@vue-flow/core'
+import { VueFlow, useVueFlow, type NodeMouseEvent } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
@@ -581,6 +581,77 @@ async function openPublishedDiff(): Promise<void> {
   }
 }
 
+/* ---------------- canvas context menu / node search ---------------- */
+
+const contextMenu = ref<{ nodeId: string; nodeType: string; x: number; y: number } | null>(null)
+
+/** Flat node list for the canvas search box (label = name · type · id). */
+const nodeSearchOptions = computed(() => {
+  void flow.graphRevision.value
+  return flow.getDefinition().nodes.map(node => {
+    const name = typeof node.name === 'string' && node.name.trim() ? node.name : node.id
+    return { value: node.id, label: `${name} · ${String(node.type ?? '')} · ${node.id}` }
+  })
+})
+
+function searchNode(nodeId: string): void {
+  if (!nodeId) return
+  flow.selectNode(nodeId)
+  flow.fitNode(nodeId)
+  closeContextMenu()
+}
+
+function closeContextMenu(): void {
+  contextMenu.value = null
+}
+
+function openNodeContextMenu(event: NodeMouseEvent): void {
+  if (!props.canWrite) return
+  event.event.preventDefault()
+  const pane = flowStore.vueFlowRef.value
+  const rect = pane?.getBoundingClientRect()
+  flow.selectNode(event.node.id)
+  const nodeType = String((event.node.data as { nodeType?: string } | undefined)?.nodeType ?? '')
+  // A context menu is always raised by a right-click, i.e. a MouseEvent.
+  const mouseEvent = event.event as MouseEvent
+  const x = Math.max(0, Math.min(mouseEvent.clientX - (rect?.left ?? 0), (rect?.width ?? 400) - 170))
+  const y = Math.max(0, Math.min(mouseEvent.clientY - (rect?.top ?? 0), (rect?.height ?? 400) - 130))
+  contextMenu.value = { nodeId: event.node.id, nodeType, x, y }
+}
+
+function onNodeDoubleClick(event: NodeMouseEvent): void {
+  if (!props.canWrite) return
+  renameNodePrompt(event.node.id)
+}
+
+/** Prompt-based rename; writes the same raw field the property panel edits. */
+function renameNodePrompt(nodeId: string): void {
+  const raw = flow.getDefinition().nodes.find(node => node.id === nodeId)
+  if (!raw) return
+  const next = window.prompt(t('soar.contextMenu.renamePrompt'), typeof raw.name === 'string' ? raw.name : '')
+  if (next === null) return
+  const trimmed = next.trim()
+  if (trimmed) raw.name = trimmed
+  else delete raw.name
+  flow.touchAfterNodeEdit()
+}
+
+function contextAction(action: 'copy' | 'delete' | 'rename'): void {
+  const menu = contextMenu.value
+  closeContextMenu()
+  if (!menu) return
+  flow.selectNode(menu.nodeId)
+  if (action === 'copy') {
+    flow.copySelection()
+    return
+  }
+  if (action === 'delete') {
+    flow.deleteSelection()
+    return
+  }
+  renameNodePrompt(menu.nodeId)
+}
+
 /** Retires a published revision; the server keeps it for audit but stops running it. */
 async function deprecateSelected(): Promise<void> {
   const version = selectedVersion.value
@@ -811,6 +882,17 @@ onUnmounted(() => {
         :title="t('soar.editorAutoLayoutHint')"
         @click="flow.autoLayout()"
       >{{ t('soar.editorAutoLayout') }}</el-button>
+      <el-select
+        class="soar-node-search"
+        :model-value="''"
+        filterable
+        clearable
+        :placeholder="t('soar.canvasSearchPlaceholder')"
+        :aria-label="t('soar.canvasSearchPlaceholder')"
+        @change="searchNode"
+      >
+        <el-option v-for="option in nodeSearchOptions" :key="option.value" :value="option.value" :label="option.label" />
+      </el-select>
       <span class="soar-toolbar-spacer" />
       <el-tag v-if="selectedVersion" size="small" :type="isDraft ? 'warning' : 'success'">{{ t('soar.revisionLabel', { version: selectedVersion.version }) }} · {{ statusLabel(selectedVersion.status) }}</el-tag>
       <el-tag v-if="validation" size="small" :type="flow.validationStale.value ? 'info' : validation.valid ? 'success' : 'danger'">
@@ -854,6 +936,11 @@ onUnmounted(() => {
             :zoom-on-scroll="true"
             :nodes-draggable="props.canWrite"
             :nodes-connectable="props.canWrite"
+            @node-context-menu="openNodeContextMenu"
+            @node-double-click="onNodeDoubleClick"
+            @node-click="closeContextMenu"
+            @pane-click="closeContextMenu"
+            @move-start="closeContextMenu"
           >
             <Background pattern-color="#94a3b8" :gap="18" :size="1" />
             <Controls position="bottom-right" />
@@ -886,6 +973,11 @@ onUnmounted(() => {
               @click="rerunFromCanvas"
             >{{ t('soar.rerunRun') }}</button>
             <button type="button" class="soar-run-legend-clear" @click="clearRunHighlights">{{ t('soar.runHighlightClear') }}</button>
+          </div>
+          <div v-if="contextMenu" class="soar-node-context-menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }">
+            <button type="button" @click="contextAction('rename')">{{ t('soar.contextMenu.rename') }}</button>
+            <button type="button" @click="contextAction('copy')">{{ t('common.copy') }}</button>
+            <button type="button" :disabled="contextMenu.nodeType === 'START'" @click="contextAction('delete')">{{ t('common.delete') }}</button>
           </div>
         </div>
         <div class="soar-canvas-footer">
@@ -1036,6 +1128,32 @@ onUnmounted(() => {
 .soar-run-legend-entry.run-waiting { --run-status-color: #d97706; }
 .soar-run-legend-entry.run-cancelled { --run-status-color: var(--ns-info); }
 .soar-run-legend-entry.run-suppressed { --run-status-color: var(--ns-text-3); }
+.soar-node-search { width: 190px; }
+.soar-node-context-menu {
+  position: absolute;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  min-width: 150px;
+  padding: 4px;
+  border: 1px solid var(--ns-border);
+  border-radius: 6px;
+  background: var(--ns-bg);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.16);
+}
+.soar-node-context-menu button {
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ns-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+.soar-node-context-menu button:hover:not(:disabled) { background: var(--ns-bg-subtle); }
+.soar-node-context-menu button:disabled { color: var(--ns-text-3); cursor: not-allowed; }
 .soar-run-legend-clear {
   margin-left: 4px;
   padding: 1px 6px;
