@@ -370,8 +370,6 @@ class SoarActivityImplCoverageTest {
         existing.setId("att-1");
         given(attempts.findByTenantIdAndNodeRunIdAndAttemptNoForUpdate(anyString(), anyString(), anyInt()))
                 .willReturn(Optional.of(existing));
-        given(attempts.findByTenantIdAndNodeRunIdAndAttemptNo(anyString(), anyString(), anyInt()))
-                .willReturn(Optional.of(existing));
         given(connectorRegistry.execute(any(ActionRequest.class)))
                 .willReturn(ActionResult.success("op", Map.<String, Object>of(), Map.<String, Object>of()));
 

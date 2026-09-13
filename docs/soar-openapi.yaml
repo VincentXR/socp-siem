@@ -605,11 +605,13 @@ components:
         timestamp: {type: string, format: date-time}
     PagedData:
       type: object
-      required: [page, size, total, items]
+      description: Paged SOAR compatibility response. The request page parameter is 0-based for backwards compatibility.
+      required: [page, size, total, totalPages, items]
       properties:
         page: {type: integer, minimum: 0}
         size: {type: integer, minimum: 1, maximum: 200}
         total: {type: integer, format: int64, minimum: 0}
+        totalPages: {type: integer, nullable: true, minimum: 0}
         items: {type: array, items: {}}
   responses:
     ApiResult:

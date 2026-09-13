@@ -6,6 +6,7 @@ import com.socp.alert.domain.Severity;
 import com.socp.alert.api.response.AlarmEvidenceResponse;
 import com.socp.alert.service.AlarmService;
 import com.socp.alert.service.AlarmDispositionService;
+import com.socp.platform.error.web.GlobalExceptionHandler;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -62,11 +63,19 @@ class AlarmControllerTest {
                 .build();
     }
 
+    private MockMvc errorMvc() {
+        return MockMvcBuilders.standaloneSetup(new AlarmController(service))
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .build();
+    }
+
     @Test
     void exportUsesTheSameStatusAndSortAsTheList() throws Exception {
         Alarm alarm = new Alarm("AUTH-BRUTE", "SSH brute force", Severity.HIGH,
                 "failed login", "203.0.113.10");
         alarm.setId("alarm-1");
+        given(service.count(Severity.HIGH, "R-1", "OPEN", "login", "riskScore", "ascending"))
+                .willReturn(1L);
         given(service.page(Severity.HIGH, "R-1", "OPEN", "login", "riskScore", "ascending", 1, 500))
                 .willReturn(new PageImpl<>(List.of(alarm)));
         mvc.perform(get("/api/alarms/export").param("severity", "HIGH").param("rule", "R-1")
@@ -88,6 +97,8 @@ class AlarmControllerTest {
         }
         Alarm tail = new Alarm("R-tail", "rule", Severity.LOW, "msg", "entity");
         tail.setId("alarm-tail");
+        given(service.count(null, null, null, null, "occurredAt", "descending"))
+                .willReturn(501L);
         given(service.page(null, null, null, null, "occurredAt", "descending", 1, 500))
                 .willReturn(new PageImpl<>(fullBatch, PageRequest.of(0, 500), 501));
         given(service.page(null, null, null, null, "occurredAt", "descending", 2, 500))
@@ -104,6 +115,30 @@ class AlarmControllerTest {
         verify(service).page(null, null, null, null, "occurredAt", "descending", 1, 500);
         verify(service).page(null, null, null, null, "occurredAt", "descending", 2, 500);
         verify(service, never()).query(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void exportRejectsRowsAboveTheHardLimitBeforeOpeningTheResponse() throws Exception {
+        given(service.count(null, null, null, null, "occurredAt", "descending"))
+                .willReturn(10_001L);
+
+        errorMvc().perform(get("/api/alarms/export"))
+                .andExpect(status().isPayloadTooLarge())
+                .andExpect(jsonPath("$.code").value(413))
+                .andExpect(jsonPath("$.message").value(containsString("limit is 10000")));
+
+        verify(service, never()).page(any(), any(), any(), any(), any(), any(), any(Integer.class), any(Integer.class));
+    }
+
+    @Test
+    void exportRejectsInvalidLimit() throws Exception {
+        errorMvc().perform(get("/api/alarms/export").param("limit", "0"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+        errorMvc().perform(get("/api/alarms/export").param("limit", "100001"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+        verify(service, never()).count(any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -151,7 +186,8 @@ class AlarmControllerTest {
                 .andExpect(jsonPath("$.data.items.length()").value(1))
                 .andExpect(jsonPath("$.data.total").value(1))
                 .andExpect(jsonPath("$.data.page").value(1))
-                .andExpect(jsonPath("$.data.size").value(20));
+                .andExpect(jsonPath("$.data.size").value(20))
+                .andExpect(jsonPath("$.data.totalPages").value(1));
     }
 
     @Test

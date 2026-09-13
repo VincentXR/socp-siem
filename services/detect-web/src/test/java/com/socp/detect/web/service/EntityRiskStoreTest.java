@@ -12,6 +12,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.Pageable;
 
 import java.time.Instant;
 import java.util.List;
@@ -104,6 +106,8 @@ class EntityRiskStoreTest {
         Watchlists.putTemplate("crown_jewels", List.of("db-core"));
         EntityRiskProfileEntity high = profile("db-core", 90, 2, "CRITICAL");
         EntityRiskProfileEntity medium = profile("web-1", 45, 1, "MEDIUM");
+        when(profiles.findByTenantId(eq("tenant-risk"), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(medium, high)));
         when(profiles.findByTenantId("tenant-risk")).thenReturn(List.of(medium, high));
         when(profiles.findByTenantIdAndEntity("tenant-risk", "db-core"))
                 .thenReturn(Optional.of(high));

@@ -201,7 +201,7 @@ class RuleControllerTest {
 
     @Test
     void reloadReturnsCurrentRuleCount() throws Exception {
-        given(engine.listRules()).willReturn(java.util.List.of(Map.of("id", "R-1"), Map.of("id", "R-2")));
+        given(engine.ruleCount()).willReturn(2L);
 
         mvc.perform(post("/api/v1/rules/reload")
                         .header("Authorization", BEARER)

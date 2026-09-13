@@ -28,10 +28,18 @@ public class AuthSessionWebFilter implements WebFilter, Ordered {
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
-        if (!LOCAL_AUTHENTICATED_PATHS.contains(exchange.getRequest().getPath().value())) {
+        String path = exchange.getRequest().getPath().value();
+        if (!LOCAL_AUTHENTICATED_PATHS.contains(path) && !requiresActuatorAuthentication(path)) {
             return chain.filter(exchange);
         }
         return gatewayFilter.filter(exchange, chain::filter);
+    }
+
+    private static boolean requiresActuatorAuthentication(String path) {
+        if ("/actuator/health".equals(path) || path.startsWith("/actuator/health/")) {
+            return false;
+        }
+        return "/actuator".equals(path) || path.startsWith("/actuator/");
     }
 
     @Override

@@ -71,7 +71,7 @@ public class SoarController {
     private final SoarTemplateService templates;
     private final ScheduledExecutorService streams;
     private final SoarRuntimeProperties runtimeProperties;
-    private SoarRunQueryService runQueries;
+    private final SoarControllerReadSupport reads;
 
     @org.springframework.beans.factory.annotation.Autowired
     public SoarController(SoarService service, SoarAutomationRuleService automationRules,
@@ -96,6 +96,7 @@ public class SoarController {
         // contexts instead of making controller startup fail.
         this.streams = streams;
         this.runtimeProperties = runtimeProperties;
+        this.reads = new SoarControllerReadSupport(service);
     }
 
     /** Spring wiring overload retained for deployments that do not expose the
@@ -116,7 +117,7 @@ public class SoarController {
      * continue to exercise command endpoints with only the original service. */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setRunQueries(SoarRunQueryService runQueries) {
-        this.runQueries = runQueries;
+        this.reads.setRunQueries(runQueries);
     }
 
     @GetMapping("/playbooks")
@@ -381,7 +382,7 @@ public class SoarController {
             @RequestParam(required = false) String requestedBy,
             @RequestParam(required = false) String createdFrom,
             @RequestParam(required = false) String createdTo) {
-        return ApiResult.ok(page(readRuns(PageRequest.of(Math.max(0, page), clampSize(size)), status,
+        return ApiResult.ok(page(reads.runs(PageRequest.of(Math.max(0, page), clampSize(size)), status,
                 playbookVersionId, triggerType, requestedBy, parseInstant(createdFrom, "createdFrom"),
                 parseInstant(createdTo, "createdTo"))));
     }
@@ -389,7 +390,7 @@ public class SoarController {
     @GetMapping("/runs/{id}")
     @RequirePermission("soar:view")
     public ApiResult<Map<String, Object>> getRun(@PathVariable String id) {
-        return ApiResult.ok(readRun(id));
+        return ApiResult.ok(reads.run(id));
     }
 
     @GetMapping("/runs/{id}/nodes")
@@ -398,11 +399,11 @@ public class SoarController {
                                    @RequestParam(required = false) Integer page,
                                    @RequestParam(required = false) Integer size) {
         if (page != null || size != null) {
-            return ApiResult.ok(page(readNodes(id,
+            return ApiResult.ok(page(reads.nodes(id,
                     PageRequest.of(Math.max(0, page == null ? 0 : page),
                             clampSize(size == null ? 100 : size)))));
         }
-        return ApiResult.ok(readNodes(id));
+        return ApiResult.ok(reads.nodes(id));
     }
 
     @GetMapping("/runs/{id}/artifacts")
@@ -411,11 +412,11 @@ public class SoarController {
                                       @RequestParam(required = false) Integer page,
                                       @RequestParam(required = false) Integer size) {
         if (page != null || size != null) {
-            return ApiResult.ok(page(readArtifacts(id,
+            return ApiResult.ok(page(reads.artifacts(id,
                     PageRequest.of(Math.max(0, page == null ? 0 : page),
                             clampSize(size == null ? 100 : size)))));
         }
-        return ApiResult.ok(readArtifacts(id));
+        return ApiResult.ok(reads.artifacts(id));
     }
 
     @PostMapping("/runs/{id}/artifacts")
@@ -433,14 +434,14 @@ public class SoarController {
     @GetMapping("/artifacts/{id}")
     @RequirePermission("soar:view")
     public ApiResult<Map<String, Object>> artifact(@PathVariable String id) {
-        return ApiResult.ok(readArtifact(id));
+        return ApiResult.ok(reads.artifact(id));
     }
 
     @GetMapping(value = "/artifacts/{id}/content", produces = MediaType.APPLICATION_JSON_VALUE)
     @RequirePermission("soar:view")
     public ResponseEntity<String> artifactContent(@PathVariable String id) {
         return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON)
-                .body(readArtifactContent(id));
+                .body(reads.artifactContent(id));
     }
 
     @GetMapping("/node-runs/{id}/attempts")
@@ -448,7 +449,7 @@ public class SoarController {
     public ApiResult<Map<String, Object>> attempts(@PathVariable String id,
                                                    @RequestParam(defaultValue = "0") int page,
                                                    @RequestParam(defaultValue = "20") int size) {
-        Page<Map<String, Object>> result = readNodeAttempts(id,
+        Page<Map<String, Object>> result = reads.nodeAttempts(id,
                 PageRequest.of(Math.max(0, page), clampSize(size)));
         return ApiResult.ok(page(result));
     }
@@ -460,10 +461,10 @@ public class SoarController {
                                     @RequestParam(required = false) Integer size,
                                     @RequestParam(required = false, defaultValue = "0") long after) {
         if (page != null || size != null || after > 0) {
-            return ApiResult.ok(page(readEvents(id, Math.max(0, after),
+            return ApiResult.ok(page(reads.events(id, Math.max(0, after),
                     PageRequest.of(Math.max(0, page == null ? 0 : page), clampSize(size == null ? 100 : size)))));
         }
-        return ApiResult.ok(readEvents(id));
+        return ApiResult.ok(reads.events(id));
     }
 
     @GetMapping(value = "/runs/{id}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -485,7 +486,7 @@ public class SoarController {
         java.util.concurrent.ScheduledFuture<?> task = streams.scheduleAtFixedRate(() -> {
             TenantContext.runWith(streamTenant, () -> {
                 try {
-                    Page<Map<String, Object>> page = readEvents(id, cursor[0], PageRequest.of(0, 100));
+                    Page<Map<String, Object>> page = reads.events(id, cursor[0], PageRequest.of(0, 100));
                     for (Map<String, Object> event : page.getContent()) {
                         long sequence = event.get("sequence") instanceof Number n ? n.longValue() : cursor[0] + 1;
                         emitter.send(SseEmitter.event().id(String.valueOf(sequence))
@@ -622,10 +623,10 @@ public class SoarController {
             @RequestParam(required = false) Integer page,
             @RequestParam(required = false) Integer size) {
         if (page != null || size != null) {
-            return ApiResult.ok(page(readManualTasks(pendingOnly, PageRequest.of(
+            return ApiResult.ok(page(reads.manualTasks(pendingOnly, PageRequest.of(
                     Math.max(0, page == null ? 0 : page), clampSize(size == null ? 100 : size)))));
         }
-        return ApiResult.ok(readManualTasks(pendingOnly));
+        return ApiResult.ok(reads.manualTasks(pendingOnly));
     }
 
     @PostMapping("/manual-tasks/{id}/complete")
@@ -647,13 +648,13 @@ public class SoarController {
     @GetMapping("/stats")
     @RequirePermission("soar:view")
     public ApiResult<Map<String, Object>> stats() {
-        return ApiResult.ok(readStats());
+        return ApiResult.ok(reads.stats());
     }
 
     @GetMapping("/operations/dead-dispatches")
     @RequirePermission("soar:operations")
     public ApiResult<List<Map<String, Object>>> deadDispatches() {
-        return ApiResult.ok(readDeadDispatches());
+        return ApiResult.ok(reads.deadDispatches());
     }
 
     @PostMapping("/operations/dead-dispatches/{id}/requeue")
@@ -697,10 +698,10 @@ public class SoarController {
     public ApiResult<Object> approvals(@RequestParam(required = false) Integer page,
                                        @RequestParam(required = false) Integer size) {
         if (page != null || size != null) {
-            return ApiResult.ok(page(readApprovals(
+            return ApiResult.ok(page(reads.approvals(
                     PageRequest.of(Math.max(0, page == null ? 0 : page), clampSize(size == null ? 100 : size)))));
         }
-        return ApiResult.ok(readApprovals());
+        return ApiResult.ok(reads.approvals());
     }
 
     @PostMapping("/approvals/{id}/decisions")
@@ -1032,86 +1033,16 @@ public class SoarController {
         return ApiResult.ok(connectors.softDelete(id));
     }
 
-    private Page<Map<String, Object>> readRuns(Pageable pageable, String status,
-                                                String playbookVersionId, String triggerType,
-                                                String requestedBy, Instant createdFrom, Instant createdTo) {
-        return runQueries == null
-                ? service.listRuns(pageable, status, playbookVersionId, triggerType, requestedBy, createdFrom, createdTo)
-                : runQueries.listRuns(pageable, status, playbookVersionId, triggerType, requestedBy, createdFrom, createdTo);
-    }
-
-    private Map<String, Object> readRun(String id) {
-        return runQueries == null ? service.getRun(id) : runQueries.getRun(id);
-    }
-
-    private List<Map<String, Object>> readNodes(String runId) {
-        return runQueries == null ? service.listNodes(runId) : runQueries.listNodes(runId);
-    }
-
-    private Page<Map<String, Object>> readNodes(String runId, Pageable pageable) {
-        return runQueries == null ? service.listNodes(runId, pageable) : runQueries.listNodes(runId, pageable);
-    }
-
-    private List<Map<String, Object>> readArtifacts(String runId) {
-        return runQueries == null ? service.listArtifacts(runId) : runQueries.listArtifacts(runId);
-    }
-
-    private Page<Map<String, Object>> readArtifacts(String runId, Pageable pageable) {
-        return runQueries == null ? service.listArtifacts(runId, pageable) : runQueries.listArtifacts(runId, pageable);
-    }
-
-    private Map<String, Object> readArtifact(String id) {
-        return runQueries == null ? service.getArtifact(id) : runQueries.getArtifact(id);
-    }
-
-    private String readArtifactContent(String id) {
-        return runQueries == null ? service.getArtifactContent(id) : runQueries.getArtifactContent(id);
-    }
-
-    private Page<Map<String, Object>> readNodeAttempts(String nodeRunId, Pageable pageable) {
-        return runQueries == null ? service.listNodeAttempts(nodeRunId, pageable)
-                : runQueries.listNodeAttempts(nodeRunId, pageable);
-    }
-
-    private List<Map<String, Object>> readEvents(String runId) {
-        return runQueries == null ? service.listEvents(runId) : runQueries.listEvents(runId);
-    }
-
-    private Page<Map<String, Object>> readEvents(String runId, long afterSequence, Pageable pageable) {
-        return runQueries == null ? service.listEvents(runId, afterSequence, pageable)
-                : runQueries.listEvents(runId, afterSequence, pageable);
-    }
-
-    private List<Map<String, Object>> readManualTasks(boolean pendingOnly) {
-        return runQueries == null ? service.listManualTasks(pendingOnly) : runQueries.listManualTasks(pendingOnly);
-    }
-
-    private Page<Map<String, Object>> readManualTasks(boolean pendingOnly, Pageable pageable) {
-        return runQueries == null ? service.listManualTasks(pendingOnly, pageable)
-                : runQueries.listManualTasks(pendingOnly, pageable);
-    }
-
-    private Map<String, Object> readStats() {
-        return runQueries == null ? service.stats() : runQueries.stats();
-    }
-
-    private List<Map<String, Object>> readDeadDispatches() {
-        return runQueries == null ? service.deadDispatches() : runQueries.deadDispatches();
-    }
-
-    private List<Map<String, Object>> readApprovals() {
-        return runQueries == null ? service.listApprovals() : runQueries.listApprovals();
-    }
-
-    private Page<Map<String, Object>> readApprovals(Pageable pageable) {
-        return runQueries == null ? service.listApprovals(pageable) : runQueries.listApprovals(pageable);
-    }
-
     private static Map<String, Object> page(Page<Map<String, Object>> result) {
         Map<String, Object> out = new LinkedHashMap<>();
+        // SOAR's unversioned compatibility surface accepts a legacy 0-based
+        // request index.  Keep that input contract stable, but expose the
+        // complete pagination metadata so clients can advance safely without
+        // guessing from the current page length.
         out.put("page", result.getNumber());
         out.put("size", result.getSize());
         out.put("total", result.getTotalElements());
+        out.put("totalPages", result.getSize() <= 0 ? null : result.getTotalPages());
         out.put("items", result.getContent());
         return out;
     }

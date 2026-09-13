@@ -59,6 +59,16 @@ public class AlarmRepositoryImpl implements AlarmRepositoryCustom {
     }
 
     @Override
+    public long count(String tenant, AlarmQuery query) {
+        CriteriaBuilder cb = entityManager.getCriteriaBuilder();
+        CriteriaQuery<Long> countQuery = cb.createQuery(Long.class);
+        Root<Alarm> countRoot = countQuery.from(Alarm.class);
+        countQuery.select(cb.count(countRoot));
+        countQuery.where(predicates(cb, countQuery, countRoot, tenant, query));
+        return entityManager.createQuery(countQuery).getSingleResult();
+    }
+
+    @Override
     public List<Alarm> list(String tenant, AlarmQuery query) {
         CriteriaBuilder cb = entityManager.getCriteriaBuilder();
         CriteriaQuery<Alarm> contentQuery = cb.createQuery(Alarm.class);

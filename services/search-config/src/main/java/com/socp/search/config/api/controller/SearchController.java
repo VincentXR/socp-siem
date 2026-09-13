@@ -3,6 +3,7 @@ package com.socp.search.config.api.controller;
 
 import com.socp.platform.error.api.ApiResult;
 import com.socp.platform.error.exception.ApiException;
+import com.socp.platform.auth.security.RequireRole;
 import com.socp.search.config.domain.SearchEvent;
 import com.socp.search.config.infrastructure.opensearch.OsEventReader;
 import com.socp.search.config.infrastructure.serialization.SearchEventJson;
@@ -70,6 +71,7 @@ public class SearchController {
     }
 
     /** Export follows the same source-selection policy as interactive search. */
+    @RequireRole({"admin", "analyst"})
     @GetMapping("/export")
     public ResponseEntity<String> export(
             @RequestParam(value = "q", defaultValue = "") String q,

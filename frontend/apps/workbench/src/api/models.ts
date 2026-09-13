@@ -122,7 +122,14 @@ export interface Paged<T> {
   totalPages: number | null
 }
 
-export interface AlarmPage { items: Alarm[]; total: number; page: number; size: number }
+/** Alarm pagination keeps the historical type name while matching PageResponse. */
+export interface AlarmPage {
+  items: Alarm[]
+  total: number
+  page: number
+  size: number
+  totalPages?: number | null
+}
 export type AlarmSortField = 'occurredAt' | 'severity' | 'ruleName' | 'entity' | 'status' | 'riskScore'
 export type AlarmSortOrder = 'ascending' | 'descending'
 export interface Disposition {

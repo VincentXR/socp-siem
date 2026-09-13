@@ -91,6 +91,10 @@ def main() -> int:
         "services/soar-web/src/main/java/com/socp/soar/web/service/SoarService.java",
         "services/soar-web/src/main/java/com/socp/soar/web/service/SoarAutomationRuleService.java",
         "services/soar-web/src/main/java/com/socp/soar/web/service/SoarArtifactRetentionWorker.java",
+        "services/soar-web/src/main/java/com/socp/soar/web/service/SoarQueryService.java",
+        "services/soar-web/src/main/java/com/socp/soar/web/service/SoarAutomationRuleMatcher.java",
+        "services/soar-web/src/main/java/com/socp/soar/web/definition/SoarGraphValidator.java",
+        "services/soar-web/src/main/java/com/socp/soar/web/definition/SoarManualFormValidator.java",
         "services/soar-web/src/main/java/com/socp/soar/web/artifact/SoarArtifactStore.java",
         "services/soar-web/src/main/java/com/socp/soar/web/artifact/S3SoarArtifactStore.java",
         "services/soar-web/src/main/java/com/socp/soar/web/temporal/SoarWorkflowImpl.java",
@@ -98,6 +102,31 @@ def main() -> int:
     )
     for relative in required_java:
         check(f"implementation file {Path(relative).name}", (ROOT / relative).is_file())
+
+    decomposition_limits = {
+        "services/soar-web/src/main/java/com/socp/soar/web/service/SoarService.java": 1300,
+        "services/soar-web/src/main/java/com/socp/soar/web/definition/SoarDefinitionValidator.java": 900,
+        "services/soar-web/src/main/java/com/socp/soar/web/service/SoarAutomationRuleService.java": 850,
+    }
+    for relative, maximum in decomposition_limits.items():
+        path = ROOT / relative
+        line_count = len(path.read_text(encoding="utf-8").splitlines()) if path.is_file() else 0
+        check(f"{Path(relative).name} remains within its orchestration budget",
+              path.is_file() and line_count <= maximum, f"lines={line_count}, max={maximum}")
+    query_service = read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarQueryService.java")
+    matcher = read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarAutomationRuleMatcher.java")
+    graph_validator = read("services/soar-web/src/main/java/com/socp/soar/web/definition/SoarGraphValidator.java")
+    manual_validator = read("services/soar-web/src/main/java/com/socp/soar/web/definition/SoarManualFormValidator.java")
+    check("SOAR query projections are isolated", "final class SoarQueryService" in query_service
+          and "new SoarQueryService(this)" in read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarService.java"))
+    check("SOAR automation matching and event normalization are isolated",
+          "final class SoarAutomationRuleMatcher" in matcher
+          and "matcher.normalizeEvent" in read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarAutomationRuleService.java"))
+    check("SOAR graph and manual-form validation are isolated",
+          "final class SoarGraphValidator" in graph_validator
+          and "final class SoarManualFormValidator" in manual_validator
+          and "SoarManualFormValidator.validate" in read(
+              "services/soar-web/src/main/java/com/socp/soar/web/definition/SoarDefinitionValidator.java"))
 
     controller = read("services/soar-web/src/main/java/com/socp/soar/web/api/controller/SoarController.java")
     soar_client = read("platform/socp-client/src/main/java/com/socp/platform/client/service/SoarClient.java")
@@ -134,17 +163,24 @@ def main() -> int:
           dynamic_body_count == 4, f"found={dynamic_body_count}; patch/evaluation routes are explicit extension boundaries")
 
     workflow = read("services/soar-web/src/main/java/com/socp/soar/web/temporal/SoarWorkflowImpl.java")
+    workflow += read("services/soar-web/src/main/java/com/socp/soar/web/temporal/SoarWorkflowJsonSupport.java")
     activity = read("services/soar-web/src/main/java/com/socp/soar/web/temporal/SoarActivityImpl.java")
+    activity += read("services/soar-web/src/main/java/com/socp/soar/web/temporal/SoarActivityExecutionService.java")
     activity_contract = read("services/soar-web/src/main/java/com/socp/soar/web/temporal/SoarActivity.java")
     recovery = read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarRunRecoveryWorker.java")
     runtime = read("services/soar-web/src/main/java/com/socp/soar/web/config/SoarRuntimeProperties.java")
     application = read("services/soar-web/src/main/resources/application.yml")
     production = read("services/soar-web/src/main/resources/application-prod.yml")
+    service_sources = read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarService.java")
+    service_sources += read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarApprovalCommandService.java")
+    service_sources += read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarArtifactCommandService.java")
+    definition_sources = read("services/soar-web/src/main/java/com/socp/soar/web/definition/SoarDefinitionValidator.java")
+    definition_sources += read("services/soar-web/src/main/java/com/socp/soar/web/definition/SoarActionContractValidator.java")
     checks = {
         "bounded graph execution": "maxSteps()" in workflow and "EXECUTION_LIMIT_EXCEEDED" in workflow,
-        "published sub-playbook graph gate": "validateSubPlaybookGraph" in read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarService.java")
-        and "SOAR_SUB_PLAYBOOK_CYCLE" in read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarService.java")
-        and "SOAR_SUB_PLAYBOOK_DEPTH_EXCEEDED" in read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarService.java"),
+        "published sub-playbook graph gate": "validateSubPlaybookGraph" in service_sources
+        and "SOAR_SUB_PLAYBOOK_CYCLE" in service_sources
+        and "SOAR_SUB_PLAYBOOK_DEPTH_EXCEEDED" in service_sources,
         "run-wide child workflow budget": "reserveNodeExecution" in activity_contract
         and "execution_node_count" in read("services/soar-web/src/main/java/com/socp/soar/web/persistence/entity/SoarRunEntity.java")
         and "executionBudgetLimit" in workflow,
@@ -152,17 +188,16 @@ def main() -> int:
         "approval gate context is persisted": "markRunWaitingWithContext" in activity_contract
         and "setInputHash" in activity and "setTargetSnapshotJson" in activity
         and "setPolicyJson" in activity and "soar-approval-gate-context" in workflow,
-        "approval role/group policy is enforced": "approvalPolicyAllows" in read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarService.java")
-        and "APPROVER_POLICY_FORBIDDEN" in read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarService.java"),
+        "approval role/group policy is enforced": "approvalPolicyAllows" in service_sources
+        and "APPROVER_POLICY_FORBIDDEN" in service_sources,
         "output hard limit": "MAX_OUTPUT_BYTES = 10 * 1024 * 1024" in activity,
         "external artifact storage boundary": "SoarArtifactStore" in activity
         and "artifactStore.put" in activity
-        and "artifactStore.read" in read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarService.java")
+        and "artifactStore.read" in service_sources
         and "ConditionalOnProperty" in read("services/soar-web/src/main/java/com/socp/soar/web/artifact/S3SoarArtifactStore.java"),
         "production artifact backend is fail-closed": ("artifacts:" in production and "backend:" in production)
         and "must be s3 in production" in read("platform/socp-auth/src/main/java/com/socp/platform/auth/security/ProdGuard.java")
-        and "large artifact requires the configured object-store adapter" in read(
-            "services/soar-web/src/main/java/com/socp/soar/web/service/SoarService.java"),
+        and "large artifact requires the configured object-store adapter" in service_sources,
         "rotatable secret provider boundary": "kubernetes-mount-path" in production
         and "KubernetesSecretResolver" in read(
             "services/soar-web/src/main/java/com/socp/soar/web/connector/KubernetesSecretResolver.java")
@@ -186,14 +221,10 @@ def main() -> int:
             "services/soar-web/src/main/java/com/socp/soar/web/service/SoarDispatchWorker.java")
         and "isExecutionEnabled" in read(
             "services/soar-web/src/main/java/com/socp/soar/web/service/SoarSignalWorker.java"),
-        "typed action parameter schemas are enforced": "validateActionParameters" in read(
-            "services/soar-web/src/main/java/com/socp/soar/web/definition/SoarDefinitionValidator.java")
-        and "ACTION_PARAMETER_REQUIRED" in read(
-            "services/soar-web/src/main/java/com/socp/soar/web/definition/SoarDefinitionValidator.java")
-        and "ACTION_PARAMETER_TYPE_INVALID" in read(
-            "services/soar-web/src/main/java/com/socp/soar/web/definition/SoarDefinitionValidator.java")
-            and "ACTION_PARAMETER_UNKNOWN" in read(
-            "services/soar-web/src/main/java/com/socp/soar/web/definition/SoarDefinitionValidator.java"),
+        "typed action parameter schemas are enforced": "validateActionParameters" in definition_sources
+        and "ACTION_PARAMETER_REQUIRED" in definition_sources
+        and "ACTION_PARAMETER_TYPE_INVALID" in definition_sources
+        and "ACTION_PARAMETER_UNKNOWN" in definition_sources,
         "workflow JSON corruption fails explicitly": "invalid workflow JSON" in workflow
         and 'return "{}"' not in workflow and "SoarWorkflowJsonException" in workflow,
         "SSE scheduler has an application lifecycle": "soarSseScheduler" in read(
@@ -258,6 +289,11 @@ def main() -> int:
           and "allowedGroups" in openapi)
     check("OpenAPI exposes typed event envelope", "EventEnvelope:" in openapi
           and "soar.event" in openapi and "/api/events/evaluate:" in openapi)
+    check("OpenAPI exposes complete SOAR pagination metadata",
+          "required: [page, size, total, totalPages, items]" in openapi
+          and "totalPages:" in openapi
+          and 'out.put("totalPages"' in controller
+          and "totalPages: number | null" in frontend)
     check("OpenAPI uses the real session cookie and ApiResult schema",
           "name: SOCP_SESSION" in openapi and "schemas/ApiResult" in openapi
           and "required: [code, message, timestamp]" in openapi

@@ -4,11 +4,26 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# Make the opt-in middleware suite explicit.  When Docker is available a
+# normal local quality run should exercise the Testcontainers contracts just
+# like CI; when it is unavailable, leave an explicit diagnostic instead of a
+# silent green skip.  An explicitly supplied value always wins.
+if [[ -z "${SOCP_TESTCONTAINERS:-}" ]]; then
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    export SOCP_TESTCONTAINERS=true
+    echo "[quality-gate] Docker detected; enabling Testcontainers contracts"
+  else
+    export SOCP_TESTCONTAINERS=false
+    echo "[quality-gate] Docker unavailable; Testcontainers contracts are skipped" >&2
+  fi
+fi
+
 bash build/mvnw.sh test -Pcoverage -Dsurefire.failIfNoSpecifiedTests=false
 python3 build/verify-coverage.py
 python3 build/verify-changed-coverage.py
 python3 build/verify-migrations.py
 python3 build/verify-contracts.py
+python3 build/verify-middleware-images.py
 python3 build/verify-package-layout.py
 python3 build/verify-architecture.py
 python3 build/verify-style.py

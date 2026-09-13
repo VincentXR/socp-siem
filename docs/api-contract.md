@@ -33,6 +33,55 @@ deployment units; preserve the context path and response envelope.
 - Pagination uses the shared `page`, `size`, `total`, and `items` shape where a
   list contract supports pagination.
 
+SOAR's unversioned compatibility routes retain their historical 0-based
+`page` request parameter. Every paged SOAR response now includes the complete
+`page`, `size`, `total`, `totalPages`, and `items` metadata; callers must use
+`totalPages` rather than inferring continuation from the returned item count.
+
+### Alarm list and export migration
+
+`GET /api/v1/alarms` is the canonical paged alarm read when `page` is supplied;
+its `data` value is `PageResponse` (`items`, `total`, `page`, `size`, and
+`totalPages`). The legacy array response remains available when pagination is
+omitted or only `size` is supplied, but the server still reads only the first
+bounded page. Clients should migrate to the paged form before the compatibility
+route is retired.
+
+`GET /api/v1/alarms/export` and the `/api/alarms` alias require the `admin` or
+`analyst` role. Exports are counted before the response is opened, stream from
+database pages of 500 rows, and accept a `limit` between 1 and 100,000 (default
+10,000). A matching set above the requested limit returns HTTP 413 with the
+normal `ApiResult` error envelope; it is never silently truncated and cannot
+materialise an unbounded tenant result in the JVM. The `format` parameter stays
+compatible with the existing `csv` and `json` representations.
+
+The workbench must inspect the envelope code even when HTTP status is 200:
+non-zero business codes are surfaced as `ApiBusinessError` instead of being
+unwrapped as successful data. This is covered by the frontend API-response
+contract tests and applies to both paged and legacy compatibility responses.
+
+### Incident list and export migration
+
+`GET /api/v1/incidents` uses the shared `PageResponse` shape with one-based
+`page` values. `GET /api/v1/incidents/export` is restricted to `admin` and
+`analyst`, counts the tenant result before opening the response, and streams
+summary rows in 500-row database pages. The `limit` parameter is required to
+be between 1 and 100,000 (default 10,000); a larger matching set returns HTTP
+413 in the normal `ApiResult` error envelope instead of being truncated or
+materialised without a bound. Timeline details remain available through the
+paged `/incidents/{id}/timeline` resource.
+
+Search export remains capped at 5,000 events and is restricted to `admin` or
+`analyst`. Report archive listing accepts a bounded `limit` (1–5,000, default
+500) and never iterates beyond that tenant-owned prefix window; callers should
+use the `truncated` flag when the archive contains more objects.
+
+The search-config source catalogue accepts one-based `page` and bounded `size`
+(maximum 500) and returns the shared `PageResponse` when pagination is
+requested. The Workbench requests the first page explicitly and keeps the
+legacy array return type only at its local adapter boundary; source reads never
+materialise the complete tenant catalogue in the HTTP handler.
+
 ## Verification
 
 Builds must include the OpenAPI dependency through `socp-starter` (servlet

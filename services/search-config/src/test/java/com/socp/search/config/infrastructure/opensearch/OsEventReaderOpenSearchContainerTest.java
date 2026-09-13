@@ -49,7 +49,7 @@ class OsEventReaderOpenSearchContainerTest {
 
     @Container
     static final GenericContainer<?> OPENSEARCH = new GenericContainer<>(
-            DockerImageName.parse("opensearchproject/opensearch:2.11.1"))
+            DockerImageName.parse("opensearchproject/opensearch:2.19.6"))
             .withEnv("discovery.type", "single-node")
             .withEnv("DISABLE_SECURITY_PLUGIN", "true")
             .withEnv("OPENSEARCH_JAVA_OPTS", "-Xms512m -Xmx512m")

@@ -47,7 +47,13 @@ public class CkReporter {
 
     /** Blocking acknowledgement used by the durable delivery worker. */
     public boolean reportAlarmAndAwait(Alarm alarm) {
-        if (!properties.isEnabled()) return true;
+        // A disabled sink is not a durable acknowledgement.  Returning true
+        // here would let AlarmDeliveryPublisher mark the CLICKHOUSE outbox
+        // row DELIVERED and lose the event if reporting is enabled later.
+        if (!properties.isEnabled()) {
+            log.warn("ClickHouse alarm detail delivery is disabled; keeping the outbox row pending");
+            return false;
+        }
         return alarm != null && doReport(alarm);
     }
 

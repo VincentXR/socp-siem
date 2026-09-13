@@ -1,8 +1,15 @@
 import { del, downloadFile, get, post, put, type ApiRequestOptions } from './core'
-import type { DataSourceType, FieldDef, LogCategory, LogSource, ParseRule, ReferenceSet, SearchResult, SinkTarget } from './models'
+import type { DataSourceType, FieldDef, LogCategory, LogSource, ParseRule, ReferenceSet, SearchResult, SinkTarget, Paged } from './models'
 import { withQuery } from '../lib/query'
 
-export const listSources = () => get<LogSource[]>('/search-config/api/v1/sources')
+/**
+ * Source catalog reads use the server-side page contract.  Keep the public
+ * return type as an array for the editor views, but never silently accept the
+ * legacy unbounded/first-page response from the browser.
+ */
+export const listSources = () =>
+  get<Paged<LogSource>>(withQuery('/search-config/api/v1/sources', { page: 1, size: 500 }))
+    .then(result => result.items)
 export type LogSourceInput = Partial<Omit<LogSource, 'id' | 'createdAt'>> & Pick<LogSource, 'name' | 'type' | 'format' | 'enabled'>
 export const createSource = (source: LogSourceInput) => post<LogSource>('/search-config/api/v1/sources', source)
 export const updateSource = (id: string, source: LogSourceInput) => put<{ source: LogSource }>(`/search-config/api/v1/sources/${encodeURIComponent(id)}`, source)

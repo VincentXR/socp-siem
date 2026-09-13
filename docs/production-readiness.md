@@ -94,6 +94,9 @@ consumers independently scalable. Promote an aggregate only after the
 and capacity evidence passes. Size Kafka
 partitions, PostgreSQL pools, ClickHouse parts, and OpenSearch shards from
 measured load; do not infer production capacity from the single-node benchmark.
+The release gate is `python build/verify-runtime-units.py --require-evidence`;
+it requires a commit-matched manifest for all six units and refuses promotion
+while the topology remains `contract-only-until-aggregate-apps-pass-integration-tests`.
 
 Real notification/SOAR connectors require vendor sandbox acceptance, timeout
 and idempotency tests, credential rotation, and an operator approval policy

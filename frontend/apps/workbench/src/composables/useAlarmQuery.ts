@@ -14,7 +14,7 @@ export function useAlarmQuery() {
   const alarmOrder = ref<AlarmSortOrder>('descending')
   const alarmPageNum = ref(1)
   const alarmPageSize = ref(10)
-  const emptyPage: AlarmPage = { items: [], total: 0, page: 1, size: 10 }
+  const emptyPage: AlarmPage = { items: [], total: 0, page: 1, size: 10, totalPages: 0 }
   const request = useRequest<AlarmPage>(emptyPage)
   const alarmPageData = computed(() => request.data.value ?? emptyPage)
   const filteredAlarms = computed(() => alarmPageData.value.items)

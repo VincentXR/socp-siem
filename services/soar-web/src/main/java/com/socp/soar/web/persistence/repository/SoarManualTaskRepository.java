@@ -18,6 +18,9 @@ public interface SoarManualTaskRepository extends TenantScopedRepository<SoarMan
     List<SoarManualTaskEntity> findByTenantIdOrderByCreatedAtDesc(String tenantId);
     Page<SoarManualTaskEntity> findByTenantIdOrderByCreatedAtDesc(String tenantId, Pageable pageable);
     List<SoarManualTaskEntity> findByTenantIdAndStatusOrderByDueAtAsc(String tenantId, String status);
+    /** Database-side paging for pending task dashboards; never materialize a tenant queue. */
+    Page<SoarManualTaskEntity> findByTenantIdAndStatusOrderByDueAtAsc(String tenantId, String status,
+                                                                       Pageable pageable);
     Optional<SoarManualTaskEntity> findByTenantIdAndId(String tenantId, String id);
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select t from SoarManualTaskEntity t where t.tenantId = :tenantId and t.id = :id")

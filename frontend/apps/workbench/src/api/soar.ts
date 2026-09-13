@@ -43,7 +43,11 @@ export interface SoarEvent {
   id: string; runId: string; nodeRunId?: string; sequence: number; eventType: string; actor?: string
   summary: string; detail?: unknown; traceId?: string; createdAt?: string
 }
-export interface SoarPage<T> { page: number; size: number; total: number; items: T[] }
+/**
+ * SOAR compatibility page. Requests remain 0-based for the unversioned
+ * surface; totalPages is returned by every paged response.
+ */
+export interface SoarPage<T> { page: number; size: number; total: number; totalPages: number | null; items: T[] }
 export interface SoarTemplate {
   id: string; version: number; name: string; description: string; eventTypes: string[]
   requiredConnectors: string[]; risk: string; attackTags: string[]

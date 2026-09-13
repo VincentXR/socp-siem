@@ -12,9 +12,11 @@ import com.socp.search.config.render.VectorConfigRenderer;
 import com.socp.search.config.persistence.store.LogSourceStore;
 import com.socp.search.config.persistence.store.SinkTargetStore;
 import com.socp.platform.error.api.ApiResult;
+import com.socp.platform.error.api.PageResponse;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.platform.auth.security.RequireIngestIdentity;
 import com.socp.platform.ratelimit.api.RateLimit;
+import org.springframework.data.domain.PageRequest;
 import jakarta.annotation.PostConstruct;
 import jakarta.validation.Valid;
 import jakarta.servlet.http.HttpServletRequest;
@@ -117,8 +119,25 @@ public class LogSourceController {
     }
 
     @GetMapping("/sources")
+    public ApiResult<?> list(@org.springframework.web.bind.annotation.RequestParam(required = false) Integer page,
+                             @org.springframework.web.bind.annotation.RequestParam(required = false) Integer size) {
+        int safeSize = size == null || size <= 0 ? 100 : Math.min(500, size);
+        if (page == null) {
+            return ApiResult.ok(store.page(PageRequest.of(0, safeSize)).getContent());
+        }
+        if (page < 1 || size != null && (size < 1 || size > 500)) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST,
+                    "page must be >= 1 and size must be between 1 and 500");
+        }
+        var result = store.page(PageRequest.of(page - 1, safeSize));
+        return ApiResult.ok(PageResponse.of(result.getContent(), result.getTotalElements(),
+                page, safeSize, result.getTotalPages()));
+    }
+
+    /** Source-compatible Java entry point for pre-pagination callers. */
     public ApiResult<List<LogSource>> list() {
-        return ApiResult.ok(store.list());
+        return ApiResult.ok(store.page(PageRequest.of(0, 500)).getContent());
     }
 
     @RequireRole({"admin", "analyst"})

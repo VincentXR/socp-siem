@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class CaseTimelinePostgresTest {
 
     @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine")
+    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:18")
             .withDatabaseName("incident")
             .withUsername("socp")
             .withPassword("socp");

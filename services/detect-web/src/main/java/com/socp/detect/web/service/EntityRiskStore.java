@@ -10,6 +10,9 @@ import com.socp.rule.util.Json;
 import com.socp.platform.tenant.context.TenantContext;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -23,6 +26,7 @@ import java.util.UUID;
 @Component
 public class EntityRiskStore {
 
+    private static final int MAX_TOP_CANDIDATES = 500;
     private static final double HALF_LIFE_SECONDS = Duration.ofHours(6).toSeconds();
     private static final double INJECT_RATIO = 0.45;
     private static final Duration RECENT_WINDOW = Duration.ofHours(1);
@@ -92,10 +96,21 @@ public class EntityRiskStore {
 
     public List<Map<String, Object>> top(int limit) {
         Instant now = Instant.now();
-        return profiles.findByTenantId(tenant()).stream()
+        int boundedLimit = Math.max(1, Math.min(MAX_TOP_CANDIDATES, limit));
+        // Score decay is applied in Java, but the candidate set is bounded at
+        // the database boundary. A tenant-created entity population must not
+        // turn the ranking endpoint into an unbounded materialisation.
+        Page<EntityRiskProfileEntity> page = profiles.findByTenantId(tenant(),
+                PageRequest.of(0, boundedLimit, Sort.by(Sort.Order.desc("score"),
+                        Sort.Order.asc("entity"))));
+        // Spring Data never returns null here.  If a replacement repository
+        // violates that contract, fail closed with an empty ranking rather
+        // than falling back to an unbounded tenant materialisation.
+        List<EntityRiskProfileEntity> candidates = page == null ? List.of() : page.getContent();
+        return candidates.stream()
                 .map(profile -> toMap(profile, now))
                 .sorted((a, b) -> Double.compare((Double) b.get("risk"), (Double) a.get("risk")))
-                .limit(Math.max(1, limit))
+                .limit(boundedLimit)
                 .toList();
     }
 

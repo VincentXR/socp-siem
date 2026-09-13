@@ -24,6 +24,9 @@ pnpm verify
 
 # OpenAPI snapshot -> TypeScript SDK generation and strict compilation
 python build/verify-openapi-sdk.py
+
+# Deployment-backed Actuator boundary (requires a running gateway)
+python build/verify-actuator-auth.py
 ```
 
 `pnpm verify` runs the workbench type check and Vite build, then verifies the
@@ -79,6 +82,10 @@ Maven service modules, default process list, target runtime-unit assignment,
 unique ports, gateway routes,
 legacy collector rewrites, and frontend health registry aligned.
 
+Changed-line coverage is fail-closed when CI supplies a non-zero base commit:
+an invalid or unavailable base is an error, not a successful skip. An all-zero
+initial-push base intentionally falls back to the current `HEAD` diff.
+
 ## Integration checks
 
 Start the required Docker middleware and backend slice before running these:
@@ -111,6 +118,24 @@ and commit failure after write acknowledgement. Set `SOCP_TESTCONTAINERS=true`
 when Docker is available; CI enables it, while local runs without Docker skip
 only these integration tests. See [the failure matrix](chaos/README.md) for the
 focused indexer command and reconciliation formula.
+
+The middleware CI job also runs the Redis cross-replica revocation proof and
+the PostgreSQL runtime-role/RLS proofs with `SOCP_TESTCONTAINERS=true`. The
+repository quality-gate wrappers detect a usable Docker daemon and enable this
+suite automatically; if Docker is unavailable they print an explicit warning
+and run the hermetic tests only. Set `SOCP_TESTCONTAINERS=true` to require the
+middleware suite (and fail if the Docker environment cannot satisfy it).
+
+The middleware image contract is checked by `build/verify-middleware-images.py`.
+PostgreSQL, Kafka, OpenSearch, Redis, and ClickHouse integration tests use the
+same image tags as `infra/docker-compose.yml`. The Kafka tests use the Apache-
+compatible Testcontainers adapter, which configures the same
+`apache/kafka:4.0.0` image in KRaft mode. The project pins Testcontainers 1.21.4
+because the Apache adapter is not available in the old 1.20.x line.
+
+The full-stack job runs `build/verify-actuator-auth.py` after all services are
+started. It treats a dependency-driven health `503` as valid, but fails if an
+unauthenticated caller can read Actuator info, metrics, or route metadata.
 
 The pipeline check confirms canonical event acceptance, Kafka delivery,
 Detection, PostgreSQL alert persistence, OpenSearch indexing, ClickHouse

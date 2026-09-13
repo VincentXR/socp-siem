@@ -2,7 +2,8 @@
 export interface ApiEnvelope<T> {
   code: number
   message?: string
-  data: T
+  /** ApiResult.fail() and Void ok() omit null data under NON_NULL serialization. */
+  data?: T | null
   traceId?: string | null
   timestamp?: string
 }

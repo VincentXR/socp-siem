@@ -19,7 +19,7 @@ class SearchConfigPostgresMigrationTest {
 
     @Test
     void populatedV5UpgradeUsesTheDueIndexAndSupportsBoundedCleanup() throws Exception {
-        try (GenericContainer<?> postgres = new GenericContainer<>(DockerImageName.parse("postgres:16-alpine"))
+        try (GenericContainer<?> postgres = new GenericContainer<>(DockerImageName.parse("postgres:18"))
                 .withEnv("POSTGRES_DB", "search")
                 .withEnv("POSTGRES_USER", "socp")
                 .withEnv("POSTGRES_PASSWORD", "socp-test")

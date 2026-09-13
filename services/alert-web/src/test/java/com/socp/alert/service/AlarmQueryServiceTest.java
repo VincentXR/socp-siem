@@ -74,6 +74,24 @@ class AlarmQueryServiceTest {
     }
 
     @Test
+    void countsUsingTheSameTenantScopedFiltersAsPagedReads() {
+        when(repository.count(eq("tenant-a"), any(AlarmQuery.class))).thenReturn(42L);
+
+        long total = service.count(Severity.HIGH, " R-1 ", " OPEN ", " login ",
+                "riskScore", "ascending");
+
+        assertThat(total).isEqualTo(42L);
+        ArgumentCaptor<AlarmQuery> query = ArgumentCaptor.forClass(AlarmQuery.class);
+        verify(repository).count(eq("tenant-a"), query.capture());
+        assertThat(query.getValue().severity()).isEqualTo(Severity.HIGH);
+        assertThat(query.getValue().rule()).isEqualTo("R-1");
+        assertThat(query.getValue().status()).isEqualTo("OPEN");
+        assertThat(query.getValue().text()).isEqualTo("login");
+        assertThat(query.getValue().sort()).isEqualTo(AlarmQuery.SortField.RISK_SCORE);
+        assertThat(query.getValue().ascending()).isTrue();
+    }
+
+    @Test
     void returnsTenantScopedAlarmOrAStableNotFoundError() {
         Alarm alarm = new Alarm();
         when(repository.findByTenantIdAndId("tenant-a", "alarm-1")).thenReturn(Optional.of(alarm));

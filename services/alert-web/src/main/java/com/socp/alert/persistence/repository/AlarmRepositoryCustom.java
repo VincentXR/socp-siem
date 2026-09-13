@@ -14,5 +14,8 @@ public interface AlarmRepositoryCustom {
 
     Page<Alarm> page(String tenant, AlarmQuery query, Pageable pageable);
 
+    /** Count a filtered tenant view without materialising the matching alarms. */
+    long count(String tenant, AlarmQuery query);
+
     List<Alarm> list(String tenant, AlarmQuery query);
 }

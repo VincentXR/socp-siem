@@ -27,7 +27,7 @@ public class SocpAuthConfig implements WebMvcConfigurer {
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(authInterceptor)
                 .addPathPatterns("/**")
-                .excludePathPatterns("/actuator/health/**", "/actuator/info/**", "/health", "/error")
+                .excludePathPatterns("/actuator/health/**", "/health", "/error")
                 .order(-100);
     }
 }

@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AlarmEnrichmentPostgresConcurrencyTest {
 
     @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine")
+    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:18")
             .withDatabaseName("alert")
             .withUsername("socp_test")
             .withPassword("socp_test_password");

@@ -35,9 +35,15 @@ public class CaseService {
     private final AlarmCaseLinkRepository alarmLinks;
 
     /** 归档导出：全部案件（含时间线）序列化为 JSON。 */
+    /**
+     * Legacy Java entry point retained for integrations that still call the
+     * service directly. Keep it bounded as well; the HTTP export endpoint
+     * streams the same summary contract in database pages.
+     */
+    @Deprecated
     public String exportJson() {
         try {
-            return MAPPER.writeValueAsString(store.list());
+            return MAPPER.writeValueAsString(store.page(1, 10_000, "", "").getContent());
         } catch (Exception e) {
             return "[]";
         }
@@ -132,6 +138,10 @@ public class CaseService {
 
     public Page<Case> page(int page, int size, String query, String status) {
         return store.page(page, size, query, status);
+    }
+
+    public long count() {
+        return store.count();
     }
 
     /** 手动创建案件：不关联告警，后续可在调查过程中补充时间线和关联信息。 */

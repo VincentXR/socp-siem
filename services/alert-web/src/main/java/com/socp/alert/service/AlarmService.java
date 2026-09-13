@@ -289,6 +289,12 @@ public class AlarmService {
         return queryService.page(severity, rule, status, text, sort, order, page, size);
     }
 
+    /** Count a filtered tenant view without loading alarm entities. */
+    public long count(Severity severity, String rule, String status, String text,
+                      String sort, String order) {
+        return queryService.count(severity, rule, status, text, sort, order);
+    }
+
     public Alarm get(String id) {
         return queryService.get(id);
     }

@@ -128,6 +128,51 @@ class CaseControllerTest {
     }
 
     @Test
+    void exportStreamsBoundedPagedCases() throws Exception {
+        Case created = Case.create("SSH investigation", "203.0.113.10", "HIGH", "analyst");
+        given(service.count()).willReturn(1L);
+        given(service.page(1, 100, "", ""))
+                .willReturn(new PageImpl<>(List.of(created), PageRequest.of(0, 100), 1));
+
+        mvc.perform(get("/api/v1/incidents/export")
+                        .header("Authorization", BEARER)
+                        .header("X-Role", "analyst")
+                        .param("limit", "100"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].title").value("SSH investigation"));
+
+        verify(service).count();
+        verify(service).page(1, 100 > CaseController.EXPORT_BATCH_SIZE
+                ? CaseController.EXPORT_BATCH_SIZE : 100, "", "");
+    }
+
+    @Test
+    void exportRejectsAnUnboundedLimit() throws Exception {
+        mvc.perform(get("/api/v1/incidents/export")
+                        .header("Authorization", BEARER)
+                        .header("X-Role", "analyst")
+                        .param("limit", String.valueOf(CaseController.EXPORT_MAX_LIMIT + 1)))
+                .andExpect(status().isBadRequest());
+
+        verify(service, org.mockito.Mockito.never()).count();
+    }
+
+    @Test
+    void exportReturnsPayloadTooLargeBeforeWritingHeaders() throws Exception {
+        given(service.count()).willReturn((long) CaseController.EXPORT_MAX_LIMIT + 1);
+
+        mvc.perform(get("/api/v1/incidents/export")
+                        .header("Authorization", BEARER)
+                        .header("X-Role", "analyst")
+                        .param("limit", String.valueOf(CaseController.EXPORT_MAX_LIMIT)))
+                .andExpect(status().isPayloadTooLarge());
+
+        verify(service, org.mockito.Mockito.never()).page(org.mockito.ArgumentMatchers.anyInt(),
+                org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
     void timelineReturnsOneBasedPagedEnvelope() throws Exception {
         Case created = Case.create("SSH investigation", "203.0.113.10", "HIGH", "analyst");
         given(service.timeline("case-1", 0, 50)).willReturn(Map.of(

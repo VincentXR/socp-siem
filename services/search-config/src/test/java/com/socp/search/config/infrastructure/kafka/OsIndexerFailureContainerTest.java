@@ -21,7 +21,7 @@ import org.apache.kafka.common.TopicPartition;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.KafkaContainer;
+import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.containers.Network;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.images.builder.Transferable;
@@ -57,11 +57,11 @@ class OsIndexerFailureContainerTest {
 
     @Container
     static final KafkaContainer KAFKA = new KafkaContainer(
-            DockerImageName.parse("confluentinc/cp-kafka:7.6.1"));
+            DockerImageName.parse("apache/kafka:4.0.0"));
 
     @Container
     static final GenericContainer<?> OPENSEARCH = new GenericContainer<>(
-            DockerImageName.parse("opensearchproject/opensearch:2.11.1"))
+            DockerImageName.parse("opensearchproject/opensearch:2.19.6"))
             .withNetwork(NETWORK)
             .withNetworkAliases("opensearch")
             .withEnv("discovery.type", "single-node")
@@ -220,7 +220,7 @@ class OsIndexerFailureContainerTest {
     @Test
     void recordsRealCommitFailureAfterOpenSearchAcknowledgement() throws Exception {
         try (KafkaContainer failingKafka = new KafkaContainer(
-                DockerImageName.parse("confluentinc/cp-kafka:7.6.1"))) {
+                DockerImageName.parse("apache/kafka:4.0.0"))) {
             failingKafka.start();
             String suffix = UUID.randomUUID().toString().substring(0, 8);
             String topic = "indexer-commit-down-" + suffix;

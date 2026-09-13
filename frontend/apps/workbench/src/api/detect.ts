@@ -1,8 +1,9 @@
 import { del, get, post, put, type ApiRequestOptions } from './core'
-import type { DetectionIngestEvent, DetectionIngestResult, GasAlert, GasStats, RiskEntity, RiskSummary, RuleSpec, ScoreBreakdown, Watchlist } from './models'
+import type { DetectionIngestEvent, DetectionIngestResult, GasAlert, GasStats, Paged, RiskEntity, RiskSummary, RuleSpec, ScoreBreakdown, Watchlist } from './models'
 import { withQuery } from '../lib/query'
 
-export const listRules = () => get<RuleSpec[]>('/detect-web/api/v1/rules')
+export const listRules = (page = 1, size = 500) =>
+  get<Paged<RuleSpec>>(withQuery('/detect-web/api/v1/rules', { page, size })).then(result => result.items)
 export const createGasRule = (spec: Partial<RuleSpec>) => post<RuleSpec>('/detect-web/api/v1/rules', spec)
 export const updateGasRule = (id: string, spec: Partial<RuleSpec>) => put<RuleSpec>(`/detect-web/api/v1/rules/${encodeURIComponent(id)}`, spec)
 export const activateGasRule = (id: string) => post<RuleSpec>(`/detect-web/api/v1/rules/${encodeURIComponent(id)}/activate`, {})

@@ -34,6 +34,11 @@ public class AlarmQueryService {
                 PageRequest.of(Math.max(0, page - 1), size));
     }
 
+    long count(Severity severity, String rule, String status, String text,
+               String sort, String order) {
+        return repository.count(tenant(), criteria(severity, rule, status, text, sort, order));
+    }
+
     Alarm get(String id) {
         return repository.findByTenantIdAndId(tenant(), id)
                 .orElseThrow(() -> com.socp.platform.error.exception.ApiException.notFound("Alarm does not exist: " + id));

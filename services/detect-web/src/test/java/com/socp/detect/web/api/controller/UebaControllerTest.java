@@ -73,4 +73,15 @@ class UebaControllerTest {
         verify(watchlists).describe("blocked_ips");
         verify(watchlists).delete("blocked_ips");
     }
+
+    @Test
+    void rejectsUnboundedRiskRankingRequests() {
+        UebaController controller = new UebaController(mock(EntityRiskStore.class), mock(WatchlistStore.class));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> controller.entities(0))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+                .hasMessageContaining("between 1 and " + UebaController.MAX_ENTITY_LIMIT);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> controller.entities(501))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
+    }
 }

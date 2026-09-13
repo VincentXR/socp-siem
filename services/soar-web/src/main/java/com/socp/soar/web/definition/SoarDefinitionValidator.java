@@ -8,14 +8,12 @@ import com.socp.soar.web.domain.DefinitionIssue;
 import com.socp.soar.web.domain.DefinitionValidationResult;
 import com.socp.soar.web.domain.SoarNodeType;
 import com.socp.soar.web.service.SoarActionCatalog;
-import com.socp.soar.web.connector.ActionDescriptor;
 import com.socp.soar.web.connector.SoarConnectorRegistry;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -37,6 +35,7 @@ public class SoarDefinitionValidator {
     private final ObjectMapper mapper;
     private final ObjectMapper canonicalMapper;
     private final SoarConnectorRegistry connectorRegistry;
+    private final SoarActionContractValidator actionContracts;
 
     public SoarDefinitionValidator(ObjectMapper mapper) {
         this(mapper, null);
@@ -49,6 +48,7 @@ public class SoarDefinitionValidator {
     public SoarDefinitionValidator(ObjectMapper mapper, SoarConnectorRegistry connectorRegistry) {
         this.mapper = mapper;
         this.connectorRegistry = connectorRegistry;
+        this.actionContracts = new SoarActionContractValidator(mapper, connectorRegistry);
         this.canonicalMapper = mapper.copy()
                 .configure(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY, true)
                 .configure(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS, true);
@@ -203,8 +203,8 @@ public class SoarDefinitionValidator {
                     errors.add(DefinitionIssue.error("ACTION_REF_UNKNOWN", id, path + "/actionRef",
                             "actionRef is not registered in the SOAR action catalog"));
                 }
-                validateActionContract(node, id, path, actionRef, errors);
-                String actionRisk = actionRiskLevel(actionRef);
+                actionContracts.validateActionContract(node, id, path, actionRef, errors);
+                String actionRisk = actionContracts.actionRiskLevel(actionRef);
                 if ("CRITICAL".equalsIgnoreCase(actionRisk)) {
                     // Design 10.1: CRITICAL auto-execute is forbidden and P0
                     // has no execution path for it at all (P1 adds a two
@@ -223,7 +223,8 @@ public class SoarDefinitionValidator {
                     errors.add(DefinitionIssue.error("ACTION_SECRET_INLINE_FORBIDDEN", id,
                             path, "action parameters/target cannot contain secret, token, password or authorization values; use a connection secretRef"));
                 }
-                if (containsCredentialValue(node.get("parameters")) || containsCredentialValue(node.get("target"))) {
+                if (SoarActionContractValidator.containsCredentialValue(node.get("parameters"))
+                        || SoarActionContractValidator.containsCredentialValue(node.get("target"))) {
                     errors.add(DefinitionIssue.error("ACTION_EMBEDDED_CREDENTIAL_FORBIDDEN", id,
                             path, "action parameters/target cannot embed credentials (user:pass@ URLs, private keys or bearer/token values)" +
                                     " beyond a secretRef reference"));
@@ -262,7 +263,7 @@ public class SoarDefinitionValidator {
                         errors.add(DefinitionIssue.error("ACTION_RETRY_BACKOFF_INVALID", id,
                                 path + "/retry/backoffSeconds", "action backoffSeconds must be 0..300"));
                     }
-                    if (maxAttempts > 1 && hasNonIdempotentSideEffect(actionRef)) {
+                    if (maxAttempts > 1 && actionContracts.hasNonIdempotentSideEffect(actionRef)) {
                         errors.add(DefinitionIssue.error("ACTION_RETRY_REQUIRES_IDEMPOTENCY", id,
                                 path + "/retry/maxAttempts",
                                 "side-effecting actions with idempotency NONE cannot be retried"));
@@ -297,7 +298,7 @@ public class SoarDefinitionValidator {
                         "END outcome is not supported"));
             }
             if ((type == SoarNodeType.CONDITION || type == SoarNodeType.SWITCH)
-                    && !safeExpression(text(node, "expression"))) {
+                    && !SoarActionContractValidator.safeExpression(text(node, "expression"))) {
                 errors.add(DefinitionIssue.error("EXPRESSION_NOT_ALLOWED", id,
                         path + "/expression", "expression contains unsupported or unsafe syntax"));
             }
@@ -356,7 +357,7 @@ public class SoarDefinitionValidator {
                 if (form != null && !form.isObject()) errors.add(DefinitionIssue.error("MANUAL_FORM_INVALID", id,
                         path + "/formSchema", "MANUAL_TASK formSchema must be an object"));
                 if (form != null && form.isObject()) {
-                    validateManualFormSchema(form, path + "/formSchema", errors, 0);
+                    SoarManualFormValidator.validate(form, path + "/formSchema", errors, 0);
                 }
                 validateTimeout(node, path, "MANUAL_TASK", 30L * 24 * 3600, errors);
             }
@@ -442,8 +443,8 @@ public class SoarDefinitionValidator {
                             path + "/port", "edge port is invalid"));
                 }
                 if (types.containsKey(from)) {
-                    validateEdgePort(types.get(from), nodeDefinitions.get(from), port, from,
-                            path, errors);
+                    SoarGraphValidator.validateEdgePort(types.get(from), nodeDefinitions.get(from), port,
+                            from, path, errors);
                 }
             }
         }
@@ -533,16 +534,16 @@ public class SoarDefinitionValidator {
                     case SUB_PLAYBOOK -> Set.of("success", "default", "");
                     default -> Set.of();
                 };
-                if (!primaryPorts.isEmpty() && !hasOutgoingPort(edges, node.getKey(), primaryPorts)) {
+                if (!primaryPorts.isEmpty() && !SoarGraphValidator.hasOutgoingPort(edges, node.getKey(), primaryPorts)) {
                     errors.add(DefinitionIssue.error("PRIMARY_PORT_REQUIRED", node.getKey(), "/edges",
                             node.getValue().name() + " requires a success/default outgoing port"));
                 }
                 if (node.getValue() == SoarNodeType.APPROVAL) {
-                    if (!hasOutgoingPort(edges, node.getKey(), Set.of("approved"))) {
+                    if (!SoarGraphValidator.hasOutgoingPort(edges, node.getKey(), Set.of("approved"))) {
                         errors.add(DefinitionIssue.error("APPROVAL_APPROVED_PORT_REQUIRED", node.getKey(), "/edges",
                                 "APPROVAL requires an approved outgoing port"));
                     }
-                    if (!hasOutgoingPort(edges, node.getKey(), Set.of("rejected"))) {
+                    if (!SoarGraphValidator.hasOutgoingPort(edges, node.getKey(), Set.of("rejected"))) {
                         errors.add(DefinitionIssue.error("APPROVAL_REJECTED_PORT_REQUIRED", node.getKey(), "/edges",
                                 "APPROVAL requires an explicit rejected/expired outgoing port"));
                     }
@@ -552,14 +553,14 @@ public class SoarDefinitionValidator {
 
         String start = starts.stream().findFirst().orElse(entry);
         if (start != null && types.containsKey(start)) {
-            Set<String> reachable = reachable(graph, start);
+            Set<String> reachable = SoarGraphValidator.reachable(graph, start);
             for (String id : types.keySet()) {
                 if (!reachable.contains(id)) {
                     errors.add(DefinitionIssue.error("NODE_UNREACHABLE", id, "/nodes",
                             "node is not reachable from START"));
                 }
             }
-            Set<String> canReachEnd = reverseReachable(graph, ends);
+            Set<String> canReachEnd = SoarGraphValidator.reverseReachable(graph, ends);
             for (String id : types.keySet()) {
                 if (types.get(id) != SoarNodeType.END && !canReachEnd.contains(id)) {
                     errors.add(DefinitionIssue.error("NODE_CANNOT_REACH_END", id, "/nodes",
@@ -571,7 +572,7 @@ public class SoarDefinitionValidator {
             // unrelated cycle could be smuggled through by adding a dormant
             // loop elsewhere.  Inspect each back-edge and reject cycles whose
             // actual cycle segment has no bounded FOREACH node.
-            if (hasUnboundedCycle(graph, types)) {
+            if (SoarGraphValidator.hasUnboundedCycle(graph, types)) {
                 errors.add(DefinitionIssue.error("GRAPH_CYCLE_NOT_ALLOWED", null, "/edges",
                         "cycles are only supported by a bounded FOREACH construct"));
             }
@@ -612,76 +613,9 @@ public class SoarDefinitionValidator {
             warnings.add(DefinitionIssue.warning("HIGH_RISK_ACTIONS_PRESENT", null, "/nodes",
                     highRisk + " high-risk action(s) require runtime approval policy"));
         }
-        validateApprovalCoverage(types, nodeDefinitions, edges, warnings);
-        validateCompensationRisk(types, nodeDefinitions, warnings);
+        actionContracts.validateApprovalCoverage(types, nodeDefinitions, edges, warnings);
+        actionContracts.validateCompensationRisk(types, nodeDefinitions, warnings);
         return result(errors, warnings, schemaVersion, hash, types.size(), actionCount, highRisk);
-    }
-
-    private static boolean hasOutgoingPort(JsonNode edges, String nodeId, Set<String> expected) {
-        if (edges == null || !edges.isArray()) return false;
-        for (JsonNode edge : edges) {
-            if (!nodeId.equals(text(edge, "from"))) continue;
-            String port = text(edge, "port");
-            if (port.isBlank()) port = text(edge, "when");
-            if (expected.contains(port.toLowerCase(java.util.Locale.ROOT))) return true;
-        }
-        return false;
-    }
-
-    /**
-     * Keep edge labels aligned with the branch names understood by the
-     * deterministic workflow.  The runtime intentionally has a default-edge
-     * fallback for backwards compatibility; publication must nevertheless
-     * reject misspelled labels so a definition cannot silently take the wrong
-     * branch.
-     */
-    private static void validateEdgePort(SoarNodeType type, JsonNode node,
-                                         String port, String nodeId, String edgePath,
-                                         List<DefinitionIssue> errors) {
-        String normalized = port == null ? "" : port.trim().toLowerCase(java.util.Locale.ROOT);
-        boolean valid;
-        switch (type) {
-            case START, END -> valid = normalized.isBlank();
-            case ACTION -> valid = normalized.isBlank() || Set.of(
-                    "default", "success", "failure", "error", "unknown").contains(normalized);
-            case CONDITION -> valid = Set.of("true", "false").contains(normalized);
-            case SWITCH -> valid = switchPortDeclared(node, normalized);
-            case PARALLEL -> valid = normalized.isBlank() || normalized.equals("default")
-                    || normalized.matches("[a-z][a-z0-9_.-]{0,31}");
-            case JOIN -> valid = normalized.isBlank() || Set.of(
-                    "default", "success", "failure", "error").contains(normalized);
-            case FOREACH -> valid = normalized.isBlank() || Set.of(
-                    "default", "body", "each", "done", "success").contains(normalized);
-            case DELAY, SET_VARIABLE -> valid = normalized.isBlank()
-                    || Set.of("default", "success").contains(normalized);
-            case APPROVAL -> valid = Set.of("approved", "rejected").contains(normalized);
-            case MANUAL_TASK -> valid = normalized.isBlank() || Set.of(
-                    "default", "completed", "success", "timeout").contains(normalized);
-            case SUB_PLAYBOOK -> valid = normalized.isBlank() || Set.of(
-                    "default", "success", "failure").contains(normalized);
-            default -> valid = false;
-        }
-        if (!valid) {
-            errors.add(DefinitionIssue.error("EDGE_PORT_NOT_ALLOWED", nodeId,
-                    edgePath + "/port", "edge port '" + (port == null ? "" : port)
-                            + "' is not valid for " + type.name()));
-        }
-    }
-
-    private static boolean switchPortDeclared(JsonNode node, String port) {
-        if (port.isBlank() || "default".equals(port)) return true;
-        JsonNode cases = node == null ? null : node.get("cases");
-        if (cases == null || !cases.isArray()) {
-            cases = node == null ? null : node.path("config").get("cases");
-        }
-        if (cases == null || !cases.isArray()) return false;
-        for (JsonNode item : cases) {
-            if (item == null || !item.isObject()) continue;
-            String declared = text(item, "port");
-            if (declared.isBlank()) declared = text(item, "toPort");
-            if (port.equalsIgnoreCase(declared)) return true;
-        }
-        return false;
     }
 
     public String canonicalHash(String definition) {
@@ -696,64 +630,6 @@ public class SoarDefinitionValidator {
                                                String schema, String hash, int nodes, int actions, int highRisk) {
         return new DefinitionValidationResult(errors.isEmpty(), errors, warnings, schema, hash,
                 nodes, actions, highRisk);
-    }
-
-    private static Set<String> reachable(Map<String, List<String>> graph, String start) {
-        Set<String> visited = new HashSet<>();
-        ArrayDeque<String> queue = new ArrayDeque<>();
-        queue.add(start);
-        while (!queue.isEmpty()) {
-            String current = queue.removeFirst();
-            if (!visited.add(current)) continue;
-            for (String next : graph.getOrDefault(current, List.of())) queue.addLast(next);
-        }
-        return visited;
-    }
-
-    private static Set<String> reverseReachable(Map<String, List<String>> graph, Set<String> ends) {
-        Map<String, List<String>> reverse = new HashMap<>();
-        graph.forEach((from, targets) -> targets.forEach(to ->
-                reverse.computeIfAbsent(to, ignored -> new ArrayList<>()).add(from)));
-        Set<String> visited = new HashSet<>();
-        ArrayDeque<String> queue = new ArrayDeque<>(ends);
-        while (!queue.isEmpty()) {
-            String current = queue.removeFirst();
-            if (!visited.add(current)) continue;
-            for (String previous : reverse.getOrDefault(current, List.of())) queue.addLast(previous);
-        }
-        return visited;
-    }
-
-    private static boolean hasUnboundedCycle(Map<String, List<String>> graph,
-                                             Map<String, SoarNodeType> types) {
-        Map<String, Integer> stackIndex = new HashMap<>();
-        List<String> stack = new ArrayList<>();
-        for (String node : types.keySet()) {
-            if (unboundedCycle(graph, types, node, stackIndex, stack)) return true;
-        }
-        return false;
-    }
-
-    private static boolean unboundedCycle(Map<String, List<String>> graph,
-                                          Map<String, SoarNodeType> types,
-                                          String node,
-                                          Map<String, Integer> stackIndex,
-                                          List<String> stack) {
-        Integer existing = stackIndex.get(node);
-        if (existing != null) {
-            for (int index = existing; index < stack.size(); index++) {
-                if (types.get(stack.get(index)) == SoarNodeType.FOREACH) return false;
-            }
-            return true;
-        }
-        stackIndex.put(node, stack.size());
-        stack.add(node);
-        for (String next : graph.getOrDefault(node, List.of())) {
-            if (unboundedCycle(graph, types, next, stackIndex, stack)) return true;
-        }
-        stack.remove(stack.size() - 1);
-        stackIndex.remove(node);
-        return false;
     }
 
     private static String text(JsonNode node, String field) {
@@ -836,234 +712,13 @@ public class SoarDefinitionValidator {
         }
     }
 
-    /**
-     * Validate the bounded JSON-Schema subset understood by the MANUAL_TASK
-     * completion endpoint.  A published workflow must not advertise a form
-     * that the runtime can only reject after an analyst has been asked to fill
-     * it in.  Full JSON-Schema (refs, scripts, unevaluated properties) is
-     * intentionally outside the SOAR trust boundary.
-     */
     private static void validateManualFormSchema(JsonNode schema, String path,
                                                  List<DefinitionIssue> errors, int depth) {
-        if (depth > 20) {
-            errors.add(DefinitionIssue.error("MANUAL_FORM_INVALID", null, path,
-                    "manual form schema exceeds the maximum nesting depth"));
-            return;
-        }
-        if (schema == null || !schema.isObject()) {
-            errors.add(DefinitionIssue.error("MANUAL_FORM_INVALID", null, path,
-                    "manual form schema must be an object"));
-            return;
-        }
-        JsonNode type = schema.get("type");
-        if (type != null && !type.isTextual() && !type.isArray()) {
-            errors.add(DefinitionIssue.error("MANUAL_FORM_INVALID", null, path + "/type",
-                    "manual form type must be a string or an array of strings"));
-        }
-        if (type != null && type.isTextual() && !validManualType(type.asText())) {
-            errors.add(DefinitionIssue.error("MANUAL_FORM_INVALID", null, path + "/type",
-                    "manual form type is not supported"));
-        }
-        if (type != null && type.isArray()) {
-            if (type.isEmpty() || type.size() > 8) {
-                errors.add(DefinitionIssue.error("MANUAL_FORM_INVALID", null, path + "/type",
-                        "manual form type array must contain 1..8 values"));
-            }
-            for (JsonNode item : type) if (!item.isTextual() || !validManualType(item.asText())) {
-                errors.add(DefinitionIssue.error("MANUAL_FORM_INVALID", null, path + "/type",
-                        "manual form type array contains an unsupported value"));
-                break;
-            }
-        }
-        JsonNode required = schema.get("required");
-        if (required != null) {
-            if (!required.isArray() || required.size() > 64) {
-                errors.add(DefinitionIssue.error("MANUAL_FORM_INVALID", null, path + "/required",
-                        "required must be an array of at most 64 field names"));
-            } else for (JsonNode item : required) if (!item.isTextual()
-                    || item.asText().isBlank() || item.asText().length() > 128) {
-                errors.add(DefinitionIssue.error("MANUAL_FORM_INVALID", null, path + "/required",
-                        "required contains an invalid field name"));
-                break;
-            }
-        }
-        JsonNode properties = schema.get("properties");
-        if (properties != null) {
-            if (!properties.isObject() || properties.size() > 64) {
-                errors.add(DefinitionIssue.error("MANUAL_FORM_INVALID", null, path + "/properties",
-                        "properties must be an object with at most 64 fields"));
-            } else {
-                properties.fields().forEachRemaining(field -> validateManualFormSchema(
-                        field.getValue(), path + "/properties/" + field.getKey(), errors, depth + 1));
-            }
-        }
-        JsonNode items = schema.get("items");
-        if (items != null && !items.isObject()) {
-            errors.add(DefinitionIssue.error("MANUAL_FORM_INVALID", null, path + "/items",
-                    "items must be an object schema"));
-        } else if (items != null) {
-            validateManualFormSchema(items, path + "/items", errors, depth + 1);
-        }
-        validateManualBound(schema, "minLength", 0, 64 * 1024, path, errors);
-        validateManualBound(schema, "maxLength", 0, 64 * 1024, path, errors);
-        validateManualBound(schema, "minItems", 0, 1000, path, errors);
-        validateManualBound(schema, "maxItems", 0, 1000, path, errors);
-        for (String field : List.of("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum")) {
-            if (schema.has(field) && !schema.get(field).isNumber()) {
-                errors.add(DefinitionIssue.error("MANUAL_FORM_INVALID", null, path + "/" + field,
-                        field + " must be a number"));
-            }
-        }
-        JsonNode pattern = schema.get("pattern");
-        if (pattern != null) {
-            if (!pattern.isTextual() || pattern.asText().length() > MAX_MANUAL_PATTERN_LENGTH
-                    || !safeManualPattern(pattern.asText())) {
-                errors.add(DefinitionIssue.error("MANUAL_FORM_INVALID", null, path + "/pattern",
-                        "pattern must be a bounded, non-backtracking regular expression of at most "
-                                + MAX_MANUAL_PATTERN_LENGTH + " characters"));
-            } else {
-                try { java.util.regex.Pattern.compile(pattern.asText()); }
-                catch (java.util.regex.PatternSyntaxException invalid) {
-                    errors.add(DefinitionIssue.error("MANUAL_FORM_INVALID", null, path + "/pattern",
-                            "pattern is not a valid regular expression"));
-                }
-            }
-        }
-        JsonNode additional = schema.get("additionalProperties");
-        if (additional != null && !additional.isBoolean() && !additional.isObject()) {
-            errors.add(DefinitionIssue.error("MANUAL_FORM_INVALID", null, path + "/additionalProperties",
-                    "additionalProperties must be a boolean or schema object"));
-        }
-        JsonNode enumValues = schema.get("enum");
-        if (enumValues != null && (!enumValues.isArray() || enumValues.size() > 100)) {
-            errors.add(DefinitionIssue.error("MANUAL_FORM_INVALID", null, path + "/enum",
-                    "enum must contain at most 100 values"));
-        }
+        SoarManualFormValidator.validate(schema, path, errors, depth);
     }
 
-    /**
-     * Reject Java-regex constructs that make runtime cost dependent on
-     * adversarial backtracking. In addition to lookarounds, back references
-     * and nested quantifiers, reject quantified alternation groups and more
-     * than one unbounded quantifier. This keeps useful patterns such as
-     * {@code ^[A-Za-z0-9_-]+$} while excluding {@code (a+)+},
-     * {@code (a|aa)+}, and {@code a*a*b}.
-     */
     public static boolean safeManualPattern(String regex) {
-        if (regex == null || regex.length() > MAX_MANUAL_PATTERN_LENGTH
-                || regex.contains("(?")) return false;
-        // [hasQuantifier, hasAlternation] for each open capturing group.
-        java.util.ArrayDeque<boolean[]> groups = new java.util.ArrayDeque<>();
-        boolean lastAtom = false;
-        boolean lastAtomWasQuantifiedGroup = false;
-        boolean lastGroupHadAlternation = false;
-        int unboundedQuantifiers = 0;
-        for (int index = 0; index < regex.length(); index++) {
-            char current = regex.charAt(index);
-            if (current == '\\') {
-                if (++index >= regex.length()) return false;
-                char escaped = regex.charAt(index);
-                if (Character.isDigit(escaped)) return false; // back-reference
-                lastAtom = true;
-                lastAtomWasQuantifiedGroup = false;
-                lastGroupHadAlternation = false;
-                continue;
-            }
-            if (current == '[') {
-                boolean closed = false;
-                for (index++; index < regex.length(); index++) {
-                    char inClass = regex.charAt(index);
-                    if (inClass == '\\') {
-                        if (++index >= regex.length()) return false;
-                    } else if (inClass == ']') {
-                        closed = true;
-                        break;
-                    }
-                }
-                if (!closed) return false;
-                lastAtom = true;
-                lastAtomWasQuantifiedGroup = false;
-                lastGroupHadAlternation = false;
-                continue;
-            }
-            if (current == '(') {
-                groups.push(new boolean[] {false, false});
-                lastAtom = false;
-                lastAtomWasQuantifiedGroup = false;
-                lastGroupHadAlternation = false;
-                continue;
-            }
-            if (current == ')') {
-                if (groups.isEmpty()) return false;
-                boolean[] group = groups.pop();
-                if (!groups.isEmpty()) {
-                    groups.peek()[0] |= group[0];
-                    groups.peek()[1] |= group[1];
-                }
-                lastAtom = true;
-                lastAtomWasQuantifiedGroup = group[0];
-                lastGroupHadAlternation = group[1];
-                continue;
-            }
-            if (current == '*' || current == '+' || current == '?' || current == '{') {
-                if (!lastAtom || lastAtomWasQuantifiedGroup || lastGroupHadAlternation) return false;
-                boolean unbounded = current == '*' || current == '+';
-                if (current == '{') {
-                    int end = regex.indexOf('}', index + 1);
-                    if (end < 0) return false;
-                    String bounds = regex.substring(index + 1, end);
-                    if (!bounds.matches("\\d{1,4}(,\\d{0,4})?")) return false;
-                    String[] parts = bounds.split(",", -1);
-                    try {
-                        int lower = Integer.parseInt(parts[0]);
-                        int upper = parts.length == 1 ? lower :
-                                (parts[1].isBlank() ? Integer.MAX_VALUE : Integer.parseInt(parts[1]));
-                        unbounded = parts.length == 2 && parts[1].isBlank();
-                        if (lower > 1000 || (!unbounded && upper > 1000)
-                                || (!unbounded && upper < lower)) return false;
-                    } catch (NumberFormatException invalid) { return false; }
-                    index = end;
-                }
-                if (unbounded && ++unboundedQuantifiers > 1) return false;
-                if (!groups.isEmpty()) groups.peek()[0] = true;
-                lastAtom = false;
-                lastAtomWasQuantifiedGroup = false;
-                lastGroupHadAlternation = false;
-                continue;
-            }
-            if (current == '^' || current == '$') {
-                lastAtom = false;
-                lastAtomWasQuantifiedGroup = false;
-                lastGroupHadAlternation = false;
-                continue;
-            }
-            if (current == '|') {
-                if (!groups.isEmpty()) groups.peek()[1] = true;
-                lastAtom = false;
-                lastAtomWasQuantifiedGroup = false;
-                lastGroupHadAlternation = false;
-                continue;
-            }
-            lastAtom = true;
-            lastAtomWasQuantifiedGroup = false;
-            lastGroupHadAlternation = false;
-        }
-        return groups.isEmpty();
-    }
-
-    private static void validateManualBound(JsonNode schema, String field, int min, int max,
-                                             String path, List<DefinitionIssue> errors) {
-        JsonNode value = schema.get(field);
-        if (value == null) return;
-        if (!isIntegerValue(value) || value.asInt() < min || value.asInt() > max) {
-            errors.add(DefinitionIssue.error("MANUAL_FORM_INVALID", null, path + "/" + field,
-                    field + " must be an integer from " + min + " to " + max));
-        }
-    }
-
-    private static boolean validManualType(String value) {
-        return value != null && Set.of("object", "array", "string", "integer", "number",
-                "boolean", "null").contains(value.trim().toLowerCase(java.util.Locale.ROOT));
+        return SoarManualFormValidator.safePattern(regex);
     }
 
     private static void validateDurationSeconds(JsonNode node, String path,
@@ -1105,16 +760,6 @@ public class SoarDefinitionValidator {
         catch (Exception ignored) { return fallback; }
     }
 
-    private static boolean looksHighRisk(String actionRef) {
-        String value = actionRef == null ? "" : actionRef.toLowerCase(java.util.Locale.ROOT);
-        return value.contains("isolate") || value.contains("block") || value.contains("disable")
-                || value.contains("delete") || value.contains("snapshot");
-    }
-
-    private static boolean safeExpression(String expression) {
-        return SoarExpressionEngine.isSafe(expression);
-    }
-
     private static boolean containsSensitiveKey(JsonNode value) {
         if (value == null || value.isNull()) return false;
         if (value.isObject()) {
@@ -1130,366 +775,6 @@ public class SoarDefinitionValidator {
             for (JsonNode item : value) if (containsSensitiveKey(item)) return true;
         }
         return false;
-    }
-
-    private void validateActionContract(JsonNode node, String nodeId, String path,
-                                        String actionRef, List<DefinitionIssue> errors) {
-        if (connectorRegistry == null || actionRef == null || actionRef.isBlank()) return;
-        var descriptor = connectorRegistry.descriptorForAction(actionRef).orElse(null);
-        if (descriptor == null) return; // the catalog error above explains it
-        String canonical = connectorRegistry.canonicalActionRef(actionRef);
-        int slash = canonical.indexOf('/');
-        String actionId = slash < 0 ? "" : canonical.substring(slash + 1).split("@")[0];
-        ActionDescriptor action = descriptor.actions().stream()
-                .filter(candidate -> candidate.id().equals(actionId)).findFirst().orElse(null);
-        if (action == null) return;
-        String connectionRef = text(node, "connectionRef");
-        if (action.requiresConnection() && connectionRef.isBlank()) {
-            errors.add(DefinitionIssue.error("ACTION_CONNECTION_REQUIRED", nodeId,
-                    path + "/connectionRef", "action requires a connectionRef"));
-        }
-        JsonNode target = node.get("target");
-        if (target != null && target.isObject() && target.has("type")
-                && !target.path("type").asText("").isBlank()
-                && !action.allowedTargetTypes().isEmpty()
-                && action.allowedTargetTypes().stream().noneMatch(type ->
-                type.equalsIgnoreCase(target.path("type").asText()))) {
-            errors.add(DefinitionIssue.error("ACTION_TARGET_TYPE_INVALID", nodeId,
-                    path + "/target/type", "target type is not supported by " + canonical));
-        }
-        JsonNode parameters = node.get("parameters");
-        if (parameters != null && !parameters.isObject()) {
-            errors.add(DefinitionIssue.error("ACTION_PARAMETERS_INVALID", nodeId,
-                    path + "/parameters", "ACTION parameters must be an object"));
-        } else {
-            // Treat an omitted parameters object as an empty object for
-            // schema validation.  This preserves optional action inputs but
-            // makes declared required fields fail at publish time instead of
-            // surfacing as a late connector/runtime error.
-            validateActionParameters(action.inputSchema(),
-                    parameters == null ? mapper.createObjectNode() : parameters,
-                    nodeId, path, errors);
-        }
-    }
-
-    /**
-     * Validate the bounded, declarative portion of an Action Definition input
-     * schema at publish time.  Connector schemas deliberately allow unknown
-     * context keys (for example a tenant-specific selector), but known fields
-     * must retain their declared JSON type and size.  A single {$expr: "..."}
-     * object is accepted as a deferred, safe expression because its final
-     * value is resolved inside the deterministic workflow.
-     */
-    private void validateActionParameters(Map<String, Object> schemaMap, JsonNode parameters,
-                                          String nodeId, String nodePath,
-                                          List<DefinitionIssue> errors) {
-        if (schemaMap == null || schemaMap.isEmpty()) return;
-        JsonNode schema = mapper.valueToTree(schemaMap);
-        if (schema == null || !schema.isObject()) return;
-        JsonNode required = schema.get("required");
-        if (required != null && required.isArray()) {
-            for (JsonNode item : required) {
-                if (item != null && item.isTextual() && !parameters.has(item.asText())) {
-                    errors.add(DefinitionIssue.error("ACTION_PARAMETER_REQUIRED", nodeId,
-                            nodePath + "/parameters/" + item.asText(),
-                            "required action parameter is missing"));
-                }
-            }
-        }
-        JsonNode properties = schema.get("properties");
-        boolean rejectAdditional = schema.has("additionalProperties")
-                && schema.get("additionalProperties").isBoolean()
-                && !schema.get("additionalProperties").asBoolean();
-        if (properties == null || !properties.isObject()) {
-            if (rejectAdditional) {
-                var fields = parameters.fields();
-                while (fields.hasNext()) {
-                    var field = fields.next();
-                    errors.add(DefinitionIssue.error("ACTION_PARAMETER_UNKNOWN", nodeId,
-                            nodePath + "/parameters/" + field.getKey(),
-                            "parameter is not declared by the action schema"));
-                }
-            }
-            return;
-        }
-        var fields = parameters.fields();
-        while (fields.hasNext()) {
-            var field = fields.next();
-            String name = field.getKey();
-            JsonNode propertySchema = properties.get(name);
-            if (propertySchema == null || propertySchema.isNull()) {
-                if (rejectAdditional) {
-                    errors.add(DefinitionIssue.error("ACTION_PARAMETER_UNKNOWN", nodeId,
-                            nodePath + "/parameters/" + name,
-                            "parameter is not declared by the action schema"));
-                }
-                continue;
-            }
-            JsonNode value = field.getValue();
-            if (isExpressionReference(value)) {
-                String expression = value.path("$expr").asText("");
-                if (expression.length() > 4096 || !safeExpression(expression)) {
-                    errors.add(DefinitionIssue.error("ACTION_PARAMETER_EXPRESSION_INVALID", nodeId,
-                            nodePath + "/parameters/" + name + "/$expr",
-                            "parameter expression is unsafe or exceeds 4 KiB"));
-                }
-                continue;
-            }
-            validateActionValue(value, propertySchema, nodeId,
-                    nodePath + "/parameters/" + name, errors, 0);
-        }
-    }
-
-    private static boolean isExpressionReference(JsonNode value) {
-        return value != null && value.isObject() && value.size() == 1
-                && value.has("$expr") && value.path("$expr").isTextual();
-    }
-
-    private void validateActionValue(JsonNode value, JsonNode schema, String nodeId,
-                                     String path, List<DefinitionIssue> errors, int depth) {
-        if (depth > 8 || schema == null || !schema.isObject()) return;
-        JsonNode declared = schema.get("type");
-        boolean typeMatches = declared == null || declared.isNull();
-        if (declared != null && declared.isTextual()) {
-            typeMatches = schemaTypeMatches(value, declared.asText(""));
-        } else if (declared != null && declared.isArray()) {
-            for (JsonNode candidate : declared) {
-                if (candidate.isTextual() && schemaTypeMatches(value, candidate.asText(""))) {
-                    typeMatches = true;
-                    break;
-                }
-            }
-        }
-        if (!typeMatches) {
-            errors.add(DefinitionIssue.error("ACTION_PARAMETER_TYPE_INVALID", nodeId, path,
-                    "parameter does not match its action schema type"));
-            return;
-        }
-        if (value != null && value.isTextual()) {
-            JsonNode maxLength = schema.get("maxLength");
-            if (maxLength != null && maxLength.isIntegralNumber()
-                    && value.asText().length() > maxLength.asInt()) {
-                errors.add(DefinitionIssue.error("ACTION_PARAMETER_SIZE_INVALID", nodeId, path,
-                        "string parameter exceeds its action schema maxLength"));
-            }
-        }
-        if (value != null && value.isArray()) {
-            JsonNode maxItems = schema.get("maxItems");
-            if (maxItems != null && maxItems.isIntegralNumber()
-                    && value.size() > maxItems.asInt()) {
-                errors.add(DefinitionIssue.error("ACTION_PARAMETER_SIZE_INVALID", nodeId, path,
-                        "array parameter exceeds its action schema maxItems"));
-            }
-            JsonNode itemSchema = schema.get("items");
-            if (itemSchema != null && itemSchema.isObject()) {
-                for (int index = 0; index < value.size(); index++) {
-                    validateActionValue(value.get(index), itemSchema, nodeId,
-                            path + "/" + index, errors, depth + 1);
-                }
-            }
-        } else if (value != null && value.isObject()) {
-            JsonNode maxProperties = schema.get("maxProperties");
-            if (maxProperties != null && maxProperties.isIntegralNumber()
-                    && value.size() > maxProperties.asInt()) {
-                errors.add(DefinitionIssue.error("ACTION_PARAMETER_SIZE_INVALID", nodeId, path,
-                        "object parameter exceeds its action schema maxProperties"));
-            }
-            JsonNode required = schema.get("required");
-            if (required != null && required.isArray()) {
-                for (JsonNode item : required) {
-                    if (item != null && item.isTextual() && !value.has(item.asText())) {
-                        errors.add(DefinitionIssue.error("ACTION_PARAMETER_REQUIRED", nodeId,
-                                path + "/" + item.asText(),
-                                "required action parameter is missing"));
-                    }
-                }
-            }
-            JsonNode properties = schema.get("properties");
-            boolean rejectAdditional = schema.has("additionalProperties")
-                    && schema.get("additionalProperties").isBoolean()
-                    && !schema.get("additionalProperties").asBoolean();
-            if (properties != null && properties.isObject()) {
-                var fields = value.fields();
-                while (fields.hasNext()) {
-                    var field = fields.next();
-                    JsonNode propertySchema = properties.get(field.getKey());
-                    if (propertySchema == null || propertySchema.isNull()) {
-                        if (rejectAdditional) {
-                            errors.add(DefinitionIssue.error("ACTION_PARAMETER_UNKNOWN", nodeId,
-                                    path + "/" + field.getKey(),
-                                    "parameter is not declared by the action schema"));
-                        }
-                        continue;
-                    }
-                    JsonNode child = field.getValue();
-                    if (isExpressionReference(child)) {
-                        String expression = child.path("$expr").asText("");
-                        if (expression.length() > 4096 || !safeExpression(expression)) {
-                            errors.add(DefinitionIssue.error("ACTION_PARAMETER_EXPRESSION_INVALID", nodeId,
-                                    path + "/" + field.getKey() + "/$expr",
-                                    "parameter expression is unsafe or exceeds 4 KiB"));
-                        }
-                        continue;
-                    }
-                    validateActionValue(child, propertySchema, nodeId,
-                            path + "/" + field.getKey(), errors, depth + 1);
-                }
-            } else if (rejectAdditional) {
-                var fields = value.fields();
-                while (fields.hasNext()) {
-                    var field = fields.next();
-                    errors.add(DefinitionIssue.error("ACTION_PARAMETER_UNKNOWN", nodeId,
-                            path + "/" + field.getKey(),
-                            "parameter is not declared by the action schema"));
-                }
-            }
-        }
-    }
-
-    private static boolean schemaTypeMatches(JsonNode value, String type) {
-        if (value == null || value.isMissingNode()) return false;
-        return switch (type == null ? "" : type.trim().toLowerCase(java.util.Locale.ROOT)) {
-            case "object" -> value.isObject();
-            case "array" -> value.isArray();
-            case "string" -> value.isTextual();
-            case "integer" -> value.isIntegralNumber();
-            case "number" -> value.isNumber();
-            case "boolean" -> value.isBoolean();
-            case "null" -> value.isNull();
-            default -> false;
-        };
-    }
-
-    private String actionRiskLevel(String actionRef) {
-        if (actionRef != null && !actionRef.isBlank() && connectorRegistry != null) {
-            ActionDescriptor action = connectorRegistry.actionDescriptor(actionRef).orElse(null);
-            if (action != null && action.riskLevel() != null && !action.riskLevel().isBlank()) {
-                return action.riskLevel();
-            }
-        }
-        // Name-based inference only as a hermetic-test fallback when no
-        // runtime registry is wired.  Production always uses the registry.
-        return looksHighRisk(actionRef) ? "HIGH" : "";
-    }
-
-    /**
-     * High-risk actions are covered when an APPROVAL gate either controls the
-     * action explicitly (actionRef on the gate) or sits directly on the
-     * approved edge into the action.  Enforcement itself happens at dispatch
-     * (run-level pre-approval when any high-risk action exists); this static
-     * pass warns authors whose high-risk action is not reachable through a
-     * gate so they can add an explicit per-node gate where policy demands it.
-     */
-    private void validateApprovalCoverage(Map<String, SoarNodeType> types,
-                                          Map<String, JsonNode> nodes, JsonNode edges,
-                                          List<DefinitionIssue> warnings) {
-        if (edges == null || !edges.isArray()) return;
-        Set<String> controlledActionRefs = new HashSet<>();
-        Set<String> controlledTargets = new HashSet<>();
-        for (JsonNode edge : edges) {
-            String from = text(edge, "from");
-            String to = text(edge, "to");
-            if (!types.containsKey(from) || !types.containsKey(to)) continue;
-            SoarNodeType type = types.get(from);
-            String port = text(edge, "port");
-            if (port.isBlank()) port = text(edge, "when");
-            if (type == SoarNodeType.APPROVAL && ("approved".equalsIgnoreCase(port)
-                    || "success".equalsIgnoreCase(port) || port.isBlank())) {
-                controlledTargets.add(to);
-                JsonNode targetNode = nodes.get(to);
-                if (targetNode != null && types.get(to) == SoarNodeType.ACTION) {
-                    String actionRef = text(targetNode, "actionRef");
-                    if (!actionRef.isBlank()) controlledActionRefs.add(actionRef);
-                }
-            }
-        }
-        for (Map.Entry<String, JsonNode> entry : nodes.entrySet()) {
-            JsonNode node = entry.getValue();
-            if (types.get(entry.getKey()) != SoarNodeType.ACTION) continue;
-            String actionRef = text(node, "actionRef");
-            if (actionRef.isBlank()) continue;
-            if (!"HIGH".equalsIgnoreCase(actionRiskLevel(actionRef))) continue;
-            boolean covered = controlledActionRefs.contains(actionRef)
-                    || controlledTargets.contains(entry.getKey());
-            if (!covered) {
-                warnings.add(DefinitionIssue.warning(
-                        "HIGH_RISK_APPROVAL_GATE_RECOMMENDED", entry.getKey(),
-                        "/nodes/" + entry.getKey(),
-                        "high-risk action is not reachable through an explicit APPROVAL gate; it relies on the run-level pre-approval policy"));
-            }
-        }
-    }
-
-    /** Compensation runs automatically after a failure, so it must not itself
-     * introduce an unapproved high-risk side effect.  The run-level approval
-     * policy still applies to the whole version; this is an authoring warning,
-     * not a hard block, because reversible HIGH compensations (for example
-     * releasing a host after a failed isolate) are legitimate. */
-    private void validateCompensationRisk(Map<String, SoarNodeType> types,
-                                          Map<String, JsonNode> nodes,
-                                          List<DefinitionIssue> warnings) {
-        if (connectorRegistry == null) return;
-        for (Map.Entry<String, JsonNode> entry : nodes.entrySet()) {
-            JsonNode node = entry.getValue();
-            if (types.get(entry.getKey()) != SoarNodeType.ACTION) continue;
-            String compensationRef = text(node, "compensationRef");
-            if (compensationRef.isBlank()) continue;
-            String risk = actionRiskLevel(compensationRef);
-            if ("HIGH".equalsIgnoreCase(risk) || "CRITICAL".equalsIgnoreCase(risk)) {
-                warnings.add(DefinitionIssue.warning("COMPENSATION_HIGH_RISK", entry.getKey(),
-                        "/nodes/" + entry.getKey() + "/compensationRef",
-                        "compensation action " + compensationRef + " is " + risk
-                                + "; ensure the run-level approval policy covers it before relying on COMPENSATE_THEN_FAIL"));
-            }
-        }
-    }
-
-    private static boolean containsCredentialValue(JsonNode value) {
-        if (value == null || value.isNull()) return false;
-        if (value.isObject()) {
-            var fields = value.fields();
-            while (fields.hasNext()) {
-                var field = fields.next();
-                if (containsCredentialValue(field.getValue())) return true;
-            }
-        } else if (value.isArray()) {
-            for (JsonNode item : value) if (containsCredentialValue(item)) return true;
-        } else if (value.isTextual()) {
-            String text = value.asText();
-            if (text == null || text.length() > 4096) return false;
-            if (text.matches("(?i)^[a-z][a-z0-9+.-]*://[^\\s:/?#]+:[^\\s@/]+@.*")) return true;
-            if (text.contains("-----BEGIN") && text.contains("PRIVATE KEY")) return true;
-            if (text.matches("(?i)^(bearer|token|apikey|api[-_]?key|authorization|secret)\\s*[:=]\\s*\\S+$")) return true;
-            if (text.matches("(?i)^[A-Za-z0-9_\\-]{40,}$") && (text.toLowerCase(java.util.Locale.ROOT).startsWith("ghp_")
-                    || text.toLowerCase(java.util.Locale.ROOT).startsWith("sk-"))) return true;
-        }
-        return false;
-    }
-
-    private boolean hasNonIdempotentSideEffect(String actionRef) {
-        if (connectorRegistry == null || actionRef == null || actionRef.isBlank()) return false;
-        var descriptor = connectorRegistry.descriptorForAction(actionRef).orElse(null);
-        if (descriptor == null) return false;
-        String canonical = connectorRegistry.canonicalActionRef(actionRef);
-        int slash = canonical.indexOf('/');
-        String actionId = slash < 0 ? "" : canonical.substring(slash + 1).split("@")[0];
-        return descriptor.actions().stream().filter(action -> action.id().equals(actionId))
-                .anyMatch(action -> !"NONE".equalsIgnoreCase(action.sideEffect())
-                        && "NONE".equalsIgnoreCase(action.idempotency()));
-    }
-
-    private boolean isHighRiskAction(String actionRef) {
-        if (looksHighRisk(actionRef)) return true;
-        if (connectorRegistry == null) return false;
-        var descriptor = connectorRegistry.descriptorForAction(actionRef).orElse(null);
-        if (descriptor == null) return false;
-        String canonical = connectorRegistry.canonicalActionRef(actionRef);
-        int slash = canonical.indexOf('/');
-        String actionId = slash < 0 ? "" : canonical.substring(slash + 1).split("@")[0];
-        return descriptor.actions().stream()
-                .filter(action -> action.id().equals(actionId))
-                .anyMatch(action -> "HIGH".equalsIgnoreCase(action.riskLevel())
-                        || "CRITICAL".equalsIgnoreCase(action.riskLevel()));
     }
 
     private static String sha256(byte[] bytes) {

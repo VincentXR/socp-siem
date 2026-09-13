@@ -2,6 +2,7 @@ package com.socp.soar.web.service;
 
 import com.socp.platform.tenant.persistence.TenantSystemJob;
 import com.socp.soar.web.persistence.entity.SoarRunEntity;
+import com.socp.soar.web.persistence.repository.SoarActionAttemptRepository;
 import com.socp.soar.web.persistence.repository.SoarRunRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,20 +26,29 @@ public class SoarRunRecoveryWorker {
     private static final Logger log = LoggerFactory.getLogger(SoarRunRecoveryWorker.class);
     private static final Set<String> ACTIVE = Set.of("DISPATCHING", "RUNNING", "CANCELLING");
     private final SoarRunRepository runs;
+    private final SoarActionAttemptRepository attempts;
     private final TemporalExecutor temporal;
     private final long staleSeconds;
 
     @org.springframework.beans.factory.annotation.Autowired
-    public SoarRunRecoveryWorker(SoarRunRepository runs, TemporalExecutor temporal,
+    public SoarRunRecoveryWorker(SoarRunRepository runs, SoarActionAttemptRepository attempts,
+                                 TemporalExecutor temporal,
                                    @Value("${socp.soar.stuck-run-timeout-seconds:7200}") long staleSeconds) {
         this.runs = runs;
+        this.attempts = attempts;
         this.temporal = temporal;
         this.staleSeconds = Math.max(300, Math.min(7 * 24 * 3600L, staleSeconds));
     }
 
+    /** Compatibility constructor for repository-focused tests and old wiring. */
+    public SoarRunRecoveryWorker(SoarRunRepository runs, TemporalExecutor temporal,
+                                 long staleSeconds) {
+        this(runs, null, temporal, staleSeconds);
+    }
+
     /** Compatibility constructor for repository-focused tests. */
     public SoarRunRecoveryWorker(SoarRunRepository runs) {
-        this(runs, null, 7200);
+        this(runs, null, null, 7200);
     }
 
     @Scheduled(fixedDelayString = "${socp.soar.recovery-poll-ms:60000}",
@@ -81,21 +91,56 @@ public class SoarRunRecoveryWorker {
                 // update decide, rather than creating a duplicate retry.
                 if (state == TemporalExecutor.WorkflowState.OPEN
                         || state == TemporalExecutor.WorkflowState.UNKNOWN) continue;
-                // A closed workflow with a stale projection may have already
-                // committed a remote side effect. Surface it as UNKNOWN so an
-                // operator must provide evidence before retry/rerun.
-                run.setStatus("ACTION_UNKNOWN");
-                run.setErrorCode("SOAR_PROJECTION_STALE");
-                run.setErrorMessage("Temporal workflow closed before the run projection was updated");
+                // Only an attempt that was durably RUNNING when the workflow
+                // closed indicates that an external side effect may have been
+                // committed. A projection-only failure is a normal FAILED
+                // outcome and must not ask an operator to resolve an action
+                // that was never admitted for execution.
+                Boolean actionInFlight = actionInFlight(run);
+                if (actionInFlight == null) continue;
+                if (actionInFlight) {
+                    run.setStatus("ACTION_UNKNOWN");
+                    run.setErrorCode("SOAR_ACTION_RESULT_UNKNOWN");
+                    run.setErrorMessage("Temporal workflow closed while an action attempt remained RUNNING");
+                } else {
+                    run.setStatus("FAILED");
+                    run.setErrorCode("SOAR_PROJECTION_STALE");
+                    run.setErrorMessage("Temporal workflow closed before the run projection was updated; no action was in flight");
+                }
             } else {
-                run.setStatus("TIMED_OUT");
-                run.setErrorCode("SOAR_PROJECTION_STALE");
-                run.setErrorMessage("run projection was not updated within the recovery lease");
+                Boolean actionInFlight = actionInFlight(run);
+                if (actionInFlight == null) continue;
+                if (actionInFlight) {
+                    run.setStatus("ACTION_UNKNOWN");
+                    run.setErrorCode("SOAR_ACTION_RESULT_UNKNOWN");
+                    run.setErrorMessage("run lost its Temporal workflow while an action attempt remained RUNNING");
+                } else {
+                    run.setStatus("TIMED_OUT");
+                    run.setErrorCode("SOAR_PROJECTION_STALE");
+                    run.setErrorMessage("run projection was not updated within the recovery lease");
+                }
             }
             run.setCompletedAt(Instant.now());
             run.setUpdatedAt(Instant.now());
             runs.save(run);
             log.warn("Marked stale SOAR run {} as {}", run.getId(), run.getStatus());
+        }
+    }
+
+    /**
+     * Returns {@code null} when the durable query cannot be trusted. Recovery
+     * leaves the run active in that case; guessing ACTION_UNKNOWN would be an
+     * unsafe operator instruction and guessing FAILED could permit a duplicate
+     * irreversible action.
+     */
+    private Boolean actionInFlight(SoarRunEntity run) {
+        if (attempts == null) return false;
+        try {
+            return attempts.existsRunningByTenantIdAndRunId(run.getTenantId(), run.getId());
+        } catch (RuntimeException failure) {
+            log.warn("Unable to classify stale SOAR run {} action attempts; leaving projection active",
+                    run.getId());
+            return null;
         }
     }
 }

@@ -495,6 +495,14 @@ com.socp.soar.web
 9. Workflow/Activity DTO 只做加字段兼容；破坏性变更使用新 Workflow type/task queue 或 Temporal Worker Deployment 版本策略。
 10. 生产 Temporal 不可用时 health 为 `DEGRADED`、执行排队；不能伪装成功或内存降级。
 
+Action Activity 的持久化边界固定为三个阶段：先用短事务登记
+`RUNNING` attempt（并锁定/复用同一业务键），再在事务外调用连接器、reconcile
+和对象存储，最后用新的短事务写入 attempt、node projection 与事件。补偿调用
+也遵循“事务外远端调用、短事务写事件”的顺序；数据库事务不得跨越供应商网络
+或对象存储 I/O。若 Worker 在登记后、取得可信回执前退出，恢复器只把仍有
+`RUNNING` attempt 的 Run 标记为 `ACTION_UNKNOWN`；没有进行中动作而仅投影落后
+的 Run 标记为 `FAILED/SOAR_PROJECTION_STALE`，避免把未执行动作误导为需要重放。
+
 ### 8.3 图执行语义
 
 - START 产生一个 token；普通节点完成后按端口把 token 发送到后继节点；
@@ -1160,6 +1168,19 @@ python build/failure-tests.py
 - 所有 mutation 使用明确的请求 DTO；事件和规则扩展只在已定义的 JSON 边界保留动态字段。
 - SoarClient 调用 /api/events/evaluate；Alert Web 的事件统一规范化后进入同一个 evaluator。
 - 历史数据可通过导入报告和只读投影核对，不能重新引入第二套执行语义。
+
+### 19.2.1 服务内职责拆分
+
+- `SoarService` 保留租户边界、事务和命令编排；查询与响应投影集中在
+  `SoarQueryService`，避免读模型和写模型继续互相膨胀。
+- `SoarDefinitionValidator` 只负责定义级协调；图结构检查由
+  `SoarGraphValidator` 承担，`MANUAL_TASK` 的受限表单 schema 和正则检查由
+  `SoarManualFormValidator` 承担，动作契约仍由 `SoarActionContractValidator`
+  承担。
+- `SoarAutomationRuleService` 只负责规则持久化、幂等回执和 Run admission；
+  条件匹配、事件 envelope 归一化、分组键和自动化深度由
+  `SoarAutomationRuleMatcher` 统一实现。所有组件均为同一服务内的纯协作者，
+  不改变 HTTP、数据库或 Temporal 契约。
 
 ### 19.3 Runtime 配置
 

@@ -23,6 +23,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -104,16 +105,20 @@ class SoarConnectorCoverageTest {
 
     @Test
     void listPagesWithoutLeakingDeletedRows() {
-        given(connectors.findByTenantIdOrderByNameAsc("tenant-a")).willReturn(List.of(
-                row("conn-1", false), row("conn-2", false), row("conn-3", true)));
+        PageRequest secondPage = PageRequest.of(1, 2);
+        given(connectors.findByTenantIdAndDeletedAtIsNullOrderByNameAsc("tenant-a", secondPage))
+                .willReturn(new PageImpl<>(List.of(), secondPage, 2));
+        PageRequest firstPage = PageRequest.of(0, 2);
+        given(connectors.findByTenantIdAndDeletedAtIsNullOrderByNameAsc("tenant-a", firstPage))
+                .willReturn(new PageImpl<>(List.of(row("conn-1", false), row("conn-2", false)), firstPage, 2));
 
-        Page<Map<String, Object>> page = service.list(PageRequest.of(1, 2));
+        Page<Map<String, Object>> page = service.list(secondPage);
 
         assertThat(page.getTotalElements()).isEqualTo(2);
         assertThat(page.getNumberOfElements()).isEqualTo(0);
         assertThat(page.getContent()).isEmpty();
 
-        Page<Map<String, Object>> first = service.list(PageRequest.of(0, 2));
+        Page<Map<String, Object>> first = service.list(firstPage);
         assertThat(first.getContent()).hasSize(2);
         assertThat(first.getContent().get(0)).containsEntry("id", "conn-1");
     }

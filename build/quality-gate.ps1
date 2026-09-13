@@ -2,6 +2,24 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Push-Location $root
 try {
+    # Keep local behaviour aligned with CI: automatically enable the
+    # Testcontainers contracts when Docker is usable, otherwise make the
+    # environment-dependent skip explicit. An explicit caller value wins.
+    if ([string]::IsNullOrWhiteSpace($env:SOCP_TESTCONTAINERS)) {
+        $docker = Get-Command docker -ErrorAction SilentlyContinue
+        $dockerReady = $false
+        if ($null -ne $docker) {
+            & $docker.Source info *> $null
+            $dockerReady = ($LASTEXITCODE -eq 0)
+        }
+        if ($dockerReady) {
+            $env:SOCP_TESTCONTAINERS = 'true'
+            Write-Host '[quality-gate] Docker detected; enabling Testcontainers contracts'
+        } else {
+            $env:SOCP_TESTCONTAINERS = 'false'
+            Write-Warning '[quality-gate] Docker unavailable; Testcontainers contracts are skipped'
+        }
+    }
     mvn -s build/settings-mirror.xml -f pom.xml test -Pcoverage '-Dsurefire.failIfNoSpecifiedTests=false'
     if ($LASTEXITCODE -ne 0) { throw 'Maven coverage tests failed' }
     python build/verify-coverage.py
@@ -12,6 +30,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Migration gate failed' }
     python build/verify-contracts.py
     if ($LASTEXITCODE -ne 0) { throw 'Contract gate failed' }
+    python build/verify-middleware-images.py
+    if ($LASTEXITCODE -ne 0) { throw 'Middleware image contract gate failed' }
     python build/verify-package-layout.py
     if ($LASTEXITCODE -ne 0) { throw 'Package layout gate failed' }
     python build/verify-architecture.py

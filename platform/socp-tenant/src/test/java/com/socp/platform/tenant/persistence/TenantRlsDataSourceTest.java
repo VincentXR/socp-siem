@@ -74,6 +74,24 @@ class TenantRlsDataSourceTest {
     }
 
     @Test
+    void refreshesScopeBeforeExecutingAStatementPreparedBeforeTenantSwitch() throws Exception {
+        DataSource delegate = mock(DataSource.class);
+        Connection connection = mock(Connection.class);
+        PreparedStatement statement = mock(PreparedStatement.class);
+        when(delegate.getConnection()).thenReturn(connection);
+        when(connection.prepareStatement(anyString())).thenReturn(statement);
+
+        TenantContext.set("tenant-a");
+        Connection wrapped = new TenantRlsDataSource(delegate).getConnection();
+        PreparedStatement prepared = wrapped.prepareStatement("select 1");
+        TenantContext.set("tenant-b");
+        prepared.execute();
+
+        verify(statement, org.mockito.Mockito.atLeastOnce()).setString(2, "tenant-b");
+        wrapped.close();
+    }
+
+    @Test
     void usesSystemMarkerOnlyInsideExplicitSystemScope() {
         assertEquals(TenantRlsDataSource.NO_SCOPE, TenantRlsDataSource.scopeValue());
         TenantContext.runAsSystem(() -> assertEquals(TenantRlsDataSource.SYSTEM_SCOPE,

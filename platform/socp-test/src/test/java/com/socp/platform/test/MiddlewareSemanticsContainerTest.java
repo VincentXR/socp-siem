@@ -11,7 +11,7 @@ import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.KafkaContainer;
+import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -43,11 +43,11 @@ class MiddlewareSemanticsContainerTest {
 
     @Container
     static final KafkaContainer KAFKA = new KafkaContainer(
-            DockerImageName.parse("confluentinc/cp-kafka:7.6.1"));
+            DockerImageName.parse("apache/kafka:4.0.0"));
 
     @Container
     static final GenericContainer<?> CLICKHOUSE = new GenericContainer<>(
-            "clickhouse/clickhouse-server:24.3")
+            "clickhouse/clickhouse-server:25.3")
             .withEnv("CLICKHOUSE_USER", "default")
             .withEnv("CLICKHOUSE_PASSWORD", "socp")
             .withExposedPorts(8123)
@@ -55,7 +55,7 @@ class MiddlewareSemanticsContainerTest {
 
     @Container
     static final GenericContainer<?> OPENSEARCH = new GenericContainer<>(
-            "opensearchproject/opensearch:2.11.1")
+            "opensearchproject/opensearch:2.19.6")
             .withEnv("discovery.type", "single-node")
             .withEnv("DISABLE_SECURITY_PLUGIN", "true")
             .withEnv("OPENSEARCH_JAVA_OPTS", "-Xms512m -Xmx512m")

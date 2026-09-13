@@ -6,6 +6,9 @@ import com.socp.detect.web.persistence.entity.RuleEntity;
 import com.socp.platform.error.exception.ApiException;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.util.Json;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 
@@ -23,6 +26,9 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Component
 public class RuleSpecStore {
+
+    /** Compatibility/list endpoints must never materialise an unbounded tenant catalogue. */
+    private static final int MAX_COMPATIBILITY_LIST_SIZE = 500;
 
     private final RuleRepository repo;
     private final Set<String> initializedTenants = ConcurrentHashMap.newKeySet();
@@ -126,6 +132,43 @@ public class RuleSpecStore {
         return repo.findByTenantId(tenant).stream()
                 .map(e -> DetectionContentCatalog.enrich(Json.parseObject(e.getSpec())))
                 .toList();
+    }
+
+    /**
+     * Reads only the first bounded page for legacy callers that do not need a
+     * total count. The worker still uses {@link #list(String)} when it builds a
+     * live engine because every enabled rule must be loaded into that engine.
+     */
+    public List<Map<String, Object>> list(int limit) {
+        return list(tenant(), limit);
+    }
+
+    public List<Map<String, Object>> list(String tenant, int limit) {
+        ensureTenantContent(tenant);
+        int boundedLimit = Math.max(1, Math.min(MAX_COMPATIBILITY_LIST_SIZE, limit));
+        return repo.findByTenantId(tenant, PageRequest.of(0, boundedLimit,
+                        Sort.by(Sort.Order.asc("id"))))
+                .map(e -> DetectionContentCatalog.enrich(Json.parseObject(e.getSpec())))
+                .getContent();
+    }
+
+    /** Database count used by runtime statistics and reload responses. */
+    public long count() {
+        return count(tenant());
+    }
+
+    public long count(String tenant) {
+        ensureTenantContent(tenant);
+        return repo.countByTenantId(tenant);
+    }
+
+    /** Reads a bounded rule page without materialising the tenant catalogue. */
+    public Page<Map<String, Object>> page(int page, int size) {
+        String tenant = tenant();
+        ensureTenantContent(tenant);
+        return repo.findByTenantId(tenant, PageRequest.of(page - 1, size,
+                        Sort.by(Sort.Order.asc("id"))))
+                .map(e -> DetectionContentCatalog.enrich(Json.parseObject(e.getSpec())));
     }
 
     public Map<String, Object> get(String id) {

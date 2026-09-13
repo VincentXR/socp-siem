@@ -2,6 +2,7 @@ package com.socp.soar.web.service;
 
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.soar.web.persistence.entity.SoarRunEntity;
+import com.socp.soar.web.persistence.repository.SoarActionAttemptRepository;
 import com.socp.soar.web.persistence.repository.SoarRunRepository;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,6 +32,8 @@ class SoarRunRecoveryWorkerCoverageTest {
     @Mock
     private SoarRunRepository runs;
     @Mock
+    private SoarActionAttemptRepository attempts;
+    @Mock
     private TemporalExecutor temporal;
 
     private SoarRunRecoveryWorker worker;
@@ -38,7 +41,7 @@ class SoarRunRecoveryWorkerCoverageTest {
     @BeforeEach
     void setUp() {
         TenantContext.set("tenant-a");
-        worker = new SoarRunRecoveryWorker(runs, temporal, STALE_SECONDS);
+        worker = new SoarRunRecoveryWorker(runs, attempts, temporal, STALE_SECONDS);
     }
 
     @AfterEach
@@ -47,7 +50,7 @@ class SoarRunRecoveryWorkerCoverageTest {
     }
 
     @Test
-    void closedWorkflowTerminalizesProjectionAsActionUnknown() {
+    void closedWorkflowWithoutAnInFlightAttemptTerminalizesProjectionAsFailed() {
         SoarRunEntity run = staleRun("RUNNING", "soar-tenant-a-run-1");
         given(runs.findTop100ByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAsc(anyCollection(), any()))
                 .willReturn(List.of(run));
@@ -55,10 +58,26 @@ class SoarRunRecoveryWorkerCoverageTest {
 
         worker.tick();
 
-        assertThat(run.getStatus()).isEqualTo("ACTION_UNKNOWN");
+        assertThat(run.getStatus()).isEqualTo("FAILED");
         assertThat(run.getErrorCode()).isEqualTo("SOAR_PROJECTION_STALE");
-        assertThat(run.getErrorMessage()).contains("Temporal workflow closed");
+        assertThat(run.getErrorMessage()).contains("no action was in flight");
         assertThat(run.getCompletedAt()).isNotNull();
+        verify(runs).save(run);
+    }
+
+    @Test
+    void closedWorkflowWithAnInFlightAttemptRequiresOperatorResolution() {
+        SoarRunEntity run = staleRun("RUNNING", "soar-tenant-a-run-1b");
+        given(runs.findTop100ByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAsc(anyCollection(), any()))
+                .willReturn(List.of(run));
+        given(temporal.describeWorkflow("soar-tenant-a-run-1b")).willReturn(TemporalExecutor.WorkflowState.CLOSED);
+        given(attempts.existsRunningByTenantIdAndRunId("tenant-a", "run-1")).willReturn(true);
+
+        worker.tick();
+
+        assertThat(run.getStatus()).isEqualTo("ACTION_UNKNOWN");
+        assertThat(run.getErrorCode()).isEqualTo("SOAR_ACTION_RESULT_UNKNOWN");
+        assertThat(run.getErrorMessage()).contains("attempt remained RUNNING");
         verify(runs).save(run);
     }
 

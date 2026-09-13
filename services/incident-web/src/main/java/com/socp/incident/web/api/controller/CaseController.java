@@ -9,6 +9,7 @@ import com.socp.platform.auth.security.RequireRole;
 import com.socp.platform.auth.security.RequirePermission;
 import com.socp.platform.error.api.ApiResult;
 import com.socp.platform.error.api.PageResponse;
+import com.socp.platform.error.exception.ApiException;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
@@ -25,6 +26,10 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.data.domain.Page;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.servlet.http.HttpServletResponse;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
@@ -36,13 +41,20 @@ import java.util.Map;
 @RequestMapping("/api/v1")
 public class CaseController {
 
+    static final int EXPORT_BATCH_SIZE = 500;
+    static final int EXPORT_DEFAULT_LIMIT = 10_000;
+    static final int EXPORT_MAX_LIMIT = 100_000;
+
     private final CaseService service;
     private final int maxListSize;
+    private final ObjectMapper objectMapper;
 
     public CaseController(CaseService service,
-                          @Value("${socp.web.list-max-size:500}") int maxListSize) {
+                          @Value("${socp.web.list-max-size:500}") int maxListSize,
+                          ObjectMapper objectMapper) {
         this.service = service;
         this.maxListSize = maxListSize;
+        this.objectMapper = objectMapper;
     }
 
     /** 由告警自动建案/归并（alert-web 创建告警时调用，或 SOAR 触发）。 */
@@ -77,14 +89,48 @@ public class CaseController {
                 result.getNumber() + 1, result.getSize(), result.getTotalPages()));
     }
 
-    /** 归档导出：全部案件（含时间线）按 JSON 下载。 */
+    /** 归档导出：按数据库页流式写出案件摘要；时间线通过独立分页资源读取。 */
+    @RequireRole({"admin", "analyst"})
     @GetMapping("/incidents/export")
-    public ResponseEntity<String> export() {
-        String json = service.exportJson();
-        return ResponseEntity.ok()
-                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"cases.json\"")
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(json);
+    public void export(@RequestParam(defaultValue = "10000") int limit,
+                       HttpServletResponse response) throws IOException {
+        if (limit < 1 || limit > EXPORT_MAX_LIMIT) {
+            throw ApiException.badRequest("limit must be between 1 and " + EXPORT_MAX_LIMIT);
+        }
+        long total = service.count();
+        if (total > limit) {
+            throw ApiException.of(413, "export exceeds the requested limit; narrow the query before exporting");
+        }
+
+        response.setStatus(HttpStatus.OK.value());
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+        response.setHeader(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"cases.json\"");
+        var writer = response.getWriter();
+        writer.write('[');
+        boolean first = true;
+        int exported = 0;
+        int page = 1;
+        while (exported < total && exported < limit) {
+            int batchSize = Math.min(EXPORT_BATCH_SIZE, limit - exported);
+            Page<Case> result = service.page(page, batchSize, "", "");
+            if (result.isEmpty()) {
+                break;
+            }
+            for (Case incident : result.getContent()) {
+                if (!first) {
+                    writer.write(',');
+                }
+                // Serialize one row at a time; writeValue(Writer, ...) closes
+                // the generator (and therefore the servlet writer) by default.
+                writer.write(objectMapper.writeValueAsString(incident));
+                first = false;
+                exported++;
+            }
+            page++;
+        }
+        writer.write(']');
+        writer.flush();
     }
 
     @GetMapping("/incidents/{id}")

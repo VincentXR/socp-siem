@@ -11,6 +11,8 @@ import com.socp.search.config.domain.SourceType;
 import com.socp.search.config.config.SearchRuntimeRole;
 import com.socp.platform.tenant.context.TenantContext;
 import org.springframework.stereotype.Component;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -57,6 +59,11 @@ public class LogSourceStore {
         List<LogSource> out = new ArrayList<>();
         for (LogSourceEntity e : repo.findByTenantId(tenant())) out.add(fromEntity(e));
         return out;
+    }
+
+    /** Database-side page used by the HTTP catalogue; avoids loading every source. */
+    public Page<LogSource> page(Pageable pageable) {
+        return repo.findByTenantId(tenant(), pageable).map(LogSourceStore::fromEntity);
     }
 
     public List<LogSource> enabled() {

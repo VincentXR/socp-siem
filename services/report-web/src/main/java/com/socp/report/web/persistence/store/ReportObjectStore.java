@@ -93,11 +93,18 @@ public class ReportObjectStore {
 
     /** 列出 bucket 内对象（前缀过滤）。 */
     public List<Map<String, Object>> list(String prefix) {
+        return list(prefix, 500);
+    }
+
+    /** List at most a bounded number of objects from the tenant prefix. */
+    public List<Map<String, Object>> list(String prefix, int limit) {
         List<Map<String, Object>> out = new ArrayList<>();
+        int boundedLimit = Math.max(1, Math.min(5_000, limit));
         if (!enabled || client == null) return out;
         try {
             for (Result<Item> r : client.listObjects(ListObjectsArgs.builder()
                     .bucket(bucket).prefix(prefix).recursive(true).build())) {
+                if (out.size() >= boundedLimit) break;
                 Item item = r.get();
                 Map<String, Object> m = new LinkedHashMap<>();
                 m.put("key", item.objectName());

@@ -34,10 +34,23 @@ class RunAllDoctorTest(unittest.TestCase):
             (target / f"{service}-1.0.0-SNAPSHOT.jar").write_bytes(b"test artifact")
 
     def doctor(self, profile="core"):
+        # Windows ships a ``bash.exe`` shim that forwards to WSL.  CI and
+        # developer machines may have Git Bash without WSL, so prefer the
+        # native Git installation when the shim cannot execute a script.
+        bash = shutil.which("bash")
+        if os.name == "nt":
+            git = shutil.which("git")
+            candidates = []
+            if git:
+                git_root = Path(git).resolve().parent.parent
+                candidates.extend((git_root / "bin" / "bash.exe", git_root / "usr" / "bin" / "bash.exe"))
+            candidates.extend((Path("D:/Git/bin/bash.exe"), Path("C:/Program Files/Git/bin/bash.exe")))
+            bash = next((str(path) for path in candidates if path.is_file()), bash)
+        self.assertIsNotNone(bash, "a POSIX shell is required for run-all.sh tests")
         return subprocess.run(
-            ["bash", str(self.root / "build/run-all.sh"), "doctor", profile],
+            [bash, str(self.root / "build/run-all.sh"), "doctor", profile],
             env={**os.environ, "JAVA_HOME": str(self.java_home)},
-            text=True, capture_output=True, timeout=20,
+            text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=20,
         )
 
     def test_java_17_cannot_pass_even_when_artifacts_exist(self):

@@ -27,7 +27,7 @@ class ProductionDatabaseRoleGuardPostgresTest {
     private static final String RUNTIME_PASSWORD = "runtime-secret";
 
     @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine")
+    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:18")
             .withDatabaseName("role_guard")
             .withUsername("socp_admin")
             .withPassword("admin-secret");

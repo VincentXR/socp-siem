@@ -727,6 +727,19 @@ public class DetectEngineService {
         return store.list();
     }
 
+    /** Bounded compatibility view for API callers that omit pagination. */
+    public List<Map<String, Object>> listRules(int limit) {
+        return store.list(limit);
+    }
+
+    public long ruleCount() {
+        return store.count();
+    }
+
+    public org.springframework.data.domain.Page<Map<String, Object>> listRulesPage(int page, int size) {
+        return store.page(page, size);
+    }
+
     public Map<String, Object> contentManifest() {
         return store.contentManifest();
     }
@@ -1026,7 +1039,9 @@ public class DetectEngineService {
                 .flatMap(engine -> engine.ruleStats().stream())
                 .toList();
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("rules", store.list(tenant).size());
+        // Stats are polled frequently and must not allocate the complete
+        // tenant rule catalogue just to calculate a count.
+        m.put("rules", store.count(tenant));
         m.put("eventCount", eventCount);
         m.put("alertCount", alertCount);
         m.put("dropCount", dropCount);

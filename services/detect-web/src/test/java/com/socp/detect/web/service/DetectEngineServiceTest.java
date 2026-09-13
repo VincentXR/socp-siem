@@ -83,7 +83,6 @@ class DetectEngineServiceTest {
 
     @Test
     void apiRoleDoesNotRestoreOrRebuildDetectionState() {
-        when(store.list("default")).thenReturn(List.of());
         when(store.tenant()).thenReturn("default");
         DetectEngineService service = new DetectEngineService(
                 store, new RecentAlertSink(10, null, null), forwarder, rulePublisher, stateStore);

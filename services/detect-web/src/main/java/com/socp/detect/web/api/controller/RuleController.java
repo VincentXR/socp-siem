@@ -7,6 +7,7 @@ import com.socp.detect.web.service.SigmaRuleImporter;
 import com.socp.detect.web.persistence.store.DetectionContentCatalog;
 import com.socp.platform.auth.security.RequireRole;
 import com.socp.platform.error.api.ApiResult;
+import com.socp.platform.error.api.PageResponse;
 import jakarta.validation.Valid;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -16,6 +17,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.LinkedHashMap;
@@ -28,6 +30,8 @@ import java.util.Map;
 @RequestMapping("/api/v1")
 public class RuleController {
 
+    static final int MAX_LIST_SIZE = 500;
+
     private final DetectEngineService engine;
 
     public RuleController(DetectEngineService engine) {
@@ -35,8 +39,31 @@ public class RuleController {
     }
 
     @GetMapping("/rules")
+    public ApiResult<?> listRules(@RequestParam(required = false) Integer page,
+                                  @RequestParam(required = false) Integer size) {
+        int safeSize = size == null || size <= 0 ? 100 : Math.min(MAX_LIST_SIZE, size);
+        if (page == null) {
+            // Compatibility response for older clients that still omit all
+            // pagination parameters. The first bounded page is returned; a
+            // tenant-created rule population can no longer cause an unbounded
+            // response allocation.
+            List<Map<String, Object>> bounded = engine.listRules(safeSize);
+            return ApiResult.ok(bounded == null ? List.of() : bounded);
+        }
+        if (page < 1 || size != null && (size < 1 || size > MAX_LIST_SIZE)) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST,
+                    "page must be >= 1 and size must be between 1 and " + MAX_LIST_SIZE);
+        }
+        var result = engine.listRulesPage(page, safeSize);
+        return ApiResult.ok(PageResponse.of(result.getContent(), result.getTotalElements(),
+                result.getNumber() + 1, result.getSize(), result.getTotalPages()));
+    }
+
+    /** Source-compatible Java entry point for existing in-process callers. */
     public ApiResult<List<Map<String, Object>>> listRules() {
-        return ApiResult.ok(engine.listRules());
+        List<Map<String, Object>> bounded = engine.listRules(MAX_LIST_SIZE);
+        return ApiResult.ok(bounded == null ? List.of() : bounded);
     }
 
     /** Versioned detection content metadata used by review and release tooling. */
@@ -111,7 +138,7 @@ public class RuleController {
         Map<String, Object> response = new LinkedHashMap<>();
         engine.reload();
         response.put("reloaded", true);
-        response.put("rules", engine.listRules().size());
+        response.put("rules", engine.ruleCount());
         return ApiResult.ok(response);
     }
 

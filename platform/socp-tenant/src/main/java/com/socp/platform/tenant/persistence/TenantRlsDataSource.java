@@ -8,18 +8,24 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.sql.CallableStatement;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
+import java.sql.Statement;
 
 /**
  * Applies the request tenant to every connection used by a PostgreSQL RLS
  * enabled application.
  *
  * <p>Hikari connections are pooled, so setting the value only once at pool
- * creation would be unsafe.  The wrapper sets it on checkout and immediately
- * before every statement factory call.  A missing request scope is represented
- * by a value that no tenant policy matches; explicit maintenance code must use
+ * creation would be unsafe.  The wrapper sets it on checkout, before every
+ * statement factory call, and immediately before statement execution.  The
+ * final execution hook matters for transaction-managed connections: Spring may
+ * acquire a connection before an Activity installs its tenant scope, and some
+ * JDBC drivers/Hibernate paths retain a prepared statement across that scope
+ * change.  A missing request scope is represented by a value that no tenant
+ * policy matches; explicit maintenance code must use
  * {@link TenantContext#runAsSystem(Runnable)}.</p>
  */
 public final class TenantRlsDataSource extends DelegatingDataSource {
@@ -81,6 +87,45 @@ public final class TenantRlsDataSource extends DelegatingDataSource {
             if (name.equals("createStatement") || name.equals("prepareStatement")
                     || name.equals("prepareCall")) {
                 setScope(delegate);
+            }
+            try {
+                Object result = method.invoke(delegate, args);
+                if (name.equals("createStatement") || name.equals("prepareStatement")
+                        || name.equals("prepareCall")) {
+                    return wrapStatement(delegate, result);
+                }
+                return result;
+            } catch (InvocationTargetException failure) {
+                throw failure.getCause();
+            }
+        }
+    }
+
+    private static Object wrapStatement(Connection connection, Object statement) {
+        if (!(statement instanceof Statement jdbcStatement)) return statement;
+        Class<?> contract = jdbcStatement instanceof CallableStatement
+                ? CallableStatement.class
+                : jdbcStatement instanceof PreparedStatement
+                ? PreparedStatement.class : Statement.class;
+        return Proxy.newProxyInstance(
+                TenantRlsDataSource.class.getClassLoader(),
+                new Class<?>[]{contract}, new StatementHandler(connection, jdbcStatement));
+    }
+
+    private static final class StatementHandler implements InvocationHandler {
+        private final Connection connection;
+        private final Statement delegate;
+
+        private StatementHandler(Connection connection, Statement delegate) {
+            this.connection = connection;
+            this.delegate = delegate;
+        }
+
+        @Override
+        public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+            String name = method.getName();
+            if (name.startsWith("execute") || name.equals("addBatch")) {
+                setScope(connection);
             }
             try {
                 return method.invoke(delegate, args);

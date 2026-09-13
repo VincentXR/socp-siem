@@ -2,6 +2,7 @@ package com.socp.report.web.api.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.auth.security.RequireRole;
 import com.socp.platform.error.api.ApiResult;
+import com.socp.platform.error.exception.ApiException;
 import com.socp.report.web.domain.ReportSummary;
 import com.socp.report.web.domain.ReportTrend;
 import com.socp.report.web.service.ReportService;
@@ -23,6 +24,9 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/v1/reports")
 public class ReportController {
+
+    static final int ARCHIVE_DEFAULT_LIMIT = 500;
+    static final int ARCHIVE_MAX_LIMIT = 5_000;
 
     private final ReportService service;
     private final ReportObjectStore objectStore;
@@ -73,12 +77,33 @@ public class ReportController {
 
     /** 归档列表（最近对象）。 */
     @GetMapping("/archive")
-    public ApiResult<Map<String, Object>> archived(@RequestParam(defaultValue = "reports/") String prefix) {
+    @RequireRole({"admin", "analyst", "viewer"})
+    public ApiResult<Map<String, Object>> archived(
+            @RequestParam(defaultValue = "reports/") String prefix,
+            @RequestParam(defaultValue = "500") int limit) {
+        if (limit < 1 || limit > ARCHIVE_MAX_LIMIT) {
+            throw ApiException.badRequest("limit must be between 1 and " + ARCHIVE_MAX_LIMIT);
+        }
+        String ownedPrefix = ownedPrefix(prefix);
+        List<Map<String, Object>> items = objectStore.list(ownedPrefix, limit);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("prefix", ownedPrefix);
+        out.put("count", items.size());
+        out.put("limit", limit);
+        out.put("truncated", items.size() >= limit);
+        out.put("objects", items);
+        return ApiResult.ok(out);
+    }
+
+    /** Source-compatible overload for scheduled/internal callers. */
+    public ApiResult<Map<String, Object>> archived(String prefix) {
         String ownedPrefix = ownedPrefix(prefix);
         List<Map<String, Object>> items = objectStore.list(ownedPrefix);
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("prefix", ownedPrefix);
         out.put("count", items.size());
+        out.put("limit", ARCHIVE_DEFAULT_LIMIT);
+        out.put("truncated", items.size() >= ARCHIVE_DEFAULT_LIMIT);
         out.put("objects", items);
         return ApiResult.ok(out);
     }

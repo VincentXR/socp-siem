@@ -15,6 +15,7 @@ import com.socp.platform.audit.api.AuditOperation;
 import com.socp.platform.auth.security.RequireRole;
 import com.socp.platform.auth.security.RequirePermission;
 import com.socp.platform.error.api.ApiResult;
+import com.socp.platform.error.api.PageResponse;
 import com.socp.platform.ratelimit.api.RateLimit;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
@@ -42,6 +43,9 @@ public class AlarmController {
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     /** Export streams the tenant alarm set in database-side pages of this size; nothing larger is held in memory. */
     static final int EXPORT_BATCH_SIZE = 500;
+    /** A caller must opt into a larger bounded export, up to this hard ceiling. */
+    static final int EXPORT_DEFAULT_LIMIT = 10_000;
+    static final int EXPORT_MAX_LIMIT = 100_000;
     private static final String CSV_HEADER =
             "id,ruleId,title,ruleName,severity,entity,mitre,riskScore,status,occurredAt,message\n";
     private final AlarmService service;
@@ -129,11 +133,8 @@ public class AlarmController {
             if (page == null) {
                 return ApiResult.ok(result.getContent());
             }
-            return ApiResult.ok(Map.of(
-                    "items", result.getContent(),
-                    "total", result.getTotalElements(),
-                    "page", pg,
-                    "size", sz));
+            return ApiResult.ok(PageResponse.of(result.getContent(), result.getTotalElements(),
+                    pg, sz, result.getTotalPages()));
         }
 
         // Keep the legacy array response for callers that omit pagination, but
@@ -187,6 +188,7 @@ public class AlarmController {
      * 分批流式写出：每批只从数据库取 EXPORT_BATCH_SIZE 条并即刻写回响应，
      * 不再全量物化租户告警，超大租户也不会把 JVM 推向 OOM。
      */
+    @RequireRole({"admin", "analyst"})
     @GetMapping("/export")
     public void export(
             @RequestParam(required = false) Severity severity,
@@ -196,7 +198,17 @@ public class AlarmController {
             @RequestParam(required = false) String status,
             @RequestParam(defaultValue = "occurredAt") String sort,
             @RequestParam(defaultValue = "descending") String order,
+            @RequestParam(defaultValue = "" + EXPORT_DEFAULT_LIMIT) int limit,
             HttpServletResponse response) throws IOException {
+        if (limit < 1 || limit > EXPORT_MAX_LIMIT) {
+            throw com.socp.platform.error.exception.ApiException.badRequest(
+                    "limit must be between 1 and " + EXPORT_MAX_LIMIT);
+        }
+        long total = service.count(severity, rule, status, q, sort, order);
+        if (total > limit) {
+            throw com.socp.platform.error.exception.ApiException.of(413,
+                    "export contains " + total + " alarms; limit is " + limit);
+        }
         boolean json = "json".equalsIgnoreCase(format);
         response.setHeader(HttpHeaders.CONTENT_DISPOSITION,
                 "attachment; filename=\"" + (json ? "alarms.json" : "alarms.csv") + "\"");
@@ -208,16 +220,20 @@ public class AlarmController {
             writer.write(CSV_HEADER);
         }
         int page = 1;
+        int exported = 0;
         boolean first = true;
-        while (true) {
+        while (exported < limit) {
             var result = service.page(severity, rule, status, q, sort, order, page, EXPORT_BATCH_SIZE);
             List<Alarm> batch = result.getContent();
             for (Alarm alarm : batch) {
+                if (exported >= limit) break;
                 if (!first) writer.write(json ? "," : "\n");
                 writer.write(json ? toJson(alarm) : csvRow(alarm));
                 first = false;
+                exported++;
             }
-            if (batch.size() < EXPORT_BATCH_SIZE || !result.hasNext()) break;
+            if (batch.isEmpty() || batch.size() < EXPORT_BATCH_SIZE || !result.hasNext()
+                    || exported >= limit) break;
             page++;
         }
         if (json) writer.write(']');

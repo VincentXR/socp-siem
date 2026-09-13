@@ -15,7 +15,6 @@ import com.socp.soar.web.connector.SoarConnectorRegistry;
 import com.socp.soar.web.config.SoarRuntimeProperties;
 import org.springframework.http.HttpStatus;
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -126,11 +125,9 @@ public class SoarConnectorService {
 
     @Transactional(readOnly = true)
     public Page<Map<String, Object>> list(Pageable pageable) {
-        List<SoarConnectorEntity> all = connectors.findByTenantIdOrderByNameAsc(TenantContext.require()).stream()
-                .filter(row -> row.getDeletedAt() == null).toList();
-        int from = Math.min(all.size(), Math.max(0, pageable.getPageNumber()) * pageable.getPageSize());
-        int to = Math.min(all.size(), from + pageable.getPageSize());
-        return new PageImpl<>(all.subList(from, to).stream().map(this::view).toList(), pageable, all.size());
+        return connectors.findByTenantIdAndDeletedAtIsNullOrderByNameAsc(
+                        TenantContext.require(), pageable)
+                .map(this::view);
     }
 
     @Transactional(readOnly = true)

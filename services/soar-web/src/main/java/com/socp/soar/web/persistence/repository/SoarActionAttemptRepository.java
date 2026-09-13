@@ -21,6 +21,20 @@ public interface SoarActionAttemptRepository extends TenantScopedRepository<Soar
     Optional<SoarActionAttemptEntity> findByTenantIdAndNodeRunIdAndAttemptNo(
             String tenantId, String nodeRunId, int attemptNo);
 
+    /**
+     * A closed Temporal workflow is actionable-unknown only when a durable
+     * action attempt was still RUNNING.  Projection failures without an
+     * in-flight attempt must not be presented as an uncertain remote side
+     * effect.
+     */
+    @Query("select case when count(a) > 0 then true else false end "
+            + "from SoarActionAttemptEntity a "
+            + "where a.tenantId = :tenantId and upper(a.status) = 'RUNNING' "
+            + "and a.nodeRunId in (select n.id from SoarNodeRunEntity n "
+            + "where n.tenantId = :tenantId and n.runId = :runId)")
+    boolean existsRunningByTenantIdAndRunId(@Param("tenantId") String tenantId,
+                                            @Param("runId") String runId);
+
     /** Serialize Activity redelivery against the attempt's business key. */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select a from SoarActionAttemptEntity a where a.tenantId = :tenantId "

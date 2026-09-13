@@ -6,6 +6,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWebTestClient;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.reactive.server.WebTestClient;
@@ -35,6 +36,20 @@ class AuthSessionApplicationTest {
         client.get().uri("/api/v1/system/health")
                 .exchange()
                 .expectStatus().isUnauthorized();
+
+        client.get().uri("/actuator/info")
+                .exchange()
+                .expectStatus().isUnauthorized();
+
+        client.get().uri("/actuator/prometheus")
+                .exchange()
+                .expectStatus().isUnauthorized();
+
+        client.get().uri("/actuator/health")
+                .exchange()
+                .expectStatus().value(status ->
+                        org.assertj.core.api.Assertions.assertThat(status)
+                                .isNotEqualTo(HttpStatus.UNAUTHORIZED.value()));
 
         client.get().uri("/auth/session")
                 .headers(headers -> {

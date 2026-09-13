@@ -34,6 +34,8 @@ import jakarta.validation.constraints.Size;
 @RequestMapping("/api/v1")
 public class UebaController {
 
+    static final int MAX_ENTITY_LIMIT = 500;
+
     private final EntityRiskStore riskStore;
     private final WatchlistStore watchlists;
 
@@ -47,6 +49,10 @@ public class UebaController {
     /** 风险 Top N 实体（默认 20），按时间衰减后的累积风险倒序 */
     @GetMapping("/ueba/entities")
     public ApiResult<List<Map<String, Object>>> entities(@RequestParam(defaultValue = "20") int limit) {
+        if (limit < 1 || limit > MAX_ENTITY_LIMIT) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "limit must be between 1 and " + MAX_ENTITY_LIMIT);
+        }
         return ApiResult.ok(riskStore.top(limit));
     }
 

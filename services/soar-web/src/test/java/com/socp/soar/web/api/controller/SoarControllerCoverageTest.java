@@ -93,7 +93,8 @@ class SoarControllerCoverageTest {
         assertThat(result.data())
                 .containsEntry("page", 0)
                 .containsEntry("size", 1)
-                .containsEntry("total", 3L);
+                .containsEntry("total", 3L)
+                .containsEntry("totalPages", 3);
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> items = (List<Map<String, Object>>) result.data().get("items");
         assertThat(items).hasSize(1);

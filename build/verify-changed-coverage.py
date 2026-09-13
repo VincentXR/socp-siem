@@ -89,9 +89,9 @@ def main() -> int:
     if not 0 <= args.minimum <= 1:
         parser.error("--minimum must be between 0 and 1")
     base = valid_base(args.base)
-    if args.base and not base:
-        print(f"[SKIP] changed-line coverage base is unavailable: {args.base}")
-        return 0
+    if args.base and set(args.base) != {"0"} and not base:
+        print(f"[FAIL] changed-line coverage base is unavailable: {args.base}", file=sys.stderr)
+        return 1
     changed = diff_lines(base)
     reports = jacoco_lines()
     executable = 0

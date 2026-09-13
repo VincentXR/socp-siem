@@ -2,16 +2,13 @@ package com.socp.soar.web.temporal;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.tenant.context.TenantContext;
-import com.socp.soar.web.domain.PlaybookActionStatus;
 import com.socp.soar.web.persistence.entity.SoarNodeRunEntity;
 import com.socp.soar.web.persistence.entity.SoarApprovalEntity;
 import com.socp.soar.web.persistence.entity.SoarApprovalDecisionEntity;
 import com.socp.soar.web.persistence.entity.SoarRunEntity;
 import com.socp.soar.web.persistence.entity.SoarRunEventEntity;
-import com.socp.soar.web.persistence.entity.SoarConnectorEntity;
 import com.socp.soar.web.persistence.entity.SoarActionAttemptEntity;
 import com.socp.soar.web.persistence.entity.SoarManualTaskEntity;
-import com.socp.soar.web.persistence.entity.SoarArtifactEntity;
 import com.socp.soar.web.persistence.repository.SoarConnectorRepository;
 import com.socp.soar.web.persistence.repository.SoarActionAttemptRepository;
 import com.socp.soar.web.persistence.repository.SoarManualTaskRepository;
@@ -23,17 +20,11 @@ import com.socp.soar.web.persistence.repository.SoarApprovalDecisionRepository;
 import com.socp.soar.web.persistence.repository.SoarArtifactRepository;
 import com.socp.soar.web.persistence.repository.PlaybookVersionRepository;
 import com.socp.soar.web.service.PlaybookExecutor;
-import com.socp.soar.web.service.SoarActionCatalog;
-import com.socp.soar.web.connector.ActionResult;
-import com.socp.soar.web.connector.ActionQuery;
-import com.socp.soar.web.connector.ConnectionContext;
 import com.socp.soar.web.connector.SecretResolver;
 import com.socp.soar.web.artifact.SoarArtifactStore;
-import com.socp.soar.web.temporal.request.ActionRequest;
 import com.socp.soar.web.temporal.request.SoarNodeRequest;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
@@ -46,12 +37,6 @@ import java.util.UUID;
 /** Spring activity implementation; every side effect is tenant-scoped and durable. */
 @Component
 public class SoarActivityImpl implements SoarActivity {
-
-    private static final Logger log = LoggerFactory.getLogger(SoarActivityImpl.class);
-
-    private static final int INLINE_OUTPUT_LIMIT_BYTES = 64 * 1024;
-    private static final int MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
-    private static final long ARTIFACT_RETENTION_DAYS = 30;
 
     private final PlaybookExecutor executor;
     private final SoarRunRepository runs;
@@ -68,6 +53,7 @@ public class SoarActivityImpl implements SoarActivity {
     private final ObjectMapper mapper;
     private SoarArtifactRepository artifacts;
     private SoarArtifactStore artifactStore;
+    private final SoarActivityExecutionService executionService;
 
     @org.springframework.beans.factory.annotation.Autowired
     public SoarActivityImpl(PlaybookExecutor executor, SoarRunRepository runs,
@@ -90,6 +76,8 @@ public class SoarActivityImpl implements SoarActivity {
         this.manualTasks = manualTasks;
         this.versions = versions;
         this.mapper = mapper;
+        this.executionService = new SoarActivityExecutionService(executor, runs, nodeRuns, events,
+                attempts, connectors, connectorRegistry, secretResolver, mapper);
     }
 
     /** Compatibility constructor for isolated Activity tests. */
@@ -108,18 +96,26 @@ public class SoarActivityImpl implements SoarActivity {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setArtifacts(SoarArtifactRepository artifacts) {
         this.artifacts = artifacts;
+        this.executionService.setArtifacts(artifacts);
     }
 
     /** Optional in preview; production config supplies the S3-compatible store. */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setArtifactStore(SoarArtifactStore artifactStore) {
         this.artifactStore = artifactStore;
+        this.executionService.setArtifactStore(artifactStore);
     }
 
     /** Optional for compatibility tests; production wiring records expiry votes. */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setApprovalDecisions(SoarApprovalDecisionRepository approvalDecisions) {
         this.approvalDecisions = approvalDecisions;
+    }
+
+    /** Optional for isolated unit tests; production wiring supplies JPA's manager. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setTransactionManager(PlatformTransactionManager transactionManager) {
+        this.executionService.setTransactionManager(transactionManager);
     }
 
     @Override
@@ -177,486 +173,13 @@ public class SoarActivityImpl implements SoarActivity {
     }
 
     @Override
-    @Transactional
     public SoarNodeResult executeNode(SoarNodeRequest request) {
-        return TenantContext.callWith(request.tenantId(), () -> {
-            SoarNodeRunEntity prior = nodeRuns.findByTenantIdAndRunIdAndNodeIdAndIterationPath(
-                    request.tenantId(), request.runId(), request.nodeId(),
-                    request.iterationPath() == null ? "" : request.iterationPath()).orElse(null);
-            if (prior != null && ("SUCCEEDED".equals(prior.getStatus())
-                    || "CONFIRMED_SUCCEEDED".equals(prior.getStatus()))) {
-                return new SoarNodeResult("SUCCEEDED", prior.getOutputJson(),
-                        prior.getErrorCode(), prior.getErrorMessage());
-            }
-            // A stale/redelivered Activity must not perform a new remote side
-            // effect after the operator has committed cancellation or a
-            // terminal projection.  Keep the lookup tolerant for old isolated
-            // tests/histories that do not carry a run projection; production
-            // runs always have one because dispatch creates it first.
-            if (runTerminalOrCancelling(request.tenantId(), request.runId())) {
-                return terminalNodeResult();
-            }
-            Instant started = Instant.now();
-            Map<String, Object> input = readMap(request.inputJson());
-            Map<String, Object> output;
-            ActionResult actionResult;
-            String status;
-            String errorCode = null;
-            String errorMessage = null;
-            // The deterministic workflow supplies the action-level attempt
-            // number.  Falling back to the historical count keeps old
-            // workflow histories/tests readable, while new executions no
-            // longer have a read-then-insert race across SOAR instances.
-            List<SoarActionAttemptEntity> priorAttempts = attempts
-                    .findByTenantIdAndNodeRunIdOrderByAttemptNoAsc(
-                            request.tenantId(), nodeIdForAttempt(request));
-            int attemptNo = request.attemptNo() > 0 ? request.attemptNo()
-                    : (priorAttempts == null ? 0 : priorAttempts.size()) + 1;
-            String nodeRunId = prior == null ? nodeIdForAttempt(request) : prior.getId();
-            ConnectionContext attemptConnection = null;
-            java.util.Optional<SoarActionAttemptEntity> existingAttempt = findAttemptForUpdate(
-                    request.tenantId(), nodeRunId, attemptNo);
-            boolean replayedAttempt = existingAttempt.isPresent()
-                    && completedAttempt(existingAttempt.get());
-            if (replayedAttempt) {
-                // The remote side effect may have completed before an Activity
-                // transaction was interrupted.  Reuse the durable receipt for
-                // the same attempt instead of invoking the connector again;
-                // the stable idempotency key is a second-line provider guard.
-                SoarActionAttemptEntity priorAttempt = existingAttempt.get();
-                output = readMap(priorAttempt.getReceiptJson());
-                status = normalizeAttemptStatus(priorAttempt.getStatus());
-                errorCode = priorAttempt.getErrorCode();
-                errorMessage = redactFreeText(priorAttempt.getErrorMessage(), 2048);
-                actionResult = replayActionResult(priorAttempt, output);
-            } else try {
-                input.put("tenantId", request.tenantId());
-                input.put("runId", request.runId());
-                input.putIfAbsent("id", request.runId());
-                input.putIfAbsent("playbookId", request.runId());
-                String inputJson = writeJson(redact(input));
-                // Resolve the connection before the attempt row so the attempt
-                // and its node projection record which connection revision was
-                // in effect.  A resolution failure is intentionally quiet here:
-                // executeConnector() below re-checks and surfaces the error on
-                // the attempt exactly as it did before.
-                attemptConnection = quietConnection(request);
-                recordAttemptStarted(request.tenantId(), nodeRunId, attemptNo, inputJson,
-                        request.idempotencyKey(), attemptConnection);
-                actionResult = executeConnector(request, input, nodeRunId, attemptNo);
-                output = new LinkedHashMap<>();
-                output.put("status", actionResult.status());
-                if (actionResult.operationId() != null) output.put("operationId", actionResult.operationId());
-                output.put("output", redact(actionResult.output()));
-                output.put("receipt", redact(actionResult.receipt()));
-                output.put("retryable", actionResult.retryable());
-                if (actionResult.errorCode() != null) output.put("errorCode", actionResult.errorCode());
-                if (actionResult.errorMessage() != null) output.put("error", redactFreeText(actionResult.errorMessage(), 2048));
-                status = "SUCCEEDED".equals(actionResult.status()) ? "SUCCEEDED" : actionResult.status();
-                if (!"SUCCEEDED".equals(status)) {
-                    errorCode = actionResult.errorCode() == null ? "ACTION_FAILED" : actionResult.errorCode();
-                    errorMessage = actionResult.errorMessage() == null ? "action failed"
-                            : redactFreeText(actionResult.errorMessage(), 2048);
-                }
-            } catch (RuntimeException failure) {
-                output = new LinkedHashMap<>();
-                status = "FAILED";
-                errorCode = failure.getMessage() != null
-                        && failure.getMessage().startsWith("SOAR_CONNECTION_UNAVAILABLE")
-                        ? "SOAR_CONNECTION_UNAVAILABLE" : "ACTION_EXCEPTION";
-                errorMessage = redactFreeText(limit(failure.getMessage(), 2048), 2048);
-                output.put("status", status);
-                output.put("retryable", !"SOAR_CONNECTION_UNAVAILABLE".equals(errorCode));
-                actionResult = ActionResult.failed(errorCode, errorMessage,
-                        !"SOAR_CONNECTION_UNAVAILABLE".equals(errorCode));
-            }
-            String outputJson = writeJson(redact(output));
-            long outputBytes = outputJson.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
-            if (!replayedAttempt && outputBytes > MAX_OUTPUT_BYTES) {
-                status = "FAILED";
-                errorCode = "SOAR_OUTPUT_TOO_LARGE";
-                errorMessage = "action output exceeds 10 MiB";
-                output = boundedFailureOutput(errorCode, errorMessage);
-                actionResult = ActionResult.failed(errorCode, errorMessage, false);
-                outputJson = writeJson(output);
-            } else if (!replayedAttempt && outputBytes > INLINE_OUTPUT_LIMIT_BYTES) {
-                // Database metadata is still required, but large payloads
-                // must never silently fall back to inline PostgreSQL storage.
-                // Preview may keep small evidence inline; anything over the
-                // boundary needs the configured object-store adapter.
-                if (artifacts == null || artifactStore == null) {
-                    status = "FAILED";
-                    errorCode = "SOAR_ARTIFACT_STORAGE_UNAVAILABLE";
-                    errorMessage = "large action output has no artifact storage adapter";
-                    output = boundedFailureOutput(errorCode, errorMessage);
-                    actionResult = ActionResult.failed(errorCode, errorMessage, false);
-                    outputJson = writeJson(output);
-                } else {
-                    try {
-                        SoarArtifactEntity artifact = persistArtifact(request, nodeRunId, outputJson, outputBytes);
-                        output = new LinkedHashMap<>();
-                        output.put("status", status);
-                        output.put("retryable", actionResult.retryable());
-                        output.put("artifact", artifactView(artifact));
-                        output.put("outputTruncated", true);
-                        if (actionResult.errorCode() != null) output.put("errorCode", actionResult.errorCode());
-                        if (actionResult.errorMessage() != null) output.put("error", redactFreeText(actionResult.errorMessage(), 2048));
-                        outputJson = writeJson(output);
-                    } catch (RuntimeException storageFailure) {
-                        status = "FAILED";
-                        errorCode = "SOAR_ARTIFACT_STORAGE_UNAVAILABLE";
-                        errorMessage = "artifact storage could not persist action output";
-                        actionResult = ActionResult.failed(errorCode, errorMessage, false);
-                        output = boundedFailureOutput(errorCode, errorMessage);
-                        outputJson = writeJson(output);
-                    }
-                }
-            }
-            if (!replayedAttempt) {
-                completeAttempt(request.tenantId(), nodeRunId, attemptNo, actionResult, output);
-            }
-            SoarNodeRunEntity row = prior == null ? new SoarNodeRunEntity() : prior;
-            if (row.getId() == null) row.setId(nodeIdForAttempt(request));
-            row.setTenantId(request.tenantId());
-            row.setRunId(request.runId());
-            row.setNodeId(request.nodeId());
-            row.setIterationPath(request.iterationPath() == null ? "" : request.iterationPath());
-            row.setNodeType(request.nodeType());
-            row.setStatus(status);
-            row.setInputJson(writeJson(redact(readMap(request.inputJson()))));
-            row.setOutputJson(outputJson);
-            row.setIdempotencyKey(request.idempotencyKey());
-            row.setConnectionId(request.connectionRef() == null || request.connectionRef().isBlank()
-                    ? null : request.connectionRef());
-            Integer connectionRevision = null;
-            if (attemptConnection != null) connectionRevision = attemptConnection.revision();
-            else if (existingAttempt.isPresent()) connectionRevision = existingAttempt.get().getConnectionRevision();
-            row.setConnectionRevision(connectionRevision);
-            row.setErrorCode(errorCode);
-            row.setErrorMessage(errorMessage);
-            row.setStartedAt(started);
-            row.setCompletedAt(Instant.now());
-            row.setUpdatedAt(Instant.now());
-            nodeRuns.save(row);
-            appendEvent(request.tenantId(), request.runId(), "NODE_" + status,
-                    request.nodeId() + " completed", row.getId());
-            boolean retryable = output.get("retryable") instanceof Boolean value && value;
-            return new SoarNodeResult(status, outputJson, errorCode, errorMessage, retryable);
-        });
+        return executionService.executeNode(request);
     }
 
     @Override
-    @Transactional
     public SoarNodeResult compensateNode(SoarNodeRequest request, String compensationRef) {
-        return TenantContext.callWith(request.tenantId(), () -> {
-            if (runTerminalOrCancelling(request.tenantId(), request.runId())) {
-                return terminalNodeResult();
-            }
-            if (compensationRef == null || compensationRef.isBlank()) {
-                return new SoarNodeResult("FAILED", "{}", "COMPENSATION_REF_REQUIRED",
-                        "compensationRef is required", false);
-            }
-            if (connectorRegistry == null) {
-                return new SoarNodeResult("FAILED", "{}", "COMPENSATION_UNAVAILABLE",
-                        "connector registry is unavailable", false);
-            }
-            ActionResult result;
-            try {
-                ActionRequest primary = new ActionRequest(request.tenantId(), request.runId(),
-                        request.nodeId(), 1, request.actionRef(), request.idempotencyKey(),
-                        readMap(request.inputJson()), request.target(), connectionFor(request));
-                result = connectorRegistry.compensate(primary, compensationRef).orElse(null);
-            } catch (RuntimeException failure) {
-                appendEvent(request.tenantId(), request.runId(), "ACTION_COMPENSATION_FAILED",
-                        "Compensation connector could not be invoked", null);
-                return new SoarNodeResult("FAILED", "{}", "COMPENSATION_FAILED",
-                        redactFreeText(limit(failure.getMessage(), 2048), 2048), false);
-            }
-            if (result == null) {
-                appendEvent(request.tenantId(), request.runId(), "ACTION_COMPENSATION_UNAVAILABLE",
-                        "No connector compensation capability for " + compensationRef, null);
-                return new SoarNodeResult("FAILED", "{}", "COMPENSATION_UNAVAILABLE",
-                        "connector does not expose compensation", false);
-            }
-            Map<String, Object> output = new LinkedHashMap<>();
-            output.put("status", result.status());
-            output.put("compensationRef", compensationRef);
-            output.put("output", redact(result.output()));
-            output.put("receipt", redact(result.receipt()));
-            if (result.errorCode() != null) output.put("errorCode", result.errorCode());
-            if (result.errorMessage() != null) output.put("error", redactFreeText(result.errorMessage(), 2048));
-            appendEvent(request.tenantId(), request.runId(),
-                    "ACTION_COMPENSATION_" + result.status(),
-                    "Compensation action completed", null);
-            return new SoarNodeResult(result.status(), writeJson(output), result.errorCode(),
-                    redactFreeText(result.errorMessage(), 2048), result.retryable());
-        });
-    }
-
-    private SoarArtifactEntity persistArtifact(SoarNodeRequest request, String nodeRunId,
-                                               String redactedJson, long sizeBytes) {
-        SoarArtifactEntity artifact = new SoarArtifactEntity();
-        artifact.setId(UUID.randomUUID().toString().replace("-", ""));
-        artifact.setTenantId(request.tenantId());
-        artifact.setRunId(request.runId());
-        artifact.setNodeRunId(nodeRunId);
-        artifact.setMediaType("application/json");
-        byte[] content = redactedJson.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        SoarArtifactStore.StoredArtifact external = null;
-        try {
-            if (artifactStore != null) {
-                external = artifactStore.put(request.tenantId(), request.runId(),
-                        artifact.getId(), "application/json", content);
-                artifact.setSizeBytes(external.sizeBytes());
-                artifact.setSha256(external.sha256());
-                artifact.setStorageRef(external.storageRef());
-            } else {
-                artifact.setSizeBytes(sizeBytes);
-                artifact.setSha256(sha256(redactedJson));
-                artifact.setStorageRef("db://soar-artifacts/" + artifact.getId());
-            }
-            artifact.setClassification("INTERNAL");
-            artifact.setInlineJson(artifactStore == null ? redactedJson : null);
-            artifact.setCreatedAt(Instant.now());
-            artifact.setExpiresAt(Instant.now().plusSeconds(ARTIFACT_RETENTION_DAYS * 24 * 3600));
-            SoarArtifactEntity saved = artifacts.save(artifact);
-            if (saved == null) throw new IllegalStateException("artifact metadata save returned no row");
-            return saved;
-        } catch (RuntimeException failure) {
-            if (external != null && artifactStore != null && external.storageRef() != null) {
-                try {
-                    artifactStore.delete(external.storageRef());
-                } catch (RuntimeException cleanupFailure) {
-                    log.warn("SOAR artifact orphan cleanup deferred after activity metadata failure");
-                }
-            }
-            throw failure;
-        }
-    }
-
-    private Map<String, Object> boundedFailureOutput(String code, String message) {
-        Map<String, Object> output = new LinkedHashMap<>();
-        output.put("status", "FAILED");
-        output.put("retryable", false);
-        output.put("errorCode", code);
-        output.put("error", message);
-        return output;
-    }
-
-    private Map<String, Object> artifactView(SoarArtifactEntity artifact) {
-        Map<String, Object> view = new LinkedHashMap<>();
-        view.put("id", artifact.getId());
-        view.put("mediaType", artifact.getMediaType());
-        view.put("sizeBytes", artifact.getSizeBytes());
-        view.put("sha256", artifact.getSha256());
-        view.put("storageRef", artifact.getStorageRef());
-        view.put("classification", artifact.getClassification());
-        view.put("expiresAt", artifact.getExpiresAt());
-        return view;
-    }
-
-    private String nodeIdForAttempt(SoarNodeRequest request) {
-        SoarNodeRunEntity existing = nodeRuns.findByTenantIdAndRunIdAndNodeIdAndIterationPath(
-                request.tenantId(), request.runId(), request.nodeId(),
-                request.iterationPath() == null ? "" : request.iterationPath()).orElse(null);
-        return existing == null ? UUID.nameUUIDFromBytes((request.runId() + "\u0000" + request.nodeId()
-                + "\u0000" + (request.iterationPath() == null ? "" : request.iterationPath()))
-                .getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString().replace("-", "") : existing.getId();
-    }
-
-    private ActionResult executeConnector(SoarNodeRequest request, Map<String, Object> input,
-                                          String nodeRunId, int attemptNo) {
-        ConnectionContext connection = connectionFor(request);
-        ActionRequest actionRequest = new ActionRequest(request.tenantId(), request.runId(),
-                nodeRunId, attemptNo, request.actionRef(), request.idempotencyKey(),
-                input, request.target(), connection);
-        ActionResult result = connectorRegistry.execute(actionRequest);
-        if ("UNKNOWN".equalsIgnoreCase(result.status())) {
-            // A transport timeout may happen after the vendor committed the
-            // write. Give the connector one deterministic chance to prove the
-            // outcome through its query API before exposing ACTION_UNKNOWN to
-            // an operator. An empty Optional deliberately preserves UNKNOWN.
-            result = connectorRegistry.reconcile(new ActionQuery(request.tenantId(), request.runId(),
-                            nodeRunId, request.actionRef(), request.idempotencyKey(), request.target(), input))
-                    .filter(candidate -> candidate != null
-                            && ("SUCCEEDED".equalsIgnoreCase(candidate.status())
-                            || "FAILED".equalsIgnoreCase(candidate.status())))
-                    .orElse(result);
-        }
-        // Preserve the legacy adapter for old drafts only. It is never a
-        // production fallback for a namespaced action unknown to the registry.
-        if ("SOAR_ACTION_NOT_FOUND".equals(result.errorCode()) && !SoarActionCatalog.isNamespaced(request.actionRef())) {
-            Map<String, Object> legacy = executor.executeAction(SoarActionCatalog.toLegacyAction(request.actionRef()),
-                    input, false, request.nodeId().hashCode() & Integer.MAX_VALUE);
-            String wire = String.valueOf(legacy.getOrDefault("status", "failed"));
-            return new ActionResult(PlaybookActionStatus.isSuccessful(wire) ? "SUCCEEDED" : "FAILED",
-                    String.valueOf(legacy.getOrDefault("operationId", "")), legacy,
-                    false, String.valueOf(legacy.getOrDefault("errorCode", "")),
-                    String.valueOf(legacy.getOrDefault("error", "")), null, legacy);
-        }
-        return result;
-    }
-
-    private ConnectionContext quietConnection(SoarNodeRequest request) {
-        if (request.connectionRef() == null || request.connectionRef().isBlank()) return null;
-        try {
-            return connectionFor(request);
-        } catch (RuntimeException ignored) {
-            // The real execution path re-checks and reports the failure; here
-            // we only want to know which connection revision to annotate.
-            return null;
-        }
-    }
-
-    private ConnectionContext connectionFor(SoarNodeRequest request) {
-        if (request.connectionRef() == null || request.connectionRef().isBlank()) return null;
-        {
-            SoarConnectorEntity row = connectors.findByTenantIdAndId(request.tenantId(), request.connectionRef())
-                    .orElseThrow(() -> new IllegalStateException("SOAR_CONNECTION_UNAVAILABLE"));
-            if (!row.isEnabled() || row.getDeletedAt() != null) {
-                throw new IllegalStateException("SOAR_CONNECTION_UNAVAILABLE: connection is disabled");
-            }
-            Map<String, Object> config = readMap(row.getConfigJson());
-            Map<String, String> refs = readStringMap(row.getSecretRefsJson());
-            if (row.getAuthSecretRef() != null && !row.getAuthSecretRef().isBlank()) {
-                refs.putIfAbsent("auth", row.getAuthSecretRef());
-            }
-            return new ConnectionContext(request.tenantId(), row.getId(),
-                    row.getRevision() <= 0 ? 1 : row.getRevision(), row.getConnectorType(), row.getEndpoint(),
-                    config, refs, secretResolver, java.time.Duration.ofSeconds(60), readList(row.getAllowedHostsJson()));
-        }
-    }
-
-    private void recordAttemptStarted(String tenant, String nodeRunId, int attemptNo,
-                                      String inputJson, String idempotencyKey,
-                                      ConnectionContext connection) {
-        // An Activity may be redelivered after the remote side effect has
-        // happened but before the database transaction committed.  The
-        // attempt business key is durable, so do not turn that redelivery
-        // into a unique-key failure (or a second attempt number).
-        java.util.Optional<SoarActionAttemptEntity> existing = attempts
-                .findByTenantIdAndNodeRunIdAndAttemptNoForUpdate(tenant, nodeRunId, attemptNo);
-        if (existing == null) {
-            // Mockito/legacy isolated tests may not stub the lock projection;
-            // production Spring Data always returns an Optional.
-            existing = attempts.findByTenantIdAndNodeRunIdAndAttemptNo(tenant, nodeRunId, attemptNo);
-        }
-        if (existing != null && existing.isPresent()) return;
-        SoarActionAttemptEntity row = new SoarActionAttemptEntity();
-        row.setId(UUID.randomUUID().toString().replace("-", ""));
-        row.setTenantId(tenant);
-        row.setNodeRunId(nodeRunId);
-        row.setAttemptNo(attemptNo);
-        row.setStatus("RUNNING");
-        row.setRequestHash(sha256(inputJson + "\u0000" + idempotencyKey));
-        row.setConnectionId(connection == null ? null : connection.connectionId());
-        row.setConnectionRevision(connection == null ? null : connection.revision());
-        row.setRetryable(false);
-        row.setStartedAt(Instant.now());
-        row.setCreatedAt(Instant.now());
-        attempts.save(row);
-    }
-
-    private java.util.Optional<SoarActionAttemptEntity> findAttemptForUpdate(
-            String tenant, String nodeRunId, int attemptNo) {
-        java.util.Optional<SoarActionAttemptEntity> existing = attempts
-                .findByTenantIdAndNodeRunIdAndAttemptNoForUpdate(tenant, nodeRunId, attemptNo);
-        if (existing == null) {
-            // Focused Mockito/legacy tests may not stub the lock projection;
-            // Spring Data always returns an Optional in production.
-            existing = attempts.findByTenantIdAndNodeRunIdAndAttemptNo(tenant, nodeRunId, attemptNo);
-        }
-        return existing == null ? java.util.Optional.empty() : existing;
-    }
-
-    private static boolean completedAttempt(SoarActionAttemptEntity attempt) {
-        String status = attempt == null ? null : attempt.getStatus();
-        return status != null && !status.isBlank() && !"RUNNING".equalsIgnoreCase(status);
-    }
-
-    private static String normalizeAttemptStatus(String status) {
-        if (status == null || status.isBlank()) return "FAILED";
-        return status.toUpperCase(java.util.Locale.ROOT);
-    }
-
-    private ActionResult replayActionResult(SoarActionAttemptEntity attempt,
-                                             Map<String, Object> output) {
-        String status = normalizeAttemptStatus(attempt.getStatus());
-        String operationId = attempt.getRemoteOperationId();
-        Map<String, Object> nestedOutput = objectMap(output.get("output"));
-        Map<String, Object> receipt = objectMap(output.get("receipt"));
-        if ("SUCCEEDED".equals(status)) {
-            return ActionResult.success(operationId, nestedOutput, receipt);
-        }
-        if ("UNKNOWN".equals(status) || "ACTION_UNKNOWN".equals(status)) {
-            return ActionResult.unknown(attempt.getErrorCode(), attempt.getErrorMessage());
-        }
-        return ActionResult.failed(attempt.getErrorCode(), attempt.getErrorMessage(), attempt.isRetryable());
-    }
-
-    @SuppressWarnings("unchecked")
-    private static Map<String, Object> objectMap(Object value) {
-        if (!(value instanceof Map<?, ?> map)) return Map.of();
-        Map<String, Object> result = new LinkedHashMap<>();
-        map.forEach((key, item) -> result.put(String.valueOf(key), item));
-        return result;
-    }
-
-    private void completeAttempt(String tenant, String nodeRunId, int attemptNo,
-                                 ActionResult action, Map<String, Object> output) {
-        attempts.findByTenantIdAndNodeRunIdAndAttemptNo(tenant, nodeRunId, attemptNo).ifPresent(row -> {
-            row.setStatus(action.status());
-            row.setRemoteOperationId(action.operationId());
-            row.setRemoteTime(action.remoteTime());
-            row.setReceiptJson(writeJson(redact(output)));
-            row.setErrorCode(action.errorCode());
-            row.setErrorMessage(redactFreeText(action.errorMessage(), 2048));
-            row.setRetryable(action.retryable());
-            row.setCompletedAt(Instant.now());
-            attempts.save(row);
-        });
-    }
-
-    @SuppressWarnings("unchecked")
-    private Map<String, String> readStringMap(String json) {
-        try {
-            Map<String, String> value = mapper.readValue(json == null ? "{}" : json, Map.class);
-            return value == null ? new LinkedHashMap<>() : new LinkedHashMap<>(value);
-        } catch (Exception ignored) { return new LinkedHashMap<>(); }
-    }
-
-    private List<String> readList(String json) {
-        try { return mapper.readValue(json == null ? "[]" : json,
-                mapper.getTypeFactory().constructCollectionType(List.class, String.class)); }
-        catch (Exception ignored) { return List.of(); }
-    }
-
-    @SuppressWarnings("unchecked")
-    private Object redact(Object value) {
-        if (value instanceof Map<?, ?> map) {
-            Map<String, Object> result = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> entry : map.entrySet()) {
-                String key = String.valueOf(entry.getKey());
-                String lower = key.toLowerCase(java.util.Locale.ROOT);
-                if (lower.contains("secret") || lower.contains("token") || lower.contains("password")
-                        || lower.contains("authorization") || lower.equals("cookie")) {
-                    result.put(key, "[REDACTED]");
-                } else result.put(key, redact(entry.getValue()));
-            }
-            return result;
-        }
-        if (value instanceof List<?> list) return list.stream().map(this::redact).toList();
-        return value;
-    }
-
-    private static String sha256(String value) {
-        try {
-            byte[] bytes = java.security.MessageDigest.getInstance("SHA-256")
-                    .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            StringBuilder out = new StringBuilder();
-            for (byte b : bytes) out.append(String.format("%02x", b));
-            return out.toString();
-        } catch (Exception failure) { return Integer.toHexString(value.hashCode()); }
+        return executionService.compensateNode(request, compensationRef);
     }
 
     @Override
@@ -908,14 +431,31 @@ public class SoarActivityImpl implements SoarActivity {
                         "Late Temporal completion ignored after operator terminal decision", null);
                 return null;
             }
-            run.setStatus(update.status());
+            String projectedStatus = update.status();
+            String projectedErrorCode = update.errorCode();
+            String projectedErrorMessage = update.errorMessage();
+            if ("FAILED".equals(projectedStatus) && "SOAR_ACTIVITY_FAILURE".equals(projectedErrorCode)) {
+                // The workflow caught an Activity failure. A durable RUNNING
+                // attempt means the connector may have committed a side
+                // effect before the worker lost the response; preserve that
+                // uncertainty in the projection instead of exposing a blind
+                // retryable FAILED result.
+                boolean actionInFlight = attempts != null
+                        && attempts.existsRunningByTenantIdAndRunId(update.tenantId(), update.runId());
+                if (actionInFlight) {
+                    projectedStatus = "ACTION_UNKNOWN";
+                    projectedErrorCode = "SOAR_ACTION_RESULT_UNKNOWN";
+                    projectedErrorMessage = "Activity failed while an action attempt remained RUNNING";
+                }
+            }
+            run.setStatus(projectedStatus);
             run.setOutputJson(redactJson(update.outputJson()));
-            run.setErrorCode(update.errorCode());
-            run.setErrorMessage(redactFreeText(update.errorMessage(), 2048));
+            run.setErrorCode(projectedErrorCode);
+            run.setErrorMessage(redactFreeText(projectedErrorMessage, 2048));
             run.setCompletedAt(Instant.now());
             run.setUpdatedAt(Instant.now());
             runs.save(run);
-            appendEvent(update.tenantId(), update.runId(), "RUN_" + update.status(),
+            appendEvent(update.tenantId(), update.runId(), "RUN_" + projectedStatus,
                     "Temporal workflow completed", null);
             return null;
         });
@@ -1030,6 +570,26 @@ public class SoarActivityImpl implements SoarActivity {
         } catch (Exception failure) {
             return "{}";
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Object redact(Object value) {
+        if (value instanceof Map<?, ?> map) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                String key = String.valueOf(entry.getKey());
+                String lower = key.toLowerCase(java.util.Locale.ROOT);
+                if (lower.contains("secret") || lower.contains("token") || lower.contains("password")
+                        || lower.contains("authorization") || lower.equals("cookie")) {
+                    result.put(key, "[REDACTED]");
+                } else {
+                    result.put(key, redact(entry.getValue()));
+                }
+            }
+            return result;
+        }
+        if (value instanceof List<?> list) return list.stream().map(this::redact).toList();
+        return value;
     }
 
     private String redactJson(String value) {

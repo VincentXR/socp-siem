@@ -25,6 +25,13 @@ Until an aggregate has passed contract and failure tests, the current
 single-purpose launchers remain the supported topology. This avoids claiming
 that a process count reduction exists before it is measured.
 
+`python build/verify-runtime-units.py` checks this assignment in normal CI.
+Release automation must additionally run it with `--require-evidence` after
+the topology status is changed to `validated`; the commit-matched manifest
+must contain passing context, transaction, failure-isolation, and capacity
+checks for all six units. A static topology check, a successful Maven build,
+or a single-node Compose run is not a substitute for that manifest.
+
 An aggregate is eligible to replace its launchers only after it proves all of
 the following with executable evidence:
 

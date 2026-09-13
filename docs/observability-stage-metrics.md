@@ -3,8 +3,13 @@
 The event path exposes bounded, stage-oriented metrics rather than one series
 per event:
 
-* `socp.ingestion.outbox.queue_age` and `socp.ingestion.outbox.lifecycle` cover
-  claim, retry, publish, dead-letter and retention cleanup.
+* `socp.ingestion.outbox.pending.count`,
+  `socp.ingestion.outbox.oldest.pending.age.seconds`,
+  `socp.ingestion.outbox.dead.count`, and
+  `socp.ingestion.outbox.oldest.dead.age.seconds` expose bounded backlog age;
+  `socp.ingestion.outbox.lifecycle{outcome=...}` covers claim, retry, publish,
+  dead-letter and retention cleanup.  The same `pending.count`/`oldest.*`
+  naming is used by the alert and detection outboxes.
 * `socp.opensearch.indexer.records{stage=consume|write|fail|drop|dlq|commit}`
   reconcile Kafka input with durable OpenSearch/DLQ outcomes.
 * `socp.detection.event.stage{stage=...}` records Kafka queue, journal,

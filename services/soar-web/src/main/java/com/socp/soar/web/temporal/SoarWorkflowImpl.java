@@ -8,15 +8,11 @@ import com.socp.soar.web.temporal.request.SoarWorkflowRequest;
 import io.temporal.activity.ActivityOptions;
 import io.temporal.common.RetryOptions;
 import io.temporal.failure.ActivityFailure;
-import io.temporal.workflow.Async;
 import io.temporal.workflow.ChildWorkflowOptions;
-import io.temporal.workflow.Promise;
 import io.temporal.workflow.Workflow;
 
 import java.time.Duration;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.LinkedHashMap;
@@ -59,18 +55,20 @@ public class SoarWorkflowImpl implements SoarWorkflow {
     private JsonNode root;
     private boolean actionFailed;
     private SoarWorkflowRequest currentRequest;
-    private ParallelSummary pendingJoin;
+    private SoarWorkflowBranchExecutor.ParallelSummary pendingJoin;
     private long executionDeadlineMillis;
+    private final SoarWorkflowBranchExecutor branchExecutor = new SoarWorkflowBranchExecutor(this);
+    private final SoarWorkflowApprovalSupport approvalSupport = new SoarWorkflowApprovalSupport(this);
+    private final SoarWorkflowJsonSupport jsonSupport = new SoarWorkflowJsonSupport(mapper);
 
-    /** Deterministic summary passed from a PARALLEL/FOREACH fan-out to its join. */
-    private record ParallelSummary(List<Map<String, Object>> branches,
-                                   boolean allSucceeded,
-                                   boolean anySucceeded,
-                                   int executedNodes) { }
-
-    /** Immutable context displayed to an approver and bound to the gate. */
-    private record ApprovalGateContext(String actionRef, String inputHash,
-                                       String targetSnapshotJson) { }
+    /* Package-private workflow state accessors used by deterministic
+       collaborators.  They keep Temporal state owned by this workflow while
+       allowing the interpreter's large policy branches to live elsewhere. */
+    JsonNode rootNode() { return root; }
+    SoarWorkflowRequest currentRequest() { return currentRequest; }
+    Map<String, Object> workflowVariables() { return variables; }
+    void appendNodeResults(List<Map<String, Object>> results) { nodeResults.addAll(results); }
+    void addStepCount(int count) { steps += count; }
 
     @Override public void cancel() { cancelled = true; }
     @Override public void approve() { if (waitingApprovalKey != null) humanDecision = Boolean.TRUE; }
@@ -133,7 +131,14 @@ public class SoarWorkflowImpl implements SoarWorkflow {
                 fail("EXECUTION_LIMIT_EXCEEDED", "graph exceeded the published execution limit");
             }
         } catch (ActivityFailure failure) {
-            throw failure;
+            // An Activity can fail after its remote call but before the
+            // projection transaction commits. Keep the workflow terminal and
+            // always attempt the completion projection; the Activity layer and
+            // recovery worker inspect durable RUNNING attempts to distinguish
+            // ACTION_UNKNOWN from a projection-only failure.
+            terminalStatus = "FAILED";
+            errorCode = "SOAR_ACTIVITY_FAILURE";
+            errorMessage = safe(failure.getMessage());
         } catch (Exception failure) {
             fail("WORKFLOW_DEFINITION_ERROR", safe(failure.getMessage()));
         }
@@ -332,8 +337,9 @@ public class SoarWorkflowImpl implements SoarWorkflow {
                 List<String> branches = edges.stream().map(this::edgeTo).filter(v -> v != null && !v.isBlank()).toList();
                 String join = commonJoin(branches);
                 if (join == null) { fail("PARALLEL_JOIN_REQUIRED", "PARALLEL must converge on a JOIN"); break; }
-                ParallelSummary summary = runParallel(nodeId, branches, join, path,
-                        node.path("limits").path("maxParallelism").asInt(maxParallelism()));
+                SoarWorkflowBranchExecutor.ParallelSummary summary = branchExecutor.runParallel(
+                        nodeId, branches, join, path,
+                        node.path("limits").path("maxParallelism").asInt(branchExecutor.maxParallelism()));
                 pendingJoin = summary;
                 output.put("branches", summary.branches());
                 output.put("allSucceeded", summary.allSucceeded());
@@ -345,7 +351,7 @@ public class SoarWorkflowImpl implements SoarWorkflow {
                 current = join; continue;
             } else if ("JOIN".equals(type)) {
                 String strategy = node.path("strategy").asText("ALL_SUCCESS").toUpperCase(java.util.Locale.ROOT);
-                ParallelSummary summary = pendingJoin;
+                SoarWorkflowBranchExecutor.ParallelSummary summary = pendingJoin;
                 boolean allSucceeded = summary == null || summary.allSucceeded();
                 boolean anySucceeded = summary != null && summary.anySucceeded();
                 output.put("strategy", strategy);
@@ -393,7 +399,8 @@ public class SoarWorkflowImpl implements SoarWorkflow {
                 String body = edgeForPort(nodeId, "body", "each"); String done = edgeForPort(nodeId, "done", "success");
                 int concurrency = node.path("limits").path("concurrency").asInt(1);
                 String itemVariable = node.path("config").path("itemVariable").asText("");
-                ParallelSummary summary = runForeach(nodeId, items, body, done, path, itemVariable, concurrency);
+                SoarWorkflowBranchExecutor.ParallelSummary summary = branchExecutor.runForeach(
+                        nodeId, items, body, done, path, itemVariable, concurrency);
                 output.put("iterations", items.size());
                 output.put("branches", summary.branches());
                 output.put("allSucceeded", summary.allSucceeded());
@@ -439,7 +446,7 @@ public class SoarWorkflowImpl implements SoarWorkflow {
                 waitingApprovalKey = requestRun() + ":node:" + nodeId;
                 humanDecision = null;
                 humanExpired = false;
-                ApprovalGateContext gate = approvalGateContext(nodeId, node);
+                SoarWorkflowApprovalSupport.ApprovalGateContext gate = approvalSupport.approvalGateContext(nodeId, node);
                 // Activity names are part of Temporal command history.  Keep
                 // old executions replayable while new runs opt into the
                 // context-bearing method through an explicit version marker.
@@ -598,124 +605,8 @@ public class SoarWorkflowImpl implements SoarWorkflow {
         }
     }
 
-    /** One immutable fan-out item; all values are captured before child start. */
-    private record BranchSpec(String startNode, String iterationPath, String inputJson,
-                              String stopAtNode, String idSuffix) { }
-
-    private record BranchOutcome(String status, String errorCode, String errorMessage,
-                                 String iterationPath, Map<String, Object> variables,
-                                 List<Map<String, Object>> nodes) { }
-
-    /**
-     * Execute PARALLEL branches as Temporal child workflows in deterministic
-     * batches.  The parent launches at most the configured number of children,
-     * waits for a batch in branch order, then merges variable writes in that
-     * same order.  This gives real overlap for slow connector Activities while
-     * keeping the workflow state single-writer and replay-safe.
-     */
-    private ParallelSummary runParallel(String parallelNodeId, List<String> starts,
-                                        String joinNodeId, String parentPath,
-                                        int configuredParallelism) {
-        Map<String, Object> base = readObject(writeJson(variables));
-        List<BranchSpec> specs = new ArrayList<>();
-        for (int index = 0; index < starts.size(); index++) {
-            String branchPath = branchPath(parentPath, index);
-            specs.add(new BranchSpec(starts.get(index), branchPath, writeJson(base),
-                    joinNodeId, parallelNodeId + "-" + index));
-        }
-        return runBranches(specs, maxParallelism(configuredParallelism));
-    }
-
-    /** Execute FOREACH items in bounded batches and merge results by input order. */
-    private ParallelSummary runForeach(String foreachNodeId, List<?> items,
-                                       String bodyNodeId, String doneNodeId,
-                                       String parentPath, String itemVariable,
-                                       int configuredConcurrency) {
-        Map<String, Object> base = readObject(writeJson(variables));
-        List<BranchSpec> specs = new ArrayList<>();
-        for (int index = 0; index < items.size(); index++) {
-            String iterationPath = branchPath(parentPath, index);
-            Map<String, Object> iteration = readObject(writeJson(base));
-            iteration.put("iteration", Map.of("index", index, "item", items.get(index)));
-            if (itemVariable != null && !itemVariable.isBlank()) {
-                iteration.put(itemVariable.replaceFirst("^vars\\.", ""), items.get(index));
-            }
-            specs.add(new BranchSpec(bodyNodeId, iterationPath, writeJson(iteration),
-                    doneNodeId, foreachNodeId + "-" + index));
-        }
-        return runBranches(specs, maxParallelism(configuredConcurrency));
-    }
-
-    private ParallelSummary runBranches(List<BranchSpec> specs, int concurrency) {
-        List<BranchOutcome> outcomes = new ArrayList<>();
-        int width = Math.max(1, Math.min(concurrency, Math.max(1, specs.size())));
-        for (int offset = 0; offset < specs.size(); offset += width) {
-            int end = Math.min(specs.size(), offset + width);
-            List<Promise<SoarWorkflowResult>> promises = new ArrayList<>();
-            for (int index = offset; index < end; index++) {
-                BranchSpec spec = specs.get(index);
-                SoarWorkflow child = Workflow.newChildWorkflowStub(SoarWorkflow.class,
-                        ChildWorkflowOptions.newBuilder()
-                                .setWorkflowId(branchWorkflowId(spec.idSuffix(), spec.iterationPath()))
-                                .setTaskQueue(SoarWorkflow.TASK_QUEUE)
-                                .build());
-                SoarWorkflowRequest request = SoarWorkflowRequest.branchOf(
-                        currentRequest, root.toString(), spec.inputJson(), spec.startNode(),
-                        spec.iterationPath(), spec.stopAtNode());
-                promises.add(Async.function(child::execute, request));
-            }
-            // Promise.get is intentionally performed in input order.  Temporal
-            // still runs the children concurrently, but variable merge and
-            // public result ordering do not depend on completion timing.
-            for (int index = offset; index < end; index++) {
-                SoarWorkflowResult result;
-                try {
-                    result = promises.get(index - offset).get();
-                } catch (RuntimeException failure) {
-                    // A child workflow can fail before it returns a typed
-                    // result (for example a projection Activity failure).
-                    // Convert that failure into a branch outcome so the
-                    // parent still records a terminal PARTIALLY_SUCCEEDED /
-                    // FAILED projection instead of becoming an unobservable
-                    // RUNNING run.
-                    result = new SoarWorkflowResult(requestRun(), currentRequest.versionId(),
-                            "FAILED", "[]", "CHILD_WORKFLOW_FAILED", safe(failure.getMessage()), "{}");
-                }
-                List<Map<String, Object>> childNodes = readObjects(result.nodesJson());
-                Map<String, Object> childVariables = readObject(result.variablesJson());
-                outcomes.add(new BranchOutcome(result.status(), result.errorCode(),
-                        redactFreeText(result.errorMessage(), 2048), specs.get(index).iterationPath(),
-                        childVariables, childNodes));
-                nodeResults.addAll(childNodes);
-                steps += childNodes.size();
-            }
-        }
-        // Merge all branch writes after every branch has observed the same
-        // input snapshot.  Later branch indexes win on an explicit conflict,
-        // which is deterministic and visible in the branch summary.
-        for (BranchOutcome outcome : outcomes) mergeBranchVariables(outcome.variables());
-        List<Map<String, Object>> summary = new ArrayList<>();
-        boolean all = true;
-        boolean any = false;
-        for (BranchOutcome outcome : outcomes) {
-            String status = outcome.status() == null ? "FAILED" : outcome.status().toUpperCase(java.util.Locale.ROOT);
-            boolean success = "SUCCEEDED".equals(status);
-            boolean partial = "PARTIALLY_SUCCEEDED".equals(status);
-            all &= success;
-            any |= success || partial;
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("iterationPath", outcome.iterationPath());
-            row.put("status", status);
-            row.put("nodeCount", outcome.nodes().size());
-            if (outcome.errorCode() != null) row.put("errorCode", outcome.errorCode());
-            if (outcome.errorMessage() != null) row.put("errorMessage", redactFreeText(outcome.errorMessage(), 2048));
-            summary.add(row);
-        }
-        return new ParallelSummary(summary, all, any,
-                outcomes.stream().mapToInt(value -> value.nodes().size()).sum());
-    }
-
-    private void mergeBranchVariables(Map<String, Object> branchVariables) {
+    /** Merge child writes while protecting parent identity and trigger fields. */
+    void mergeBranchVariables(Map<String, Object> branchVariables) {
         if (branchVariables == null || branchVariables.isEmpty()) return;
         for (Map.Entry<String, Object> entry : branchVariables.entrySet()) {
             // These values describe the parent run and must never be replaced
@@ -726,90 +617,29 @@ public class SoarWorkflowImpl implements SoarWorkflow {
         }
     }
 
-    private String branchWorkflowId(String suffix, String iterationPath) {
-        String path = iterationPath == null || iterationPath.isBlank()
-                ? "root" : iterationPath.replace('/', '-');
-        String id = "soar-branch-" + requestRun() + "-" + suffix + "-" + path;
-        if (id.length() <= 240) return id;
-        // Temporal workflow IDs are bounded.  Truncating alone can make two
-        // long iteration paths collide; keep a deterministic hash suffix so
-        // retries/replays address the exact same child without aliasing a
-        // sibling branch.
-        String hash = Integer.toUnsignedString(id.hashCode(), 16);
-        int keep = Math.max(1, 240 - hash.length() - 1);
-        return id.substring(0, keep) + "-" + hash;
-    }
-
     private String childWorkflowId(String nodeId, String iterationPath) {
-        String path = iterationPath == null || iterationPath.isBlank()
-                ? "root" : iterationPath.replace('/', '-');
-        String id = "soar-child-" + requestRun() + "-" + nodeId + "-" + path;
-        if (id.length() <= 240) return id;
-        String hash = Integer.toUnsignedString(id.hashCode(), 16);
-        int keep = Math.max(1, 240 - hash.length() - 1);
-        return id.substring(0, keep) + "-" + hash;
+        return SoarWorkflowGraphSupport.childWorkflowId(requestRun(), nodeId, iterationPath);
     }
 
     private String subPlaybookPath(String nodeId, String parentPath) {
-        String prefix = parentPath == null || parentPath.isBlank() ? "" : parentPath + "/";
-        String raw = prefix + "sub-" + nodeId;
-        if (raw.length() <= 512) return raw;
-        String hash = Integer.toUnsignedString(raw.hashCode(), 16);
-        int keep = Math.max(1, 512 - hash.length() - 1);
-        return raw.substring(0, keep) + "-" + hash;
+        return SoarWorkflowGraphSupport.subPlaybookPath(nodeId, parentPath);
     }
 
-    private String branchPath(String parentPath, int index) {
-        String suffix = String.valueOf(index);
-        return parentPath == null || parentPath.isBlank() ? suffix : parentPath + "/" + suffix;
-    }
+    List<Map<String, Object>> readObjects(String json) { return jsonSupport.readObjects(json); }
 
-    private int maxParallelism(int configured) {
-        return Math.max(1, Math.min(MAX_PARALLELISM, Math.min(Math.max(1, configured),
-                root == null ? MAX_PARALLELISM : root.path("limits").path("maxParallelism").asInt(MAX_PARALLELISM))));
-    }
-
-    private int maxParallelism() {
-        return root == null ? MAX_PARALLELISM
-                : Math.max(1, Math.min(MAX_PARALLELISM,
-                root.path("limits").path("maxParallelism").asInt(MAX_PARALLELISM)));
-    }
-
-    private static final int MAX_PARALLELISM = 10;
-
-    @SuppressWarnings("unchecked")
-    private List<Map<String, Object>> readObjects(String json) {
-        String source = json == null || json.isBlank() ? "[]" : json;
-        try {
-            JsonNode value = mapper.readTree(source);
-            if (value == null || value.isNull()) return List.of();
-            if (!value.isArray()) throw jsonFailure("array", null);
-            List<Map<String, Object>> result = new ArrayList<>();
-            for (JsonNode item : value) {
-                if (item == null || !item.isObject()) throw jsonFailure("array item", null);
-                result.add(mapper.convertValue(item, Map.class));
-            }
-            return result;
-        } catch (SoarWorkflowJsonException failure) {
-            throw failure;
-        } catch (Exception failure) {
-            throw jsonFailure("array", failure);
-        }
-    }
-
-    private Map<String, Object> actionInput(JsonNode node) {
+    Map<String, Object> actionInput(JsonNode node) {
         // The full event context is useful to a connector, but secrets from
         // an alert or a previous action must never be copied into an outbound
         // request merely because they happen to share the workflow context.
         Map<String, Object> input = new LinkedHashMap<>();
-        variables.forEach((key, value) -> input.put(key, redactForConnector(key, value)));
+        variables.forEach((key, value) -> input.put(key, SoarWorkflowGraphSupport.redactForConnector(key, value)));
         if (node.path("parameters").isObject()) {
             Map<String, Object> parameters = mapper.convertValue(node.path("parameters"), Map.class);
-            parameters.replaceAll((key, value) -> redactForConnector(key, resolveBinding(value)));
+            parameters.replaceAll((key, value) -> SoarWorkflowGraphSupport.redactForConnector(key, resolveBinding(value)));
             input.putAll(parameters);
         }
         if (node.path("config").isObject()) {
-            input.put("config", redactForConnector("config",
+            input.put("config", SoarWorkflowGraphSupport.redactForConnector("config",
                     resolveBinding(mapper.convertValue(node.path("config"), Map.class))));
         }
         if (node.path("connectionRef").isTextual()) input.put("connectionRef", node.path("connectionRef").asText());
@@ -817,66 +647,22 @@ public class SoarWorkflowImpl implements SoarWorkflow {
     }
 
     private Map<String, Object> snapshotVariables() {
-        Map<String, Object> snapshot = new LinkedHashMap<>();
-        int used = 2;
-        for (Map.Entry<String, Object> entry : variables.entrySet()) {
-            Object safe = redactForConnector(entry.getKey(), entry.getValue());
-            String encoded = writeJson(safe);
-            int bytes = encoded.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
-            if (bytes > MAX_SNAPSHOT_ENTRY_BYTES || used + bytes > MAX_SNAPSHOT_BYTES) {
-                // Keep retry/resume deterministic without allowing a large
-                // alert or action output to overflow Temporal payload limits.
-                snapshot.put(entry.getKey(), Map.of("truncated", true,
-                        "originalBytes", bytes));
-                used += 48;
-            } else {
-                snapshot.put(entry.getKey(), safe);
-                used += bytes;
-            }
-        }
-        return snapshot;
+        return SoarWorkflowGraphSupport.snapshotVariables(variables, mapper,
+                MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_ENTRY_BYTES);
     }
 
-    @SuppressWarnings("unchecked")
-    private Object redactForConnector(String key, Object value) {
-        String lower = key == null ? "" : key.toLowerCase(java.util.Locale.ROOT);
-        if (lower.contains("secret") || lower.contains("token") || lower.contains("password")
-                || lower.contains("authorization") || lower.equals("cookie")) {
-            return "[REDACTED]";
-        }
-        if (value instanceof Map<?, ?> map) {
-            Map<String, Object> out = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> item : map.entrySet()) {
-                String childKey = String.valueOf(item.getKey());
-                out.put(childKey, redactForConnector(childKey, item.getValue()));
-            }
-            return out;
-        }
-        if (value instanceof List<?> list) {
-            List<Object> out = new ArrayList<>();
-            for (Object item : list) out.add(redactForConnector("", item));
-            return out;
-        }
-        return value;
+    Object redactForConnector(String key, Object value) {
+        return SoarWorkflowGraphSupport.redactForConnector(key, value);
     }
     /* Tenant/run identity is workflow input, never user-controlled variable
        state. A manual caller may legitimately provide fields named trigger
        or tenantId for investigation data, but those values must not redirect
        an Activity to another tenant or run. */
-    private String requestTenant() { return currentRequest == null ? "" : currentRequest.tenantId(); }
-    private String requestRun() { return currentRequest == null ? "" : currentRequest.runId(); }
+    String requestTenant() { return currentRequest == null ? "" : currentRequest.tenantId(); }
+    String requestRun() { return currentRequest == null ? "" : currentRequest.runId(); }
     private String idempotency(String nodeId, String path) {
-        String series = currentRequest == null || currentRequest.executionSeriesId() == null
-                || currentRequest.executionSeriesId().isBlank() ? requestRun()
-                : currentRequest.executionSeriesId();
-        String raw = series + ":" + nodeId + ":" + (path == null ? "" : path);
-        if (raw.length() <= 240) return raw;
-        // Vendor headers and the node projection are bounded to 255 bytes.
-        // Preserve a readable prefix but add a deterministic hash so long
-        // FOREACH paths cannot collide after truncation.
-        String hash = deterministicHash(raw);
-        int keep = Math.max(1, 240 - hash.length() - 1);
-        return raw.substring(0, keep) + ":" + hash;
+        return SoarWorkflowGraphSupport.idempotency(requestTenant(), requestRun(),
+                currentRequest == null ? null : currentRequest.executionSeriesId(), nodeId, path);
     }
 
     /**
@@ -888,42 +674,21 @@ public class SoarWorkflowImpl implements SoarWorkflow {
      * a vendor already associated with a different destination.
      */
     private String actionIdempotency(String nodeId, String path, JsonNode targetNode) {
-        return sha256Hex(idempotencyParts(nodeId, path, targetNode, null));
+        return SoarWorkflowGraphSupport.actionIdempotency(requestTenant(), requestRun(),
+                currentRequest == null ? null : currentRequest.executionSeriesId(), nodeId, path, targetNode);
     }
 
     /** Compensation is a separate logical operation from the primary action, so
      * it derives its own key (never "{actionKey}:compensate", which could be
      * mistaken for the primary operation by a vendor header). */
     private String compensationIdempotency(String nodeId, String path, String compensationRef, JsonNode targetNode) {
-        return sha256Hex(idempotencyParts(nodeId, path, targetNode,
-                "compensate:" + (compensationRef == null ? "" : compensationRef)));
-    }
-
-    private String idempotencyParts(String nodeId, String path, JsonNode targetNode, String suffix) {
-        String series = currentRequest == null || currentRequest.executionSeriesId() == null
-                || currentRequest.executionSeriesId().isBlank() ? requestRun()
-                : currentRequest.executionSeriesId();
-        String target = targetNode == null || targetNode.isNull() || targetNode.isMissingNode()
-                ? "" : targetNode.toString();
-        StringBuilder parts = new StringBuilder();
-        parts.append(requestTenant()).append('\n').append(series).append('\n')
-                .append(nodeId).append('\n').append(path == null ? "" : path).append('\n').append(target);
-        if (suffix != null) parts.append('\n').append(suffix);
-        return parts.toString();
+        return SoarWorkflowGraphSupport.compensationIdempotency(requestTenant(), requestRun(),
+                currentRequest == null ? null : currentRequest.executionSeriesId(), nodeId, path,
+                compensationRef, targetNode);
     }
 
     private static String deterministicHash(String value) {
-        try {
-            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
-                    .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            StringBuilder out = new StringBuilder(16);
-            for (int index = 0; index < 8; index++) out.append(String.format("%02x", digest[index]));
-            return out.toString();
-        } catch (Exception ignored) {
-            // SHA-256 is required by the JDK; retain a deterministic fallback
-            // for unusual restricted runtimes without widening the key.
-            return Integer.toUnsignedString(value.hashCode(), 16);
-        }
+        return SoarWorkflowGraphSupport.deterministicHash(value);
     }
     private boolean isTerminal() {
         return Set.of("FAILED", "ACTION_UNKNOWN", "CANCELLED", "SUPPRESSED", "TIMED_OUT",
@@ -933,99 +698,6 @@ public class SoarWorkflowImpl implements SoarWorkflow {
         terminalStatus = "FAILED"; errorCode = code; errorMessage = redactFreeText(message, 2048);
     }
     private int maxSteps() { return Math.max(1, Math.min(500, root == null ? 500 : root.path("limits").path("maxNodeExecutions").asInt(500))); }
-
-    /**
-     * Resolve the action controlled by an APPROVAL node and capture only a
-     * bounded, redacted target snapshot.  Definitions commonly put the
-     * approval immediately before the dangerous ACTION, so that form is
-     * supported in addition to an explicit actionRef/target on the gate.
-     * The hash is over the sanitized input and is intentionally full SHA-256;
-     * it lets the API prove that a later decision was made for the same
-     * parameters without persisting those parameters in the approval row.
-     */
-    private ApprovalGateContext approvalGateContext(String nodeId, JsonNode approvalNode) {
-        JsonNode controlled = approvalNode;
-        String actionRef = approvalNode == null ? "" : approvalNode.path("actionRef").asText("").trim();
-        if (actionRef.isBlank() && approvalNode != null) {
-            String next = nextNode(nodeId, "approved");
-            JsonNode candidate = findNode(root.path("nodes"), next);
-            if (candidate != null && "ACTION".equalsIgnoreCase(candidate.path("type").asText(""))) {
-                controlled = candidate;
-                actionRef = candidate.path("actionRef").asText("").trim();
-            }
-        }
-        Map<String, Object> input = controlled == null ? Map.of() : actionInput(controlled);
-        String inputJson = writeJson(redactForConnector("input", input));
-        Map<String, Object> snapshot = new LinkedHashMap<>();
-        if (!actionRef.isBlank()) snapshot.put("actionRef", actionRef);
-        if (controlled != null && controlled.path("connectionRef").isTextual()
-                && !controlled.path("connectionRef").asText("").isBlank()) {
-            snapshot.put("connectionRef", controlled.path("connectionRef").asText(""));
-        }
-        if (controlled != null && controlled.has("target")) {
-            Map<String, Object> target = readObject(controlled.path("target").toString());
-            snapshot.put("target", redactForConnector("target", target));
-        }
-        Map<String, Object> policy = approvalPolicySnapshot(approvalNode);
-        if (!policy.isEmpty()) snapshot.put("approvalPolicy", policy);
-        String snapshotJson = writeJson(snapshot);
-        if (snapshotJson.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > MAX_SNAPSHOT_BYTES) {
-            snapshotJson = writeJson(Map.of("truncated", true,
-                    "sha256", sha256Hex(snapshotJson), "originalBytes",
-                    snapshotJson.getBytes(java.nio.charset.StandardCharsets.UTF_8).length));
-        }
-        return new ApprovalGateContext(actionRef, sha256Hex(inputJson), snapshotJson);
-    }
-
-    /**
-     * Copy only the role/group allow-list from the immutable published gate.
-     * Approval policy is data carried to the Activity projection; it is never
-     * evaluated in the deterministic Workflow and therefore cannot be changed
-     * by a signal or by workflow variables.
-     */
-    private Map<String, Object> approvalPolicySnapshot(JsonNode approvalNode) {
-        if (approvalNode == null) return Map.of();
-        JsonNode policy = approvalNode.path("policy").isObject()
-                ? approvalNode.path("policy") : approvalNode.path("config");
-        if (!policy.isObject()) return Map.of();
-        Map<String, Object> result = new LinkedHashMap<>();
-        copyPolicyList(policy, result, "allowedRoles", "approverRoles");
-        copyPolicyList(policy, result, "allowedGroups", "approverGroups");
-        if (policy.has("approvalsRequired") && policy.path("approvalsRequired").isIntegralNumber()) {
-            result.put("approvalsRequired", Math.max(1, Math.min(20, policy.path("approvalsRequired").asInt())));
-        } else if (policy.has("requiredApprovals") && policy.path("requiredApprovals").isIntegralNumber()) {
-            result.put("approvalsRequired", Math.max(1, Math.min(20, policy.path("requiredApprovals").asInt())));
-        }
-        return result;
-    }
-
-    private void copyPolicyList(JsonNode policy, Map<String, Object> target,
-                                String canonical, String alias) {
-        JsonNode values = policy.path(canonical).isArray() ? policy.path(canonical) : policy.path(alias);
-        if (values == null || !values.isArray()) return;
-        List<String> safe = new ArrayList<>();
-        for (JsonNode value : values) {
-            if (value != null && value.isTextual() && !value.asText().isBlank()
-                    && value.asText().length() <= 128 && safe.size() < 64) {
-                safe.add(value.asText().trim());
-            }
-        }
-        if (!safe.isEmpty()) target.put(canonical, safe);
-    }
-
-    private static String sha256Hex(String value) {
-        try {
-            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
-                    .digest((value == null ? "" : value).getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            StringBuilder out = new StringBuilder(digest.length * 2);
-            for (byte item : digest) out.append(String.format("%02x", item));
-            return out.toString();
-        } catch (Exception failure) {
-            // SHA-256 is mandatory in the JDK; this deterministic fallback is
-            // only for unusual restricted runtimes and is never user data.
-            return Integer.toUnsignedString(String.valueOf(value).hashCode(), 16);
-        }
-    }
 
     /** Approval gate: bounded by node config, default 24h, hard-capped at 7 days. */
     private long approvalTimeoutSeconds(JsonNode node) {
@@ -1076,12 +748,29 @@ public class SoarWorkflowImpl implements SoarWorkflow {
                     new SoarNodeResult(status, writeJson(safeOutput), code, safeMessage));
         }
     }
-    private JsonNode findNode(JsonNode list, String id) { if (!list.isArray()) return null; for (JsonNode node : list) if (id.equals(node.path("id").asText())) return node; return null; }
-    private List<JsonNode> outgoing(JsonNode node) { List<JsonNode> out = new ArrayList<>(); if (node == null) return out; for (JsonNode edge : root.path("edges")) if (node.path("id").asText().equals(edgeText(edge, "from", "source"))) out.add(edge); return out; }
-    private String edgeTo(JsonNode edge) { return edgeText(edge, "to", "target"); }
-    private String edgeForPort(String source, String... ports) { for (String port : ports) { String found = nextNode(source, port); if (found != null) return found; } return nextNode(source, "success"); }
-    private String nextNode(String source, String branch) { String fallback = null; for (JsonNode edge : root.path("edges")) { if (!source.equals(edgeText(edge, "from", "source"))) continue; String port = edgeText(edge, "port", "when"); String to = edgeTo(edge); if (fallback == null && (port.isBlank() || "default".equalsIgnoreCase(port))) fallback = to; if (branch.equalsIgnoreCase(port)) return to; } return fallback; }
-    private String commonJoin(List<String> starts) { if (starts.isEmpty()) return null; Set<String> candidates = null; for (String start : starts) { Set<String> reachable = new HashSet<>(); ArrayDeque<String> queue = new ArrayDeque<>(); queue.add(start); while (!queue.isEmpty()) { String id = queue.removeFirst(); if (!reachable.add(id)) continue; JsonNode node = findNode(root.path("nodes"), id); if (node != null && "JOIN".equalsIgnoreCase(node.path("type").asText())) break; if (node != null) for (JsonNode edge : outgoing(node)) if (edgeTo(edge) != null) queue.add(edgeTo(edge)); } if (candidates == null) candidates = reachable; else candidates.retainAll(reachable); } return candidates == null ? null : candidates.stream().filter(id -> { JsonNode node = findNode(root.path("nodes"), id); return node != null && "JOIN".equalsIgnoreCase(node.path("type").asText()); }).sorted().findFirst().orElse(null); }
+    JsonNode findNode(JsonNode list, String id) {
+        return SoarWorkflowGraphSupport.findNode(list, id);
+    }
+
+    private List<JsonNode> outgoing(JsonNode node) {
+        return SoarWorkflowGraphSupport.outgoing(root, node);
+    }
+
+    private String edgeTo(JsonNode edge) {
+        return SoarWorkflowGraphSupport.edgeTo(edge);
+    }
+
+    private String edgeForPort(String source, String... ports) {
+        return SoarWorkflowGraphSupport.edgeForPort(root, source, ports);
+    }
+
+    String nextNode(String source, String branch) {
+        return SoarWorkflowGraphSupport.nextNode(root, source, branch);
+    }
+
+    private String commonJoin(List<String> starts) {
+        return SoarWorkflowGraphSupport.commonJoin(root, starts);
+    }
     private Object resolveExpression(String expression) { String text = expression == null ? "" : expression.trim(); if ((text.startsWith("\"") && text.endsWith("\"")) || (text.startsWith("'") && text.endsWith("'"))) return text.substring(1, text.length() - 1); Object value = resolvePath(text); return value == null ? text : value; }
     private boolean evaluate(String expression) { return SoarExpressionEngine.evaluate(expression, variables); }
     private Object resolvePath(String path) {
@@ -1153,49 +842,16 @@ public class SoarWorkflowImpl implements SoarWorkflow {
         }
         return value;
     }
-    private String edgeText(JsonNode node, String first, String second) { String value = node.path(first).asText(""); return value.isBlank() ? node.path(second).asText("") : value; }
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> readObject(String json) {
-        String source = json == null || json.isBlank() ? "{}" : json;
-        try {
-            JsonNode node = mapper.readTree(source);
-            if (node == null || node.isNull()) return new LinkedHashMap<>();
-            if (!node.isObject()) throw jsonFailure("object", null);
-            return mapper.convertValue(node, Map.class);
-        } catch (SoarWorkflowJsonException failure) {
-            throw failure;
-        } catch (Exception failure) {
-            throw jsonFailure("object", failure);
-        }
+    private String edgeText(JsonNode node, String first, String second) {
+        return SoarWorkflowGraphSupport.edgeText(node, first, second);
     }
+    Map<String, Object> readObject(String json) { return jsonSupport.readObject(json); }
+    String writeJson(Object value) { return jsonSupport.writeJson(value); }
 
-    private String writeJson(Object value) {
-        try {
-            return mapper.writeValueAsString(value);
-        } catch (Exception failure) {
-            throw jsonFailure("serialization", failure);
-        }
-    }
-
-    /**
-     * JSON is part of the durable workflow contract.  Returning an empty
-     * object on malformed data hides corruption and can cause a side effect to
-     * run with the wrong inputs, so malformed payloads fail the workflow and
-     * are surfaced as WORKFLOW_DEFINITION_ERROR by {@link #execute}.
-     */
-    private SoarWorkflowJsonException jsonFailure(String kind, Exception cause) {
-        return new SoarWorkflowJsonException("invalid workflow JSON (" + kind + ")", cause);
-    }
-
-    private static final class SoarWorkflowJsonException extends IllegalStateException {
-        private SoarWorkflowJsonException(String message, Throwable cause) {
-            super(message, cause);
-        }
-    }
-    private String safe(String value) {
+    String safe(String value) {
         return redactFreeText(value == null ? "workflow failure" : value, 1024);
     }
-    private String redactFreeText(String value, int max) {
+    String redactFreeText(String value, int max) {
         if (value == null) return "";
         String safe = value.replaceAll("(?i)(bearer\\s+)[^\\s,;]+", "$1[REDACTED]")
                 .replaceAll("(?i)((?:secret|token|password|authorization|api[_-]?key)\\s*[:=]\\s*)[^\\s,;]+",
