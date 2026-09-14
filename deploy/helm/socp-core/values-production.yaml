@@ -1,0 +1,2 @@
+# Production keeps the chart defaults. Override dependency endpoints and
+# capacity only with reviewed environment-specific values.

@@ -1,10 +1,11 @@
+{{- if .Values.monitoring.prometheusRule.enabled }}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
   name: socp-slo-alerts
-  namespace: socp-system
+  namespace: {{ .Release.Namespace }}
   labels:
-    app.kubernetes.io/part-of: socp-siem
+    {{- include "socp-core.commonLabels" . | nindent 4 }}
 spec:
   groups:
     - name: socp-event-path
@@ -65,3 +66,4 @@ spec:
             severity: critical
           annotations:
             summary: SOCP OpenSearch indexer is sending events to DLQ
+{{- end }}

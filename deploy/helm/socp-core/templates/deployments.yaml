@@ -1,0 +1,128 @@
+{{- $root := . }}
+{{- range $name, $workload := .Values.workloads }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $root.Release.Namespace }}
+  labels:
+    {{- include "socp-core.commonLabels" $root | nindent 4 }}
+    app.kubernetes.io/name: {{ $name }}
+    socp.io/runtime-domain: {{ $workload.runtimeDomain }}
+spec:
+  {{- if not $root.Values.autoscaling.enabled }}
+  replicas: {{ $workload.replicas }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "socp-core.selectorLabels" (dict "name" $name) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "socp-core.selectorLabels" (dict "name" $name) | nindent 8 }}
+        socp.io/runtime-domain: {{ $workload.runtimeDomain }}
+      annotations:
+        checksum/runtime-config: {{ include (print $root.Template.BasePath "/configmap.yaml") $root | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "socp-core.serviceAccountName" $root }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ $workload.terminationGracePeriodSeconds }}
+      {{- with $root.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: topology.kubernetes.io/zone
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: {{ $name }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ $name }}
+          image: {{ include "socp-core.image" (dict "root" $root "workload" $workload) }}
+          imagePullPolicy: {{ (index $root.Values.images $workload.image).pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: socp-runtime
+            - secretRef:
+                name: {{ $root.Values.runtime.existingSecret }}
+          {{- if or $workload.env $workload.secretEnv $workload.fieldEnv }}
+          env:
+            {{- range $key := keys $workload.env | sortAlpha }}
+            - name: {{ $key }}
+              value: {{ index $workload.env $key | quote }}
+            {{- end }}
+            {{- range $key := keys $workload.secretEnv | sortAlpha }}
+            - name: {{ $key }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $root.Values.runtime.existingSecret }}
+                  key: {{ index $workload.secretEnv $key }}
+            {{- end }}
+            {{- range $key := keys $workload.fieldEnv | sortAlpha }}
+            - name: {{ $key }}
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: {{ index $workload.fieldEnv $key }}
+            {{- end }}
+          {{- end }}
+          readinessProbe:
+            httpGet:
+              path: {{ $workload.health.basePath }}/readiness
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: {{ $workload.health.basePath }}/liveness
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: {{ $workload.health.basePath }}
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          resources:
+            {{- toYaml $workload.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ $workload.tmpSizeLimit }}
+{{- end }}

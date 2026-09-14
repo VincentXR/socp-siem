@@ -1,0 +1,525 @@
+name: AWS release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/aws-release.yml"
+      - "pom.xml"
+      - "platform/**"
+      - "services/api-gateway/**"
+      - "services/search-config/**"
+      - "services/detect-web/**"
+      - "services/alert-web/**"
+      - "deploy/docker/**"
+      - "deploy/helm/**"
+      - "deploy/k8s/**"
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: Protected GitHub Environment to deploy
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      release_sha:
+        description: Full source commit SHA; required for production promotion
+        required: false
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: aws-release-${{ github.event_name == 'workflow_dispatch' && inputs.target_environment || 'staging' }}
+  cancel-in-progress: false
+
+env:
+  SOCP_MAVEN_SETTINGS: none
+  RELEASE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha || github.sha }}
+  TARGET_ENVIRONMENT: ${{ github.event_name == 'workflow_dispatch' && inputs.target_environment || 'staging' }}
+
+jobs:
+  package:
+    if: >-
+      (github.event_name == 'push' && vars.AWS_DELIVERY_ENABLED == 'true') ||
+      (github.event_name == 'workflow_dispatch' && inputs.target_environment == 'staging')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Validate source revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "release_sha must be a full lowercase commit SHA" >&2
+            exit 1
+          }
+
+      - name: Check out release source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+          persist-credentials: false
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      - name: Build core service JARs once
+        shell: bash
+        run: >-
+          bash build/mvnw.sh
+          -pl services/api-gateway,services/search-config,services/detect-web,services/alert-web
+          -am -DskipTests package
+
+      - name: Collect immutable build inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .cache/release-jars
+          for service in api-gateway search-config detect-web alert-web; do
+            jar="services/$service/target/$service-1.0.0-SNAPSHOT.jar"
+            test -f "$jar"
+            cp "$jar" ".cache/release-jars/$service.jar"
+          done
+
+      - name: Upload release JARs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-jars-${{ env.RELEASE_SHA }}
+          path: .cache/release-jars/
+          if-no-files-found: error
+          retention-days: 7
+
+  build-publish:
+    needs: package
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [api-gateway, search-config, detect-web, alert-web]
+    env:
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_RELEASE_ROLE_ARN: ${{ vars.AWS_RELEASE_ROLE_ARN }}
+      ECR_REPOSITORY_PREFIX: ${{ vars.ECR_REPOSITORY_PREFIX }}
+      RUNTIME_IMAGE: ${{ vars.SOCP_RUNTIME_IMAGE }}
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+          persist-credentials: false
+
+      - name: Download release JARs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-jars-${{ env.RELEASE_SHA }}
+          path: .cache/release-jars
+
+      - name: Validate protected-environment configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
+          [[ "$AWS_REGION" =~ ^[a-z]{2}-[a-z]+-[0-9]+$ ]]
+          [[ "$AWS_RELEASE_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/.+$ ]]
+          [[ "$ECR_REPOSITORY_PREFIX" =~ ^[a-z0-9][a-z0-9._/-]*$ ]]
+          [[ "$RUNTIME_IMAGE" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]]
+
+      - name: Configure temporary AWS credentials
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: ${{ env.AWS_RELEASE_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ env.AWS_ACCOUNT_ID }}
+          role-session-name: socp-${{ github.run_id }}-${{ matrix.service }}
+          unset-current-credentials: true
+
+      - name: Log in to Amazon ECR
+        shell: bash
+        run: >-
+          aws ecr get-login-password --region "$AWS_REGION" |
+          docker login --username AWS --password-stdin
+          "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+
+      - name: Resolve immutable image
+        id: image
+        shell: bash
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          set -euo pipefail
+          repository="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY_PREFIX-$SERVICE"
+          image_tag="$repository:sha-$RELEASE_SHA"
+          if digest="$(aws ecr describe-images \
+            --repository-name "$ECR_REPOSITORY_PREFIX-$SERVICE" \
+            --image-ids "imageTag=sha-$RELEASE_SHA" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text 2>.cache/ecr-describe-error)"; then
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            image_ref="$repository@$digest"
+            docker pull "$image_ref"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          else
+            if ! grep --quiet 'ImageNotFoundException' .cache/ecr-describe-error; then
+              cat .cache/ecr-describe-error >&2
+              exit 1
+            fi
+            image_ref="$image_tag"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "image_ref=$image_ref" >> "$GITHUB_OUTPUT"
+          echo "image_tag=$image_tag" >> "$GITHUB_OUTPUT"
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+
+      - name: Build local image when absent
+        if: steps.image.outputs.exists != 'true'
+        shell: bash
+        env:
+          SERVICE: ${{ matrix.service }}
+          IMAGE_TAG: ${{ steps.image.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg "RUNTIME_IMAGE=$RUNTIME_IMAGE" \
+            --build-arg "APP_JAR=.cache/release-jars/$SERVICE.jar" \
+            --build-arg "BUILD_VERSION=$RELEASE_SHA" \
+            --build-arg "VCS_REF=$RELEASE_SHA" \
+            --file deploy/docker/Dockerfile.jvm \
+            --tag "$IMAGE_TAG" .
+
+      - name: Verify image source revision
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          revision="$(docker inspect \
+            --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+            "$IMAGE_REF")"
+          test "$revision" = "$RELEASE_SHA"
+
+      - name: Generate CycloneDX SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.image.outputs.image_ref }}
+          format: cyclonedx
+          output: .cache/${{ matrix.service }}.sbom.cdx.json
+          scanners: vuln
+
+      - name: Reject critical vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.image.outputs.image_ref }}
+          format: table
+          scanners: vuln
+          severity: CRITICAL
+          ignore-unfixed: false
+          exit-code: "1"
+
+      - name: Push image and record registry digest
+        shell: bash
+        env:
+          SERVICE: ${{ matrix.service }}
+          IMAGE_TAG: ${{ steps.image.outputs.image_tag }}
+          REPOSITORY: ${{ steps.image.outputs.repository }}
+          EXISTING_DIGEST: ${{ steps.image.outputs.digest }}
+          IMAGE_EXISTS: ${{ steps.image.outputs.exists }}
+        run: |
+          set -euo pipefail
+          if [[ "$IMAGE_EXISTS" == "true" ]]; then
+            digest="$EXISTING_DIGEST"
+          else
+            docker push "$IMAGE_TAG"
+            digest="$(aws ecr describe-images \
+              --repository-name "$ECR_REPOSITORY_PREFIX-$SERVICE" \
+              --image-ids "imageTag=sha-$RELEASE_SHA" \
+              --query 'imageDetails[0].imageDigest' \
+              --output text)"
+          fi
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          jq -n \
+            --arg service "$SERVICE" \
+            --arg repository "$REPOSITORY" \
+            --arg digest "$digest" \
+            --arg sourceSha "$RELEASE_SHA" \
+            '{service: $service, repository: $repository, digest: $digest, sourceSha: $sourceSha}' \
+            > ".cache/$SERVICE.release.json"
+
+      - name: Upload image metadata and SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: image-${{ matrix.service }}-${{ env.RELEASE_SHA }}
+          path: |
+            .cache/${{ matrix.service }}.release.json
+            .cache/${{ matrix.service }}.sbom.cdx.json
+          if-no-files-found: error
+          retention-days: 30
+
+  resolve-images:
+    if: github.event_name == 'workflow_dispatch' && inputs.target_environment == 'production'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_RELEASE_ROLE_ARN: ${{ vars.AWS_RELEASE_ROLE_ARN }}
+      ECR_REPOSITORY_PREFIX: ${{ vars.ECR_REPOSITORY_PREFIX }}
+    steps:
+      - name: Validate promotion request
+        shell: bash
+        env:
+          REQUESTED_RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$REQUESTED_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "production promotion requires a full lowercase release_sha" >&2
+            exit 1
+          }
+          [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
+          [[ "$AWS_REGION" =~ ^[a-z]{2}-[a-z]+-[0-9]+$ ]]
+          [[ "$AWS_RELEASE_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/.+$ ]]
+          [[ "$ECR_REPOSITORY_PREFIX" =~ ^[a-z0-9][a-z0-9._/-]*$ ]]
+
+      - name: Configure temporary AWS credentials
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: ${{ env.AWS_RELEASE_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ env.AWS_ACCOUNT_ID }}
+          role-session-name: socp-${{ github.run_id }}-promote
+          unset-current-credentials: true
+
+      - name: Resolve existing immutable images
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .cache
+          registry="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+          for service in api-gateway search-config detect-web alert-web; do
+            repository_name="$ECR_REPOSITORY_PREFIX-$service"
+            digest="$(aws ecr describe-images \
+              --repository-name "$repository_name" \
+              --image-ids "imageTag=sha-$RELEASE_SHA" \
+              --query 'imageDetails[0].imageDigest' \
+              --output text)"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            jq -n \
+              --arg service "$service" \
+              --arg repository "$registry/$repository_name" \
+              --arg digest "$digest" \
+              --arg sourceSha "$RELEASE_SHA" \
+              '{service: $service, repository: $repository, digest: $digest, sourceSha: $sourceSha}' \
+              > ".cache/$service.release.json"
+          done
+
+      - name: Upload resolved image metadata
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: image-production-${{ env.RELEASE_SHA }}
+          path: .cache/*.release.json
+          if-no-files-found: error
+          retention-days: 30
+
+  collect-release:
+    needs: [build-publish, resolve-images]
+    if: >-
+      always() && !cancelled() &&
+      (needs.build-publish.result == 'success' || needs.resolve-images.result == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Download image metadata
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: image-*-${{ env.RELEASE_SHA }}
+          path: .cache/release-input
+          merge-multiple: true
+
+      - name: Assemble release manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .cache/release
+          jq -s 'sort_by(.service)' .cache/release-input/*.release.json \
+            > .cache/release/release-manifest.json
+          jq -e --arg sha "$RELEASE_SHA" '
+            length == 4 and
+            ([.[].service] | sort) ==
+              ["alert-web", "api-gateway", "detect-web", "search-config"] and
+            all(.[];
+              .sourceSha == $sha and
+              (.digest | test("^sha256:[0-9a-f]{64}$")) and
+              (.repository | test("^[^@[:space:]]+$")))
+          ' .cache/release/release-manifest.json > /dev/null
+          cp .cache/release-input/*.sbom.cdx.json .cache/release/ 2>/dev/null || true
+
+      - name: Upload release manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: socp-release-${{ env.RELEASE_SHA }}
+          path: .cache/release/
+          if-no-files-found: error
+          retention-days: 30
+
+  deploy:
+    needs: collect-release
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.target_environment || 'staging' }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_RELEASE_ROLE_ARN: ${{ vars.AWS_RELEASE_ROLE_ARN }}
+      EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME }}
+      SOCP_NAMESPACE: ${{ vars.SOCP_NAMESPACE || 'socp-system' }}
+      RUNTIME_SECRET_NAME: ${{ vars.SOCP_RUNTIME_SECRET_NAME || 'socp-runtime-secrets' }}
+      HELM_VALUES_B64: ${{ secrets.SOCP_HELM_VALUES_B64 }}
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require production revision on main
+        if: env.TARGET_ENVIRONMENT == 'production'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$RELEASE_SHA" origin/main
+
+      - name: Download release manifest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: socp-release-${{ env.RELEASE_SHA }}
+          path: .cache/release
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
+        with:
+          version: v1.36.1
+
+      - name: Validate protected-environment configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
+          [[ "$AWS_REGION" =~ ^[a-z]{2}-[a-z]+-[0-9]+$ ]]
+          [[ "$AWS_RELEASE_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/.+$ ]]
+          [[ "$EKS_CLUSTER_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]
+          [[ "$SOCP_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]
+          test "$SOCP_NAMESPACE" = "socp-system"
+          test -f "deploy/helm/socp-core/values-$TARGET_ENVIRONMENT.yaml"
+
+      - name: Configure temporary AWS credentials
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: ${{ env.AWS_RELEASE_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ env.AWS_ACCOUNT_ID }}
+          role-session-name: socp-${{ github.run_id }}-deploy
+          unset-current-credentials: true
+
+      - name: Build Helm arguments
+        id: helm-values
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest=.cache/release/release-manifest.json
+          test -f "$manifest"
+          if [[ -n "$HELM_VALUES_B64" ]]; then
+            printf '%s' "$HELM_VALUES_B64" | base64 --decode > .cache/release/environment-values.yaml
+            echo "environment_values=.cache/release/environment-values.yaml" >> "$GITHUB_OUTPUT"
+          fi
+          : > .cache/release/image-values.args
+          while IFS=$'\t' read -r service repository digest; do
+            case "$service" in
+              api-gateway) image_key=apiGateway ;;
+              search-config) image_key=searchConfig ;;
+              detect-web) image_key=detectWeb ;;
+              alert-web) image_key=alertWeb ;;
+              *) echo "unexpected service in release manifest: $service" >&2; exit 1 ;;
+            esac
+            printf '%s\n' \
+              "--set-string" "images.$image_key.repository=$repository" \
+              "--set-string" "images.$image_key.digest=$digest" \
+              >> .cache/release/image-values.args
+          done < <(jq -r '.[] | [.service, .repository, .digest] | @tsv' "$manifest")
+
+      - name: Connect to EKS and verify prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+          kubectl get namespace "$SOCP_NAMESPACE"
+          kubectl -n "$SOCP_NAMESPACE" get secret "$RUNTIME_SECRET_NAME"
+
+      - name: Render and deploy the release
+        shell: bash
+        env:
+          ENVIRONMENT_VALUES: ${{ steps.helm-values.outputs.environment_values }}
+        run: |
+          set -euo pipefail
+          mapfile -t image_args < .cache/release/image-values.args
+          value_args=(
+            --values "deploy/helm/socp-core/values-$TARGET_ENVIRONMENT.yaml"
+            --set-string "runtime.existingSecret=$RUNTIME_SECRET_NAME"
+          )
+          if [[ -n "$ENVIRONMENT_VALUES" ]]; then
+            value_args+=(--values "$ENVIRONMENT_VALUES")
+          fi
+          helm lint deploy/helm/socp-core "${value_args[@]}" "${image_args[@]}"
+          helm template socp-core deploy/helm/socp-core \
+            --namespace "$SOCP_NAMESPACE" \
+            "${value_args[@]}" "${image_args[@]}" \
+            > .cache/release/rendered-manifest.yaml
+          helm upgrade --install socp-core deploy/helm/socp-core \
+            --namespace "$SOCP_NAMESPACE" \
+            --atomic --wait --timeout 10m --history-max 10 \
+            "${value_args[@]}" "${image_args[@]}"
+
+      - name: Verify workload rollout
+        shell: bash
+        run: |
+          set -euo pipefail
+          for workload in \
+            api-gateway search-config-api search-config-worker \
+            detect-web-api detect-web-worker alert-web; do
+            kubectl -n "$SOCP_NAMESPACE" rollout status "deployment/$workload" --timeout=5m
+          done
+          helm -n "$SOCP_NAMESPACE" status socp-core
+
+      - name: Upload rendered release evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: socp-deployment-${{ env.TARGET_ENVIRONMENT }}-${{ env.RELEASE_SHA }}
+          path: |
+            .cache/release/release-manifest.json
+            .cache/release/rendered-manifest.yaml
+          if-no-files-found: warn
+          retention-days: 30

@@ -1,0 +1,20 @@
+{{- $root := . }}
+{{- range $name, $workload := .Values.workloads }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ $root.Release.Namespace }}
+  labels:
+    {{- include "socp-core.commonLabels" $root | nindent 4 }}
+    app.kubernetes.io/name: {{ $name }}
+spec:
+  selector:
+    {{- include "socp-core.selectorLabels" (dict "name" $name) | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  type: ClusterIP
+{{- end }}

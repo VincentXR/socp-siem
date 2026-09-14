@@ -2,6 +2,14 @@ output "cluster_name" {
   value = aws_eks_cluster.this.name
 }
 
+output "aws_account_id" {
+  value = data.aws_caller_identity.current.account_id
+}
+
+output "aws_region" {
+  value = var.aws_region
+}
+
 output "cluster_endpoint" {
   value = aws_eks_cluster.this.endpoint
 }
@@ -11,6 +19,10 @@ output "ecr_repository_urls" {
     for service, repository in aws_ecr_repository.service :
     service => repository.repository_url
   }
+}
+
+output "ecr_repository_prefix" {
+  value = local.name_prefix
 }
 
 output "terraform_plan_role_arn" {

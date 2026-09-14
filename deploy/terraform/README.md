@@ -13,10 +13,11 @@ them.
 
 `environments/dev` owns the disposable VPC, one-NAT network, EKS cluster,
 managed node group, four ECR repositories, GitHub OIDC roles, EKS access
-entries, control-plane logging, and monthly budget. It intentionally does not
-provision Kafka, PostgreSQL, OpenSearch, ClickHouse, Redis, or an identity
-provider. The executable demo must select one separately documented dependency
-profile instead of silently treating single-node middleware as production.
+entries, control-plane logging, Metrics Server for HPA, and monthly budget. It
+intentionally does not provision Kafka, PostgreSQL, OpenSearch, ClickHouse,
+Redis, or an identity provider. The executable demo must select one separately
+documented dependency profile instead of silently treating single-node
+middleware as production.
 
 ## 1. Bootstrap remote state
 
@@ -60,7 +61,7 @@ four SOCP repositories and deploy only through its namespace-scoped EKS access
 entry.
 
 Before handing deployment to the release role, the infrastructure apply stage
-must create `socp-system` from `../k8s/base/namespace.yaml`. A namespace-scoped
+must create `socp-system` from `../k8s/namespace.yaml`. A namespace-scoped
 EKS access policy intentionally cannot create that cluster-scoped resource.
 
 The monthly budget filters costs by the `Project` tag. Activate that
@@ -74,6 +75,32 @@ The dev EKS API is public so GitHub-hosted runners can reach it. The default
 CIDR is therefore broad, while authentication remains IAM-backed. This is a
 documented demo trade-off, not a production recommendation. A production
 environment must use restricted CIDRs or a runner with private VPC access.
+
+After apply, map the Terraform and bootstrap outputs to protected GitHub
+Environment variables. `.github/workflows/aws-infrastructure.yml` uses the
+plan role for same-repository pull requests and the apply role only inside the
+`infrastructure` environment. `.github/workflows/aws-release.yml` uses the
+release role in the `staging` and `production` environments:
+
+| Terraform output | GitHub variable |
+| --- | --- |
+| bootstrap `state_bucket_name` | `TF_STATE_BUCKET` |
+| bootstrap `state_kms_key_arn` | `TF_STATE_KMS_KEY_ARN` |
+| `aws_account_id` | `AWS_ACCOUNT_ID` |
+| `aws_region` | `AWS_REGION` |
+| `terraform_plan_role_arn` | `AWS_TERRAFORM_PLAN_ROLE_ARN` |
+| `terraform_apply_role_arn` | `AWS_TERRAFORM_APPLY_ROLE_ARN` |
+| `release_role_arn` | `AWS_RELEASE_ROLE_ARN` |
+| `cluster_name` | `EKS_CLUSTER_NAME` |
+| `ecr_repository_prefix` | `ECR_REPOSITORY_PREFIX` |
+| `release_namespace` | `SOCP_NAMESPACE` |
+
+Set repository variable `AWS_INFRASTRUCTURE_ENABLED=true` only after the plan
+environment is configured; otherwise pull requests run local Terraform
+validation without contacting AWS. Set `AWS_DELIVERY_ENABLED=true` only after
+both release environments are configured. The staging environment also sets
+`SOCP_RUNTIME_IMAGE` to a verified Java 21 JRE image reference containing a
+full sha256 digest.
 
 ## 3. Teardown
 

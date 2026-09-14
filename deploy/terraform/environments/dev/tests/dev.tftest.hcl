@@ -40,7 +40,7 @@ variables {
   state_kms_key_arn = "arn:aws:kms:ap-southeast-1:123456789012:key/test-state-key"
 }
 
-run "least_privilege_demo_shape" {
+run "least_privilege_reference_shape" {
   command = plan
 
   assert {
@@ -71,6 +71,11 @@ run "least_privilege_demo_shape" {
   assert {
     condition     = length(aws_eks_cluster.this.enabled_cluster_log_types) == 5
     error_message = "All five EKS control-plane log types must remain enabled."
+  }
+
+  assert {
+    condition     = aws_eks_addon.metrics_server.addon_name == "metrics-server"
+    error_message = "The EKS environment must provide resource metrics for HPA."
   }
 }
 

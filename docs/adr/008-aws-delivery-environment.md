@@ -28,11 +28,20 @@ the deprecated `aws-auth` ConfigMap. Application pods receive no AWS IAM role
 by default. Add-ons receive Pod Identity only when they actually call AWS
 APIs.
 
-The infrastructure stage creates the cluster-scoped `socp-system` namespace
-before the namespace-scoped release role is used. Project-filtered budget
-evidence also requires the account's `Project` cost allocation tag to be
-activated. Enhanced ECR scanning remains disabled by default because its
-configuration is account-and-region scoped and must have a single owner.
+Helm is the only application release definition. The chart maps four
+digest-addressed images to six workloads, while raw Kubernetes assets retain
+only the cluster-scoped namespace prerequisite. Staging builds, scans, and
+publishes each image once; production promotion resolves the existing ECR
+digests for an explicit source commit instead of rebuilding them.
+
+The infrastructure workflow rejects cloud access from fork pull requests.
+Protected mutation creates and applies one saved plan; destroy additionally
+requires an explicit confirmation token. After an apply, the infrastructure
+stage creates the cluster-scoped `socp-system` namespace before the
+namespace-scoped release role is used. Project-filtered budget evidence also
+requires the account's `Project` cost allocation tag to be activated. Enhanced
+ECR scanning remains disabled by default because its configuration is
+account-and-region scoped and must have a single owner.
 
 ## Explicit demo trade-offs
 

@@ -1,0 +1,27 @@
+workloads:
+  api-gateway:
+    autoscaling:
+      minReplicas: 2
+      maxReplicas: 4
+  search-config-api:
+    autoscaling:
+      minReplicas: 2
+      maxReplicas: 4
+  search-config-worker:
+    autoscaling:
+      minReplicas: 2
+      maxReplicas: 4
+  detect-web-api:
+    autoscaling:
+      minReplicas: 2
+      maxReplicas: 4
+  detect-web-worker:
+    autoscaling:
+      minReplicas: 2
+      maxReplicas: 6
+    podDisruptionBudget:
+      minAvailable: 1
+  alert-web:
+    autoscaling:
+      minReplicas: 2
+      maxReplicas: 4

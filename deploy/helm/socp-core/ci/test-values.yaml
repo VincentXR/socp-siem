@@ -1,0 +1,19 @@
+# Render-only values used by repository verification. These images are not
+# published and must never be used for a cluster rollout.
+images:
+  apiGateway:
+    repository: example.invalid/socp-api-gateway
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  searchConfig:
+    repository: example.invalid/socp-search-config
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  detectWeb:
+    repository: example.invalid/socp-detect-web
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  alertWeb:
+    repository: example.invalid/socp-alert-web
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+monitoring:
+  prometheusRule:
+    enabled: true

@@ -49,6 +49,7 @@ directory instead of source control.
 - [Operational demo checklist](demo-checklist.md)
 - [Production delivery baseline](production-readiness.md)
 - [Kubernetes release contract](operations/kubernetes.md)
+- [Helm release runbook](../deploy/helm/README.md)
 - [AWS infrastructure runbook](../deploy/terraform/README.md)
 
 ## Architecture decision records

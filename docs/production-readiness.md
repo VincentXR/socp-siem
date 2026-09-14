@@ -10,9 +10,10 @@ dependencies and records the evidence listed below.
 - Build JARs once and package them with `deploy/docker/Dockerfile.jvm`.
 - Pass a verified Java 21 runtime image digest; mutable tags and `latest` are
   rejected by `build/verify-production.py`.
-- Generate an SPDX or CycloneDX SBOM, scan the image and dependencies
-  (`grype` or the registry scanner), sign the image (`cosign sign`), and verify
-  the signature before a Kubernetes rollout.
+- Generate a CycloneDX SBOM and scan the image and dependencies before push.
+  The AWS release workflow rejects critical vulnerabilities. Image signing
+  and provenance attestation remain an additional policy gate and must not be
+  claimed unless a release records that evidence.
 - Inject secrets through the platform (`socp-runtime-secrets` in the
   Kubernetes baseline). Do not add a Secret manifest containing real values to
   Git.
@@ -24,11 +25,12 @@ Compose production overlay maps those values from
 `SOCP_PG_MIGRATION_USER`/`SOCP_PG_MIGRATION_PASSWORD` account. The remaining
 reference-deployment secret keys are `SOCP_SECURITY_SERVICE_SECRET`,
 `SOCP_SECURITY_METRICS_TOKEN`, `SOCP_SECURITY_ISSUER_URI`,
-`SOCP_SECURITY_JWK_SET_URI`, `SOCP_LOGIN_SECRET`, `SOCP_OPENSEARCH_USERNAME`,
-`SOCP_OPENSEARCH_PASSWORD`, `SOCP_CK_USER`, `SOCP_CK_PASSWORD`,
-`SOCP_COLLECTOR_CREDENTIALS`, `SOCP_INGEST_TOKEN`, and `SOCP_VECTOR_TOKEN`
-where the corresponding service uses them. Secret keys are intentionally not
-populated in Git.
+`SOCP_SECURITY_JWK_SET_URI`, `SOCP_SECURITY_AUDIENCE`, `SOCP_LOGIN_SECRET`,
+`SOCP_OPENSEARCH_USERNAME`, `SOCP_OPENSEARCH_PASSWORD`, `SOCP_CK_USER`,
+`SOCP_CK_PASSWORD`, `SOCP_COLLECTOR_CREDENTIALS`, `SOCP_INGEST_TOKEN`, and
+`SOCP_VECTOR_TOKEN` where the corresponding service uses them. Secret keys
+use these exact environment-variable names because the chart imports the
+external Secret with `envFrom`; they are intentionally not populated in Git.
 
 For local Compose, `SOCP_PG_BOOTSTRAP_PASSWORD` is the administrator password
 used only by PostgreSQL initialization. If it is omitted, the legacy
@@ -46,13 +48,12 @@ missing, expired, or replayed.
 
 ## Kubernetes rollout
 
-`deploy/k8s/base` is a minimal reference for the high-throughput event path:
-two Gateway replicas, two Search/Ingest replicas, three Detection replicas,
-and two Alert replicas. It
-sets rolling-update behavior, readiness/liveness/startup probes, resource
-requests and limits, a non-root/read-only container policy, and disruption
-budgets. Replace each `REPLACE_WITH_RELEASE_DIGEST` token during release
-rendering, then run `kubectl apply --server-side` and wait for rollout status.
+`deploy/helm/socp-core` is the single application release definition for the
+core event path. Four digest-addressed images render six independently
+scalable workloads. Environment values select fixed dev replicas or HPA/PDB
+capacity policy without duplicating Deployment manifests. The infrastructure
+role creates the restricted `socp-system` namespace from
+`deploy/k8s/namespace.yaml`; Helm owns the namespaced application resources.
 
 Search, Detection, and Alert readiness includes TCP reachability for required
 Kafka/OpenSearch/ClickHouse/downstream-service endpoints through
@@ -70,16 +71,28 @@ topology, replication, TLS, upgrade, and failure-domain policy.
 lifecycle separate from disposable application infrastructure.
 `deploy/terraform/environments/dev` creates a two-AZ/one-NAT VPC, EKS managed
 node group, four immutable ECR repositories, GitHub OIDC roles, API-backed EKS
-access entries, encrypted control-plane logs, and a monthly budget. The
-environment is a cost-controlled reference deployment, not a production HA
-topology. Its explicit limitations and teardown procedure are documented in
-the [AWS infrastructure runbook](../deploy/terraform/README.md) and
+access entries, encrypted control-plane logs, a Metrics Server add-on for HPA,
+and a monthly budget. The environment is a cost-controlled reference
+deployment, not a production HA topology. Its explicit limitations and
+teardown procedure are documented in the
+[AWS infrastructure runbook](../deploy/terraform/README.md) and
 [ADR 008](adr/008-aws-delivery-environment.md).
 
 Infrastructure planning, infrastructure mutation, and application release use
-separate IAM roles. The release role has no VPC/IAM/EKS provisioning
-permission and its Kubernetes access is limited to the `socp-system`
-namespace. Application services have no AWS IAM permission by default.
+separate IAM roles. Same-repository pull requests can create a read-only plan;
+fork pull requests cannot obtain AWS credentials. Apply and destroy run only
+inside the protected `infrastructure` environment, use a saved plan, and
+require an explicit confirmation token for destroy. The apply stage creates
+the restricted namespace before handing control to the release role. The
+release role has no VPC/IAM/EKS provisioning permission and its Kubernetes
+access is limited to the `socp-system` namespace. Application services have no
+AWS IAM permission by default.
+
+The AWS release workflow authenticates with OIDC, builds the four JARs once,
+creates and scans four images, records CycloneDX SBOMs, pushes immutable
+source-SHA tags, resolves ECR digests, and deploys those digests with an atomic
+Helm upgrade. Production promotion resolves existing images for an explicit
+commit SHA and does not rebuild them.
 
 ## Backup, restore, and recovery evidence
 

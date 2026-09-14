@@ -1,0 +1,237 @@
+images:
+  apiGateway:
+    repository: ""
+    digest: ""
+    pullPolicy: IfNotPresent
+  searchConfig:
+    repository: ""
+    digest: ""
+    pullPolicy: IfNotPresent
+  detectWeb:
+    repository: ""
+    digest: ""
+    pullPolicy: IfNotPresent
+  alertWeb:
+    repository: ""
+    digest: ""
+    pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+serviceAccount:
+  name: socp-service
+  annotations: {}
+
+runtime:
+  existingSecret: socp-runtime-secrets
+  config:
+    SPRING_PROFILES_ACTIVE: prod
+    SERVER_PORT: "8080"
+    SPRING_DATA_REDIS_HOST: redis.socp-data.svc.cluster.local
+    SPRING_DATA_REDIS_PORT: "6379"
+    SOCP_TENANT_RLS_ENABLED: "true"
+    SOCP_SECURITY_REQUIRE_GATEWAY: "true"
+    SOCP_ALLOW_GLOBAL_INGEST_TOKEN: "false"
+    SOCP_OPENSEARCH_INSECURE_SKIP_VERIFY: "false"
+    SOCP_AUTH_COOKIE_SECURE: "true"
+    SOCP_RATELIMIT_BACKEND: redis
+    SOCP_RATELIMIT_FAIL_CLOSED: "true"
+    SOCP_AUDIT_SINK: kafka
+    SOCP_AUDIT_FAIL_CLOSED: "true"
+    SOCP_KAFKA_BOOTSTRAP: kafka.socp-data.svc.cluster.local:9092
+    SOCP_PG_HOST: postgres.socp-data.svc.cluster.local
+    SOCP_PG_PORT: "5432"
+    SOCP_OPENSEARCH_URL: https://opensearch.socp-data.svc.cluster.local:9200
+    SOCP_CK_URL: http://clickhouse.socp-data.svc.cluster.local:8123
+    SOCP_SSA_URI: http://alert-web:8080
+    SOCP_GLS_URI: http://search-config-api:8080
+    SOCP_GAS_WEB_URI: http://detect-web-api:8080
+    SOCP_GAS_WORKER_URI: http://detect-web-worker:8080
+    SOCP_DETECT_URL: http://detect-web-api:8080
+    SOCP_ALERT_URL: http://alert-web:8080
+  extraConfig: {}
+
+autoscaling:
+  enabled: true
+  scaleDownStabilizationSeconds: 300
+
+podDisruptionBudget:
+  enabled: true
+
+networkPolicy:
+  enabled: true
+  dnsNamespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: kube-system
+  dependencyNamespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: socp-data
+  gatewayIngressNamespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: ingress-nginx
+  metricsIngressNamespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: monitoring
+  additionalEgress: []
+
+monitoring:
+  prometheusRule:
+    enabled: false
+
+workloads:
+  api-gateway:
+    image: apiGateway
+    runtimeDomain: gateway-ui
+    replicas: 2
+    terminationGracePeriodSeconds: 30
+    tmpSizeLimit: 256Mi
+    health:
+      basePath: /actuator/health
+    secretEnv: {}
+    env: {}
+    fieldEnv: {}
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 768Mi
+    autoscaling:
+      minReplicas: 2
+      maxReplicas: 6
+      targetCPUUtilizationPercentage: 70
+    podDisruptionBudget:
+      minAvailable: 1
+  search-config-api:
+    image: searchConfig
+    runtimeDomain: ingest-search
+    replicas: 2
+    terminationGracePeriodSeconds: 45
+    tmpSizeLimit: 512Mi
+    health:
+      basePath: /search-config/actuator/health
+    secretEnv: {}
+    fieldEnv: {}
+    env:
+      SOCP_SEARCH_RUNTIME_ROLE: api
+      SOCP_HEALTH_REQUIRED_ENDPOINTS: kafka=kafka.socp-data.svc.cluster.local:9092,opensearch=opensearch.socp-data.svc.cluster.local:9200,detect=detect-web-api:8080
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 1536Mi
+    autoscaling:
+      minReplicas: 2
+      maxReplicas: 8
+      targetCPUUtilizationPercentage: 65
+    podDisruptionBudget:
+      minAvailable: 1
+  search-config-worker:
+    image: searchConfig
+    runtimeDomain: ingest-search
+    replicas: 2
+    terminationGracePeriodSeconds: 45
+    tmpSizeLimit: 512Mi
+    health:
+      basePath: /search-config/actuator/health
+    secretEnv: {}
+    fieldEnv: {}
+    env:
+      SOCP_SEARCH_RUNTIME_ROLE: worker
+      SOCP_HEALTH_REQUIRED_ENDPOINTS: kafka=kafka.socp-data.svc.cluster.local:9092,opensearch=opensearch.socp-data.svc.cluster.local:9200
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 1536Mi
+    autoscaling:
+      minReplicas: 2
+      maxReplicas: 8
+      targetCPUUtilizationPercentage: 65
+    podDisruptionBudget:
+      minAvailable: 1
+  detect-web-api:
+    image: detectWeb
+    runtimeDomain: detection
+    replicas: 2
+    terminationGracePeriodSeconds: 45
+    tmpSizeLimit: 512Mi
+    health:
+      basePath: /detect-web/actuator/health
+    secretEnv: {}
+    fieldEnv:
+      SOCP_DETECT_INSTANCE_ID: metadata.uid
+    env:
+      SOCP_DETECT_RUNTIME_ROLE: api
+      SOCP_HEALTH_REQUIRED_ENDPOINTS: kafka=kafka.socp-data.svc.cluster.local:9092,alert=alert-web:8080
+    resources:
+      requests:
+        cpu: 200m
+        memory: 384Mi
+      limits:
+        cpu: "1"
+        memory: 1024Mi
+    autoscaling:
+      minReplicas: 2
+      maxReplicas: 8
+      targetCPUUtilizationPercentage: 65
+    podDisruptionBudget:
+      minAvailable: 1
+  detect-web-worker:
+    image: detectWeb
+    runtimeDomain: detection
+    replicas: 3
+    terminationGracePeriodSeconds: 45
+    tmpSizeLimit: 512Mi
+    health:
+      basePath: /detect-web/actuator/health
+    secretEnv: {}
+    fieldEnv:
+      SOCP_DETECT_INSTANCE_ID: metadata.uid
+    env:
+      SOCP_DETECT_RUNTIME_ROLE: worker
+      SOCP_KAFKA_GROUP_ID: socp-detect
+      SOCP_HEALTH_REQUIRED_ENDPOINTS: kafka=kafka.socp-data.svc.cluster.local:9092,alert=alert-web:8080
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 1536Mi
+    autoscaling:
+      minReplicas: 3
+      maxReplicas: 12
+      targetCPUUtilizationPercentage: 65
+    podDisruptionBudget:
+      minAvailable: 2
+  alert-web:
+    image: alertWeb
+    runtimeDomain: alert-incident
+    replicas: 2
+    terminationGracePeriodSeconds: 45
+    tmpSizeLimit: 512Mi
+    health:
+      basePath: /alert-web/actuator/health
+    secretEnv: {}
+    fieldEnv: {}
+    env:
+      SOCP_HEALTH_REQUIRED_ENDPOINTS: kafka=kafka.socp-data.svc.cluster.local:9092,clickhouse=clickhouse.socp-data.svc.cluster.local:8123
+    resources:
+      requests:
+        cpu: 150m
+        memory: 384Mi
+      limits:
+        cpu: "1"
+        memory: 1024Mi
+    autoscaling:
+      minReplicas: 2
+      maxReplicas: 8
+      targetCPUUtilizationPercentage: 65
+    podDisruptionBudget:
+      minAvailable: 1

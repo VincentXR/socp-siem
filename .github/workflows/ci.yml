@@ -45,9 +45,14 @@ jobs:
           cache-dependency-path: frontend/pnpm-lock.yaml
 
       - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: 1.16.2
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.4
 
       - name: Build backend (Maven reactor)
         run: bash build/mvnw.sh -DskipTests package
@@ -71,9 +76,20 @@ jobs:
           python3 build/verify-style.py
           python3 build/verify-runtime-consolidation.py
           python3 build/verify-middleware-images.py
+          python3 build/verify-helm.py
           python3 -m unittest discover -s build/tests -p 'test_*.py'
           python3 build/verify-frontend-i18n.py
           python3 build/verify-production.py
+
+      - name: Validate GitHub Actions workflows
+        run: |
+          curl --fail --silent --show-error --location \
+            --output /tmp/actionlint.tar.gz \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  /tmp/actionlint.tar.gz" \
+            | sha256sum --check --strict
+          tar --extract --gzip --file /tmp/actionlint.tar.gz --directory /tmp actionlint
+          /tmp/actionlint
 
       - name: Verify Terraform contracts
         run: |

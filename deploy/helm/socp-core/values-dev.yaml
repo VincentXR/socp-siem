@@ -1,0 +1,19 @@
+autoscaling:
+  enabled: false
+
+podDisruptionBudget:
+  enabled: false
+
+workloads:
+  api-gateway:
+    replicas: 1
+  search-config-api:
+    replicas: 1
+  search-config-worker:
+    replicas: 1
+  detect-web-api:
+    replicas: 1
+  detect-web-worker:
+    replicas: 1
+  alert-web:
+    replicas: 1

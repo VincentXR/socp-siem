@@ -1,0 +1,12 @@
+{{- $runtimeConfig := deepCopy .Values.runtime.config | mergeOverwrite .Values.runtime.extraConfig }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: socp-runtime
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "socp-core.commonLabels" . | nindent 4 }}
+data:
+  {{- range $key := keys $runtimeConfig | sortAlpha }}
+  {{ $key }}: {{ index $runtimeConfig $key | quote }}
+  {{- end }}
