@@ -67,10 +67,10 @@ It is the sole executable source for packaged detections; a fresh Detection
 database installs the manifest rules before user customization.
 
 <!-- detection-summary:start -->
-**Detection content**: `39` rules (`39` ACTIVE), pack `socp-core-detections` version `2026.08.30` (schema `1`).
+**Detection content**: `39` rules (`39` ACTIVE), pack `socp-core-detections` version `2026.09.13` (schema `1`).
 Types: baseline=3, correlation=2, correlation-set=1, pattern=18, rare=5, threshold=10. Statuses: ACTIVE=39.
 ATT&CK techniques: `23`; data sources: `22` (alert, application, audit, auditd, auth, database, dlp, dns, edr, falco, firewall, linux, mail, netflow, nginx, proxy, risk, sshd, sysmon, waf, web, windows).
-Manifest SHA-256: `fafd608e3c89207c49fcf83c984725ef73bba56cde3ccae5bb3bdb014eb54673`.
+Manifest SHA-256: `5db827bd6aedb84e70d1de1082e11629bc8234bb1644e3e970a7b226b18196e0`.
 <!-- detection-summary:end -->
 The exact partition and recovery contract is in
 `docs/detection-state-semantics.md`.

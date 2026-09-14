@@ -57,7 +57,7 @@ function runFixture() {
   }
 }
 
-async function installSoarMocks(page: Page): Promise<MockState> {
+async function installSoarMocks(page: Page, role: 'analyst' | 'admin' = 'analyst'): Promise<MockState> {
   const state: MockState = {
     playbooks: [EXISTING_PLAYBOOK],
     versions: { 'pb-existing': [EXISTING_VERSION] },
@@ -77,7 +77,7 @@ async function installSoarMocks(page: Page): Promise<MockState> {
       return
     }
     if (url.pathname === '/auth/session') {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ username: 'analyst', role: 'analyst', tenant: 'default' }) })
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ username: role, role, tenant: 'default' }) })
       return
     }
     if (!url.pathname.startsWith('/soar-web/')) {
@@ -194,7 +194,9 @@ async function installSoarMocks(page: Page): Promise<MockState> {
 
 test('SOAR workbench covers draft lifecycle, run inspection and human controls', async ({ page }, testInfo) => {
   await page.addInitScript(() => localStorage.setItem('socp-locale', 'en-US'))
-  const state = await installSoarMocks(page)
+  // Publishing is intentionally restricted to the admin role; the backend
+  // permission contract does not grant `soar:publish` to analysts.
+  const state = await installSoarMocks(page, 'admin')
   await page.goto('/soar')
   await expect(page.locator('.soar-view')).toBeVisible()
 
