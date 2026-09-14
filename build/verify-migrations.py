@@ -21,38 +21,50 @@ def fail(errors: list[str], message: str) -> None:
 
 def main() -> int:
     errors: list[str] = []
-    modules = 0
+    module_migrations: dict[Path, list[Path]] = {}
     files = 0
-    for migration_dir in sorted(ROOT.glob("services/*/src/main/resources/db/migration")):
-        module = migration_dir.parents[4]
-        migrations = sorted(path for path in migration_dir.iterdir() if path.is_file())
-        if not migrations:
-            fail(errors, f"{module.name}: empty migration directory")
+    # A bounded context may own more than one independent Flyway location.
+    # Detection keeps secondary analysis in a separate database and therefore
+    # stores its migrations under db/secondary-analysis rather than merging
+    # them into the primary db/migration history.
+    for migration_dir in sorted(ROOT.glob("services/*/src/main/resources/db/*")):
+        if not migration_dir.is_dir():
             continue
-        modules += 1
-        versions: dict[tuple[int, ...], str] = {}
-        combined_sql: list[str] = []
-        for migration in migrations:
-            match = VERSIONED.fullmatch(migration.name)
-            if not match and not REPEATABLE.fullmatch(migration.name):
-                fail(errors, f"{migration.relative_to(ROOT)}: invalid Flyway filename")
-                continue
-            sql = migration.read_text(encoding="utf-8")
-            files += 1
-            if len(sql.strip()) < 20:
-                fail(errors, f"{migration.relative_to(ROOT)}: migration is empty or trivial")
-            if DESTRUCTIVE.search(sql) and "SOCP-MIGRATION-ALLOW-DESTRUCTIVE" not in sql:
-                fail(errors, f"{migration.relative_to(ROOT)}: destructive statement requires an explicit marker")
-            combined_sql.append(sql.lower())
-            if match:
-                version = tuple(int(part) for part in match.group("version").split("_"))
-                if version in versions:
-                    fail(errors, f"{module.name}: duplicate version {version}: {versions[version]} and {migration.name}")
-                versions[version] = migration.name
+        module = migration_dir.parents[4]
+        if not any(path.is_file() for path in migration_dir.iterdir()):
+            # Empty directories are not represented in Git. Ignore stale local
+            # build directories so they cannot change the repository result.
+            continue
+        module_migrations.setdefault(module, []).append(migration_dir)
 
-        major_versions = sorted(version[0] for version in versions if len(version) == 1)
-        if major_versions and major_versions != list(range(1, max(major_versions) + 1)):
-            fail(errors, f"{module.name}: non-consecutive major versions {major_versions}")
+    for module, migration_dirs in sorted(module_migrations.items()):
+        module_sql: list[str] = []
+        for migration_dir in migration_dirs:
+            migrations = sorted(path for path in migration_dir.iterdir() if path.is_file())
+            versions: dict[tuple[int, ...], str] = {}
+            combined_sql: list[str] = []
+            for migration in migrations:
+                match = VERSIONED.fullmatch(migration.name)
+                if not match and not REPEATABLE.fullmatch(migration.name):
+                    fail(errors, f"{migration.relative_to(ROOT)}: invalid Flyway filename")
+                    continue
+                sql = migration.read_text(encoding="utf-8")
+                files += 1
+                if len(sql.strip()) < 20:
+                    fail(errors, f"{migration.relative_to(ROOT)}: migration is empty or trivial")
+                if DESTRUCTIVE.search(sql) and "SOCP-MIGRATION-ALLOW-DESTRUCTIVE" not in sql:
+                    fail(errors, f"{migration.relative_to(ROOT)}: destructive statement requires an explicit marker")
+                combined_sql.append(sql.lower())
+                if match:
+                    version = tuple(int(part) for part in match.group("version").split("_"))
+                    if version in versions:
+                        fail(errors, f"{module.name}/{migration_dir.name}: duplicate version {version}: {versions[version]} and {migration.name}")
+                    versions[version] = migration.name
+
+            major_versions = sorted(version[0] for version in versions if len(version) == 1)
+            if major_versions and major_versions != list(range(1, max(major_versions) + 1)):
+                fail(errors, f"{module.name}/{migration_dir.name}: non-consecutive major versions {major_versions}")
+            module_sql.extend(combined_sql)
 
         pom = (module / "pom.xml").read_text(encoding="utf-8")
         app_yml = module / "src/main/resources/application.yml"
@@ -61,7 +73,7 @@ def main() -> int:
         if not app_yml.exists() or "flyway:" not in app_yml.read_text(encoding="utf-8"):
             fail(errors, f"{module.name}: migrations exist but application.yml does not configure Flyway")
 
-        all_sql = "\n".join(combined_sql)
+        all_sql = "\n".join(module_sql)
         for entity in module.glob("src/main/java/**/*.java"):
             source = entity.read_text(encoding="utf-8")
             table = TABLE.search(source)
@@ -73,6 +85,7 @@ def main() -> int:
             if "tenantId" in source and "tenant_id" not in all_sql:
                 fail(errors, f"{entity.relative_to(ROOT)}: tenant entity has no tenant_id migration")
 
+    modules = len(module_migrations)
     if modules < 8 or files < 20:
         fail(errors, f"unexpected migration inventory: {modules} modules / {files} files")
     if errors:
