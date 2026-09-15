@@ -20,6 +20,7 @@ import reactor.core.publisher.Mono;
 import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -106,6 +107,33 @@ class GatewayFilterTest {
                 .getFirst(ServiceRequestSignature.SERVICE_HEADER));
         assertEquals(null, forwarded.getValue().getRequest().getHeaders()
                 .getFirst(ServiceRequestSignature.SIGNATURE_HEADER));
+    }
+
+    @Test
+    void downstreamServerErrorsAreMarkedOnTheRequestSpan() {
+        GatewayFilter filter = new GatewayFilter(jwtValidator);
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.get("/auth/login").build());
+        given(chain.filter(org.mockito.ArgumentMatchers.any())).willAnswer(invocation -> {
+            exchange.getResponse().setStatusCode(HttpStatus.INTERNAL_SERVER_ERROR);
+            return Mono.empty();
+        });
+
+        filter.filter(exchange, chain).block(Duration.ofSeconds(1));
+
+        assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, exchange.getResponse().getStatusCode());
+    }
+
+    @Test
+    void chainFailuresReachTheCaller() {
+        GatewayFilter filter = new GatewayFilter(jwtValidator);
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.get("/auth/login").build());
+        IllegalStateException boom = new IllegalStateException("downstream exploded");
+        given(chain.filter(org.mockito.ArgumentMatchers.any())).willReturn(Mono.error(boom));
+
+        assertThrows(IllegalStateException.class,
+                () -> filter.filter(exchange, chain).block(Duration.ofSeconds(1)));
     }
 
     @Test

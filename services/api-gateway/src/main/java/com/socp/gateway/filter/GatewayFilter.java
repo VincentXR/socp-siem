@@ -4,8 +4,15 @@ import com.nimbusds.jwt.JWTClaimsSet;
 import com.socp.gateway.api.controller.AuthController;
 import com.socp.platform.auth.security.JwtValidationException;
 import com.socp.platform.auth.security.JwtValidator;
+import com.socp.platform.obs.trace.TracePropagation;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.platform.tenant.security.ServiceRequestSignature;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.propagation.TextMapGetter;
+import io.opentelemetry.context.propagation.TextMapSetter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
@@ -38,6 +45,21 @@ public class GatewayFilter implements GlobalFilter, Ordered {
     private static final String BEARER = "Bearer ";
     private static final Set<String> ROLES = Set.of("admin", "analyst", "viewer");
     private static final Pattern W3C_TRACE_ID = Pattern.compile("(?!0{32})[0-9a-f]{32}");
+
+    private static final TextMapGetter<HttpHeaders> HTTP_GETTER = new TextMapGetter<>() {
+        @Override
+        public Iterable<String> keys(HttpHeaders headers) {
+            return headers.keySet();
+        }
+
+        @Override
+        public String get(HttpHeaders headers, String key) {
+            return headers.getFirst(key);
+        }
+    };
+
+    private static final TextMapSetter<HttpHeaders> HTTP_SETTER = HttpHeaders::set;
+
     private final JwtValidator jwtValidator;
     private final Set<String> allowedOrigins;
     private final String serviceSecret;
@@ -59,10 +81,24 @@ public class GatewayFilter implements GlobalFilter, Ordered {
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
+        // The gateway is where an inbound request becomes a trace. Without a
+        // span here the first downstream service roots a trace of its own and
+        // the north-bound hop is lost, which is why forwarded requests used to
+        // carry no traceparent at all and traces began inside the mesh.
+        Span span = TracePropagation.startSpan(spanName(exchange), SpanKind.SERVER,
+                TracePropagation.extract(HTTP_GETTER, exchange.getRequest().getHeaders()));
+        Context spanContext = Context.current().with(span);
+        span.setAttribute("http.request.method", methodOf(exchange));
+        span.setAttribute("url.path", exchange.getRequest().getPath().value());
+
         String incomingTrace = exchange.getRequest().getHeaders().getFirst("X-Trace-Id");
-        String traceId = incomingTrace != null && W3C_TRACE_ID.matcher(incomingTrace).matches()
-                ? incomingTrace
-                : UUID.randomUUID().toString().replace("-", "");
+        String spanTraceId = TracePropagation.traceId(spanContext);
+        // Effectively final: the response and the forwarded request both capture it.
+        final String traceId = spanTraceId != null
+                ? spanTraceId
+                : (incomingTrace != null && W3C_TRACE_ID.matcher(incomingTrace).matches()
+                    ? incomingTrace
+                    : UUID.randomUUID().toString().replace("-", ""));
         exchange.getResponse().beforeCommit(() -> {
             exchange.getResponse().getHeaders().set("X-Trace-Id", traceId);
             return Mono.empty();
@@ -71,7 +107,7 @@ public class GatewayFilter implements GlobalFilter, Ordered {
         String path = exchange.getRequest().getPath().value();
         if (path.startsWith("/auth/login") || path.startsWith("/auth/service-token")
                 || path.startsWith("/auth/oidc/")) {
-            return chain.filter(withTrace(exchange, traceId));
+            return traced(span, exchange, chain.filter(withTrace(spanContext, exchange, traceId)));
         }
 
         String auth = exchange.getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
@@ -85,7 +121,8 @@ public class GatewayFilter implements GlobalFilter, Ordered {
         }
         if (!validBearer(auth)) {
             log.warn("Authentication rejected traceId={} path={} reason=missing-credentials", traceId, path);
-            return reject(exchange, traceId, "Missing or invalid session", HttpStatus.UNAUTHORIZED);
+            return traced(span, exchange,
+                    reject(exchange, traceId, "Missing or invalid session", HttpStatus.UNAUTHORIZED));
         }
 
         String tenant;
@@ -111,29 +148,32 @@ public class GatewayFilter implements GlobalFilter, Ordered {
             } catch (JwtValidationException | java.text.ParseException failure) {
                 log.warn("Authentication rejected traceId={} path={} reason={}",
                         traceId, path, failure.getMessage());
-                return reject(exchange, traceId, "Invalid or expired session", HttpStatus.UNAUTHORIZED);
+                return traced(span, exchange,
+                        reject(exchange, traceId, "Invalid or expired session", HttpStatus.UNAUTHORIZED));
             }
             if (!TenantContext.isValid(tenant) || subject == null || subject.isBlank()
                     || role == null || !ROLES.contains(role)) {
-                return reject(exchange, traceId, "Session identity claims are incomplete",
-                        HttpStatus.UNAUTHORIZED);
+                return traced(span, exchange, reject(exchange, traceId,
+                        "Session identity claims are incomplete", HttpStatus.UNAUTHORIZED));
             }
         }
 
         if (!TenantContext.isValid(tenant)) {
-            return reject(exchange, traceId, "Invalid tenant identity", HttpStatus.UNAUTHORIZED);
+            return traced(span, exchange,
+                    reject(exchange, traceId, "Invalid tenant identity", HttpStatus.UNAUTHORIZED));
         }
 
         String method = exchange.getRequest().getMethod() == null
                 ? "GET" : exchange.getRequest().getMethod().name();
         if ("viewer".equals(role) && !("GET".equals(method) || "OPTIONS".equals(method))) {
-            return reject(exchange, traceId, "viewer role is read-only", HttpStatus.FORBIDDEN);
+            return traced(span, exchange,
+                    reject(exchange, traceId, "viewer role is read-only", HttpStatus.FORBIDDEN));
         }
         if (cookieAuthentication && isUnsafe(method)) {
             String origin = exchange.getRequest().getHeaders().getOrigin();
             if (origin == null || !allowedOrigins.contains(origin)) {
-                return reject(exchange, traceId, "Cross-site session request rejected",
-                        HttpStatus.FORBIDDEN);
+                return traced(span, exchange, reject(exchange, traceId,
+                        "Cross-site session request rejected", HttpStatus.FORBIDDEN));
             }
         }
 
@@ -146,6 +186,9 @@ public class GatewayFilter implements GlobalFilter, Ordered {
             stripServiceIdentity(headers);
             stripGatewayIdentity(headers);
             headers.set("X-Trace-Id", traceId);
+            // Overwrite, never append: an inbound header must not let a caller
+            // decide the parent of our own span.
+            TracePropagation.inject(spanContext, HTTP_SETTER, headers);
             headers.set(HttpHeaders.AUTHORIZATION, resolvedAuth);
             headers.set("X-Tenant-Id", resolvedTenant);
             headers.set("X-Socp-Role", resolvedRole);
@@ -166,19 +209,53 @@ public class GatewayFilter implements GlobalFilter, Ordered {
                                 resolvedTenant, timestamp, nonce));
             }
         })).build();
-        return chain.filter(trusted);
+        return traced(span, exchange, chain.filter(trusted));
     }
 
-    private static ServerWebExchange withTrace(ServerWebExchange exchange, String traceId) {
+    private static ServerWebExchange withTrace(Context spanContext, ServerWebExchange exchange,
+                                               String traceId) {
         return exchange.mutate().request(request -> request.headers(headers -> {
             stripServiceIdentity(headers);
             stripGatewayIdentity(headers);
             headers.set("X-Trace-Id", traceId);
+            TracePropagation.inject(spanContext, HTTP_SETTER, headers);
             headers.remove("X-Socp-Role");
             headers.remove("X-Socp-User");
             headers.remove("X-Socp-Locale");
             headers.remove("X-Tenant-Id");
         })).build();
+    }
+
+    private static String methodOf(ServerWebExchange exchange) {
+        return exchange.getRequest().getMethod() == null
+                ? "HTTP" : exchange.getRequest().getMethod().name();
+    }
+
+    private static String spanName(ServerWebExchange exchange) {
+        return methodOf(exchange) + " " + exchange.getRequest().getPath().value();
+    }
+
+    /**
+     * Ends the gateway span once the exchange settles. WebFlux gives no
+     * request-scoped thread, so the span lifecycle has to be bound to the
+     * reactive signal rather than to a try/finally block.
+     */
+    private static Mono<Void> traced(Span span, ServerWebExchange exchange, Mono<Void> result) {
+        return result
+                .doOnError(throwable -> {
+                    span.recordException(throwable);
+                    span.setStatus(StatusCode.ERROR);
+                })
+                .doFinally(signal -> {
+                    var status = exchange.getResponse().getStatusCode();
+                    if (status != null) {
+                        span.setAttribute("http.response.status_code", status.value());
+                        if (status.is5xxServerError()) {
+                            span.setStatus(StatusCode.ERROR);
+                        }
+                    }
+                    span.end();
+                });
     }
 
     private static void stripServiceIdentity(org.springframework.http.HttpHeaders headers) {

@@ -1,7 +1,11 @@
 package com.socp.search.config.infrastructure.kafka;
 
+import com.socp.platform.client.kafka.KafkaTrace;
+import com.socp.platform.obs.trace.TracePropagation;
 import com.socp.search.config.config.KafkaProperties;
 import com.socp.search.config.config.SearchRuntimeRole;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanKind;
 import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
@@ -69,18 +73,27 @@ public class KafkaEventProducer {
      */
     public boolean sendAndAwait(String routingKey, String payload, String traceparent) {
         if (!properties.isEnabled()) return false;
+        // The outbox row carries the trace context captured at ingest time,
+        // because this thread never saw the producing request. Publishing under
+        // a PRODUCER span parented to it makes the publish a real child of the
+        // ingest; replaying the stored string verbatim would instead give the
+        // consumer a parent that is the ingest span itself, with no hop of its
+        // own in between.
+        Span span = TracePropagation.startSpan("kafka publish " + properties.getTopic(),
+                SpanKind.PRODUCER, TracePropagation.contextFrom(traceparent));
+        Throwable failure = null;
         try {
             ProducerRecord<String, String> record = new ProducerRecord<>(properties.getTopic(), routingKey, payload);
-            if (traceparent != null && !traceparent.isBlank()) {
-                record.headers().add("traceparent",
-                        traceparent.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            }
+            KafkaTrace.inject(KafkaTrace.contextOf(span), record.headers());
             producer().send(record).get(30, TimeUnit.SECONDS);
             return true;
-        } catch (Exception failure) {
+        } catch (Exception publishFailure) {
+            failure = publishFailure;
             log.warn("Kafka canonical event publish failed routingKey={}: {}",
-                    routingKey, failure.getMessage());
+                    routingKey, publishFailure.getMessage());
             return false;
+        } finally {
+            TracePropagation.finish(span, failure);
         }
     }
 

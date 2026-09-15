@@ -4,6 +4,7 @@ package com.socp.detect.web.persistence.store;
 import com.socp.detect.web.persistence.repository.DetectionAlertOutboxRepository;
 import com.socp.detect.web.persistence.entity.DetectionAlertOutboxEntity;
 import com.socp.detect.web.engine.DetectionAlertOutboxPublisher;
+import com.socp.platform.obs.web.TraceIdFilter;
 import com.socp.platform.tenant.context.TenantContext;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.ObjectProvider;
@@ -53,9 +54,14 @@ public class DetectionAlertOutboxService {
         }
         if (repository.existsByAlertIdAndTenantId(alertId, tenantId)) return;
         Instant now = Instant.now();
+        // Captured on the worker thread that is processing the record. The
+        // publisher that drains this row runs on a scheduler and inherits
+        // neither the MDC nor the OTel context, so without persisting the
+        // value here the Detection -> Alert hop carries no trace header.
+        String traceparent = TraceIdFilter.buildTraceparent();
         try {
             repository.saveAndFlush(new DetectionAlertOutboxEntity(
-                    alertId, tenantId, payload, now));
+                    alertId, tenantId, payload, now, traceparent));
             scheduleOutboxTrigger();
         } catch (DataIntegrityViolationException duplicate) {
             // The primary key is the final arbiter when two workers replay the

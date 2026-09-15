@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.socp.platform.client.kafka.KafkaClientSupport;
+import com.socp.platform.client.kafka.KafkaTrace;
 import com.socp.search.config.config.KafkaProperties;
 import com.socp.search.config.config.OpenSearchIndexerProperties;
 import com.socp.search.config.config.SearchRuntimeRole;
@@ -180,8 +181,15 @@ public class OsIndexerConsumer {
     }
 
     private PartitionOutcome processPartitionOutcome(List<ConsumerRecord<String, String>> records) {
-        String traceId = traceId(records.getFirst());
-        if (traceId != null) org.slf4j.MDC.put("traceId", traceId);
+        // One span per batch, parented to the first record's producer. A batch
+        // can straddle several producer traces, so the first record names the
+        // parent by convention; a span per record would bury the bulk write
+        // under spans without naming a better parent.
+        return KafkaTrace.callConsumed("os-indexer " + records.getFirst().topic(),
+                records.getFirst().headers(), () -> indexBatch(records));
+    }
+
+    private PartitionOutcome indexBatch(List<ConsumerRecord<String, String>> records) {
         try {
             List<PreparedRecord> prepared = new ArrayList<>(records.size());
             List<SearchEvent> events = new ArrayList<>(records.size());
@@ -268,17 +276,6 @@ public class OsIndexerConsumer {
         Map<Integer, BulkWriteResult.Failure> byIndex = new HashMap<>();
         failures.forEach(failure -> byIndex.put(failure.itemIndex(), failure));
         return byIndex;
-    }
-
-    private static String traceId(ConsumerRecord<String, String> record) {
-        try {
-            var header = record.headers().lastHeader("traceparent");
-            if (header == null) return null;
-            return com.socp.platform.obs.web.TraceIdFilter.parseTraceId(
-                    new String(header.value(), StandardCharsets.UTF_8));
-        } catch (Exception ignored) {
-            return null;
-        }
     }
 
     private static InvalidRecord invalidRecord(ConsumerRecord<String, String> record, Exception failure) {
