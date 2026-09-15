@@ -25,7 +25,10 @@ serviceAccount:
 runtime:
   existingSecret: socp-runtime-secrets
   config:
-    SPRING_PROFILES_ACTIVE: prod
+    # The pg profile is what points spring.datasource at PostgreSQL; without
+    # it the prod profile keeps the H2 file database that ProdGuard rejects,
+    # so the release could never start.
+    SPRING_PROFILES_ACTIVE: "prod,pg"
     SERVER_PORT: "8080"
     SPRING_DATA_REDIS_HOST: redis.socp-data.svc.cluster.local
     SPRING_DATA_REDIS_PORT: "6379"
@@ -72,11 +75,36 @@ networkPolicy:
   metricsIngressNamespaceSelector:
     matchLabels:
       kubernetes.io/metadata.name: monitoring
+  # An empty list is correct only while every dependency resolves inside the
+  # cluster. The moment an environment-owned values file points runtime.config
+  # or SOCP_HEALTH_REQUIRED_ENDPOINTS at a managed or external Kafka,
+  # PostgreSQL, OpenSearch, ClickHouse, Redis, or identity endpoint, that file
+  # must also add egress rules here. Without them the readiness probes fail,
+  # and an --atomic rollout reverts the whole release after the timeout.
   additionalEgress: []
 
 monitoring:
+  # A PrometheusRule without metrics discovery evaluates against no data, so
+  # verify-helm.py refuses any profile that enables the rule without the
+  # ServiceMonitor. Both require the Prometheus Operator CRDs; enabling them
+  # on a cluster without those CRDs makes `helm upgrade --atomic` fail and
+  # roll back, so the chart keeps both off by default.
   prometheusRule:
     enabled: false
+    # Extra labels so the rule can match the Prometheus Operator's
+    # ruleSelector, typically `release: <prometheus-release-name>`.
+    additionalLabels: {}
+  serviceMonitor:
+    enabled: false
+    # Extra labels so the objects can match the Prometheus Operator's
+    # serviceMonitorSelector, typically `release: <prometheus-release-name>`.
+    additionalLabels: {}
+    interval: 30s
+    scrapeTimeout: 10s
+    # Pulled from runtime.existingSecret. The platform authenticates it as
+    # `Authorization: Bearer <token>` and restricts it to the actuator metrics
+    # endpoints, so Prometheus needs no JWT and no gateway signature.
+    bearerTokenSecretKey: SOCP_SECURITY_METRICS_TOKEN
 
 workloads:
   api-gateway:
@@ -87,6 +115,10 @@ workloads:
     tmpSizeLimit: 256Mi
     health:
       basePath: /actuator/health
+      # Intentionally no metricsPath. The Gateway exposes health only on the
+      # application port; application.yml documents that Prometheus samples
+      # must wait for a dedicated internal management path/port. Rendering a
+      # ServiceMonitor for it would scrape an endpoint that does not exist.
     secretEnv: {}
     env: {}
     fieldEnv: {}
@@ -111,6 +143,7 @@ workloads:
     tmpSizeLimit: 512Mi
     health:
       basePath: /search-config/actuator/health
+      metricsPath: /search-config/actuator/prometheus
     secretEnv: {}
     fieldEnv: {}
     env:
@@ -137,6 +170,7 @@ workloads:
     tmpSizeLimit: 512Mi
     health:
       basePath: /search-config/actuator/health
+      metricsPath: /search-config/actuator/prometheus
     secretEnv: {}
     fieldEnv: {}
     env:
@@ -163,6 +197,7 @@ workloads:
     tmpSizeLimit: 512Mi
     health:
       basePath: /detect-web/actuator/health
+      metricsPath: /detect-web/actuator/prometheus
     secretEnv: {}
     fieldEnv:
       SOCP_DETECT_INSTANCE_ID: metadata.uid
@@ -190,6 +225,7 @@ workloads:
     tmpSizeLimit: 512Mi
     health:
       basePath: /detect-web/actuator/health
+      metricsPath: /detect-web/actuator/prometheus
     secretEnv: {}
     fieldEnv:
       SOCP_DETECT_INSTANCE_ID: metadata.uid
@@ -218,6 +254,7 @@ workloads:
     tmpSizeLimit: 512Mi
     health:
       basePath: /alert-web/actuator/health
+      metricsPath: /alert-web/actuator/prometheus
     secretEnv: {}
     fieldEnv: {}
     env:

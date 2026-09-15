@@ -6,6 +6,12 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "socp-core.commonLabels" . | nindent 4 }}
+    {{- /* The Prometheus Operator selects rules by label, most commonly
+           `release: <helm-release-name>`. Without a way to add that label the
+           rule object exists but is never evaluated. */}}
+    {{- with .Values.monitoring.prometheusRule.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 spec:
   groups:
     - name: socp-event-path

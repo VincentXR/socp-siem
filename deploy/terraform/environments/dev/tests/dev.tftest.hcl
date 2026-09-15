@@ -101,3 +101,58 @@ run "invalid_node_sizing_is_rejected" {
 
   expect_failures = [aws_eks_node_group.core]
 }
+
+run "budget_without_a_subscriber_cannot_warn" {
+  command = plan
+
+  assert {
+    condition     = length(aws_budgets_budget.monthly.notification) == 0
+    error_message = "An unset budget subscriber renders no notification, which is why the workflow must pass one."
+  }
+}
+
+run "blank_budget_subscriber_is_treated_as_unset" {
+  command = plan
+
+  # CI passes the subscriber through TF_VAR_budget_alert_email, and an unset
+  # GitHub variable expands to the empty string rather than to null.
+  variables {
+    budget_alert_email = "   "
+  }
+
+  assert {
+    condition     = length(aws_budgets_budget.monthly.notification) == 0
+    error_message = "A blank subscriber must render no notification instead of subscribing an empty address."
+  }
+}
+
+run "configured_budget_subscriber_creates_forecast_and_actual_alerts" {
+  command = plan
+
+  variables {
+    budget_alert_email = "security@example.com"
+  }
+
+  assert {
+    condition     = length(aws_budgets_budget.monthly.notification) == 2
+    error_message = "A configured subscriber must create both the forecasted and the actual budget alert."
+  }
+
+  assert {
+    condition = alltrue([
+      for notification in aws_budgets_budget.monthly.notification :
+      contains(notification.subscriber_email_addresses, "security@example.com")
+    ])
+    error_message = "Both budget alerts must subscribe the configured address."
+  }
+}
+
+run "malformed_budget_subscriber_is_rejected" {
+  command = plan
+
+  variables {
+    budget_alert_email = "not-an-email"
+  }
+
+  expect_failures = [var.budget_alert_email]
+}

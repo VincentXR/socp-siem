@@ -24,6 +24,36 @@ WORKLOADS = {
     "detect-web-worker": ("detection", "socp-detect-web"),
     "alert-web": ("alert-incident", "socp-alert-web"),
 }
+IMAGE_KEYS = {
+    "apiGateway": "socp-api-gateway",
+    "searchConfig": "socp-search-config",
+    "detectWeb": "socp-detect-web",
+    "alertWeb": "socp-alert-web",
+}
+# Workloads whose application.yml exposes the actuator metrics endpoint, and
+# the one that deliberately does not. services/api-gateway/.../application.yml
+# limits the application port to health and defers Prometheus samples to a
+# dedicated internal management path/port, so the chart must not claim to
+# scrape it.
+METRICS_WORKLOADS = (
+    "alert-web",
+    "detect-web-api",
+    "detect-web-worker",
+    "search-config-api",
+    "search-config-worker",
+)
+METRICS_EXCLUDED = ("api-gateway",)
+# Locked per-profile monitoring intent. Change this together with the matching
+# values-<profile>.yaml. This table exists because the previous contract
+# asserted a rendered PrometheusRule for every profile while injecting its own
+# values file that enabled the rule, so the assertion said nothing about what a
+# real release renders.
+MONITORING_ENABLED = {"dev": False, "staging": False, "production": False}
+MONITORING_OVERRIDE = (
+    "--set", "monitoring.prometheusRule.enabled=true",
+    "--set", "monitoring.serviceMonitor.enabled=true",
+)
+RELEASE_WORKFLOW = ROOT / ".github/workflows/aws-release.yml"
 
 
 def helm_binary() -> str | None:
@@ -68,9 +98,103 @@ def require(errors: list[str], condition: bool, message: str) -> None:
         errors.append(message)
 
 
+def release_image_args() -> list[str]:
+    """Supply images the way the release workflow does.
+
+    `.github/workflows/aws-release.yml` injects `images.<key>.repository` and
+    `images.<key>.digest` with `--set-string`; no values file carries them. The
+    previous verifier instead relied on `ci/test-values.yaml`, which supplied
+    the images and silently flipped `monitoring.prometheusRule.enabled` at the
+    same time, so every profile appeared to render a PrometheusRule.
+    """
+    args: list[str] = []
+    for key, artifact in IMAGE_KEYS.items():
+        args += ["--set-string", f"images.{key}.repository=example.invalid/{artifact}"]
+        args += ["--set-string", f"images.{key}.digest=sha256:{'0' * 64}"]
+    return args
+
+
+def values_workload_block(values: str, workload: str) -> str:
+    """Return the slice of values.yaml belonging to one workload."""
+    tail = values.split("\nworkloads:\n", 1)[-1]
+    match = re.search(
+        rf"(?ms)^  {re.escape(workload)}:\s*$.*?(?=^  [a-z0-9-]+:\s*$|\Z)",
+        tail,
+    )
+    return match.group(0) if match else ""
+
+
+def verify_monitoring(
+    profile: str,
+    documents: dict[tuple[str, str], str],
+    structural: dict[tuple[str, str], str],
+    values: str,
+    errors: list[str],
+) -> None:
+    prefix = f"{profile}: monitoring"
+    enabled = MONITORING_ENABLED[profile]
+
+    # Intent must be declared by the profile, never inherited from chart
+    # defaults: silent inheritance is what hid the original drift.
+    profile_values = CHART / f"values-{profile}.yaml"
+    require(errors,
+            re.search(r"(?m)^monitoring:\s*$", profile_values.read_text(encoding="utf-8")) is not None,
+            f"{prefix}: values-{profile}.yaml must declare monitoring explicitly")
+
+    rendered_rule = ("PrometheusRule", "socp-slo-alerts") in documents
+    scrapes = sorted(name for kind, name in documents if kind == "ServiceMonitor")
+    expected_scrapes = sorted(METRICS_WORKLOADS) if enabled else []
+
+    require(errors, rendered_rule == enabled,
+            f"{prefix}: release render has PrometheusRule={rendered_rule}, locked intent={enabled}")
+    require(errors, scrapes == expected_scrapes,
+            f"{prefix}: release render scrapes {scrapes}, expected {expected_scrapes}")
+    require(errors, not rendered_rule or bool(scrapes),
+            f"{prefix}: PrometheusRule without ServiceMonitor evaluates against no data")
+    for excluded in METRICS_EXCLUDED:
+        require(errors, excluded not in scrapes,
+                f"{prefix}: {excluded} must not be scraped (its application port exposes health only)")
+
+    # Drift detector: anything that the flag override alone changes must be
+    # exactly the monitoring objects. This catches the next flag-gated resource
+    # that CI enables for itself but no real profile renders.
+    expected_added: set[tuple[str, str]] = set()
+    if not enabled:
+        expected_added = {("PrometheusRule", "socp-slo-alerts")}
+        expected_added |= {("ServiceMonitor", name) for name in METRICS_WORKLOADS}
+    added = {key for key in structural if key not in documents}
+    removed = {key for key in documents if key not in structural}
+    require(errors, added == expected_added,
+            f"{prefix}: flag override changed unexpected objects; "
+            f"enabled only by overrides={sorted(added - expected_added)}, "
+            f"never rendered={sorted(expected_added - added)}")
+    require(errors, not removed,
+            f"{prefix}: release render has objects the structural render lacks: {sorted(removed)}")
+
+    # A scrape path that drifts from the probe path silently scrapes nothing.
+    for workload in METRICS_WORKLOADS:
+        block = values_workload_block(values, workload)
+        base = re.search(r"(?m)^      basePath:\s*(\S+)\s*$", block)
+        metrics = re.search(r"(?m)^      metricsPath:\s*(\S+)\s*$", block)
+        if base is None or metrics is None:
+            errors.append(f"{prefix}: workload {workload} must declare health.basePath and health.metricsPath")
+            continue
+        expected_path = base.group(1).removesuffix("/health") + "/prometheus"
+        require(errors, metrics.group(1) == expected_path,
+                f"{prefix}: workload {workload} metricsPath {metrics.group(1)} must match {expected_path}")
+    for excluded in METRICS_EXCLUDED:
+        block = values_workload_block(values, excluded)
+        require(errors, re.search(r"(?m)^      metricsPath:", block) is None,
+                f"{prefix}: workload {excluded} must not declare health.metricsPath")
+
+
 def verify_profile(helm: str, profile: str, errors: list[str]) -> None:
     profile_values = CHART / f"values-{profile}.yaml"
-    values = ["--values", str(TEST_VALUES), "--values", str(profile_values)]
+    values = [
+        "--values", str(TEST_VALUES),
+        "--values", str(profile_values),
+        *release_image_args(),
+    ]
     run([helm, "lint", str(CHART), *values])
     rendered = run([
         helm,
@@ -82,6 +206,28 @@ def verify_profile(helm: str, profile: str, errors: list[str]) -> None:
         *values,
     ]).stdout
     documents = manifest_documents(rendered)
+
+    # Second render with every optional capability forced on. Comparing the two
+    # is what proves the release render reflects profile behaviour rather than
+    # an override that only the verifier supplies.
+    structural = manifest_documents(run([
+        helm,
+        "template",
+        "socp-core",
+        str(CHART),
+        "--namespace",
+        NAMESPACE,
+        *values,
+        *MONITORING_OVERRIDE,
+    ]).stdout)
+
+    verify_monitoring(
+        profile,
+        documents,
+        structural,
+        (CHART / "values.yaml").read_text(encoding="utf-8"),
+        errors,
+    )
 
     require(errors, not any(kind == "Namespace" for kind, _ in documents),
             f"{profile}: chart must not create cluster-scoped Namespace resources")
@@ -95,8 +241,6 @@ def verify_profile(helm: str, profile: str, errors: list[str]) -> None:
             f"{profile}: missing non-cloud ServiceAccount")
     require(errors, ("ConfigMap", "socp-runtime") in documents,
             f"{profile}: missing runtime ConfigMap")
-    require(errors, ("PrometheusRule", "socp-slo-alerts") in documents,
-            f"{profile}: missing enabled PrometheusRule render")
 
     expected_scalers = 0 if profile == "dev" else 6
     require(errors,
@@ -192,6 +336,43 @@ def verify_profile(helm: str, profile: str, errors: list[str]) -> None:
             f"{profile}: runtime config must not route dependencies to loopback")
 
 
+def verify_test_values_scope(errors: list[str]) -> None:
+    """The shared CI values fixture must supply images and nothing else.
+
+    A behaviour override hidden in a file shared by every profile is how the
+    original drift hid: the fixture enabled the rule, so the verifier reported
+    a rendered PrometheusRule that no real profile produced. Declaring the keys
+    explicitly keeps that class of override visible even when a profile happens
+    to neutralise it.
+    """
+    text = TEST_VALUES.read_text(encoding="utf-8")
+    keys = re.findall(r"(?m)^([A-Za-z][A-Za-z0-9_-]*):", text)
+    unexpected = sorted(set(keys) - {"images"})
+    require(errors, not unexpected,
+            f"ci/test-values.yaml must supply images only; it also sets {unexpected}")
+
+
+def verify_release_image_mechanism(errors: list[str]) -> None:
+    """The chart image keys must be the ones the release workflow injects.
+
+    The verifier renders images through `--set-string`, so if the workflow used
+    different keys the chart would keep rendering here and fail only on a real
+    rollout.
+    """
+    if not RELEASE_WORKFLOW.is_file():
+        errors.append("missing AWS release workflow; cannot confirm the image injection contract")
+        return
+    release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    for field in ("repository", "digest"):
+        if f"images.$image_key.{field}" not in release:
+            errors.append(
+                f"release workflow must inject images.$image_key.{field} to match the chart's image keys"
+            )
+    for key in IMAGE_KEYS:
+        if f"image_key={key}" not in release:
+            errors.append(f"release workflow does not map any service to the chart image key {key}")
+
+
 def main() -> int:
     errors: list[str] = []
     helm = helm_binary()
@@ -208,6 +389,9 @@ def main() -> int:
     )
     if insecure_defaults.returncode == 0:
         errors.append("chart lint must reject missing image repositories and digests")
+
+    verify_test_values_scope(errors)
+    verify_release_image_mechanism(errors)
 
     try:
         for profile in PROFILES:

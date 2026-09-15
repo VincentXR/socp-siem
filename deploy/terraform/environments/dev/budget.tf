@@ -11,7 +11,7 @@ resource "aws_budgets_budget" "monthly" {
   }
 
   dynamic "notification" {
-    for_each = var.budget_alert_email == null ? [] : [var.budget_alert_email]
+    for_each = local.budget_alert_email == null ? [] : [local.budget_alert_email]
 
     content {
       comparison_operator        = "GREATER_THAN"
@@ -23,7 +23,7 @@ resource "aws_budgets_budget" "monthly" {
   }
 
   dynamic "notification" {
-    for_each = var.budget_alert_email == null ? [] : [var.budget_alert_email]
+    for_each = local.budget_alert_email == null ? [] : [local.budget_alert_email]
 
     content {
       comparison_operator        = "GREATER_THAN"

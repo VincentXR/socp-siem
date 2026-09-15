@@ -77,6 +77,11 @@ jobs:
       AWS_TERRAFORM_PLAN_ROLE_ARN: ${{ vars.AWS_TERRAFORM_PLAN_ROLE_ARN }}
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
       TF_STATE_KMS_KEY_ARN: ${{ vars.TF_STATE_KMS_KEY_ARN }}
+      # Terraform reads TF_VAR_* directly, so the plan and the apply agree on
+      # the budget subscriber without threading another -var through both
+      # plan invocations. An unset variable expands to the empty string, which
+      # the environment normalises back to null.
+      TF_VAR_budget_alert_email: ${{ vars.BUDGET_ALERT_EMAIL }}
     steps:
       - name: Check out pull request
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -156,6 +161,7 @@ jobs:
       AWS_TERRAFORM_APPLY_ROLE_ARN: ${{ vars.AWS_TERRAFORM_APPLY_ROLE_ARN }}
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
       TF_STATE_KMS_KEY_ARN: ${{ vars.TF_STATE_KMS_KEY_ARN }}
+      TF_VAR_budget_alert_email: ${{ vars.BUDGET_ALERT_EMAIL }}
       OPERATION: ${{ inputs.operation }}
       DESTROY_CONFIRMATION: ${{ inputs.destroy_confirmation }}
     steps:

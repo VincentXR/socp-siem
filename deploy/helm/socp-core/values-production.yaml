@@ -1,2 +1,13 @@
-# Production keeps the chart defaults. Override dependency endpoints and
-# capacity only with reviewed environment-specific values.
+# Production keeps the chart defaults for capacity. Override dependency
+# endpoints and capacity only with reviewed environment-specific values.
+#
+# Declare the monitoring intent explicitly instead of inheriting it. The chart
+# default is off because both objects need the Prometheus Operator CRDs, and a
+# missing CRD turns `helm upgrade --atomic` into a rollback. Turn both on here
+# once the cluster runs the operator: verify-helm.py rejects any profile that
+# enables the rule without the scrape configuration.
+monitoring:
+  prometheusRule:
+    enabled: false
+  serviceMonitor:
+    enabled: false

@@ -169,10 +169,19 @@ variable "monthly_budget_usd" {
 }
 
 variable "budget_alert_email" {
-  description = "Optional email subscriber for actual and forecast budget alerts."
+  description = "Optional email subscriber for actual and forecast budget alerts. An empty string is treated as unset."
   type        = string
   default     = null
   nullable    = true
+
+  validation {
+    condition = (
+      var.budget_alert_email == null ||
+      trimspace(var.budget_alert_email) == "" ||
+      can(regex("^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$", trimspace(var.budget_alert_email)))
+    )
+    error_message = "budget_alert_email must be null, blank, or a single email address."
+  }
 }
 
 variable "control_plane_log_retention_days" {

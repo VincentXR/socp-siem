@@ -67,7 +67,12 @@ EKS access policy intentionally cannot create that cluster-scoped resource.
 The monthly budget filters costs by the `Project` tag. Activate that
 user-defined cost allocation tag in the AWS Billing console before treating
 the budget as an effective project guardrail; activation and cost visibility
-are not immediate. The optional enhanced ECR scanning resource is
+are not immediate. A budget without a subscriber cannot warn anyone, so set the
+repository or environment variable `BUDGET_ALERT_EMAIL` before applying from
+CI: both workflows pass it through `TF_VAR_budget_alert_email`, and an unset
+variable expands to the empty string, which the environment normalises back to
+no subscriber. `terraform test` covers the unset, blank, valid, and malformed
+cases. The optional enhanced ECR scanning resource is
 account-and-region scoped. Enable it only when this stack is the designated
 owner and no other stack manages the registry scanning configuration.
 

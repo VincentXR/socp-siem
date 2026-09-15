@@ -1,3 +1,12 @@
+# The disposable dev reference environment does not run the Prometheus
+# Operator, so both monitoring objects stay off and the intent is stated here
+# rather than inherited from the chart defaults.
+monitoring:
+  prometheusRule:
+    enabled: false
+  serviceMonitor:
+    enabled: false
+
 autoscaling:
   enabled: false
 

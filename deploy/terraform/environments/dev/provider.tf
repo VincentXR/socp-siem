@@ -24,6 +24,17 @@ locals {
   cluster_name = "${local.name_prefix}-eks"
   namespace    = "socp-system"
 
+  # A budget without a subscriber cannot warn anyone, so it is not a cost
+  # guardrail. Normalise the empty string here because CI passes the value
+  # through TF_VAR_budget_alert_email, and an unset GitHub variable expands to
+  # the empty string rather than to null; without this the notification blocks
+  # would subscribe an empty address and the apply would fail.
+  budget_alert_email = (
+    var.budget_alert_email == null || trimspace(var.budget_alert_email) == ""
+    ? null
+    : trimspace(var.budget_alert_email)
+  )
+
   availability_zones = slice(data.aws_availability_zones.available.names, 0, 2)
 
   services = toset([
