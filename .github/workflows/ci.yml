@@ -92,12 +92,32 @@ jobs:
           /tmp/actionlint
 
       - name: Verify Terraform contracts
+        # Both environments need the AWS provider, which is hundreds of
+        # megabytes. A shared plugin cache makes the second init reuse the
+        # first download instead of fetching it again, halving both the time
+        # and the exposure to a flaky registry. init is idempotent, so the
+        # retry covers the failure that remains: the provider download is a
+        # single large transfer that releases.hashicorp.com sometimes resets
+        # mid-stream, which used to fail this whole step.
+        env:
+          TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/terraform-plugin-cache
         run: |
+          set -euo pipefail
+          tf_init() {
+            for attempt in 1 2 3; do
+              if terraform -chdir="$1" init -backend=false -input=false; then
+                return 0
+              fi
+              echo "terraform init failed for $1 (attempt $attempt); retrying" >&2
+              sleep $((attempt * 15))
+            done
+            return 1
+          }
           terraform fmt -check -recursive deploy/terraform
-          terraform -chdir=deploy/terraform/bootstrap init -backend=false -input=false
+          tf_init deploy/terraform/bootstrap
           terraform -chdir=deploy/terraform/bootstrap validate
           terraform -chdir=deploy/terraform/bootstrap test
-          terraform -chdir=deploy/terraform/environments/dev init -backend=false -input=false
+          tf_init deploy/terraform/environments/dev
           terraform -chdir=deploy/terraform/environments/dev validate
           terraform -chdir=deploy/terraform/environments/dev test
 
