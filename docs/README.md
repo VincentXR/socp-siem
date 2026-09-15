@@ -51,7 +51,6 @@ directory instead of source control.
 - [Production delivery baseline](production-readiness.md)
 - [Kubernetes release contract](operations/kubernetes.md)
 - [Helm release runbook](../deploy/helm/README.md)
-- [AWS infrastructure runbook](../deploy/terraform/README.md)
 
 ## Architecture decision records
 
@@ -62,4 +61,3 @@ directory instead of source control.
 - [ADR 005: outbox lifecycle](adr/005-outbox-lifecycle.md)
 - [ADR 006: detection runtime selection](adr/006-detection-runtime-selection.md)
 - [ADR 007: logical domains and evidence-gated consolidation](adr/007-runtime-deployment-units.md)
-- [ADR 008: disposable AWS delivery environment](adr/008-aws-delivery-environment.md)

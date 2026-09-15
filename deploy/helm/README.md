@@ -17,10 +17,10 @@ manifests.
 
 ## Prerequisites
 
-The infrastructure role must create `socp-system` using
-`deploy/k8s/namespace.yaml`. The deployment platform must then create the
-external `socp-runtime-secrets` Secret. The chart never creates secret values
-and application service accounts receive no AWS permissions by default.
+The deployment platform must create `socp-system` using
+`deploy/k8s/namespace.yaml`. It must then create the external
+`socp-runtime-secrets` Secret. The chart never creates secret values and
+application service accounts receive no external cloud permissions by default.
 
 Dependency endpoints default to the `socp-data` namespace. Override
 `runtime.extraConfig` through an environment-owned values file when using
@@ -46,7 +46,7 @@ monitoring:
 
 runtime:
   extraConfig:
-    SOCP_KAFKA_BOOTSTRAP: b-1.example.kafka.ap-southeast-1.amazonaws.com:9096
+    SOCP_KAFKA_BOOTSTRAP: kafka.example.internal:9092
 
 networkPolicy:
   additionalEgress:
@@ -55,7 +55,7 @@ networkPolicy:
             cidr: 10.0.0.0/8
       ports:
         - protocol: TCP
-          port: 9096
+          port: 9092
 ```
 
 ## Render locally
@@ -75,11 +75,11 @@ override hidden in a file shared by every profile would otherwise let the
 verifier report a resource that no real profile renders.
 
 `build/verify-helm.py` renders each profile twice. The first render is the
-release path — the profile values plus the same `--set-string images.*`
-arguments `.github/workflows/aws-release.yml` uses. The second forces every
-optional capability on. Any object that appears only in the second render must
-be in the verifier's expected set, so a new flag-gated resource cannot quietly
-become something only CI produces.
+release path — profile values plus explicit `--set-string images.*`
+repository/digest arguments, matching the chart's cloud-neutral release
+interface. The second forces every optional capability on. Any object that
+appears only in the second render must be in the verifier's expected set, so a
+new flag-gated resource cannot quietly become something only CI produces.
 
 Each profile must also declare its monitoring intent explicitly in
 `values-<profile>.yaml`. Inheriting the chart default is rejected, because
@@ -144,36 +144,16 @@ updated in the environment values file, otherwise the scrape is dropped.
 
 ## Release behavior
 
-`.github/workflows/aws-release.yml` builds the four JARs once, builds and
-scans each image, emits a CycloneDX SBOM, pushes an immutable source-SHA tag to
-ECR, resolves the registry digest, and deploys those exact digests with
-`helm upgrade --install --atomic`.
+A deployment pipeline should build the four JARs once, build and scan each
+image, emit an SBOM, publish immutable images to the target registry, resolve
+their digests, and pass those exact repository/digest pairs to Helm.
 
-A production dispatch requires the full commit SHA of an existing staging
-release. It resolves the already-published ECR images and does not rebuild
-them. GitHub Environment protection is the approval boundary. The protected
-`staging` and `production` environments provide:
+Production promotion should reuse an already-published set of image digests
+for an explicit source revision instead of rebuilding artifacts. Registry,
+cluster, identity, ingress, secret, and approval configuration are owned by
+the target environment rather than by this chart.
 
-- `AWS_ACCOUNT_ID`
-- `AWS_REGION`
-- `AWS_RELEASE_ROLE_ARN`
-- `ECR_REPOSITORY_PREFIX`
-- `EKS_CLUSTER_NAME`
-- staging-only `SOCP_RUNTIME_IMAGE`, pinned as `repository@sha256:digest`
-- optional `SOCP_NAMESPACE` (must remain `socp-system` for the Terraform role)
-- optional `SOCP_RUNTIME_SECRET_NAME`
-- optional secret `SOCP_HELM_VALUES_B64` containing a base64-encoded,
-  non-secret environment values file
-
-The repository variable `AWS_DELIVERY_ENABLED=true` enables automatic staging
-delivery after relevant changes reach `main`. Without it, the workflow remains
-available for explicit dispatch and does not contact AWS.
-
-Production must resolve the same immutable ECR repositories populated by the
-staging build. If clusters use separate AWS accounts, replicate the image
-manifests without rebuilding them and grant the production node role pull
-access; the resolved digest must remain unchanged.
-
-`--atomic` rolls back a failed upgrade automatically. Operators can inspect or
-manually select an earlier revision with `helm history` and `helm rollback`;
-production rollback must use the same protected environment.
+Use `helm upgrade --install --atomic --wait` for rollout. `--atomic` rolls back
+a failed upgrade automatically. Operators can inspect or manually select an
+earlier revision with `helm history` and `helm rollback`; production rollback
+must follow the target environment's normal approval boundary.

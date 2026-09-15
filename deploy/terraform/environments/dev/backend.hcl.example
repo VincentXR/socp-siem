@@ -1,4 +1,0 @@
-bucket     = "REPLACE_WITH_STATE_BUCKET"
-key        = "environments/dev/terraform.tfstate"
-region     = "ap-southeast-1"
-kms_key_id = "REPLACE_WITH_STATE_KMS_KEY_ARN"

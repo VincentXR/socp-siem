@@ -12,14 +12,10 @@
   ownership domains and evaluates only explicitly registered consolidation
   candidates with per-candidate context, transaction, failure, and capacity
   evidence.
-- Added the disposable AWS infrastructure baseline: separately bootstrapped
-  encrypted Terraform state, a two-AZ EKS/ECR dev environment, GitHub OIDC
-  plan/apply/release roles, API-backed EKS access entries, control-plane
-  logging, cost guardrails, and mock-provider plan tests.
 - Replaced duplicate Kustomize application manifests with a schema-validated
-  Helm release for four images and six workloads. Added OIDC-authenticated ECR
-  delivery with immutable digests, CycloneDX SBOMs, critical-vulnerability
-  gating, no-rebuild production promotion, and atomic EKS rollout.
+  Helm release for four images and six workloads, including digest-only image
+  inputs, hardened pod defaults, HPA/PDB policy, network policy, and atomic
+  rollout support.
 
 ### Pipeline durability and performance
 

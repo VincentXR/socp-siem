@@ -53,7 +53,6 @@ MONITORING_OVERRIDE = (
     "--set", "monitoring.prometheusRule.enabled=true",
     "--set", "monitoring.serviceMonitor.enabled=true",
 )
-RELEASE_WORKFLOW = ROOT / ".github/workflows/aws-release.yml"
 
 
 def helm_binary() -> str | None:
@@ -99,13 +98,11 @@ def require(errors: list[str], condition: bool, message: str) -> None:
 
 
 def release_image_args() -> list[str]:
-    """Supply images the way the release workflow does.
+    """Supply immutable image coordinates through the chart release interface.
 
-    `.github/workflows/aws-release.yml` injects `images.<key>.repository` and
-    `images.<key>.digest` with `--set-string`; no values file carries them. The
-    previous verifier instead relied on `ci/test-values.yaml`, which supplied
-    the images and silently flipped `monitoring.prometheusRule.enabled` at the
-    same time, so every profile appeared to render a PrometheusRule.
+    Real deployment automation should inject `images.<key>.repository` and
+    `images.<key>.digest` with `--set-string`; environment values do not own
+    release image identity.
     """
     args: list[str] = []
     for key, artifact in IMAGE_KEYS.items():
@@ -155,9 +152,6 @@ def verify_monitoring(
         require(errors, excluded not in scrapes,
                 f"{prefix}: {excluded} must not be scraped (its application port exposes health only)")
 
-    # Drift detector: anything that the flag override alone changes must be
-    # exactly the monitoring objects. This catches the next flag-gated resource
-    # that CI enables for itself but no real profile renders.
     expected_added: set[tuple[str, str]] = set()
     if not enabled:
         expected_added = {("PrometheusRule", "socp-slo-alerts")}
@@ -171,7 +165,6 @@ def verify_monitoring(
     require(errors, not removed,
             f"{prefix}: release render has objects the structural render lacks: {sorted(removed)}")
 
-    # A scrape path that drifts from the probe path silently scrapes nothing.
     for workload in METRICS_WORKLOADS:
         block = values_workload_block(values, workload)
         base = re.search(r"(?m)^      basePath:\s*(\S+)\s*$", block)
@@ -207,9 +200,6 @@ def verify_profile(helm: str, profile: str, errors: list[str]) -> None:
     ]).stdout
     documents = manifest_documents(rendered)
 
-    # Second render with every optional capability forced on. Comparing the two
-    # is what proves the release render reflects profile behaviour rather than
-    # an override that only the verifier supplies.
     structural = manifest_documents(run([
         helm,
         "template",
@@ -352,27 +342,6 @@ def verify_test_values_scope(errors: list[str]) -> None:
             f"ci/test-values.yaml must supply images only; it also sets {unexpected}")
 
 
-def verify_release_image_mechanism(errors: list[str]) -> None:
-    """The chart image keys must be the ones the release workflow injects.
-
-    The verifier renders images through `--set-string`, so if the workflow used
-    different keys the chart would keep rendering here and fail only on a real
-    rollout.
-    """
-    if not RELEASE_WORKFLOW.is_file():
-        errors.append("missing AWS release workflow; cannot confirm the image injection contract")
-        return
-    release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-    for field in ("repository", "digest"):
-        if f"images.$image_key.{field}" not in release:
-            errors.append(
-                f"release workflow must inject images.$image_key.{field} to match the chart's image keys"
-            )
-    for key in IMAGE_KEYS:
-        if f"image_key={key}" not in release:
-            errors.append(f"release workflow does not map any service to the chart image key {key}")
-
-
 def main() -> int:
     errors: list[str] = []
     helm = helm_binary()
@@ -391,7 +360,6 @@ def main() -> int:
         errors.append("chart lint must reject missing image repositories and digests")
 
     verify_test_values_scope(errors)
-    verify_release_image_mechanism(errors)
 
     try:
         for profile in PROFILES:

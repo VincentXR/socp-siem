@@ -35,10 +35,7 @@ correctness and recovery behavior, not a production capacity or HA claim.
 | Actuator boundary | `python build/verify-actuator-auth.py` | Gateway health remains probeable while info, metrics, and route metadata return 401 without credentials | Full-stack/release candidate |
 | Runtime consolidation policy | `python build/verify-runtime-consolidation.py` | No fixed process target is configured and logical domains/candidates match the executable registry | Every topology change |
 | Candidate consolidation | `python build/verify-runtime-consolidation.py --candidate NAME --require-evidence --evidence PATH` | One registered candidate has commit-matched context, transaction, failure-isolation, and capacity evidence | Before changing that candidate's runtime placement |
-| Terraform bootstrap | `terraform -chdir=deploy/terraform/bootstrap init -backend=false -input=false && terraform fmt -check -recursive deploy/terraform/bootstrap && terraform -chdir=deploy/terraform/bootstrap validate && terraform -chdir=deploy/terraform/bootstrap test` | State bucket/KMS configuration is formatted, provider-valid, versioned, encrypted, and non-public | Every AWS bootstrap change |
-| Terraform AWS dev | `terraform -chdir=deploy/terraform/environments/dev init -backend=false -input=false && terraform fmt -check -recursive deploy/terraform/environments/dev && terraform -chdir=deploy/terraform/environments/dev validate && terraform -chdir=deploy/terraform/environments/dev test` | Core EKS/ECR graph, OIDC role separation, access entries, production CIDR guard, and node-size guard pass without creating resources | Every AWS environment change |
 | Helm release | `python build/verify-helm.py` | Dev/staging/production profiles render four digest-only images into six hardened workloads with the expected HPA/PDB, runtime roles, and service routes | Every Kubernetes release change |
-| AWS workflows | `actionlint .github/workflows/aws-infrastructure.yml .github/workflows/aws-release.yml && python build/verify-production.py` | Workflow syntax, commit-pinned actions, distinct plan/apply/release trust boundaries, fork guard, saved-plan apply, explicit destroy confirmation, namespace bootstrap, SBOM/scan gate, ECR digest resolution, no-rebuild promotion, and atomic Helm rollout remain present | Every AWS delivery change |
 | SOAR live | `python build/verify-soar-live.py` | Real PostgreSQL/Temporal Run completion, Alert-shaped event admission, receipt idempotency, and two-instance capacity fence | Weekly/release candidate |
 | Dependency failure | `python build/failure-tests.py` | Kafka, OpenSearch, Temporal, and PostgreSQL recovery assertions | Manual/scheduled |
 
@@ -91,8 +88,8 @@ addresses, tokens, passwords, or machine-specific screenshots.
 
 Push and pull-request CI runs the Java suite, opt-in Testcontainers contracts,
 frontend contracts/build, the minimal service slice, and the Kafka pipeline.
-PRs run duplicate-delivery and Detection Outbox replay Chaos; nightly/manual CI
-repeats those deterministic invariants. The full-stack workflow is
+PRs run duplicate-delivery and Detection Outbox replay Chaos; manual Change CI
+can repeat those deterministic invariants. The full-stack workflow is
 manual/weekly, starts the fixed three-instance cluster, and runs full API,
 pipeline, process/database/OpenSearch outage, Golden Demo, Detection recovery,
 multi-instance/rebalance, attack scenarios, and dependency failure checks with
