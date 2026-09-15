@@ -62,11 +62,16 @@ class HealthSnapshotServiceTest {
                 .build();
         when(routes.getRoutes()).thenReturn(Flux.just(alertRoute));
 
+        // A probe that overruns its timeout is reported as "down" rather than
+        // failing, so a tight timeout turns machine jitter into a false
+        // negative: the first WebClient call in a JVM also pays Reactor Netty
+        // initialisation. This test asserts routing and caching, not probe
+        // latency, so the timeout is generous and the outer block wider still.
         HealthSnapshotService service = new HealthSnapshotService(
-                routes, WebClient.builder(), (HealthEndpoint) null, 60_000, 1_000);
+                routes, WebClient.builder(), (HealthEndpoint) null, 60_000, 5_000);
 
-        HealthSnapshot first = service.snapshot().block(Duration.ofSeconds(5));
-        HealthSnapshot second = service.snapshot().block(Duration.ofSeconds(5));
+        HealthSnapshot first = service.snapshot().block(Duration.ofSeconds(15));
+        HealthSnapshot second = service.snapshot().block(Duration.ofSeconds(15));
 
         assertNotNull(first);
         assertNotNull(second);
