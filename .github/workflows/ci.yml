@@ -1,4 +1,4 @@
-name: CI
+name: Change CI
 
 on:
   push:
@@ -6,8 +6,6 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
-  schedule:
-    - cron: "0 2 * * *"
 
 env:
   # GitHub-hosted runners should use Maven Central directly. The repository
@@ -569,19 +567,19 @@ jobs:
             exit 1
           fi
 
-      # Keep the nightly job deterministic here; the Compose-backed weekly
-      # workflow owns process/database/OpenSearch outage experiments.
-      - name: Run nightly chaos evidence (deterministic replay invariants)
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      # Manual runs can exercise the deterministic replay checks without
+      # mixing a scheduled/nightly lifecycle into the change-validation CI.
+      - name: Run manual replay evidence (deterministic replay invariants)
+        if: github.event_name == 'workflow_dispatch'
         run: |
           mkdir -p .cache/chaos
           set +e
           python3 build/chaos-pipeline.py --scenario duplicate_delivery \
-            --run-id "nightly-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --run-id "manual-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --output .cache/chaos/duplicate-delivery.json
           duplicate_status=$?
           python3 build/chaos-pipeline.py --scenario detection_outbox_replay \
-            --run-id "nightly-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --run-id "manual-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --output .cache/chaos/detection-outbox-replay.json
           replay_status=$?
           if [ "$duplicate_status" -ne 0 ] || [ "$replay_status" -ne 0 ]; then

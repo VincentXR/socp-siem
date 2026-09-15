@@ -1,19 +1,6 @@
-name: AWS release
+name: AWS release (manual)
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/aws-release.yml"
-      - "pom.xml"
-      - "platform/**"
-      - "services/api-gateway/**"
-      - "services/search-config/**"
-      - "services/detect-web/**"
-      - "services/alert-web/**"
-      - "deploy/docker/**"
-      - "deploy/helm/**"
-      - "deploy/k8s/**"
   workflow_dispatch:
     inputs:
       target_environment:
