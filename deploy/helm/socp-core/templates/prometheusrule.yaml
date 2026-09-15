@@ -16,13 +16,19 @@ spec:
   groups:
     - name: socp-event-path
       rules:
+        # absent() matters here: the lag series only exists while a consumer is
+        # reporting. When the consumer wedges, the series disappears and a bare
+        # max() evaluates to nothing, so the alert would go quiet exactly when
+        # the thing it watches has stopped.
         - alert: SocpDetectionConsumerLag
-          expr: max(socp_kafka_consumer_lag) > 10000
+          expr: absent(socp_kafka_consumer_lag) == 1 or max(socp_kafka_consumer_lag) > 10000
           for: 10m
           labels:
             severity: warning
           annotations:
-            summary: SOCP detection consumer lag is high
+            summary: SOCP detection consumer lag is high or not reporting
+            description: Fires on more than 10000 unprocessed records, or when no
+              consumer reports a lag at all.
         - alert: SocpOutboxOldestAge
           expr: max(socp_ingestion_outbox_oldest_pending_age_seconds) > 300
           for: 10m
@@ -30,6 +36,8 @@ spec:
             severity: warning
           annotations:
             summary: SOCP ingestion outbox has an old pending row
+            description: A row has been pending for over 5 minutes. Two drain
+              cycles should clear it; longer means the publisher is wedged.
         - alert: SocpAlertOutboxOldestAge
           expr: max(socp_alert_outbox_oldest_pending_age_seconds) > 300
           for: 10m
@@ -37,6 +45,7 @@ spec:
             severity: warning
           annotations:
             summary: SOCP Alert outbox has an old pending row
+            description: A row has been pending for over 5 minutes.
         - alert: SocpDetectionOutboxOldestAge
           expr: max(socp_detection_outbox_oldest_pending_age_seconds) > 300
           for: 10m
@@ -44,27 +53,41 @@ spec:
             severity: warning
           annotations:
             summary: SOCP Detection outbox has an old pending row
+            description: A row has been pending for over 5 minutes.
+        # DEAD rows are retained on purpose for investigation and explicit
+        # replay, so the dead count never returns to zero. Alerting on the
+        # absolute count therefore latches for good: a critical alert that can
+        # never resolve is a banner operators learn to ignore, which is worse
+        # than having no alert at all. Alert on growth instead, which resolves
+        # once the backlog stops getting worse.
         - alert: SocpIngestionOutboxDead
-          expr: max(socp_ingestion_outbox_dead_count) > 0
+          expr: delta(socp_ingestion_outbox_dead_count[15m]) > 0
           for: 5m
           labels:
             severity: critical
           annotations:
-            summary: SOCP ingestion outbox requires operator action
+            summary: SOCP ingestion outbox gained dead rows
+            description: New rows exhausted their retries and need operator
+              action. Historic dead rows retained for investigation do not
+              re-alert until the count grows again.
         - alert: SocpAlertOutboxDead
-          expr: max(socp_alert_outbox_dead_count) > 0
+          expr: delta(socp_alert_outbox_dead_count[15m]) > 0
           for: 5m
           labels:
             severity: critical
           annotations:
-            summary: SOCP Alert outbox requires operator action
+            summary: SOCP Alert outbox gained dead rows
+            description: New rows exhausted their retries and need operator
+              action.
         - alert: SocpDetectionOutboxDead
-          expr: max(socp_detection_outbox_dead_count) > 0
+          expr: delta(socp_detection_outbox_dead_count[15m]) > 0
           for: 5m
           labels:
             severity: critical
           annotations:
-            summary: SOCP Detection outbox requires operator action
+            summary: SOCP Detection outbox gained dead rows
+            description: New rows exhausted their retries and need operator
+              action.
         - alert: SocpDeadLetterGrowth
           expr: increase(socp_opensearch_indexer_records_total{stage="dlq"}[15m]) > 0
           for: 5m
