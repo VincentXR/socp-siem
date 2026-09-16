@@ -1,0 +1,18 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+{{- $root := . }}
+{{- range $name, $workload := .Values.workloads }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+  namespace: {{ $root.Release.Namespace }}
+  labels:
+    {{- include "socp-core.commonLabels" $root | nindent 4 }}
+spec:
+  minAvailable: {{ $workload.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "socp-core.selectorLabels" (dict "name" $name) | nindent 6 }}
+{{- end }}
+{{- end }}

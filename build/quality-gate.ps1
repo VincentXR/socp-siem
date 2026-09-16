@@ -44,6 +44,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Canonical event schema gate failed' }
     python build/verify-production.py
     if ($LASTEXITCODE -ne 0) { throw 'Production deployment contract gate failed' }
+    python build/verify-helm.py
+    if ($LASTEXITCODE -ne 0) { throw 'Helm release contract gate failed' }
     python build/validate-detection-content.py
     if ($LASTEXITCODE -ne 0) { throw 'Detection content gate failed' }
     python build/generate-detection-summary.py --check-readme

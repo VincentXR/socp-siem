@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["images", "runtime", "workloads"],
+  "properties": {
+    "images": {
+      "type": "object",
+      "required": ["apiGateway", "searchConfig", "detectWeb", "alertWeb"],
+      "additionalProperties": false,
+      "properties": {
+        "apiGateway": { "$ref": "#/definitions/image" },
+        "searchConfig": { "$ref": "#/definitions/image" },
+        "detectWeb": { "$ref": "#/definitions/image" },
+        "alertWeb": { "$ref": "#/definitions/image" }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "required": ["existingSecret", "config"],
+      "properties": {
+        "existingSecret": { "type": "string", "minLength": 1 },
+        "config": { "type": "object" },
+        "extraConfig": { "type": "object" }
+      }
+    },
+    "workloads": {
+      "type": "object",
+      "required": [
+        "api-gateway",
+        "search-config-api",
+        "search-config-worker",
+        "detect-web-api",
+        "detect-web-worker",
+        "alert-web"
+      ]
+    }
+  },
+  "definitions": {
+    "image": {
+      "type": "object",
+      "required": ["repository", "digest", "pullPolicy"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^@\\s]+$"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": ["Always", "IfNotPresent", "Never"]
+        }
+      }
+    }
+  }
+}

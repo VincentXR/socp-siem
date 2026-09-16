@@ -82,7 +82,7 @@ def main() -> int:
     runtime = topology_report()
     errors.extend(f"runtime topology: {error}" for error in runtime["errors"])
 
-    k8s_runtime = (ROOT / "deploy/k8s/base/runtime-config.yaml").read_text(encoding="utf-8")
+    k8s_runtime = (ROOT / "deploy/helm/socp-core/values.yaml").read_text(encoding="utf-8")
     if not re.search(r"^\s*SOCP_SECURITY_REQUIRE_GATEWAY:\s*[\"']?true[\"']?\s*$",
                      k8s_runtime, re.MULTILINE):
         errors.append("Kubernetes runtime config must require gateway trust")

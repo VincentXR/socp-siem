@@ -27,6 +27,13 @@ python build/verify-openapi-sdk.py
 
 # Deployment-backed Actuator boundary (requires a running gateway)
 python build/verify-actuator-auth.py
+
+# Helm render and deployment invariants (requires Helm 4)
+python build/verify-helm.py
+
+# AWS workflow syntax and static delivery contract (requires actionlint)
+actionlint .github/workflows/aws-infrastructure.yml .github/workflows/aws-release.yml
+python build/verify-production.py
 ```
 
 `pnpm verify` runs the workbench type check and Vite build, then verifies the

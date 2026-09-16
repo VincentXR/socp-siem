@@ -1,0 +1,259 @@
+name: AWS infrastructure
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/aws-infrastructure.yml"
+      - "deploy/terraform/**"
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Infrastructure operation
+        required: true
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+      destroy_confirmation:
+        description: Enter destroy-socp-dev when operation is destroy
+        required: false
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: aws-infrastructure-dev
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  TF_WORKING_DIR: deploy/terraform/environments/dev
+  TF_STATE_KEY: environments/dev/terraform.tfstate
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.16.2
+
+      - name: Validate Terraform contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform fmt -check -recursive deploy/terraform
+          terraform -chdir=deploy/terraform/bootstrap init -backend=false
+          terraform -chdir=deploy/terraform/bootstrap validate
+          terraform -chdir=deploy/terraform/bootstrap test
+          terraform -chdir="$TF_WORKING_DIR" init -backend=false
+          terraform -chdir="$TF_WORKING_DIR" validate
+          terraform -chdir="$TF_WORKING_DIR" test
+
+  pull-request-plan:
+    needs: validate
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      vars.AWS_INFRASTRUCTURE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_TERRAFORM_PLAN_ROLE_ARN: ${{ vars.AWS_TERRAFORM_PLAN_ROLE_ARN }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_KMS_KEY_ARN: ${{ vars.TF_STATE_KMS_KEY_ARN }}
+    steps:
+      - name: Check out pull request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.16.2
+
+      - name: Validate repository configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
+          [[ "$AWS_REGION" =~ ^[a-z]{2}-[a-z]+-[0-9]+$ ]]
+          [[ "$AWS_TERRAFORM_PLAN_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/.+$ ]]
+          [[ "$TF_STATE_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]
+          [[ "$TF_STATE_KMS_KEY_ARN" =~ ^arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key/.+$ ]]
+
+      - name: Configure plan-only AWS credentials
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: ${{ env.AWS_TERRAFORM_PLAN_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ env.AWS_ACCOUNT_ID }}
+          role-session-name: socp-${{ github.run_id }}-plan
+          unset-current-credentials: true
+
+      - name: Create review plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .cache/terraform
+          terraform -chdir="$TF_WORKING_DIR" init -reconfigure \
+            -backend-config="bucket=$TF_STATE_BUCKET" \
+            -backend-config="key=$TF_STATE_KEY" \
+            -backend-config="region=$AWS_REGION" \
+            -backend-config="kms_key_id=$TF_STATE_KMS_KEY_ARN"
+          set +e
+          terraform -chdir="$TF_WORKING_DIR" plan \
+            -detailed-exitcode -lock-timeout=5m \
+            -var="aws_region=$AWS_REGION" \
+            -var="github_repository=$GITHUB_REPOSITORY" \
+            -var="state_bucket_name=$TF_STATE_BUCKET" \
+            -var="state_kms_key_arn=$TF_STATE_KMS_KEY_ARN" \
+            -out="$GITHUB_WORKSPACE/.cache/terraform/dev.tfplan"
+          plan_exit=$?
+          set -e
+          if [[ "$plan_exit" -gt 2 ]]; then
+            exit "$plan_exit"
+          fi
+          terraform -chdir="$TF_WORKING_DIR" show -no-color \
+            "$GITHUB_WORKSPACE/.cache/terraform/dev.tfplan" \
+            > "$GITHUB_WORKSPACE/.cache/terraform/dev-plan.txt"
+
+      - name: Upload review plan
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: terraform-dev-plan-${{ github.event.pull_request.number }}
+          path: .cache/terraform/dev-plan.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  protected-operation:
+    needs: validate
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: infrastructure
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_TERRAFORM_APPLY_ROLE_ARN: ${{ vars.AWS_TERRAFORM_APPLY_ROLE_ARN }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_KMS_KEY_ARN: ${{ vars.TF_STATE_KMS_KEY_ARN }}
+      OPERATION: ${{ inputs.operation }}
+      DESTROY_CONFIRMATION: ${{ inputs.destroy_confirmation }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.16.2
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
+        with:
+          version: v1.36.1
+
+      - name: Validate protected-environment configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
+          [[ "$AWS_REGION" =~ ^[a-z]{2}-[a-z]+-[0-9]+$ ]]
+          [[ "$AWS_TERRAFORM_APPLY_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/.+$ ]]
+          [[ "$TF_STATE_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]
+          [[ "$TF_STATE_KMS_KEY_ARN" =~ ^arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key/.+$ ]]
+          if [[ "$OPERATION" == "destroy" && "$DESTROY_CONFIRMATION" != "destroy-socp-dev" ]]; then
+            echo "destroy requires destroy_confirmation=destroy-socp-dev" >&2
+            exit 1
+          fi
+
+      - name: Configure infrastructure AWS credentials
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: ${{ env.AWS_TERRAFORM_APPLY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ env.AWS_ACCOUNT_ID }}
+          role-session-name: socp-${{ github.run_id }}-infrastructure
+          unset-current-credentials: true
+
+      - name: Plan requested operation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .cache/terraform
+          terraform -chdir="$TF_WORKING_DIR" init -reconfigure \
+            -backend-config="bucket=$TF_STATE_BUCKET" \
+            -backend-config="key=$TF_STATE_KEY" \
+            -backend-config="region=$AWS_REGION" \
+            -backend-config="kms_key_id=$TF_STATE_KMS_KEY_ARN"
+          plan_args=(
+            -lock-timeout=5m
+            -var="aws_region=$AWS_REGION"
+            -var="github_repository=$GITHUB_REPOSITORY"
+            -var="state_bucket_name=$TF_STATE_BUCKET"
+            -var="state_kms_key_arn=$TF_STATE_KMS_KEY_ARN"
+            -out="$GITHUB_WORKSPACE/.cache/terraform/dev.tfplan"
+          )
+          if [[ "$OPERATION" == "destroy" ]]; then
+            plan_args=(-destroy "${plan_args[@]}")
+          fi
+          terraform -chdir="$TF_WORKING_DIR" plan "${plan_args[@]}"
+          terraform -chdir="$TF_WORKING_DIR" show -no-color \
+            "$GITHUB_WORKSPACE/.cache/terraform/dev.tfplan" \
+            > "$GITHUB_WORKSPACE/.cache/terraform/dev-plan.txt"
+
+      - name: Apply saved plan
+        if: env.OPERATION == 'apply' || env.OPERATION == 'destroy'
+        shell: bash
+        run: >-
+          terraform -chdir="$TF_WORKING_DIR" apply
+          -auto-approve "$GITHUB_WORKSPACE/.cache/terraform/dev.tfplan"
+
+      - name: Apply cluster-scoped prerequisites
+        if: env.OPERATION == 'apply'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cluster_name="$(terraform -chdir="$TF_WORKING_DIR" output -raw cluster_name)"
+          [[ "$cluster_name" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$ ]]
+          aws eks update-kubeconfig --name "$cluster_name" --region "$AWS_REGION"
+          for attempt in {1..6}; do
+            if kubectl apply -f deploy/k8s/namespace.yaml; then
+              exit 0
+            fi
+            if [[ "$attempt" -eq 6 ]]; then
+              echo "EKS API did not accept cluster prerequisites after 6 attempts" >&2
+              exit 1
+            fi
+            sleep 10
+          done
+
+      - name: Upload operation plan
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: terraform-dev-${{ env.OPERATION }}-${{ github.run_id }}
+          path: .cache/terraform/dev-plan.txt
+          if-no-files-found: warn
+          retention-days: 30
