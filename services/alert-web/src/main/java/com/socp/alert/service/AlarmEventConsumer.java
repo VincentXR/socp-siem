@@ -6,7 +6,11 @@ import com.socp.alert.domain.Alarm;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.socp.platform.client.kafka.KafkaClientSupport;
+import com.socp.platform.client.kafka.KafkaTrace;
+import com.socp.platform.obs.trace.TracePropagation;
 import com.socp.platform.tenant.context.TenantContext;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.context.Scope;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
@@ -63,20 +67,26 @@ public class AlarmEventConsumer {
                 boolean retry = false;
                 for (var record : records) {
                     restoreTrace(record.headers().lastHeader("traceparent"));
-                    try {
+                    Throwable failure = null;
+                    Span span = KafkaTrace.startConsume("alarm-register " + record.topic(),
+                            record.headers());
+                    try (Scope scope = KafkaTrace.contextOf(span).makeCurrent()) {
                         registerEvent(record.value());
                     } catch (IllegalArgumentException | JsonProcessingException invalid) {
+                        failure = invalid;
                         if (!toDlqAndAwait(record.key(), record.value())) {
                             retry = true;
                             break;
                         }
                         log.warn("Invalid alarm event moved to DLQ alarmId={}: {}", record.key(), invalid.getMessage());
                     } catch (RuntimeException transientFailure) {
+                        failure = transientFailure;
                         log.warn("Alarm delivery registration failed; Kafka batch will retry: {}",
                                 transientFailure.getMessage());
                         retry = true;
                         break;
                     } finally {
+                        TracePropagation.finish(span, failure);
                         TenantContext.clear();
                         MDC.remove("traceId");
                     }

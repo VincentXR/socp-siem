@@ -23,6 +23,7 @@ directory instead of source control.
 - [Hardening and evidence](hardening-evidence.md)
 - [Idempotency](idempotency-contract.md)
 - [Event-path observability](observability-stage-metrics.md)
+- [Distributed tracing](distributed-tracing.md)
 - [Workbench internationalization](frontend-i18n.md)
 
 ## Ingestion, search, and detection

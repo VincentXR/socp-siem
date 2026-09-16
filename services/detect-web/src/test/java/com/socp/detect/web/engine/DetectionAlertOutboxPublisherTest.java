@@ -51,7 +51,7 @@ class DetectionAlertOutboxPublisherTest {
 
         assertEquals("PENDING", event.getStatus());
         assertEquals(1, event.getAttempts());
-        verify(alarmProducer, never()).sendAndAwait(any(), anyString());
+        verify(alarmProducer, never()).sendAndAwait(any(), anyString(), any());
     }
 
     @Test
@@ -61,7 +61,7 @@ class DetectionAlertOutboxPublisherTest {
                 eq("PENDING"), any(Instant.class))).willReturn(List.of(event));
         given(repository.claim(eq("alert-2"), eq("PENDING"), any(Instant.class), any(Integer.class))).willReturn(1);
         given(alertClient.forwardAlarm(anyString())).willReturn(success());
-        given(alarmProducer.sendAndAwait(any(), eq("alert-2"))).willAnswer(invocation -> {
+        given(alarmProducer.sendAndAwait(any(), eq("alert-2"), any())).willAnswer(invocation -> {
             assertEquals("tenant-a", TenantContext.get());
             return true;
         });
@@ -73,7 +73,7 @@ class DetectionAlertOutboxPublisherTest {
         verify(alertClient).forwardAlarm(argThat(payload ->
                 payload.contains("\"id\":\"alert-2\"")
                         && payload.contains("\"detectionOutboxClaimedAt\"")));
-        verify(alarmProducer).sendAndAwait(any(), eq("alert-2"));
+        verify(alarmProducer).sendAndAwait(any(), eq("alert-2"), any());
         verify(repository, never()).claim(eq("alert-2"), eq("DELIVERED"), any(Instant.class), any(Integer.class));
     }
 
@@ -88,7 +88,7 @@ class DetectionAlertOutboxPublisherTest {
         publisher.publishDue();
 
         verify(alertClient, never()).forwardAlarm(anyString());
-        verify(alarmProducer, never()).sendAndAwait(any(), anyString());
+        verify(alarmProducer, never()).sendAndAwait(any(), anyString(), any());
     }
 
     @Test
@@ -103,7 +103,7 @@ class DetectionAlertOutboxPublisherTest {
         given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
                 eq("DELIVERED"), any(Instant.class))).willReturn(List.of(event));
         given(repository.claim(eq("alert-4"), eq("DELIVERED"), any(Instant.class), any(Integer.class))).willReturn(1);
-        given(alarmProducer.sendAndAwait(any(), eq("alert-4"))).willReturn(false);
+        given(alarmProducer.sendAndAwait(any(), eq("alert-4"), any())).willReturn(false);
 
         publisher().publishDue();
 
@@ -120,7 +120,7 @@ class DetectionAlertOutboxPublisherTest {
         given(repository.claim(eq("alert-inline-failure"), eq("PENDING"), any(Instant.class), any(Integer.class)))
                 .willReturn(1);
         given(alertClient.forwardAlarm(anyString())).willReturn(success());
-        given(alarmProducer.sendAndAwait(any(), eq("alert-inline-failure"))).willReturn(false);
+        given(alarmProducer.sendAndAwait(any(), eq("alert-inline-failure"), any())).willReturn(false);
 
         publisher().publishDue();
 
@@ -189,7 +189,7 @@ class DetectionAlertOutboxPublisherTest {
                 active.decrementAndGet();
             }
         });
-        given(alarmProducer.sendAndAwait(any(), anyString())).willReturn(true);
+        given(alarmProducer.sendAndAwait(any(), anyString(), any())).willReturn(true);
 
         DetectionAlertOutboxPublisher publisher = new DetectionAlertOutboxPublisher(
                 repository, alertClient, alarmProducer, null, 4);
@@ -264,7 +264,7 @@ class DetectionAlertOutboxPublisherTest {
                 any(Instant.class), eq(12))).willReturn(0);
         given(repository.claim(eq("delivered-backlog"), eq("DELIVERED"),
                 any(Instant.class), eq(12))).willReturn(1);
-        given(alarmProducer.sendAndAwait(any(), eq("delivered-backlog"))).willReturn(true);
+        given(alarmProducer.sendAndAwait(any(), eq("delivered-backlog"), any())).willReturn(true);
         DetectionAlertOutboxPublisher publisher = new DetectionAlertOutboxPublisher(
                 repository, alertClient, alarmProducer, null, 1, 12, 60_000L, 8, 10_000L);
         try {
@@ -273,7 +273,7 @@ class DetectionAlertOutboxPublisherTest {
             publisher.stopDeliveryExecutor();
         }
 
-        verify(alarmProducer).sendAndAwait(any(), eq("delivered-backlog"));
+        verify(alarmProducer).sendAndAwait(any(), eq("delivered-backlog"), any());
         assertEquals("PUBLISHED", delivered.getStatus());
     }
 

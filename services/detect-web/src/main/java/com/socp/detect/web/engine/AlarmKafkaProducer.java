@@ -2,6 +2,11 @@ package com.socp.detect.web.engine;
 
 import com.socp.detect.web.config.DetectRuntimeRole;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.socp.platform.client.kafka.KafkaTrace;
+import com.socp.platform.obs.trace.TracePropagation;
+import com.socp.platform.obs.web.TraceIdFilter;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanKind;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -11,7 +16,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.TimeUnit;
@@ -62,7 +66,11 @@ public class AlarmKafkaProducer {
      * {@link #sendAndAwait(Map, String)} so a failed send remains retryable.
      */
     public void send(Map<String, Object> alarm, String alertId) {
-        Thread.startVirtualThread(() -> sendAndAwait(alarm, alertId));
+        // Captured on the calling thread: neither the MDC nor the OTel context
+        // propagates into the virtual thread, so reading them inside it yields
+        // nothing and the record would ship without a trace header.
+        String traceparent = TraceIdFilter.buildTraceparent();
+        Thread.startVirtualThread(() -> sendAndAwait(alarm, alertId, traceparent));
     }
 
     /**
@@ -73,6 +81,19 @@ public class AlarmKafkaProducer {
      * record PUBLISHED even though nothing was delivered to Kafka.</p>
      */
     public boolean sendAndAwait(Map<String, Object> alarm, String alertId) {
+        return sendAndAwait(alarm, alertId, TraceIdFilter.buildTraceparent());
+    }
+
+    /**
+     * Send with a bounded acknowledgement wait for the Detection outbox.
+     *
+     * <p>{@code traceparent} is the context to publish under. It is either the
+     * live span of the calling thread or the value a durable outbox row
+     * recorded at enqueue time; the publisher has no span of its own. A
+     * PRODUCER span is opened beneath it so the hop appears in the tree rather
+     * than being skipped.</p>
+     */
+    public boolean sendAndAwait(Map<String, Object> alarm, String alertId, String traceparent) {
         if (alarm == null) {
             throw new IllegalArgumentException("alarm must not be null");
         }
@@ -80,20 +101,23 @@ public class AlarmKafkaProducer {
             log.warn("Original alert Kafka publish is disabled; keeping outbox record retryable alertId={}", alertId);
             return false;
         }
+        Span span = TracePropagation.startSpan("kafka publish " + topic, SpanKind.PRODUCER,
+                TracePropagation.contextFrom(traceparent));
+        Throwable failure = null;
         try {
             String value = MAPPER.writeValueAsString(alarm);
             ProducerRecord<String, String> record = new ProducerRecord<>(topic,
                     alertId == null ? "unknown" : alertId, value);
-            String traceparent = com.socp.platform.obs.web.TraceIdFilter.buildTraceparent();
-            if (traceparent != null) {
-                record.headers().add("traceparent", traceparent.getBytes(StandardCharsets.UTF_8));
-            }
+            KafkaTrace.inject(KafkaTrace.contextOf(span), record.headers());
             producer().send(record).get(5, TimeUnit.SECONDS);
             return true;
         } catch (Exception ex) {
+            failure = ex;
             log.warn("Original alert Kafka publish failed alertId={} (Detection outbox will retry): {}",
                     alertId, ex.getMessage());
             return false;
+        } finally {
+            TracePropagation.finish(span, failure);
         }
     }
 }

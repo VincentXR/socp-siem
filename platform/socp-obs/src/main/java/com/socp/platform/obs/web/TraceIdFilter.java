@@ -1,9 +1,9 @@
 package com.socp.platform.obs.web;
 import com.socp.platform.obs.config.OTelSetup;
-import io.opentelemetry.api.GlobalOpenTelemetry;
+import com.socp.platform.obs.trace.TracePropagation;
 import io.opentelemetry.api.trace.Span;
-import io.opentelemetry.api.trace.SpanContext;
-import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.api.trace.StatusCode;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
 import io.opentelemetry.context.propagation.TextMapGetter;
@@ -81,8 +81,19 @@ public class TraceIdFilter extends OncePerRequestFilter {
         return value;
     }
 
-    /** 从 MDC 构建出站 traceparent（沿用当前 traceId + 新 span-id）；无 traceId 返回 null。 */
+    /**
+     * 出站 traceparent。优先渲染当前真实 Span（这样 downstream 的父 span 确实存在）；
+     * 只有在没有 live span 时才回退 MDC + 新 span-id。
+     *
+     * <p>手写回退会造出一个没有任何 exporter 见过的 span-id，downstream 会把
+     * 它当父 span 引用，于是 trace 里出现一个悬空的父引用：同一个 trace-id
+     * 但不成树。所以只要能拿到 live span 就必须用 propagator 渲染。
+     */
     public static String buildTraceparent() {
+        String live = TracePropagation.currentTraceparent();
+        if (live != null) {
+            return live;
+        }
         String tid = normalizeTraceId(MDC.get("traceId"));
         if (tid == null) return null;
         return "00-" + tid + "-" + newSpanId() + "-01";
@@ -129,44 +140,43 @@ public class TraceIdFilter extends OncePerRequestFilter {
         }
     }
 
-    /** OTel SDK 路径：propagator 提取父上下文 → 创建 Span → MDC → 响应注入。 */
+    /** OTel SDK 路径：propagator 提取父上下文 → 创建 SERVER Span → MDC → 响应注入。 */
     private void doWithOtel(HttpServletRequest req, HttpServletResponse res, FilterChain chain)
             throws IOException, ServletException {
-        Context parent = GlobalOpenTelemetry.getPropagators().getTextMapPropagator()
-                .extract(Context.current(), req, GETTER);
-        Span parentSpan = Span.fromContext(parent);
-        String traceId;
-        if (parentSpan.getSpanContext().isValid()) {
-            traceId = parentSpan.getSpanContext().getTraceId();
-        } else {
+        Context parent = TracePropagation.extract(GETTER, req);
+        String method = req.getMethod() == null ? "HTTP" : req.getMethod();
+        String path = req.getRequestURI();
+        Span span = TracePropagation.startSpan(method + " " + path, SpanKind.SERVER, parent);
+        // Bound once and reused for injection: try-with-resources closes the
+        // scope before the finally block runs, so Context.current() there no
+        // longer carries this span. Injecting from Context.current() in the
+        // finally block used to publish the caller's span instead of ours.
+        Context spanContext = Context.current().with(span);
+        String traceId = TracePropagation.traceId(spanContext);
+        if (traceId == null) {
             traceId = newTraceId();
         }
         MDC.put("traceId", traceId);
-        Tracer tracer = GlobalOpenTelemetry.getTracer("socp", "1.0.0");
-        String path = req.getRequestURI();
-        Span span = tracer.spanBuilder(req.getMethod() + " " + path)
-                .setParent(parent)
-                .startSpan();
-        SpanContext sc = span.getSpanContext();
-        if (sc.isValid()) {
-            MDC.put("traceId", sc.getTraceId());
-        }
-        res.setHeader(HEADER, MDC.get("traceId"));
-        try (Scope scope = span.makeCurrent()) {
+        span.setAttribute("http.request.method", method);
+        span.setAttribute("url.path", path);
+        res.setHeader(HEADER, traceId);
+
+        Throwable failure = null;
+        try (Scope scope = spanContext.makeCurrent()) {
             chain.doFilter(req, res);
-            if (res.getStatus() >= 500) {
-                span.setStatus(io.opentelemetry.api.trace.StatusCode.ERROR);
-            }
         } catch (Throwable t) {
-            span.recordException(t);
-            span.setStatus(io.opentelemetry.api.trace.StatusCode.ERROR);
+            failure = t;
             throw t;
         } finally {
-            span.end();
+            if (failure == null && res.getStatus() >= 500) {
+                span.setStatus(StatusCode.ERROR);
+            }
+            span.setAttribute("http.response.status_code", res.getStatus());
             // 响应注入 W3C traceparent（若未由其他组件写入）
             if (res.getHeader(TRACEPARENT) == null) {
-                GlobalOpenTelemetry.getPropagators().getTextMapPropagator().inject(Context.current(), res, SETTER);
+                TracePropagation.inject(spanContext, SETTER, res);
             }
+            TracePropagation.finish(span, failure);
             MDC.remove("traceId");
         }
     }

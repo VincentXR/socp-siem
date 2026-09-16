@@ -1,6 +1,7 @@
 package com.socp.detect.web.engine;
 
 import com.socp.platform.client.kafka.KafkaClientSupport;
+import com.socp.platform.client.kafka.KafkaTrace;
 import com.socp.detect.web.config.DetectRuntimeRole;
 import com.socp.detect.web.service.DetectEngineService;
 import com.socp.detect.web.metrics.DetectionPerformanceMetrics;
@@ -423,18 +424,19 @@ public class KafkaEventConsumer {
                                   long epoch) {
         long delay = 250;
         int attempts = 0;
-        String traceparent = extractHeader(record, "traceparent");
-        String traceId = extractTraceId(traceparent);
 
         while (running.get() && !Thread.currentThread().isInterrupted()) {
             try {
-                if (traceId != null) org.slf4j.MDC.put("traceId", traceId);
-                if (traceparent != null) org.slf4j.MDC.put("traceparent", traceparent);
-                // The normalized event is the source of truth for tenant
-                // ownership. DetectionRecordProcessor installs that scope
-                // after parsing, so a Kafka header can never re-home a row.
-                processOne(record.topic(), record.partition(), record.offset(), record.key(), record.value());
-                completions.offer(new RecordCompletion(record.partition(), record.offset(), epoch));
+                // Parented to the producer's span, so the Kafka hop joins the
+                // same tree. Mirroring the trace-id into the MDC only made
+                // both sides print one string; no exporter could join them.
+                KafkaTrace.runConsumed("detect " + record.topic() + " receive", record.headers(), () -> {
+                    // The normalized event is the source of truth for tenant
+                    // ownership. DetectionRecordProcessor installs that scope
+                    // after parsing, so a Kafka header can never re-home a row.
+                    processOne(record.topic(), record.partition(), record.offset(), record.key(), record.value());
+                    completions.offer(new RecordCompletion(record.partition(), record.offset(), epoch));
+                });
                 return;
             } catch (DetectionRecordProcessor.MalformedDetectionRecordException terminal) {
                 if (handoffToDlqUntilDurable(terminal.eventId(), terminal.raw(), record.partition(), record.offset(),
@@ -470,8 +472,6 @@ public class KafkaEventConsumer {
                     }
                 }
             } finally {
-                if (traceId != null) org.slf4j.MDC.remove("traceId");
-                if (traceparent != null) org.slf4j.MDC.remove("traceparent");
                 com.socp.platform.tenant.context.TenantContext.clear();
             }
             if (!sleepRetry(delay)) return;
@@ -479,18 +479,6 @@ public class KafkaEventConsumer {
         }
     }
 
-    private static String extractHeader(org.apache.kafka.clients.consumer.ConsumerRecord<String, String> record, String name) {
-        if (record == null || record.headers() == null) return null;
-        org.apache.kafka.common.header.Header header = record.headers().lastHeader(name);
-        if (header == null || header.value() == null) return null;
-        return new String(header.value(), java.nio.charset.StandardCharsets.UTF_8);
-    }
-
-    private static String extractTraceId(String traceparent) {
-        if (traceparent == null || traceparent.isBlank()) return null;
-        String[] parts = traceparent.trim().split("-");
-        return parts.length >= 2 ? parts[1] : traceparent;
-    }
 
     private void processPendingWithRetry(PendingDetectionEvent row) {
         long delay = 250;

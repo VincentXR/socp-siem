@@ -301,7 +301,10 @@ public class DetectionAlertOutboxPublisher {
     private void publishOriginalAlarm(DetectionAlertOutboxEntity event) {
         try {
             Map<String, Object> payload = MAPPER.readValue(event.getPayload(), MAP);
-            boolean published = alarmProducer.sendAndAwait(payload, event.getAlertId());
+            // Rejoin the trace recorded when the row was enqueued; this thread
+            // has no live span of its own to inherit.
+            boolean published = alarmProducer.sendAndAwait(payload, event.getAlertId(),
+                    event.getTraceparent());
             if (!published) {
                 fail(event, "socp-alarm-original publish failed", "DELIVERED");
                 return;

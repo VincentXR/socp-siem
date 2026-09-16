@@ -62,13 +62,23 @@ public class DetectionAlertOutboxEntity {
     @Column(name = "last_error", length = 1024)
     private String lastError;
 
+    /** W3C {@code traceparent} captured at enqueue time, null when untraced. */
+    @Column(name = "traceparent", length = 255)
+    private String traceparent;
+
     protected DetectionAlertOutboxEntity() {
     }
 
     public DetectionAlertOutboxEntity(String alertId, String tenantId, String payload, Instant now) {
+        this(alertId, tenantId, payload, now, null);
+    }
+
+    public DetectionAlertOutboxEntity(String alertId, String tenantId, String payload,
+                                      Instant now, String traceparent) {
         this.alertId = alertId;
         this.tenantId = tenantId;
         this.payload = payload;
+        this.traceparent = traceparent;
         this.status = "PENDING";
         this.nextAttemptAt = now;
         this.createdAt = now;
@@ -141,6 +151,10 @@ public class DetectionAlertOutboxEntity {
 
     public String getLastError() {
         return lastError;
+    }
+
+    public String getTraceparent() {
+        return traceparent;
     }
 
     public void setLastError(String lastError) {
