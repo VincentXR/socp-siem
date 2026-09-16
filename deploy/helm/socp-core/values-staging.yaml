@@ -1,3 +1,12 @@
+# Staging mirrors the production monitoring decision so a staging release
+# exercises the same discovery path. Enabling either key requires the
+# Prometheus Operator CRDs on the cluster.
+monitoring:
+  prometheusRule:
+    enabled: false
+  serviceMonitor:
+    enabled: false
+
 workloads:
   api-gateway:
     autoscaling:

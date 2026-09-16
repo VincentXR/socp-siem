@@ -1,5 +1,12 @@
-# Render-only values used by repository verification. These images are not
-# published and must never be used for a cluster rollout.
+# Render-only values used by repository verification and by the manual render
+# documented in deploy/helm/README.md. These images are not published and must
+# never be used for a cluster rollout.
+#
+# This file supplies renderable images and nothing else. It must not enable or
+# disable a chart capability: a behaviour override hidden here is exactly how
+# verify-helm.py once proved that every profile rendered a PrometheusRule while
+# no real profile did. `build/verify-helm.py` injects the optional capabilities
+# it wants to exercise explicitly.
 images:
   apiGateway:
     repository: example.invalid/socp-api-gateway
@@ -13,7 +20,3 @@ images:
   alertWeb:
     repository: example.invalid/socp-alert-web
     digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
-
-monitoring:
-  prometheusRule:
-    enabled: true

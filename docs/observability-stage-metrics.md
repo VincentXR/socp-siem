@@ -22,3 +22,29 @@ the counters as an accounting invariant (`consume = write + drop + failed`) and
 investigate any offset commit without a matching durable write or acknowledged
 DLQ record. Percentile histograms are intended for dashboards; raw event IDs
 are never metric labels.
+
+## Alert thresholds
+
+The `socp-event-path` Prometheus rule group ships with the chart and is off by
+default because it needs the Prometheus Operator CRDs. Each threshold below was
+chosen so that a healthy pipeline sits well clear of it, and so that the alert
+can resolve again.
+
+| Alert | Threshold | Basis |
+| --- | --- | --- |
+| `SocpDetectionConsumerLag` | no lag reported, or `> 10000` | `absent()` is required: the series only exists while a consumer reports one. A bare `max()` evaluates to nothing when the consumer wedges, so the alert would fall silent exactly when the thing it watches has stopped. 10000 records is roughly a minute of a loaded pipeline, far above normal catch-up. |
+| `Socp*OutboxOldestAge` | `> 300s` pending | Two drain cycles should clear a row; five minutes of pending means the publisher is wedged rather than briefly behind. |
+| `Socp*OutboxDead` | `delta(...[15m]) > 0` | Dead rows are retained deliberately for investigation and replay, so the count never returns to zero. Alerting on the absolute count latches forever; alerting on growth resolves once the backlog stops worsening. |
+| `SocpDeadLetterGrowth` | `increase(...[15m]) > 0` | The indexer counter is monotonic, so `increase()` is the correct function here; the dead counts above are gauges and use `delta()`. |
+
+Two properties are worth stating because they are easy to get wrong and the
+failure is silent:
+
+1. **An alert on a metric that vanishes cannot fire.** Any rule whose
+   expression is `max(<series>) > x` goes inactive when `<series>` stops being
+   exported, which is usually what happens when the producing component dies.
+   Pair such expressions with `absent()`, or the alert stops talking at the
+   moment it matters most.
+2. **An alert that cannot resolve is not an alert.** If the underlying state is
+   retained by design, never assert on its absolute value; assert on whether it
+   is still getting worse.

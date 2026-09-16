@@ -1,0 +1,40 @@
+{{- if .Values.monitoring.serviceMonitor.enabled }}
+{{- $root := . }}
+{{- range $name, $workload := .Values.workloads }}
+{{- if $workload.health.metricsPath }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ $name }}
+  namespace: {{ $root.Release.Namespace }}
+  labels:
+    {{- include "socp-core.commonLabels" $root | nindent 4 }}
+    app.kubernetes.io/name: {{ $name }}
+    {{- /* The Prometheus Operator selects ServiceMonitors by label, most
+           commonly `release: <helm-release-name>`. Without a way to add that
+           label the objects exist but nothing scrapes them. */}}
+    {{- with $root.Values.monitoring.serviceMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ $root.Release.Namespace }}
+  selector:
+    matchLabels:
+      {{- include "socp-core.selectorLabels" (dict "name" $name) | nindent 6 }}
+  endpoints:
+    - port: http
+      path: {{ $workload.health.metricsPath }}
+      scheme: http
+      interval: {{ $root.Values.monitoring.serviceMonitor.interval }}
+      scrapeTimeout: {{ $root.Values.monitoring.serviceMonitor.scrapeTimeout }}
+      authorization:
+        type: Bearer
+        credentials:
+          name: {{ $root.Values.runtime.existingSecret }}
+          key: {{ $root.Values.monitoring.serviceMonitor.bearerTokenSecretKey }}
+{{- end }}
+{{- end }}
+{{- end }}

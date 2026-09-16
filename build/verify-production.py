@@ -45,6 +45,7 @@ REQUIRED_HELM = {
     "templates/poddisruptionbudgets.yaml",
     "templates/prometheusrule.yaml",
     "templates/serviceaccount.yaml",
+    "templates/servicemonitor.yaml",
     "templates/services.yaml",
 }
 
@@ -142,6 +143,7 @@ def main() -> int:
             "disabled service-account token": "automountServiceAccountToken: false",
             "resource requests and limits": "toYaml $workload.resources",
             "runtime ConfigMap checksum": "checksum/runtime-config:",
+            "metrics discovery": "kind: ServiceMonitor",
         }
         for label, marker in template_checks.items():
             if marker not in templates:
@@ -187,6 +189,8 @@ def main() -> int:
             "SOCP_GAS_WORKER_URI: http://detect-web-worker:8080",
             "SOCP_DETECT_URL: http://detect-web-api:8080",
             "SOCP_ALERT_URL: http://alert-web:8080",
+            "metricsPath: /detect-web/actuator/prometheus",
+            "bearerTokenSecretKey: SOCP_SECURITY_METRICS_TOKEN",
         }
         for marker in required_values:
             if marker not in values:

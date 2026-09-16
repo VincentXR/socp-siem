@@ -1,26 +1,101 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
   "type": "object",
-  "required": ["images", "runtime", "workloads"],
+  "required": [
+    "images",
+    "runtime",
+    "workloads"
+  ],
   "properties": {
     "images": {
       "type": "object",
-      "required": ["apiGateway", "searchConfig", "detectWeb", "alertWeb"],
+      "required": [
+        "apiGateway",
+        "searchConfig",
+        "detectWeb",
+        "alertWeb"
+      ],
       "additionalProperties": false,
       "properties": {
-        "apiGateway": { "$ref": "#/definitions/image" },
-        "searchConfig": { "$ref": "#/definitions/image" },
-        "detectWeb": { "$ref": "#/definitions/image" },
-        "alertWeb": { "$ref": "#/definitions/image" }
+        "apiGateway": {
+          "$ref": "#/definitions/image"
+        },
+        "searchConfig": {
+          "$ref": "#/definitions/image"
+        },
+        "detectWeb": {
+          "$ref": "#/definitions/image"
+        },
+        "alertWeb": {
+          "$ref": "#/definitions/image"
+        }
       }
     },
     "runtime": {
       "type": "object",
-      "required": ["existingSecret", "config"],
+      "required": [
+        "existingSecret",
+        "config"
+      ],
       "properties": {
-        "existingSecret": { "type": "string", "minLength": 1 },
-        "config": { "type": "object" },
-        "extraConfig": { "type": "object" }
+        "existingSecret": {
+          "type": "string",
+          "minLength": 1
+        },
+        "config": {
+          "type": "object"
+        },
+        "extraConfig": {
+          "type": "object"
+        }
+      }
+    },
+    "monitoring": {
+      "type": "object",
+      "properties": {
+        "prometheusRule": {
+          "type": "object",
+          "required": [
+            "enabled"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "additionalLabels": {
+              "type": "object"
+            }
+          }
+        },
+        "serviceMonitor": {
+          "type": "object",
+          "required": [
+            "enabled",
+            "interval",
+            "scrapeTimeout",
+            "bearerTokenSecretKey"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "interval": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h)$"
+            },
+            "scrapeTimeout": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h)$"
+            },
+            "bearerTokenSecretKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "additionalLabels": {
+              "type": "object"
+            }
+          }
+        }
       }
     },
     "workloads": {
@@ -38,7 +113,11 @@
   "definitions": {
     "image": {
       "type": "object",
-      "required": ["repository", "digest", "pullPolicy"],
+      "required": [
+        "repository",
+        "digest",
+        "pullPolicy"
+      ],
       "properties": {
         "repository": {
           "type": "string",
@@ -51,7 +130,11 @@
         },
         "pullPolicy": {
           "type": "string",
-          "enum": ["Always", "IfNotPresent", "Never"]
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
         }
       }
     }

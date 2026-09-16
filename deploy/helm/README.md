@@ -30,6 +30,34 @@ the declared data-service namespace, gateway traffic from `ingress-nginx`, and
 metrics collection from `monitoring`. External dependencies require explicit
 `networkPolicy.additionalEgress` rules in that same environment-owned file.
 
+Changing `runtime.extraConfig` without adding those rules is the failure mode
+to watch for: the readiness probes keep checking the new endpoints, fail, and
+`--atomic` reverts the whole release after the ten-minute timeout. The
+in-cluster default needs no rules because `socp-data` is already allowed. A
+managed endpoint outside the cluster needs both the address and the egress
+rule, for example:
+
+```yaml
+monitoring:
+  prometheusRule:
+    enabled: true
+  serviceMonitor:
+    enabled: true
+
+runtime:
+  extraConfig:
+    SOCP_KAFKA_BOOTSTRAP: b-1.example.kafka.ap-southeast-1.amazonaws.com:9096
+
+networkPolicy:
+  additionalEgress:
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/8
+      ports:
+        - protocol: TCP
+          port: 9096
+```
+
 ## Render locally
 
 Repository verification uses non-routable image names:
@@ -42,7 +70,77 @@ python build/verify-helm.py
 ```
 
 The `ci/test-values.yaml` file is render-only and must never be supplied to a
-cluster rollout.
+cluster rollout. It supplies renderable images and nothing else: a capability
+override hidden in a file shared by every profile would otherwise let the
+verifier report a resource that no real profile renders.
+
+`build/verify-helm.py` renders each profile twice. The first render is the
+release path — the profile values plus the same `--set-string images.*`
+arguments `.github/workflows/aws-release.yml` uses. The second forces every
+optional capability on. Any object that appears only in the second render must
+be in the verifier's expected set, so a new flag-gated resource cannot quietly
+become something only CI produces.
+
+Each profile must also declare its monitoring intent explicitly in
+`values-<profile>.yaml`. Inheriting the chart default is rejected, because
+silent inheritance is what let the verifier assert a rendered `PrometheusRule`
+while no real release produced one.
+
+## Monitoring
+
+The chart ships two optional objects and keeps both off by default:
+
+| Object | Flag | Purpose |
+| --- | --- | --- |
+| `PrometheusRule` | `monitoring.prometheusRule.enabled` | The eight SLO alerts for the event path |
+| `ServiceMonitor` | `monitoring.serviceMonitor.enabled` | Metrics discovery for the five workloads that expose Prometheus |
+
+Both require the Prometheus Operator CRDs. Enabling them on a cluster that does
+not run the operator makes `helm upgrade --install --atomic` fail and roll the
+release back, which is why the chart default is off and each environment opts
+in through its own values file.
+
+The two flags are not independent: a rule with no scrape target never
+evaluates, so `build/verify-helm.py` rejects any profile that enables the rule
+without the ServiceMonitor. Turn both on together once the operator is present:
+
+```bash
+helm upgrade --install socp-core deploy/helm/socp-core \
+  --set monitoring.prometheusRule.enabled=true \
+  --set monitoring.serviceMonitor.enabled=true
+```
+
+Prometheus authenticates with the metrics token from `socp-runtime-secrets`
+(`SOCP_SECURITY_METRICS_TOKEN`). The platform accepts it as
+`Authorization: Bearer <token>` and restricts that credential to the actuator
+metrics endpoints, so Prometheus needs neither a user JWT nor a gateway
+signature. A production profile must set a non-default token; the platform
+refuses to start with the development default.
+
+The token is one accepted credential on the metrics path, not an exclusive
+access control. The interceptor treats it as one branch of the authentication
+chain, and the actuator endpoints carry no role annotation, so a valid user
+JWT also passes it. In a `prod` profile the gateway-signature requirement is
+what closes that path, because Prometheus cannot produce a gateway signature
+and a bare JWT is rejected. Do not describe the metrics token as the only way
+to read the endpoint.
+
+`api-gateway` is deliberately not scraped. Its application port exposes health
+only and defers Prometheus samples to a dedicated internal management
+path/port, so the chart declares no `health.metricsPath` for it. The verifier
+rejects a `ServiceMonitor` for that workload and rejects any `metricsPath` that
+does not match the workload's health path.
+
+The `ServiceMonitor` resolves its bearer token from `socp-runtime-secrets` in
+the release namespace, so the Prometheus instance must be able to read Secrets
+there. A Prometheus that runs elsewhere or lacks that permission loses the
+credential silently and every scrape returns 401. Confirm credential
+reachability before enabling the flag.
+
+The default network policy already admits metrics traffic to port 8080 from
+the namespace labelled `kubernetes.io/metadata.name: monitoring`. A Prometheus
+in a differently named namespace needs `networkPolicy.metricsIngressNamespaceSelector`
+updated in the environment values file, otherwise the scrape is dropped.
 
 ## Release behavior
 
