@@ -28,6 +28,9 @@ import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.m
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { computed, onMounted, ref } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
+import FormField from '../components/FormField.vue'
+import FormGrid from '../components/FormGrid.vue'
+import FormSection from '../components/FormSection.vue'
 import { updateChannel, testChannel, createChannel, deleteChannel, dispatchLog, listChannels, toggleChannel, type Channel, type DispatchLogEntry } from '../api'
 import { useI18n } from '../composables/useI18n'
 
@@ -104,22 +107,69 @@ async function loadNotify() {
   }
 }
 
+/** Per-field messages so a rejected save points at the field, not just a banner. */
+const fieldErrors = ref<{ name?: string; target?: string }>({})
+
+function validateChannel(): boolean {
+  fieldErrors.value = {}
+  if (!form.value.name.trim()) fieldErrors.value.name = t('forms.required')
+  if (form.value.type !== 'LOG') {
+    const target = form.value.target.trim()
+    if (!target) fieldErrors.value.target = t('forms.required')
+    else if (form.value.type === 'EMAIL' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(target)) fieldErrors.value.target = t('forms.recipient')
+    else if (!['EMAIL', 'LOG'].includes(form.value.type)) {
+      try {
+        const url = new URL(target)
+        if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) fieldErrors.value.target = t('forms.endpoint')
+      } catch { fieldErrors.value.target = t('forms.endpoint') }
+    }
+  }
+  return Object.keys(fieldErrors.value).length === 0
+}
+
+function resetChannelForm() {
+  form.value = { name: '', type: 'SLACK', target: '', enabled: true, description: '' }
+  fieldErrors.value = {}
+}
+
+/** Saves and returns the channel id, or throws when validation refuses the save. */
+async function persistChannel(): Promise<string | null> {
+  if (!canWrite.value) return null
+  if (form.value.type === 'LOG') form.value.target = 'local'
+  if (!validateChannel()) throw new Error(fieldErrors.value.target ?? fieldErrors.value.name ?? t('forms.required'))
+  const payload = { ...form.value, name: form.value.name.trim(), target: form.value.target.trim() }
+  if (editingId.value) {
+    await updateChannel(editingId.value, payload)
+    return editingId.value
+  }
+  const created = await createChannel(payload)
+  return created?.id ?? null
+}
+
 async function addChannel() {
   return mutation.run(async () => {
-  if (!canWrite.value) return
-  if (form.value.type === 'LOG') form.value.target = 'local'
-  if (!form.value.name.trim() || !form.value.target.trim()) throw new Error(t('forms.required'))
-  if (form.value.type === 'EMAIL' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.value.target.trim())) throw new Error(t('forms.recipient'))
-  if (!['EMAIL', 'LOG'].includes(form.value.type)) {
-    const url = new URL(form.value.target)
-    if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) throw new Error(t('forms.endpoint'))
-  }
-  const payload = { ...form.value, name: form.value.name.trim(), target: form.value.target.trim() }
-  if (editingId.value) await updateChannel(editingId.value, payload)
-  else await createChannel(payload)
-  form.value = { name: '', type: 'SLACK', target: '', enabled: true, description: '' }
-  dialogVisible.value = false
-  await loadNotify()
+    const id = await persistChannel()
+    if (!id) return
+    resetChannelForm()
+    dialogVisible.value = false
+    await loadNotify()
+  })
+}
+
+/**
+ * Saves and immediately tests, because the test endpoint works on a stored
+ * channel: without this an operator learns a webhook is wrong only after it has
+ * been persisted and has already been handed real alerts.
+ */
+async function saveAndTestChannel() {
+  return mutation.run(async () => {
+    const id = await persistChannel()
+    if (!id) return
+    await testChannel(id)
+    resetChannelForm()
+    dialogVisible.value = false
+    await loadNotify()
+    ElMessage.success(t('forms.testSent'))
   })
 }
 
@@ -172,15 +222,30 @@ onMounted(loadNotify)
       </el-table>
     </el-card>
 
-    <el-dialog v-model="dialogVisible" :before-close="dialogVisibleGuard.beforeClose" :title="editingId ? t('common.edit') : t('notify.createChannel')" width="560px" :close-on-click-modal="false"><ActionFeedback :error="actionError" />
-      <el-form :disabled="actionBusy" label-width="90px">
-        <el-form-item :label="t('common.name')"><el-input v-model="form.name" :placeholder="t('notify.namePlaceholder')" /></el-form-item>
-        <el-form-item :label="t('common.type')"><el-select v-model="form.type" style="width:200px" @change="onChannelTypeChange"><el-option v-for="type in channelTypes" :key="type" :label="channelTypeLabel(type)" :value="type" /></el-select></el-form-item>
-        <el-form-item v-if="form.type !== 'LOG'" :label="targetLabel" required><el-input v-model="form.target" :placeholder="targetPlaceholder" /></el-form-item><p v-else>{{ t('notify.localDestination') }}: <span class="mono">local</span></p>
-        <el-form-item :label="t('common.description')"><el-input v-model="form.description" :placeholder="t('common.description')" /></el-form-item>
-        <el-form-item :label="t('common.enable')"><el-switch v-model="form.enabled" /></el-form-item>
+    <el-dialog v-model="dialogVisible" :before-close="dialogVisibleGuard.beforeClose" :title="editingId ? t('common.edit') : t('notify.createChannel')" width="640px" :close-on-click-modal="false"><ActionFeedback :error="actionError" />
+      <el-form :disabled="actionBusy" label-position="top">
+        <FormGrid :columns="2">
+          <FormField :label="t('common.name')" required :error="fieldErrors.name">
+            <el-input v-model="form.name" :placeholder="t('notify.namePlaceholder')" />
+          </FormField>
+          <FormField :label="t('common.type')" :hint="t('notify.typeHint')">
+            <el-select v-model="form.type" @change="onChannelTypeChange"><el-option v-for="type in channelTypes" :key="type" :label="channelTypeLabel(type)" :value="type" /></el-select>
+          </FormField>
+          <FormField v-if="form.type !== 'LOG'" :label="targetLabel" required :hint="t('notify.targetHint')" :error="fieldErrors.target" full>
+            <el-input v-model="form.target" :placeholder="targetPlaceholder" />
+          </FormField>
+          <FormField v-else :label="t('notify.target')" full>
+            <span class="mono">{{ t('notify.localDestination') }}</span>
+          </FormField>
+          <FormField :label="t('common.description')" full>
+            <el-input v-model="form.description" :placeholder="t('common.description')" />
+          </FormField>
+          <FormField :label="t('common.enable')">
+            <el-switch v-model="form.enabled" />
+          </FormField>
+        </FormGrid>
       </el-form>
-      <template #footer><el-button @click="dialogVisibleGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="success" :loading="actionBusy" @click="addChannel">{{ t('common.save') }}</el-button></template>
+      <template #footer><el-button @click="dialogVisibleGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" :loading="actionBusy" @click="addChannel">{{ t('common.save') }}</el-button><el-button v-if="canWrite" type="success" :loading="actionBusy" @click="saveAndTestChannel">{{ t('notify.saveAndTest') }}</el-button></template>
     </el-dialog>
   </div>
 </template>

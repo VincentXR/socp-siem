@@ -8,6 +8,9 @@ const workbench = inject(WORKBENCH_STATE)
 
 import { useMutation } from '../composables/useMutation'
 import ActionFeedback from '../components/ActionFeedback.vue'
+import FormField from '../components/FormField.vue'
+import FormGrid from '../components/FormGrid.vue'
+import FormSection from '../components/FormSection.vue'
 const mutation = useMutation()
 const { busy: actionBusy, error: actionError } = mutation
 import 'element-plus/es/components/button/style/css.mjs'
@@ -299,14 +302,30 @@ watch(assetDetailOpen, visible => {
       </el-table>
     </DataTableCard>
 
-    <el-dialog v-model="showAssetDialog" :before-close="showAssetDialogGuard.beforeClose" :title="editingAssetId ? (t('assets.edit')) : t('assets.createAsset')" width="560px"><ActionFeedback :error="actionError" />
-      <el-form :disabled="actionBusy" label-width="90px">
-        <el-form-item :label="t('common.name')" required><el-input v-model="assetForm.name" :placeholder="t('assets.namePlaceholder')" /></el-form-item>
-        <el-form-item :label="t('common.type')"><el-select v-model="assetForm.type" style="width: 180px"><el-option v-for="type in assetTypes" :key="type.value" :label="type.label" :value="type.value" /></el-select></el-form-item>
-        <el-form-item :label="t('common.ip')" required><el-input v-model="assetForm.ip" :placeholder="t('assets.ipPlaceholder')" /></el-form-item>
-        <el-form-item :label="t('endpoints.os')"><el-input v-model="assetForm.os" :placeholder="t('assets.osPlaceholder')" /></el-form-item>
-        <el-form-item :label="t('assets.owner')"><el-select v-model="assetForm.owner" filterable clearable :placeholder="t('assets.ownerPlaceholder')"><el-option v-if="assetForm.owner" :label="assetForm.owner" :value="assetForm.owner" /><el-option v-for="person in workbench?.operatorOptions.value ?? []" :key="person" :label="person" :value="person" /></el-select></el-form-item>
-        <el-form-item :label="t('assets.criticality')"><el-select v-model="assetForm.criticality" style="width: 180px"><el-option v-for="level in criticalityOptions" :key="level.value" :label="level.label" :value="level.value" /></el-select></el-form-item>
+    <el-dialog v-model="showAssetDialog" :before-close="showAssetDialogGuard.beforeClose" :title="editingAssetId ? (t('assets.edit')) : t('assets.createAsset')" width="640px"><ActionFeedback :error="actionError" />
+      <el-form :disabled="actionBusy" label-position="top">
+        <FormSection :title="t('assets.identity')" :hint="t('assets.identityHint')">
+          <FormGrid :columns="2">
+            <FormField :label="t('common.name')" required :hint="t('assets.nameHint')">
+              <el-input v-model="assetForm.name" :placeholder="t('assets.namePlaceholder')" />
+            </FormField>
+            <FormField :label="t('common.type')">
+              <el-select v-model="assetForm.type"><el-option v-for="type in assetTypes" :key="type.value" :label="type.label" :value="type.value" /></el-select>
+            </FormField>
+            <FormField :label="t('common.ip')" required :hint="t('assets.ipHint')">
+              <el-input v-model="assetForm.ip" :placeholder="t('assets.ipPlaceholder')" />
+            </FormField>
+            <FormField :label="t('endpoints.os')">
+              <el-input v-model="assetForm.os" :placeholder="t('assets.osPlaceholder')" />
+            </FormField>
+            <FormField :label="t('assets.owner')" :hint="t('assets.ownerHint')">
+              <el-select v-model="assetForm.owner" filterable clearable :placeholder="t('assets.ownerPlaceholder')"><el-option v-if="assetForm.owner" :label="assetForm.owner" :value="assetForm.owner" /><el-option v-for="person in workbench?.operatorOptions.value ?? []" :key="person" :label="person" :value="person" /></el-select>
+            </FormField>
+            <FormField :label="t('assets.criticality')" :hint="t('assets.criticalityHint')">
+              <el-select v-model="assetForm.criticality"><el-option v-for="level in criticalityOptions" :key="level.value" :label="level.label" :value="level.value" /></el-select>
+            </FormField>
+          </FormGrid>
+        </FormSection>
       </el-form>
       <template #footer>
         <el-button @click="showAssetDialogGuard.cancel">{{ t('common.cancel') }}</el-button>

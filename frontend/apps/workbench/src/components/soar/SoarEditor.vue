@@ -50,6 +50,9 @@ import { diffDefinitions, type DefinitionDiff } from './editor/definitionDiff'
 import SoarFlowNode from './editor/SoarFlowNode.vue'
 import SoarFlowPalette from './editor/SoarFlowPalette.vue'
 import SoarFlowPropertyPanel from './editor/SoarFlowPropertyPanel.vue'
+import FormField from '../FormField.vue'
+import FormGrid from '../FormGrid.vue'
+import FormSection from '../FormSection.vue'
 import { summarizeRunHighlights, type RunHighlightRow, type RunOpenRequest, type RunStatusTone } from './editor/runHighlight'
 import { PALETTE_DATA_TYPE } from './editor/types'
 import type { EditorNode, ValidationIssue, ValidationResult } from './editor/types'
@@ -993,9 +996,17 @@ onUnmounted(() => {
     <el-dialog v-if="props.canWrite" v-model="newPlaybookVisible" :before-close="newPlaybookGuard.beforeClose" :title="t('soar.createBlankTitle')" width="520px">
       <p class="soar-dialog-hint">{{ t('soar.createBlankHint') }}</p>
       <el-form label-position="top">
-        <el-form-item :label="t('common.name')" required><el-input v-model="newPlaybookForm.name" :placeholder="t('soar.playbookNamePlaceholder')" /></el-form-item>
-        <el-form-item :label="t('common.description')"><el-input v-model="newPlaybookForm.description" type="textarea" :rows="2" /></el-form-item>
-        <el-form-item :label="t('soar.tags')"><el-input v-model="newPlaybookForm.tags" :placeholder="t('soar.tagsPlaceholder')" /></el-form-item>
+        <FormGrid :columns="1">
+          <FormField :label="t('common.name')" required>
+            <el-input v-model="newPlaybookForm.name" :placeholder="t('soar.playbookNamePlaceholder')" />
+          </FormField>
+          <FormField :label="t('common.description')" :hint="t('soar.playbookDescriptionHint')">
+            <el-input v-model="newPlaybookForm.description" type="textarea" :rows="2" />
+          </FormField>
+          <FormField :label="t('soar.tags')" :hint="t('soar.tagsHint')">
+            <el-input v-model="newPlaybookForm.tags" :placeholder="t('soar.tagsPlaceholder')" />
+          </FormField>
+        </FormGrid>
       </el-form>
       <div v-if="newPlaybookError" class="soar-editor-error">{{ newPlaybookError }}</div>
       <template #footer><el-button @click="newPlaybookGuard.cancel">{{ t('common.cancel') }}</el-button><el-button type="primary" :loading="newPlaybookSaving" @click="createPlaybookAndVersion">{{ t('soar.openCanvas') }}</el-button></template>
@@ -1004,7 +1015,7 @@ onUnmounted(() => {
     <el-dialog
       v-model="diffVisible"
       :title="t('soar.diff.title', { version: publishedVersion?.version ?? '' })"
-      width="680px"
+      width="720px"
       :close-on-click-modal="false"
     >
       <p class="soar-dialog-hint">{{ t('soar.diff.hint') }}</p>

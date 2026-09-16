@@ -1684,7 +1684,6 @@ body {
 .editor-footer { position:sticky; bottom:0; z-index:5; display:flex; justify-content:flex-end; gap:8px; padding:16px 0; border-top:1px solid var(--ns-border); background:var(--ns-surface); }
 .section-toolbar { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:12px 0; }
 .action-feedback { margin-bottom:12px; }
-.source-field { display:flex; flex-direction:column; gap:6px; color:var(--ns-text-2); font-size:13px; }
 .template-choice { display:flex; justify-content:space-between; align-items:center; gap:16px; padding:16px 0; border-bottom:1px solid var(--ns-border); }
 .template-choice p { color:var(--ns-text-3); margin:6px 0; }
 .el-dialog { max-width:calc(100vw - 32px); }

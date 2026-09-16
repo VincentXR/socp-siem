@@ -27,6 +27,9 @@ import ElCard from 'element-plus/es/components/card/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import FieldConditionBuilder from '../FieldConditionBuilder.vue'
+import FormField from '../FormField.vue'
+import FormGrid from '../FormGrid.vue'
+import FormSection from '../FormSection.vue'
 import { useI18n } from '../../composables/useI18n'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import {
@@ -441,50 +444,67 @@ function controlSubtitle(): string {
 
     <section v-if="tab === 'rules'" class="soar-control-section">
       <div class="soar-section-toolbar"><div><b>{{ t('soar.eventRouting') }}</b><small>{{ t('soar.eventRoutingHint') }}</small></div><div><el-button v-if="props.canWrite" size="small" @click="toggleRuleForm">{{ showRuleForm ? t('soar.closeForm') : t('soar.newRule') }}</el-button><el-button v-if="props.canWrite" size="small" @click="showRuleTest = true">{{ t('forms.test') }}</el-button></div></div>
-      <el-drawer v-if="props.canWrite" v-model="showRuleForm" :before-close="ruleGuard.beforeClose" :title="editingRule ? t('forms.edit') : t('detect.createRule')" size="min(760px, 96vw)" :close-on-click-modal="false"><div v-if="errorMessage" role="alert" class="soar-feedback error">{{ errorMessage }}</div><div class="soar-form-grid">
-        <label>{{ t('common.name') }}<el-input v-model="ruleForm.name" :placeholder="t('soar.namePlaceholder')" /></label>
-        <label>{{ t('soar.triggerType') }}
-          <el-select v-model="ruleForm.triggerType" filterable default-first-option placeholder="alert.created">
-            <el-option label="alert.created" value="alert.created" />
-            <el-option label="case.updated" value="case.updated" />
-            <el-option label="ANY" value="ANY" />
-          </el-select>
-        </label>
-        <label>{{ t('soar.priority') }}<el-input-number v-model="ruleForm.priority" :min="0" :max="10000" /></label>
-        <label>{{ t('soar.publishedVersions') }}
-          <el-select v-model="ruleForm.playbookVersionIds" multiple filterable default-first-option collapse-tags :loading="versionOptionsLoading" :placeholder="t('soar.publishedVersionsPlaceholder')">
-            <el-option v-for="version in publishedVersionOptions" :key="version.id" :label="`${version.playbookName} · Revision ${version.version}`" :value="version.id"><div class="soar-version-option"><b>{{ version.playbookName }} · Revision {{ version.version }}</b><small>{{ version.id }}</small></div></el-option>
-          </el-select>
-          <small v-if="versionOptionsError" class="soar-field-warning">{{ versionOptionsError }}</small>
-        </label>
+      <el-drawer v-if="props.canWrite" v-model="showRuleForm" :before-close="ruleGuard.beforeClose" :title="editingRule ? t('forms.edit') : t('detect.createRule')" size="min(760px, 96vw)" :close-on-click-modal="false"><div v-if="errorMessage" role="alert" class="soar-feedback error">{{ errorMessage }}</div><el-form label-position="top" :disabled="saving">
+        <FormSection index="01" :title="t('soar.ruleBasics')" :hint="t('soar.ruleBasicsHint')">
+          <FormGrid :columns="2">
+            <FormField :label="t('common.name')" required>
+              <el-input v-model="ruleForm.name" :placeholder="t('soar.namePlaceholder')" />
+            </FormField>
+            <FormField :label="t('soar.triggerType')" :hint="t('soar.triggerTypeHint')">
+              <el-select v-model="ruleForm.triggerType" filterable default-first-option placeholder="alert.created">
+                <el-option label="alert.created" value="alert.created" />
+                <el-option label="case.updated" value="case.updated" />
+                <el-option label="ANY" value="ANY" />
+              </el-select>
+            </FormField>
+            <FormField :label="t('soar.priority')" :hint="t('soar.priorityHint')">
+              <el-input-number v-model="ruleForm.priority" :min="0" :max="10000" />
+            </FormField>
+            <FormField :label="t('soar.publishedVersions')" :error="versionOptionsError" full>
+              <el-select v-model="ruleForm.playbookVersionIds" multiple filterable default-first-option collapse-tags :loading="versionOptionsLoading" :placeholder="t('soar.publishedVersionsPlaceholder')">
+                <el-option v-for="version in publishedVersionOptions" :key="version.id" :label="`${version.playbookName} · Revision ${version.version}`" :value="version.id"><div class="soar-version-option"><b>{{ version.playbookName }} · Revision {{ version.version }}</b><small>{{ version.id }}</small></div></el-option>
+              </el-select>
+            </FormField>
+          </FormGrid>
+        </FormSection>
+        <FormSection index="02" :title="t('soar.matchConditions')" :hint="t('soar.matchConditionsHint')">
         <div class="soar-condition-builder">
           <FieldConditionBuilder :model-value="ruleConditionRows" :read-only="!props.canWrite" :fields="automationFields" :title="t('soar.simpleConditions')" :add-label="t('common.add')" :empty-hint="t('soar.simpleConditionsHint')" :field-placeholder="t('search.fieldSearchPlaceholder')" :value-placeholder="t('common.value')" @update:model-value="commitRuleConditionRows" />
           <details class="soar-inline-details"><summary>{{ t('soar.advancedConditionsJson') }}</summary><el-input type="textarea" v-model="ruleForm.conditions" :readonly="!props.canWrite" :rows="3" spellcheck="false"  /></details>
         </div>
-        <label>{{ t('forms.dedupWindow') }}<el-input-number :model-value="suppressionSettings.dedupWindowSeconds as number | undefined" :min="0" @change="value => updateSuppression('dedupWindowSeconds', value)" /></label>
-        <label>{{ t('forms.conflictStrategy') }}<el-select :model-value="suppressionSettings.conflictStrategy as string | undefined" @change="value => updateSuppression('conflictStrategy', value)"><el-option v-for="strategy in ['QUEUE', 'SUPPRESS']" :key="strategy" :value="strategy" :label="strategy" /></el-select></label>
-        <details><summary>{{ t('forms.advanced') }}</summary><el-input type="textarea" v-model="ruleForm.suppression" :rows="3" spellcheck="false" /></details>
+        </FormSection>
+        <FormSection index="03" :title="t('soar.suppressionSettings')" :hint="t('soar.suppressionSettingsHint')">
+          <FormGrid :columns="2">
+            <FormField :label="t('forms.dedupWindow')">
+              <el-input-number :model-value="suppressionSettings.dedupWindowSeconds as number | undefined" :min="0" @change="value => updateSuppression('dedupWindowSeconds', value)" />
+            </FormField>
+            <FormField :label="t('forms.conflictStrategy')" :hint="t('soar.conflictStrategyHint')">
+              <el-select :model-value="suppressionSettings.conflictStrategy as string | undefined" @change="value => updateSuppression('conflictStrategy', value)"><el-option v-for="strategy in ['QUEUE', 'SUPPRESS']" :key="strategy" :value="strategy" :label="strategy" /></el-select>
+            </FormField>
+            <details><summary>{{ t('forms.advanced') }}</summary><el-input type="textarea" v-model="ruleForm.suppression" :rows="3" spellcheck="false" /></details>
+          </FormGrid>
+        </FormSection></el-form>
         <div class="soar-form-actions"><el-button v-if="props.canWrite" type="primary" size="small" :loading="saving" @click="createRule">{{ t('common.save') }}</el-button></div>
-      </div></el-drawer>
+      </el-drawer>
       <el-dialog v-if="props.canWrite" v-model="showRuleTest" :title="t('forms.test')" width="720px"><div v-if="errorMessage" role="alert">{{ errorMessage }}</div><div class="soar-test-box"><el-input type="textarea" v-model="ruleEventText" :rows="3" spellcheck="false" :aria-label="t('soar.actionTestEvent')"  /><pre v-if="ruleTestResult">{{ JSON.stringify(ruleTestResult, null, 2) }}</pre></div><template #footer><el-button :loading="saving" @click="testRules">{{ t('forms.test') }}</el-button></template></el-dialog>
       <div class="soar-table-scroll"><table><thead><tr><th>{{ t('common.name') }}</th><th>{{ t('soar.triggerType') }}</th><th>{{ t('soar.priority') }}</th><th>{{ t('soar.revision') }}</th><th>{{ t('common.status') }}</th><th>{{ t('soar.publishedVersions') }}</th><th v-if="props.canWrite || props.canPublish">{{ t('common.actions') }}</th></tr></thead><tbody><tr v-for="rule in rules" :key="rule.id"><td><b>{{ rule.name }}</b><small>{{ rule.id }}</small></td><td>{{ rule.triggerType }}</td><td>{{ rule.priority }}</td><td>{{ rule.revision || 1 }}</td><td><el-tag size="small" :type="rule.enabled ? 'success' : 'info'">{{ statusLabel(rule.enabled ? 'ENABLED' : 'DISABLED') }}</el-tag></td><td class="mono">{{ JSON.stringify(rule.actions) }}</td><td v-if="props.canWrite || props.canPublish" class="nowrap"><el-button v-if="props.canPublish" link size="small" @click="toggleRule(rule)">{{ rule.enabled ? t('common.disable') : t('common.enable') }}</el-button><el-button v-if="props.canWrite" link size="small" @click="editRule(rule)">{{ t('common.edit') }}</el-button></td></tr></tbody></table><div v-if="!rules.length" class="soar-empty">{{ t('soar.noAutomationRules') }}</div></div>
     </section>
 
     <section v-else-if="tab === 'connections'" class="soar-control-section">
       <div class="soar-section-toolbar"><div><b>{{ t('soar.connectorAssets') }}</b><small>{{ t('soar.connectorAssetsHint') }}</small></div><div><el-button v-if="props.canWrite" size="small" @click="showConnectionForm = !showConnectionForm">{{ showConnectionForm ? t('soar.closeForm') : t('soar.newConnection') }}</el-button><details class="soar-inline-details"><summary>{{ t('soar.actionCatalog', { count: actions.length }) }}</summary><div class="soar-action-catalog"><span v-for="action in actions" :key="action.actionRef"><b>{{ action.actionRef }}</b><small>{{ action.riskLevel }} · {{ action.idempotency }} · {{ action.production ? t('soar.production') : t('soar.certificationRequired') }}</small></span></div></details></div></div>
-      <el-dialog v-if="props.canWrite" v-model="showConnectionForm" :before-close="connectionGuard.beforeClose" :title="t('soar.tabConnections')" width="640px" :close-on-click-modal="false"><div v-if="errorMessage" role="alert" class="soar-feedback error">{{ errorMessage }}</div><div class="soar-form-grid">
-        <label>{{ t('common.name') }}<el-input v-model="connectionForm.name" :placeholder="t('soar.connectionNamePlaceholder')" /></label>
-        <label>{{ t('soar.connectorType') }}
+      <el-dialog v-if="props.canWrite" v-model="showConnectionForm" :before-close="connectionGuard.beforeClose" :title="t('soar.tabConnections')" width="640px" :close-on-click-modal="false"><div v-if="errorMessage" role="alert" class="soar-feedback error">{{ errorMessage }}</div><el-form label-position="top" :disabled="saving"><FormGrid :columns="2">
+        <FormField :label="t('common.name')" required><el-input v-model="connectionForm.name" :placeholder="t('soar.connectionNamePlaceholder')" /></FormField>
+        <FormField :label="t('soar.connectorType')">
           <el-select v-model="connectionForm.connectorType" filterable default-first-option :placeholder="t('soar.selectConnector')">
             <el-option v-for="connectorId in connectorTypeOptions" :key="connectorId" :label="connectorId" :value="connectorId" />
           </el-select>
-        </label>
-        <label>{{ t('soar.httpsEndpoint') }}<el-input v-model="connectionForm.endpoint" :placeholder="t('soar.endpointPlaceholder')" /></label>
-        <label>{{ t('soar.secretRef') }}<el-input v-model="connectionForm.authSecretRef" :placeholder="t('soar.secretRefPlaceholder')" /></label>
-        <label>{{ t('soar.allowedHosts') }}<el-input v-model="connectionForm.allowedHosts" :placeholder="t('soar.allowedHostsPlaceholder')" /></label>
-        <label class="soar-checkbox"><el-switch v-model="connectionForm.enabled" /> {{ t('soar.enabledAfterCreate') }}</label>
+        </FormField>
+        <FormField :label="t('soar.httpsEndpoint')" required full><el-input v-model="connectionForm.endpoint" :placeholder="t('soar.endpointPlaceholder')" /></FormField>
+        <FormField :label="t('soar.secretRef')" :hint="t('soar.secretRefHint')"><el-input v-model="connectionForm.authSecretRef" :placeholder="t('soar.secretRefPlaceholder')" /></FormField>
+        <FormField :label="t('soar.allowedHosts')" :hint="t('soar.allowedHostsHint')"><el-input v-model="connectionForm.allowedHosts" :placeholder="t('soar.allowedHostsPlaceholder')" /></FormField>
+        <FormField :label="t('soar.enabledAfterCreate')"><el-switch v-model="connectionForm.enabled" /></FormField>
         <div class="soar-form-actions"><el-button v-if="props.canWrite" type="primary" size="small" :loading="saving" @click="createConnection">{{ t('common.create') }}</el-button></div>
-      </div></el-dialog>
+      </FormGrid></el-form></el-dialog>
       <div class="soar-table-scroll"><table><thead><tr><th>{{ t('common.name') }}</th><th>{{ t('common.type') }}</th><th>{{ t('soar.httpsEndpoint') }}</th><th>{{ t('common.status') }}</th><th>{{ t('soar.connectionTest') }}</th><th v-if="props.canWrite">{{ t('common.actions') }}</th></tr></thead><tbody><tr v-for="connection in connections" :key="connection.id"><td><b>{{ connection.name }}</b><small>{{ connection.id }}</small></td><td>{{ connection.connectorType }}</td><td class="mono">{{ connection.endpoint }}</td><td><el-tag size="small" :type="connection.status === 'HEALTHY' ? 'success' : connection.enabled ? 'warning' : 'info'">{{ statusLabel(connection.status) }}</el-tag></td><td>{{ connection.lastTestAt || '-' }}<small>{{ connection.lastTestError || '' }}</small></td><td v-if="props.canWrite" class="nowrap"><el-button link size="small" @click="testConnection(connection)">{{ t('soar.connectionTest') }}</el-button><el-button link size="small" @click="toggleConnection(connection)">{{ connection.enabled ? t('common.disable') : t('common.enable') }}</el-button><el-button link type="danger" size="small" @click="removeConnection(connection)">{{ t('common.delete') }}</el-button></td></tr></tbody></table><div v-if="!connections.length" class="soar-empty">{{ t('soar.noConnections') }}</div></div>
     </section>
 
@@ -498,7 +518,7 @@ function controlSubtitle(): string {
       <div class="soar-section-toolbar"><div><b>{{ t('soar.deadLetterOperations') }}</b><small>{{ t('soar.deadLetterHint') }}</small></div></div>
       <div class="soar-table-scroll"><table><thead><tr><th>{{ t('common.type') }}</th><th>{{ t('soar.runNode').split(' / ')[0] }}</th><th>{{ t('soar.signalKey') }}</th><th>{{ t('soar.attempts') }}</th><th>{{ t('soar.lastError') }}</th><th v-if="props.canOperate">{{ t('common.actions') }}</th></tr></thead><tbody><tr v-for="letter in deadLetters" :key="`${letter.kind}-${letter.id}`"><td>{{ letter.kind || 'DISPATCH' }}<small>{{ letter.signalType || '' }}</small></td><td class="mono">{{ letter.runId }}</td><td class="mono">{{ letter.signalKey || '-' }}</td><td>{{ letter.attempts }}</td><td>{{ letter.lastError || '-' }}</td><td v-if="props.canOperate" class="nowrap"><el-button link size="small" @click="requeue(letter)">{{ t('soar.requeue') }}</el-button><el-button link type="danger" size="small" @click="discard(letter)">{{ t('soar.discard') }}</el-button></td></tr></tbody></table><div v-if="!deadLetters.length" class="soar-empty">{{ t('soar.noDeadLetters') }}</div></div>
     </section>
-    <el-drawer v-model="taskOpen" :before-close="taskGuard.beforeClose" :title="t('forms.task')" size="min(680px, 96vw)" :close-on-click-modal="false">
+    <el-drawer v-model="taskOpen" :before-close="taskGuard.beforeClose" :title="t('forms.task')" size="min(760px, 96vw)" :close-on-click-modal="false">
       <template v-if="selectedTask"><p>{{ selectedTask.runId }} · {{ selectedTask.nodeId }}</p><div v-if="errorMessage" role="alert" class="soar-feedback error">{{ errorMessage }}</div><SchemaInputForm :key="selectedTask.id" v-model="taskValue" :schema="selectedTask.formSchema" :disabled="saving" @valid="taskValid = $event" /></template>
       <template #footer><el-button v-if="props.canCompleteTasks && selectedTask" type="primary" :loading="saving" :disabled="!taskValid" @click="completeTask(selectedTask)">{{ t('forms.complete') }}</el-button></template>
     </el-drawer>
@@ -514,11 +534,10 @@ function controlSubtitle(): string {
 .soar-tabs button:hover, .soar-tabs button.active { border-bottom-color: var(--ns-accent); color: var(--ns-accent); }
 .soar-feedback { margin: 8px 0; padding: 7px 10px; border-radius: 5px; font-size: 13px; }.soar-feedback.success { color: var(--ns-success); background: color-mix(in srgb, var(--ns-success) 9%, transparent); }.soar-feedback.error { color: var(--ns-danger); background: color-mix(in srgb, var(--ns-danger) 9%, transparent); }
 .soar-control-section { min-width: 0; }.soar-section-toolbar { margin-bottom: 10px; }.soar-section-toolbar > div:first-child { min-width: 0; }
-.soar-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin: 10px 0; padding: 10px; border: 1px solid var(--ns-border); border-radius: 5px; background: var(--ns-bg-subtle); }
-.soar-form-grid label { display: flex; flex-direction: column; gap: 4px; color: var(--ns-text-3); font-size: 13px; }.soar-form-grid input, .soar-form-grid textarea, .soar-form-grid .el-select, .soar-test-box textarea, .soar-task-input { width: 100%; box-sizing: border-box; border: 1px solid var(--ns-border); border-radius: 4px; padding: 6px 7px; background: var(--ns-bg); color: var(--ns-text); font: inherit; font-size: 13px; }.soar-form-grid .el-select { padding: 0; border: 0; }.soar-form-grid textarea, .soar-test-box textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }.soar-form-actions { align-self: end; }.soar-checkbox { justify-content: flex-end; flex-direction: row !important; align-items: center; gap: 7px !important; }.soar-checkbox input { width: auto; }.soar-version-option { display: flex; flex-direction: column; gap: 2px; line-height: 1.25; }.soar-version-option small, .soar-field-warning { color: var(--ns-warning); font-size: 12px; }
+.soar-form-actions { align-self: end; }.soar-version-option { display: flex; flex-direction: column; gap: 2px; line-height: 1.25; }.soar-version-option small, .soar-field-warning { color: var(--ns-warning); font-size: 12px; }
 .soar-test-box { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 9px; margin-bottom: 10px; }.soar-test-box pre { max-height: 100px; margin: 0; overflow: auto; padding: 7px; border: 1px solid var(--ns-border); border-radius: 4px; font-size: 13px; }
 .soar-table-scroll { max-height: 330px; overflow: auto; }.soar-control-plane table { width: 100%; border-collapse: collapse; font-size: 13px; }.soar-control-plane th, .soar-control-plane td { padding: 7px 6px; border-bottom: 1px solid var(--ns-border); text-align: left; vertical-align: top; }.soar-control-plane th { color: var(--ns-text-3); font-size: 12px; text-transform: uppercase; }.soar-control-plane td b, .soar-control-plane td small { display: block; }.soar-control-plane td small { margin-top: 2px; color: var(--ns-text-3); font-size: 12px; }.mono { max-width: 300px; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }.nowrap { white-space: nowrap; }.soar-empty { padding: 10px 0; color: var(--ns-text-3); font-size: 13px; }
 .soar-inline-details { position: relative; display: inline-block; margin-left: 6px; color: var(--ns-text-2); font-size: 13px; }.soar-inline-details summary { cursor: pointer; }.soar-action-catalog { position: absolute; z-index: 2; right: 0; top: 22px; display: grid; width: min(520px, 80vw); max-height: 240px; overflow: auto; gap: 6px; padding: 9px; border: 1px solid var(--ns-border); border-radius: 5px; background: var(--ns-bg); box-shadow: 0 5px 20px rgb(0 0 0 / 16%); }.soar-action-catalog span { display: flex; justify-content: space-between; gap: 10px; }.soar-action-catalog small { color: var(--ns-text-3); }.soar-task-input { min-width: 180px; }.soar-stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 14px; }.soar-stat-grid > div { padding: 10px; border: 1px solid var(--ns-border); border-radius: 5px; background: var(--ns-bg-subtle); }.soar-stat-grid b, .soar-stat-grid small { display: block; }.soar-stat-grid b { font-size: 20px; }.soar-stat-grid small { margin-top: 3px; color: var(--ns-text-3); font-size: 13px; }
-@media (max-width: 850px) { .soar-form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.soar-test-box { grid-template-columns: 1fr; } }
-@media (max-width: 560px) { .soar-control-header, .soar-section-toolbar { align-items: flex-start; flex-direction: column; }.soar-form-grid, .soar-stat-grid { grid-template-columns: 1fr; }.soar-tabs { overflow-x: auto; }.soar-tabs button { white-space: nowrap; } }
+@media (max-width: 850px) { .soar-test-box { grid-template-columns: 1fr; } }
+@media (max-width: 560px) { .soar-control-header, .soar-section-toolbar { align-items: flex-start; flex-direction: column; }.soar-stat-grid { grid-template-columns: 1fr; }.soar-tabs { overflow-x: auto; }.soar-tabs button { white-space: nowrap; } }
 </style>

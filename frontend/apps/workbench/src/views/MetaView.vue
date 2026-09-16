@@ -4,6 +4,9 @@ const canWrite = useWriteAccess()
 import { useFormDialog } from '../composables/useFormDialog'
 import { useMutation } from '../composables/useMutation'
 import ActionFeedback from '../components/ActionFeedback.vue'
+import FormField from '../components/FormField.vue'
+import FormGrid from '../components/FormGrid.vue'
+import FormSection from '../components/FormSection.vue'
 const mutation = useMutation()
 const { busy: actionBusy, error: actionError } = mutation
 import 'element-plus/es/components/button/style/css.mjs'
@@ -173,11 +176,21 @@ onMounted(() => { void loadMeta() })
           <span class="hint">{{ t('meta.registryHint') }}</span>
         </div>
         <el-dialog v-model="showDsDialog" :before-close="showDsDialogGuard.beforeClose" :title="editingId ? t('common.edit') : t('meta.addDataSourceType')" width="520px"><ActionFeedback :error="actionError" />
-          <el-form :disabled="actionBusy" label-width="80px">
-            <el-form-item :label="t('meta.code')"><el-input :disabled="Boolean(editingId)" v-model="newDsType.code" :placeholder="t('meta.syslogPlaceholder')" /></el-form-item>
-            <el-form-item :label="t('meta.name')"><el-input v-model="newDsType.name" :placeholder="t('meta.syslogNamePlaceholder')" /></el-form-item>
-            <el-form-item :label="t('meta.explanation')"><el-input v-model="newDsType.description" :placeholder="t('meta.descriptionPlaceholder')" /></el-form-item>
-            <el-form-item :label="t('meta.enabled')"><el-switch v-model="newDsType.enabled" /></el-form-item>
+          <el-form :disabled="actionBusy" label-position="top">
+            <FormGrid :columns="2">
+              <FormField :label="t('meta.code')" required :hint="t('meta.codeHint')">
+                <el-input :disabled="Boolean(editingId)" v-model="newDsType.code" :placeholder="t('meta.syslogPlaceholder')" />
+              </FormField>
+              <FormField :label="t('meta.name')" required>
+                <el-input v-model="newDsType.name" :placeholder="t('meta.syslogNamePlaceholder')" />
+              </FormField>
+              <FormField :label="t('meta.explanation')" full>
+                <el-input v-model="newDsType.description" :placeholder="t('meta.descriptionPlaceholder')" />
+              </FormField>
+              <FormField :label="t('meta.enabled')">
+                <el-switch v-model="newDsType.enabled" />
+              </FormField>
+            </FormGrid>
           </el-form>
           <template #footer><el-button @click="showDsDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="success" :loading="actionBusy" @click="addDsType">{{ t('common.save') }}</el-button></template>
         </el-dialog>
@@ -198,13 +211,25 @@ onMounted(() => { void loadMeta() })
           <el-button v-if="canWrite" type="primary" @click="openNewMetadata('category')">+ {{ t('meta.addLogCategory') }}</el-button>
           <span class="hint">{{ t('meta.taxonomyHint') }}</span>
         </div>
-        <el-dialog v-model="showCatDialog" :before-close="showCatDialogGuard.beforeClose" :title="editingId ? t('common.edit') : t('meta.addLogCategory')" width="520px"><ActionFeedback :error="actionError" />
-          <el-form :disabled="actionBusy" label-width="80px">
-            <el-form-item :label="t('meta.code')"><el-input :disabled="Boolean(editingId)" v-model="newCategory.code" :placeholder="t('meta.authPlaceholder')" /></el-form-item>
-            <el-form-item :label="t('meta.name')"><el-input v-model="newCategory.name" :placeholder="t('meta.name')" /></el-form-item>
-            <el-form-item :label="t('meta.baselineSeverity')"><el-select v-model="newCategory.defaultSeverity" style="width:160px"><el-option v-for="s in SEVERITIES" :key="s" :label="t('severities.' + s) || s" :value="s" /></el-select></el-form-item>
-            <el-form-item :label="t('meta.explanation')"><el-input v-model="newCategory.description" :placeholder="t('meta.descriptionPlaceholder')" /></el-form-item>
-            <el-form-item :label="t('meta.enabled')"><el-switch v-model="newCategory.enabled" /></el-form-item>
+        <el-dialog v-model="showCatDialog" :before-close="showCatDialogGuard.beforeClose" :title="editingId ? t('common.edit') : t('meta.addLogCategory')" width="640px"><ActionFeedback :error="actionError" />
+          <el-form :disabled="actionBusy" label-position="top">
+            <FormGrid :columns="2">
+              <FormField :label="t('meta.code')" required :hint="t('meta.codeHint')">
+                <el-input :disabled="Boolean(editingId)" v-model="newCategory.code" :placeholder="t('meta.authPlaceholder')" />
+              </FormField>
+              <FormField :label="t('meta.name')" required>
+                <el-input v-model="newCategory.name" :placeholder="t('meta.name')" />
+              </FormField>
+              <FormField :label="t('meta.baselineSeverity')" :hint="t('meta.baselineSeverityHint')">
+                <el-select v-model="newCategory.defaultSeverity"><el-option v-for="s in SEVERITIES" :key="s" :label="t('severities.' + s) || s" :value="s" /></el-select>
+              </FormField>
+              <FormField :label="t('meta.enabled')">
+                <el-switch v-model="newCategory.enabled" />
+              </FormField>
+              <FormField :label="t('meta.explanation')" full>
+                <el-input v-model="newCategory.description" :placeholder="t('meta.descriptionPlaceholder')" />
+              </FormField>
+            </FormGrid>
           </el-form>
           <template #footer><el-button @click="showCatDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="success" :loading="actionBusy" @click="addCategory">{{ t('common.save') }}</el-button></template>
         </el-dialog>
@@ -226,14 +251,30 @@ onMounted(() => { void loadMeta() })
           <el-button v-if="canWrite" type="primary" @click="openNewMetadata('field')">+ {{ t('meta.addField') }}</el-button>
           <span class="hint">{{ t('meta.fieldHint') }}</span>
         </div>
-        <el-dialog v-model="showFieldDialog" :before-close="showFieldDialogGuard.beforeClose" :title="editingId ? t('common.edit') : t('meta.addField')" width="540px"><ActionFeedback :error="actionError" />
-          <el-form :disabled="actionBusy" label-width="80px">
-            <el-form-item :label="t('meta.fieldName')"><el-input :disabled="Boolean(editingId)" v-model="newField.fieldName" :placeholder="t('meta.fieldNamePlaceholder')" /></el-form-item>
-            <el-form-item :label="t('meta.fieldLabel')"><el-input v-model="newField.fieldLabel" :placeholder="t('meta.fieldLabelPlaceholder')" /></el-form-item>
-            <el-form-item :label="t('meta.dataType')"><el-select :disabled="Boolean(editingId)" v-model="newField.fieldType" style="width:160px"><el-option v-for="fieldType in ['string', 'int', 'long', 'float', 'ip', 'date', 'bool', 'json']" :key="fieldType" :label="fieldType" :value="fieldType" /></el-select></el-form-item>
-            <el-form-item :label="t('meta.source')"><el-select v-model="newField.source" style="width:160px"><el-option :label="t('meta.sourceParse')" value="parse" /><el-option :label="t('meta.sourceCustom')" value="custom" /></el-select></el-form-item>
-            <el-form-item :label="t('meta.indexStrategy')"><el-checkbox v-model="newField.searchable">{{ t('common.search') }}</el-checkbox><el-checkbox v-model="newField.aggregatable">{{ t('meta.aggregation') }}</el-checkbox><el-checkbox v-model="newField.stored">{{ t('meta.storage') }}</el-checkbox></el-form-item>
-            <el-form-item :label="t('meta.explanation')"><el-input v-model="newField.description" :placeholder="t('meta.descriptionPlaceholder')" /></el-form-item>
+        <el-dialog v-model="showFieldDialog" :before-close="showFieldDialogGuard.beforeClose" :title="editingId ? t('common.edit') : t('meta.addField')" width="640px"><ActionFeedback :error="actionError" />
+          <el-form :disabled="actionBusy" label-position="top">
+            <FormGrid :columns="2">
+              <FormField :label="t('meta.fieldName')" required :hint="t('meta.fieldNameHint')">
+                <el-input :disabled="Boolean(editingId)" v-model="newField.fieldName" :placeholder="t('meta.fieldNamePlaceholder')" />
+              </FormField>
+              <FormField :label="t('meta.fieldLabel')" required>
+                <el-input v-model="newField.fieldLabel" :placeholder="t('meta.fieldLabelPlaceholder')" />
+              </FormField>
+              <FormField :label="t('meta.dataType')">
+                <el-select :disabled="Boolean(editingId)" v-model="newField.fieldType"><el-option v-for="fieldType in ['string', 'int', 'long', 'float', 'ip', 'date', 'bool', 'json']" :key="fieldType" :label="fieldType" :value="fieldType" /></el-select>
+              </FormField>
+              <FormField :label="t('meta.source')" :hint="t('meta.sourceHint')">
+                <el-select v-model="newField.source"><el-option :label="t('meta.sourceParse')" value="parse" /><el-option :label="t('meta.sourceCustom')" value="custom" /></el-select>
+              </FormField>
+              <FormField :label="t('meta.indexStrategy')" :hint="t('meta.indexStrategyHint')" full>
+                <el-checkbox v-model="newField.searchable">{{ t('common.search') }}</el-checkbox>
+                <el-checkbox v-model="newField.aggregatable">{{ t('meta.aggregation') }}</el-checkbox>
+                <el-checkbox v-model="newField.stored">{{ t('meta.storage') }}</el-checkbox>
+              </FormField>
+              <FormField :label="t('meta.explanation')" full>
+                <el-input v-model="newField.description" :placeholder="t('meta.descriptionPlaceholder')" />
+              </FormField>
+            </FormGrid>
           </el-form>
           <template #footer><el-button @click="showFieldDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="success" :loading="actionBusy" @click="addField">{{ t('common.save') }}</el-button></template>
         </el-dialog>

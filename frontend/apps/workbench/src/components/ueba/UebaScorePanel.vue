@@ -50,7 +50,7 @@ function riskColor(level: string) {
     <el-col :span="10">
       <el-card shadow="never">
         <template #header>{{ t('ueba.scoreInputs') }}</template>
-        <el-form label-width="120px" size="small">
+        <el-form label-position="top" size="small">
           <el-form-item :label="t('ueba.severityBaseline')">
             <el-select v-model="form.severity" @change="emit('calculate')" style="width:160px">
               <el-option v-for="severity in severities" :key="severity" :label="t('severities.' + severity) || severity" :value="severity" />

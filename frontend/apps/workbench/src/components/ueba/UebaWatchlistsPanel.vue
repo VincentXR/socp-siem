@@ -17,6 +17,9 @@ import { useFormDialog } from '../../composables/useFormDialog'
 import { useI18n } from '../../composables/useI18n'
 import ActionFeedback from '../ActionFeedback.vue'
 import DataTableCard from '../DataTableCard.vue'
+import FormField from '../FormField.vue'
+import FormGrid from '../FormGrid.vue'
+import FormSection from '../FormSection.vue'
 import type { Watchlist } from '../../api'
 
 const props = withDefaults(defineProps<{
@@ -80,11 +83,17 @@ async function submitAppend(name: string) {
         <el-button v-if="props.canWrite" link type="danger" :disabled="busy" @click="emit('remove', row.name)">{{ t('common.delete') }}</el-button>
       </template></el-table-column>
     </el-table>
-    <el-dialog v-model="dialogVisible" :before-close="dialogGuard.beforeClose" :title="t('ueba.watchlistCreate')" width="560px">
+    <el-dialog v-model="dialogVisible" :before-close="dialogGuard.beforeClose" :title="t('ueba.watchlistCreate')" width="440px">
       <ActionFeedback :error="error" />
-        <el-form label-width="92px" :disabled="busy || !props.canWrite">
-        <el-form-item :label="t('ueba.watchlistName')" required><el-input v-model="newWatchlist.name" :placeholder="t('ueba.watchlistNamePlaceholder')" /></el-form-item>
-        <el-form-item :label="t('ueba.watchlistValues')"><el-input v-model="newWatchlist.values" type="textarea" :rows="4" :placeholder="t('ueba.watchlistValuesPlaceholder')" /></el-form-item>
+        <el-form label-position="top" :disabled="busy || !props.canWrite">
+        <FormGrid :columns="1">
+          <FormField :label="t('ueba.watchlistName')" required :hint="t('ueba.watchlistNameHint')">
+            <el-input v-model="newWatchlist.name" :placeholder="t('ueba.watchlistNamePlaceholder')" />
+          </FormField>
+          <FormField :label="t('ueba.watchlistValues')" :hint="t('ueba.watchlistValuesHint')">
+            <el-input v-model="newWatchlist.values" type="textarea" :rows="4" :placeholder="t('ueba.watchlistValuesPlaceholder')" />
+          </FormField>
+        </FormGrid>
       </el-form>
       <template #footer><el-button @click="dialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="props.canWrite" type="primary" :loading="busy" @click="submitCreate">{{ t('common.create') }}</el-button></template>
     </el-dialog>

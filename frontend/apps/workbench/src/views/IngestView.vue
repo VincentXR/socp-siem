@@ -10,6 +10,9 @@ const router = useRouter()
 
 import { useMutation } from '../composables/useMutation'
 import ActionFeedback from '../components/ActionFeedback.vue'
+import FormField from '../components/FormField.vue'
+import FormGrid from '../components/FormGrid.vue'
+import FormSection from '../components/FormSection.vue'
 const mutation = useMutation()
 const { busy: actionBusy, error: actionError } = mutation
 import 'element-plus/es/components/alert/style/css.mjs'
@@ -291,7 +294,7 @@ onMounted(async () => {
             <el-table-column type="expand"><template #default="{ row }"><div style="padding:8px 20px;font-size:12px;color:var(--ns-text-2)"><div>{{ t('ingest.environmentDetail', { value: row.env || t('time.notAvailable') }) }} · {{ t('ingest.categoryDetail', { value: row.categoryId || t('time.notAvailable') }) }} · {{ t('ingest.outputDetail', { value: outputLabel(row.sinkTargetId) }) }} · {{ t('ingest.createdDetail', { value: fmtTime(row.createdAt) }) }}</div><div style="margin-top:4px">{{ t('ingest.boundRules') }}<el-tag v-for="p in row.parseRuleIds" :key="p" size="small" style="margin-right:4px">{{ p }}</el-tag><span v-if="!row.parseRuleIds?.length" style="color:var(--ns-text-3)">{{ t('ingest.autoDetect') }}</span></div><div v-if="row.runtime.lastError" style="margin-top:4px;color:var(--ns-danger)">{{ t('ingest.recentError', { time: fmtTime(row.runtime.lastErrorAt ?? null) }) }}{{ row.runtime.lastError }}</div></div></template></el-table-column>
           </el-table>
         </el-card>
-        <el-dialog v-model="testDialog" :title="t('ingest.parsePreviewTitle', { name: testTarget?.name ?? '' })" width="680px"><ActionFeedback :error="actionError" />
+        <el-dialog v-model="testDialog" :title="t('ingest.parsePreviewTitle', { name: testTarget?.name ?? '' })" width="720px"><ActionFeedback :error="actionError" />
           <div style="font-size:12px;color:var(--ns-text-3);margin-bottom:8px">{{ t('ingest.parsePreviewDescription') }}</div>
           <el-input v-model="testSample" type="textarea" :rows="4" :placeholder="t('ingest.testSamplePlaceholder')" />
           <div v-if="testResult" style="margin-top:12px"><el-alert :type="testResult.ok ? 'success' : 'error'" :closable="false" :title="t(testResult.ok ? 'ingest.parsePreviewPassed' : 'ingest.parsePreviewFailed')" /><div v-if="Object.keys(testResult.fields).length" class="parse-preview-fields"><span v-for="(value, field) in testResult.fields" :key="field"><b>{{ field }}</b><code>{{ value }}</code></span></div><pre class="mono test-out">{{ JSON.stringify(testResult, null, 2) }}</pre></div>
@@ -302,12 +305,63 @@ onMounted(async () => {
       <el-tab-pane :label="t('ingest.sourcesTab')" name="sources">
         <div class="add-bar"><el-button v-if="canWrite" type="primary" @click="openCreateSource">+ {{ t('ingest.addSource') }}</el-button><el-button @click="loadSources">{{ t('ingest.refresh') }}</el-button><el-button type="primary" plain @click="doRender">{{ t('ingest.renderConfig') }}</el-button><span class="hint">{{ t('ingest.sourceHint') }}</span></div>
         <el-drawer v-model="showSourceDialog" :before-close="showSourceDialogGuard.beforeClose" :title="editingSourceId ? t('ingest.editSource') : t('ingest.addSource')" size="min(760px, 96vw)" :close-on-click-modal="false"><ActionFeedback :error="actionError" />
-          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px"><label class="source-field"><span>{{ t('ingest.sourceNamePlaceholder') }}</span><el-input v-model="newSource.name" :placeholder="t('ingest.sourceNamePlaceholder')" /></label><label class="source-field"><span>{{ t('ingest.ingestMethodPlaceholder') }}</span><el-select v-model="newSource.type" :placeholder="t('ingest.ingestMethodPlaceholder')"><el-option v-for="type in SOURCE_TYPES" :key="type" :label="type" :value="type" /></el-select></label><label class="source-field"><span>{{ t('ingest.parseFormatPlaceholder') }}</span><el-select v-model="newSource.format" :placeholder="t('ingest.parseFormatPlaceholder')"><el-option v-for="format in PARSE_FORMATS" :key="format" :label="format" :value="format" /></el-select></label><label class="source-field"><span>{{ t('ingest.boundRules') }}</span><el-select v-model="newSource.parseRuleIds" multiple collapse-tags :placeholder="t('ingest.boundRules')"><el-option v-for="rule in parseRules" :key="rule.id" :label="rule.name" :value="rule.id" /></el-select></label><label class="source-field"><span>{{ t('ingest.outputTargetPlaceholder') }}</span><el-select v-model="newSource.sinkTargetId" clearable filterable :placeholder="t('ingest.outputTargetPlaceholder')"><el-option :label="t('ingest.disabledDefault')" value="" /><el-option v-if="newSource.sinkTargetId && !outputs.some(output => output.id === newSource.sinkTargetId)" :label="newSource.sinkTargetId" :value="newSource.sinkTargetId" /><el-option v-for="output in outputs" :key="output.id" :label="`${output.name} · ${output.type}`" :value="output.id" /></el-select></label><label class="source-field"><span>{{ t('ingest.categoryPlaceholder') }}</span><el-select v-model="newSource.categoryId" :placeholder="t('ingest.categoryPlaceholder')" clearable><el-option v-for="category in logCategories" :key="category.id" :label="category.code + ' ' + category.name" :value="category.id" /></el-select></label><label class="source-field"><span>{{ t('ingest.environmentPlaceholder') }}</span><el-input v-model="newSource.env" :placeholder="t('ingest.environmentPlaceholder')" /></label></div>
-          <div v-if="newSource.type === 'FILE'" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:10px"><label class="source-field"><span>{{ t('ingest.filePathPlaceholder') }}</span><el-input v-model="newSource.path" :placeholder="t('ingest.filePathPlaceholder')" /></label><el-select v-model="newSource.readFrom"><el-option :label="t('ingest.readFromBeginning')" value="beginning" /><el-option :label="t('ingest.readFromEnd')" value="end" /></el-select><label class="source-field"><span>{{ t('ingest.frequencyPlaceholder') }}</span><el-input v-model.number="newSource.frequency" :placeholder="t('ingest.frequencyPlaceholder')" /></label></div>
-          <div v-else-if="newSource.type === 'SOCKET' || newSource.type === 'SYSLOG'" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:10px"><label class="source-field"><span>{{ t('ingest.listenAddressPlaceholder') }}</span><el-input v-model="newSource.address" :placeholder="t('ingest.listenAddressPlaceholder')" /></label><label class="source-field"><span>{{ t('ingest.protocol') }}</span><el-select v-model="newSource.protocol" :placeholder="t('ingest.protocol')"><el-option label="UDP" value="udp" /><el-option label="TCP" value="tcp" /><el-option label="TLS" value="tls" /></el-select></label></div>
-          <div v-else-if="newSource.type === 'KAFKA'" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:10px"><label class="source-field"><span>{{ t('ingest.topicPlaceholder') }}</span><el-input v-model="newSource.topic" :placeholder="t('ingest.topicPlaceholder')" /></label><label class="source-field"><span>{{ t('ingest.groupIdPlaceholder') }}</span><el-input v-model="newSource.groupId" :placeholder="t('ingest.groupIdPlaceholder')" /></label></div>
+          <el-form label-position="top" :disabled="actionBusy">
+            <FormSection index="01" :title="t('ingest.sourceBasics')" :hint="t('ingest.sourceBasicsHint')">
+              <FormGrid :columns="2">
+                <FormField :label="t('ingest.sourceName')" required>
+                  <el-input v-model="newSource.name" :placeholder="t('ingest.sourceNamePlaceholder')" />
+                </FormField>
+                <FormField :label="t('ingest.ingestMethod')" :hint="t('ingest.ingestMethodHint')">
+                  <el-select v-model="newSource.type" :placeholder="t('ingest.ingestMethodPlaceholder')"><el-option v-for="type in SOURCE_TYPES" :key="type" :label="type" :value="type" /></el-select>
+                </FormField>
+                <FormField :label="t('ingest.parseFormat')">
+                  <el-select v-model="newSource.format" :placeholder="t('ingest.parseFormatPlaceholder')"><el-option v-for="format in PARSE_FORMATS" :key="format" :label="format" :value="format" /></el-select>
+                </FormField>
+                <FormField :label="t('ingest.boundRules')" full>
+                  <el-select v-model="newSource.parseRuleIds" multiple collapse-tags :placeholder="t('ingest.boundRules')"><el-option v-for="rule in parseRules" :key="rule.id" :label="rule.name" :value="rule.id" /></el-select>
+                </FormField>
+                <FormField :label="t('ingest.outputTarget')">
+                  <el-select v-model="newSource.sinkTargetId" clearable filterable :placeholder="t('ingest.outputTargetPlaceholder')"><el-option :label="t('ingest.disabledDefault')" value="" /><el-option v-if="newSource.sinkTargetId && !outputs.some(output => output.id === newSource.sinkTargetId)" :label="newSource.sinkTargetId" :value="newSource.sinkTargetId" /><el-option v-for="output in outputs" :key="output.id" :label="`${output.name} · ${output.type}`" :value="output.id" /></el-select>
+                </FormField>
+                <FormField :label="t('ingest.category')">
+                  <el-select v-model="newSource.categoryId" :placeholder="t('ingest.categoryPlaceholder')" clearable><el-option v-for="category in logCategories" :key="category.id" :label="category.code + ' ' + category.name" :value="category.id" /></el-select>
+                </FormField>
+                <FormField :label="t('ingest.environment')">
+                  <el-input v-model="newSource.env" :placeholder="t('ingest.environmentPlaceholder')" />
+                </FormField>
+              </FormGrid>
+            </FormSection>
+            <FormSection v-if="newSource.type === 'FILE'" index="02" :title="t('ingest.sourceAccess')" :hint="t('ingest.fileAccessHint')">
+              <FormGrid :columns="2">
+                <FormField :label="t('ingest.multilineLabel')" :hint="t('ingest.multilineHint')" full>
+                  <el-input v-model="newSource.multiline" type="textarea" :rows="2" :placeholder="t('ingest.multilinePlaceholder')" />
+                </FormField>
+                <FormField :label="t('ingest.filePath')"><el-input v-model="newSource.path" :placeholder="t('ingest.filePathPlaceholder')" /></FormField>
+                <FormField :label="t('ingest.readFrom')"><el-select v-model="newSource.readFrom"><el-option :label="t('ingest.readFromBeginning')" value="beginning" /><el-option :label="t('ingest.readFromEnd')" value="end" /></el-select></FormField>
+                <FormField :label="t('ingest.frequency')"><el-input v-model.number="newSource.frequency" :placeholder="t('ingest.frequencyPlaceholder')" /></FormField>
+              </FormGrid>
+            </FormSection>
+            <FormSection v-else-if="newSource.type === 'SOCKET' || newSource.type === 'SYSLOG'" index="02" :title="t('ingest.sourceAccess')" :hint="t('ingest.socketAccessHint')">
+              <FormGrid :columns="2">
+                <FormField :label="t('ingest.listenAddress')"><el-input v-model="newSource.address" :placeholder="t('ingest.listenAddressPlaceholder')" /></FormField>
+                <FormField :label="t('ingest.protocol')"><el-select v-model="newSource.protocol" :placeholder="t('ingest.protocol')"><el-option label="UDP" value="udp" /><el-option label="TCP" value="tcp" /><el-option label="TLS" value="tls" /></el-select></FormField>
+              </FormGrid>
+            </FormSection>
+            <FormSection v-else-if="newSource.type === 'KAFKA'" index="02" :title="t('ingest.sourceAccess')" :hint="t('ingest.kafkaAccessHint')">
+              <FormGrid :columns="2">
+                <FormField :label="t('ingest.topic')"><el-input v-model="newSource.topic" :placeholder="t('ingest.topicPlaceholder')" /></FormField>
+                <FormField :label="t('ingest.groupId')"><el-input v-model="newSource.groupId" :placeholder="t('ingest.groupIdPlaceholder')" /></FormField>
+              </FormGrid>
+            </FormSection>
           <div v-else-if="['WINDOWS_EVENT', 'AGENT', 'HTTP_API', 'DATABASE', 'CLOUD'].includes(newSource.type)" style="margin-top:10px"><el-alert type="info" :closable="false" :title="t('ingest.collectorInfo', { type: newSource.type })" /></div>
-          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:10px"><label class="source-field"><span>{{ t('ingest.charsetPlaceholder') }}</span><el-select v-model="newSource.charset" :placeholder="t('ingest.charsetPlaceholder')"><el-option label="UTF-8" value="utf-8" /><el-option label="GBK" value="gbk" /><el-option label="ISO-8859-1" value="iso-8859-1" /></el-select></label><label class="source-field"><span>{{ t('ingest.timezonePlaceholder') }}</span><el-select v-model="newSource.timezone" :placeholder="t('ingest.timezonePlaceholder')"><el-option label="Asia/Shanghai" value="Asia/Shanghai" /><el-option label="UTC" value="UTC" /><el-option label="Asia/Tokyo" value="Asia/Tokyo" /></el-select></label><label class="source-field"><span>{{ t('ingest.tagsPlaceholder') }}</span><el-input v-model="newSource.tags" :placeholder="t('ingest.tagsPlaceholder')" /></label></div>
+            <FormSection index="03" :title="t('ingest.encodingLabels')" :hint="t('ingest.encodingLabelsHint')">
+              <FormGrid :columns="2">
+                <FormField :label="t('ingest.charset')"><el-select v-model="newSource.charset" :placeholder="t('ingest.charsetPlaceholder')"><el-option label="UTF-8" value="utf-8" /><el-option label="GBK" value="gbk" /><el-option label="ISO-8859-1" value="iso-8859-1" /></el-select></FormField>
+                <FormField :label="t('ingest.timezone')"><el-select v-model="newSource.timezone" :placeholder="t('ingest.timezonePlaceholder')"><el-option label="Asia/Shanghai" value="Asia/Shanghai" /><el-option label="UTC" value="UTC" /><el-option label="Asia/Tokyo" value="Asia/Tokyo" /></el-select></FormField>
+                <FormField :label="t('ingest.tags')" :hint="t('ingest.tagsHint')" full><el-input v-model="newSource.tags" :placeholder="t('ingest.tagsPlaceholder')" /></FormField>
+              </FormGrid>
+            </FormSection>
+          </el-form>
           <template #footer><el-switch v-model="newSource.enabled" :active-text="t('common.enabled')" style="margin-right:12px" /><el-button @click="showSourceDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="success" :loading="actionBusy" @click="saveSource">{{ editingSourceId ? t('common.save') : t('ingest.addSource') }}</el-button></template>
         </el-drawer>
         <el-card shadow="never"><el-table :data="sources" size="small" border><el-table-column prop="name" :label="t('common.name')" width="130" show-overflow-tooltip /><el-table-column prop="type" :label="t('common.type')" width="110" /><el-table-column prop="format" :label="t('ingest.parseFormat')" width="80" /><el-table-column :label="t('ingest.target')" min-width="160" show-overflow-tooltip><template #default="{ row }">{{ row.path || row.address || row.topic || t('time.notAvailable') }}</template></el-table-column><el-table-column :label="t('ingest.protocol')" width="70"><template #default="{ row }">{{ row.protocol || t('time.notAvailable') }}</template></el-table-column><el-table-column prop="env" :label="t('ingest.environment')" width="65" /><el-table-column :label="t('common.enabled')" width="65"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.yes') : t('common.no') }}</el-tag></template></el-table-column><el-table-column v-if="canWrite" :label="t('common.actions')" width="120"><template #default="{ row }"><el-button link type="primary" size="small" @click="openEditSource(row as LogSource)">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeSource(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table></el-card>
@@ -315,7 +369,25 @@ onMounted(async () => {
 
       <el-tab-pane :label="t('ingest.outputTab')" name="outputs">
         <div class="add-bar"><el-button v-if="canWrite" type="primary" @click="openCreateOutput">+ {{ t('ingest.addOutput') }}</el-button><span class="hint">{{ t('ingest.outputHint') }}</span></div>
-        <el-dialog v-model="showOutputDialog" :before-close="showOutputDialogGuard.beforeClose" :title="t('ingest.addOutput')" width="560px"><ActionFeedback :error="actionError" /><el-form :disabled="actionBusy" label-width="80px"><el-form-item :label="t('ingest.outputName')"><el-input v-model="newOutput.name" :placeholder="t('ingest.addOutputNamePlaceholder')" /></el-form-item><el-form-item :label="t('ingest.outputType')"><el-select v-model="newOutput.type" style="width:200px"><el-option label="GLS_INGEST" value="GLS_INGEST" /><el-option label="OPENSEARCH" value="OPENSEARCH" /><el-option label="HTTP" value="HTTP" /></el-select></el-form-item><el-form-item :label="t('ingest.targetUrl')"><el-input v-model="newOutput.uri" :placeholder="t('ingest.addOutputUrlPlaceholder')" /></el-form-item><el-form-item :label="t('common.enabled')"><el-switch v-model="newOutput.enabled" :active-text="t('common.enabled')" /></el-form-item></el-form><template #footer><el-button @click="showOutputDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="success" :loading="actionBusy" @click="addOutput">{{ t('ingest.addOutput') }}</el-button></template></el-dialog>
+        <el-dialog v-model="showOutputDialog" :before-close="showOutputDialogGuard.beforeClose" :title="t('ingest.addOutput')" width="520px"><ActionFeedback :error="actionError" /><el-form :disabled="actionBusy" label-position="top">
+            <FormGrid :columns="2">
+              <FormField :label="t('ingest.outputName')" required>
+                <el-input v-model="newOutput.name" :placeholder="t('ingest.addOutputNamePlaceholder')" />
+              </FormField>
+              <FormField :label="t('ingest.outputType')" :hint="t('ingest.outputTypeHint')">
+                <el-select v-model="newOutput.type"><el-option label="GLS_INGEST" value="GLS_INGEST" /><el-option label="OPENSEARCH" value="OPENSEARCH" /><el-option label="HTTP" value="HTTP" /></el-select>
+              </FormField>
+              <FormField :label="t('ingest.targetUrl')" required :hint="t('ingest.outputUriHint')" full>
+                <el-input v-model="newOutput.uri" :placeholder="t('ingest.addOutputUrlPlaceholder')" />
+              </FormField>
+              <FormField :label="t('ingest.outputAuthToken')" :hint="t('ingest.outputAuthTokenHint')" full>
+                <el-input v-model="newOutput.authToken" type="password" show-password :placeholder="t('ingest.outputAuthTokenPlaceholder')" />
+              </FormField>
+              <FormField :label="t('common.enabled')">
+                <el-switch v-model="newOutput.enabled" />
+              </FormField>
+            </FormGrid>
+          </el-form><template #footer><el-button @click="showOutputDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="success" :loading="actionBusy" @click="addOutput">{{ t('ingest.addOutput') }}</el-button></template></el-dialog>
         <el-card shadow="never"><el-table :data="outputs" size="small" border><el-table-column prop="name" :label="t('common.name')" width="180" /><el-table-column prop="type" :label="t('common.type')" width="130" /><el-table-column prop="uri" :label="t('ingest.targetUrl')" min-width="280" show-overflow-tooltip /><el-table-column :label="t('common.enabled')" width="70"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.yes') : t('common.no') }}</el-tag></template></el-table-column><el-table-column v-if="canWrite" :label="t('common.actions')" width="70"><template #default="{ row }"><el-button link type="danger" size="small" @click="removeOutput(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table></el-card>
       </el-tab-pane>
 

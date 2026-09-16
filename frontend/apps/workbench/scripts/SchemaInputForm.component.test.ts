@@ -37,20 +37,45 @@ describe('schema input draft preservation', () => {
     expect(validateSchemaInput({}, false)).toContainEqual({ path: '$', code: 'schema' })
   })
 
-  it('retains invalid nested JSON and unknown fields while validating corrections', async () => {
+  it('edits an object as key/value rows without dropping untouched top-level fields', async () => {
     const wrapper = mount(SchemaInputForm, { props: {
       schema: { properties: { headers: { type: 'object' } } },
       modelValue: { headers: { existing: true }, futureOption: { preserve: 42 } },
       'onUpdate:modelValue': value => wrapper.setProps({ modelValue: value }),
     } })
-    const nested = wrapper.findAll('textarea')[0]
-    await nested.setValue('{"incomplete":')
-    expect((nested.element as HTMLTextAreaElement).value).toBe('{"incomplete":')
-    expect(wrapper.emitted('valid')?.at(-1)).toEqual([false])
-    expect(wrapper.props('modelValue').headers).toEqual({ existing: true })
-    await nested.setValue('{"new":true}')
+    // The stored entry is seeded as an editable row, not as a JSON blob, and its
+    // value keeps its type rather than degrading to a string.
+    const seeded = wrapper.findAll('input')
+    expect((seeded[0].element as HTMLInputElement).value).toBe('existing')
+    expect((seeded[1].element as HTMLInputElement).value).toBe('true')
+
+    // The seeded row carries its own delete button, so the add button is last.
+    await wrapper.findAll('button').at(-1)!.trigger('click')
+    const rows = wrapper.findAll('input')
+    await rows[2].setValue('new')
+    await rows[3].setValue('42')
+
+    expect(wrapper.props('modelValue')).toEqual({
+      headers: { existing: true, new: 42 },
+      futureOption: { preserve: 42 },
+    })
     expect(wrapper.emitted('valid')?.at(-1)).toEqual([true])
-    expect(wrapper.props('modelValue')).toEqual({ headers: { new: true }, futureOption: { preserve: 42 } })
+    wrapper.unmount()
+  })
+
+  it('edits an array as repeatable rows and drops emptied ones', async () => {
+    const wrapper = mount(SchemaInputForm, { props: {
+      schema: { properties: { tags: { type: 'array' } } },
+      modelValue: { tags: ['a'] },
+      'onUpdate:modelValue': value => wrapper.setProps({ modelValue: value }),
+    } })
+    await wrapper.findAll('button').at(-1)!.trigger('click')
+    const rows = wrapper.findAll('input')
+    await rows[1].setValue('b')
+    expect(wrapper.props('modelValue')).toEqual({ tags: ['a', 'b'] })
+
+    await rows[1].setValue('  ')
+    expect(wrapper.props('modelValue')).toEqual({ tags: ['a'] })
     wrapper.unmount()
   })
 })

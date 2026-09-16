@@ -163,8 +163,8 @@ onMounted(loadAttack)
       </el-table>
     </el-card>
 
-    <el-dialog v-model="techniqueDialogVisible" :before-close="noteGuard.beforeClose" :title="t('attack.editTitle', { id: editingTechniqueId })" width="620px">
-      <p>{{ t('forms.standardReadOnly') }}</p><p v-if="noteError" role="alert">{{ noteError }}</p><el-form label-width="80px">
+    <el-dialog v-model="techniqueDialogVisible" :before-close="noteGuard.beforeClose" :title="t('attack.editTitle', { id: editingTechniqueId })" width="640px">
+      <p>{{ t('forms.standardReadOnly') }}</p><p v-if="noteError" role="alert">{{ noteError }}</p><el-form label-position="top">
         <el-form-item :label="t('attack.name')" required><el-input disabled v-model="techniqueForm.name" /></el-form-item>
         <el-form-item :label="t('attack.tactic')"><el-select disabled v-model="techniqueForm.tactic" style="width: 240px"><el-option v-for="tactic in tactics" :key="tactic.id" :label="tactic.name" :value="tactic.id" /></el-select></el-form-item>
         <el-form-item :label="t('attack.detailUrl')"><el-input disabled v-model="techniqueForm.url" /></el-form-item>

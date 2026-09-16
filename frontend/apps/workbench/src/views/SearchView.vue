@@ -26,6 +26,7 @@ import { useRoute, useRouter } from 'vue-router'
 import EmptyState from '../components/EmptyState.vue'
 import PageHeader from '../components/PageHeader.vue'
 import SevBadge from '../components/SevBadge.vue'
+import FormField from '../components/FormField.vue'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { exportSearch, listAlarmsByEvent, listFields, splSearch, type Alarm, type FieldDef, type SearchEvent, type SearchResult } from '../api'
 import { useI18n } from '../composables/useI18n'
@@ -431,7 +432,14 @@ onMounted(() => {
       </section>
     </div>
 
-    <el-dialog v-model="saveDialogVisible" :title="t('search.saveQuery')" width="420px"><el-input v-model="savedQueryName" autofocus :placeholder="t('search.saveQueryPlaceholder')" @keyup.enter="saveQuery" /><template #footer><el-button @click="saveDialogVisible = false">{{ t('common.cancel') }}</el-button><el-button type="primary" :disabled="!savedQueryName.trim()" @click="saveQuery">{{ t('common.save') }}</el-button></template></el-dialog>
+    <el-dialog v-model="saveDialogVisible" :title="t('search.saveQuery')" width="440px">
+      <el-form label-position="top">
+        <FormField :label="t('search.saveQueryLabel')" required :hint="t('search.saveQueryHint')">
+          <el-input v-model="savedQueryName" autofocus :placeholder="t('search.saveQueryPlaceholder')" @keyup.enter="saveQuery" />
+        </FormField>
+      </el-form>
+      <template #footer><el-button @click="saveDialogVisible = false">{{ t('common.cancel') }}</el-button><el-button type="primary" :disabled="!savedQueryName.trim()" @click="saveQuery">{{ t('common.save') }}</el-button></template>
+    </el-dialog>
 
     <el-drawer :model-value="Boolean(selectedEvent)" :title="t('search.eventDetails')" size="620px" @close="closeEvent">
       <template v-if="selectedEvent">

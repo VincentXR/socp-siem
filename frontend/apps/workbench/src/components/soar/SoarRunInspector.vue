@@ -478,7 +478,7 @@ function streamLabel(state: 'closed' | 'live' | 'polling'): string {
     <div v-else class="soar-empty soar-no-run">{{ t('soar.noRunSelected') }}</div>
     <div v-if="queueMessage" class="soar-queue-message" role="status">{{ queueMessage }}</div>
 
-    <el-dialog v-if="props.canExecute" v-model="queueDialogVisible" :title="t('soar.queuePublishedRun')" width="560px">
+    <el-dialog v-if="props.canExecute" v-model="queueDialogVisible" :title="t('soar.queuePublishedRun')" width="520px">
       <p class="soar-dialog-hint">{{ t('soar.queueHint') }}</p>
       <el-form label-position="top">
         <el-form-item :label="t('soar.publishedPlaybookVersion')" required>

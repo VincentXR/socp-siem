@@ -369,7 +369,7 @@ onMounted(loadPlaybooks)
     <div v-if="loadError" class="soar-load-error" role="alert">{{ loadError }}</div>
 
     <!-- Approval Decision Dialog -->
-    <el-dialog v-model="approvalModal.visible" :title="approvalModal.isApprove ? t('soar.approve') : t('soar.reject')" width="480px">
+    <el-dialog v-model="approvalModal.visible" :title="approvalModal.isApprove ? t('soar.approve') : t('soar.reject')" width="520px">
       <div class="soar-approval-dialog-body">
         <p><strong>{{ t('soar.runId') }}:</strong> {{ approvalModal.runId }}</p>
         <p v-if="approvalModal.actionRef"><strong>{{ t('soar.action') }}:</strong> {{ approvalModal.actionRef }}</p>

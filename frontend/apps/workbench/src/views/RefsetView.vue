@@ -32,6 +32,9 @@ import ElMessage from 'element-plus/es/components/message/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { computed, onMounted, ref } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
+import FormField from '../components/FormField.vue'
+import FormGrid from '../components/FormGrid.vue'
+import FormSection from '../components/FormSection.vue'
 import { listRules, deleteRefEntry, type RuleSpec, addRefEntry, createRefSet, deleteRefSet, listRefSets, type ReferenceSet } from '../api'
 import { useI18n } from '../composables/useI18n'
 import { useWriteAccess } from '../composables/useWriteAccess'
@@ -192,13 +195,21 @@ onMounted(loadRefSets)
         <el-button v-if="canWrite" type="danger" plain :disabled="Boolean(referencesError) || referencingRules.length > 0 || actionBusy" @click="removeRefSet(selected.id)">{{ t('common.delete') }}</el-button>
       </template>
     </el-drawer>
-    <el-dialog v-model="importing" :before-close="importGuard.beforeClose" :title="t('forms.import')" width="560px" append-to-body :close-on-click-modal="false"><ActionFeedback :error="actionError" /><el-input v-model="importText" type="textarea" :rows="10" :placeholder="t('refset.initialEntriesPlaceholder')" /><template #footer><el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="importEntries">{{ t('forms.import') }}</el-button></template></el-dialog>
+    <el-dialog v-model="importing" :before-close="importGuard.beforeClose" :title="t('forms.import')" width="640px" append-to-body :close-on-click-modal="false"><ActionFeedback :error="actionError" /><el-input v-model="importText" type="textarea" :rows="10" :placeholder="t('refset.initialEntriesPlaceholder')" /><template #footer><el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="importEntries">{{ t('forms.import') }}</el-button></template></el-dialog>
 
-    <el-dialog v-model="dialogVisible" :before-close="dialogVisibleGuard.beforeClose" :title="t('refset.createSet')" width="560px"><ActionFeedback :error="actionError" />
-      <el-form :disabled="actionBusy || !canWrite" label-width="90px">
-        <el-form-item :label="t('refset.nameLabel')"><el-input v-model="form.name" :placeholder="t('refset.namePlaceholder')" /></el-form-item>
-        <el-form-item :label="t('common.description')"><el-input v-model="form.description" :placeholder="t('common.description')" /></el-form-item>
-        <el-form-item :label="t('refset.initialEntries')"><el-input v-model="form.entries" type="textarea" :rows="4" :placeholder="t('refset.initialEntriesPlaceholder')" /></el-form-item>
+    <el-dialog v-model="dialogVisible" :before-close="dialogVisibleGuard.beforeClose" :title="t('refset.createSet')" width="520px"><ActionFeedback :error="actionError" />
+      <el-form :disabled="actionBusy || !canWrite" label-position="top">
+        <FormGrid :columns="1">
+          <FormField :label="t('refset.nameLabel')" required :hint="t('refset.nameHint')">
+            <el-input v-model="form.name" :placeholder="t('refset.namePlaceholder')" />
+          </FormField>
+          <FormField :label="t('common.description')">
+            <el-input v-model="form.description" :placeholder="t('common.description')" />
+          </FormField>
+          <FormField :label="t('refset.initialEntries')" :hint="t('refset.initialEntriesHint')">
+            <el-input v-model="form.entries" type="textarea" :rows="4" :placeholder="t('refset.initialEntriesPlaceholder')" />
+          </FormField>
+        </FormGrid>
       </el-form>
       <template #footer><el-button @click="dialogVisibleGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="success" :loading="actionBusy" @click="addRefSet">{{ t('common.create') }}</el-button></template>
     </el-dialog>

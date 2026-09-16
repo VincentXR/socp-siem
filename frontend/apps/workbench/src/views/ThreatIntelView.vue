@@ -27,6 +27,9 @@ import EmptyState from '../components/EmptyState.vue'
 import FilterToolbar from '../components/FilterToolbar.vue'
 import PageHeader from '../components/PageHeader.vue'
 import SevBadge from '../components/SevBadge.vue'
+import FormField from '../components/FormField.vue'
+import FormGrid from '../components/FormGrid.vue'
+import FormSection from '../components/FormSection.vue'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { threatIntelApi, type Ioc } from '../api/domains'
 import { SEVERITIES, type IocInput } from '../api'
@@ -197,7 +200,26 @@ function onIocTypeChange(): void {
 
     <DataTableCard v-model:current-page="iocPage" v-model:page-size="iocSize" :total="iocTotal" :loading="loading" :error="loadError" :retry="loadTi" :empty-title="t('threat.iocList')" :empty-description="t('threat.description')"><el-table :data="iocs" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @row-click="openDetailRow"><el-table-column prop="type" column-key="type" :label="t('common.type')" :width="columnWidth('type', 90)" sortable="custom" /><el-table-column prop="value" column-key="value" :label="t('threat.iocValue')" :width="columnWidth('value')" min-width="180" sortable="custom" show-overflow-tooltip /><el-table-column prop="source" column-key="source" :label="t('common.source')" :width="columnWidth('source', 120)" sortable="custom" show-overflow-tooltip /><el-table-column prop="confidence" :label="t('threat.confidence')" width="100"><template #default="{ row }">{{ row.confidence == null ? t('time.notAvailable') : `${row.confidence}%` }}</template></el-table-column><el-table-column :label="t('common.status')" width="90"><template #default="{ row }"><el-tag :type="lifecycleLabel(row).type" size="small">{{ lifecycleLabel(row).text }}</el-tag></template></el-table-column><el-table-column :label="t('threat.validUntil')" width="155"><template #default="{ row }">{{ formatTime(row.validUntil || row.expiration) }}</template></el-table-column><el-table-column v-if="canWrite" :label="t('common.actions')" width="150" :resizable="false"><template #default="{ row }"><el-button v-if="canWrite" link type="primary" size="small" @click.stop="openEditIoc(row as Ioc)">{{ t('common.edit') }}</el-button><el-button v-if="canWrite" link :type="row.revoked ? 'success' : 'warning'" size="small" @click.stop="toggleLifecycle(row as Ioc)">{{ row.revoked ? t('threat.restore') : t('threat.revoke') }}</el-button></template></el-table-column></el-table></DataTableCard>
 
-    <el-dialog v-model="showIocDialog" :title="editingIocId ? t('threat.editIoc') : t('threat.addIoc')" width="560px"><el-form label-width="100px"><el-form-item :label="t('threat.iocValue')" required><el-input v-model="newIoc.value" :placeholder="t('threat.valuePlaceholder')" /></el-form-item><el-form-item :label="t('common.type')"><el-select v-model="newIoc.type" style="width:180px"><el-option v-for="type in IOC_TYPES" :key="type" :label="type" :value="type" /></el-select></el-form-item><el-form-item :label="t('common.severity')"><el-select v-model="newIoc.severity" style="width:180px"><el-option v-for="severity in SEVERITIES" :key="severity" :label="t('severities.' + severity) || severity" :value="severity" /></el-select></el-form-item><el-form-item :label="t('common.source')"><el-input v-model="newIoc.source" /></el-form-item><el-form-item :label="t('threat.tags')"><el-input v-model="newIoc.tags" :placeholder="t('threat.tagsPlaceholder')" /></el-form-item><el-form-item :label="t('common.description')"><el-input v-model="newIoc.description" type="textarea" :rows="3" /></el-form-item></el-form><template #footer><el-button @click="showIocDialog = false">{{ t('common.cancel') }}</el-button><el-button type="primary" :disabled="!newIoc.value.trim()" @click="saveIoc">{{ t('common.save') }}</el-button></template></el-dialog>
+    <el-dialog v-model="showIocDialog" :title="editingIocId ? t('threat.editIoc') : t('threat.addIoc')" width="640px"><el-form label-position="top"><p class="dialog-hint">{{ t('threat.manualScopeHint') }}</p><FormGrid :columns="2">
+          <FormField :label="t('threat.iocValue')" required :hint="t('threat.valueHint')" full>
+            <el-input v-model="newIoc.value" :placeholder="t('threat.valuePlaceholder')" />
+          </FormField>
+          <FormField :label="t('common.type')">
+            <el-select v-model="newIoc.type"><el-option v-for="type in IOC_TYPES" :key="type" :label="type" :value="type" /></el-select>
+          </FormField>
+          <FormField :label="t('common.severity')" :hint="t('threat.severityHint')">
+            <el-select v-model="newIoc.severity"><el-option v-for="severity in SEVERITIES" :key="severity" :label="t('severities.' + severity) || severity" :value="severity" /></el-select>
+          </FormField>
+          <FormField :label="t('common.source')">
+            <el-input v-model="newIoc.source" :placeholder="t('threat.sourcePlaceholder')" />
+          </FormField>
+          <FormField :label="t('threat.tags')" :hint="t('threat.tagsHint')">
+            <el-input v-model="newIoc.tags" :placeholder="t('threat.tagsPlaceholder')" />
+          </FormField>
+          <FormField :label="t('common.description')" full>
+            <el-input v-model="newIoc.description" type="textarea" :rows="3" />
+          </FormField>
+        </FormGrid></el-form><template #footer><el-button @click="showIocDialog = false">{{ t('common.cancel') }}</el-button><el-button type="primary" :disabled="!newIoc.value.trim()" @click="saveIoc">{{ t('common.save') }}</el-button></template></el-dialog>
 
     <el-dialog v-model="importPreviewVisible" :title="t('threat.importPreviewTitle')" width="720px" :close-on-click-modal="false"><p class="dialog-hint">{{ t('forms.importPreview', { count: importPreviewRows.length, shown: Math.min(importPreviewRows.length, 20) }) }}</p><el-table :data="importPreviewRows.slice(0, 20)" size="small" max-height="360" border><el-table-column prop="type" :label="t('common.type')" width="90" /><el-table-column prop="value" :label="t('threat.iocValue')" min-width="200" show-overflow-tooltip /><el-table-column prop="severity" :label="t('common.severity')" width="110" /><el-table-column prop="source" :label="t('common.source')" width="130" show-overflow-tooltip /></el-table><template #footer><el-button @click="importPreviewVisible = false">{{ t('common.cancel') }}</el-button><el-button type="primary" :loading="importBusy" @click="confirmIocImport">{{ t('threat.confirmImport') }}</el-button></template></el-dialog>
 

@@ -4,6 +4,9 @@ const canWrite = useWriteAccess()
 import { useFormDialog } from '../composables/useFormDialog'
 import { useMutation } from '../composables/useMutation'
 import ActionFeedback from '../components/ActionFeedback.vue'
+import FormField from '../components/FormField.vue'
+import FormGrid from '../components/FormGrid.vue'
+import FormSection from '../components/FormSection.vue'
 const mutation = useMutation()
 const { busy: actionBusy, error: actionError } = mutation
 import 'element-plus/es/components/button/style/css.mjs'
@@ -215,12 +218,24 @@ watch(drawerVisible, visible => {
       </el-table>
     </DataTableCard>
 
-    <el-dialog v-model="createDialogVisible" :before-close="createDialogVisibleGuard.beforeClose" :title="t('cases.createCase')" width="560px"><ActionFeedback :error="actionError" />
-      <el-form :disabled="actionBusy" label-width="90px">
-        <el-form-item :label="t('cases.caseTitle')" required><el-input v-model="caseForm.title" :placeholder="t('cases.titlePlaceholder')" /></el-form-item>
-        <el-form-item :label="t('common.entity')"><el-input v-model="caseForm.entity" :placeholder="t('cases.entityPlaceholder')" /></el-form-item>
-        <el-form-item :label="t('common.severity')"><el-select v-model="caseForm.severity" style="width: 180px"><el-option v-for="level in ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']" :key="level" :label="t('severities.' + level) || level" :value="level" /></el-select></el-form-item>
-        <el-form-item :label="t('cases.assignee')"><el-select v-model="caseForm.assignee" filterable default-first-option clearable :placeholder="t('cases.assigneePlaceholder')" style="width:100%"><el-option v-for="assignee in assigneeOptions" :key="assignee" :label="assignee" :value="assignee" /></el-select></el-form-item>
+    <el-dialog v-model="createDialogVisible" :before-close="createDialogVisibleGuard.beforeClose" :title="t('cases.createCase')" width="520px"><ActionFeedback :error="actionError" />
+      <el-form :disabled="actionBusy" label-position="top">
+        <FormSection :title="t('cases.identity')" :hint="t('cases.identityHint')">
+          <FormGrid :columns="2">
+            <FormField :label="t('cases.caseTitle')" required full>
+              <el-input v-model="caseForm.title" :placeholder="t('cases.titlePlaceholder')" />
+            </FormField>
+            <FormField :label="t('common.entity')" :hint="t('cases.entityHint')">
+              <el-input v-model="caseForm.entity" :placeholder="t('cases.entityPlaceholder')" />
+            </FormField>
+            <FormField :label="t('common.severity')" :hint="t('cases.severityHint')">
+              <el-select v-model="caseForm.severity"><el-option v-for="level in ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']" :key="level" :label="t('severities.' + level) || level" :value="level" /></el-select>
+            </FormField>
+            <FormField :label="t('cases.assignee')" :hint="t('cases.assigneeHint')">
+              <el-select v-model="caseForm.assignee" filterable default-first-option clearable :placeholder="t('cases.assigneePlaceholder')"><el-option v-for="assignee in assigneeOptions" :key="assignee" :label="assignee" :value="assignee" /></el-select>
+            </FormField>
+          </FormGrid>
+        </FormSection>
       </el-form>
       <template #footer>
         <el-button @click="createDialogVisibleGuard.cancel">{{ t('common.cancel') }}</el-button>
