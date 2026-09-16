@@ -16,6 +16,8 @@ import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.header.Headers;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -89,8 +91,13 @@ public class KafkaEventConsumer {
     private final Set<TopicPartition> pausedPartitions = ConcurrentHashMap.newKeySet();
     private final BlockingQueue<RecordCompletion> completions = new LinkedBlockingQueue<>();
     private final AtomicBoolean running = new AtomicBoolean(true);
+
+    /** Bounds the dead-letter hand-off so an unreachable broker cannot wedge a lane. */
+    private int dlqHandoffMaxAttempts = 5;
+    private long dlqHandoffRetryDelayMs = 1_000;
     private volatile org.apache.kafka.clients.producer.KafkaProducer<String, String> dlqProducer;
-    private BiConsumer<String, String> dlqSink = this::publishDlq;
+    /** Set by {@link #setDlqSink}; null means the Kafka DLQ path is used. */
+    private BiConsumer<String, String> dlqSink;
     private volatile boolean customDlqSink;
     private Thread consumerThread;
 
@@ -158,7 +165,7 @@ public class KafkaEventConsumer {
             processOne(null, null, key, raw);
         } catch (DetectionRecordProcessor.MalformedDetectionRecordException terminal) {
             try {
-                publishDlqAndAwait(terminal.eventId(), terminal.raw());
+                publishDlqAndAwait(terminal.eventId(), terminal.raw(), null);
                 stateStore.recordDeadLettered(terminal.eventId(), terminal.raw(), null, null,
                         terminal.getMessage());
             } catch (Exception ex) {
@@ -175,7 +182,7 @@ public class KafkaEventConsumer {
             processOne(partition, offset, key, raw);
         } catch (DetectionRecordProcessor.MalformedDetectionRecordException terminal) {
             try {
-                publishDlqAndAwait(terminal.eventId(), terminal.raw());
+                publishDlqAndAwait(terminal.eventId(), terminal.raw(), null);
                 stateStore.recordDeadLettered(terminal.eventId(), terminal.raw(), partition, offset,
                         terminal.getMessage());
             } catch (Exception ex) {
@@ -190,7 +197,7 @@ public class KafkaEventConsumer {
 
     void setDlqSink(BiConsumer<String, String> sink) {
         customDlqSink = sink != null;
-        this.dlqSink = sink == null ? this::publishDlq : sink;
+        this.dlqSink = sink;
     }
 
     /**
@@ -420,8 +427,14 @@ public class KafkaEventConsumer {
         return replayWindow == null ? Duration.ZERO : replayWindow;
     }
 
-    private void processWithRetry(org.apache.kafka.clients.consumer.ConsumerRecord<String, String> record,
-                                  long epoch) {
+    /**
+     * Package-private so the retry, dead-letter and completion decisions can be
+     * driven with a real record; {@link #processRecord(String, String)} bypasses
+     * this path because it carries no Kafka headers and therefore no trace
+     * context.
+     */
+    void processWithRetry(org.apache.kafka.clients.consumer.ConsumerRecord<String, String> record,
+                          long epoch) {
         long delay = 250;
         int attempts = 0;
 
@@ -440,7 +453,7 @@ public class KafkaEventConsumer {
                 return;
             } catch (DetectionRecordProcessor.MalformedDetectionRecordException terminal) {
                 if (handoffToDlqUntilDurable(terminal.eventId(), terminal.raw(), record.partition(), record.offset(),
-                        terminal.getMessage())) {
+                        terminal.getMessage(), record.headers())) {
                     completions.offer(new RecordCompletion(record.partition(), record.offset(), epoch));
                 }
                 return;
@@ -454,7 +467,8 @@ public class KafkaEventConsumer {
                     String eventId = record.key() == null || record.key().isBlank()
                             ? record.topic() + "-" + record.partition() + "-" + record.offset() : record.key();
                     String reason = "processing attempts exhausted: " + failure.getMessage();
-                    if (handoffToDlqUntilDurable(eventId, record.value(), record.partition(), record.offset(), reason)) {
+                    if (handoffToDlqUntilDurable(eventId, record.value(), record.partition(), record.offset(),
+                            reason, record.headers())) {
                         completions.offer(new RecordCompletion(record.partition(), record.offset(), epoch));
                     }
                     return;
@@ -497,8 +511,10 @@ public class KafkaEventConsumer {
                         row.partition(), row.offset(), attempts, limit, failure.getMessage());
 
                 if (attempts >= limit) {
+                    // A replayed journal row carries no Kafka headers, so the
+                    // hand-off has no originating trace to inherit.
                     handoffToDlqUntilDurable(row.event().id(), row.event().raw(), row.partition(), row.offset(),
-                            "pending replay attempts exhausted: " + failure.getMessage());
+                            "pending replay attempts exhausted: " + failure.getMessage(), null);
                     return;
                 }
 
@@ -522,21 +538,41 @@ public class KafkaEventConsumer {
      * This prevents repeated business side effects while still preserving the
      * contiguous-offset guarantee when the DLQ broker is temporarily down.
      */
+    /**
+     * Hands a record to the dead-letter topic, giving up after a bounded wait.
+     * <p>
+     * This used to retry until the write succeeded, which wedged the lane
+     * whenever the broker was unreachable: the record never completed, no later
+     * batch on that partition could commit, and the only signal was an ERROR
+     * log while every health probe stayed green. Returning false is the safe
+     * failure: the caller withholds the completion, so the offset stays
+     * uncommitted and the record is redelivered and re-attempted once the
+     * broker is reachable again. The wait is bounded rather than unbounded
+     * because a stuck lane stops progress on every other record behind it.
+     */
     private boolean handoffToDlqUntilDurable(String eventId, String raw,
-                                             Integer partition, Long offset, String reason) {
-        long delay = 1_000;
-        while (running.get() && !Thread.currentThread().isInterrupted()) {
+                                             Integer partition, Long offset, String reason,
+                                             Headers sourceHeaders) {
+        long delay = dlqHandoffRetryDelayMs;
+        for (int attempt = 1; attempt <= dlqHandoffMaxAttempts; attempt++) {
+            if (!running.get() || Thread.currentThread().isInterrupted()) return false;
             try {
-                publishDlqAndAwait(eventId, raw);
+                publishDlqAndAwait(eventId, raw, sourceHeaders);
                 stateStore.recordDeadLettered(eventId, raw, partition, offset, reason);
                 return true;
             } catch (Exception dlqFailure) {
-                log.error("Detection DLQ hand-off unavailable partition={} offset={}; retrying in {}ms: {}",
-                        partition, offset, delay, dlqFailure.getMessage());
+                log.error("Detection DLQ hand-off unavailable partition={} offset={} attempt={}/{}; "
+                                + "retrying in {}ms: {}",
+                        partition, offset, attempt, dlqHandoffMaxAttempts, delay,
+                        dlqFailure.getMessage());
+                if (attempt == dlqHandoffMaxAttempts) break;
                 if (!sleepRetry(delay)) return false;
                 delay = Math.min(RETRY_MAX.toMillis(), delay * 2);
             }
         }
+        log.error("Detection DLQ hand-off abandoned partition={} offset={} after {} attempts; "
+                        + "the offset stays uncommitted so the record is redelivered",
+                partition, offset, dlqHandoffMaxAttempts);
         return false;
     }
 
@@ -582,21 +618,19 @@ public class KafkaEventConsumer {
                 ? Set.of(failedPartition) : owned);
     }
 
-    private void publishDlqAndAwait(String eventId, String raw) throws Exception {
+    private void publishDlqAndAwait(String eventId, String raw, Headers sourceHeaders)
+            throws Exception {
         if (customDlqSink) {
             dlqSink.accept(eventId, raw);
             return;
         }
-        KafkaClientSupport.sendAndAwait(dlq(), topic + "-dlq", eventId, raw, Duration.ofSeconds(30));
-    }
-
-    private void publishDlq(String eventId, String raw) {
-        try {
-            dlq().send(new org.apache.kafka.clients.producer.ProducerRecord<>(topic + "-dlq",
-                    eventId == null ? "unknown" : eventId, raw));
-        } catch (Exception ex) {
-            log.warn("Failed to write event to DLQ eventId={}: {}", eventId, ex.getMessage());
-        }
+        ProducerRecord<String, String> record = new ProducerRecord<>(topic + "-dlq",
+                eventId == null ? "unknown" : eventId, raw);
+        // The dead-letter entry inherits the trace of the record it replaces, so
+        // an operator looking at the DLQ lands in the trace that failed instead
+        // of a detached one. Journal replay has no source headers to inherit.
+        KafkaTrace.inject(KafkaTrace.extract(sourceHeaders), record.headers());
+        KafkaClientSupport.sendAndAwait(dlq(), record, Duration.ofSeconds(30));
     }
 
     private static long estimateRecordBytes(

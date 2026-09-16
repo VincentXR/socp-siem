@@ -13,8 +13,11 @@ import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.context.Scope;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -64,34 +67,7 @@ public class AlarmEventConsumer {
             consumer.subscribe(List.of(topic));
             while (!Thread.currentThread().isInterrupted()) {
                 var records = consumer.poll(Duration.ofMillis(500));
-                boolean retry = false;
-                for (var record : records) {
-                    restoreTrace(record.headers().lastHeader("traceparent"));
-                    Throwable failure = null;
-                    Span span = KafkaTrace.startConsume("alarm-register " + record.topic(),
-                            record.headers());
-                    try (Scope scope = KafkaTrace.contextOf(span).makeCurrent()) {
-                        registerEvent(record.value());
-                    } catch (IllegalArgumentException | JsonProcessingException invalid) {
-                        failure = invalid;
-                        if (!toDlqAndAwait(record.key(), record.value())) {
-                            retry = true;
-                            break;
-                        }
-                        log.warn("Invalid alarm event moved to DLQ alarmId={}: {}", record.key(), invalid.getMessage());
-                    } catch (RuntimeException transientFailure) {
-                        failure = transientFailure;
-                        log.warn("Alarm delivery registration failed; Kafka batch will retry: {}",
-                                transientFailure.getMessage());
-                        retry = true;
-                        break;
-                    } finally {
-                        TracePropagation.finish(span, failure);
-                        TenantContext.clear();
-                        MDC.remove("traceId");
-                    }
-                }
-                if (retry) {
+                if (processBatch(records)) {
                     KafkaClientSupport.rewindBatch(consumer, records);
                 } else if (!records.isEmpty()) {
                     consumer.commitSync();
@@ -100,6 +76,46 @@ public class AlarmEventConsumer {
         } catch (RuntimeException failure) {
             log.warn("Alarm event reconciler stopped: {}", failure.getMessage());
         }
+    }
+
+    /**
+     * Registers one polled batch. Returns true when the caller must rewind and
+     * retry the batch: either a record broke a rule and the DLQ would not
+     * acknowledge it, or delivery failed transiently and the batch is the only
+     * durable record of the work.
+     * <p>
+     * Separated from {@link #run()} so the retry, dead-letter and span
+     * lifecycle decisions can be tested without a broker.
+     */
+    boolean processBatch(ConsumerRecords<String, String> records) {
+        boolean retry = false;
+        for (var record : records) {
+            restoreTrace(record.headers().lastHeader("traceparent"));
+            Throwable failure = null;
+            Span span = KafkaTrace.startConsume("alarm-register " + record.topic(),
+                    record.headers());
+            try (Scope scope = KafkaTrace.contextOf(span).makeCurrent()) {
+                registerEvent(record.value());
+            } catch (IllegalArgumentException | JsonProcessingException invalid) {
+                failure = invalid;
+                if (!toDlqAndAwait(record.key(), record.value(), record.headers())) {
+                    retry = true;
+                    break;
+                }
+                log.warn("Invalid alarm event moved to DLQ alarmId={}: {}", record.key(), invalid.getMessage());
+            } catch (RuntimeException transientFailure) {
+                failure = transientFailure;
+                log.warn("Alarm delivery registration failed; Kafka batch will retry: {}",
+                        transientFailure.getMessage());
+                retry = true;
+                break;
+            } finally {
+                TracePropagation.finish(span, failure);
+                TenantContext.clear();
+                MDC.remove("traceId");
+            }
+        }
+        return retry;
     }
 
     void registerEvent(String raw) throws JsonProcessingException {
@@ -121,9 +137,14 @@ public class AlarmEventConsumer {
         if (traceId != null) MDC.put("traceId", traceId);
     }
 
-    private boolean toDlqAndAwait(String alarmId, String raw) {
+    private boolean toDlqAndAwait(String alarmId, String raw, Headers sourceHeaders) {
         try {
-            KafkaClientSupport.sendAndAwait(dlq(), topic + "-dlq", alarmId, raw, Duration.ofSeconds(10));
+            ProducerRecord<String, String> record = new ProducerRecord<>(topic + "-dlq",
+                    alarmId == null ? "unknown" : alarmId, raw);
+            // The dead-letter entry inherits the trace of the record it replaces,
+            // so an operator following the DLQ lands in the trace that failed.
+            KafkaTrace.inject(KafkaTrace.extract(sourceHeaders), record.headers());
+            KafkaClientSupport.sendAndAwait(dlq(), record, Duration.ofSeconds(10));
             return true;
         } catch (RuntimeException failure) {
             log.warn("Alarm DLQ acknowledgement failed alarmId={}: {}", alarmId, failure.getMessage());

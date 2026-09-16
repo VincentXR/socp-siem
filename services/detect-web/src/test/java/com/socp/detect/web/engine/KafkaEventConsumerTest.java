@@ -6,9 +6,12 @@ import com.socp.detect.web.persistence.store.DetectionStateStore;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
+import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.AbstractMap;
 import java.util.ArrayList;
@@ -23,14 +26,26 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.nio.charset.StandardCharsets;
+import java.util.Queue;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.trace.propagation.W3CTraceContextPropagator;
+import io.opentelemetry.context.propagation.ContextPropagators;
+import io.opentelemetry.sdk.OpenTelemetrySdk;
+import io.opentelemetry.sdk.trace.SdkTracerProvider;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -39,6 +54,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 @ExtendWith(MockitoExtension.class)
 class KafkaEventConsumerTest {
@@ -95,6 +111,151 @@ class KafkaEventConsumerTest {
 
         assertEquals(0, dlq.size());
         verify(engine).ingestFromKafkaAndAwait(any(SecurityEvent.class));
+    }
+
+    @Test
+    @Timeout(20)
+    void aPolledRecordIsProcessedUnderItsOwnTraceAndPublishesACompletion() throws Exception {
+        // A record that carries topic and position takes the four-argument
+        // overload; stubbing the one-argument form would leave this null, and
+        // the resulting failure sends the record down the durable DLQ path,
+        // which retries against a broker that no unit test has.
+        given(stateStore.claim(any(SecurityEvent.class), any(), any(), anyString()))
+                .willReturn(DetectionEventClaim.NEW);
+        given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))
+                .willReturn(CompletableFuture.completedFuture(null));
+        KafkaEventConsumer consumer = new KafkaEventConsumer(engine, stateStore);
+        String event = "{\"eventId\":\"consumer-test-201\",\"tenantId\":\"default\",\"source\":\"auth\","
+                + "\"host\":\"web-1\",\"msg\":\"login failed\"}";
+        ConsumerRecord<String, String> record =
+                new ConsumerRecord<>("socp-events", 3, 7L, "key-1", event);
+        record.headers().add("traceparent",
+                "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+                        .getBytes(StandardCharsets.UTF_8));
+
+        consumer.processWithRetry(record, 3L);
+
+        verify(engine).ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any());
+        // The offset may only advance once the work is durable, so the batch
+        // completion is what the committer waits for, not the return of process.
+        assertEquals(1, completionsOf(consumer).size());
+        assertNull(org.slf4j.MDC.get("traceId"),
+                "the consume span must not leave its trace id behind");
+    }
+
+    @Test
+    @Timeout(20)
+    void aMalformedPolledRecordIsDeadLetteredAndStillPublishesACompletion() throws Exception {
+        KafkaEventConsumer consumer = new KafkaEventConsumer(engine);
+        List<Map.Entry<String, String>> dlq = new ArrayList<>();
+        consumer.setDlqSink((eventId, raw) -> dlq.add(
+                new AbstractMap.SimpleEntry<>(eventId, raw)));
+        ConsumerRecord<String, String> record =
+                new ConsumerRecord<>("socp-events", 3, 8L, "bad-key", "{not-json");
+
+        consumer.processWithRetry(record, 3L);
+
+        assertEquals(1, dlq.size());
+        // A malformed record must not reach the engine through any overload.
+        verifyNoInteractions(engine);
+        assertEquals(1, completionsOf(consumer).size());
+    }
+
+    @Test
+    @Timeout(20)
+    void anUnreachableDeadLetterQueueGivesUpWithoutPublishingACompletion() throws Exception {
+        KafkaEventConsumer consumer = new KafkaEventConsumer(engine);
+        ReflectionTestUtils.setField(consumer, "dlqHandoffMaxAttempts", 3);
+        ReflectionTestUtils.setField(consumer, "dlqHandoffRetryDelayMs", 10L);
+        consumer.setDlqSink((eventId, raw) -> {
+            throw new IllegalStateException("broker unreachable");
+        });
+        ConsumerRecord<String, String> record =
+                new ConsumerRecord<>("socp-events", 3, 9L, "bad-key", "{not-json");
+
+        consumer.processWithRetry(record, 3L);
+
+        // Giving up must not publish a completion. That is what keeps the
+        // offset uncommitted, so an unreachable broker costs a retry later
+        // instead of a record silently dropped, or a lane wedged forever.
+        assertEquals(0, completionsOf(consumer).size());
+    }
+
+    @Test
+    @Timeout(20)
+    void aDeadLetterIsPublishedToKafkaWithTheTraceOfTheRecordItReplaces() throws Exception {
+        // Tracing on, because the propagation is what is under test: a no-op
+        // propagator injects nothing and the assertion would pass for the wrong
+        // reason.
+        GlobalOpenTelemetry.resetForTest();
+        GlobalOpenTelemetry.set(OpenTelemetrySdk.builder()
+                .setTracerProvider(SdkTracerProvider.builder().build())
+                .setPropagators(ContextPropagators.create(W3CTraceContextPropagator.getInstance()))
+                .build());
+        try {
+        KafkaEventConsumer consumer = new KafkaEventConsumer(engine);
+        KafkaProducer<String, String> dlq = mock(KafkaProducer.class);
+        given(dlq.send(any(ProducerRecord.class)))
+                .willReturn(CompletableFuture.completedFuture(mock(RecordMetadata.class)));
+        ReflectionTestUtils.setField(consumer, "dlqProducer", dlq);
+        String stored = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
+        ConsumerRecord<String, String> record =
+                new ConsumerRecord<>("socp-events", 3, 11L, "bad-key", "{not-json");
+        record.headers().add("traceparent", stored.getBytes(StandardCharsets.UTF_8));
+
+        consumer.processWithRetry(record, 3L);
+
+        ArgumentCaptor<ProducerRecord<String, String>> captor =
+                ArgumentCaptor.forClass(ProducerRecord.class);
+        verify(dlq).send(captor.capture());
+        assertEquals(stored, new String(
+                captor.getValue().headers().lastHeader("traceparent").value(), StandardCharsets.UTF_8));
+        assertEquals(1, completionsOf(consumer).size());
+        } finally {
+            GlobalOpenTelemetry.resetForTest();
+        }
+    }
+
+    @Test
+    @Timeout(20)
+    void exhaustedRetriesHandOffThroughTheDeadLetterProducer() throws Exception {
+        given(stateStore.claim(any(SecurityEvent.class), any(), any(), anyString()))
+                .willReturn(DetectionEventClaim.NEW);
+        given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))
+                .willReturn(CompletableFuture.failedFuture(new IllegalStateException("sink unavailable")));
+        KafkaEventConsumer consumer = new KafkaEventConsumer(engine, stateStore);
+        ReflectionTestUtils.setField(consumer, "processingMaxAttempts", 1);
+        KafkaProducer<String, String> dlq = mock(KafkaProducer.class);
+        given(dlq.send(any(ProducerRecord.class)))
+                .willReturn(CompletableFuture.completedFuture(mock(RecordMetadata.class)));
+        ReflectionTestUtils.setField(consumer, "dlqProducer", dlq);
+        ConsumerRecord<String, String> record = new ConsumerRecord<>("socp-events", 3, 12L, "key-1",
+                "{\"eventId\":\"consumer-test-301\",\"tenantId\":\"default\",\"source\":\"auth\","
+                        + "\"host\":\"web-1\",\"msg\":\"login failed\"}");
+
+        consumer.processWithRetry(record, 3L);
+
+        // Retries exhausted: the record is dead-lettered rather than retried forever.
+        verify(dlq).send(any(ProducerRecord.class));
+        assertEquals(1, completionsOf(consumer).size());
+    }
+
+    @Test
+    void theOffsetAwareSeamAlsoDeadLetters() {
+        KafkaEventConsumer consumer = new KafkaEventConsumer(engine);
+        List<Map.Entry<String, String>> dlq = new ArrayList<>();
+        consumer.setDlqSink((eventId, raw) -> dlq.add(new AbstractMap.SimpleEntry<>(eventId, raw)));
+
+        consumer.processRecord(3, 13L, "bad-key", "{not-json");
+
+        assertEquals(1, dlq.size());
+        verifyNoInteractions(engine);
+    }
+
+    private static java.util.Queue<?> completionsOf(KafkaEventConsumer consumer) throws Exception {
+        Field field = KafkaEventConsumer.class.getDeclaredField("completions");
+        field.setAccessible(true);
+        return (java.util.Queue<?>) field.get(consumer);
     }
 
     @Test

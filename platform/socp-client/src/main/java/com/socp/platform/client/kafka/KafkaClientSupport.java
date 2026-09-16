@@ -59,9 +59,21 @@ public final class KafkaClientSupport {
 
     public static void sendAndAwait(KafkaProducer<String, String> producer, String topic,
                                     String key, String value, Duration timeout) {
+        sendAndAwait(producer,
+                new ProducerRecord<>(topic, key == null ? "unknown" : key, value),
+                timeout);
+    }
+
+    /**
+     * Sends a record that already carries its own headers, such as a dead-letter
+     * entry that inherits the trace context of the record it replaces. Without
+     * this the hand-off starts a detached trace and the original one ends at the
+     * failure, which is exactly when an operator wants to follow it.
+     */
+    public static void sendAndAwait(KafkaProducer<String, String> producer,
+                                    ProducerRecord<String, String> record, Duration timeout) {
         try {
-            producer.send(new ProducerRecord<>(topic, key == null ? "unknown" : key, value))
-                    .get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+            producer.send(record).get(timeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("Kafka delivery interrupted", interrupted);
