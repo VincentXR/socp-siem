@@ -11,6 +11,7 @@ import org.springframework.http.HttpStatus;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 /**
@@ -151,7 +152,7 @@ final class SoarPlaybookCommandService {
         PlaybookVersionEntity base = baseVersionNo == null
                 ? (history.isEmpty() ? null : history.get(0))
                 : history.stream()
-                        .filter(candidate -> candidate.getVersionNo() == baseVersionNo)
+                        .filter(candidate -> Objects.equals(candidate.getVersionNo(), baseVersionNo))
                         .findFirst()
                         .orElseThrow(() -> SoarService.error(HttpStatus.NOT_FOUND, "SOAR_VERSION_NOT_FOUND",
                                 "version not found"));
