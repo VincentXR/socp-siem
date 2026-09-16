@@ -38,8 +38,8 @@ stay beside the workbench code or in its `e2e/` directory.
 ## Toolchain and common commands
 
 Use Java 21, Node.js 22, Corepack/pnpm 10, Python 3, and Docker Desktop. Use
-Terraform 1.16 and Helm 4 for deployment changes. Run Bash scripts through Git
-Bash or WSL; native PowerShell may use the matching `build/compose.ps1`,
+Helm 4 for Kubernetes deployment changes. Run Bash scripts through Git Bash or
+WSL; native PowerShell may use the matching `build/compose.ps1`,
 `build/mvnw.ps1`, or `build/quality-gate.ps1` wrapper.
 
 ```bash
@@ -55,7 +55,6 @@ cd frontend/apps/workbench && pnpm test && pnpm lint && pnpm format:check && pnp
 
 # Deployment contracts
 python build/verify-helm.py
-terraform fmt -check -recursive deploy/terraform
 
 # Middleware and application lifecycle
 bash build/compose.sh up -d

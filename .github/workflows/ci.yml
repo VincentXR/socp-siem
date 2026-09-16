@@ -1,4 +1,4 @@
-name: CI
+name: Change CI
 
 on:
   push:
@@ -6,8 +6,6 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
-  schedule:
-    - cron: "0 2 * * *"
 
 env:
   # GitHub-hosted runners should use Maven Central directly. The repository
@@ -44,6 +42,11 @@ jobs:
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
 
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.4
+
       - name: Build backend (Maven reactor)
         run: bash build/mvnw.sh -DskipTests package
 
@@ -66,9 +69,20 @@ jobs:
           python3 build/verify-style.py
           python3 build/verify-runtime-consolidation.py
           python3 build/verify-middleware-images.py
+          python3 build/verify-helm.py
           python3 -m unittest discover -s build/tests -p 'test_*.py'
           python3 build/verify-frontend-i18n.py
           python3 build/verify-production.py
+
+      - name: Validate GitHub Actions workflows
+        run: |
+          curl --fail --silent --show-error --location \
+            --output /tmp/actionlint.tar.gz \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  /tmp/actionlint.tar.gz" \
+            | sha256sum --check --strict
+          tar --extract --gzip --file /tmp/actionlint.tar.gz --directory /tmp actionlint
+          /tmp/actionlint
 
       - name: Run build policy and SpotBugs
         run: bash build/mvnw.sh verify -Pquality -DskipTests
@@ -518,19 +532,19 @@ jobs:
             exit 1
           fi
 
-      # Keep the nightly job deterministic here; the Compose-backed weekly
-      # workflow owns process/database/OpenSearch outage experiments.
-      - name: Run nightly chaos evidence (deterministic replay invariants)
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      # Manual runs can exercise the deterministic replay checks without
+      # mixing a scheduled/nightly lifecycle into the change-validation CI.
+      - name: Run manual replay evidence (deterministic replay invariants)
+        if: github.event_name == 'workflow_dispatch'
         run: |
           mkdir -p .cache/chaos
           set +e
           python3 build/chaos-pipeline.py --scenario duplicate_delivery \
-            --run-id "nightly-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --run-id "manual-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --output .cache/chaos/duplicate-delivery.json
           duplicate_status=$?
           python3 build/chaos-pipeline.py --scenario detection_outbox_replay \
-            --run-id "nightly-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --run-id "manual-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --output .cache/chaos/detection-outbox-replay.json
           replay_status=$?
           if [ "$duplicate_status" -ne 0 ] || [ "$replay_status" -ne 0 ]; then

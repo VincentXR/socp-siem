@@ -23,10 +23,6 @@ K8S_NAMESPACE = K8S_DIR / "namespace.yaml"
 HELM_CHART = ROOT / "deploy" / "helm" / "socp-core"
 HELM_VALUES = HELM_CHART / "values.yaml"
 HELM_SCHEMA = HELM_CHART / "values.schema.json"
-AWS_RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "aws-release.yml"
-AWS_INFRASTRUCTURE_WORKFLOW = (
-    ROOT / ".github" / "workflows" / "aws-infrastructure.yml"
-)
 COMPOSE_PROD = ROOT / "infra" / "docker-compose.prod.yml"
 REQUIRED_HELM = {
     ".helmignore",
@@ -60,17 +56,6 @@ def runtime_domain_membership() -> dict[str, str]:
             if isinstance(name, str) and isinstance(member, str):
                 membership[member] = name
     return membership
-
-
-def check_action_pins(
-    errors: list[str], workflow: str, workflow_label: str
-) -> None:
-    action_references = re.findall(r"^\s*uses:\s+([^\s#]+)", workflow, re.MULTILINE)
-    for reference in action_references:
-        if not re.search(r"@[0-9a-f]{40}$", reference):
-            errors.append(
-                f"{workflow_label} action is not commit-pinned: {reference}"
-            )
 
 
 def main() -> int:
@@ -198,57 +183,6 @@ def main() -> int:
         if "localhost" in values or "127.0.0.1" in values:
             errors.append("Helm runtime config must not route dependencies to loopback")
 
-    if not AWS_RELEASE_WORKFLOW.is_file():
-        errors.append("missing AWS release workflow")
-    else:
-        release = AWS_RELEASE_WORKFLOW.read_text(encoding="utf-8")
-        release_markers = {
-            "OIDC authentication": "id-token: write",
-            "AWS account guard": "allowed-account-ids:",
-            "immutable source tag": 'image_tag="$repository:sha-$RELEASE_SHA"',
-            "idempotent immutable-image retry": "ImageNotFoundException",
-            "source revision verification": "Verify image source revision",
-            "critical vulnerability gate": "Reject critical vulnerabilities",
-            "CycloneDX SBOM": "format: cyclonedx",
-            "registry digest resolution": "aws ecr describe-images",
-            "production no-rebuild promotion": "Resolve existing immutable images",
-            "production mainline guard": "git merge-base --is-ancestor",
-            "atomic Helm rollout": "--atomic --wait",
-            "protected production environment": "environment: production",
-            "explicit kubectl toolchain": "azure/setup-kubectl@",
-        }
-        for label, marker in release_markers.items():
-            if marker not in release:
-                errors.append(f"AWS release workflow lacks {label}")
-        check_action_pins(errors, release, "AWS release workflow")
-
-    if not AWS_INFRASTRUCTURE_WORKFLOW.is_file():
-        errors.append("missing AWS infrastructure workflow")
-    else:
-        infrastructure = AWS_INFRASTRUCTURE_WORKFLOW.read_text(encoding="utf-8")
-        infrastructure_markers = {
-            "same-repository pull-request guard": (
-                "github.event.pull_request.head.repo.full_name == github.repository"
-            ),
-            "plan-only AWS role": "AWS_TERRAFORM_PLAN_ROLE_ARN",
-            "separate apply AWS role": "AWS_TERRAFORM_APPLY_ROLE_ARN",
-            "OIDC authentication": "id-token: write",
-            "AWS account guard": "allowed-account-ids:",
-            "protected infrastructure environment": "environment: infrastructure",
-            "explicit destroy confirmation": "destroy-socp-dev",
-            "saved Terraform plan": "dev.tfplan",
-            "saved-plan application": 'apply\n          -auto-approve "$GITHUB_WORKSPACE/.cache/terraform/dev.tfplan"',
-            "remote state lock timeout": "-lock-timeout=5m",
-            "explicit kubectl toolchain": "azure/setup-kubectl@",
-            "cluster prerequisite application": (
-                "kubectl apply -f deploy/k8s/namespace.yaml"
-            ),
-        }
-        for label, marker in infrastructure_markers.items():
-            if marker not in infrastructure:
-                errors.append(f"AWS infrastructure workflow lacks {label}")
-        check_action_pins(errors, infrastructure, "AWS infrastructure workflow")
-
     if not COMPOSE_PROD.is_file():
         errors.append("missing infra/docker-compose.prod.yml")
     else:
@@ -329,7 +263,7 @@ def main() -> int:
         return 1
     print(
         "Production deployment contract passed "
-        "(Helm source, runtime domains, digest images, pod hardening, AWS workflows)"
+        "(Helm source, runtime domains, digest images, pod hardening, production Compose)"
     )
     return 0
 

@@ -50,6 +50,7 @@ directory instead of source control.
 - [Operational demo checklist](demo-checklist.md)
 - [Production delivery baseline](production-readiness.md)
 - [Kubernetes release contract](operations/kubernetes.md)
+- [Helm release runbook](../deploy/helm/README.md)
 
 ## Architecture decision records
 

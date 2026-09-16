@@ -31,8 +31,10 @@ python build/verify-actuator-auth.py
 # Helm render and deployment invariants (requires Helm 4)
 python build/verify-helm.py
 
-# AWS workflow syntax and static delivery contract (requires actionlint)
-actionlint .github/workflows/aws-infrastructure.yml .github/workflows/aws-release.yml
+# Workflow syntax, and the static production delivery contract (requires
+# actionlint). Run it with no arguments so it lints every workflow, which is
+# what CI does.
+actionlint
 python build/verify-production.py
 ```
 

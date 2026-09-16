@@ -10,9 +10,9 @@ dependencies and records the evidence listed below.
 - Build JARs once and package them with `deploy/docker/Dockerfile.jvm`.
 - Pass a verified Java 21 runtime image digest; mutable tags and `latest` are
   rejected by `build/verify-production.py`.
-- Generate an SPDX or CycloneDX SBOM, scan the image and dependencies
-  (`grype` or the registry scanner), sign the image (`cosign sign`), and verify
-  the signature before a Kubernetes rollout.
+- Generate a CycloneDX SBOM and scan images and dependencies before publishing
+  a release. Image signing and provenance attestation are deployment-policy
+  gates and must not be claimed unless the release records that evidence.
 - Inject secrets through the platform (`socp-runtime-secrets` in the
   Kubernetes baseline). Do not add a Secret manifest containing real values to
   Git.
@@ -24,11 +24,12 @@ Compose production overlay maps those values from
 `SOCP_PG_MIGRATION_USER`/`SOCP_PG_MIGRATION_PASSWORD` account. The remaining
 reference-deployment secret keys are `SOCP_SECURITY_SERVICE_SECRET`,
 `SOCP_SECURITY_METRICS_TOKEN`, `SOCP_SECURITY_ISSUER_URI`,
-`SOCP_SECURITY_JWK_SET_URI`, `SOCP_LOGIN_SECRET`, `SOCP_OPENSEARCH_USERNAME`,
-`SOCP_OPENSEARCH_PASSWORD`, `SOCP_CK_USER`, `SOCP_CK_PASSWORD`,
-`SOCP_COLLECTOR_CREDENTIALS`, `SOCP_INGEST_TOKEN`, and `SOCP_VECTOR_TOKEN`
-where the corresponding service uses them. Secret keys are intentionally not
-populated in Git.
+`SOCP_SECURITY_JWK_SET_URI`, `SOCP_SECURITY_AUDIENCE`, `SOCP_LOGIN_SECRET`,
+`SOCP_OPENSEARCH_USERNAME`, `SOCP_OPENSEARCH_PASSWORD`, `SOCP_CK_USER`,
+`SOCP_CK_PASSWORD`, `SOCP_COLLECTOR_CREDENTIALS`, `SOCP_INGEST_TOKEN`, and
+`SOCP_VECTOR_TOKEN` where the corresponding service uses them. Secret keys
+use these exact environment-variable names because the chart imports the
+external Secret with `envFrom`; they are intentionally not populated in Git.
 
 For local Compose, `SOCP_PG_BOOTSTRAP_PASSWORD` is the administrator password
 used only by PostgreSQL initialization. If it is omitted, the legacy
@@ -46,13 +47,12 @@ missing, expired, or replayed.
 
 ## Kubernetes rollout
 
-`deploy/k8s/base` is a minimal reference for the high-throughput event path:
-two Gateway replicas, two Search/Ingest replicas, three Detection replicas,
-and two Alert replicas. It
-sets rolling-update behavior, readiness/liveness/startup probes, resource
-requests and limits, a non-root/read-only container policy, and disruption
-budgets. Replace each `REPLACE_WITH_RELEASE_DIGEST` token during release
-rendering, then run `kubectl apply --server-side` and wait for rollout status.
+`deploy/helm/socp-core` is the single application release definition for the
+core event path. Four digest-addressed images render six independently
+scalable workloads. Environment values select fixed dev replicas or HPA/PDB
+capacity policy without duplicating Deployment manifests. The deployment
+platform creates the restricted `socp-system` namespace from
+`deploy/k8s/namespace.yaml`; Helm owns the namespaced application resources.
 
 Search, Detection, and Alert readiness includes TCP reachability for required
 Kafka/OpenSearch/ClickHouse/downstream-service endpoints through

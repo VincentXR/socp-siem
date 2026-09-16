@@ -5,10 +5,10 @@ event path. Raw application Deployments and environment overlays are not kept
 under `deploy/k8s`, preventing Kustomize and Helm from drifting into two
 independent release definitions.
 
-The infrastructure role first applies `deploy/k8s/namespace.yaml`. The
-namespace uses the Kubernetes Restricted Pod Security Standard. The
-namespace-scoped release role then installs the Helm chart; it cannot create
-or modify cluster-scoped resources.
+The deployment platform first applies `deploy/k8s/namespace.yaml`. The
+namespace uses the Kubernetes Restricted Pod Security Standard. A
+namespace-scoped deployment identity then installs the Helm chart; it should
+not require cluster-scoped mutation for the application release.
 
 ## Runtime topology
 
@@ -39,8 +39,8 @@ the workload manifests.
 `socp-runtime-secrets` is external to Helm. The deployment platform must
 create it before release and rotate it independently. Non-secret dependency
 endpoints can be supplied through an environment-owned values file under
-`runtime.extraConfig`. Neither generated secrets nor environment values are
-committed by the release workflow.
+`runtime.extraConfig`. Neither generated secrets nor environment values belong
+in source control.
 
 Default egress is limited to cluster DNS, same-namespace service HTTP, and the
 declared data-service namespace. Gateway ingress defaults to the
@@ -64,8 +64,8 @@ External data services and ingress controllers remain platform dependencies.
 
 ## Rollout and rollback
 
-The AWS release workflow uses `helm upgrade --install --atomic --wait` and
-waits for all six Deployments. A failed upgrade rolls back automatically.
+Deployment automation should use `helm upgrade --install --atomic --wait` and
+wait for all six Deployments. A failed upgrade rolls back automatically.
 Operators can inspect and restore a prior successful revision with:
 
 ```bash

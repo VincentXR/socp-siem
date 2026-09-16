@@ -35,6 +35,7 @@ correctness and recovery behavior, not a production capacity or HA claim.
 | Actuator boundary | `python build/verify-actuator-auth.py` | Gateway health remains probeable while info, metrics, and route metadata return 401 without credentials | Full-stack/release candidate |
 | Runtime consolidation policy | `python build/verify-runtime-consolidation.py` | No fixed process target is configured and logical domains/candidates match the executable registry | Every topology change |
 | Candidate consolidation | `python build/verify-runtime-consolidation.py --candidate NAME --require-evidence --evidence PATH` | One registered candidate has commit-matched context, transaction, failure-isolation, and capacity evidence | Before changing that candidate's runtime placement |
+| Helm release | `python build/verify-helm.py` | Dev/staging/production profiles render four digest-only images into six hardened workloads with the expected HPA/PDB, runtime roles, and service routes | Every Kubernetes release change |
 | SOAR live | `python build/verify-soar-live.py` | Real PostgreSQL/Temporal Run completion, Alert-shaped event admission, receipt idempotency, and two-instance capacity fence | Weekly/release candidate |
 | Dependency failure | `python build/failure-tests.py` | Kafka, OpenSearch, Temporal, and PostgreSQL recovery assertions | Manual/scheduled |
 
@@ -87,8 +88,8 @@ addresses, tokens, passwords, or machine-specific screenshots.
 
 Push and pull-request CI runs the Java suite, opt-in Testcontainers contracts,
 frontend contracts/build, the minimal service slice, and the Kafka pipeline.
-PRs run duplicate-delivery and Detection Outbox replay Chaos; nightly/manual CI
-repeats those deterministic invariants. The full-stack workflow is
+PRs run duplicate-delivery and Detection Outbox replay Chaos; manual Change CI
+can repeat those deterministic invariants. The full-stack workflow is
 manual/weekly, starts the fixed three-instance cluster, and runs full API,
 pipeline, process/database/OpenSearch outage, Golden Demo, Detection recovery,
 multi-instance/rebalance, attack scenarios, and dependency failure checks with

@@ -12,6 +12,10 @@
   ownership domains and evaluates only explicitly registered consolidation
   candidates with per-candidate context, transaction, failure, and capacity
   evidence.
+- Replaced duplicate Kustomize application manifests with a schema-validated
+  Helm release for four images and six workloads, including digest-only image
+  inputs, hardened pod defaults, HPA/PDB policy, network policy, and atomic
+  rollout support.
 
 ### Pipeline durability and performance
 
