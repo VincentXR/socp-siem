@@ -28,11 +28,11 @@ The registry returns the immutable digest only after push. Helm consumes the
 repository and returned digest separately and renders
 `repository@sha256:...`; `docker build -t repository@sha256:...` is invalid.
 
-The AWS release pipeline builds the JAR, creates the image, produces a
-CycloneDX SBOM, rejects critical vulnerabilities, pushes the image, and deploys
-the returned ECR digest. Image signing and provenance attestation remain a
-separate policy gate; the repository does not claim they ran until the release
-workflow records that evidence.
+Build the JAR once, package it with `Dockerfile.jvm`, produce a CycloneDX SBOM,
+and scan images and dependencies before publishing a release. The deployment
+supplies the repository and the pushed digest separately. Image signing and
+provenance attestation are deployment-policy gates and must not be claimed
+unless the release records that evidence.
 
 Images run as UID/GID `10001`, have no shell entrypoint, and do not write to a
 host-mounted application directory. Runtime secrets are injected by the
