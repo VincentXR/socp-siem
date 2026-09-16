@@ -50,6 +50,11 @@ CODEBUDDY.md
 # ---- 工具链 junction（指向本机 D 盘 tooling，仓库内不跟踪） ----
 tooling/
 
+# ---- 本机临时目录（helm 渲染、junit、下载的工具等） ----
+# 与 Terraform 无关：删掉 AWS 交付栈时它被一并删了，于是这个通用目录
+# 变成了未忽略状态，一次 git add -A 就会把本机产物带进仓库。
+.tmp/
+
 # ---- Python 缓存 ----
 __pycache__/
 *.pyc
