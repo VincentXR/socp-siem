@@ -167,8 +167,8 @@ jobs:
       - name: Start a second SOAR instance for admission evidence
         run: |
           mkdir -p .cache
-          secondary_jvm_opts="${SOCP_SOAR_WEB_JVM_OPTS:--Xms16m -Xmx192m -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC}"
-          nohup java $secondary_jvm_opts \
+          read -r -a secondary_jvm_args <<< "${SOCP_SOAR_WEB_JVM_OPTS:--Xms16m -Xmx192m -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC}"
+          nohup java "${secondary_jvm_args[@]}" \
             -jar services/soar-web/target/soar-web-1.0.0-SNAPSHOT.jar \
             --server.port=28083 --spring.profiles.active=dev,pg \
             --spring.main.banner-mode=off \
@@ -213,7 +213,7 @@ jobs:
           python3 build/webhook-sink.py --port "$SOCP_WEBHOOK_FIXTURE_PORT" \
             > .cache/webhook-sink.log 2>&1 &
           echo $! > .cache/webhook-sink.pid
-          for attempt in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if curl --fail --silent "http://127.0.0.1:${SOCP_WEBHOOK_FIXTURE_PORT}/health" >/dev/null; then
               exit 0
             fi

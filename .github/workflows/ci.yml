@@ -540,7 +540,7 @@ jobs:
       - name: Print pipeline logs on failure
         if: failure()
         run: |
-          ps -ef | grep -E 'search-config|detect-web|alert-web|report-web|api-gateway' | grep -v grep || true
+          pgrep -af 'search-config|detect-web|alert-web|report-web|api-gateway' || true
           for log in "$GITHUB_WORKSPACE"/.cache/*.log; do
             echo "===== $log ====="
             tail -n 120 "$log" || true

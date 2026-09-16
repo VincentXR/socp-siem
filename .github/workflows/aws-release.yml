@@ -161,6 +161,8 @@ jobs:
           set -euo pipefail
           repository="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY_PREFIX-$SERVICE"
           image_tag="$repository:sha-$RELEASE_SHA"
+          exists=false
+          digest=""
           if digest="$(aws ecr describe-images \
             --repository-name "$ECR_REPOSITORY_PREFIX-$SERVICE" \
             --image-ids "imageTag=sha-$RELEASE_SHA" \
@@ -169,19 +171,23 @@ jobs:
             [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
             image_ref="$repository@$digest"
             docker pull "$image_ref"
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+            exists=true
           else
             if ! grep --quiet 'ImageNotFoundException' .cache/ecr-describe-error; then
               cat .cache/ecr-describe-error >&2
               exit 1
             fi
             image_ref="$image_tag"
-            echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
-          echo "image_ref=$image_ref" >> "$GITHUB_OUTPUT"
-          echo "image_tag=$image_tag" >> "$GITHUB_OUTPUT"
-          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          {
+            echo "exists=$exists"
+            if [[ "$exists" == "true" ]]; then
+              echo "digest=$digest"
+            fi
+            echo "image_ref=$image_ref"
+            echo "image_tag=$image_tag"
+            echo "repository=$repository"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build local image when absent
         if: steps.image.outputs.exists != 'true'

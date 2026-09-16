@@ -84,7 +84,9 @@ enforces JDK/Maven policy and high-confidence SpotBugs findings.
 
 `build/verify-migrations.py` rejects duplicate/misnamed migrations, version
 gaps, unmarked destructive statements, missing Flyway wiring, and tenant JPA
-entities without a `tenant_id` migration. `build/verify-contracts.py` keeps the
+entities without a `tenant_id` migration. It aggregates independent Flyway
+locations owned by one service, such as Detection's secondary-analysis schema,
+without merging their version histories. `build/verify-contracts.py` keeps the
 Maven service modules, default process list, logical-domain assignment,
 optional consolidation candidates, unique ports, gateway routes, legacy
 collector rewrites, and frontend health registry aligned.
