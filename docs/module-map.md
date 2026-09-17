@@ -17,7 +17,7 @@ preview, and production-readiness contract of each service.
 | `agents/` | Vector pipeline and Falco rule assets |
 | `infra/` | Docker Compose, production-shaped overlay, database bootstrap SQL, tenant RLS, and observability configuration |
 | `deploy/` | Digest-addressed application image and Kubernetes rolling-update baseline |
-| `build/` | Toolchain, startup, port registry, verification, failure injection, benchmark, and demo scripts |
+| `build/` | Toolchain, startup, port registry, verification, failure injection, and demo scripts |
 | `docs/` | Architecture, operating guidance, test scope, demo instructions, and ADRs |
 
 Java tests are colocated under each module's `src/test/java`. Frontend contract

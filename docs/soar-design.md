@@ -955,11 +955,9 @@ HTTP/1.1 202 Accepted
 - 连接健康检查采用指数退避，不能因一个厂商故障拖垮全部 worker；
 - 生产部署必须保证 Worker 与已持久化的 Workflow history 兼容；升级使用受支持的 Worker Deployment 策略。
 
-## 16. SLO、容量与边界
+## 16. SLO 与边界
 
-以下是发布目标，不是未测试的现状声明。测量时固定提交、环境和数据集并保留报告。
-
-### 16.1 P0 SLO
+以下是发布目标，不是未测试的现状声明。
 
 | 指标 | 目标 |
 |---|---|
@@ -967,24 +965,12 @@ HTTP/1.1 202 Accepted
 | 同一 Trigger Receipt 重复创建 Run | 0 |
 | 跨租户读写或 signal | 0 |
 | 控制面 API 可用性 | 月度 99.9%，不含计划维护和依赖整体不可用 |
-| 控制面读 API p95 | < 500 ms（100 万 Run 元数据量、正常索引） |
-| 接受到 Workflow started p95 | < 2 s（50 events/s，Temporal/PG 健康） |
+| 控制面读 API p95 | < 500 ms（正常索引） |
+| 接受到 Workflow started p95 | < 2 s（Temporal/PG 健康） |
 | 取消请求到停止调度新节点 p95 | < 5 s |
 | Worker/服务重启恢复排队运行 | < 2 min |
 | 非敏感日志/History 中 secret 泄漏 | 0 |
 
-### 16.2 P0 容量验收模型
-
-参考单个 SOAR 部署单元 4 vCPU/8 GiB、独立 PostgreSQL/Temporal：
-
-- 100 个租户、每租户 100 个已发布剧本和 200 条规则；
-- 50 个触发事件/秒持续 30 分钟，200/秒突发 60 秒；
-- 1,000 个并发 Run，其中 500 个等待审批/Delay；
-- 每 Run 平均 20 节点、p95 100 节点；
-- 外部 stub 延迟 100 ms、1% 可重试失败、0.1% unknown 场景；
-- 重启 API、Worker、PostgreSQL 连接和 Temporal 后验证无丢失、无越权、幂等动作无重复。
-
-P1 目标再提升到 500 events/s 和 10,000 并发 Run。任何数字必须由 `build/benchmark-soar.*` 的可重复报告证明。
 
 ## 17. 测试与验收
 

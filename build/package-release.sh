@@ -6,14 +6,14 @@
 #   - 注册表中的全部后端 fat jar（services/*/target/*.jar）
 #   - workbench 前端生产产物（frontend/apps/workbench/dist）
 #   - 启停/验证脚本（run-all.sh 已动态定位 ROOT，可直接运行）
-#   - docs/ 文档 + FROZEN.md + RELEASE.md 使用说明
+#   - docs/ 文档 + RELEASE.md 使用说明
 #
 # 用法：
 #   bash socp/build/package-release.sh            # 打包（复用已构建产物）
 #   bash socp/build/package-release.sh --build    # 先全量构建再打包
 # 产物：dist/socp-siem-YYYYMMDD-HHMM.tar.gz
 # ============================================================
-set -uo pipefail
+set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TS=$(date +%Y%m%d-%H%M)
 OUT="$REPO_ROOT/dist"
@@ -68,12 +68,15 @@ else
 fi
 
 # 3) 脚本
-for f in auth_client.py ports.env ports.py run-all.sh toolchain.sh wait_health.py verify-full.py verify-slice.py verify-pipeline.py; do
+for f in auth_client.py ports.env ports.py run-all.sh toolchain.sh verify-full.py verify-slice.py verify-pipeline.py; do
   [ -f "$REPO_ROOT/build/$f" ] && { mkdir -p "$PKG/socp/build"; cp "$REPO_ROOT/build/$f" "$PKG/socp/build/"; }
 done
-# 4) 文档与声明
-[ -d "$REPO_ROOT/docs" ] && cp -r "$REPO_ROOT/docs" "$PKG/socp/docs"
-[ -f "$REPO_ROOT/FROZEN.md" ] && cp "$REPO_ROOT/FROZEN.md" "$PKG/"
+# 4) 文档
+if [ -d "$REPO_ROOT/docs" ]; then
+  cp -r "$REPO_ROOT/docs" "$PKG/socp/docs"
+  # docs/_local holds gitignored operator scratch notes; never ship them.
+  rm -rf "$PKG/socp/docs/_local"
+fi
 
 # 5) 生成使用说明
 cat > "$PKG/RELEASE.md" <<'EOF'
@@ -114,7 +117,7 @@ EOF
 
 echo "=== 打包 ==="
 cd "$OUT"
-tar czf "$PKGNAME.tar.gz" "$PKGNAME" 2>/dev/null
+tar czf "$PKGNAME.tar.gz" "$PKGNAME"
 SIZE=$(ls -lh "$PKGNAME.tar.gz" | awk '{print $5}')
 echo "  生成: $OUT/$PKGNAME.tar.gz ($SIZE)"
 echo "=== 内容清单 ==="

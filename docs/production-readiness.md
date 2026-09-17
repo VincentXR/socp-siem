@@ -79,9 +79,9 @@ and a SHA-256 sidecar. A production runbook must additionally record:
 6. RTO/RPO, SLOs, alert thresholds, and the measured failure-domain recovery
    time.
 
-These drills are deployment-owned evidence. The repository's benchmark and
-chaos scripts validate application invariants and do not claim capacity, HA,
-or disaster recovery by themselves.
+These drills are deployment-owned evidence. The repository's chaos scripts
+validate application invariants and do not claim capacity, HA, or disaster
+recovery by themselves.
 
 ## Capacity and service grouping
 
@@ -94,7 +94,7 @@ runtime placement only for one registered candidate after the
 [ADR 007](adr/007-runtime-deployment-units.md) context, transaction, failure,
 and capacity evidence passes. Size Kafka
 partitions, PostgreSQL pools, ClickHouse parts, and OpenSearch shards from
-measured load; do not infer production capacity from the single-node benchmark.
+measured load; do not infer production capacity from a local run.
 The standing-policy gate is `python build/verify-runtime-consolidation.py`.
 Candidate evidence is checked independently with `--candidate NAME
 --require-evidence`; there is no repository-wide aggregate promotion.

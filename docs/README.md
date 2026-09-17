@@ -46,7 +46,6 @@ directory instead of source control.
 
 ## Verification and operations
 
-- [Pipeline benchmark](benchmark/README.md)
 - [Failure and chaos scenarios](chaos/README.md)
 - [Operational demo checklist](demo-checklist.md)
 - [Production delivery baseline](production-readiness.md)

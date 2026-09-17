@@ -59,7 +59,7 @@ Web has another transactional Outbox for the Kafka fan-out hand-off.
 - Shared durable entity-risk projection, alert evidence, IOC enrichment, ATT&CK mapping,
   incidents, cases, notifications, SOAR playbooks, and reporting.
 - JWT/OIDC, RBAC, logical tenant isolation, audit records, metrics, traces,
-  benchmark tooling, and failure-injection scripts.
+  failure-injection scripts, and demos.
 
 The versioned detection pack is at
 `services/detect-web/src/main/resources/detection-content/manifest.json`.
@@ -100,6 +100,18 @@ bash build/run-all.sh status
 bash build/run-all.sh stop
 ```
 
+To produce a redistributable archive from already-built artifacts - the fat
+jars, the built workbench, the start and verification scripts, and `docs/`:
+
+```bash
+bash build/package-release.sh            # package what is already built
+bash build/package-release.sh --build    # full build first
+```
+
+It writes a timestamped `tar.gz` under the ignored `dist/`, together with a
+generated `RELEASE.md` carrying the start commands and the port map. It refuses
+to package a partially written jar set.
+
 ## Verification
 
 ```bash
@@ -132,9 +144,8 @@ DETECTION_INSTANCE_URLS=http://127.0.0.1:18082,http://127.0.0.1:28082,http://127
   python build/chaos-pipeline.py --scenario multi_instance --count 30 --rebalance-cycles 3
 ```
 
-Benchmark commands and the JSON report schema are documented in
-`docs/benchmark/README.md`. Do not claim production throughput from a local
-benchmark; retain machine-specific output outside source control.
+Throughput and latency measurements are machine-specific. Keep per-run output
+outside source control, and do not claim production throughput from a local run.
 
 ## Runtime boundaries
 
@@ -165,7 +176,7 @@ frontend/apps/workbench/  Vue 3 security operations workbench
 agents/                   Vector and Falco assets
 infra/                    Docker Compose and middleware initialization
 deploy/                   container, Kubernetes, and Helm deployment assets
-build/                    startup, verification, benchmark, chaos, demos
+build/                    startup, verification, chaos, demos
 docs/                     architecture, operating guides, tests, and ADRs
 ```
 

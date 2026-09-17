@@ -17,6 +17,9 @@ frontend/**/test-results/
 .pnpm-store/
 frontend/.pnpm-store/
 
+# ---- 发布包 ----
+/dist/
+
 # ---- IDE ----
 .idea/
 *.iml

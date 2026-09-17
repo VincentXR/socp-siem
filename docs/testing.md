@@ -116,8 +116,6 @@ python build/failure-tests.py
 python build/validate-detection-content.py
 python build/verify-investigation-dataset.py
 python build/eval-investigation.py --results services/ai-assistant/target/investigation-eval-results.json
-python build/benchmark-pipeline.py --mode e2e --profile realistic --count 100 --batch-size 25 \
-  --output .cache/benchmark/e2e-100.json
 ```
 
 The opt-in Testcontainers contract suite is in `platform/socp-test`, with the
@@ -162,29 +160,6 @@ Detection, PostgreSQL alert persistence, OpenSearch indexing, ClickHouse
 analytics, and report availability. The failure checks verify dependency
 recovery. The Alert Web restart scenario specifically proves that a Detection
 Alert Outbox row survives a downstream outage.
-
-The benchmark has two scopes. `bulk` measures the Detection HTTP boundary;
-`--mode e2e` sends events through `search-config -> Kafka -> detect-web ->
-alert-web` and waits for the expected run-scoped alerts. Use
-`--profile realistic` for a low hit-rate mixed workload or
-`--profile alert-heavy` to stress the durable alert path. It records batch
-request P50/P95/P99, ingress throughput,
-T0-T8 event/alert stage histograms, explicitly scoped transaction ratios, the
-durable `Alert Web createdAt - triggerIngestedAt` latency, and Kafka offsets
-when `kafka-python` is installed. `BENCH_DETECTION_URLS` enables aggregation
-across all Detection instances. `--offered-eps` plus `--duration` runs the
-steady-state lag check. See the [benchmark contract](benchmark/README.md).
-E2E runs require the direct collector boundary variables `BENCH_INGEST_URL`,
-`BENCH_COLLECTOR_ID`, and `BENCH_COLLECTOR_TOKEN`; a user JWT is never reused as
-a collector credential.
-
-For repeated baseline evidence, use `build/benchmark-series.py`; it runs the
-same workload once as an excluded warm-up and then three to five measured
-times, writes per-run reports and process logs, and fails unless every round
-uses one commit, throughput remains within the configured degradation
-tolerance, and no sustained monotonic decline is present. If a single round aborts, `build/benchmark-pipeline.py` writes a
-`.failed.json` sidecar containing the exception and traceback instead of
-silently losing the evidence.
 
 When local Compose ports differ from defaults, set `PIPELINE_OS` for
 `verify-pipeline.py` and `FAILURE_OS_URL` for `failure-tests.py`. Both accept
