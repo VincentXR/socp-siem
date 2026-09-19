@@ -83,14 +83,17 @@ final class TenantCatalog<T> {
     boolean delete(String key) {
         String tenant = tenant();
         boolean existed = get(key) != null;
+        // A tombstone for an entry this tenant never had would only accumulate
+        // rows that no restart can reconcile, so unknown ids are rejected here.
+        if (!existed) return false;
         if (persistence != null) {
             persistence.delete(catalogType, tenant, key);
-            return existed;
+            return true;
         }
         Map<String, T> tenantOverlay = overlays.get(tenant);
         if (tenantOverlay != null) tenantOverlay.remove(key);
         deleted.computeIfAbsent(tenant, ignored -> ConcurrentHashMap.newKeySet()).add(key);
-        return existed;
+        return true;
     }
 
     private static String tenant() {

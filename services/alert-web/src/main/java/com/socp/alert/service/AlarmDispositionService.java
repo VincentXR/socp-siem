@@ -9,18 +9,25 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.socp.platform.error.exception.ApiException;
+import com.socp.platform.tenant.context.AuthenticatedIdentity;
+import com.socp.platform.tenant.context.AuthenticatedIdentityContext;
 import com.socp.platform.tenant.context.TenantContext;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -82,13 +89,20 @@ public class AlarmDispositionService {
         }
         Disposition cur = currentForUpdate(alarmId);
         Disposition next = new Disposition(s, cur.assignee(), cur.notes());
+        // Deterministic idempotency: re-applying the current status is a no-op, so a
+        // retried or duplicated request neither rewrites the row nor churns updated_at.
+        if (s.equals(cur.status())) return next;
         return persist(alarmId, next);
     }
 
     @Transactional
     public Disposition assign(String alarmId, String assignee) {
         Disposition cur = currentForUpdate(alarmId);
-        Disposition next = new Disposition(cur.status(), assignee, cur.notes());
+        String target = assignee == null ? null : assignee.trim();
+        Disposition next = new Disposition(cur.status(), target, cur.notes());
+        // Deterministic idempotency: assigning the current owner is a no-op, so SOAR
+        // or UI retries of the same assignment do not rewrite the disposition.
+        if (Objects.equals(target, cur.assignee())) return next;
         return persist(alarmId, next);
     }
 
@@ -129,6 +143,15 @@ public class AlarmDispositionService {
      * two analysts update overlapping selections concurrently.  The returned
      * item list is deterministic, which also makes audit/retry evidence easy
      * to compare.
+     *
+     * <p>The recorded reason carries the same durable set-once ledger as
+     * connector notes: its identity is derived deterministically from the
+     * trusted actor plus the normalized mutation, so an at-least-once retry of
+     * the same batch neither duplicates the note nor rewrites a row that already
+     * holds the requested state.  Status and assignee are still reconciled on a
+     * replay, because unlike a note they are the caller's requested state and may
+     * have drifted in between.  A blank reason records no note at all: the
+     * independent {@code @AuditOperation} entry is the evidence of the call.</p>
      */
     @Transactional
     public Map<String, Object> batchUpdate(List<String> alarmIds, String status,
@@ -152,19 +175,29 @@ public class AlarmDispositionService {
         if (normalizedStatus == null && normalizedAssignee == null && normalizedReason == null) {
             throw ApiException.badRequest("at least one of status, assignee or reason is required");
         }
+        String actor = batchActor();
+        String reasonKey = normalizedReason == null
+                ? null : batchReasonKey(actor, normalizedStatus, normalizedAssignee, normalizedReason);
 
         List<Map<String, Object>> items = new ArrayList<>();
         normalizedIds.stream().sorted(Comparator.naturalOrder()).forEach(alarmId -> {
-            Disposition current = currentForUpdate(alarmId);
+            DispositionEntity row = lockedRow(alarmId);
+            Disposition current = toDisposition(row);
+            boolean reasonPending = reasonKey != null
+                    && !readNoteKeys(row.getNoteKeys()).contains(reasonKey);
             List<Disposition.Note> notes = new ArrayList<>(current.notes());
-            if (normalizedReason != null) {
-                notes.add(new Disposition.Note("operator", normalizedReason, Instant.now()));
+            if (reasonPending) {
+                notes.add(new Disposition.Note(actor, normalizedReason, Instant.now()));
             }
             Disposition next = new Disposition(
                     normalizedStatus == null ? current.status() : normalizedStatus,
                     normalizedAssignee == null ? current.assignee() : normalizedAssignee,
                     List.copyOf(notes), current.tags());
-            persist(alarmId, next);
+            boolean statePending = !next.status().equals(current.status())
+                    || !Objects.equals(next.assignee(), current.assignee());
+            // Deterministic idempotency: a replay that adds no note and changes no
+            // state leaves the row (and its updated_at) untouched.
+            if (reasonPending || statePending) write(row, next, reasonPending ? reasonKey : null);
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("alarmId", alarmId);
             item.put("status", next.status());
@@ -185,29 +218,79 @@ public class AlarmDispositionService {
     }
 
     private Disposition persist(String alarmId, Disposition d, String noteKey) {
-        String tenant = tenant();
-        DispositionEntity e = repo.findByAlarmIdAndTenantId(alarmId, tenant).orElseGet(() -> {
-            DispositionEntity n = new DispositionEntity();
-            n.setAlarmId(alarmId);
-            n.setTenantId(tenant);
-            return n;
-        });
-        if (noteKey != null && readNoteKeys(e.getNoteKeys()).contains(noteKey)) {
-            return toDisposition(e);
+        DispositionEntity row = managedRow(alarmId);
+        if (noteKey != null && readNoteKeys(row.getNoteKeys()).contains(noteKey)) {
+            return toDisposition(row);
         }
-        e.setStatus(d.status());
-        e.setAssignee(d.assignee());
-        e.setNotes(writeNotes(d.notes()));
-        e.setTags(writeTags(d.tags()));
-        if (noteKey != null) e.setNoteKeys(writeNoteKeys(e.getNoteKeys(), noteKey));
-        repo.save(e);
+        return write(row, d, noteKey);
+    }
+
+    /** The row behind {@code findByAlarmIdAndTenantId}, or an unsaved new one. */
+    private DispositionEntity managedRow(String alarmId) {
+        String tenant = tenant();
+        return repo.findByAlarmIdAndTenantId(alarmId, tenant).orElseGet(() -> newRow(alarmId, tenant));
+    }
+
+    /** The row locked for update, or an unsaved new one. */
+    private DispositionEntity lockedRow(String alarmId) {
+        String tenant = tenant();
+        return repo.findForUpdate(alarmId, tenant).orElseGet(() -> newRow(alarmId, tenant));
+    }
+
+    private static DispositionEntity newRow(String alarmId, String tenant) {
+        DispositionEntity created = new DispositionEntity();
+        created.setAlarmId(alarmId);
+        created.setTenantId(tenant);
+        return created;
+    }
+
+    /**
+     * Writes the disposition onto an already loaded row.  A non-null note key is
+     * recorded in the bounded set-once ledger alongside the note it authorizes.
+     */
+    private Disposition write(DispositionEntity row, Disposition d, String noteKey) {
+        row.setStatus(d.status());
+        row.setAssignee(d.assignee());
+        row.setNotes(writeNotes(d.notes()));
+        row.setTags(writeTags(d.tags()));
+        if (noteKey != null) row.setNoteKeys(writeNoteKeys(row.getNoteKeys(), noteKey));
+        repo.save(row);
         return d;
     }
 
     private Disposition currentForUpdate(String alarmId) {
-        return repo.findForUpdate(alarmId, tenant())
-                .map(AlarmDispositionService::toDisposition)
-                .orElseGet(() -> new Disposition("OPEN", null, List.of()));
+        return toDisposition(lockedRow(alarmId));
+    }
+
+    /**
+     * Author of a batch triage note, taken from the authenticated principal rather
+     * than from anything the caller can set — the same trust rule the single-note
+     * endpoint applies through {@code DispositionActor}.  The batch request carries
+     * no actor field, so every identity is recorded by its own subject; the
+     * {@code @AuditOperation} entry stays the independent evidence of the call.
+     */
+    private static String batchActor() {
+        return AuthenticatedIdentityContext.current()
+                .map(AuthenticatedIdentity::subject)
+                .orElse("operator");
+    }
+
+    /**
+     * Deterministic identity of one batch triage reason: the same actor re-applying
+     * the same normalized mutation replays onto the same key, which the row's
+     * note-key ledger accepts at most once.  It is a digest because a reason is free
+     * text up to 4KB while the ledger column has to stay bounded.
+     */
+    private static String batchReasonKey(String actor, String status, String assignee, String reason) {
+        String canonical = "actor=" + actor + "\nstatus=" + status
+                + "\nassignee=" + assignee + "\nreason=" + reason;
+        // SHA-256 is mandated by the JCA specification, so this guard can only fail on a
+        // JVM that does not implement it; it must not silently weaken the recorded key.
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(canonical.getBytes(StandardCharsets.UTF_8));
+            return "batch:" + HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException impossible) { throw new IllegalStateException("SHA-256 is required", impossible); }
     }
 
     private static String tenant() {

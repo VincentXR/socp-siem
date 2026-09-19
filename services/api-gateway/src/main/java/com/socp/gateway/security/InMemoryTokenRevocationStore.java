@@ -1,6 +1,7 @@
 package com.socp.gateway.security;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 
@@ -8,8 +9,14 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-/** Development-only revocation backend; production defaults to Redis. */
+/**
+ * Development-only revocation backend. The deny-list is process-local, so a
+ * logout would silently keep working on only one of several gateway replicas;
+ * production is confined to {@link RedisTokenRevocationStore} by this profile
+ * gate plus the ProdGuard backend assertion.
+ */
 @Component
+@Profile("!prod")
 @ConditionalOnProperty(name = "socp.auth.revocation.backend", havingValue = "memory")
 class InMemoryTokenRevocationStore implements TokenRevocationStore {
 

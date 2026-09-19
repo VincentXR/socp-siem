@@ -9,6 +9,9 @@ import org.springframework.boot.actuate.health.HealthEndpoint;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class HealthControllerTest {
 
@@ -20,7 +23,24 @@ class HealthControllerTest {
 
         var result = new HealthController(properties, health).health();
 
-        assertThat(result.data()).containsExactlyInAnyOrderEntriesOf(
+        assertThat(result.getStatusCodeValue()).isEqualTo(200);
+        assertThat(result.getBody().data()).containsExactlyInAnyOrderEntriesOf(
                 Map.of("service", "ai-assistant", "status", "UP", "maturity", "preview"));
+    }
+
+    @Test
+    void reportsServiceUnavailableWhenHealthIsNotUp() {
+        AiRuntimeProperties properties = new AiRuntimeProperties();
+        properties.setMaturity("preview");
+        HealthEndpoint endpoint = mock(HealthEndpoint.class, RETURNS_DEEP_STUBS);
+        when(endpoint.health().getStatus().getCode()).thenReturn("DOWN");
+        @SuppressWarnings("unchecked")
+        ObjectProvider<HealthEndpoint> health = mock(ObjectProvider.class);
+        when(health.getIfAvailable()).thenReturn(endpoint);
+
+        var result = new HealthController(properties, health).health();
+
+        assertThat(result.getStatusCodeValue()).isEqualTo(503);
+        assertThat(result.getBody().data()).containsEntry("status", "DOWN");
     }
 }

@@ -17,7 +17,8 @@ class HealthControllerTest {
 
         var result = new HealthController(health).health();
 
-        assertThat(result.data()).containsExactlyInAnyOrderEntriesOf(
+        assertThat(result.getStatusCode().value()).isEqualTo(200);
+        assertThat(result.getBody().data()).containsExactlyInAnyOrderEntriesOf(
                 Map.of("service", "search-config", "status", "UP"));
     }
 }

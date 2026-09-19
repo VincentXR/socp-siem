@@ -8,6 +8,8 @@ import com.socp.report.web.domain.ReportTrend;
 import com.socp.report.web.service.ReportService;
 import com.socp.report.web.persistence.store.ReportObjectStore;
 import com.socp.platform.tenant.context.TenantContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -27,6 +29,8 @@ public class ReportController {
 
     static final int ARCHIVE_DEFAULT_LIMIT = 500;
     static final int ARCHIVE_MAX_LIMIT = 5_000;
+
+    private static final Logger log = LoggerFactory.getLogger(ReportController.class);
 
     private final ReportService service;
     private final ReportObjectStore objectStore;
@@ -52,27 +56,27 @@ public class ReportController {
         return ApiResult.ok(service.trend7d());
     }
 
-    /** 归档：把当日日报 + 趋势快照上传 MinIO，返回对象 key。 */
+    /** 归档：把当日日报 + 趋势快照上传 MinIO，返回对象 key；失败按 5xx 信封归一，原因只进日志。 */
     @PostMapping("/archive")
     @RequireRole({"admin", "analyst"})
     public ApiResult<Map<String, Object>> archive() {
         String day = ReportObjectStore.today();
-        Map<String, Object> out = new LinkedHashMap<>();
         try {
             String dailyJson = mapper.writeValueAsString(service.dailyReport());
             String trendJson = mapper.writeValueAsString(service.trend7d());
             String base = tenantPrefix();
             String dailyKey = objectStore.put(base + day + "/daily.json", dailyJson, "application/json");
             String trendKey = objectStore.put(base + day + "/trend7d.json", trendJson, "application/json");
+            Map<String, Object> out = new LinkedHashMap<>();
             out.put("archived", true);
             out.put("day", day);
             out.put("dailyKey", dailyKey);
             out.put("trendKey", trendKey);
-        } catch (Exception e) {
-            out.put("archived", false);
-            out.put("error", e.getMessage());
+            return ApiResult.ok(out);
+        } catch (Exception failure) {
+            log.error("报表归档失败 day={}", day, failure);
+            throw ApiException.of(503, "报表归档失败，请稍后重试；若持续失败请联系运维核对对象存储与报表数据源");
         }
-        return ApiResult.ok(out);
     }
 
     /** 归档列表（最近对象）。 */

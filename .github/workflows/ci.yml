@@ -73,6 +73,7 @@ jobs:
           python3 -m unittest discover -s build/tests -p 'test_*.py'
           python3 build/verify-frontend-i18n.py
           python3 build/verify-production.py
+          python3 build/verify-prod-compose.py
 
       - name: Validate GitHub Actions workflows
         run: |

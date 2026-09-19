@@ -20,17 +20,17 @@ class ParseRuleStoreTest {
     void revisionsInvalidateTheCompiledRuleCacheAfterSaveAndDelete() {
         TenantContext.set("tenant-parse-rule-store");
         ParseRuleStore store = new ParseRuleStore();
-        long seededRevision = store.revision();
+        long seededRevision = store.revision("tenant-parse-rule-store");
         ParseRule rule = ParseRule.createWithId(
                 "custom-rule", "Custom rule", null, "KV", null,
                 List.of(), List.of(), true, 30);
 
         assertThat(store.save(rule)).isEqualTo(rule);
-        assertThat(store.revision()).isEqualTo(seededRevision + 1);
+        assertThat(store.revision("tenant-parse-rule-store")).isEqualTo(seededRevision + 1);
         assertThat(store.get(rule.id())).isEqualTo(rule);
 
         assertThat(store.delete(rule.id())).isTrue();
-        assertThat(store.revision()).isEqualTo(seededRevision + 2);
+        assertThat(store.revision("tenant-parse-rule-store")).isEqualTo(seededRevision + 2);
         assertThat(store.delete(rule.id())).isFalse();
     }
 }

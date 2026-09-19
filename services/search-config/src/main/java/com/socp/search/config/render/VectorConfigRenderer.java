@@ -1,9 +1,13 @@
 package com.socp.search.config.render;
 
+import com.socp.platform.error.exception.ApiException;
 import com.socp.search.config.domain.LogSource;
 import com.socp.search.config.domain.SinkTarget;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
@@ -16,33 +20,31 @@ import java.util.stream.Collectors;
  * <p>每个日志源生成独立的 transform（inputs=[sources.src_X]），在 VRL 里按源标注
  * parse_format（解析格式）与 parse_rule_ids（自定义解析规则），SEARCH ingest 侧据此选择解析方式；
  * Vector 本身做采集、轻量 envelope 元数据和传输，保持单一可信解析路径。
+ *
+ * <p>输出目标按 {@code LogSource.sinkTargetId} 经 {@link SinkResolver} 逐个解析，不再对租户目录
+ * 做 findFirst 抢占；解析不到可用目标即返回 HTTP 409，让运维先配置，绝不兜底到进程内硬编码地址。
+ * 凭据默认脱敏为 {@link #REDACTED_TOKEN}，只有显式授权（admin + includeSecret）的调用才回填明文。
  */
 public class VectorConfigRenderer {
 
-    private final String defaultUri;
-    private final String defaultAuthToken;
+    /** 渲染产物里替代真实采集凭据的占位符；部署时由运维替换或用 SOCP_VECTOR_TOKEN 注入。 */
+    public static final String REDACTED_TOKEN = "<SOCP_INGEST_TOKEN>";
 
-    public VectorConfigRenderer(String defaultUri) {
-        this(defaultUri, null);
-    }
+    private final String platformAuthToken;
 
     /**
-     * @param defaultAuthToken credential used by the built-in SEARCH ingest
-     *                         sink when no per-sink token was persisted
+     * @param platformAuthToken credential of the platform SEARCH ingest target; it is only
+     *                          emitted when the caller is explicitly allowed the secret
      */
-    public VectorConfigRenderer(String defaultUri, String defaultAuthToken) {
-        this.defaultUri = defaultUri == null || defaultUri.isBlank()
-                ? "http://localhost:18081/search-config/api/v1/ingest"
-                : defaultUri;
-        this.defaultAuthToken = defaultAuthToken;
+    public VectorConfigRenderer(String platformAuthToken) {
+        this.platformAuthToken = platformAuthToken;
     }
 
-    /** 兼容旧调用：无输出配置时用默认 SEARCH ingest */
-    public String render(List<LogSource> sources) {
-        return render(sources, List.of());
+    public String render(List<LogSource> sources, SinkResolver sinks) {
+        return render(sources, sinks, false);
     }
 
-    public String render(List<LogSource> sources, List<SinkTarget> outputs) {
+    public String render(List<LogSource> sources, SinkResolver sinks, boolean includeSecret) {
         StringBuilder sb = new StringBuilder();
         sb.append(header());
 
@@ -52,29 +54,50 @@ public class VectorConfigRenderer {
             return sb.toString();
         }
 
-        SinkTarget selected = outputs.stream()
-                .filter(SinkTarget::enabled)
-                .filter(t -> t.uri() != null && !t.uri().isBlank())
-                .findFirst()
-                .orElse(null);
-        String sinkUri = selected == null ? defaultUri : selected.uri();
-        String authToken = selected == null ? defaultAuthToken : selected.authToken();
-        if ((authToken == null || authToken.isBlank()) && selected != null
-                && "GLS_INGEST".equalsIgnoreCase(selected.type())) {
-            authToken = defaultAuthToken;
-        }
-
-        List<String> transformNames = new java.util.ArrayList<>();
+        Map<String, SinkTarget> targets = new LinkedHashMap<>();
+        Map<String, List<String>> groups = new LinkedHashMap<>();
         for (LogSource src : active) {
             String id = "src_" + src.id().replace('-', '_');
             String tName = "t_" + src.id().replace('-', '_');
+            SinkTarget target = select(src, sinks);
+            targets.put(target.id(), target);
+            groups.computeIfAbsent(target.id(), ignored -> new ArrayList<>()).add(tName);
             sb.append(emitSource(src, id));
             sb.append(emitTransform(src, id, tName));
-            transformNames.add(tName);
         }
-        sb.append(sinkBlock(sinkUri, authToken, transformNames));
+        int index = 0;
+        for (Map.Entry<String, List<String>> group : groups.entrySet()) {
+            sb.append(sinkBlock(sinkBlockName(index++), targets.get(group.getKey()),
+                    group.getValue(), includeSecret));
+        }
         sb.append(footer());
         return sb.toString();
+    }
+
+    /** 单个源的 sink 名称保持稳定：第一组沿用历史契约名 gls_ingest，多目标时按序号区分。 */
+    private static String sinkBlockName(int index) {
+        return index == 0 ? "gls_ingest" : "gls_ingest_" + (index + 1);
+    }
+
+    private SinkTarget select(LogSource source, SinkResolver sinks) {
+        SinkTarget target = sinks == null ? null : sinks.resolve(source.sinkTargetId());
+        if (target == null) {
+            throw ApiException.of(409, "日志源 " + displayName(source) + " 没有可用输出目标："
+                    + "请在「输出目标」创建 sink 并绑定该源，或为平台设置 SOCP_VECTOR_URI 采集入口地址");
+        }
+        if (target.id() == null || target.id().isBlank()) {
+            throw ApiException.of(409, "日志源 " + displayName(source)
+                    + " 绑定的输出目标缺少稳定 id，无法生成唯一的 sink 名称");
+        }
+        if (!target.enabled() || target.uri() == null || target.uri().isBlank()) {
+            throw ApiException.of(409, "日志源 " + displayName(source) + " 绑定的输出目标 "
+                    + target.name() + " 已停用或未配置投递地址，请先修正后再渲染");
+        }
+        return target;
+    }
+
+    private static String displayName(LogSource source) {
+        return source.name() == null || source.name().isBlank() ? source.id() : source.name();
     }
 
     private String emitSource(LogSource s, String id) {
@@ -175,19 +198,24 @@ public class VectorConfigRenderer {
                 """.formatted(tName, srcId, s.id(), tag, fmt, rules);
     }
 
-    private String sinkBlock(String uri, String authToken, List<String> transformInputs) {
+    private String sinkBlock(String blockName, SinkTarget target, List<String> transformInputs,
+                             boolean includeSecret) {
         String inputs = transformInputs.stream().map(t -> "\"" + t + "\"")
                 .collect(Collectors.joining(", ", "[", "]"));
         // 输出目标可选带机机 token（Authorization 头）；dev-bypass=false 时缺失会导致 ingest 401。
         // authToken 语义允许已含 "Bearer " 前缀（SinkTarget 注释），此时不再重复加。
-        String auth = (authToken == null || authToken.isBlank())
+        String authToken = credential(target, includeSecret);
+        String auth = authToken == null
                 ? ""
                 : "\nrequest.headers.Authorization = \""
                     + (authToken.startsWith("Bearer ") ? authToken : "Bearer " + authToken)
                     + "\"";
+        String secretNote = authToken == null || !REDACTED_TOKEN.equals(authToken) ? ""
+                : "\n# 凭据已脱敏：把 " + REDACTED_TOKEN
+                    + " 替换为采集 token，或（管理员）请求 includeSecret=true 取回明文。";
         return """
-                \n# ---------- 转发：NDJSON 批量 POST 给 SEARCH 输出目标 ----------
-                [sinks.gls_ingest]
+                \n# ---------- 转发：NDJSON 批量 POST 给输出目标 %s ----------
+                [sinks.%s]
                 type = "http"
                 inputs = %s
                 uri = "%s"
@@ -207,12 +235,22 @@ public class VectorConfigRenderer {
                 request.retry_attempts = 5
                 request.retry_backoff_secs = 2
                 request.timeout_secs = 30
-                %s
+                %s%s
 
                 buffer.type = "disk"
                 buffer.max_size = 268435488
                 buffer.when_full = "block"
-                """.formatted(inputs, uri, auth);
+                """.formatted(target.name(), blockName, inputs, target.uri(), auth, secretNote);
+    }
+
+    /** Effective credential of one target, redacted unless the caller may see the secret. */
+    private String credential(SinkTarget target, boolean includeSecret) {
+        String token = target.authToken();
+        if ((token == null || token.isBlank()) && "GLS_INGEST".equalsIgnoreCase(target.type())) {
+            token = platformAuthToken;
+        }
+        if (token == null || token.isBlank()) return null;
+        return includeSecret ? token : REDACTED_TOKEN;
     }
 
     private String header() {
@@ -221,7 +259,7 @@ public class VectorConfigRenderer {
                 # SOCP / SEARCH 采集流水线 —— 由 search-config 渲染生成（勿手改，改配置后重新渲染）
                 # 角色：Vector 采集 + 轻量 envelope 元数据 + 传输，解析/检索/告警归 SEARCH/OpenSearch。
                 # 每个 LogSource 一个 transform（标注 parse_format/parse_rule_ids），
-                # 输出目标可选（默认 SEARCH ingest；可换 OpenSearch 等）。
+                # 输出目标按源的 sinkTargetId 选择；未绑定即使用平台采集入口。
                 # 校验：vector validate --no-environment vector.generated.toml
                 # 启动：vector --config vector.generated.toml
                 # ============================================================================

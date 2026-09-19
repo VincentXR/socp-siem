@@ -15,6 +15,8 @@ import com.socp.platform.client.service.SearchClient;
 import com.socp.platform.client.service.ThreatClient;
 import com.socp.platform.error.exception.ApiException;
 import com.socp.platform.tenant.context.TenantContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -35,6 +37,7 @@ import java.util.function.Supplier;
 @Service
 public class InvestigationAgentService {
 
+    private static final Logger log = LoggerFactory.getLogger(InvestigationAgentService.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final TypeReference<Map<String, Object>> MAP = new TypeReference<>() { };
 
@@ -230,21 +233,32 @@ public class InvestigationAgentService {
             ServiceCall created = incidentClient.createFromAlarm(write(objectMap(result.get("alert"))));
             auditCall(result.get("alertId"), "incident.create", created);
             if (created == null || !created.ok()) {
-                throw new IllegalStateException("Incident case creation failed: "
-                        + (created == null ? "no response" : created.failureReason()));
+                log.warn("incident case creation failed alertId={} reason={}", result.get("alertId"),
+                        created == null ? "no response" : created.failureReason());
+                throw ApiException.of(502, "创建案件失败，请稍后重试；AI 调查结论尚未写入案件时间线");
             }
             Map<String, Object> createdBody = parseBody(created);
             incidentId = text(createdBody.get("caseId"));
             if (incidentId == null) incidentId = text(createdBody.get("id"));
-            if (incidentId == null) throw new IllegalStateException("Incident response did not contain caseId");
+            if (incidentId == null) incidentId = caseIdOf(createdBody.get("case"));
+            if (incidentId == null) {
+                throw ApiException.of(502, "案件服务返回的建案回执缺少案件标识，请稍后重试");
+            }
         }
 
         String summary = InvestigationEvidenceComposer.incidentSummary(result);
         ServiceCall note = incidentClient.addNote(incidentId, "ai-investigation", summary, investigationId);
         auditCall(result.get("alertId"), "incident.append-summary", note);
         if (note == null || !note.ok()) {
-            throw new IllegalStateException("Incident timeline append failed: "
-                    + (note == null ? "no response" : note.failureReason()));
+            log.warn("incident timeline append failed alertId={} incidentId={} reason={}",
+                    result.get("alertId"), incidentId, note == null ? "no response" : note.failureReason());
+            throw ApiException.of(502, "写入案件时间线失败，请稍后重试");
+        }
+        Map<String, Object> appendReceipt = parseBody(note);
+        if (appendReceipt.get("error") != null || appendReceipt.get("case") == null) {
+            log.warn("incident timeline append was not confirmed alertId={} incidentId={} receipt={}",
+                    result.get("alertId"), incidentId, appendReceipt.keySet());
+            throw ApiException.of(502, "案件服务未确认时间线写入，请稍后重试");
         }
         Instant appended = Instant.now();
         result.put("summaryAppended", true);
@@ -446,6 +460,11 @@ public class InvestigationAgentService {
         if (value == null) return null;
         String result = String.valueOf(value);
         return result.isBlank() ? null : result;
+    }
+
+    /** Accepts both the flat caseId receipt and a nested case object. */
+    private static String caseIdOf(Object caseValue) {
+        return caseValue instanceof Map<?, ?> map ? text(map.get("id")) : null;
     }
 
     private static String blankToNull(String value) {

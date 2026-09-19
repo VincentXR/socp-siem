@@ -377,6 +377,12 @@ def compare_runtime(snapshot: dict[str, Any], runtime: dict[str, Any]) -> list[s
     missing = sorted(snapshot_ops - runtime_ops)
     if missing:
         errors.append(f"runtime OpenAPI misses snapshot operations: {missing[:12]}")
+    # The snapshot must be refreshed whenever a runtime route is added, so the
+    # comparison is a two-way set difference: an undocumented runtime route is
+    # the same contract drift as a snapshot route the runtime no longer serves.
+    extra = sorted(runtime_ops - snapshot_ops)
+    if extra:
+        errors.append(f"snapshot OpenAPI misses runtime operations: {extra[:12]}")
     runtime_schemes = runtime.get("components", {}).get("securitySchemes", {})
     cookie = runtime_schemes.get("cookieAuth") if isinstance(runtime_schemes, dict) else None
     if not isinstance(cookie, dict) or cookie.get("name") != "SOCP_SESSION":
@@ -937,6 +943,86 @@ def normalize_base(value: str) -> str:
     return base
 
 
+def module_names() -> list[str]:
+    """Executable modules from the shared port registry (the deployment units)."""
+    text = (ROOT / "build" / "ports.env").read_text(encoding="utf-8")
+    match = re.search(r'^SOCP_MODULE_NAMES="([^"]+)"$', text, re.MULTILINE)
+    if not match:
+        raise RuntimeError("build/ports.env does not declare SOCP_MODULE_NAMES")
+    return match.group(1).split()
+
+
+def service_document_anchor() -> tuple[list[str], list[str]]:
+    """Offline anchor for the per-service `/v3/api-docs` promise.
+
+    A deployment-backed document fetch cannot run in a pull-request job, so this
+    keeps the promise honest without a live stack: every module must still ship
+    the springdoc surface through `socp-starter` (the gateway declares its own
+    reactive dependency), no module may disable the api-docs endpoint, and the
+    contract text may only advertise surfaces the build actually ships.
+    """
+    passed: list[str] = []
+    errors: list[str] = []
+    starter = (ROOT / "platform" / "socp-starter" / "pom.xml").read_text(encoding="utf-8")
+    if "springdoc-openapi-starter-webmvc-api" not in starter:
+        errors.append("socp-starter no longer provides springdoc-openapi-starter-webmvc-api, "
+                      "so /v3/api-docs is unavailable for every servlet service")
+    poms = {module: ROOT / "services" / module / "pom.xml" for module in module_names()}
+    ui_shipped = "springdoc-openapi-starter-webmvc-ui" in starter or any(
+        pom.is_file() and "springdoc-openapi-starter-webmvc-ui" in pom.read_text(encoding="utf-8")
+        for pom in poms.values())
+    contract = (ROOT / "docs" / "api-contract.md").read_text(encoding="utf-8")
+    if "/swagger-ui.html" in contract and not ui_shipped:
+        errors.append("docs/api-contract.md advertises /swagger-ui.html but no springdoc "
+                      "webmvc UI artifact is on any service classpath")
+    checked = 0
+    for module, pom in sorted(poms.items()):
+        if not pom.is_file():
+            errors.append(f"{module}: missing services/{module}/pom.xml")
+            continue
+        pom_text = pom.read_text(encoding="utf-8")
+        configuration = ROOT / "services" / module / "src" / "main" / "resources" / "application.yml"
+        text = configuration.read_text(encoding="utf-8") if configuration.is_file() else ""
+        if re.search(r"api-docs:\s*\n\s*enabled:\s*[\"']?false", text):
+            errors.append(f"{module}: api-docs endpoint is disabled while the contract advertises it")
+        if module == "api-gateway":
+            if "springdoc" not in pom_text:
+                errors.append("api-gateway: the reactive service must declare its own springdoc dependency")
+        elif "socp-starter" not in pom_text and "springdoc" not in pom_text:
+            errors.append(f"{module}: neither socp-starter nor a springdoc dependency, "
+                          "so the service has no /v3/api-docs surface")
+        checked += 1
+    passed.append(f"per-service OpenAPI surface is declared by {checked} modules (offline anchor)")
+    return passed, errors
+
+
+def runtime_service_documents(gateway: str, cookie: str, tenant: str) -> tuple[list[str], list[str]]:
+    """Fetches `<gateway>/<context>/v3/api-docs` for every registered service."""
+    passed: list[str] = []
+    errors: list[str] = []
+    for module in module_names():
+        url = gateway.rstrip("/") + ("/v3/api-docs" if module == "api-gateway"
+                                     else f"/{module}/v3/api-docs")
+        try:
+            document = fetch_runtime_document(url, cookie, tenant)
+        except Exception as error:
+            errors.append(str(error))
+            continue
+        paths = document.get("paths")
+        if not isinstance(paths, dict) or not paths:
+            errors.append(f"{module}: runtime /v3/api-docs exposes no paths")
+            continue
+        schemes = (document.get("components") or {}).get("securitySchemes") or {}
+        if not isinstance(schemes, dict):
+            errors.append(f"{module}: runtime /v3/api-docs has no security schemes")
+            continue
+        for scheme in ("bearerAuth", "tenantHeader"):
+            if scheme not in schemes:
+                errors.append(f"{module}: runtime /v3/api-docs does not describe {scheme}")
+        passed.append(f"{module}: runtime /v3/api-docs exposes {len(paths)} paths")
+    return passed, errors
+
+
 def smoke_runner(client_source: Path, operations: list[Operation], output: Path) -> Path:
     by_key = {(operation.method, canonical_path(operation.path)): operation for operation in operations}
     def find(method: str, suffix: str) -> Operation:
@@ -1060,6 +1146,9 @@ def main() -> int:
             failures.extend(errors)
         else:
             passed.append("static OpenAPI document and references")
+        anchor_passed, anchor_errors = service_document_anchor()
+        passed.extend(anchor_passed)
+        failures.extend(anchor_errors)
         client_text, operations = generate_client(snapshot)
         client_path = output / "soar-client.mts"
         client_path.write_text(client_text, encoding="utf-8")
@@ -1130,6 +1219,21 @@ def main() -> int:
             failures.append("runtime URL is required; set SOAR_OPENAPI_BASE_URL")
         else:
             warnings.append("runtime OpenAPI and generated-client smoke skipped")
+
+        if runtime_base:
+            gateway_root = os.environ.get("SOCP_GATEWAY_URL", "").strip()
+            if gateway_root and session:
+                service_passed, service_errors = runtime_service_documents(
+                    gateway_root, session, tenant)
+                if service_errors:
+                    failures.extend(service_errors)
+                if service_passed:
+                    passed.append("per-service /v3/api-docs smoke: "
+                                  + ", ".join(item.split(":", 1)[0] for item in service_passed))
+            elif gateway_root:
+                failures.append("per-service /v3/api-docs smoke needs an authenticated session")
+            else:
+                warnings.append("per-service /v3/api-docs smoke skipped; set SOCP_GATEWAY_URL")
 
         manifest = {
             "schemaVersion": "soar.openapi-sdk-evidence",

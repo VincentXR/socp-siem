@@ -12,7 +12,20 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.HexFormat;
 
-/** Redis-backed deny-list so logout is effective across gateway replicas. */
+/**
+ * Redis-backed deny-list so logout is effective across gateway replicas.
+ *
+ * <p>Read path: {@link com.socp.gateway.filter.RevokedTokenWebFilter} fails closed
+ * (503) when Redis cannot be reached. Reachability is not the whole contract —
+ * a revoked key must survive until the session's own expiry. A key-policy that
+ * can evict live keys (any {@code allkeys-*}, or {@code volatile-*} on a
+ * memory-pressure instance) silently un-revokes sessions instead of erroring,
+ * so the instance carrying {@code socp:auth:revoked:*} must be sized with
+ * {@code maxmemory-policy noeviction} and separate from bulk cache traffic.
+ * Key-prefix tiering does not protect here: eviction policies ignore prefixes.
+ * That retention requirement belongs to the deployment baseline (Redis is not
+ * delivered by the application chart).</p>
+ */
 @Component
 @ConditionalOnProperty(name = "socp.auth.revocation.backend", havingValue = "redis", matchIfMissing = true)
 class RedisTokenRevocationStore implements TokenRevocationStore {

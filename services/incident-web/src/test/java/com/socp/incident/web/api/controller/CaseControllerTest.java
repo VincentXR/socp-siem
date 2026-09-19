@@ -2,6 +2,8 @@ package com.socp.incident.web.api.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.incident.web.domain.Case;
 import com.socp.incident.web.service.CaseService;
+import com.socp.platform.tenant.context.AuthenticatedIdentity;
+import com.socp.platform.tenant.context.AuthenticatedIdentityContext;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -35,6 +37,9 @@ class CaseControllerTest {
 
     @Autowired
     private ObjectMapper json;
+
+    @Autowired
+    private CaseController controller;
 
     @MockitoBean
     private CaseService service;
@@ -173,6 +178,39 @@ class CaseControllerTest {
     }
 
     @Test
+    void statusForMissingCaseReturnsNotFoundEnvelopeInsteadOfDataError() throws Exception {
+        given(service.setStatus("missing", "RESOLVED", null))
+                .willThrow(new com.socp.platform.error.exception.ApiException(404, "未找到案件 missing"));
+
+        mvc.perform(post("/api/v1/incidents/{id}/status", "missing")
+                        .header("Authorization", BEARER)
+                        .header("X-Role", "analyst")
+                        .param("status", "RESOLVED"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value(404))
+                .andExpect(jsonPath("$.message").value("未找到案件 missing"))
+                .andExpect(jsonPath("$.data").doesNotExist());
+    }
+
+    @Test
+    void noteForMissingCaseReturnsNotFoundEnvelopeInsteadOfDataError() throws Exception {
+        given(service.addNote(org.mockito.ArgumentMatchers.eq("missing"),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.eq("checked"),
+                org.mockito.ArgumentMatchers.isNull()))
+                .willThrow(new com.socp.platform.error.exception.ApiException(404, "未找到案件 missing"));
+
+        mvc.perform(post("/api/v1/incidents/{id}/notes", "missing")
+                        .header("Authorization", BEARER)
+                        .header("X-Role", "analyst")
+                        .param("author", "analyst")
+                        .param("content", "checked"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value(404))
+                .andExpect(jsonPath("$.data").doesNotExist());
+    }
+
+    @Test
     void timelineReturnsOneBasedPagedEnvelope() throws Exception {
         Case created = Case.create("SSH investigation", "203.0.113.10", "HIGH", "analyst");
         given(service.timeline("case-1", 0, 50)).willReturn(Map.of(
@@ -192,5 +230,37 @@ class CaseControllerTest {
                 .andExpect(jsonPath("$.data.size").value(50))
                 .andExpect(jsonPath("$.data.total").value(3))
                 .andExpect(jsonPath("$.data.totalPages").value(1));
+    }
+
+    @Test
+    void noteAttributesToAuthenticatedSubjectNotTheRequestBodyAuthor() {
+        given(service.addNote(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any())).willReturn(Map.of());
+        AuthenticatedIdentityContext.set(new AuthenticatedIdentity("analyst-9", "tenant-a", "analyst",
+                java.util.Set.of(), java.util.Set.of(), AuthenticatedIdentity.Kind.USER));
+        try {
+            controller.note("case-1", "someone-else", "checked", null);
+            verify(service).addNote("case-1", "analyst-9", "checked", null);
+        } finally {
+            AuthenticatedIdentityContext.clear();
+        }
+    }
+
+    @Test
+    void noteFromServiceIdentityKeepsTheDelegatedAuthor() {
+        given(service.addNote(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any())).willReturn(Map.of());
+        AuthenticatedIdentityContext.set(new AuthenticatedIdentity("ai-assistant", "tenant-a", "service",
+                java.util.Set.of(), java.util.Set.of(), AuthenticatedIdentity.Kind.SERVICE));
+        try {
+            controller.note("case-1", "ai-investigation", "summary", "inv-7");
+            verify(service).addNote("case-1", "ai-investigation", "summary", "inv-7");
+        } finally {
+            AuthenticatedIdentityContext.clear();
+        }
     }
 }

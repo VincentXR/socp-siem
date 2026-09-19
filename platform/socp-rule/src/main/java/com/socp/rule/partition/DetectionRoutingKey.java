@@ -7,6 +7,7 @@ import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Canonical Kafka key contract for stateful detection.
@@ -26,6 +27,9 @@ public final class DetectionRoutingKey {
     public static final String TENANT_FIELD = "tenant_id";
     public static final String ROUTING_FIELD = "detection_routing_field";
     public static final String ROUTING_VALUE = "detection_routing_value";
+
+    /** Sources whose own host is the entity the window is about. */
+    private static final Set<String> ENDPOINT_SOURCES = Set.of("edr", "auditd", "falco", "linux");
 
     private DetectionRoutingKey() {
     }
@@ -72,6 +76,19 @@ public final class DetectionRoutingKey {
         return ruleKeyField.equals(routingField);
     }
 
+    /**
+     * The dimension the default policy selects first for a source when every
+     * candidate field is present. Content validation uses this to state which
+     * grouping dimensions can lose to a higher-priority dimension.
+     */
+    public static String primaryDimension(String source) {
+        return ENDPOINT_SOURCES.contains(normalize(source)) ? "host" : "src_ip";
+    }
+
+    private static String normalize(String value) {
+        return blank(value, "unknown").toLowerCase(Locale.ROOT);
+    }
+
     private static Entity resolve(String tenant, String source, String host, Map<String, String> fields) {
         String normalizedTenant = blank(tenant, "default");
         String explicitField = first(fields, ROUTING_FIELD, "routing_field");
@@ -80,12 +97,10 @@ public final class DetectionRoutingKey {
             if (explicitValue != null) return new Entity(normalizedTenant, explicitField, explicitValue);
         }
 
-        String normalizedSource = blank(source, "unknown").toLowerCase(Locale.ROOT);
-        String preferred = normalizedSource.equals("edr") || normalizedSource.equals("auditd")
-                || normalizedSource.equals("falco") || normalizedSource.equals("linux")
-                ? "host" : null;
-        if (preferred != null && valueOf(fields, preferred, host) != null) {
-            return new Entity(normalizedTenant, preferred, valueOf(fields, preferred, host));
+        String preferred = primaryDimension(source);
+        String preferredValue = valueOf(fields, preferred, "host".equals(preferred) ? host : null);
+        if (preferredValue != null) {
+            return new Entity(normalizedTenant, preferred, preferredValue);
         }
         for (String candidate : new String[]{"src_ip", "user", "host", "dst_ip"}) {
             String value = valueOf(fields, candidate, "host".equals(candidate) ? host : null);

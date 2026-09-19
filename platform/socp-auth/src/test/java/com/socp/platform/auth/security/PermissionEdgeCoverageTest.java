@@ -9,23 +9,32 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Additional edge cases for {@link Permission#roleDefaults(String)}: the
- * approver and viewer grant sets, case-insensitive role matching and the
+ * issuable role vocabulary, case-insensitive role matching and the
  * unmodifiable empty fallback.
  */
 class PermissionEdgeCoverageTest {
 
     @Test
-    void approverRoleYieldsTheApprovalOrientedDefaults() {
-        assertThat(Permission.roleDefaults("approver")).containsExactlyInAnyOrder(
-                "alarm:read", "soar:view", "soar:approve", "soar:task:complete");
-        assertThat(Permission.roleDefaults("approver"))
-                .doesNotContain("soar:edit", "soar:publish", "soar:execute", "soar:operations", "tenant:admin");
+    void roleWithoutAnIssuancePathYieldsNoDefaults() {
+        // approver was documented as a SOAR reviewer but no delivered component
+        // can issue that role, so it must behave like any other unknown role.
+        assertThat(Permission.roleDefaults("approver")).isEmpty();
+        assertThat(Permission.roleDefaults("operator")).isEmpty();
+        assertThat(Permission.ISSUABLE_ROLES).doesNotContain("approver", "operator");
     }
 
     @Test
-    void approverRoleIsMatchedCaseInsensitively() {
-        assertThat(Permission.roleDefaults("APPROVER")).isEqualTo(Permission.roleDefaults("approver"));
-        assertThat(Permission.roleDefaults("Approver")).isEqualTo(Permission.roleDefaults("approver"));
+    void issuableRolesAreTheOnlyRolesThePlatformGrantsDefaultsFor() {
+        assertThat(Permission.ISSUABLE_ROLES).containsExactlyInAnyOrder("admin", "analyst", "viewer");
+        for (String issuable : Permission.ISSUABLE_ROLES) {
+            assertThat(Permission.roleDefaults(issuable)).isNotEmpty();
+        }
+    }
+
+    @Test
+    void roleMatchingIsCaseInsensitive() {
+        assertThat(Permission.roleDefaults("ANALYST")).isEqualTo(Permission.roleDefaults("analyst"));
+        assertThat(Permission.roleDefaults("Viewer")).isEqualTo(Permission.roleDefaults("viewer"));
     }
 
     @Test

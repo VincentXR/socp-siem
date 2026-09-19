@@ -5,8 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.search.config.domain.LogSource;
 import com.socp.search.config.domain.ParseFormat;
+import com.socp.search.config.config.ConfigCacheProperties;
 import com.socp.search.config.config.SearchRuntimeRole;
 import com.socp.search.config.persistence.store.LogSourceStore;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
@@ -17,6 +19,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * Resolves the server-owned source configuration for one Vector envelope.
  * Body metadata is only a lookup hint; tenant ownership still comes from the
  * authenticated request and parsing rules come from the persisted LogSource.
+ *
+ * <p>The cache is invalidated per tenant (another tenant's write no longer flushes this
+ * tenant's resolved sources) and refreshed at least every configuration-cache TTL so a
+ * source changed through another SEARCH replica stops being served from this cache.
  */
 @Component
 @SearchRuntimeRole(SearchRuntimeRole.Role.API)
@@ -27,10 +33,16 @@ public class IngestSourceResolver {
 
     private final LogSourceStore sources;
     private final Map<String, Optional<LogSource>> cache = new ConcurrentHashMap<>();
-    private volatile long cacheRevision = Long.MIN_VALUE;
+    private final TenantCacheGuard guard;
 
     public IngestSourceResolver(LogSourceStore sources) {
+        this(sources, new ConfigCacheProperties());
+    }
+
+    @Autowired
+    public IngestSourceResolver(LogSourceStore sources, ConfigCacheProperties properties) {
         this.sources = sources;
+        this.guard = new TenantCacheGuard(properties.getTtlMs());
     }
 
     public IngestSourceContext resolve(String raw, String trustedCollector) {
@@ -54,13 +66,11 @@ public class IngestSourceResolver {
     private Optional<LogSource> lookup(String candidate) {
         if (candidate == null || candidate.isBlank()) return Optional.empty();
         String tenant = TenantContext.require();
-        long revision = sources.revision();
-        if (cacheRevision != revision) {
+        long revision = sources.revision(tenant);
+        if (guard.isStale(tenant, revision)) {
             synchronized (cache) {
-                if (cacheRevision != revision) {
-                    cache.clear();
-                    cacheRevision = revision;
-                }
+                cache.keySet().removeIf(key -> key.startsWith(tenant + "|"));
+                guard.markFresh(tenant, revision);
             }
         }
         String key = tenant + "|" + candidate.trim();

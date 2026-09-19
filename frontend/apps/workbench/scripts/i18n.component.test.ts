@@ -63,6 +63,21 @@ describe('workbench i18n', () => {
     expect(translate('soar.rerunRun')).toBe('Rerun')
   })
 
+  it('describes detection rule deletion as an asynchronous drain, not an instant hot reload', () => {
+    // The rule engine applies deletions by draining per-replica generations, so the
+    // confirm copy must not promise an immediate, synchronous engine reload.
+    setLocale('zh-CN', false)
+    const zh = translate('detect.deleteRuleConfirm')
+    expect(zh).toContain('异步')
+    expect(zh).not.toContain('立即热更新')
+    expect(zh).not.toContain('热更新引擎')
+
+    setLocale('en-US', false)
+    const en = translate('detect.deleteRuleConfirm')
+    expect(en.toLowerCase()).toContain('asynchronously')
+    expect(en.toLowerCase()).not.toContain('hot reload')
+  })
+
   it('sends the active locale to the API unless a request supplies one', async () => {
     const seen: string[] = []
     const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {

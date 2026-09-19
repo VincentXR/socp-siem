@@ -1,6 +1,7 @@
 package com.socp.platform.auth.security;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -9,8 +10,14 @@ import java.util.Comparator;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
-/** Development fallback. Production uses the Redis implementation from socp-ratelimit. */
+/**
+ * Development fallback. Production uses the Redis implementation from socp-ratelimit.
+ * The nonce set is process-local, so it cannot stop a signed request replayed against a
+ * different replica; the {@code !prod} gate keeps it out of production, where a shared
+ * backend is the only correct option.
+ */
 @Component
+@Profile("!prod")
 @ConditionalOnProperty(name = "socp.ratelimit.backend", havingValue = "memory", matchIfMissing = true)
 public class InMemoryServiceNonceStore implements ServiceNonceStore {
 

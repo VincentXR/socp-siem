@@ -45,6 +45,6 @@ public class AlarmFeedbackController {
                                                 @Valid @RequestBody AlarmFeedbackRequest request) {
         alarmService.get(id);
         return ApiResult.ok(feedbackService.save(id, request.kind(), request.reason(),
-                request.expiresAt(), request.actor()));
+                request.expiresAt(), DispositionActor.resolve(request.actor())));
     }
 }

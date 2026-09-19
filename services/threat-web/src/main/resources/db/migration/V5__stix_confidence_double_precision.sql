@@ -1,0 +1,13 @@
+-- afc86f48 fixed the confidence column type by rewriting the already-published
+-- V2 in place. That breaks Flyway's checksum on every existing database: the
+-- stored V2 row no longer validates, and because Flyway never re-runs an applied
+-- version, the DOUBLE PRECISION declaration would only ever reach fresh
+-- databases. V2 is restored to its published content and the intended
+-- declaration is re-delivered here so every database converges. Mirrors the
+-- alert-web and threat-web V1/V4 revert-plus-replay pattern.
+-- DOUBLE is a standard synonym of DOUBLE PRECISION in both PostgreSQL and H2
+-- (both resolve it to float8), so this replay is an idempotent same-type cast:
+-- no table rewrite and no data change on either engine. The column always
+-- exists here because V2 adds it earlier in the same sequence, which is why no
+-- IF EXISTS clause is used -- PostgreSQL does not accept one for TYPE changes.
+ALTER TABLE t_ioc ALTER COLUMN confidence TYPE DOUBLE PRECISION;

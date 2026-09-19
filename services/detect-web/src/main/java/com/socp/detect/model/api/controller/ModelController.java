@@ -28,7 +28,14 @@ import java.util.Map;
  *   <li>Kafka 消费 {@code socp-alarm-original}（生产主链，detect-web 转发后自动触发，
  *       由同一 Detection worker 内的 AlarmConsumer 处理）。</li>
  * </ul>
- * 分析结果（命中/窗口聚合）对 /analyzed /stats /window 统一可查。
+ * 两类读口径不同，必须分开理解：{@code /analyzed} 读耐久投影
+ * {@code t_analyzed}，因此任一副本答案一致；{@code /stats} 的窗口聚合、
+ * {@code /window} 与 {@code /window/trend} 读的是<b>应答副本自己的</b>进程内计数，
+ * 风暴抑制判定同样是副本本地的。多副本 worker 分摊告警流时，连续两次查询可能
+ * 命中不同副本而得到不同计数；{@code /stats} 与 {@code /window} 的响应体带
+ * {@code scope=replica-local} 与 {@code instance}，{@code /analyze} 的响应带
+ * {@code instance}。把这些视图改成集群视图需要按稳定 storm key 重新分区告警流，
+ * 或把计数落到共享存储，见 docs/detection-state-semantics.md。
  */
 @RestController
 @DetectRuntimeRole(DetectRuntimeRole.Role.WORKER)
@@ -72,7 +79,7 @@ public class ModelController {
         return ApiResult.ok(windowAggregator.snapshot());
     }
 
-    /** 分钟级趋势（最近 5 分钟命中数）。 */
+    /** 分钟级趋势（最近 5 分钟命中数）；计数只覆盖应答副本，见类注释。 */
     @GetMapping("/window/trend")
     public ApiResult<List<Map<String, Object>>> windowTrend() {
         return ApiResult.ok(windowAggregator.trend());

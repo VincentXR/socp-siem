@@ -10,6 +10,7 @@ import com.socp.search.config.persistence.entity.SearchEventEntity;
 import com.socp.search.config.persistence.repository.SearchEventRepository;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -23,8 +24,9 @@ import java.util.concurrent.locks.ReentrantLock;
 import com.socp.platform.tenant.context.TenantContext;
 
 /**
- * 检索事件库——本地切片用 H2 文件库（重启不丢，含种子样例）；生产由 OpenSearch 承载。
+ * 检索事件库——本地切片用 H2 文件库（重启不丢）；生产由 OpenSearch 承载。
  * 内存中仅保留最近的有界窗口供 SPL 引擎快速检索，写入同时落库。
+ * 伪造的演示事件只在 {@code socp.demo-data.enabled=true} 时写入，prod profile 强制关闭。
  */
 @Component
 @SearchRuntimeRole(SearchRuntimeRole.Role.API)
@@ -39,29 +41,34 @@ public class SearchStore {
     private final long tenantBufferIdleTtlMs;
     private final int maxTenantBuffers;
 
-    /** Source-compatible constructor retained for direct Java integrations. */
+    /** Source-compatible constructor retained for direct Java integrations; it never seeds. */
     public SearchStore(SearchEventRepository repo, OsEventWriter ignoredWriter) {
-        this(repo, new SearchCacheProperties());
+        this(repo, new SearchCacheProperties(), false);
     }
 
-    @Autowired
-    public SearchStore(SearchEventRepository repo, ObjectProvider<OsEventWriter> ignoredWriter,
-                       SearchCacheProperties properties) {
-        this(repo, properties);
-    }
-
-    private SearchStore(SearchEventRepository repo, SearchCacheProperties properties) {
+    /** Explicit wiring used by tests that need the demo window present. */
+    public SearchStore(SearchEventRepository repo, SearchCacheProperties properties,
+                       boolean demoDataEnabled) {
         this.repo = repo;
         this.tenantBufferIdleTtlMs = properties.getIdleTtlMs();
         this.maxTenantBuffers = properties.getMaxTenants();
+        if (!demoDataEnabled) return;
+        // Demo fixtures are fake security events. They are only ever written while the
+        // socp.demo-data.enabled switch is on, which the prod profile pins to false.
         TenantContext.runWith("default", () -> {
-            long persisted = repo.countByTenantId("default");
-            if (persisted == 0) {
+            if (repo.countByTenantId("default") == 0) {
                 seed();
             } else {
                 events("default");
             }
         });
+    }
+
+    @Autowired
+    public SearchStore(SearchEventRepository repo, ObjectProvider<OsEventWriter> ignoredWriter,
+                       SearchCacheProperties properties,
+                       @Value("${socp.demo-data.enabled:false}") boolean demoDataEnabled) {
+        this(repo, properties, demoDataEnabled);
     }
 
     public List<SearchEvent> all() {

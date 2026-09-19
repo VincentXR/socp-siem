@@ -84,7 +84,9 @@ class InvestigationAgentServiceTest {
         entity.setResultJson("{\"alertId\":\"AL-1\",\"alert\":{\"id\":\"AL-1\"},\"analysis\":\"bounded\",\"recommendedSpl\":\"host=h\",\"citations\":[]}");
         given(repository.findByIdAndTenantId("INV-1", "tenant-a")).willReturn(Optional.of(entity));
         given(repository.markAppended(anyString(), anyString(), anyString(), any(), anyString(), any())).willReturn(1);
-        given(incidents.addNote(anyString(), anyString(), anyString(), anyString())).willReturn(ok("{}", SocpService.INCIDENT));
+        given(incidents.addNote(anyString(), anyString(), anyString(), anyString()))
+                .willReturn(ok("{\"code\":0,\"message\":\"ok\",\"data\":{\"case\":{\"id\":\"CASE-1\"}}}",
+                        SocpService.INCIDENT));
         AuditSink audit = mock(AuditSink.class);
         InvestigationAgentService service = new InvestigationAgentService(
                 repository, mock(AlertClient.class), mock(SearchClient.class), incidents,
@@ -96,6 +98,32 @@ class InvestigationAgentServiceTest {
         assertThat(first.get("summaryAppended")).isEqualTo(true);
         assertThat(second.get("duplicate")).isEqualTo(true);
         verify(incidents).addNote(anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void anUnconfirmedAppendLeavesTheInvestigationRetryable() {
+        TenantContext.set("tenant-a");
+        InvestigationRepository repository = mock(InvestigationRepository.class);
+        IncidentClient incidents = mock(IncidentClient.class);
+        InvestigationEntity entity = new InvestigationEntity();
+        entity.setId("INV-1");
+        entity.setTenantId("tenant-a");
+        entity.setAlertId("AL-1");
+        entity.setStatus("COMPLETED");
+        entity.setResultJson("{\"alertId\":\"AL-1\",\"alert\":{\"id\":\"AL-1\"},\"citations\":[]}");
+        given(repository.findByIdAndTenantId("INV-1", "tenant-a")).willReturn(Optional.of(entity));
+        given(incidents.addNote(anyString(), anyString(), anyString(), anyString()))
+                .willReturn(ok("{\"code\":0,\"message\":\"ok\",\"data\":{}}", SocpService.INCIDENT));
+
+        InvestigationAgentService service = new InvestigationAgentService(
+                repository, mock(AlertClient.class), mock(SearchClient.class), incidents,
+                mock(ThreatClient.class), mock(LlmChatClient.class), mock(AuditSink.class), properties());
+
+        assertThatThrownBy(() -> service.appendToIncident("INV-1", "CASE-1"))
+                .isInstanceOf(com.socp.platform.error.exception.ApiException.class)
+                .extracting("code").isEqualTo(502);
+        verify(repository, org.mockito.Mockito.never())
+                .markAppended(anyString(), anyString(), anyString(), any(), anyString(), any());
     }
 
     @Test

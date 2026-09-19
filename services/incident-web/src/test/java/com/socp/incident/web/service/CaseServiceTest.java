@@ -15,6 +15,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
@@ -113,6 +114,23 @@ class CaseServiceTest {
         assertEquals(5L, stats.get("total"));
         assertEquals(2L, stats.get("open"));
         assertEquals(3L, stats.get("resolved"));
+    }
+
+    @Test
+    void missingCaseWritesFailLoudlyInsteadOfReturningErrorData() {
+        given(store.get("missing")).willReturn(null);
+        CaseService service = new CaseService(store, alarmLinks);
+
+        for (java.util.function.Supplier<Map<String, Object>> call : List.<java.util.function.Supplier<Map<String, Object>>>of(
+                () -> service.setStatus("missing", "RESOLVED", null),
+                () -> service.addNote("missing", "analyst", "note", null),
+                () -> service.timeline("missing", 0, 50))) {
+            assertThatThrownBy(call::get)
+                    .isInstanceOf(com.socp.platform.error.exception.ApiException.class)
+                    .hasFieldOrPropertyWithValue("code", 404);
+        }
+        verify(store, never()).appendTimeline(any(), any());
+        verify(store, never()).save(any(Case.class));
     }
 
     private static Map<String, Object> alarm(String id) {

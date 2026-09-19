@@ -1,8 +1,6 @@
 package com.socp.alert.service;
 
 import com.socp.alert.config.AlertKafkaProperties;
-import com.socp.alert.domain.Alarm;
-
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.socp.platform.client.kafka.KafkaClientSupport;
@@ -13,9 +11,13 @@ import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.context.Scope;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
-import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.errors.WakeupException;
+import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.slf4j.Logger;
@@ -26,8 +28,10 @@ import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Reconciles alarm events into idempotent, database-backed delivery intents. */
 @Component
@@ -35,18 +39,39 @@ public class AlarmEventConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(AlarmEventConsumer.class);
 
+    private static final String GROUP_ID = "socp-alarm-delivery-registration";
+    private static final long POLL_INTERVAL_MS = 500L;
+
     private final String bootstrap;
     private final String topic;
     private final boolean enabled;
     private final AlarmDeliveryRegistrar registrar;
+    private final AlertPerformanceMetrics metrics;
     private volatile KafkaProducer<String, String> dlqProducer;
 
+    private final AtomicBoolean running = new AtomicBoolean(false);
+    private volatile Thread worker;
+    private volatile KafkaConsumer<String, String> activeConsumer;
+
+    // Bounded-retry pacing knobs. They are fields rather than constants so a
+    // test can pin the ceiling without waiting on real back-off intervals.
+    private long retryDelayMs = 1_000L;
+    private long retryMaxMs = 30_000L;
+    private int retryCeilingBatches = 5;
+    private long maxPollIntervalMs = 1_800_000L;
+
     @Autowired
-    public AlarmEventConsumer(AlarmDeliveryRegistrar registrar, AlertKafkaProperties properties) {
+    public AlarmEventConsumer(AlarmDeliveryRegistrar registrar, AlertKafkaProperties properties,
+                              AlertPerformanceMetrics metrics) {
         this.registrar = registrar;
         this.bootstrap = properties.getBootstrap();
         this.topic = properties.getAlarmTopic();
         this.enabled = properties.isEnabled();
+        this.metrics = metrics;
+    }
+
+    AlarmEventConsumer(AlarmDeliveryRegistrar registrar, AlertKafkaProperties properties) {
+        this(registrar, properties, null);
     }
 
     AlarmEventConsumer(AlarmDeliveryRegistrar registrar) {
@@ -56,38 +81,94 @@ public class AlarmEventConsumer {
     @PostConstruct
     public void start() {
         if (!enabled) return;
-        Thread.ofPlatform().name("alarm-event-consumer").daemon(true).start(this::run);
+        running.set(true);
+        worker = Thread.ofPlatform().name("alarm-event-consumer").daemon(true).start(this::run);
         log.info("Alarm event reconciler started topic={}", topic);
     }
 
+    /**
+     * Supervise the Kafka session so a single rebalance, commit failure or poll
+     * error restarts the reconciler with bounded back-off instead of silently
+     * killing the only polling thread while the JVM (and health probes) stay green.
+     */
     private void run() {
-        var props = KafkaClientSupport.reliableConsumer(bootstrap,
-                "socp-alarm-delivery-registration", "earliest", 200);
-        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props)) {
-            consumer.subscribe(List.of(topic));
-            while (!Thread.currentThread().isInterrupted()) {
-                var records = consumer.poll(Duration.ofMillis(500));
-                applyPolledBatch(consumer, records);
+        long restartDelay = retryDelayMs;
+        while (running.get() && !Thread.currentThread().isInterrupted()) {
+            try {
+                runConsumerSession();
+                restartDelay = retryDelayMs;
+            } catch (WakeupException wakeup) {
+                if (running.get()) {
+                    log.warn("Alarm event reconciler was unexpectedly woken", wakeup);
+                }
+                return;
+            } catch (RuntimeException failure) {
+                if (!running.get() || Thread.currentThread().isInterrupted()) return;
+                log.error("Alarm event reconciler session failed; restarting in {}ms: {}",
+                        restartDelay, failure.getMessage(), failure);
+                if (metrics != null) metrics.reconcilerSessionRestart();
             }
-        } catch (RuntimeException failure) {
-            log.warn("Alarm event reconciler stopped: {}", failure.getMessage());
+            if (!running.get()) break;
+            if (!sleepRetry(restartDelay)) break;
+            restartDelay = nextRetryDelayMs(restartDelay);
+        }
+    }
+
+    private void runConsumerSession() {
+        var props = KafkaClientSupport.reliableConsumer(bootstrap, GROUP_ID, "earliest", 200);
+        props.put(ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG, String.valueOf(maxPollIntervalMs));
+        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props)) {
+            activeConsumer = consumer;
+            consumer.subscribe(List.of(topic), new SessionRebalanceListener());
+            long retryDelay = retryDelayMs;
+            int consecutiveRetryBatches = 0;
+            while (running.get() && !Thread.currentThread().isInterrupted()) {
+                var records = consumer.poll(Duration.ofMillis(POLL_INTERVAL_MS));
+                if (!applyPolledBatch(consumer, records)) {
+                    consecutiveRetryBatches = 0;
+                    retryDelay = retryDelayMs;
+                    continue;
+                }
+                consecutiveRetryBatches++;
+                if (consecutiveRetryBatches >= retryCeilingBatches) {
+                    log.error("Alarm delivery registration wedged on {} consecutive batches; "
+                                    + "holding the batch uncommitted at {}ms back-off so it is "
+                                    + "redelivered on the next rebalance instead of hot-spinning",
+                            consecutiveRetryBatches, retryMaxMs);
+                    if (metrics != null) metrics.reconcilerBackoff("ceiling");
+                    if (!sleepRetry(retryMaxMs)) break;
+                    continue;
+                }
+                if (metrics != null) metrics.reconcilerBackoff("retry");
+                if (!sleepRetry(retryDelay)) break;
+                retryDelay = nextRetryDelayMs(retryDelay);
+            }
+        } finally {
+            activeConsumer = null;
         }
     }
 
     /**
      * Applies one polled batch: rewind it when it must be retried, commit it once
-     * the batch has been registered. Separated from {@link #run()} for the same
-     * reason as {@link #processBatch}: this is the decision that decides whether a
+     * the batch has been registered. Returns true when the batch was rewound and
+     * must be retried. Separated from {@link #run()} for the same reason as
+     * {@link #processBatch}: this is the decision that determines whether a
      * restart replays the batch or skips it, and that is worth testing without a
      * broker.
      */
-    void applyPolledBatch(KafkaConsumer<String, String> consumer,
-                          ConsumerRecords<String, String> records) {
+    boolean applyPolledBatch(KafkaConsumer<String, String> consumer,
+                             ConsumerRecords<String, String> records) {
         if (processBatch(records)) {
             KafkaClientSupport.rewindBatch(consumer, records);
-        } else if (!records.isEmpty()) {
+            return true;
+        }
+        if (!records.isEmpty()) {
+            // commitSync raises CommitFailedException once the partitions are
+            // revoked, which the supervisor turns into a clean re-join; the offset
+            // stays uncommitted so the batch is redelivered, never dropped.
             consumer.commitSync();
         }
+        return false;
     }
 
     /**
@@ -175,8 +256,32 @@ public class AlarmEventConsumer {
         }
     }
 
+    /** Doubles the delay toward {@link #retryMaxMs}, never below {@link #retryDelayMs}. */
+    long nextRetryDelayMs(long current) {
+        long doubled = current <= 0 ? retryDelayMs : current * 2;
+        return Math.min(retryMaxMs, Math.max(retryDelayMs, doubled));
+    }
+
+    private boolean sleepRetry(long delayMs) {
+        if (delayMs <= 0) {
+            return running.get() && !Thread.currentThread().isInterrupted();
+        }
+        try {
+            Thread.sleep(delayMs);
+            return running.get() && !Thread.currentThread().isInterrupted();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
     @PreDestroy
     void stop() {
+        running.set(false);
+        KafkaConsumer<String, String> consumer = activeConsumer;
+        if (consumer != null) consumer.wakeup();
+        Thread handle = worker;
+        if (handle != null) handle.interrupt();
         KafkaProducer<String, String> producer = dlqProducer;
         if (producer != null) producer.close(Duration.ofSeconds(5));
     }
@@ -185,5 +290,17 @@ public class AlarmEventConsumer {
         if (value == null) return null;
         String text = String.valueOf(value);
         return text.isBlank() ? null : text;
+    }
+
+    private static final class SessionRebalanceListener implements ConsumerRebalanceListener {
+        @Override
+        public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
+            if (!partitions.isEmpty()) log.info("Alarm delivery partitions revoked: {}", partitions);
+        }
+
+        @Override
+        public void onPartitionsAssigned(Collection<TopicPartition> partitions) {
+            if (!partitions.isEmpty()) log.info("Alarm delivery partitions assigned: {}", partitions);
+        }
     }
 }

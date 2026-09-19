@@ -16,12 +16,38 @@ per event:
   evaluation and durable completion latency.
 * `socp.detection.alert.stage{stage=...}` records alert-outbox age, HTTP round
   trip and downstream acknowledgement.
+* `socp.detection.dlq.handoff{outcome=committed|abandoned}` counts the durable
+  dead-letter hand-off of an otherwise-poison event: `committed` fires once the
+  DLQ write is acknowledged and the offset is free to advance; `abandoned` fires
+  when the bounded hand-off retries are exhausted, so the partition commit stays
+  pinned rather than skipping a still-undurable record.
+* `socp.detection.processing.withheld{outcome=globally_unavailable|replay_globally_unavailable}`
+  counts records whose processing is deliberately held while the state store is
+  globally unavailable. A withhold neither dead-letters a record nor consumes the
+  per-record DLQ budget (`globally_unavailable` on the live path,
+  `replay_globally_unavailable` during journal replay); the offset stays pinned so
+  recovery re-drives it once the store returns.
+* `socp.detection.offset.pinned` is a gauge: the summed pending (un-committable)
+  offsets across the assigned partitions while an `abandoned` hand-off or a
+  `withheld` record blocks advancement. A sustained non-zero value is the
+  actionable signal behind the two counters above — an idle pipeline shows zero,
+  a wedged one grows.
+* `socp.detection.rule.routing.mismatch{rule,declared_field,event_field}`
+  (Prometheus `socp_detection_rule_routing_mismatch`) emits one report per rule
+  per window when an event's routing field does not carry the key the rule
+  declared, making the partition-local state contract a falsifiable observation;
+  its series count is bounded by the rule catalogue and the field vocabulary,
+  never by the event rate.
 
 `ingested_at` is carried in the canonical event fields. Operators should use
 the counters as an accounting invariant (`consume = write + drop + failed`) and
 investigate any offset commit without a matching durable write or acknowledged
-DLQ record. Percentile histograms are intended for dashboards; raw event IDs
-are never metric labels.
+DLQ record. Because a global outage withholds records instead of dead-lettering
+them, `socp.detection.dlq.handoff` should stay flat while
+`socp.detection.processing.withheld` and `socp.detection.offset.pinned` rise;
+DLQ growth that tracks an availability incident, rather than per-record poison,
+means that classification has regressed. Percentile histograms are intended for
+dashboards; raw event IDs are never metric labels.
 
 ## Alert thresholds
 

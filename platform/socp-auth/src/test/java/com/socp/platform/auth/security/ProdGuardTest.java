@@ -3,6 +3,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -310,6 +311,241 @@ class ProdGuardTest {
         assertTrue(error.getMessage().contains("trust-all TLS"));
         assertTrue(error.getMessage().contains("must use HTTPS"));
         assertTrue(error.getMessage().contains("known development default"));
+    }
+
+    @Test
+    void rejectsProcessLocalGatewaySessionBackendsInProduction() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("spring.application.name", "api-gateway")
+                .withProperty("socp.auth.cookie-secure", "true")
+                .withProperty("socp.auth.revocation.backend", "memory")
+                .withProperty("socp.oidc.state.backend", "memory");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+
+        assertTrue(error.getMessage().contains("socp.auth.revocation.backend=memory"));
+        assertTrue(error.getMessage().contains("socp.oidc.state.backend=memory"));
+    }
+
+    /**
+     * 网关会话 cookie 的默认值是「不Secure」，所以漏配必须自己成为违规项：
+     * 未显式置 true 时启动即失败，而不是悄悄把会话令牌以明文 cookie 发到 HTTP 上。
+     */
+    @Test
+    void rejectsInsecureGatewaySessionCookiesByDefault() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("spring.application.name", "api-gateway")
+                .withProperty("socp.auth.revocation.backend", "redis")
+                .withProperty("socp.oidc.state.backend", "redis");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+
+        assertTrue(error.getMessage().contains("socp.auth.cookie-secure=false"),
+                "违规项必须点名 cookie 开关，实际=" + error.getMessage());
+        assertTrue(error.getMessage().contains("HTTPS"));
+        assertFalse(error.getMessage().contains("revocation.backend"),
+                "共享后端已配 redis，不得被这条违规一并误报");
+        assertFalse(error.getMessage().contains("oidc.state.backend"));
+
+        env.withProperty("socp.auth.cookie-secure", "true");
+        assertDoesNotThrow(() -> new ProdGuard(env), "显式 Secure 后网关侧唯一违规就是该开关，修掉即通过");
+    }
+
+    /** 显式 false 与漏配同义：生产不得用「没读到属性」当作允许明文 cookie 的理由。 */
+    @Test
+    void rejectsExplicitlyDisabledGatewaySessionCookieSecurity() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("spring.application.name", "api-gateway")
+                .withProperty("socp.auth.cookie-secure", "false")
+                .withProperty("socp.auth.revocation.backend", "redis")
+                .withProperty("socp.oidc.state.backend", "redis");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+
+        assertTrue(error.getMessage().contains("socp.auth.cookie-secure=false"));
+    }
+
+    @Test
+    void rejectsBlankRateLimitBackendAsUnsupportedNotRedis() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("socp.ratelimit.backend", "");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+
+        assertTrue(error.getMessage().contains("socp.ratelimit.backend=<blank>"));
+    }
+
+    @Test
+    void rejectsMisspelledRateLimitBackendEvenWithFailClosed() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("socp.ratelimit.backend", "reids")
+                .withProperty("socp.ratelimit.fail-closed", "true");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+
+        assertTrue(error.getMessage().contains("socp.ratelimit.backend=reids"));
+    }
+
+    @Test
+    void requiresDedicatedFlywayMigrationRoleOnPostgres() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("spring.datasource.username", "socp")
+                .withProperty("spring.flyway.enabled", "true")
+                .withProperty("spring.flyway.url", "jdbc:postgresql://db.example.test/socp")
+                .withProperty("spring.flyway.user", "socp");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+
+        assertTrue(error.getMessage().contains("spring.flyway.user"));
+    }
+
+    /**
+     * 与运行时角色「不同」还不够：迁移角色落在 postgres / socp 这类已知本地默认上，
+     * 等价于把 DDL 权限留在人人都知道的账号里，必须单独成为违规项。
+     */
+    @Test
+    void rejectsAKnownLocalDefaultMigrationRoleEvenWhenItDiffersFromRuntime() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("spring.datasource.username", "socp_app_runtime")
+                .withProperty("spring.flyway.enabled", "true")
+                .withProperty("spring.flyway.url", "jdbc:postgresql://db.example.test/socp")
+                .withProperty("spring.flyway.user", "postgres")
+                .withProperty("spring.flyway.password", "a-dedicated-migration-password");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+
+        assertTrue(error.getMessage().contains("known local default"),
+                "必须点出「已知本地默认角色」这一具体原因，实际=" + error.getMessage());
+        assertFalse(error.getMessage().contains("must differ from spring.datasource.username"),
+                "角色本就没和运行时重合，不得误报成撞名");
+        assertFalse(error.getMessage().contains("must be an explicit dedicated migration role"),
+                "角色已显式配置，不得误报成缺失");
+
+        // 大小写不敏感：POSTGRES/socp 这类默认名同样命中，换成真正专用的角色后整套配置通过。
+        env.withProperty("spring.flyway.user", "POSTGRES");
+        IllegalStateException uppercaseDefault =
+                assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+        assertTrue(uppercaseDefault.getMessage().contains("known local default"));
+        env.withProperty("spring.flyway.user", "socp");
+        IllegalStateException runtimeUserNamedDefault =
+                assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+        assertTrue(runtimeUserNamedDefault.getMessage().contains("known local default"));
+        env.withProperty("spring.flyway.user", "socp_migrator");
+        assertDoesNotThrow(() -> new ProdGuard(env));
+    }
+
+    /** 撞名检查优先于默认名检查：同一账号既撞运行时又落在默认上时只报一次。 */
+    @Test
+    void reportsRuntimeCollisionBeforeTheDefaultNameForTheSameMigrationRole() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("spring.datasource.username", "socp")
+                .withProperty("spring.flyway.enabled", "true")
+                .withProperty("spring.flyway.url", "jdbc:postgresql://db.example.test/socp")
+                .withProperty("spring.flyway.user", "socp")
+                .withProperty("spring.flyway.password", "a-dedicated-migration-password");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+
+        assertTrue(error.getMessage().contains("must differ from spring.datasource.username"));
+        assertFalse(error.getMessage().contains("known local default"));
+    }
+
+    @Test
+    void rejectsMissingFlywayMigrationCredentialsOnPostgres() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("spring.datasource.username", "socp")
+                .withProperty("spring.flyway.enabled", "true")
+                .withProperty("spring.flyway.url", "jdbc:postgresql://db.example.test/socp");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+
+        assertTrue(error.getMessage().contains("spring.flyway.user"));
+        assertTrue(error.getMessage().contains("spring.flyway.password"));
+    }
+
+    @Test
+    void acceptsSeparateFlywayMigrationRoleOnPostgres() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("spring.datasource.username", "socp")
+                .withProperty("spring.flyway.enabled", "true")
+                .withProperty("spring.flyway.url", "jdbc:postgresql://db.example.test/socp")
+                .withProperty("spring.flyway.user", "socp_migrator")
+                .withProperty("spring.flyway.password", "a-dedicated-migration-password");
+
+        assertDoesNotThrow(() -> new ProdGuard(env));
+    }
+
+    @Test
+    void flywayMigrationRoleGuardIsSkippedWhenFlywayDisabled() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("spring.datasource.username", "socp")
+                .withProperty("spring.flyway.enabled", "false");
+
+        assertDoesNotThrow(() -> new ProdGuard(env));
+    }
+
+    /**
+     * 独立迁移角色是 PostgreSQL 契约（SOCP_PG_MIGRATION_*）：Flyway 目标不是 pg 时
+     * 必须整体跳过，否则一个本就没有 pg 迁移角色的服务会被判成双重违规而起不来。
+     */
+    @Test
+    void flywayMigrationRoleGuardIsSkippedForNonPostgresTargets() {
+        MockEnvironment env = new MockEnvironment()
+                .withProperty("socp.security.jwk-set-uri", "https://id.example.test/keys")
+                .withProperty("socp.security.audience", "socp-api")
+                .withProperty("socp.security.ingest-token", "production-ingest-token")
+                .withProperty("socp.security.service-secret", "production-service-secret-0123456789")
+                .withProperty("socp.security.metrics-token", "production-metrics-secret-0123456789")
+                .withProperty("socp.ratelimit.backend", "redis")
+                .withProperty("socp.ratelimit.fail-closed", "true")
+                .withProperty("socp.audit.sink", "kafka")
+                .withProperty("socp.audit.fail-closed", "true")
+                .withProperty("socp.temporal.enabled", "true")
+                .withProperty("spring.flyway.enabled", "true")
+                .withProperty("spring.flyway.url", "jdbc:oracle:thin:@//db.example.test:1521/SOCP");
+
+        assertDoesNotThrow(() -> new ProdGuard(env),
+                "非 postgres 的 Flyway 目标不得被要求提供 pg 专用迁移角色");
+
+        // 同一环境仅把 Flyway 指向 pg，缺失的迁移角色/口令立刻成为违规：
+        // 证明上一条通过来自数据库类型判定，而不是「属性没读到」。
+        env.withProperty("spring.flyway.url", "jdbc:postgresql://db.example.test/socp");
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+        assertTrue(error.getMessage().contains("spring.flyway.user"));
+        assertTrue(error.getMessage().contains("spring.flyway.password"));
+    }
+
+    /** 数据库类型看的是两侧连接串：运行时 datasource 是 pg 时，Flyway 也必须交代迁移角色。 */
+    @Test
+    void migrationRoleContractFollowsTheRuntimeDatasourceType() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("spring.flyway.enabled", "true")
+                .withProperty("spring.flyway.url", "jdbc:oracle:thin:@//db.example.test:1521/SOCP");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+
+        assertTrue(error.getMessage().contains("spring.flyway.user"));
+    }
+
+    @Test
+    void acceptsSharedGatewaySessionBackendsInProduction() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("spring.application.name", "api-gateway")
+                .withProperty("socp.auth.cookie-secure", "true")
+                .withProperty("socp.auth.revocation.backend", "redis")
+                .withProperty("socp.oidc.state.backend", "redis");
+
+        assertDoesNotThrow(() -> new ProdGuard(env));
+    }
+
+    @Test
+    void gatewayAssertionsDoNotApplyToServletServices() {
+        // Servlet services do not read those keys at all; only the gateway must
+        // resolve them to the shared backend.
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("spring.application.name", "alert-web");
+
+        assertDoesNotThrow(() -> new ProdGuard(env));
     }
 
     private static MockEnvironment validProductionEnvironment() {

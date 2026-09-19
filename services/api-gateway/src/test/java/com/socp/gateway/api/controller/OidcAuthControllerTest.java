@@ -52,6 +52,17 @@ class OidcAuthControllerTest {
                 .hasMessageContaining("returned 401");
     }
 
+    @Test
+    void mapsOnlyRolesTheGatewayCanAdmit() {
+        // The IdP role mapping must stay a permutation of the issuable vocabulary:
+        // mapping an advisory name from docs/soar-design.md (approver) would issue
+        // a session that GatewayFilter then rejects with 401.
+        org.assertj.core.api.Assertions
+                .assertThat(OidcAuthController.ROLE_PRECEDENCE)
+                .containsExactlyInAnyOrderElementsOf(
+                        com.socp.platform.auth.security.Permission.ISSUABLE_ROLES);
+    }
+
     private void respondRejected(HttpExchange exchange) throws IOException {
         byte[] body = "rejected".getBytes(StandardCharsets.UTF_8);
         exchange.sendResponseHeaders(401, body.length);

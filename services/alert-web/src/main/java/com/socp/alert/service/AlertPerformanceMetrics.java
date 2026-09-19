@@ -47,6 +47,19 @@ public class AlertPerformanceMetrics {
         registry.counter("socp.alert.persistence", "outcome", "failed").increment();
     }
 
+    /** Counts a supervised restart of the alarm delivery-registration consumer session. */
+    public void reconcilerSessionRestart() {
+        registry.counter("socp.alert.reconciler", "outcome", "session-restart").increment();
+    }
+
+    /**
+     * Records the alarm reconciler's bounded-retry pacing. Tags use a fixed
+     * vocabulary so a wedged batch cannot create unbounded metric cardinality.
+     */
+    public void reconcilerBackoff(String outcome) {
+        registry.counter("socp.alert.reconciler", "outcome", outcome).increment();
+    }
+
     /**
      * Records operational lifecycle transitions for durable delivery rows.
      * Tags deliberately use a small fixed vocabulary so an incident cannot

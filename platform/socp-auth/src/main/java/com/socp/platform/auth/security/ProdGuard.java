@@ -19,6 +19,10 @@ import java.util.List;
  *   <li>禁止默认演示 JWT secret（run-all.sh 注入的 demo 值）</li>
  *   <li>禁止 dev-bypass=true（鉴权不得绕过）</li>
  *   <li>禁止默认采集凭据（dev-vector-token）</li>
+ *   <li>要求 metrics 凭据非默认（ActuatorAuthFilter 在 actuator 路径上消费它）</li>
+ *   <li>要求限流后端为共享 redis（正向白名单，非 redis/空/拼错一律拒绝）</li>
+ *   <li>要求 prod+pg 下 Flyway 使用独立迁移角色，且 ≠ 运行时角色、非本地默认</li>
+ *   <li>要求网关的会话撤销 / OIDC state 后端为共享 redis</li>
  *   <li>禁止关闭 Temporal（SOAR 不得回退进程内执行器）</li>
  * </ul>
  *
@@ -200,8 +204,11 @@ public class ProdGuard {
             violations.add("socp.demo-data.enabled=true (production forbids seeded demo data)");
         }
 
-        if ("memory".equalsIgnoreCase(env.getProperty("socp.ratelimit.backend", "memory"))) {
-            violations.add("socp.ratelimit.backend=memory (production requires the shared Redis backend)");
+        String rateLimitBackend = env.getProperty("socp.ratelimit.backend", "memory").trim();
+        if (!"redis".equalsIgnoreCase(rateLimitBackend)) {
+            violations.add("socp.ratelimit.backend="
+                    + (rateLimitBackend.isBlank() ? "<blank>" : rateLimitBackend)
+                    + " (production requires the shared redis backend)");
         } else if (!"true".equalsIgnoreCase(env.getProperty("socp.ratelimit.fail-closed", "false"))) {
             violations.add("socp.ratelimit.fail-closed must be true in production");
         }
@@ -214,9 +221,16 @@ public class ProdGuard {
             violations.add("socp.audit.fail-closed must be true in production");
         }
 
-        if ("api-gateway".equals(application)
-                && !"true".equalsIgnoreCase(env.getProperty("socp.auth.cookie-secure", "false"))) {
-            violations.add("socp.auth.cookie-secure=false (production session cookies require HTTPS)");
+        if ("api-gateway".equals(application)) {
+            if (!"true".equalsIgnoreCase(env.getProperty("socp.auth.cookie-secure", "false"))) {
+                violations.add("socp.auth.cookie-secure=false (production session cookies require HTTPS)");
+            }
+            // Session revocation and OIDC PKCE state are correctness state shared by
+            // every gateway replica. A process-local backend keeps a logged-out
+            // session alive for the replicas that never saw the logout, and lets an
+            // authorization callback land on a replica without its PKCE state.
+            requireSharedBackend(env, violations, "socp.auth.revocation.backend");
+            requireSharedBackend(env, violations, "socp.oidc.state.backend");
         }
 
         validateConfiguredCredential(env, violations, "spring.datasource.password", List.of("", "socp"));
@@ -227,6 +241,8 @@ public class ProdGuard {
         validateConfiguredCredential(env, violations, "socp.vector.token", List.of("", DEMO_INGEST_TOKEN));
         validateConfiguredCredential(env, violations, "socp.opensearch.password", List.of("", "Socp!Sec2026xK", "admin"));
         validateConfiguredCredential(env, violations, "socp.opensearch.username", List.of("", "admin"));
+
+        validateMigrationRole(env, url, violations);
 
         if (isEnabled(env, "socp.opensearch.enabled")
                 && "true".equalsIgnoreCase(env.getProperty("socp.opensearch.tls.insecure-skip-verify", "false"))) {
@@ -242,6 +258,60 @@ public class ProdGuard {
             throw new IllegalStateException("【prod 启动校验失败】" + String.join("；", violations));
         }
         log.info("ProdGuard 通过：prod 模式启动校验无违规项");
+    }
+
+    /**
+     * Correctness state shared by every replica must live in the Redis backend.
+     * A per-process map is only ever a development convenience: with two gateway
+     * replicas a memory backend makes logout effective for roughly half the
+     * traffic and fails closed nowhere.
+     */
+    private static void requireSharedBackend(Environment env, List<String> violations, String key) {
+        String backend = env.getProperty(key, "redis").trim();
+        if (!"redis".equalsIgnoreCase(backend)) {
+            violations.add(key + "=" + (backend.isBlank() ? "<blank>" : backend)
+                    + " (production requires the shared redis backend)");
+        }
+    }
+
+    /**
+     * Flyway owns DDL, so the runtime connection must not double as the migration
+     * role. Under prod + a postgresql datasource this guard fails fast when the
+     * dedicated migration credentials are missing, reused from the runtime role,
+     * or left on a local default — the application-side half of the contract the
+     * no-default {@code ${SOCP_PG_MIGRATION_*}} binding and the Helm secretEnv pin
+     * rely on (the runtime role cannot CREATE in the first place, so a silent
+     * fallback there only surfaces as a hard boot failure; asserting here keeps the
+     * diagnosis explicit and the two role identities provably separate).
+     */
+    private static void validateMigrationRole(Environment env, String datasourceUrl, List<String> violations) {
+        if (!isEnabled(env, "spring.flyway.enabled")) {
+            return;
+        }
+        String flywayUrl = env.getProperty("spring.flyway.url", "");
+        boolean postgresql = isPostgres(datasourceUrl) || isPostgres(flywayUrl);
+        if (!postgresql) {
+            return;
+        }
+        String runtimeUser = env.getProperty("spring.datasource.username", "").trim();
+        if (!env.containsProperty("spring.flyway.user") || env.getProperty("spring.flyway.user", "").trim().isEmpty()) {
+            violations.add("spring.flyway.user must be an explicit dedicated migration role in production");
+        } else {
+            String migrationUser = env.getProperty("spring.flyway.user", "").trim();
+            if (!runtimeUser.isEmpty() && migrationUser.equalsIgnoreCase(runtimeUser)) {
+                violations.add("spring.flyway.user must differ from spring.datasource.username (separate migration role)");
+            } else if (List.of("socp", "postgres").stream().anyMatch(migrationUser::equalsIgnoreCase)) {
+                violations.add("spring.flyway.user uses a known local default instead of a dedicated migration role");
+            }
+        }
+        if (!env.containsProperty("spring.flyway.password")
+                || env.getProperty("spring.flyway.password", "").trim().isEmpty()) {
+            violations.add("spring.flyway.password must be explicitly configured in production");
+        }
+    }
+
+    private static boolean isPostgres(String jdbcUrl) {
+        return jdbcUrl != null && jdbcUrl.toLowerCase(java.util.Locale.ROOT).startsWith("jdbc:postgresql:");
     }
 
     private static void validateConfiguredCredential(Environment env, List<String> violations,

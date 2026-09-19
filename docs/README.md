@@ -51,6 +51,8 @@ directory instead of source control.
 - [Production delivery baseline](production-readiness.md)
 - [Kubernetes release contract](operations/kubernetes.md)
 - [Helm release runbook](../deploy/helm/README.md)
+- [Kafka topic provisioning runbook](operations/kafka-topic-provisioning.md)
+- [Flyway checksum drift and repair runbook](operations/database-migration-repair.md)
 
 ## Architecture decision records
 

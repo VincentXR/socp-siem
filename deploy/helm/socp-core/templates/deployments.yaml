@@ -96,7 +96,12 @@ spec:
               path: {{ $workload.health.basePath }}/readiness
               port: http
             periodSeconds: 10
-            timeoutSeconds: 3
+            # Covers the worst contributor inside the readiness group: the
+            # Spring `db` contributor borrows a pooled connection, and the
+            # chart pins spring.datasource.hikari.connection-timeout below
+            # this value. The TCP dependency indicator costs 500ms per
+            # endpoint, serially.
+            timeoutSeconds: 5
             failureThreshold: 3
           livenessProbe:
             httpGet:
@@ -107,7 +112,15 @@ spec:
             failureThreshold: 3
           startupProbe:
             httpGet:
-              path: {{ $workload.health.basePath }}
+              # The process-local liveness group, not the aggregated endpoint:
+              # /actuator/health folds in the dependency indicator and the db
+              # contributor, so a Kafka/ClickHouse/OpenSearch outage would keep
+              # a brand-new container from ever passing startup and kubelet
+              # would restart it on a fixed cycle. That restart churns the
+              # shared consumer group the running replicas depend on. Waiting
+              # for dependencies stays a readiness concern, where the cost is
+              # removing one replica from traffic.
+              path: {{ $workload.health.basePath }}/liveness
               port: http
             periodSeconds: 5
             failureThreshold: 30

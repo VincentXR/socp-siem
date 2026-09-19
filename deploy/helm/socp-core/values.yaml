@@ -23,6 +23,14 @@ serviceAccount:
   annotations: {}
 
 runtime:
+  # Each database workload below names the four PostgreSQL role keys in
+  # `secretEnv` instead of relying on the `envFrom` import alone. `envFrom`
+  # accepts any subset of keys, and application-pg.yml resolves Flyway's
+  # credentials as `${SOCP_PG_MIGRATION_USER:${SOCP_PG_USER:socp}}`, so a Secret
+  # that omits the migration pair silently runs migrations as the restricted
+  # runtime role and only fails at the next schema change. An explicit
+  # secretKeyRef is required by kubelet: the missing key then stops the Pod with
+  # a visible CreateContainerConfigError before anything starts.
   existingSecret: socp-runtime-secrets
   config:
     # The pg profile is what points spring.datasource at PostgreSQL; without
@@ -39,6 +47,11 @@ runtime:
     SOCP_AUTH_COOKIE_SECURE: "true"
     SOCP_RATELIMIT_BACKEND: redis
     SOCP_RATELIMIT_FAIL_CLOSED: "true"
+    # The readiness group includes the Spring `db` contributor, which waits for
+    # a pooled connection. HikariCP's 30s default outlasts any probe budget, so
+    # a saturated pool shows up as a probe timeout instead of a DOWN readiness
+    # signal. Keep the wait inside the probe timeout.
+    SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT: "2000"
     SOCP_AUDIT_SINK: kafka
     SOCP_AUDIT_FAIL_CLOSED: "true"
     SOCP_KAFKA_BOOTSTRAP: kafka.socp-data.svc.cluster.local:9092
@@ -120,7 +133,12 @@ workloads:
       # must wait for a dedicated internal management path/port. Rendering a
       # ServiceMonitor for it would scrape an endpoint that does not exist.
     secretEnv: {}
-    env: {}
+    env:
+      # Declared instead of relying on the application default: these stores
+      # hold replay nonces and logged-out sessions, so a process-local variant
+      # makes logout and the OIDC callback depend on which replica answers.
+      SOCP_AUTH_REVOCATION_BACKEND: redis
+      SOCP_OIDC_STATE_BACKEND: redis
     fieldEnv: {}
     resources:
       requests:
@@ -144,7 +162,11 @@ workloads:
     health:
       basePath: /search-config/actuator/health
       metricsPath: /search-config/actuator/prometheus
-    secretEnv: {}
+    secretEnv:
+      SOCP_PG_MIGRATION_PASSWORD: SOCP_PG_MIGRATION_PASSWORD
+      SOCP_PG_MIGRATION_USER: SOCP_PG_MIGRATION_USER
+      SOCP_PG_PASSWORD: SOCP_PG_PASSWORD
+      SOCP_PG_USER: SOCP_PG_USER
     fieldEnv: {}
     env:
       SOCP_SEARCH_RUNTIME_ROLE: api
@@ -171,7 +193,11 @@ workloads:
     health:
       basePath: /search-config/actuator/health
       metricsPath: /search-config/actuator/prometheus
-    secretEnv: {}
+    secretEnv:
+      SOCP_PG_MIGRATION_PASSWORD: SOCP_PG_MIGRATION_PASSWORD
+      SOCP_PG_MIGRATION_USER: SOCP_PG_MIGRATION_USER
+      SOCP_PG_PASSWORD: SOCP_PG_PASSWORD
+      SOCP_PG_USER: SOCP_PG_USER
     fieldEnv: {}
     env:
       SOCP_SEARCH_RUNTIME_ROLE: worker
@@ -198,12 +224,22 @@ workloads:
     health:
       basePath: /detect-web/actuator/health
       metricsPath: /detect-web/actuator/prometheus
-    secretEnv: {}
+    secretEnv:
+      SOCP_PG_MIGRATION_PASSWORD: SOCP_PG_MIGRATION_PASSWORD
+      SOCP_PG_MIGRATION_USER: SOCP_PG_MIGRATION_USER
+      SOCP_PG_PASSWORD: SOCP_PG_PASSWORD
+      SOCP_PG_USER: SOCP_PG_USER
     fieldEnv:
       SOCP_DETECT_INSTANCE_ID: metadata.uid
     env:
       SOCP_DETECT_RUNTIME_ROLE: api
-      SOCP_HEALTH_REQUIRED_ENDPOINTS: kafka=kafka.socp-data.svc.cluster.local:9092,alert=alert-web:8080
+      # Kafka only. The API role never calls alert-web: the Alert outbox
+      # publisher is worker-role, so keeping `alert=alert-web:8080` here would
+      # make this workload's readiness depend on a transitive downstream hop
+      # (search-config -> detect -> alert) and let one ClickHouse outage pull
+      # the northernmost ingest entry out of rotation once every replica of
+      # each tier lost readiness at the same time.
+      SOCP_HEALTH_REQUIRED_ENDPOINTS: kafka=kafka.socp-data.svc.cluster.local:9092
     resources:
       requests:
         cpu: 200m
@@ -226,7 +262,11 @@ workloads:
     health:
       basePath: /detect-web/actuator/health
       metricsPath: /detect-web/actuator/prometheus
-    secretEnv: {}
+    secretEnv:
+      SOCP_PG_MIGRATION_PASSWORD: SOCP_PG_MIGRATION_PASSWORD
+      SOCP_PG_MIGRATION_USER: SOCP_PG_MIGRATION_USER
+      SOCP_PG_PASSWORD: SOCP_PG_PASSWORD
+      SOCP_PG_USER: SOCP_PG_USER
     fieldEnv:
       SOCP_DETECT_INSTANCE_ID: metadata.uid
     env:
@@ -255,7 +295,11 @@ workloads:
     health:
       basePath: /alert-web/actuator/health
       metricsPath: /alert-web/actuator/prometheus
-    secretEnv: {}
+    secretEnv:
+      SOCP_PG_MIGRATION_PASSWORD: SOCP_PG_MIGRATION_PASSWORD
+      SOCP_PG_MIGRATION_USER: SOCP_PG_MIGRATION_USER
+      SOCP_PG_PASSWORD: SOCP_PG_PASSWORD
+      SOCP_PG_USER: SOCP_PG_USER
     fieldEnv: {}
     env:
       SOCP_HEALTH_REQUIRED_ENDPOINTS: kafka=kafka.socp-data.svc.cluster.local:9092,clickhouse=clickhouse.socp-data.svc.cluster.local:8123

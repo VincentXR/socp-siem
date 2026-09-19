@@ -45,6 +45,7 @@ class IngestEventNormalizerTest {
                 CanonicalEvent.HOST_NAME, "host-1",
                 CanonicalEvent.SOURCE_IP, "203.0.113.10"));
         when(references.matchedSets(anyString())).thenReturn(java.util.List.of());
+        when(references.snapshot()).thenReturn(ReferenceSetStore.Snapshot.EMPTY);
         IngestEventNormalizer normalizer = new IngestEventNormalizer(
                 mock(ParsePreviewService.class), mock(ParseRuleStore.class), references, parsers);
         TenantContext.set("tenant-a");
@@ -268,20 +269,21 @@ class IngestEventNormalizerTest {
         TenantContext.set("tenant-a");
         ReferenceSetStore references = mock(ReferenceSetStore.class);
         when(references.matchedSets(anyString())).thenReturn(List.of());
+        when(references.snapshot()).thenReturn(ReferenceSetStore.Snapshot.EMPTY);
 
         LogSource source = LogSource.createFull("nginx", SourceType.FILE, ParseFormat.AUTO,
                 "/var/log/nginx/access.log", null, null, "prod", true,
                 "beginning", null, null, List.of("nginx-rule"), null,
                 null, "utf-8", "event_time", "UTC", List.of(), 1, null, null);
         LogSourceStore sources = mock(LogSourceStore.class);
-        when(sources.revision()).thenReturn(1L);
+        when(sources.revision("tenant-a")).thenReturn(1L);
         when(sources.get("collector-1")).thenReturn(Optional.empty());
         when(sources.get(source.id())).thenReturn(Optional.of(source));
 
         ParseRule rule = ParseRule.createWithId("nginx-rule", "Nginx access", source.id(),
                 "REGEX", "user=(?<user>\\S+) src=(?<srcip>\\S+)", List.of(), List.of(), true, 1);
         ParseRuleStore rules = mock(ParseRuleStore.class);
-        when(rules.revision()).thenReturn(1L);
+        when(rules.revision("tenant-a")).thenReturn(1L);
         when(rules.get("nginx-rule")).thenReturn(rule);
 
         IngestEventNormalizer normalizer = new IngestEventNormalizer(

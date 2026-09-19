@@ -41,8 +41,9 @@ class SplEngineTest {
     }
 
     private final SplEngine engine = new SplEngine();
-    /** 空仓储：findAll 返回空触发种子数据，save 不落库——仅测 SPL 逻辑；OpenSearch/Kafka 写器置 null 跳过 */
-    private final SearchStore store = new SearchStore(new EmptyRepo(), null);
+    /** 显式开启演示数据：种子样例仅在 demo-data 开关为真时写入，这里用有界窗口驱动 SPL 逻辑；OpenSearch/Kafka 写器置 null 跳过 */
+    private final SearchStore store =
+            new SearchStore(new EmptyRepo(), new com.socp.search.config.config.SearchCacheProperties(), true);
 
     private static final class EmptyRepo implements SearchEventRepository {
         @Override public List<SearchEventEntity> findByTenantId(String tenantId) { return List.of(); }

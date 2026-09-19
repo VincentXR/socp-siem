@@ -2,14 +2,25 @@ package com.socp.detect.web.engine;
 
 import com.socp.detect.web.service.DetectEngineService;
 import com.socp.detect.web.persistence.store.InMemoryDetectionStateStore;
+import com.socp.rule.model.SecurityEvent;
 import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
 
 class DetectionRecordProcessorTest {
+
+    private static final String EVENT_PAYLOAD = """
+            {"eventId":"evt-terminal","tenantId":"default","source":"auth","host":"web-1",\
+            "msg":"login failed","fields":{"src_ip":"198.51.100.10"}}
+            """;
 
     @Test
     void parsesCanonicalFieldsWithoutUncheckedMaps() {
@@ -74,5 +85,41 @@ class DetectionRecordProcessorTest {
 
         assertThrows(DetectionRecordProcessor.MalformedDetectionRecordException.class,
                 () -> processor.parse("key", "{\"eventId\":\"evt-no-tenant\",\"fields\":{}}"));
+    }
+
+    @Test
+    void aDurableResultFailureCarriesTheNormalizedIdentityAndTenant() {
+        DetectEngineService engine = mock(DetectEngineService.class);
+        given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))
+                .willReturn(CompletableFuture.failedFuture(
+                        new IllegalStateException("durable sink rejected this event")));
+        DetectionRecordProcessor processor = new DetectionRecordProcessor(
+                engine, new InMemoryDetectionStateStore(), null);
+
+        DetectionRecordProcessor.TerminalDetectionFailure failure = assertThrows(
+                DetectionRecordProcessor.TerminalDetectionFailure.class,
+                () -> processor.process("socp-events", 2, 42L, "default|src_ip|198.51.100.10",
+                        EVENT_PAYLOAD));
+
+        // The Kafka routing key is shared by every event of one entity, so the
+        // terminal identity must come from the event itself.
+        assertEquals("evt-terminal", failure.eventId());
+        assertEquals("default", failure.tenantId());
+    }
+
+    @Test
+    void admissionBackpressureIsClassifiedAsGloballyRetryable() {
+        DetectEngineService engine = mock(DetectEngineService.class);
+        given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))
+                .willReturn(CompletableFuture.failedFuture(new TenantAdmission.RejectedException(
+                        "default", TenantAdmission.RejectionReason.PENDING_BYTES)));
+        DetectionRecordProcessor processor = new DetectionRecordProcessor(
+                engine, new InMemoryDetectionStateStore(), null);
+
+        // A budget rejection is not this record's fault: it must be distinguishable
+        // from a deterministic failure so the consumer never dead-letters it.
+        assertThrows(DetectionRecordProcessor.DetectionUnavailableException.class,
+                () -> processor.process("socp-events", 2, 42L, "default|src_ip|198.51.100.10",
+                        EVENT_PAYLOAD));
     }
 }

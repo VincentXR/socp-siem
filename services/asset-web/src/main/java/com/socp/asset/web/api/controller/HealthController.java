@@ -1,6 +1,8 @@
 package com.socp.asset.web.api.controller;
 
 import com.socp.platform.error.api.ApiResult;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.beans.factory.ObjectProvider;
@@ -18,9 +20,11 @@ public class HealthController {
     }
 
     @GetMapping("/health")
-    public ApiResult<Map<String, Object>> health() {
+    public ResponseEntity<ApiResult<Map<String, Object>>> health() {
         HealthEndpoint endpoint = healthEndpoint.getIfAvailable();
         String status = endpoint == null ? "UP" : endpoint.health().getStatus().getCode();
-        return ApiResult.ok(Map.of("service", "asset-web", "status", status));
+        HttpStatus code = "UP".equalsIgnoreCase(status) ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE;
+        return ResponseEntity.status(code)
+                .body(ApiResult.ok(Map.of("service", "asset-web", "status", status)));
     }
 }

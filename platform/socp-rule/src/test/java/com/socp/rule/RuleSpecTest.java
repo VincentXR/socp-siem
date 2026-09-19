@@ -15,6 +15,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -25,6 +26,62 @@ class RuleSpecTest {
     private static SecurityEvent ev(String source, String msg, String srcIp) {
         return new SecurityEvent(Instant.now(), source, "h1", msg,
                 Map.of("msg", msg, "src_ip", srcIp == null ? "" : srcIp), Severity.INFO);
+    }
+
+    @Test
+    void windowUsesTheSharedDurationGrammarAndMustBePositive() {
+        assertEquals(java.time.Duration.ofDays(7), RuleSpec.parseWindow("7d"));
+        assertEquals(java.time.Duration.ofMillis(500), RuleSpec.parseWindow("500ms"));
+        assertEquals(java.time.Duration.ofMinutes(5), RuleSpec.parseWindow("PT5M"));
+        assertEquals(java.time.Duration.ofSeconds(30), RuleSpec.parseWindow("30s"));
+        assertEquals(java.time.Duration.ofSeconds(45), RuleSpec.parseWindow("45"));
+        assertThrows(IllegalArgumentException.class, () -> RuleSpec.parseWindow("weekly"));
+        assertThrows(IllegalArgumentException.class, () -> RuleSpec.parseWindow("1w"));
+        assertThrows(IllegalArgumentException.class, () -> RuleSpec.parseWindow("0s"));
+        assertThrows(IllegalArgumentException.class, () -> RuleSpec.parseWindow("-5m"));
+    }
+
+    @Test
+    void windowsThatOnceFailedConstructionNowBuildARule() {
+        // "7d" and "500ms" passed content validation with the old window parser
+        // and threw NumberFormatException while the engine was assembled, which
+        // took the whole tenant's detection down.
+        Map<String, java.time.Duration> expected = new java.util.LinkedHashMap<>();
+        expected.put("7d", java.time.Duration.ofDays(7));
+        expected.put("500ms", java.time.Duration.ofMillis(500));
+        expected.put("PT10M", java.time.Duration.ofMinutes(10));
+        expected.put("2h", java.time.Duration.ofHours(2));
+        for (Map.Entry<String, java.time.Duration> candidate : expected.entrySet()) {
+            RuleSpec spec = new RuleSpec(Json.parseObject("""
+                    {"id":"T-WIN","name":"n","type":"threshold","severity":"HIGH",
+                     "keyField":"src_ip","threshold":3,"window":"%s"}
+                    """.formatted(candidate.getKey())));
+            assertEquals(candidate.getValue(), spec.window, candidate.getKey());
+            Rule rule = spec.toRule();
+            rule.close();
+        }
+    }
+
+    @Test
+    void lifecycleStatusAndLivenessShareOneDerivation() {
+        assertEquals("TESTING", RuleSpec.lifecycleStatus(java.util.Map.of("status", "testing")));
+        assertEquals("ACTIVE", RuleSpec.lifecycleStatus(java.util.Map.of("enabled", true)));
+        assertEquals("DISABLED", RuleSpec.lifecycleStatus(java.util.Map.of("enabled", false)));
+        assertEquals("ACTIVE", RuleSpec.lifecycleStatus(java.util.Map.of()));
+        assertTrue(RuleSpec.isLive(java.util.Map.of("status", "ACTIVE")));
+        assertFalse(RuleSpec.isLive(java.util.Map.of("status", "DRAFT")));
+        assertFalse(RuleSpec.isLive(java.util.Map.of("status", "DISABLED", "enabled", true)));
+        assertTrue(RuleSpec.isLive(java.util.Map.of("enabled", true)));
+        assertFalse(RuleSpec.isLive(java.util.Map.of("enabled", false)));
+        // Legacy content carries neither status nor enabled and stays live.
+        assertTrue(RuleSpec.isLive(java.util.Map.of()));
+
+        // A declared lifecycle status stays authoritative over the legacy flag.
+        RuleSpec draft = new RuleSpec(Json.parseObject("""
+                {"id":"D1","name":"n","type":"pattern","severity":"LOW","message":"m",
+                 "status":"TESTING","enabled":true}
+                """));
+        assertFalse(draft.enabled, "TESTING content must not enter the live engine");
     }
 
     @Test

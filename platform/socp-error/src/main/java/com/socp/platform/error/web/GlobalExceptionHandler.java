@@ -22,10 +22,19 @@ import org.springframework.web.server.ResponseStatusException;
  *       让网关限流统计、Prometheus 告警、客户端自动退避都能正常工作；</li>
  *   <li>业务自定义码（如 10001 库存不足）→ HTTP 200，靠 body.code 区分，保持统一响应体约定。</li>
  * </ul>
+ *
+ * <p>文案策略（见 api-contract.md「错误信封与文案」）：信封 message 只放运维可读、可行动的
+ * 人话句。业务 {@link ApiException} 的领域句与请求校验详情原样保留；未处理异常的原文
+ * （驱动/SQL/解析器文本）只进日志，对外固定为 {@link #INTERNAL_ERROR_MESSAGE}，
+ * 由运维用信封里的 traceId 关联日志与链路下钻。
  */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    /** 5xx 对外固定语句；细节仅留在日志（logback 模式已带 %X{traceId}）。 */
+    static final String INTERNAL_ERROR_MESSAGE =
+            "服务处理失败，请稍后重试；如持续出现请联系运维并提供追踪码";
 
     @ExceptionHandler(ApiException.class)
     public ResponseEntity<ApiResult<Void>> handleApi(ApiException e) {
@@ -34,14 +43,23 @@ public class GlobalExceptionHandler {
         if (e.getRetryAfterSeconds() > 0) {
             builder.header("Retry-After", String.valueOf(e.getRetryAfterSeconds()));
         }
-        return builder.body(ApiResult.fail(e.getCode(), e.getMessage()));
+        String message = e.getMessage() == null || e.getMessage().isBlank()
+                ? humanSentence(e.getCode()) : e.getMessage();
+        if (status.is5xxServerError()) {
+            log.error("业务异常 code={} path_status={}", e.getCode(), status.value(), e);
+        }
+        return builder.body(ApiResult.fail(e.getCode(), message));
     }
 
     /** 保留 Controller 显式声明的 4xx/5xx 状态，避免被通用 Exception handler 改成 500。 */
     @ExceptionHandler(ResponseStatusException.class)
     public ResponseEntity<ApiResult<Void>> handleResponseStatus(ResponseStatusException e) {
         int code = e.getStatusCode().value();
-        String message = e.getReason() == null ? e.getMessage() : e.getReason();
+        String message = e.getReason() == null || e.getReason().isBlank()
+                ? humanSentence(code) : e.getReason();
+        if (e.getStatusCode().is5xxServerError()) {
+            log.error("声明式响应异常 code={}", code, e);
+        }
         return ResponseEntity.status(e.getStatusCode()).body(ApiResult.fail(code, message));
     }
 
@@ -53,7 +71,7 @@ public class GlobalExceptionHandler {
                 .distinct()
                 .sorted()
                 .reduce((left, right) -> left + "; " + right)
-                .orElse("request validation failed");
+                .orElse("请求参数校验未通过");
         return ResponseEntity.badRequest().body(ApiResult.fail(400, message));
     }
 
@@ -63,10 +81,24 @@ public class GlobalExceptionHandler {
         return resolved != null && resolved.isError() ? resolved : HttpStatus.OK;
     }
 
+    /** 没有领域文案时的兜底人话句：不暴露内部实现，只说清「发生了什么 + 下一步」。 */
+    private static String humanSentence(int code) {
+        return switch (code) {
+            case 400 -> "请求参数不合法，请修正后重试";
+            case 401 -> "登录状态已失效，请重新登录";
+            case 403 -> "当前账号无权执行该操作";
+            case 404 -> "请求的资源不存在，请确认标识或刷新列表";
+            case 409 -> "资源状态冲突，请刷新后重试";
+            case 413 -> "请求的数据量过大，请缩小查询范围后重试";
+            case 429 -> "请求过于频繁，请稍后重试";
+            default -> code >= 500 ? INTERNAL_ERROR_MESSAGE : "请求未成功，请稍后重试或联系运维";
+        };
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResult<Void>> handleOther(Exception e, HttpServletRequest req) {
-        log.error("未处理异常 path={}", req.getRequestURI(), e);
+        log.error("未处理异常 path={} type={}", req.getRequestURI(), e.getClass().getName(), e);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(ApiResult.fail(500, e.getMessage() == null ? "internal error" : e.getMessage()));
+                .body(ApiResult.fail(500, INTERNAL_ERROR_MESSAGE));
     }
 }

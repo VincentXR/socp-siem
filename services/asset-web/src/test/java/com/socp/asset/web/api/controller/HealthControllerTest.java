@@ -1,12 +1,18 @@
 package com.socp.asset.web.api.controller;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.actuate.health.HealthEndpoint;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -32,5 +38,20 @@ class HealthControllerTest {
                 .andExpect(jsonPath("$.data.service").value("asset-web"))
                 .andExpect(jsonPath("$.data.status").value("UP"))
                 .andExpect(jsonPath("$.timestamp").isNotEmpty());
+    }
+
+    @Test
+    void reportsServiceUnavailableWhenHealthIsNotUp() {
+        HealthEndpoint endpoint = mock(HealthEndpoint.class, RETURNS_DEEP_STUBS);
+        when(endpoint.health().getStatus().getCode()).thenReturn("DOWN");
+        @SuppressWarnings("unchecked")
+        ObjectProvider<HealthEndpoint> health = mock(ObjectProvider.class);
+        when(health.getIfAvailable()).thenReturn(endpoint);
+
+        var result = new HealthController(health).health();
+
+        // A non-UP status must not be reported as HTTP 200.
+        assertThat(result.getStatusCodeValue()).isEqualTo(503);
+        assertThat(result.getBody().data()).containsEntry("status", "DOWN");
     }
 }

@@ -37,6 +37,13 @@ socp:
       idle-ttl-ms: ${SOCP_SEARCH_CACHE_IDLE_TTL_MS:1800000}
       max-tenants: ${SOCP_SEARCH_CACHE_MAX_TENANTS:100}
       cleanup-interval-ms: ${SOCP_SEARCH_CACHE_CLEANUP_INTERVAL_MS:60000}
+    config-cache:
+      # 采集链路配置缓存的跨副本收敛窗口：本副本写入即时失效，
+      # 其它 SEARCH 副本写入的配置最迟一个 TTL 后对本副本可见。
+      ttl-ms: ${SOCP_SEARCH_CONFIG_CACHE_TTL_MS:60000}
+  # 演示数据开关：与其他服务同键同口径；prod profile 强制 false（docs/adr/004-runtime-profiles.md）。
+  demo-data:
+    enabled: ${SOCP_DEMO_DATA_ENABLED:true}
   security:
     # 生产鉴权（2026-08-09 启用）：HMAC HS256 验签，与网关 /auth/login 签发 secret 一致。
     jwt-secret: ${SOCP_JWT_SECRET:}
@@ -55,6 +62,9 @@ socp:
     # 渲染 Vector 配置时注入的采集 token（Authorization: Bearer），与 Vector sink 约定一致；
     # dev-bypass=false 时 ingest 校验此 token，缺失/不匹配返回 401。
     token: ${SOCP_VECTOR_TOKEN:dev-vector-token}
+    # 平台采集入口地址：日志源未绑定输出目标时渲染器用它。留空即渲染失败（HTTP 409），
+    # 不再兜底到进程内硬编码的 localhost；prod profile 必须显式设置本服务的可达地址。
+    uri: ${SOCP_VECTOR_URI:http://localhost:18081/search-config/api/v1/ingest}
   kafka:
     bootstrap: ${SOCP_KAFKA_BOOTSTRAP:localhost:9092}
     topic: ${SOCP_KAFKA_TOPIC:socp-events}

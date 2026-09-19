@@ -24,6 +24,15 @@ import javax.sql.DataSource;
 @DetectRuntimeRole(DetectRuntimeRole.Role.WORKER)
 public class AnalysisReceiptStore {
 
+    /** The analysis ran and its derived alerts were persisted. */
+    public static final String STATUS_COMPLETED = "COMPLETED";
+
+    /**
+     * The analysis ran but its derived alerts were collapsed by storm
+     * suppression, so {@code result_count} is what actually reached storage.
+     */
+    public static final String STATUS_SUPPRESSED = "SUPPRESSED";
+
     private final JdbcTemplate jdbc;
     private final boolean postgres;
 
@@ -63,12 +72,26 @@ public class AnalysisReceiptStore {
     }
 
     public void complete(String tenantId, String sourceAlarmId, String analyzerVersion, int resultCount) {
+        complete(tenantId, sourceAlarmId, analyzerVersion, resultCount, STATUS_COMPLETED);
+    }
+
+    /**
+     * Close the receipt with the outcome the caller actually observed. A storm
+     * collapse persists no derived alerts, so reporting {@code COMPLETED} would
+     * claim rows that were never written; {@code SUPPRESSED} keeps the durable
+     * receipt truthful while still ending the claim.
+     */
+    public void complete(String tenantId, String sourceAlarmId, String analyzerVersion,
+                         int resultCount, String status) {
+        if (!STATUS_COMPLETED.equals(status) && !STATUS_SUPPRESSED.equals(status)) {
+            throw new IllegalArgumentException("unsupported analysis receipt status: " + status);
+        }
         if (jdbc == null) return;
         int updated = jdbc.update("""
                 UPDATE t_analysis_receipt
-                   SET status = 'COMPLETED', completed_at = ?, result_count = ?
+                   SET status = ?, completed_at = ?, result_count = ?
                  WHERE tenant_id = ? AND source_alarm_id = ? AND analyzer_version = ?
-                """, Timestamp.from(Instant.now()), resultCount, tenantId, sourceAlarmId, analyzerVersion);
+                """, status, Timestamp.from(Instant.now()), resultCount, tenantId, sourceAlarmId, analyzerVersion);
         if (updated != 1) {
             throw new IllegalStateException("analysis receipt was not claimed before completion");
         }

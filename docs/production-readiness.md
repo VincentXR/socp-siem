@@ -18,11 +18,19 @@ dependencies and records the evidence listed below.
   Git.
 
 The application pods expect `SOCP_PG_USER` and `SOCP_PG_PASSWORD` to contain
-the restricted runtime role, never the PostgreSQL bootstrap account. The
-Compose production overlay maps those values from
-`SOCP_PG_RUNTIME_USER`/`SOCP_PG_RUNTIME_PASSWORD`; Flyway uses the separate
-`SOCP_PG_MIGRATION_USER`/`SOCP_PG_MIGRATION_PASSWORD` account. The remaining
-reference-deployment secret keys are `SOCP_SECURITY_SERVICE_SECRET`,
+the restricted runtime role, never the PostgreSQL bootstrap account. Flyway
+uses the separate `SOCP_PG_MIGRATION_USER`/`SOCP_PG_MIGRATION_PASSWORD`
+account. These four PostgreSQL role keys are part of the reference-deployment
+secret contract and are always required without a fallback: the Compose
+production overlay maps the runtime pair from
+`SOCP_PG_RUNTIME_USER`/`SOCP_PG_RUNTIME_PASSWORD` and passes all four through
+`${VAR:?}`, and the Helm baseline pins each of the four per database workload
+through `secretEnv`. `application-pg.yml` no longer supplies nested
+`${SOCP_PG_MIGRATION_USER:${SOCP_PG_USER:...}}` defaults, so a missing
+migration role fails the Pod at startup instead of silently running DDL as the
+runtime role. `build/verify-production.py` and `build/verify-prod-compose.py`
+assert this. The remaining reference-deployment secret keys are
+`SOCP_SECURITY_SERVICE_SECRET`,
 `SOCP_SECURITY_METRICS_TOKEN`, `SOCP_SECURITY_ISSUER_URI`,
 `SOCP_SECURITY_JWK_SET_URI`, `SOCP_SECURITY_AUDIENCE`, `SOCP_LOGIN_SECRET`,
 `SOCP_OPENSEARCH_USERNAME`, `SOCP_OPENSEARCH_PASSWORD`, `SOCP_CK_USER`,
@@ -54,15 +62,37 @@ capacity policy without duplicating Deployment manifests. The deployment
 platform creates the restricted `socp-system` namespace from
 `deploy/k8s/namespace.yaml`; Helm owns the namespaced application resources.
 
-Search, Detection, and Alert readiness includes TCP reachability for required
-Kafka/OpenSearch/ClickHouse/downstream-service endpoints through
-`SOCP_HEALTH_REQUIRED_ENDPOINTS`. Liveness remains process-local so a
-dependency outage removes a pod from traffic without creating a restart loop.
+Startup and liveness target the process-local `liveness` health group, not the
+aggregated `/actuator/health` endpoint: a dependency outage must not stop a
+brand-new container from ever passing startup and get restart-looped, which
+would churn the shared consumer group the running replicas depend on. Only
+readiness is dependency-aware. Search, Detection, and Alert readiness adds TCP
+reachability for required Kafka/OpenSearch/ClickHouse endpoints through
+`SOCP_HEALTH_REQUIRED_ENDPOINTS`, limited to synchronous dependencies the
+request path actually calls — the Detection API does not declare Alert as a
+readiness dependency because no request path calls it. A dependency failure
+therefore removes a replica from traffic via readiness while the process stays
+alive. Because the readiness group also carries the Spring `db` contributor,
+which borrows a pooled connection, the chart pins
+`SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT` (2000 ms) well below the
+readiness `timeoutSeconds` (5 s) so a saturated pool surfaces as a DOWN signal
+rather than a probe timeout; `build/verify-helm.py` and
+`build/verify-prod-compose.py` lock both the probe targets and that budget.
 
 The database, Kafka, OpenSearch, ClickHouse, Redis, identity provider, and
 object store are intentionally not bundled into this application baseline.
 They need managed services or separately reviewed operators with their own
 topology, replication, TLS, upgrade, and failure-domain policy.
+
+Any Redis instance the platform points at carries correctness keys — signed
+service-request replay nonces and the session revocation list — so it must be
+configured with `--maxmemory-policy noeviction` and separately capacity
+planned. Under an evicting policy such as `allkeys-lru`, an evicted nonce or
+revocation key makes `SETNX` succeed again and a logged-out session usable
+until its JWT expires; that is silent and unalarmed, not a connection failure.
+The production-shaped Compose rehearsal enforces `noeviction` plus
+`--requirepass`; the Kubernetes baseline delegates Redis to a managed
+operator that must provide the same `noeviction` guarantee.
 
 ## Backup, restore, and recovery evidence
 

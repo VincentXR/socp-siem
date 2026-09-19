@@ -344,7 +344,7 @@ public class AuthController {
 
     private static String supportedRole(String role) {
         String normalized = role == null ? "" : role.trim().toLowerCase();
-        if (!java.util.Set.of("admin", "analyst", "viewer").contains(normalized)) {
+        if (!com.socp.platform.auth.security.Permission.ISSUABLE_ROLES.contains(normalized)) {
             throw new IllegalArgumentException("Unsupported SOCP role");
         }
         return normalized;

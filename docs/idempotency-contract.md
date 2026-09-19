@@ -6,7 +6,8 @@ ClickHouse 写入均采用至少一次传输；“没有重复副作用”必须
 
 | 副作用 | 业务幂等键 | 重复请求/并发请求 | 远端成功、本地未确认 | replay / DEAD | 证明方式 |
 |---|---|---|---|---|---|
-| Alert `t_alarm` | `(tenant_id, source_alert_id)` | PostgreSQL 唯一约束；已有事实直接返回 | 重试命中同一 `source_alert_id`，不新建告警 | Detection outbox 可重放；Alert Web 只接收同一事实 | `count(*)` 与 `count(distinct tenant_id, source_alert_id)` |
+| Alert `t_alarm` | `(tenant_id, source_alert_id)`，`source_alert_id` 自 V20 起 NOT NULL | PostgreSQL 唯一约束；已有事实直接返回；无键手工写入派生 `manual:<uuid>` | 重试命中同一 `source_alert_id`，不新建告警 | Detection outbox 可重放；Alert Web 只接收同一事实 | `count(*)` 与 `count(distinct tenant_id, source_alert_id)` |
+| 告警处置 note（单条与批处置） | 单条：调用方 `Idempotency-Key`；批处置：`batch:<sha256(actor|status|assignee|reason)>`，actor 取认证主体 | 行级 note-key 账本 set-once（每行上限 2048，FIFO 驱逐）；同参重放不重复落 note；状态/指派为绝对值写入，重复应用是 no-op | 写行成功即视为受理；账本满驱逐最旧键后极远期同键重放理论上可再落一条（运维量级假设） | 无 replay 语义；DEAD 不适用 | note 的 `batch:`/前缀键可查询；`@AuditOperation` 留独立调用痕迹 |
 | Detection event journal | `(tenant_id, event_id)` | 事件 claim 状态机，重复事件不再次评估 | Kafka offset 保持未提交，恢复后从 journal/outbox 重放 | terminal DEAD 只能由 DLQ/人工处理 | journal `PENDING=0`、Kafka lag=0、DLQ 有记录 |
 | Alert delivery outbox | `(tenant_id, alarm_id, destination)` | 数据库唯一约束 + 原子 claim；并发 worker 只有一个 PROCESSING | 收据未确认则回到 PENDING/恢复 stale 后重试 | DEAD 不自动重放，必须显式 requeue | 各目标一条 delivery，状态和 attempts 可审计 |
 | Incident | `(tenant_id, alarm_id)` | `t_alarm_case_link` 唯一约束；同一告警返回已有 case | 重试查询 link，不追加重复告警时间线 | DEAD/人工补偿由 Incident 运维负责 | link 行数=1，case `alarmIds` 只含一次 |
@@ -17,6 +18,22 @@ ClickHouse 写入均采用至少一次传输；“没有重复副作用”必须
 | SEARCH ingest event | `(tenant_id, event_id)` | `t_search_event` 与 ingestion outbox 唯一约束；相同内容重试返回 acknowledged/duplicates | 事务提交后重试只补缺失 Outbox，不重复写事件 | 数据库失败返回 503；仅重试未提交批次 | `payload_fingerprint`、唯一索引、`created/duplicates/acknowledged` 响应 |
 
 ## 约束
+
+### Alert `t_alarm` 幂等键非空
+
+`t_alarm.source_alert_id` 是告警幂等键，`(tenant_id, source_alert_id)` 唯一索引只在两列
+都非空时才生效（PostgreSQL 与 H2 `MODE=PostgreSQL` 默认 NULLS DISTINCT，NULL 彼此永不冲
+突）。V20 先把历史 NULL 行回填为 `legacy:<id>`（逐行确定、互不合并），再对该列
+`SET NOT NULL`，沿用本仓 `SET NOT NULL` 作为 fail-closed 数据校验的既有范式；因此生产
+schema 上该列恒非空，与 `ContainerIdempotencyContractTest` 的建表断言对齐。
+
+写入侧语义：
+
+- Detection outbox 经 `AlertClient` 的单条 `POST /api/alarms` 恒定携带 `sourceAlertId`，
+  重放命中同一 `(tenant_id, source_alert_id)`，不新建告警。
+- 授权分析员走单条 POST 且省略 `sourceAlertId` 时，`AlarmService` 派生 `manual:<uuid>`
+  作为非空、无冲突身份以保证唯一约束成立；它每次调用生成新 UUID，故这类手工无键告警在
+  跨调用层面**不**去重。需要幂等的手工写入必须显式携带稳定 `sourceAlertId`。
 
 ### ClickHouse alarm detail version semantics
 

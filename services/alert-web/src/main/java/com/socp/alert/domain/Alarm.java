@@ -72,7 +72,7 @@ public class Alarm extends BaseEntity {
     private String riskLevel;
 
     /** Stable id emitted by Detection; used for alert transaction idempotency. */
-    @Column(name = "source_alert_id", length = 255)
+    @Column(name = "source_alert_id", length = 255, nullable = false)
     private String sourceAlertId;
 
     private String status = "OPEN";

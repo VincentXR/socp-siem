@@ -165,6 +165,23 @@ class DetectionEventJournalTest {
     }
 
     @Test
+    void completedRowsAreNeverRewrittenAsDeadLettered() {
+        DetectionEventEntity completed = row("event-15", "tenant-a", "{}");
+        completed.setStatus(DetectionEventStatus.COMPLETED.name());
+        when(repository.findByTenantIdAndSourceEventId("tenant-a", "event-15"))
+                .thenReturn(Optional.of(completed));
+
+        journal.markDeadLettered("tenant-a", "event-15", "late hand-off from a revoked replica");
+        journal.recordDeadLettered("event-15", "ignored", 1, 2L, "late hand-off");
+
+        // A durable completion is the stronger terminal fact: a late or fenced-out
+        // dead-letter receipt must not turn a evaluated event into a failure.
+        assertThat(completed.getStatus()).isEqualTo(DetectionEventStatus.COMPLETED.name());
+        assertThat(completed.getStatusReason()).isNull();
+        verify(repository, never()).saveAndFlush(completed);
+    }
+
+    @Test
     void readsPagesRestoresFieldsAndFallsBackForMalformedRows() {
         DetectionEventEntity valid = new DetectionEventEntity(
                 "tenant-a", "event-7", "auth", "host", "raw", "{\"user\":\"alice\"}",

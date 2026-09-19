@@ -145,6 +145,79 @@ class DetectionContentCatalogTest {
                 .anyMatch(error -> error.contains("groupBy and keyField")));
     }
 
+    @Test
+    void windowIsValidationCheckedWithTheOneDurationGrammarTheEngineUses() {
+        Map<String, Object> valid = new LinkedHashMap<>();
+        valid.put("id", "win");
+        valid.put("name", "win");
+        valid.put("type", "threshold");
+        valid.put("severity", "HIGH");
+        valid.put("version", "1");
+        valid.put("owner", "test");
+        valid.put("groupBy", "host");
+        valid.put("routingField", "host");
+        valid.put("threshold", 2);
+
+        // "7d" and "500ms" used to pass validation and then throw while the
+        // engine was assembled, which stopped detection for the whole tenant.
+        for (String window : List.of("7d", "500ms", "PT10M", "2h", "45")) {
+            Map<String, Object> candidate = new LinkedHashMap<>(valid);
+            candidate.put("window", window);
+            assertTrue(DetectionContentCatalog.validateSpec(candidate).isEmpty(), window);
+            new RuleSpec(candidate).toRule().close();
+        }
+
+        for (String garbage : List.of("weekly", "1w", "0s", "-5m", "60 s")) {
+            Map<String, Object> candidate = new LinkedHashMap<>(valid);
+            candidate.put("window", garbage);
+            List<String> errors = DetectionContentCatalog.validateSpec(candidate);
+            assertTrue(errors.stream().anyMatch(error -> error.startsWith("invalid window")), garbage);
+        }
+    }
+
+    @Test
+    void partitionLocalAdvisoriesNameTheDimensionThatOutranksTheGrouping() {
+        Map<String, Object> userGrouped = new LinkedHashMap<>();
+        userGrouped.put("id", "advisory");
+        userGrouped.put("type", "threshold");
+        userGrouped.put("groupBy", "user");
+        userGrouped.put("dataSources", List.of("auth", "linux"));
+
+        List<String> advisories = DetectionContentCatalog.partitionLocalAdvisories(userGrouped);
+        assertEquals(2, advisories.size(), "每个可被更高优先级维度压过的数据源各一条");
+        assertTrue(advisories.stream().anyMatch(text -> text.contains("'auth' route by 'src_ip'")));
+        assertTrue(advisories.stream().anyMatch(text -> text.contains("'linux' route by 'host'")));
+
+        userGrouped.put("groupBy", "src_ip");
+        userGrouped.put("dataSources", List.of("auth"));
+        assertTrue(DetectionContentCatalog.partitionLocalAdvisories(userGrouped).isEmpty());
+
+        Map<String, Object> stateless = new LinkedHashMap<>(userGrouped);
+        stateless.put("type", "pattern");
+        assertTrue(DetectionContentCatalog.partitionLocalAdvisories(stateless).isEmpty(),
+                "无状态规则没有分区本地状态可讨论");
+        assertTrue(DetectionContentCatalog.partitionLocalAdvisories(null).isEmpty());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void packagedContentAdvisoriesNeverTurnIntoRejections() {
+        List<Map<String, Object>> rules =
+                (List<Map<String, Object>>) DetectionContentCatalog.manifest().get("rules");
+        int advised = 0;
+        for (Map<String, Object> item : rules) {
+            Map<String, Object> enriched = DetectionContentCatalog.enrich(
+                    (Map<String, Object>) item.get("spec"));
+            // The advisory is deliberately not part of validateSpec: rejecting it
+            // would reject shipped content that legitimately correlates across
+            // sources, so the trade-off is measured instead of refused here.
+            assertTrue(DetectionContentCatalog.validateSpec(enriched).isEmpty(),
+                    String.valueOf(item.get("id")));
+            if (!DetectionContentCatalog.partitionLocalAdvisories(enriched).isEmpty()) advised++;
+        }
+        assertTrue(advised > 0, "内容包里的 user 维度分组规则应被点名，否则该审计无证据");
+    }
+
     @SuppressWarnings("unchecked")
     private static SecurityEvent toEvent(Map<String, Object> input, int index) {
         Map<String, String> fields = new LinkedHashMap<>();

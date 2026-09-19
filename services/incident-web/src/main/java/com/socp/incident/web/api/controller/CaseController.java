@@ -23,7 +23,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.server.ResponseStatusException;
 import org.springframework.data.domain.Page;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -72,7 +71,7 @@ public class CaseController {
     @PostMapping("/incidents")
     public ApiResult<Map<String, Object>> create(@Valid @RequestBody CreateCaseRequest request) {
         if (request == null || request.title() == null || request.title().isBlank()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "案件标题不能为空");
+            throw ApiException.badRequest("案件标题不能为空");
         }
         return ApiResult.ok(Map.of("case", service.create(request.title(), request.entity(), request.severity(), request.assignee())));
     }
@@ -164,12 +163,13 @@ public class CaseController {
 
     @RequireRole({"admin", "analyst"})
     @RequirePermission("case:write")
+    @AuditOperation(action = "ADD_INCIDENT_NOTE", target = "case")
     @PostMapping("/incidents/{id}/notes")
     public ApiResult<Map<String, Object>> note(@PathVariable String id,
-                                               @RequestParam String author,
+                                               @RequestParam(required = false) String author,
                                                @RequestParam String content,
                                                @RequestParam(required = false) String idempotencyKey) {
-        return ApiResult.ok(service.addNote(id, author, content, idempotencyKey));
+        return ApiResult.ok(service.addNote(id, CaseActor.resolve(author), content, idempotencyKey));
     }
 
     @GetMapping("/stats")
@@ -179,14 +179,14 @@ public class CaseController {
 
     private void requireValidRange(int page, int size) {
         if (page < 1 || size < 1 || size > maxListSize) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "分页参数非法：page 从 1 起，size 上限 " + maxListSize);
+            throw ApiException.badRequest("分页参数非法：page 从 1 起，size 上限 " + maxListSize);
         }
     }
 
     private static String normalizeQuery(String query) {
         String normalized = query == null ? "" : query.trim();
         if (normalized.length() > 128) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "q length must not exceed 128 characters");
+            throw ApiException.badRequest("q length must not exceed 128 characters");
         }
         return normalized;
     }

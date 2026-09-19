@@ -5,7 +5,11 @@ import com.socp.detect.web.persistence.repository.RuleRepository;
 import com.socp.detect.web.persistence.entity.RuleEntity;
 import com.socp.platform.error.exception.ApiException;
 import com.socp.platform.tenant.context.TenantContext;
+import com.socp.rule.config.RuleSpec;
+import com.socp.rule.rules.Rule;
 import com.socp.rule.util.Json;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -26,6 +30,8 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Component
 public class RuleSpecStore {
+
+    private static final Logger LOG = LoggerFactory.getLogger(RuleSpecStore.class);
 
     /** Compatibility/list endpoints must never materialise an unbounded tenant catalogue. */
     private static final int MAX_COMPATIBILITY_LIST_SIZE = 500;
@@ -109,7 +115,14 @@ public class RuleSpecStore {
         if (!errors.isEmpty()) {
             throw ApiException.badRequest("rule contract validation failed: " + String.join(", ", errors));
         }
+        compileOrReject(spec);
         String ruleId = String.valueOf(spec.get("id"));
+        for (String advisory : DetectionContentCatalog.partitionLocalAdvisories(spec)) {
+            // Deliberately not a rejection: the packaged content set contains
+            // rules whose grouping dimension can lose to a higher-priority
+            // routing field. The event path counts what actually happens.
+            LOG.warn("Rule {} partition-locality advisory: {}", ruleId, advisory);
+        }
         RuleEntity e = repo.findByRuleIdAndTenantId(ruleId, tenant).orElseGet(RuleEntity::new);
         e.setId(String.valueOf(spec.get("id")));
         if (e.getStorageId() == null) e.setStorageId(storageId(tenant, ruleId));
@@ -197,6 +210,28 @@ public class RuleSpecStore {
     private static String storageId(String tenant, String ruleId) {
         return UUID.nameUUIDFromBytes((tenant + "|" + ruleId)
                 .getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+    }
+
+    /**
+     * Build the candidate with the exact code the engine uses, then release it.
+     * Contract validation and rule construction previously accepted different
+     * grammars, so a document could be stored and only fail when the engine was
+     * assembled - which took the whole tenant's detection down. A rule the
+     * engine cannot build is now a client error at write time.
+     */
+    private static void compileOrReject(Map<String, Object> spec) {
+        try {
+            Rule compiled = new RuleSpec(spec).toRule();
+            compiled.close();
+        } catch (RuntimeException failure) {
+            throw ApiException.badRequest("rule cannot be compiled: " + describe(failure));
+        }
+    }
+
+    private static String describe(RuntimeException failure) {
+        String message = failure.getMessage();
+        return message == null || message.isBlank()
+                ? failure.getClass().getSimpleName() : failure.getClass().getSimpleName() + ": " + message;
     }
 
     private void ensureTenantContent(String tenant) {

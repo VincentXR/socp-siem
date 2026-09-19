@@ -83,6 +83,11 @@ public record LogSource(
 
     /** 渲染用的归一化事件标签键：避免与正文解析出的 host 冲突（同 com.siem Vector 契约） */
     public String collectorTag() {
+        return collectorTagOf(id, name);
+    }
+
+    /** Same tag contract as {@link #collectorTag()}, usable from identity-only read projections. */
+    public static String collectorTagOf(String id, String name) {
         return "search-" + (name == null ? id : name).toLowerCase().replaceAll("[^a-z0-9]+", "-");
     }
 }

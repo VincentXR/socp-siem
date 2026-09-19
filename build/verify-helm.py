@@ -242,6 +242,17 @@ def verify_profile(helm: str, profile: str, errors: list[str]) -> None:
             == expected_scalers,
             f"{profile}: expected {expected_scalers} PodDisruptionBudgets")
 
+    # The readiness group carries the Spring `db` contributor, which borrows a
+    # pooled connection. HikariCP's 30s default outlasts any probe budget, so the
+    # chart pins the connection wait explicitly; the readiness timeout must exceed
+    # it, otherwise a saturated pool surfaces as a probe timeout instead of a DOWN
+    # signal that removes one replica from traffic.
+    runtime_cm = documents.get(("ConfigMap", "socp-runtime"), "")
+    hikari = re.search(r'SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT:\s*"?([0-9]+)', runtime_cm)
+    require(errors, hikari is not None,
+            f"{profile}: runtime config must pin SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT")
+    hikari_ms = int(hikari.group(1)) if hikari else 0
+
     for workload, (runtime_domain, image_name) in WORKLOADS.items():
         document = documents.get(("Deployment", workload), "")
         prefix = f"{profile}: Deployment/{workload}"
@@ -283,6 +294,30 @@ def verify_profile(helm: str, profile: str, errors: list[str]) -> None:
         if profile == "dev":
             require(errors, re.search(r"(?m)^  replicas:\s*1\s*$", document) is not None,
                     f"{prefix} must render one fixed replica")
+
+        # Probe paths must target a bounded health group, never the aggregated
+        # /actuator/health endpoint: that group folds in the dependency indicator
+        # and the db contributor, so a Kafka/ClickHouse/OpenSearch outage would
+        # keep a brand-new container from ever passing startup and kubelet would
+        # restart-loop it, churning the shared consumer group serving traffic.
+        # Waiting on dependencies stays a readiness concern. Mirrors the parity
+        # check kept in build/verify-prod-compose.py; both gates hold the line.
+        for probe in ("startup", "liveness"):
+            path = re.search(
+                rf"(?ms){probe}Probe:\s+httpGet:\s+(?:#.*\n\s*)*path:\s*(\S+)", document
+            )
+            require(errors, path is not None and re.search(r"/(liveness|startup)$", path.group(1)),
+                    f"{prefix} {probe}Probe must target a bounded health group, "
+                    f"not the aggregated endpoint (got {path.group(1) if path else 'no path'})")
+        readiness = re.search(
+            r"(?ms)readinessProbe:\s+httpGet:\s+path:\s*(\S+)", document
+        )
+        require(errors, readiness is not None and readiness.group(1).endswith("/readiness"),
+                f"{prefix} readinessProbe must target the readiness health group")
+        readiness_timeout = re.search(r"(?ms)readinessProbe:.*?timeoutSeconds:\s*([0-9]+)", document)
+        require(errors, readiness_timeout is not None and hikari_ms < int(readiness_timeout.group(1)) * 1000,
+                f"{prefix} readiness timeoutSeconds must exceed the pinned HikariCP "
+                f"connection wait ({hikari_ms}ms) or the db contributor yields a timeout, not DOWN")
 
     for workload, role in (
         ("search-config-api", "api"),

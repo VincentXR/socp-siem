@@ -36,6 +36,13 @@ python build/verify-helm.py
 # what CI does.
 actionlint
 python build/verify-production.py
+
+# Production-shaped orchestration contract: asserts the *effective* base+overlay
+# Compose merge (via `docker compose config` when the CLI is available), Redis
+# noeviction/auth, the declared Kafka posture, and Helm probe/migration-role
+# parity. It is the merged-config gate `verify-production.py` no longer
+# duplicates. Compose files only; Docker is optional.
+python build/verify-prod-compose.py
 ```
 
 `pnpm verify` runs the workbench type check and Vite build, then verifies the

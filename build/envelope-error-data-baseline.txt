@@ -1,0 +1,8 @@
+# Reviewed exceptions to the "success envelopes never carry error semantics"
+# gate in build/verify-contracts.py (see docs/api-contract.md, "Error envelope
+# and message copy"). Each entry is "<relative/file.java>#<method>".
+#
+# The gate permits no additions and requires deleting an entry as soon as the
+# corresponding call site is converted to ApiException.notFound/badRequest (or
+# the marker is genuinely a domain outcome field rather than a failure signal).
+# Start the ledger empty: every known dual-track call site is fixed in-tree.

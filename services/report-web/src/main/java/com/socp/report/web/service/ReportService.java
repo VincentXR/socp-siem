@@ -268,8 +268,10 @@ public class ReportService {
         return Math.toIntExact(Long.parseLong(value));
     }
 
+    /** Diagnostic reasons stay in the log; the envelope carries an operator-readable sentence. */
     private static ApiException unavailable(String report, String primaryReason, String fallbackReason) {
-        return ApiException.of(503, report + " is unavailable: " + primaryReason + "; " + fallbackReason);
+        log.warn("report source unavailable report={} primary={} fallback={}", report, primaryReason, fallbackReason);
+        return ApiException.of(503, "报表数据源暂不可用，请稍后重试；若持续失败请联系运维核对 ClickHouse 与告警统计服务");
     }
 
     private static String tenant() {

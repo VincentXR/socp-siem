@@ -66,6 +66,10 @@ public class DetectEngineService {
     private final RuleProcessingObserver processingObserver;
     private final DetectionStateSnapshotStore snapshotStore;
     private final Map<String, AtomicLong> snapshotCounters = new ConcurrentHashMap<>();
+    /** Rules this engine could not build, counted per engine key. */
+    private final Map<String, Integer> isolatedRules = new ConcurrentHashMap<>();
+    /** State rebuilds that found no journaled history and warmed an empty engine. */
+    private final AtomicLong warmedWithoutHistory = new AtomicLong();
     /** Last durable Kafka position included in each tenant/shard snapshot. */
     private final Map<String, Map<Integer, Long>> snapshotOffsets = new ConcurrentHashMap<>();
     /** Ownership leases are keyed by the actual Kafka state unit, not tenant. */
@@ -80,6 +84,16 @@ public class DetectEngineService {
     /** Starts READY for source-compatible unit callers; Spring invokes start before traffic. */
     private final AtomicReference<RecoveryStatus> recoveryStatus =
             new AtomicReference<>(RecoveryStatus.READY);
+    /**
+     * Recovery is scoped. The process scope covers startup and a full Kafka
+     * assignment rebuild, which really does replace every engine. A tenant hot
+     * reload only marks the engine keys it owns, so one tenant's rule edit can
+     * not open a rejection window for every other tenant in the process.
+     */
+    private final Map<String, RecoveryStatus> engineRecovery = new ConcurrentHashMap<>();
+    /** Rebuilds that failed while the previous engines stayed in service. */
+    private final Map<String, String> pendingRebuilds = new ConcurrentHashMap<>();
+    private final AtomicLong rebuildRetries = new AtomicLong();
     private volatile String recoveryFailure;
     private final ReentrantReadWriteLock engineLifecycle = new ReentrantReadWriteLock(true);
 
@@ -123,6 +137,23 @@ public class DetectEngineService {
     /** Replay boundary shared with the journal and pending-work recovery. */
     @Value("${socp.detect.state.retention}")
     private Duration recoveryWindow;
+
+    /**
+     * How long a hot reload waits for the live engine to finish accepted work
+     * before it reads the Journal. A rebuild that cannot drain in this budget is
+     * abandoned with the live engines still serving, instead of swapping in state
+     * that is missing an in-flight completion.
+     */
+    @Value("${socp.detect.reload.drain-timeout-ms:30000}")
+    private long reloadDrainTimeoutMs = 30_000L;
+
+    /**
+     * Operator label for this worker. Recovery and isolation counters are engine
+     * state inside one process, so a stats reader must know which replica it is
+     * looking at.
+     */
+    @Value("${socp.detect.instance-id:unknown}")
+    private String instanceId = "unknown";
 
     public DetectEngineService(RuleSpecStore store, RecentAlertSink sink, AlertForwarder forwarder,
                                RuleChangePublisher rulePublisher, DetectionStateStore stateStore,
@@ -175,7 +206,11 @@ public class DetectEngineService {
     }
 
     public RecoveryStatus recoveryStatus() {
-        return recoveryStatus.get();
+        RecoveryStatus worst = recoveryStatus.get();
+        for (RecoveryStatus status : engineRecovery.values()) {
+            if (status.ordinal() > worst.ordinal()) worst = status;
+        }
+        return worst;
     }
 
     public boolean isReady() {
@@ -186,6 +221,37 @@ public class DetectEngineService {
         return recoveryFailure;
     }
 
+    /**
+     * Admission decision for one event. Only the recovery scope of the engine
+     * that would evaluate it - and the process-wide scope, which really does
+     * replace every engine - can hold this work back.
+     */
+    private boolean readyFor(String tenant, int shard) {
+        if (recoveryStatus.get() != RecoveryStatus.READY) return false;
+        RecoveryStatus status = engineRecovery.get(engineKey(resolveTenant(tenant), shard));
+        return status == null || status == RecoveryStatus.READY;
+    }
+
+    /** The recovery status of exactly one engine scope. */
+    private RecoveryStatus recoveryStatusFor(String tenant, int shard) {
+        if (recoveryStatus.get() != RecoveryStatus.READY) return recoveryStatus.get();
+        RecoveryStatus status = engineRecovery.get(engineKey(resolveTenant(tenant), shard));
+        return status == null ? RecoveryStatus.READY : status;
+    }
+
+    /**
+     * Hold one engine scope shut until the recovery schedule rebuilds it. Other
+     * tenants and shards keep accepting work: this is no longer a process gate.
+     */
+    private void markKeyDegraded(String tenant, int shard, Throwable failure) {
+        String key = engineKey(resolveTenant(tenant), shard);
+        engineRecovery.put(key, RecoveryStatus.DEGRADED);
+        pendingRebuilds.put(key, describe(failure));
+        recoveryFailure = describe(failure);
+        org.slf4j.LoggerFactory.getLogger(DetectEngineService.class)
+                .warn("Detection engine degraded key={}: {}", key, describe(failure), failure);
+    }
+
     private void markRecovering() {
         recoveryFailure = null;
         recoveryStatus.set(RecoveryStatus.RECOVERING);
@@ -194,13 +260,49 @@ public class DetectEngineService {
     private void markReady() {
         recoveryFailure = null;
         recoveryStatus.set(RecoveryStatus.READY);
+        engineRecovery.clear();
     }
 
     private void markDegraded(Throwable failure) {
-        recoveryFailure = failure == null ? "unknown recovery failure" : failure.getMessage();
+        recoveryFailure = describe(failure);
         recoveryStatus.set(RecoveryStatus.DEGRADED);
         org.slf4j.LoggerFactory.getLogger(DetectEngineService.class)
                 .error("Detection state recovery failed; readiness is degraded", failure);
+    }
+
+    private void markKeysRecovering(java.util.Collection<String> keys) {
+        for (String key : keys) engineRecovery.put(key, RecoveryStatus.RECOVERING);
+    }
+
+    private void markKeysReady(java.util.Collection<String> keys) {
+        for (String key : keys) {
+            engineRecovery.remove(key);
+            pendingRebuilds.remove(key);
+        }
+    }
+
+    /**
+     * A tenant-scoped rebuild failure is reported and retried, but it does not
+     * stop ingestion while the engines that served this tenant before the
+     * attempt are still alive. Only a key with no live engine is held shut.
+     */
+    private void markKeysAfterFailedRebuild(java.util.Collection<String> keys, Throwable failure) {
+        recoveryFailure = describe(failure);
+        for (String key : keys) {
+            pendingRebuilds.put(key, recoveryFailure);
+            if (!engines.containsKey(key)) engineRecovery.put(key, RecoveryStatus.DEGRADED);
+            else engineRecovery.remove(key);
+        }
+        org.slf4j.LoggerFactory.getLogger(DetectEngineService.class).warn(
+                "Detection engine rebuild failed; previous engines stay in service and the rebuild"
+                        + " is retried on the recovery schedule: {}", describe(failure), failure);
+    }
+
+    private static String describe(Throwable failure) {
+        if (failure == null) return "unknown recovery failure";
+        String message = failure.getMessage();
+        return message == null || message.isBlank()
+                ? failure.getClass().getSimpleName() : failure.getClass().getSimpleName() + ": " + message;
     }
 
     @PostConstruct
@@ -231,6 +333,9 @@ public class DetectEngineService {
             engineLastAccess.clear();
             snapshotCounters.clear();
             snapshotOffsets.clear();
+            isolatedRules.clear();
+            engineRecovery.clear();
+            pendingRebuilds.clear();
             suppressor.close();
             tenantAdmission.clear();
             releaseAllStateLeases();
@@ -274,30 +379,60 @@ public class DetectEngineService {
     }
 
     private RuleEngine buildEngine(String tenant, List<SecurityEvent> history) {
-        return buildEngine(tenant, history, null);
+        return buildEngine(engineKey(tenant, 0), tenant, history, null);
     }
 
-    private RuleEngine buildEngine(String tenant, List<SecurityEvent> history,
+    /**
+     * Assemble one engine from the tenant's stored rule documents.
+     *
+     * <p>Documents are filtered on their lifecycle before anything is parsed,
+     * and every remaining document is compiled inside its own guard. A rule that
+     * cannot be built is therefore skipped and counted instead of throwing,
+     * which used to take the whole tenant's detection - and, through the
+     * process-wide recovery gate, every other tenant - down to the dead-letter
+     * path.</p>
+     */
+    private RuleEngine buildEngine(String engineKey, String tenant, List<SecurityEvent> history,
                                    Runnable durableCommitGuard) {
-        List<RuleSpec> specs = store.list(tenant).stream()
-                .map(RuleSpec::new)
-                .filter(spec -> spec.enabled)
-                .toList();
-        List<Rule> rules = new java.util.ArrayList<>(specs.size());
+        List<Map<String, Object>> documents = new java.util.ArrayList<>();
+        for (Map<String, Object> document : store.list(tenant)) {
+            if (RuleSpec.isLive(document)) documents.add(document);
+        }
+        List<Rule> rules = new java.util.ArrayList<>(documents.size());
         Map<String, String> stateCompatibilityVersions = new LinkedHashMap<>();
-        for (RuleSpec spec : specs) {
-            Rule rule = spec.toRule();
-            rules.add(rule);
-            if (rule instanceof StatefulRule stateful) {
-                stateCompatibilityVersions.put(spec.id,
-                        stateful.stateVersion() + ":" + spec.stateSemanticsFingerprint());
-            } else {
-                // The result envelope needs a version for stateless rules as
-                // well. Keep the same semantic fingerprint so a result can
-                // be explained against the exact published content.
-                stateCompatibilityVersions.put(spec.id,
-                        "stateless-v1:" + spec.stateSemanticsFingerprint());
+        Map<String, RuleEngine.RoutingDimension> routingDimensions = new LinkedHashMap<>();
+        int isolated = 0;
+        for (Map<String, Object> document : documents) {
+            String documentId = String.valueOf(document.get("id"));
+            try {
+                RuleSpec spec = new RuleSpec(document);
+                Rule rule = spec.toRule();
+                rules.add(rule);
+                if (rule instanceof StatefulRule stateful) {
+                    stateCompatibilityVersions.put(spec.id,
+                            stateful.stateVersion() + ":" + spec.stateSemanticsFingerprint());
+                    if (spec.groupBy != null && !spec.groupBy.isBlank()) {
+                        routingDimensions.put(spec.id, new RuleEngine.RoutingDimension(
+                                spec.groupBy, Math.max(1L, spec.window.getSeconds())));
+                    }
+                } else {
+                    // The result envelope needs a version for stateless rules as
+                    // well. Keep the same semantic fingerprint so a result can
+                    // be explained against the exact published content.
+                    stateCompatibilityVersions.put(spec.id,
+                            "stateless-v1:" + spec.stateSemanticsFingerprint());
+                }
+            } catch (RuntimeException ruleFailure) {
+                isolated++;
+                org.slf4j.LoggerFactory.getLogger(DetectEngineService.class).warn(
+                        "Skipping undetectable rule tenant={} rule={}: {}",
+                        tenant, documentId, describe(ruleFailure), ruleFailure);
             }
+        }
+        if (isolated > 0) {
+            isolatedRules.put(engineKey, isolated);
+        } else {
+            isolatedRules.remove(engineKey);
         }
         RuleEngine engine = new RuleEngine(
                 rules, List.of(sink), suppressor, processingObserver,
@@ -305,7 +440,7 @@ public class DetectEngineService {
                     var tenantScope = com.socp.platform.tenant.context.TenantContext.open(
                             event.requireTenantId());
                     return tenantScope::close;
-                }, durableCommitGuard, stateCompatibilityVersions);
+                }, durableCommitGuard, stateCompatibilityVersions, routingDimensions);
         // The journal itself clamps this to its configured retention. Keep the
         // replay boundary configurable so rule windows can be sized safely.
         // Any restore failure is propagated so readiness cannot claim a
@@ -314,6 +449,7 @@ public class DetectEngineService {
             engine.restore(history);
         } catch (RuntimeException failure) {
             engine.close();
+            isolatedRules.remove(engineKey);
             throw failure;
         }
         return engine;
@@ -324,19 +460,24 @@ public class DetectEngineService {
     }
 
     private RuleEngine engineFor(String tenant, int shard) {
-        String resolved = tenant == null || tenant.isBlank() ? "default" : tenant;
+        String resolved = resolveTenant(tenant);
         int resolvedShard = normalizeShard(shard);
         String key = engineKey(resolved, resolvedShard);
         engineLifecycle.readLock().lock();
         try {
             RuleEngine engine = engines.computeIfAbsent(key, ignored -> {
-                RuleEngine created = buildEngine(resolved, List.of());
                 try {
+                    RuleEngine created = buildEngine(key, resolved, List.of(), null);
                     restoreState(resolved, created, assignedPartitions.get(), resolvedShard);
                     created.start();
+                    engineRecovery.remove(key);
+                    pendingRebuilds.remove(key);
                     return created;
                 } catch (RuntimeException recoveryFailure) {
-                    created.close();
+                    // A lazily created engine that cannot be restored must not
+                    // look healthy: only this key is held shut, and the recovery
+                    // schedule retries it.
+                    markKeyDegraded(resolved, resolvedShard, recoveryFailure);
                     throw recoveryFailure;
                 }
             });
@@ -349,6 +490,10 @@ public class DetectEngineService {
 
     private int normalizeShard(int shard) {
         return Math.floorMod(shard, effectiveShardCount());
+    }
+
+    private static String resolveTenant(String tenant) {
+        return tenant == null || tenant.isBlank() ? "default" : tenant;
     }
 
     private int effectiveShardCount() {
@@ -428,16 +573,33 @@ public class DetectEngineService {
         return new StateRoutingKey(tenant, field, value).shard(effectiveShardCount());
     }
 
-    /** 规则热更新：原子替换引擎（旧引擎毒丸退出），无需重启进程 */
-    public void reload() {
+    /**
+     * 规则热更新：为该租户的每个 shard 装配新引擎并原子替换。
+     *
+     * <p>The recovery gate is scoped to this tenant's engine keys, so one
+     * tenant's rule edit cannot open a rejection window for the others. A failed
+     * rebuild keeps the previously live engines serving and is retried by
+     * {@link #retryDegradedEngines()}.</p>
+     */
+    public synchronized void reload() {
         if (!workerRole()) return;
-        markRecovering();
+        String tenant = store.tenant();
+        List<String> keys = tenantEngineKeys(tenant);
+        markKeysRecovering(keys);
         try {
-            replaceTenantEngine(store.tenant());
-            markReady();
+            replaceTenantEngine(tenant);
+            markKeysReady(keys);
         } catch (RuntimeException failure) {
-            markDegraded(failure);
+            markKeysAfterFailedRebuild(keys, failure);
         }
+    }
+
+    /** Every engine key one tenant owns at the current shard count. */
+    private List<String> tenantEngineKeys(String tenant) {
+        int shards = effectiveShardCount();
+        List<String> keys = new java.util.ArrayList<>(shards);
+        for (int shard = 0; shard < shards; shard++) keys.add(engineKey(tenant, shard));
+        return List.copyOf(keys);
     }
 
     /**
@@ -491,6 +653,59 @@ public class DetectEngineService {
                 markDegraded(failure);
             }
         });
+    }
+
+    /**
+     * Rebuild engines that a scoped recovery left behind. Detection keeps
+     * serving from whatever engine was already live, so a failed rebuild used to
+     * stay failed until an operator edited a rule again; this closes that gap.
+     */
+    @Scheduled(fixedDelayString = "${socp.detect.recovery.retry-interval-ms:30000}",
+            initialDelayString = "${socp.detect.recovery.retry-initial-delay-ms:30000}")
+    void retryDegradedEngines() {
+        if (!workerRole()) return;
+        if (pendingRebuilds.isEmpty() && engineRecovery.isEmpty()
+                && recoveryStatus.get() == RecoveryStatus.READY) return;
+        rebuildRetries.incrementAndGet();
+        Set<String> keys = new java.util.LinkedHashSet<>(pendingRebuilds.keySet());
+        for (Map.Entry<String, RecoveryStatus> entry : engineRecovery.entrySet()) {
+            if (entry.getValue() != RecoveryStatus.READY) keys.add(entry.getKey());
+        }
+        com.socp.platform.tenant.context.TenantContext.runAsSystem(() -> {
+            if (recoveryStatus.get() == RecoveryStatus.DEGRADED) {
+                // The process scope failed at startup or on a full assignment
+                // rebuild; that rebuild replaces every engine, so retry it as a
+                // whole rather than one key at a time.
+                try {
+                    replaceAllEnginesFromState(assignedPartitions.get());
+                    releaseUnassignedStateLeases(assignedPartitions.get());
+                    markReady();
+                } catch (RuntimeException failure) {
+                    markDegraded(failure);
+                }
+                return;
+            }
+            for (String key : keys) {
+                String tenant = tenantOfEngineKey(key);
+                if (tenant == null) continue;
+                try {
+                    replaceTenantEngine(tenant);
+                    engineRecovery.remove(key);
+                    pendingRebuilds.remove(key);
+                    org.slf4j.LoggerFactory.getLogger(DetectEngineService.class)
+                            .info("Detection engine rebuild recovered key={}", key);
+                } catch (RuntimeException failure) {
+                    markKeysAfterFailedRebuild(List.of(key), failure);
+                }
+            }
+        });
+    }
+
+    /** Reverse of {@link #engineKey}: the tenant part of an engine key. */
+    private static String tenantOfEngineKey(String key) {
+        if (key == null) return null;
+        int marker = key.lastIndexOf("shard-");
+        return marker <= 1 ? null : key.substring(0, marker - 1);
     }
 
     private void restoreState(String tenant, RuleEngine replacement, Set<Integer> partitions, int shard) {
@@ -584,46 +799,60 @@ public class DetectEngineService {
         return assignedPartitions.get();
     }
 
+    /**
+     * Build this tenant's replacement engines, restore them from durable state,
+     * and only then swap them in.
+     *
+     * <p>Compilation happens outside the lifecycle lock so a slow rule store does
+     * not stall ingestion. Restoration happens under the write lock - after all
+     * accepted work has drained - but before the live engines are closed, so a
+     * failed rebuild leaves this tenant detecting on the engines it was already
+     * using instead of taking it down.</p>
+     */
     private void replaceTenantEngine(String tenant) {
-        String resolvedTenant = tenant == null || tenant.isBlank() ? "default" : tenant;
-        engineLifecycle.writeLock().lock();
+        String resolvedTenant = resolveTenant(tenant);
+        List<String> keys = tenantEngineKeys(resolvedTenant);
         Map<String, RuleEngine> replacements = new LinkedHashMap<>();
         try {
-            // Resolve the rules before closing the live engine so a temporary
-            // rule-store outage leaves it available. Once the replacement can
-            // be built, stop admission and drain all accepted events before
-            // reading the Journal. The new hot state therefore includes every
-            // durable completion that happened before the swap.
-            for (int shard = 0; shard < effectiveShardCount(); shard++) {
-                RuleEngine replacement = buildEngine(resolvedTenant, List.of());
-                replacements.put(engineKey(resolvedTenant, shard), replacement);
+            for (int shard = 0; shard < keys.size(); shard++) {
+                replacements.put(keys.get(shard),
+                        buildEngine(keys.get(shard), resolvedTenant, List.of(), null));
             }
-            List<String> oldKeys = engines.keySet().stream()
-                    .filter(key -> key.startsWith(resolvedTenant + "\u0000shard-"))
-                    .toList();
-            oldKeys.forEach(key -> {
-                RuleEngine old = engines.remove(key);
-                if (old != null) old.close();
-                engineLastAccess.remove(key);
-            });
-            int restoreShard = 0;
-            for (RuleEngine replacement : replacements.values()) {
-                restoreState(resolvedTenant, replacement, assignedPartitions.get(), restoreShard++);
+            engineLifecycle.writeLock().lock();
+            try {
+                // The replacement reads the Journal only after admission is
+                // closed and accepted work has drained, so its hot state
+                // includes every durable completion before the swap. Draining
+                // without closing is what keeps the live engine servable when the
+                // rebuild afterwards fails.
+                for (String key : keys) {
+                    RuleEngine live = engines.get(key);
+                    if (live == null || live.awaitIdle(reloadDrainTimeoutMs)) continue;
+                    throw new IllegalStateException("detection engine did not drain before"
+                            + " hot reload key=" + key + " budgetMs=" + reloadDrainTimeoutMs);
+                }
+                for (int shard = 0; shard < keys.size(); shard++) {
+                    restoreState(resolvedTenant, replacements.get(keys.get(shard)),
+                            assignedPartitions.get(), shard);
+                }
+                for (String key : keys) {
+                    RuleEngine old = engines.remove(key);
+                    engineLastAccess.remove(key);
+                    if (old != null) old.close();
+                }
+                replacements.forEach((key, replacement) -> {
+                    replacement.start();
+                    engines.put(key, replacement);
+                    engineLastAccess.put(key, System.currentTimeMillis());
+                });
+            } finally {
+                engineLifecycle.writeLock().unlock();
             }
-            replacements.forEach((key, replacement) -> {
-                replacement.start();
-                engines.put(key, replacement);
-                engineLastAccess.put(key, System.currentTimeMillis());
-            });
         } catch (RuntimeException failure) {
-            replacements.forEach((key, replacement) -> {
-                engines.remove(key, replacement);
-                engineLastAccess.remove(key);
-                replacement.close();
-            });
+            // Nothing was published, so only the candidates are released. The
+            // engines that were live keep serving this tenant.
+            replacements.values().forEach(RuleEngine::close);
             throw failure;
-        } finally {
-            engineLifecycle.writeLock().unlock();
         }
     }
 
@@ -635,15 +864,16 @@ public class DetectEngineService {
             engineLastAccess.clear();
             snapshotCounters.clear();
             snapshotOffsets.clear();
+            isolatedRules.clear();
             java.util.function.Consumer<List<SecurityEvent>> restoreBatch = events -> {
                 Map<String, List<SecurityEvent>> byEngine = events.stream()
                         .collect(java.util.stream.Collectors.groupingBy(event ->
                                 engineKey(event.tenantId(), shardFor(event))));
                 byEngine.forEach((key, owned) -> {
-                    String tenant = key.substring(0, key.indexOf('\u0000'));
+                    String tenant = tenantOfEngineKey(key);
                     RuleEngine engine = engines.get(key);
                     if (engine == null) {
-                        engine = buildEngine(tenant, List.of());
+                        engine = buildEngine(key, tenant, List.of(), null);
                         engines.put(key, engine);
                     }
                     engine.restore(owned);
@@ -661,8 +891,15 @@ public class DetectEngineService {
             // Other tenant/shard engines are started only when their first
             // event is admitted, avoiding an O(tenants × shards) startup storm.
             if (engines.isEmpty()) {
+                // The full-window replay above is authoritative: this engine has
+                // no journaled state at all. Say so, instead of letting a warm
+                // empty engine look like a checkpoint-restored one.
+                warmedWithoutHistory.incrementAndGet();
+                org.slf4j.LoggerFactory.getLogger(DetectEngineService.class).info(
+                        "Detection state rebuild found no journaled history; warming an empty"
+                                + " default engine partitions={}", partitions);
                 String key = engineKey("default", 0);
-                engines.put(key, buildEngine("default", List.of()));
+                engines.put(key, buildEngine(key, "default", List.of(), null));
                 engineLastAccess.put(key, System.currentTimeMillis());
             }
             engines.values().forEach(RuleEngine::start);
@@ -672,6 +909,7 @@ public class DetectEngineService {
             engineLastAccess.clear();
             snapshotCounters.clear();
             snapshotOffsets.clear();
+            isolatedRules.clear();
             throw failure;
         } finally {
             engineLifecycle.writeLock().unlock();
@@ -712,6 +950,13 @@ public class DetectEngineService {
                 engineLastAccess.remove(tenant);
                 snapshotCounters.remove(tenant);
                 snapshotOffsets.remove(tenant);
+                isolatedRules.remove(tenant);
+                if (removed == null) {
+                    // A pending rebuild for an engine that is no longer cached is
+                    // meaningless; the next event rebuilds it lazily instead.
+                    engineRecovery.remove(tenant);
+                    pendingRebuilds.remove(tenant);
+                }
                 if (removed != null) removed.close();
             }
         } finally {
@@ -757,7 +1002,7 @@ public class DetectEngineService {
         String id = String.valueOf(spec.get("id"));
         Map<String, Object> current = store.get(id);
         if (current == null) {
-            throw new IllegalArgumentException("规则不存在: " + spec.get("id"));
+            throw com.socp.platform.error.exception.ApiException.notFound("规则不存在: " + spec.get("id"));
         }
         // Preserve lifecycle status when older clients only send the legacy
         // enabled flag. Disabling a live rule is safe; promotion to ACTIVE is
@@ -780,7 +1025,9 @@ public class DetectEngineService {
     @org.springframework.transaction.annotation.Transactional
     public Map<String, Object> activateRule(String id) {
         Map<String, Object> current = store.get(id);
-        if (current == null) throw new IllegalArgumentException("rule not found " + id);
+        if (current == null) {
+            throw com.socp.platform.error.exception.ApiException.notFound("规则不存在: " + id);
+        }
         Map<String, Object> activated = new java.util.LinkedHashMap<>(current);
         activated.put("status", "ACTIVE");
         activated.put("enabled", true);
@@ -816,7 +1063,8 @@ public class DetectEngineService {
     public boolean ingest(SecurityEvent ev) {
         engineLifecycle.readLock().lock();
         try {
-            if (!workerRole() || !isReady()) return false;
+            int shard = shardFor(ev);
+            if (!workerRole() || !readyFor(ev.tenantId(), shard)) return false;
             DetectionEventClaim claim = stateStore.claim(ev);
             if (claim == DetectionEventClaim.COMPLETED || claim == DetectionEventClaim.DEAD_LETTERED) {
                 return true;
@@ -829,14 +1077,13 @@ public class DetectEngineService {
             TenantAdmission.Permit permit = admission.permit();
             RuleEngine.Submission submission;
             try {
-                RuleEngine target = engineFor(ev.tenantId(), shardFor(ev));
+                RuleEngine target = engineFor(ev.tenantId(), shard);
                 // HTTP ingestion has no Kafka position to acknowledge. The
                 // completion handler below owns its checkpoint cadence; adding
                 // a worker callback here would count every event twice.
                 submission = target.submit(ev, true);
             } catch (RuntimeException recoveryFailure) {
                 tenantAdmission.rollback(permit);
-                markDegraded(recoveryFailure);
                 if (claim == DetectionEventClaim.NEW) stateStore.remove(ev);
                 return false;
             }
@@ -887,9 +1134,11 @@ public class DetectEngineService {
                 return CompletableFuture.failedFuture(
                         new IllegalStateException("detection runtime role is " + runtimeRole));
             }
-            if (!isReady()) {
-                return CompletableFuture.failedFuture(
-                        new IllegalStateException("detection state recovery is " + recoveryStatus().name()));
+            int shard = shardFor(ev);
+            if (!readyFor(ev.requireTenantId(), shard)) {
+                return CompletableFuture.failedFuture(new IllegalStateException(
+                        "detection state recovery is "
+                                + recoveryStatusFor(ev.requireTenantId(), shard).name()));
             }
             TenantAdmission.Decision admission = admit(ev);
             if (!admission.admitted()) {
@@ -898,10 +1147,9 @@ public class DetectEngineService {
             }
             TenantAdmission.Permit permit = admission.permit();
             try {
-                RuleEngine target = engineFor(ev.tenantId(), shardFor(ev));
+                RuleEngine target = engineFor(ev.tenantId(), shard);
                 int statePartition = partition == null ? -1 : partition;
-                int stateShard = shardFor(ev);
-                Runnable ownershipGuard = durableGuardFor(statePartition, stateShard);
+                Runnable ownershipGuard = durableGuardFor(statePartition, shard);
                 Runnable durablePosition = () -> recordDurablePosition(ev, partition, offset);
                 com.socp.rule.engine.DetectionResult.InputPosition inputPosition =
                         partition == null || offset == null
@@ -918,7 +1166,6 @@ public class DetectEngineService {
                         .whenComplete((ignored, failure) -> tenantAdmission.release(permit));
             } catch (RuntimeException recoveryFailure) {
                 tenantAdmission.rollback(permit);
-                markDegraded(recoveryFailure);
                 return CompletableFuture.failedFuture(recoveryFailure);
             }
         } finally {
@@ -995,12 +1242,13 @@ public class DetectEngineService {
     private boolean enqueue(SecurityEvent ev) {
         engineLifecycle.readLock().lock();
         try {
-            if (!isReady()) return false;
+            int shard = shardFor(ev);
+            if (!readyFor(ev.tenantId(), shard)) return false;
             TenantAdmission.Decision admission = admit(ev);
             if (!admission.admitted()) return false;
             TenantAdmission.Permit permit = admission.permit();
             try {
-                RuleEngine.Submission submission = engineFor(ev.tenantId(), shardFor(ev)).submit(ev, false);
+                RuleEngine.Submission submission = engineFor(ev.tenantId(), shard).submit(ev, false);
                 if (!submission.accepted()) {
                     tenantAdmission.rollback(permit);
                     return false;
@@ -1009,7 +1257,6 @@ public class DetectEngineService {
                 return true;
             } catch (RuntimeException recoveryFailure) {
                 tenantAdmission.rollback(permit);
-                markDegraded(recoveryFailure);
                 return false;
             }
         } finally {
@@ -1023,16 +1270,19 @@ public class DetectEngineService {
 
     public Map<String, Object> stats() {
         String tenant = store.tenant();
+        String keyPrefix = tenant + "\u0000shard-";
         List<RuleEngine> tenantEngines = engines.entrySet().stream()
-                .filter(entry -> entry.getKey().startsWith(tenant + "\u0000shard-"))
+                .filter(entry -> entry.getKey().startsWith(keyPrefix))
                 .map(Map.Entry::getValue)
                 .toList();
-        if (tenantEngines.isEmpty() && workerRole() && isReady()) {
+        if (tenantEngines.isEmpty() && workerRole() && readyFor(tenant, 0)) {
             tenantEngines = List.of(engineFor(tenant, 0));
         }
         long eventCount = tenantEngines.stream().mapToLong(RuleEngine::eventCount).sum();
         long alertCount = tenantEngines.stream().mapToLong(RuleEngine::alertCount).sum();
         long dropCount = tenantEngines.stream().mapToLong(RuleEngine::dropCount).sum();
+        // Each engine counts the suppression decisions it made itself, so this
+        // sum is the tenant's real number for any shard count.
         long suppressedCount = tenantEngines.stream().mapToLong(RuleEngine::suppressedCount).sum();
         double queueLoad = tenantEngines.stream().mapToDouble(RuleEngine::queueLoad).max().orElse(0.0);
         List<Map<String, Object>> ruleStats = tenantEngines.stream()
@@ -1048,12 +1298,36 @@ public class DetectEngineService {
         m.put("suppressedCount", suppressedCount);
         m.put("queueLoad", queueLoad);
         m.put("ruleStats", ruleStats);
+        // Isolation is counted per engine key, so a tenant view must not add up
+        // another tenant's skipped rules into its own number.
+        m.put("isolatedRules", isolatedRules.entrySet().stream()
+                .filter(entry -> entry.getKey().startsWith(keyPrefix))
+                .mapToInt(Map.Entry::getValue).sum());
+        m.put("routingMismatchWindows", tenantEngines.stream()
+                .mapToLong(RuleEngine::routingMismatchWindows).sum());
+        m.put("instance", instanceId);
         m.put("assignedPartitions", assignedPartitions.get());
         m.put("pendingEvents", stateStore.pendingCount(tenant));
         Map<String, Object> recovery = new LinkedHashMap<>();
         recovery.put("status", recoveryStatus().name());
         recovery.put("ready", isReady());
         if (recoveryFailure != null) recovery.put("error", recoveryFailure);
+        // Recovery is scoped: name the engines that are not ready instead of
+        // letting one key look like a process-wide outage. Only this tenant's
+        // keys are shown; the retry counters below describe this replica.
+        Map<String, RecoveryStatus> scopes = new LinkedHashMap<>();
+        engineRecovery.forEach((key, status) -> {
+            if (key.startsWith(keyPrefix)) scopes.put(key, status);
+        });
+        Map<String, String> pending = new LinkedHashMap<>();
+        pendingRebuilds.forEach((key, reason) -> {
+            if (key.startsWith(keyPrefix)) pending.put(key, reason);
+        });
+        if (!scopes.isEmpty()) recovery.put("engineScopes", Map.copyOf(scopes));
+        if (!pending.isEmpty()) recovery.put("pendingRebuilds", Map.copyOf(pending));
+        recovery.put("scope", "replica-local");
+        recovery.put("rebuildRetries", rebuildRetries.get());
+        recovery.put("warmedWithoutHistory", warmedWithoutHistory.get());
         recovery.put("store", stateStore.getClass().getSimpleName());
         String recoveryWindow = stateStore.recoveryWindow();
         recovery.put("replayWindow", recoveryWindow == null ? "unknown" : recoveryWindow);

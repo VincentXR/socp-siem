@@ -32,6 +32,25 @@ class StatefulRuleSnapshotTest {
     }
 
     @Test
+    void restoreSkipsBlankGroupingKeysInsteadOfFailingTheWholeCheckpoint() {
+        ThresholdRule original = threshold();
+        original.accept(event("e-1", 0));
+        Map<String, Object> state = new java.util.LinkedHashMap<>(
+                StateSnapshotCodec.read(original.snapshotState()));
+        // accept() never stores a blank grouping key, so one in a checkpoint is
+        // corrupt content: it must be skipped, not built into state and not
+        // allowed to fail the restore of every other key in the same generation.
+        state.put("", state.get("host-1"));
+
+        ThresholdRule restored = threshold();
+        restored.restoreState(StateSnapshotCodec.write(state));
+
+        assertEquals(1L, ((Number) restored.stats().get("stateKeys")).longValue());
+        restored.accept(event("e-2", 1));
+        assertEquals(1, restored.drain().size(), "跳过脏键不得影响合法状态的续算");
+    }
+
+    @Test
     void ruleEngineRestoresOnlyCompatibleStatefulRules() {
         ThresholdRule rule = threshold();
         rule.accept(event("e-1", 0));

@@ -28,6 +28,7 @@ class NotifyChannelEditingTest {
         verify(dispatcher).test(original);
         verify(dispatcher, never()).dispatch(any());
         assertThatThrownBy(() -> controller.update("missing", new ChannelCreateRequest("Edited", "LOG", "local", false, "")))
-                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
+                .isInstanceOf(com.socp.platform.error.exception.ApiException.class)
+                .hasFieldOrPropertyWithValue("code", 404);
     }
 }

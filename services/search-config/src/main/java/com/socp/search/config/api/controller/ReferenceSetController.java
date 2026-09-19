@@ -6,6 +6,7 @@ import com.socp.search.config.api.request.ReferenceEntryRequest;
 import com.socp.search.config.api.request.ReferenceSetCreateRequest;
 import com.socp.search.config.persistence.store.ReferenceSetStore;
 import com.socp.platform.error.api.ApiResult;
+import com.socp.platform.error.exception.ApiException;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -50,7 +51,7 @@ public class ReferenceSetController {
     @PostMapping("/{id}/entries")
     public ApiResult<Map<String, Object>> addEntry(@PathVariable String id, @Valid @RequestBody ReferenceEntryRequest body) {
         ReferenceSet rs = store.get(id);
-        if (rs == null) return ApiResult.ok(Map.of("error", "not_found"));
+        if (rs == null) throw ApiException.notFound("未找到查找表 " + id);
         List<String> entries = new java.util.ArrayList<>(rs.entries());
         String v = body.value();
         if (!entries.contains(v)) entries.add(v);
@@ -69,18 +70,12 @@ public class ReferenceSetController {
     public ApiResult<Map<String, Object>> removeEntry(@PathVariable String id,
             @org.springframework.web.bind.annotation.RequestParam String value) {
         ReferenceSet updated = store.removeEntry(id, value);
-        if (updated == null) throw new org.springframework.web.server.ResponseStatusException(
-                org.springframework.http.HttpStatus.NOT_FOUND, "Reference set not found");
+        if (updated == null) throw ApiException.notFound("未找到查找表 " + id);
         return ApiResult.ok(Map.of("ok", true, "size", updated.entries().size()));
     }
 
     @GetMapping("/{name}/contains")
     public ApiResult<Map<String, Object>> contains(@PathVariable String name, @org.springframework.web.bind.annotation.RequestParam String value) {
         return ApiResult.ok(Map.of("name", name, "value", value, "contains", store.contains(name, value)));
-    }
-
-    private static String str(Map<String, Object> m, String k) {
-        Object v = m.get(k);
-        return v == null ? "" : String.valueOf(v);
     }
 }

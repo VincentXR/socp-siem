@@ -162,7 +162,14 @@ public class PlaybookActionHandlerRegistry {
             if (PlaybookActionStatus.EXECUTED.wireValue().equals(result.get("status"))) {
                 Map<String, Object> response = envelopeData(call.body());
                 Object failed = response.get("failed");
-                if (!(failed instanceof Number number)) {
+                if (errorSignal(response) != null) {
+                    result.put("status", PlaybookActionStatus.FAILED.wireValue());
+                    result.put("mode", "EXECUTED");
+                    result.put("verified", false);
+                    result.put("errorCode", "DOWNSTREAM_ERROR_RECEIPT");
+                    result.put("error", "notify-web returned an error signal inside a success envelope: "
+                            + errorSignal(response));
+                } else if (!(failed instanceof Number number)) {
                     result.put("status", PlaybookActionStatus.FAILED.wireValue());
                     result.put("mode", "EXECUTED");
                     result.put("verified", false);
@@ -202,7 +209,14 @@ public class PlaybookActionHandlerRegistry {
             if (PlaybookActionStatus.EXECUTED.wireValue().equals(result.get("status"))) {
                 Map<String, Object> response = envelopeData(call.body());
                 Object caseId = response.get("caseId");
-                if (!(caseId instanceof String id) || id.isBlank()) {
+                if (errorSignal(response) != null) {
+                    result.put("status", PlaybookActionStatus.FAILED.wireValue());
+                    result.put("mode", "EXECUTED");
+                    result.put("verified", false);
+                    result.put("errorCode", "DOWNSTREAM_ERROR_RECEIPT");
+                    result.put("error", "incident-web returned an error signal inside a success envelope: "
+                            + errorSignal(response));
+                } else if (!(caseId instanceof String id) || id.isBlank()) {
                     result.put("status", PlaybookActionStatus.FAILED.wireValue());
                     result.put("mode", "EXECUTED");
                     result.put("verified", false);
@@ -302,6 +316,18 @@ public class PlaybookActionHandlerRegistry {
             return payload;
         }
         return root;
+    }
+
+    /**
+     * Detects the retired dual-track shape where a downstream service reports a
+     * failure inside a code=0 envelope. Platform services now answer with a
+     * non-2xx {@code ApiResult.fail} envelope, so this only guards against a
+     * regression that would otherwise terminalize a failed action.
+     */
+    private static String errorSignal(Map<String, Object> response) {
+        Object marker = response.get("error");
+        if (marker == null) marker = response.get("not_found");
+        return marker == null ? null : String.valueOf(marker);
     }
 
     private static boolean accepted(Map<String, Object> receipt) {

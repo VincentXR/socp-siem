@@ -16,21 +16,24 @@ import org.springframework.data.domain.Pageable;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 日志源存储——本地切片用 H2 文件库（重启不丢）；生产由独立 search 库 PG 承载。
- * 对外公共 API（save/get/list/enabled/delete）保持不变，渲染器与控制器无需改动。
+ * 读出口分三层：HTTP 目录走 {@link #page}，计数走 SQL，全量 {@link #list()} 只留给
+ * 启动播种与 Vector 渲染这类内部批处理。
  */
 @Component
 @SearchRuntimeRole(SearchRuntimeRole.Role.API)
 public class LogSourceStore {
 
     private final LogSourceRepository repo;
-    private final AtomicLong revision = new AtomicLong();
+    private final Map<String, AtomicLong> revisions = new ConcurrentHashMap<>();
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public LogSourceStore(LogSourceRepository repo) {
@@ -39,7 +42,7 @@ public class LogSourceStore {
 
     public synchronized LogSource save(LogSource src) {
         repo.save(toEntity(src));
-        revision.incrementAndGet();
+        bumpRevision();
         return src;
     }
 
@@ -50,11 +53,19 @@ public class LogSourceStore {
     /** Resolve the stable tag emitted by the rendered Vector transform. */
     public Optional<LogSource> findByCollectorTag(String collectorTag) {
         if (collectorTag == null || collectorTag.isBlank()) return Optional.empty();
-        return list().stream()
-                .filter(source -> collectorTag.equals(source.collectorTag()))
-                .findFirst();
+        for (Object[] identity : repo.findIdentityProjections(tenant())) {
+            String sourceId = (String) identity[0];
+            if (collectorTag.equals(LogSource.collectorTagOf(sourceId, (String) identity[1]))) {
+                return get(sourceId);
+            }
+        }
+        return Optional.empty();
     }
 
+    /**
+     * Full tenant materialisation. Internal batch use only (bootstrap seeding and Vector
+     * rendering); HTTP handlers must use {@link #page(Pageable)} or the count projections.
+     */
     public List<LogSource> list() {
         List<LogSource> out = new ArrayList<>();
         for (LogSourceEntity e : repo.findByTenantId(tenant())) out.add(fromEntity(e));
@@ -67,22 +78,51 @@ public class LogSourceStore {
     }
 
     public List<LogSource> enabled() {
-        return list().stream().filter(LogSource::enabled).toList();
+        List<LogSource> out = new ArrayList<>();
+        for (LogSourceEntity e : repo.findByTenantIdAndEnabledTrue(tenant())) out.add(fromEntity(e));
+        return out;
+    }
+
+    /** SQL-side catalogue size; never loads rows. */
+    public long count() {
+        return repo.countByTenantId(tenant());
+    }
+
+    /** SQL-side enabled size; never loads rows. */
+    public long countEnabled() {
+        return repo.countByTenantIdAndEnabledTrue(tenant());
+    }
+
+    /** Collector tags of enabled sources, resolved without JSON deserialisation. */
+    public List<String> enabledCollectorTags() {
+        List<String> tags = new ArrayList<>();
+        for (Object[] identity : repo.findEnabledIdentityProjections(tenant())) {
+            tags.add(LogSource.collectorTagOf((String) identity[0], (String) identity[1]));
+        }
+        return List.copyOf(tags);
     }
 
     public synchronized boolean delete(String id) {
         Optional<LogSourceEntity> entity = repo.findByTenantIdAndSourceId(tenant(), id);
         if (entity.isPresent()) {
             repo.delete(entity.get());
-            revision.incrementAndGet();
+            bumpRevision();
             return true;
         }
         return false;
     }
 
-    /** Cheap in-memory change token used by the source-context cache. */
-    public long revision() {
-        return revision.get();
+    /**
+     * Change token of one tenant's catalogue. Tokens are per tenant on purpose: a shared
+     * counter let one tenant's write flush every other tenant's source/pipeline cache.
+     */
+    public long revision(String tenantId) {
+        AtomicLong token = tenantId == null ? null : revisions.get(tenantId);
+        return token == null ? 0L : token.get();
+    }
+
+    private void bumpRevision() {
+        revisions.computeIfAbsent(tenant(), ignored -> new AtomicLong()).incrementAndGet();
     }
 
     // ---- 互转 ----

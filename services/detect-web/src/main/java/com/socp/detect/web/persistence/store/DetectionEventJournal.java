@@ -32,7 +32,10 @@ import java.util.function.Consumer;
  *
  * <p>Only COMPLETED events rebuild hot rule windows. PENDING rows are replayed
  * as live work after a restart/rebalance, while DEAD_LETTERED rows are
- * terminal and never silently re-enter the detection engine.</p>
+ * terminal and never silently re-enter the detection engine. The two terminal
+ * states are mutually exclusive: neither overwrites the other, so a late
+ * dead-letter receipt cannot undo a durable completion and a completion cannot
+ * undo recorded dead-letter evidence.</p>
  */
 @Component
 public class DetectionEventJournal implements DetectionStateStore {
@@ -183,6 +186,13 @@ public class DetectionEventJournal implements DetectionStateStore {
     public void markDeadLettered(String tenantId, String eventId, String reason) {
         if (eventId == null || eventId.isBlank()) return;
         repository.findByTenantIdAndSourceEventId(tenantId, eventId).ifPresent(row -> {
+            if (DetectionEventStatus.COMPLETED.name().equals(row.getStatus())) {
+                // Completion is the durable receipt of every required write for
+                // this event. A late hand-off - possibly from a replica that lost
+                // the partition - must never re-terminalise it as a failure.
+                log.info("Detection dead-letter receipt skipped for completed eventId={}", eventId);
+                return;
+            }
             Instant now = Instant.now();
             row.setStatus(DetectionEventStatus.DEAD_LETTERED.name());
             row.setDeadLetteredAt(now);

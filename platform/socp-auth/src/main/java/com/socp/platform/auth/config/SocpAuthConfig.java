@@ -11,6 +11,11 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
  * 注册鉴权拦截器，跳过 actuator / 健康检查等无需鉴权的路径。
  * 业务服务把 com.socp.platform 纳入 scanBasePackages 即可启用机机/人机鉴权（见 §3 横切机制）。
  *
+ * <p>注意 MVC 拦截器只覆盖 Spring 自己创建的映射，actuator 端点由独立的
+ * HandlerMapping 应答，因此那条路径由 servlet Filter 版本的同规则守卫
+ * {@link com.socp.platform.auth.security.ActuatorAuthFilter} 负责；两者是双轨，
+ * 缺一不可，健康检查仍然公开。</p>
+ *
  * 注意：AuthInterceptor 需要注入 JwtValidator，不能再 new 出来，必须用容器里的 Bean。
  */
 @Configuration

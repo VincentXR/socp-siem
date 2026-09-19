@@ -2,6 +2,24 @@
 # rehearsal. It is not an HA substitute for the Kubernetes baseline.
 # Every application image and secret is required from the environment; there
 # are deliberately no development fallbacks in this file.
+#
+# Two conventions keep this file honest, and both are machine-checked:
+#   - Every application block spells out its complete environment. Compose
+#     merges `environment` key by key, so anything a shared anchor would hide
+#     from a reader is also hidden from the per-service assertions in
+#     build/verify-production.py and build/verify-prod-compose.py. ProdGuard
+#     rejects the boot of any servlet service missing the ratelimit/audit pair,
+#     and the services that read Redis cannot reach it through a container
+#     localhost, so the Redis wiring is part of the required set.
+#   - Middleware blocks restate the keys whose development value must not ride
+#     in through that same merge. Compose replaces `command` wholesale but
+#     appends `ports`, so narrowing a published port here is impossible;
+#     off-host reachability is an environment-owned firewall decision.
+#
+# This file defines no healthcheck for the application services: the runtime
+# image (deploy/docker/Dockerfile.jvm) ships no HTTP client, so a probe would
+# fail open. Readiness/liveness orchestration belongs to deploy/helm/socp-core
+# and executable boot evidence to build/verify-prod-boot.py.
 
 services:
   postgres:
@@ -13,12 +31,53 @@ services:
       SOCP_PG_MIGRATION_PASSWORD: ${SOCP_PG_MIGRATION_PASSWORD:?set SOCP_PG_MIGRATION_PASSWORD}
 
   kafka:
+    # Declared rather than inherited. The development broker answers on a second
+    # unauthenticated PLAINTEXT_KIND listener (29092) whose advertised name is
+    # in-cluster DNS; this rehearsal must not keep that binding. Only 9092 (in
+    # network) and the controller port stay open. There is no SASL/TLS listener
+    # here at all: Kafka in this file is a single-broker lab broker, while
+    # broker topology, replication and transport security belong to the
+    # managed cluster the real baseline points at
+    # (docs/production-readiness.md).
     environment:
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      # Off: every topic the event path needs is provisioned explicitly by
+      # infra/init-sql/kafka/create-topics.sh (main chain plus each <topic>-dlq
+      # the consumers derive in code). Lazy creation would let a typo or a
+      # missing DLQ look like a healthy broker; with auto-create off, a missing
+      # topic fails the producer or the dead-letter hand-off loudly instead.
+      # This overlay has no provisioning step, so the runbook must run that
+      # script once against the broker before the first application boot.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      # Single-broker floor, not a durability choice: a replication factor above
+      # the broker count makes __consumer_offsets, the transaction log and
+      # auto-created topics impossible to create at all.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
 
   opensearch:
     environment:
       OPENSEARCH_INITIAL_ADMIN_PASSWORD: ${SOCP_OPENSEARCH_PASSWORD:?set SOCP_OPENSEARCH_PASSWORD}
+
+  # Same instance as in development, hardened: the correctness keys it holds
+  # (service replay nonces, revoked sessions, the shared limiter budget) must be
+  # both non-evictable and unreachable without a credential. Eviction is not an
+  # error - SETNX simply succeeds again - so the development allkeys policy
+  # would silently accept a replayed signature or a logged-out session, and the
+  # missing password let anything that could reach the published 6379 delete a
+  # revocation entry. noeviction plus requirepass makes both loud.
+  redis:
+    environment:
+      REDIS_PASSWORD: ${SOCP_REDIS_PASSWORD:?set SOCP_REDIS_PASSWORD}
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "192mb", "--maxmemory-policy", "noeviction", "--requirepass", "${SOCP_REDIS_PASSWORD:?set SOCP_REDIS_PASSWORD}"]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   api-gateway:
     image: ${SOCP_API_GATEWAY_IMAGE:?set SOCP_API_GATEWAY_IMAGE to an image@sha256:digest}
@@ -40,8 +99,19 @@ services:
       SOCP_AUDIT_FAIL_CLOSED: "true"
       SOCP_TENANT_RLS_ENABLED: "true"
       SOCP_AUTH_COOKIE_SECURE: "true"
+      # The gateway keeps its own limiter, replay-nonce, revocation and OIDC
+      # state stores. With backend=memory, or with a Redis address it cannot
+      # reach, brute-force thresholds become per-replica counters and logout
+      # only works on the replica that served the request; this release runs
+      # two replicas. SPRING_DATA_REDIS_HOST is the Compose service name
+      # because a container's localhost is the container itself.
       SOCP_RATELIMIT_BACKEND: redis
       SOCP_RATELIMIT_FAIL_CLOSED: "true"
+      SOCP_AUTH_REVOCATION_BACKEND: redis
+      SOCP_OIDC_STATE_BACKEND: redis
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      SPRING_DATA_REDIS_PASSWORD: ${SOCP_REDIS_PASSWORD:?set SOCP_REDIS_PASSWORD}
       SOCP_SSA_URI: http://alert-web:8080
       SOCP_GLS_URI: http://search-config-api:8080
       SOCP_GAS_WEB_URI: http://detect-web-api:8080
@@ -49,7 +119,7 @@ services:
     ports:
       - "${SOCP_GATEWAY_BIND:-127.0.0.1:18092}:8080"
     networks: [socp]
-    depends_on: [postgres, kafka, opensearch, alert-web, search-config-api, detect-web-api, detect-web-worker]
+    depends_on: [postgres, kafka, opensearch, redis, alert-web, search-config-api, detect-web-api, detect-web-worker]
 
   search-config-api:
     image: ${SOCP_SEARCH_CONFIG_IMAGE:?set SOCP_SEARCH_CONFIG_IMAGE to an image@sha256:digest}
@@ -85,8 +155,16 @@ services:
       SOCP_VECTOR_TOKEN: ${SOCP_VECTOR_TOKEN:?set SOCP_VECTOR_TOKEN}
       SOCP_ALLOW_GLOBAL_INGEST_TOKEN: "false"
       SOCP_TENANT_RLS_ENABLED: "true"
+      # ProdGuard rejects a process-local limiter in prod, and the service nonce
+      # store that replays-proof guards signed calls is only shared on Redis.
+      # Without the host, a container cannot reach the Redis service at all.
+      SOCP_RATELIMIT_BACKEND: redis
+      SOCP_RATELIMIT_FAIL_CLOSED: "true"
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      SPRING_DATA_REDIS_PASSWORD: ${SOCP_REDIS_PASSWORD:?set SOCP_REDIS_PASSWORD}
     networks: [socp]
-    depends_on: [postgres, kafka, opensearch, detect-web-api]
+    depends_on: [postgres, kafka, opensearch, redis, detect-web-api]
 
   # The API and the continuous delivery/indexing loops intentionally use the
   # same image but separate processes. Restarting management/query traffic no
@@ -120,8 +198,20 @@ services:
       SOCP_OPENSEARCH_PASSWORD: ${SOCP_OPENSEARCH_PASSWORD:?set SOCP_OPENSEARCH_PASSWORD}
       SOCP_OPENSEARCH_INSECURE_SKIP_VERIFY: "false"
       SOCP_TENANT_RLS_ENABLED: "true"
+      # ProdGuard keys the collector-identity rules on spring.application.name,
+      # and this process shares it with the API. Omitting this set is why the
+      # worker used to be unbootable even after the limiter keys were added.
+      SOCP_COLLECTOR_CREDENTIALS: ${SOCP_COLLECTOR_CREDENTIALS:?set SOCP_COLLECTOR_CREDENTIALS}
+      SOCP_INGEST_TOKEN: ${SOCP_INGEST_TOKEN:?set SOCP_INGEST_TOKEN}
+      SOCP_VECTOR_TOKEN: ${SOCP_VECTOR_TOKEN:?set SOCP_VECTOR_TOKEN}
+      SOCP_ALLOW_GLOBAL_INGEST_TOKEN: "false"
+      SOCP_RATELIMIT_BACKEND: redis
+      SOCP_RATELIMIT_FAIL_CLOSED: "true"
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      SPRING_DATA_REDIS_PASSWORD: ${SOCP_REDIS_PASSWORD:?set SOCP_REDIS_PASSWORD}
     networks: [socp]
-    depends_on: [postgres, kafka, opensearch]
+    depends_on: [postgres, kafka, opensearch, redis]
 
   # Detection management/ingress APIs have their own lifecycle. The worker
   # owns Kafka partitions, rule-change invalidation and Alert Outbox delivery;
@@ -154,8 +244,13 @@ services:
       SOCP_KAFKA_GROUP_ID: socp-detect
       SOCP_ALERT_URL: http://alert-web:8080
       SOCP_TENANT_RLS_ENABLED: "true"
+      SOCP_RATELIMIT_BACKEND: redis
+      SOCP_RATELIMIT_FAIL_CLOSED: "true"
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      SPRING_DATA_REDIS_PASSWORD: ${SOCP_REDIS_PASSWORD:?set SOCP_REDIS_PASSWORD}
     networks: [socp]
-    depends_on: [postgres]
+    depends_on: [postgres, redis]
 
   detect-web-worker:
     image: ${SOCP_DETECT_WEB_IMAGE:?set SOCP_DETECT_WEB_IMAGE to an image@sha256:digest}
@@ -185,8 +280,13 @@ services:
       SOCP_AUDIT_FAIL_CLOSED: "true"
       SOCP_ALERT_URL: http://alert-web:8080
       SOCP_TENANT_RLS_ENABLED: "true"
+      SOCP_RATELIMIT_BACKEND: redis
+      SOCP_RATELIMIT_FAIL_CLOSED: "true"
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      SPRING_DATA_REDIS_PASSWORD: ${SOCP_REDIS_PASSWORD:?set SOCP_REDIS_PASSWORD}
     networks: [socp]
-    depends_on: [postgres, kafka, alert-web]
+    depends_on: [postgres, kafka, redis, alert-web]
 
   alert-web:
     image: ${SOCP_ALERT_WEB_IMAGE:?set SOCP_ALERT_WEB_IMAGE to an image@sha256:digest}
@@ -215,5 +315,10 @@ services:
       SOCP_AUDIT_SINK: kafka
       SOCP_AUDIT_FAIL_CLOSED: "true"
       SOCP_TENANT_RLS_ENABLED: "true"
+      SOCP_RATELIMIT_BACKEND: redis
+      SOCP_RATELIMIT_FAIL_CLOSED: "true"
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      SPRING_DATA_REDIS_PASSWORD: ${SOCP_REDIS_PASSWORD:?set SOCP_REDIS_PASSWORD}
     networks: [socp]
-    depends_on: [postgres, kafka, clickhouse]
+    depends_on: [postgres, kafka, clickhouse, redis]

@@ -19,7 +19,8 @@ class HealthControllerTest {
 
         var result = new HealthController(health).health();
 
-        assertThat(result.data()).containsExactlyInAnyOrderEntriesOf(
+        assertThat(result.getStatusCodeValue()).isEqualTo(200);
+        assertThat(result.getBody().data()).containsExactlyInAnyOrderEntriesOf(
                 Map.of("service", "detect-web", "status", "UP"));
     }
 
@@ -33,7 +34,9 @@ class HealthControllerTest {
 
         var result = new HealthController(health, detection).health();
 
-        assertThat(result.data()).containsEntry("status", "DEGRADED")
+        // Degraded detection is not available traffic, so the probe must fail closed.
+        assertThat(result.getStatusCodeValue()).isEqualTo(503);
+        assertThat(result.getBody().data()).containsEntry("status", "DEGRADED")
                 .containsEntry("detectionRecovery", "DEGRADED")
                 .containsEntry("detectionReady", false);
     }

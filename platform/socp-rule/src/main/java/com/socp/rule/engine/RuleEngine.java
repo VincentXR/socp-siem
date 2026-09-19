@@ -3,6 +3,7 @@ package com.socp.rule.engine;
 import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
+import com.socp.rule.partition.DetectionRoutingKey;
 import com.socp.rule.rules.Rule;
 import com.socp.rule.state.StatefulRule;
 import org.slf4j.Logger;
@@ -34,6 +35,9 @@ public final class RuleEngine implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(RuleEngine.class);
     private static final SecurityEvent POISON_EVENT = new SecurityEvent(
             Instant.EPOCH, "POISON", "POISON", "POISON", Map.of(), Severity.INFO);
+    /** Ordered marker that completes when every earlier accepted event has finished. */
+    private static final SecurityEvent IDLE_BARRIER_EVENT = new SecurityEvent(
+            Instant.EPOCH, "IDLE_BARRIER", "IDLE_BARRIER", "IDLE_BARRIER", Map.of(), Severity.INFO);
 
     private final AtomicReference<List<Rule>> rulesRef;
     private final List<AlertSink> sinks;
@@ -51,6 +55,17 @@ public final class RuleEngine implements AutoCloseable {
     private final AtomicLong eventCount = new AtomicLong();
     private final AtomicLong alertCount = new AtomicLong();
     private final AtomicLong dropCount = new AtomicLong();
+    /**
+     * Alerts this engine decided to suppress. The shared {@link Suppressor}
+     * keeps a process-wide total, which cannot be attributed to a tenant or a
+     * shard, so each engine counts its own decisions for statistics.
+     */
+    private final AtomicLong suppressedCount = new AtomicLong();
+    private final AtomicLong routingMismatchWindows = new AtomicLong();
+    /** Declared grouping dimension per rule; makes partition-locality observable. */
+    private final Map<String, RoutingDimension> routingDimensions;
+    private final Map<String, RoutingMismatchState> routingMismatches =
+            new java.util.concurrent.ConcurrentHashMap<>();
     /** Serializes rule mutation, durable position callbacks, and snapshots. */
     private final Object stateLock = new Object();
     private static final int RULE_FAILURE_THRESHOLD = Math.max(1,
@@ -60,6 +75,13 @@ public final class RuleEngine implements AutoCloseable {
 
     /** Immediate queue admission plus an optional durable completion signal. */
     public record Submission(boolean accepted, CompletableFuture<Void> completion) {
+    }
+
+    /**
+     * The event dimension a rule groups its state on, plus the cadence its
+     * routing diagnostic may report at (normally one rule window).
+     */
+    public record RoutingDimension(String declaredField, long reportIntervalSeconds) {
     }
 
     private record WorkItem(SecurityEvent event, CompletableFuture<Void> completion,
@@ -104,6 +126,19 @@ public final class RuleEngine implements AutoCloseable {
     public RuleEngine(List<Rule> rules, List<AlertSink> sinks, Suppressor suppressor,
                       RuleProcessingObserver observer, RuleExecutionScope executionScope,
                       Runnable durableCommitGuard, Map<String, String> stateCompatibilityVersions) {
+        this(rules, sinks, suppressor, observer, executionScope, durableCommitGuard,
+                stateCompatibilityVersions, Map.of());
+    }
+
+    /**
+     * Create an engine that also knows each rule's declared grouping dimension.
+     * The engine compares it with the dimension the event actually routes on so
+     * a partial-state rule is observable instead of only documented.
+     */
+    public RuleEngine(List<Rule> rules, List<AlertSink> sinks, Suppressor suppressor,
+                      RuleProcessingObserver observer, RuleExecutionScope executionScope,
+                      Runnable durableCommitGuard, Map<String, String> stateCompatibilityVersions,
+                      Map<String, RoutingDimension> routingDimensions) {
         this.rulesRef = new AtomicReference<>(List.copyOf(rules));
         this.sinks = List.copyOf(sinks);
         this.suppressor = suppressor;
@@ -112,6 +147,7 @@ public final class RuleEngine implements AutoCloseable {
         this.durableCommitGuard = durableCommitGuard;
         this.stateCompatibilityVersions = stateCompatibilityVersions == null
                 ? Map.of() : Map.copyOf(stateCompatibilityVersions);
+        this.routingDimensions = routingDimensions == null ? Map.of() : Map.copyOf(routingDimensions);
     }
 
     public void start() {
@@ -145,6 +181,10 @@ public final class RuleEngine implements AutoCloseable {
             try {
                 WorkItem item = queue.take();
                 if (item.event() == POISON_EVENT) break;
+                if (item.event() == IDLE_BARRIER_EVENT) {
+                    if (item.completion() != null) item.completion().complete(null);
+                    continue;
+                }
                 try {
                     process(item);
                     if (item.completion() != null) item.completion().complete(null);
@@ -177,6 +217,10 @@ public final class RuleEngine implements AutoCloseable {
                 // therefore never capture rule bytes ahead of its watermark.
                 if (item.onDurable() != null) item.onDurable().run();
             } catch (RuntimeException | Error failure) {
+                // Candidate alerts are not covered by the serialized state
+                // snapshot. Without this drain, an alert a rule emitted before
+                // it failed would be delivered against the next event.
+                discardPendingAlerts();
                 if (item.durable() && !before.isEmpty()) {
                     try {
                         restoreMutableStates(before);
@@ -191,9 +235,22 @@ public final class RuleEngine implements AutoCloseable {
         }
     }
 
+    /** Discard every candidate alert accumulated since the last drain. */
+    private void discardPendingAlerts() {
+        for (Rule rule : rulesRef.get()) {
+            try {
+                rule.drain();
+            } catch (RuntimeException drainFailure) {
+                log.warn("Unable to discard candidate alerts ruleId={}: {}",
+                        rule.id(), drainFailure.getMessage());
+            }
+        }
+    }
+
     private void processInScope(WorkItem item, SecurityEvent event,
                                 Map<StatefulRule, byte[]> before) {
         eventCount.incrementAndGet();
+        observeRoutingDimensions(event);
         List<Rule> rules = rulesRef.get();
         for (Rule rule : rules) {
             if (ruleCircuitOpen(rule)) {
@@ -207,6 +264,7 @@ public final class RuleEngine implements AutoCloseable {
         for (Rule rule : rules) candidates.addAll(rule.drain());
         try (Suppressor.Batch batch = suppressor == null ? null : suppressor.begin(candidates)) {
             List<Alert> emitted = batch == null ? List.copyOf(candidates) : batch.alerts();
+            suppressedCount.addAndGet(Math.max(0, candidates.size() - emitted.size()));
             notifyEvaluationCompleted(event, emitted.size());
             DetectionResult result = new DetectionResult(
                     event,
@@ -296,6 +354,64 @@ public final class RuleEngine implements AutoCloseable {
                 return;
             }
             throw failure;
+        }
+    }
+
+    /**
+     * Report a rule whose declared grouping dimension is not the dimension this
+     * event routes on, so the state it accumulates is only a fragment of the
+     * entity's history. The check costs one routing resolution per event and is
+     * reported at most once per rule per rule window, which keeps it usable on
+     * the event path without bounding alert volume.
+     */
+    private void observeRoutingDimensions(SecurityEvent event) {
+        if (routingDimensions.isEmpty()) return;
+        String eventField = null;
+        for (Map.Entry<String, RoutingDimension> declared : routingDimensions.entrySet()) {
+            RoutingDimension dimension = declared.getValue();
+            if (dimension == null || dimension.declaredField() == null
+                    || dimension.declaredField().isBlank()) continue;
+            if (DetectionRoutingKey.isPartitionLocal(event, dimension.declaredField())) continue;
+            if (eventField == null) {
+                eventField = DetectionRoutingKey.field(event.source(), event.host(), event.fields());
+            }
+            RoutingMismatchState state = routingMismatches.computeIfAbsent(
+                    declared.getKey(), ignored -> new RoutingMismatchState());
+            if (!state.windowElapsed(dimension.reportIntervalSeconds())) continue;
+            routingMismatchWindows.incrementAndGet();
+            log.warn("Detection rule state is not partition-local ruleId={} declaredGrouping={} "
+                            + "eventRoutingField={} eventId={}",
+                    declared.getKey(), dimension.declaredField(), eventField, event.id());
+            notifyRoutingMismatch(event, declared.getKey(), dimension.declaredField(), eventField);
+        }
+    }
+
+    private void notifyRoutingMismatch(SecurityEvent event, String ruleId,
+                                       String declaredField, String eventField) {
+        try {
+            observer.routingMismatched(event, ruleId, declaredField, eventField);
+        } catch (RuntimeException metricsFailure) {
+            log.debug("Rule processing observer failed at routing diagnostic: {}",
+                    metricsFailure.getMessage());
+        }
+    }
+
+    private static final class RoutingMismatchState {
+        private long lastReportNanos;
+        private long reports;
+
+        /** True once per reporting interval; a window without this event stays quiet. */
+        private synchronized boolean windowElapsed(long reportIntervalSeconds) {
+            long now = System.nanoTime();
+            long interval = TimeUnit.SECONDS.toNanos(Math.max(1L, reportIntervalSeconds));
+            if (lastReportNanos != 0L && now - lastReportNanos < interval) return false;
+            lastReportNanos = now;
+            reports++;
+            return true;
+        }
+
+        private synchronized long reports() {
+            return reports;
         }
     }
 
@@ -458,6 +574,43 @@ public final class RuleEngine implements AutoCloseable {
         return cap == 0 ? 0.0 : (double) queue.size() / cap;
     }
 
+    /**
+     * Wait until every event accepted before this call has finished, leaving the
+     * engine open to new work. A hot reload drains the live engine with this
+     * before it reads the durable journal, so the replacement cannot miss a
+     * completion that was still in flight - and unlike {@link #close()} the
+     * engine survives a failed rebuild instead of taking the tenant down.
+     *
+     * @return true when the engine reached an idle point within the budget
+     */
+    public boolean awaitIdle(long timeoutMs) {
+        if (!running) return true;
+        long budget = Math.max(1L, timeoutMs);
+        CompletableFuture<Void> barrier = new CompletableFuture<>();
+        lifecycle.readLock().lock();
+        try {
+            if (!running) return true;
+            WorkItem item = new WorkItem(IDLE_BARRIER_EVENT, barrier, false, null, null,
+                    DetectionResult.InputPosition.unknown());
+            if (!queue.offer(item, budget, TimeUnit.MILLISECONDS)) {
+                log.warn("Detection engine is saturated; unable to schedule an idle barrier");
+                return false;
+            }
+        } catch (InterruptedException interruption) {
+            Thread.currentThread().interrupt();
+            return false;
+        } finally {
+            lifecycle.readLock().unlock();
+        }
+        try {
+            barrier.get(budget, TimeUnit.MILLISECONDS);
+            return true;
+        } catch (Exception incomplete) {
+            log.warn("Detection engine did not drain within {} ms: {}", budget, incomplete.getMessage());
+            return false;
+        }
+    }
+
     public void close() {
         boolean interrupted = false;
         lifecycle.writeLock().lock();
@@ -502,6 +655,7 @@ public final class RuleEngine implements AutoCloseable {
         synchronized (stateLock) {
             List<Rule> old = rulesRef.getAndSet(replacement);
             ruleCircuits.clear();
+            routingMismatches.clear();
             old.forEach(Rule::close);
             log.info("Detection rules reloaded count={}", replacement.size());
         }
@@ -515,6 +669,12 @@ public final class RuleEngine implements AutoCloseable {
             else {
                 stats.put("ruleFailures", 0L);
                 stats.put("ruleCircuit", "CLOSED");
+            }
+            RoutingDimension dimension = routingDimensions.get(rule.id());
+            if (dimension != null) {
+                stats.put("routingField", dimension.declaredField());
+                RoutingMismatchState mismatch = routingMismatches.get(rule.id());
+                stats.put("routingMismatchWindows", mismatch == null ? 0L : mismatch.reports());
             }
             return stats;
         }).toList();
@@ -659,7 +819,17 @@ public final class RuleEngine implements AutoCloseable {
         return dropCount.get();
     }
 
+    /**
+     * Alerts suppressed by this engine's own decisions. Safe to sum across the
+     * engines of a tenant because it is instance state, unlike the process-wide
+     * total kept inside the shared {@link Suppressor}.
+     */
     public long suppressedCount() {
-        return suppressor == null ? 0 : suppressor.suppressed();
+        return suppressedCount.get();
+    }
+
+    /** Routing diagnostics this engine reported; at most one per rule window. */
+    public long routingMismatchWindows() {
+        return routingMismatchWindows.get();
     }
 }

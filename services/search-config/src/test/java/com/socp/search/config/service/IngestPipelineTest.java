@@ -35,9 +35,9 @@ class IngestPipelineTest {
         IngestTaskMonitor monitor = mock(IngestTaskMonitor.class);
         SearchEvent first = event("event-1");
         SearchEvent second = event("event-2");
-        when(normalizer.normalize("one", "collector-1"))
+        when(normalizer.normalize(eq("one"), eq("collector-1"), any(), any()))
                 .thenReturn(new IngestEventNormalizer.NormalizedEvent(first, Map.of("eventId", "event-1"), "collector-1"));
-        when(normalizer.normalize("two", "collector-1"))
+        when(normalizer.normalize(eq("two"), eq("collector-1"), any(), any()))
                 .thenReturn(new IngestEventNormalizer.NormalizedEvent(second, Map.of("eventId", "event-2"), "collector-1"));
         when(monitor.runtime("collector-1", true)).thenReturn(Map.of("eps1m", 2.0));
         IngestPipeline pipeline = new IngestPipeline(normalizer, commit, monitor,
@@ -57,7 +57,7 @@ class IngestPipelineTest {
         IngestionCommitService commit = mock(IngestionCommitService.class);
         IngestTaskMonitor monitor = mock(IngestTaskMonitor.class);
         when(monitor.runtime("collector-1", true)).thenReturn(Map.of("eps1m", 0.0));
-        when(normalizer.normalize(anyString(), eq("collector-1")))
+        when(normalizer.normalize(anyString(), eq("collector-1"), any(), any()))
                 .thenAnswer(invocation -> {
                     String line = invocation.getArgument(0, String.class);
                     return new IngestEventNormalizer.NormalizedEvent(
@@ -89,7 +89,7 @@ class IngestPipelineTest {
         IngestEventNormalizer normalizer = mock(IngestEventNormalizer.class);
         IngestionCommitService commit = mock(IngestionCommitService.class);
         IngestTaskMonitor monitor = mock(IngestTaskMonitor.class);
-        when(normalizer.normalize("event", "collector-1"))
+        when(normalizer.normalize(eq("event"), eq("collector-1"), any(), any()))
                 .thenThrow(new IllegalStateException("source database unavailable"));
         when(monitor.runtime("collector-1", true)).thenReturn(Map.of("eps1m", 0.0));
         IngestPipeline pipeline = new IngestPipeline(normalizer, commit, monitor,
@@ -107,7 +107,7 @@ class IngestPipelineTest {
         IngestEventNormalizer normalizer = mock(IngestEventNormalizer.class);
         IngestionCommitService commit = mock(IngestionCommitService.class);
         IngestTaskMonitor monitor = mock(IngestTaskMonitor.class);
-        when(normalizer.normalize("event", "collector-1"))
+        when(normalizer.normalize(eq("event"), eq("collector-1"), any(), any()))
                 .thenThrow(new IngestParseException("event contains too many fields"));
         when(monitor.runtime("collector-1", true)).thenReturn(Map.of("eps1m", 0.0));
         IngestPipeline pipeline = new IngestPipeline(normalizer, commit, monitor,
@@ -126,7 +126,7 @@ class IngestPipelineTest {
         IngestionCommitService commit = mock(IngestionCommitService.class);
         IngestTaskMonitor monitor = mock(IngestTaskMonitor.class);
         when(monitor.runtime("collector-1", true)).thenReturn(Map.of("eps1m", 0.0));
-        when(normalizer.normalize(anyString(), eq("collector-1"), anyString()))
+        when(normalizer.normalize(anyString(), eq("collector-1"), anyString(), any()))
                 .thenAnswer(invocation -> {
                     String line = invocation.getArgument(0, String.class);
                     return new IngestEventNormalizer.NormalizedEvent(
@@ -139,7 +139,7 @@ class IngestPipelineTest {
         pipeline.process("different", "collector-1", "request-1");
 
         org.mockito.ArgumentCaptor<String> identities = org.mockito.ArgumentCaptor.forClass(String.class);
-        verify(normalizer, times(2)).normalize(anyString(), eq("collector-1"), identities.capture());
+        verify(normalizer, times(2)).normalize(anyString(), eq("collector-1"), identities.capture(), any());
         assertNotEquals(identities.getAllValues().get(0), identities.getAllValues().get(1));
     }
 

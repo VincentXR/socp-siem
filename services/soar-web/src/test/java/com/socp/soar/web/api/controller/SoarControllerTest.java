@@ -278,14 +278,17 @@ class SoarControllerTest {
     }
 
     @Test
-    void approverRoleCanReachApprovalReadApiWithoutAdminRoleGate() throws Exception {
+    void unissuableApproverRoleIsRejectedOnApprovalReadApi() throws Exception {
         given(service.listApprovals()).willReturn(List.of(Map.of("id", "appr-2", "status", "PENDING")));
 
+        // "approver" has no session issuance path; approval authority is admin
+        // plus an explicit permissions claim, so the built-in default must not
+        // grant the approval read API (see Permission.roleDefaults).
         mvc.perform(get("/api/approvals")
                         .header(HttpHeaders.AUTHORIZATION, BEARER)
                         .header("X-Role", "approver"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].id").value("appr-2"));
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
     }
 
     @Test

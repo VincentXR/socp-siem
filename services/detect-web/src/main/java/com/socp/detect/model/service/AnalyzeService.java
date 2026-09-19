@@ -12,6 +12,7 @@ import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.rule.rules.Rule;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -29,7 +30,18 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-/** Tenant-scoped secondary alert analysis backed by a durable projection. */
+/**
+ * Tenant-scoped secondary alert analysis backed by a durable projection.
+ *
+ * <p>Scope contract: {@code t_analyzed} and the analysis receipt are durable and
+ * shared, but storm collapsing and the five-minute window are this process's own
+ * counters. With more than one worker replica the storm threshold therefore
+ * applies per replica, and {@code /window} and {@code /stats} answer with the
+ * replica that served the request. Responses carry the instance id so a reader
+ * cannot mistake a replica view for a cluster view; making these judgments
+ * cluster-wide requires routing alarms by a stable storm key or moving the
+ * counters into shared storage.</p>
+ */
 @Service
 @DetectRuntimeRole(DetectRuntimeRole.Role.WORKER)
 public class AnalyzeService {
@@ -42,6 +54,7 @@ public class AnalyzeService {
     private final Map<String, TenantRules> rulesByTenant = new ConcurrentHashMap<>();
     private final AlertWindowAggregator windowAggregator;
     private final AnalysisReceiptStore receiptStore;
+    private final MeterRegistry meterRegistry;
     private final java.util.concurrent.locks.ReentrantReadWriteLock ruleStateLifecycle =
             new java.util.concurrent.locks.ReentrantReadWriteLock(true);
 
@@ -57,19 +70,37 @@ public class AnalyzeService {
     @Value("${socp.detect.model.storm-counter-max-entries:100000}")
     private int maxStormCounterEntries = 100_000;
 
+    /**
+     * Alerts per (tenant, rule, entity) per minute this replica may emit before
+     * it starts collapsing the rest. The counter is replica-local, so with more
+     * than one worker the effective cluster-wide threshold is this value times
+     * the number of replicas sharing the alarm topic.
+     */
+    @Value("${socp.detect.model.storm-suppression-threshold:50}")
+    private long stormSuppressionThreshold = 50L;
+
+    @Value("${socp.detect.instance-id:unknown}")
+    private String instanceId = "unknown";
+
     @Value("${socp.detect.model.analyzer-version:v1}")
     private String analyzerVersion = "v1";
 
     public AnalyzeService(AnalyzedRepository repository, AlertWindowAggregator windowAggregator) {
-        this(repository, windowAggregator, new AnalysisReceiptStore());
+        this(repository, windowAggregator, new AnalysisReceiptStore(), null);
+    }
+
+    public AnalyzeService(AnalyzedRepository repository, AlertWindowAggregator windowAggregator,
+                          AnalysisReceiptStore receiptStore) {
+        this(repository, windowAggregator, receiptStore, null);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
     public AnalyzeService(AnalyzedRepository repository, AlertWindowAggregator windowAggregator,
-                          AnalysisReceiptStore receiptStore) {
+                          AnalysisReceiptStore receiptStore, MeterRegistry meterRegistry) {
         this.repository = repository;
         this.windowAggregator = windowAggregator;
         this.receiptStore = receiptStore;
+        this.meterRegistry = meterRegistry;
     }
 
     @Transactional(transactionManager = "secondaryAnalysisTransactionManager")
@@ -103,7 +134,7 @@ public class AnalyzeService {
                 .getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
         SecurityEvent event = new SecurityEvent(eventId, eventTimestamp(alarm), source, entity, message, fields, severity);
 
-        // 告警风暴智能抑制：同实体同规则在一分钟内超出 50 次时启动收敛
+        // 告警风暴智能抑制：同实体同规则在本副本一分钟内超出可配阈值时启动收敛
         long minute = System.currentTimeMillis() / 60_000;
         String stormKey = tenant + "\u0000" + ruleId + "\u0000" + entity;
         StormCounter counter = stormCounters.compute(stormKey, (key, current) ->
@@ -111,21 +142,42 @@ public class AnalyzeService {
                         ? new StormCounter(minute, 1)
                         : new StormCounter(minute, current.count + 1));
         long count = counter.count;
-        boolean suppressed = count > 50;
+        boolean suppressed = count > Math.max(1L, stormSuppressionThreshold);
 
         List<Alert> alerts = evaluateRules(tenant, event);
+        int persisted = 0;
         if (!suppressed) {
-            for (Alert alert : alerts) persist(tenant, alert);
+            for (Alert alert : alerts) {
+                persist(tenant, alert);
+                persisted++;
+            }
         }
         int matched = alerts.size();
-        if (matched > 0) windowAggregator.record(tenant, ruleId, entity, severity.name());
-        if (sourceAlarmId != null) receiptStore.complete(tenant, sourceAlarmId, version, matched);
+        if (suppressed) {
+            // The discarded derivations must stay accountable: count them and
+            // say so in the durable receipt instead of reporting a completion
+            // with rows that were never written.
+            countStormSuppressed(matched);
+            log.info("Secondary analysis suppressed storm tenant={} rule={} entity={} count={}"
+                            + " discardedAlerts={} instance={}",
+                    tenant, ruleId, entity, count, matched, instanceId);
+        } else if (matched > 0) {
+            windowAggregator.record(tenant, ruleId, entity, severity.name());
+        }
+        if (sourceAlarmId != null) {
+            receiptStore.complete(tenant, sourceAlarmId, version, persisted, suppressed
+                    ? AnalysisReceiptStore.STATUS_SUPPRESSED : AnalysisReceiptStore.STATUS_COMPLETED);
+        }
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("inputRuleId", ruleId);
         result.put("entity", entity);
         result.put("analyzedAlerts", matched);
+        result.put("persistedAlerts", persisted);
         result.put("stormSuppressed", suppressed);
+        // Storm collapsing is a replica-local heuristic; name the replica so a
+        // reader cannot mistake one instance's view for the cluster's.
+        result.put("instance", instanceId);
         if (sourceAlarmId != null) {
             result.put("sourceAlarmId", sourceAlarmId);
             result.put("analyzerVersion", version);
@@ -150,6 +202,10 @@ public class AnalyzeService {
     }
 
     private final Map<String, StormCounter> stormCounters = new ConcurrentHashMap<>();
+    private final java.util.concurrent.atomic.AtomicLong stormSuppressedEvents =
+            new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong stormSuppressedAlerts =
+            new java.util.concurrent.atomic.AtomicLong();
 
     @Transactional(transactionManager = "secondaryAnalysisTransactionManager", readOnly = true)
     public AnalyzedPage analyzed(int page, int size) {
@@ -175,6 +231,11 @@ public class AnalyzeService {
         stats.put("rules", DEFAULT_RULE_COUNT);
         stats.put("bySeverity", bySeverity);
         stats.put("window", windowAggregator.snapshot(tenant));
+        stats.put("stormSuppressedEvents", stormSuppressedEvents.get());
+        stats.put("stormSuppressedAlerts", stormSuppressedAlerts.get());
+        // The window above is this replica's own counter, not a cluster view.
+        stats.put("scope", AlertWindowAggregator.REPLICA_LOCAL_SCOPE);
+        stats.put("instance", instanceId);
         return stats;
     }
 
@@ -182,6 +243,18 @@ public class AnalyzeService {
         repository.save(new AnalyzedEntity(tenant, alert.id(), alert.ruleId(), alert.ruleName(),
                 alert.severity().name(), truncate(alert.message(), 1000),
                 truncate(alert.entity(), 250), alert.timestamp()));
+    }
+
+    /** Count what a storm collapse threw away, so the loss is at least traceable. */
+    private void countStormSuppressed(int discardedAlerts) {
+        stormSuppressedEvents.incrementAndGet();
+        stormSuppressedAlerts.addAndGet(Math.max(0, discardedAlerts));
+        if (meterRegistry == null) return;
+        meterRegistry.counter("socp.detect.storm.suppressed").increment();
+        if (discardedAlerts > 0) {
+            meterRegistry.counter("socp.detect.storm.suppressed.alerts")
+                    .increment(discardedAlerts);
+        }
     }
 
     @Scheduled(fixedDelayString = "${socp.detect.model.cleanup-interval-ms:3600000}",

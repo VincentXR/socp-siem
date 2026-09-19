@@ -139,6 +139,13 @@ public final class Suppressor implements AutoCloseable {
         cleaner.interrupt();
     }
 
+    /**
+     * Process-wide total of suppression decisions across every tenant, rule,
+     * engine and reload. One {@link Suppressor} is shared by all engines of a
+     * process, so this value cannot be attributed to a tenant or a shard: expose
+     * it as a process metric only. {@code RuleEngine.suppressedCount()} is the
+     * per-engine number that is safe to sum into tenant statistics.
+     */
     public long suppressed() {
         return suppressed.get();
     }

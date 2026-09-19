@@ -1,29 +1,30 @@
 package com.socp.platform.ratelimit.web;
 import com.socp.platform.ratelimit.api.RateLimit;
-import com.socp.platform.ratelimit.store.InMemoryRateLimitStore;
 import com.socp.platform.ratelimit.store.RateLimitStore;
 import com.socp.platform.error.exception.ApiException;
 import com.socp.platform.tenant.context.TenantContext;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.web.method.HandlerMethod;
 import org.springframework.web.servlet.HandlerInterceptor;
 
-/** Applies the configured shared/local rate-limit store after authentication. */
+/**
+ * Applies the configured shared/local rate-limit store after authentication.
+ *
+ * <p>The store is a required collaborator rather than something defaulted to a
+ * process-local map here: {@code InMemoryRateLimitStore} is a {@code !prod}
+ * bean, so an unshared backend in production fails context startup instead of
+ * silently localizing every replica's counters.</p>
+ */
 @Component
 public class RateLimitInterceptor implements HandlerInterceptor {
 
     private final RateLimitStore store;
 
     @Autowired
-    public RateLimitInterceptor(ObjectProvider<RateLimitStore> stores) {
-        this(stores.getIfAvailable(InMemoryRateLimitStore::new));
-    }
-
-    RateLimitInterceptor(RateLimitStore store) {
+    public RateLimitInterceptor(RateLimitStore store) {
         this.store = store;
     }
 

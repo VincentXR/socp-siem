@@ -2,16 +2,19 @@ package com.socp.search.config.persistence.store;
 
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.socp.platform.tenant.context.TenantContext;
 import com.socp.search.config.config.SearchRuntimeRole;
 import com.socp.search.config.domain.ParseRule;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 解析规则存储——进程内；生产替换为 PG search.t_parse_rule，接口不变。
+ * 解析规则存储——租户覆盖项落 PG search.t_tenant_catalog_entry，内置规则为共享模板。
  */
 @Component
 @SearchRuntimeRole(SearchRuntimeRole.Role.API)
@@ -19,7 +22,7 @@ public class ParseRuleStore {
 
     private final TenantCatalog<ParseRule> catalog;
     private boolean seeding = true;
-    private final AtomicLong revision = new AtomicLong();
+    private final Map<String, AtomicLong> revisions = new ConcurrentHashMap<>();
 
     public ParseRuleStore() {
         this(null, null);
@@ -69,11 +72,10 @@ public class ParseRuleStore {
     public ParseRule save(ParseRule r) {
         if (seeding) {
             catalog.registerTemplate(r);
-            revision.incrementAndGet();
             return r;
         }
         ParseRule saved = catalog.save(r);
-        revision.incrementAndGet();
+        bumpRevision();
         return saved;
     }
 
@@ -83,12 +85,23 @@ public class ParseRuleStore {
 
     public boolean delete(String id) {
         boolean deleted = catalog.delete(id);
-        if (deleted) revision.incrementAndGet();
+        if (deleted) bumpRevision();
         return deleted;
     }
 
-    /** Cheap in-memory change token used by the compiled parser-pipeline cache. */
-    public long revision() {
-        return revision.get();
+    /**
+     * Change token of one tenant's rule set. Built-in templates are registered while the
+     * store is being constructed — before any request is served — so they need no token.
+     * Tokens are per tenant: another tenant's write must not invalidate this tenant's
+     * compiled parser cache.
+     */
+    public long revision(String tenantId) {
+        AtomicLong token = tenantId == null ? null : revisions.get(tenantId);
+        return token == null ? 0L : token.get();
+    }
+
+    private void bumpRevision() {
+        revisions.computeIfAbsent(TenantContext.require(), ignored -> new AtomicLong())
+                .incrementAndGet();
     }
 }

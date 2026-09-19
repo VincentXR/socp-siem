@@ -11,6 +11,12 @@ from runtime_topology import topology_report
 
 
 ROOT = Path(__file__).resolve().parents[1]
+ENVELOPE_BASELINE = ROOT / "build" / "envelope-error-data-baseline.txt"
+OK_CALL = re.compile(r"ApiResult\.ok\s*\(")
+ENVELOPE_ERROR_LITERAL = re.compile(r'"(?:error|not_found)"')
+NOT_FOUND_SENTINEL = re.compile(r'"not_found"')
+METHOD_DECL = re.compile(r"^(?:public|private|protected|static|final|synchronized|default|void|@)")
+STATEMENT_LEADERS = {"if", "for", "while", "switch", "catch", "return", "throw", "else", "try", "do", "synchronized"}
 
 
 def quoted_list(text: str, name: str) -> list[str]:
@@ -18,6 +24,65 @@ def quoted_list(text: str, name: str) -> list[str]:
     if not match:
         raise ValueError(f"missing {name}")
     return match.group(1).split()
+
+
+def relative(path: Path) -> str:
+    return path.relative_to(ROOT).as_posix()
+
+
+def balanced_argument(text: str, open_paren: int) -> str:
+    depth = 0
+    for index in range(open_paren, len(text)):
+        char = text[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return text[open_paren + 1:index]
+    return text[open_paren:]
+
+
+def enclosing_method(text: str, offset: int) -> str:
+    """Best-effort stable id for a finding: the last indented declaration above it."""
+    best = "class-body"
+    for line in text[:offset].splitlines():
+        if not line.startswith("    ") or "(" not in line:
+            continue
+        stripped = line.strip()
+        head = stripped.split("(", 1)[0]
+        if stripped.startswith(("//", "*", "@")) or "=" in head:
+            continue
+        tokens = head.split()
+        if len(tokens) < 2 or tokens[0] in STATEMENT_LEADERS or not METHOD_DECL.match(tokens[0]):
+            continue
+        best = tokens[-1]
+    return best
+
+
+def envelope_findings() -> set[str]:
+    """Success envelopes must not carry error semantics (docs/api-contract.md).
+
+    Two shapes are rejected in every service controller and service class: an
+    ``ApiResult.ok(...)`` argument that contains an ``"error"``/``"not_found"``
+    marker, and the retired ``"not_found"`` sentinel that a code=0 envelope used
+    to carry instead of a 404. Callers must fail through
+    ``ApiException.notFound``/``badRequest`` so HTTP status and envelope code
+    stay in sync.
+    """
+    findings: set[str] = set()
+    sources = sorted(
+        set(ROOT.glob("services/*/src/main/java/**/*Controller.java"))
+        | set(ROOT.glob("services/*/src/main/java/**/*Service.java"))
+    )
+    for path in sources:
+        text = path.read_text(encoding="utf-8")
+        for match in OK_CALL.finditer(text):
+            if ENVELOPE_ERROR_LITERAL.search(balanced_argument(text, match.end() - 1)):
+                findings.add(f"{relative(path)}#{enclosing_method(text, match.start())}")
+        for match in NOT_FOUND_SENTINEL.finditer(text):
+            findings.add(f"{relative(path)}#{enclosing_method(text, match.start())}")
+    return findings
 
 
 def main() -> int:
@@ -366,6 +431,18 @@ def main() -> int:
     if "uniqExact(tenant_id, alarm_id)" not in idempotency:
         errors.append("ClickHouse logical dedup contract must require uniqExact")
 
+    envelope_debt = envelope_findings()
+    expected_debt = {
+        line.strip() for line in ENVELOPE_BASELINE.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    }
+    for entry in sorted(envelope_debt - expected_debt):
+        errors.append(f"{entry}: success envelope carries error semantics")
+    retired = expected_debt - envelope_debt
+    if retired:
+        errors.append("envelope baseline contains retired debt; remove these entries: "
+                      + ", ".join(sorted(retired)))
+
     if errors:
         print("Contract gate failed:", file=sys.stderr)
         for error in errors:
@@ -375,7 +452,7 @@ def main() -> int:
         f"Contract gate passed: {len(modules)} modules, {len(services)} default processes, "
         f"no fixed process target, {runtime['logicalDomainCount']} logical domains, "
         f"{len(runtime['consolidationCandidates'])} consolidation candidates, "
-        f"{len(route_ids)} gateway routes"
+        f"{len(route_ids)} gateway routes, envelope debt={len(envelope_debt)}"
     )
     return 0
 

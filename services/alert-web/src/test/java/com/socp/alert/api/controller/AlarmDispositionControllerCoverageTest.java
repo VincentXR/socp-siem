@@ -7,6 +7,8 @@ import com.socp.alert.api.request.AlarmTagRequest;
 import com.socp.alert.service.AlarmDispositionService;
 import com.socp.alert.service.AlarmService;
 import com.socp.platform.error.exception.ApiException;
+import com.socp.platform.tenant.context.AuthenticatedIdentity;
+import com.socp.platform.tenant.context.AuthenticatedIdentityContext;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.platform.error.api.ApiResult;
 import org.junit.jupiter.api.AfterEach;
@@ -127,5 +129,37 @@ class AlarmDispositionControllerCoverageTest {
 
         assertThat(result.status()).isEqualTo("OPEN");
         verify(alarmService).get("a1");
+    }
+
+    @Test
+    void aHumanAuthorIsTheAuthenticatedSubjectNotTheForgedBodyValue() {
+        AuthenticatedIdentityContext.set(new AuthenticatedIdentity("analyst-9", "tenant-a", "analyst",
+                java.util.Set.of(), java.util.Set.of(), AuthenticatedIdentity.Kind.USER));
+        try {
+            given(disposition.addNote("a1", "analyst-9", "enriched", null)).willReturn(open());
+            AlarmNoteRequest body = new AlarmNoteRequest("victim", "enriched");
+
+            controller.addNote("a1", body, null);
+
+            verify(disposition).addNote("a1", "analyst-9", "enriched", null);
+        } finally {
+            AuthenticatedIdentityContext.clear();
+        }
+    }
+
+    @Test
+    void aServiceCallerKeepsItsDelegatedAuthorName() {
+        AuthenticatedIdentityContext.set(new AuthenticatedIdentity("soar-web", "tenant-a", "service",
+                java.util.Set.of(), java.util.Set.of(), AuthenticatedIdentity.Kind.SERVICE));
+        try {
+            given(disposition.addNote("a1", "soar", "enriched", "k1")).willReturn(open());
+            AlarmNoteRequest body = new AlarmNoteRequest("soar", "enriched");
+
+            controller.addNote("a1", body, "k1");
+
+            verify(disposition).addNote("a1", "soar", "enriched", "k1");
+        } finally {
+            AuthenticatedIdentityContext.clear();
+        }
     }
 }

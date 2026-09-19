@@ -5,6 +5,7 @@ import com.socp.notify.web.api.request.NotifyAlarmRequest;
 import com.socp.notify.web.domain.Channel;
 import com.socp.notify.web.persistence.store.ChannelStore;
 import com.socp.notify.web.service.NotificationDispatcher;
+import com.socp.platform.error.exception.ApiException;
 import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -19,8 +20,10 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
@@ -65,11 +68,14 @@ class NotifyControllerTest {
     }
 
     @Test
-    void toggleReturnsNotFoundWithoutWritingWhenChannelIsMissing() {
+    void toggleFailsWithNotFoundWithoutWritingWhenChannelIsMissing() {
         TenantContext.set("tenant-a");
         given(channels.get("missing")).willReturn(null);
 
-        assertEquals(Map.of("error", "not_found"), controller().toggle("missing").data());
+        assertThatThrownBy(() -> controller().toggle("missing"))
+                .isInstanceOf(ApiException.class)
+                .hasFieldOrPropertyWithValue("code", 404);
+        verify(channels, never()).add(any());
     }
 
     @Test
@@ -106,6 +112,7 @@ class NotifyControllerTest {
         var response = controller().notify(request);
 
         assertEquals(HttpStatus.BAD_GATEWAY, response.getStatusCode());
+        assertEquals(502, response.getBody().code());
         assertSame(result, response.getBody().data());
     }
 

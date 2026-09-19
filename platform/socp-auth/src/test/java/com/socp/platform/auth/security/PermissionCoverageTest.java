@@ -42,9 +42,14 @@ class PermissionCoverageTest {
     }
 
     @Test
-    void approverCanReadAlarmsApproveAndCompleteTasks() {
-        assertThat(Permission.roleDefaults("approver")).containsExactlyInAnyOrder(
-                "alarm:read", "soar:view", "soar:approve", "soar:task:complete");
+    void approvalAuthorityIsNotAttachedToAnUnissuableRole() {
+        // Only admin gets soar:approve by default. A reviewer identity must come
+        // from an IdP role carrying an explicit permissions claim, because no
+        // delivered component can issue an "approver" session.
+        assertThat(Permission.roleDefaults("approver")).isEmpty();
+        assertThat(Permission.roleDefaults("analyst")).doesNotContain("soar:approve");
+        assertThat(Permission.roleDefaults("viewer")).doesNotContain("soar:approve");
+        assertThat(Permission.roleDefaults("admin")).contains("soar:approve");
     }
 
     @Test

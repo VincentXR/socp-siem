@@ -107,19 +107,12 @@ public final class RuleSpec {
         Object w = m.get("window");
         this.window = w == null ? Duration.ofMinutes(1) : parseWindow(String.valueOf(w));
         this.eventTimePolicy = EventTimePolicy.parse(m.get("lateEventPolicy"), this.window);
-        Object en = m.get("enabled");
-        boolean enB = en == null || Boolean.parseBoolean(String.valueOf(en));
-        Object st = m.get("status");
-        if (st != null && !String.valueOf(st).isBlank()) {
-            this.status = String.valueOf(st).toUpperCase();
-        } else {
-            this.status = enB ? "ACTIVE" : "DISABLED"; // 旧规则无 status → 按 enabled 派生
-        }
         // A declared lifecycle status is authoritative.  The legacy enabled
         // flag is only used when status is absent, so DISABLED/TESTING/DRAFT
-        // content cannot accidentally enter the live engine.
-        this.enabled = st != null && !String.valueOf(st).isBlank()
-                ? "ACTIVE".equals(this.status) : enB;
+        // content cannot accidentally enter the live engine.  Both derivations
+        // come from the same helpers the engine pre-filter uses.
+        this.status = lifecycleStatus(m);
+        this.enabled = isLive(m);
         this.match = parseConds((List<Object>) m.getOrDefault("match", List.of()));
         this.matchAny = parseSteps((List<Object>) m.getOrDefault("matchAny", List.of()));
         Object rawWhitelist = m.containsKey("whitelist") ? m.get("whitelist") : m.get("allowlist");
@@ -351,12 +344,38 @@ public final class RuleSpec {
         };
     }
 
-    private static Duration parseWindow(String s) {
-        s = s.trim();
-        if (s.endsWith("s")) return Duration.ofSeconds(Long.parseLong(s.substring(0, s.length() - 1)));
-        if (s.endsWith("m")) return Duration.ofMinutes(Long.parseLong(s.substring(0, s.length() - 1)));
-        if (s.endsWith("h")) return Duration.ofHours(Long.parseLong(s.substring(0, s.length() - 1)));
-        return Duration.ofSeconds(Long.parseLong(s));
+    /**
+     * Parse a rule window with the one duration grammar shared by late-event
+     * policies. A window must be positive: a zero window cannot hold evidence
+     * and a negative window would move every cutoff into the future.
+     */
+    public static Duration parseWindow(String s) {
+        Duration window = EventTimePolicy.parseDuration(s);
+        if (window.isZero() || window.isNegative()) {
+            throw new IllegalArgumentException("window must be positive: " + s);
+        }
+        return window;
+    }
+
+    /**
+     * Resolve the lifecycle status of a raw rule document with the same rules
+     * the constructor applies, so callers can filter a document without paying
+     * for a full {@link RuleSpec} construction.
+     */
+    public static String lifecycleStatus(Map<String, Object> m) {
+        Object st = m == null ? null : m.get("status");
+        if (st != null && !String.valueOf(st).isBlank()) return String.valueOf(st).toUpperCase();
+        Object en = m == null ? null : m.get("enabled");
+        boolean enB = en == null || Boolean.parseBoolean(String.valueOf(en));
+        return enB ? "ACTIVE" : "DISABLED";
+    }
+
+    /** Whether a raw rule document belongs in the live engine. */
+    public static boolean isLive(Map<String, Object> m) {
+        Object st = m == null ? null : m.get("status");
+        if (st != null && !String.valueOf(st).isBlank()) return "ACTIVE".equals(lifecycleStatus(m));
+        Object en = m == null ? null : m.get("enabled");
+        return en == null || Boolean.parseBoolean(String.valueOf(en));
     }
 
     @SuppressWarnings("unchecked")

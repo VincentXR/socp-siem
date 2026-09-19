@@ -17,11 +17,20 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
-/** Five-minute secondary-analysis window, independently maintained per tenant. */
+/**
+ * Five-minute secondary-analysis window, independently maintained per tenant.
+ *
+ * <p>The window is process memory: with more than one worker replica each
+ * replica answers with its own counters, so {@code snapshot} labels the scope
+ * and the instance that produced it.</p>
+ */
 @Component
 @EnableScheduling
 @DetectRuntimeRole(DetectRuntimeRole.Role.WORKER)
 public class AlertWindowAggregator {
+
+    /** Marks a response that describes one replica rather than the cluster. */
+    public static final String REPLICA_LOCAL_SCOPE = "replica-local";
 
     public static final long WINDOW_MINUTES = 5;
     private static final int BUCKETS = 10;
@@ -31,6 +40,9 @@ public class AlertWindowAggregator {
 
     @Value("${socp.detect.model.window-idle-ttl-ms:1800000}")
     private long idleTtlMs = 30 * 60 * 1000L;
+
+    @Value("${socp.detect.instance-id:unknown}")
+    private String instanceId = "unknown";
 
     @Value("${socp.detect.model.window-max-tenants:1000}")
     private int maxTenants = 1000;
@@ -104,6 +116,8 @@ public class AlertWindowAggregator {
             result.put("byEntity", sortedTop(byEntity, 10));
             result.put("bySeverity", bySeverity);
             result.put("trend", trend(window));
+            result.put("scope", REPLICA_LOCAL_SCOPE);
+            result.put("instance", instanceId);
             return result;
         }
     }

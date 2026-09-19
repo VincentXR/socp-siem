@@ -111,12 +111,19 @@ services:
       #                  本地 kind 演练集群里的 Pod 用这个名字；它们无法解析
       #                  localhost（那是 Pod 自己的 loopback），也解析不到裸 kafka
       #                  （Pod 在 socp-system 命名空间）。宿主机侧行为不变。
+      # 该 listener 只属于这套开发编排：它同样是 PLAINTEXT（无 SASL/TLS），且宣告名
+      # 是集群内 DNS。docker-compose.prod.yml 覆盖 KAFKA_LISTENERS 与协议映射，把它
+      # 从合并结果中去掉，因此按叠加层运行时 broker 不再监听 29092。
       KAFKA_LISTENERS: "PLAINTEXT://:9092,PLAINTEXT_KIND://:29092,CONTROLLER://:9093"
       KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:9092,PLAINTEXT_KIND://kafka.socp-data.svc.cluster.local:29092"
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_KIND:PLAINTEXT"
       KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
       KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
-      # 演示环境开 auto-create，避免容器重建后 topic 丢失需手动重建
+      # 演示环境开 auto-create，避免容器重建后 topic 丢失需手动重建。
+      # 风险需知：infra/init-sql/kafka/create-topics.sh 没有预建事件主链与 *-dlq，
+      # 关掉本开关即让死信 hand-off 直接失败。Compose 的 environment 是按键合并的，
+      # 所以本值会泄进 docker-compose.prod.yml 的有效配置：叠加层必须显式重述该键
+      # 并给出理由，而不是隐式继承（build/verify-prod-compose.py 断言这一点）。
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       # 增强（2026-08-10）：新建 topic 默认 3 分区（事件可并行消费、支持多消费者实例扩展）。
       # 副本因子保持 1（单 broker KRaft 演示环境；生产集群按 broker 数调整 replication.factor）。
@@ -124,6 +131,10 @@ services:
       # Detection instances. Existing topics must be expanded explicitly;
       # Kafka never reduces a topic's partition count.
       KAFKA_NUM_PARTITIONS: "6"
+      # RF/MIN_ISR=1 只在这套单 broker KRaft 编排里成立：副本因子大于 broker 数会让
+      # __consumer_offsets、事务日志与 auto-create topic 全部无法建立。它没有持久性
+      # 含义，broker 磁盘故障即丢日志；多副本与 ISR 属于外部集群的部署证据
+      # （docs/production-readiness.md）。叠加层同样按单 broker 显式重述这组值。
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
@@ -195,11 +206,27 @@ services:
 
   # ── 缓存 / 分布式锁扩展点 ─────────────────────────────
   # 当前 socp-ratelimit 默认使用进程内令牌桶；Redis 已纳入编排，生产多实例部署应接入共享配额。
+  # Once SOCP_RATELIMIT_BACKEND=redis this instance also carries correctness keys:
+  # the service/gateway replay nonces (RedisServiceNonceStore) and the revoked
+  # session list (RedisTokenRevocationStore). An evicted key is not an error -
+  # SETNX simply succeeds again - so allkeys-lru would silently accept a replayed
+  # signature or a logged-out session. The policy is therefore noeviction: a full
+  # instance rejects writes, and every consumer turns that exception into an
+  # explicit refusal (fail-closed) instead of silent acceptance.
+  # Capacity: a nonce lives 2 x socp.security.service-max-skew-seconds (120s at
+  # the default 60) and a revocation entry lives the remaining session lifetime;
+  # at roughly 200 bytes per key that is about a million keys inside 192mb, far
+  # above this stack's rehearsal traffic. Managed production Redis needs its own
+  # measured plan - the invariant is the policy, not the size.
+  # This instance has no password and is published on the host: it is a
+  # development posture. docker-compose.prod.yml requires a password for the
+  # same instance (Compose appends `ports:`, so the overlay cannot narrow this
+  # binding; off-host reachability is environment-owned).
   redis:
     <<: *socp-runtime
     image: ${SOCP_REDIS_IMAGE:?load infra/middleware-images.env}
     container_name: socp-redis
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "192mb", "--maxmemory-policy", "allkeys-lru"]
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "192mb", "--maxmemory-policy", "noeviction"]
     ports:
       - "${SOCP_REDIS_PORT:-6379}:6379"
     volumes:

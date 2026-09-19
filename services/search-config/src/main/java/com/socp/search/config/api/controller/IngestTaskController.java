@@ -7,19 +7,19 @@ import com.socp.search.config.service.IngestPipeline;
 import com.socp.search.config.service.IngestTaskMonitor;
 import com.socp.search.config.persistence.store.LogSourceStore;
 import com.socp.platform.error.api.ApiResult;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
+import com.socp.platform.error.api.PageResponse;
+import com.socp.platform.error.exception.ApiException;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import com.socp.platform.auth.security.RequireRole;
 import jakarta.validation.Valid;
 
@@ -27,11 +27,15 @@ import jakarta.validation.Valid;
  * 接入任务管理 API：把"接入配置"和"运行指标"合成一个任务视图。
  *
  * <ul>
- *   <li>GET  /api/v1/ingest/tasks           —— 任务列表（配置 + EPS/累计量/健康状态）</li>
- *   <li>GET  /api/v1/ingest/tasks/summary   —— 全局接入摘要</li>
+ *   <li>GET  /api/v1/ingest/tasks           —— 任务列表（配置 + EPS/累计量/健康状态），
+ *                                            与 /sources 同口径：1-based page、size 上限 500</li>
+ *   <li>GET  /api/v1/ingest/tasks/summary   —— 全局接入摘要（计数走 SQL，不物化目录）</li>
  *   <li>POST /api/v1/ingest/tasks/{id}/start|stop —— 启停任务（等价于切换 enabled 并重渲染 Vector 配置）</li>
  *   <li>POST /api/v1/ingest/tasks/{id}/test —— 灌一条样例日志走完整管线，回显解析结果</li>
  * </ul>
+ *
+ * <p>未知 id 一律抛 {@link ApiException#notFound}，由 GlobalExceptionHandler 产出
+ * 404 + 非零 code 信封；成功信封的 data 内不再携带错误语义。
  */
 @RestController
 @com.socp.search.config.config.SearchRuntimeRole(
@@ -49,50 +53,57 @@ public class IngestTaskController {
         this.pipeline = pipeline;
     }
 
+    /**
+     * 任务列表：与 {@code GET /sources} 同一分页口径（1-based page、size 上限 500）。
+     * 不带 page 的兼容调用只返回首页且最多 500 行，运行指标按当页行取，绝不整租户物化。
+     */
     @GetMapping("/ingest/tasks")
-    public ApiResult<List<Map<String, Object>>> tasks() {
-        return ApiResult.ok(store.list().stream().map(this::toTask).toList());
+    public ApiResult<?> tasks(@RequestParam(required = false) Integer page,
+                              @RequestParam(required = false) Integer size) {
+        int safeSize = size == null || size <= 0 ? 500 : Math.min(500, size);
+        if (page == null) {
+            return ApiResult.ok(store.page(PageRequest.of(0, safeSize)).getContent()
+                    .stream().map(this::toTask).toList());
+        }
+        if (page < 1 || size != null && (size < 1 || size > 500)) {
+            throw ApiException.badRequest("page must be >= 1 and size must be between 1 and 500");
+        }
+        var result = store.page(PageRequest.of(page - 1, safeSize));
+        return ApiResult.ok(PageResponse.of(result.getContent().stream().map(this::toTask).toList(),
+                result.getTotalElements(), page, safeSize, result.getTotalPages()));
     }
 
     @GetMapping("/ingest/tasks/summary")
     public ApiResult<Map<String, Object>> summary() {
-        List<String> enabled = store.enabled().stream().map(LogSource::collectorTag).toList();
-        Map<String, Object> m = new LinkedHashMap<>(monitor.summary(enabled));
-        m.put("sources", store.list().size());
-        m.put("enabledSources", enabled.size());
+        Map<String, Object> m = new LinkedHashMap<>(monitor.summary(store.enabledCollectorTags()));
+        m.put("sources", store.count());
+        m.put("enabledSources", store.countEnabled());
         return ApiResult.ok(m);
     }
 
     @GetMapping("/ingest/tasks/{id}")
-    public ResponseEntity<ApiResult<Map<String, Object>>> task(@PathVariable String id) {
-        Optional<LogSource> s = store.get(id);
-        return s.<ResponseEntity<ApiResult<Map<String, Object>>>>map(
-                        logSource -> ResponseEntity.ok(ApiResult.ok(toTask(logSource))))
-                .orElseGet(() -> notFound(id));
+    public ApiResult<Map<String, Object>> task(@PathVariable String id) {
+        return ApiResult.ok(toTask(require(id)));
     }
 
-        @RequireRole({"admin", "analyst"})
-@PostMapping("/ingest/tasks/{id}/start")
-    public ResponseEntity<ApiResult<Map<String, Object>>> start(@PathVariable String id) {
+    @RequireRole({"admin", "analyst"})
+    @PostMapping("/ingest/tasks/{id}/start")
+    public ApiResult<Map<String, Object>> start(@PathVariable String id) {
         return toggle(id, true);
     }
 
-        @RequireRole({"admin", "analyst"})
-@PostMapping("/ingest/tasks/{id}/stop")
-    public ResponseEntity<ApiResult<Map<String, Object>>> stop(@PathVariable String id) {
+    @RequireRole({"admin", "analyst"})
+    @PostMapping("/ingest/tasks/{id}/stop")
+    public ApiResult<Map<String, Object>> stop(@PathVariable String id) {
         return toggle(id, false);
     }
 
     /** 接入连通性自测：灌一条样例日志走完整解析/富化/转发链路，回显管线结果 */
-        @RequireRole({"admin", "analyst"})
-@PostMapping("/ingest/tasks/{id}/test")
-    public ResponseEntity<ApiResult<Map<String, Object>>> test(@PathVariable String id,
-                                                               @Valid @RequestBody(required = false) IngestTestRequest body) {
-        Optional<LogSource> s = store.get(id);
-        if (s.isEmpty()) {
-            return notFound(id);
-        }
-        LogSource src = s.get();
+    @RequireRole({"admin", "analyst"})
+    @PostMapping("/ingest/tasks/{id}/test")
+    public ApiResult<Map<String, Object>> test(@PathVariable String id,
+                                               @Valid @RequestBody(required = false) IngestTestRequest body) {
+        LogSource src = require(id);
         String sample = body == null || body.sample() == null
                 ? defaultSample(src) : body.sample();
         Map<String, Object> result = pipeline.process(sample, src.collectorTag());
@@ -102,7 +113,7 @@ public class IngestTaskController {
         out.put("sample", sample);
         out.put("pipeline", result);
         out.put("ok", Integer.parseInt(String.valueOf(result.getOrDefault("accepted", 0))) > 0);
-        return ResponseEntity.ok(ApiResult.ok(out));
+        return ApiResult.ok(out);
     }
 
     /** 造一条贴合该源类型的样例日志，让"测试"按钮开箱即用 */
@@ -116,12 +127,8 @@ public class IngestTaskController {
                 .formatted(collector, host);
     }
 
-    private ResponseEntity<ApiResult<Map<String, Object>>> toggle(String id, boolean enabled) {
-        Optional<LogSource> opt = store.get(id);
-        if (opt.isEmpty()) {
-            return notFound(id);
-        }
-        LogSource s = opt.get();
+    private ApiResult<Map<String, Object>> toggle(String id, boolean enabled) {
+        LogSource s = require(id);
         LogSource updated = new LogSource(s.id(), s.name(), s.type(), s.format(), s.path(), s.address(),
                 s.topic(), s.env(), enabled, s.readFrom(), s.multiline(), s.sinkTargetId(),
                 s.parseRuleIds(), s.description(), s.protocol(), s.charset(), s.timeField(),
@@ -131,12 +138,12 @@ public class IngestTaskController {
         out.put("id", id);
         out.put("enabled", enabled);
         out.put("task", toTask(updated));
-        return ResponseEntity.ok(ApiResult.ok(out));
+        return ApiResult.ok(out);
     }
 
-    private static ResponseEntity<ApiResult<Map<String, Object>>> notFound(String id) {
-        return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                .body(ApiResult.fail(404, "source_not_found: " + id));
+    /** 单一失败通道：缺资源即抛 ApiException.notFound，由 GlobalExceptionHandler 出 404 fail 信封。 */
+    private LogSource require(String id) {
+        return store.get(id).orElseThrow(() -> ApiException.notFound("未找到接入任务对应的日志源 " + id));
     }
 
     private Map<String, Object> toTask(LogSource s) {

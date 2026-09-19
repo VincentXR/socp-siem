@@ -61,7 +61,12 @@ public record EventTimePolicy(Duration allowedLateness, LateEventHandling handli
         return out;
     }
 
-    private static Duration parseDuration(String value) {
+    /**
+     * The single duration grammar accepted by detection content. Both rule
+     * windows and late-event allowances use it so a document can never pass
+     * validation and then fail while it is being constructed.
+     */
+    public static Duration parseDuration(String value) {
         String text = value.trim();
         try {
             if (text.startsWith("P")) return Duration.parse(text);
@@ -72,7 +77,7 @@ public record EventTimePolicy(Duration allowedLateness, LateEventHandling handli
             if (text.endsWith("d")) return Duration.ofDays(Long.parseLong(text.substring(0, text.length() - 1)));
             return Duration.ofSeconds(Long.parseLong(text));
         } catch (RuntimeException failure) {
-            throw new IllegalArgumentException("invalid allowedLateness: " + value, failure);
+            throw new IllegalArgumentException("invalid duration: " + value, failure);
         }
     }
 

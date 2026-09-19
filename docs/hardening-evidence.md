@@ -35,7 +35,15 @@ An internal service JWT cannot be used as a broad analyst credential. It is
 accepted only when the request also carries an HMAC proof whose service name
 matches the token subject. Nonces are claimed with Redis `SET NX` in the
 shared-backend profile, so a replay sent to another service instance is still
-rejected. Redis failure is fail-closed for this identity proof.
+rejected. A Redis *connection* failure is fail-closed for this identity proof:
+the store rejects rather than allowing an unverifiable request. That guarantee
+does not cover silent key eviction. The nonce and session-revocation keys are
+correctness keys, so the Redis instance holding them must run with
+`--maxmemory-policy noeviction`; under an evicting policy such as `allkeys-lru`
+an evicted nonce makes `SET NX` succeed again and admits a replay inside the
+signature-skew window, with no connection failure to trip the fail-closed path.
+`build/verify-prod-compose.py` locks the production-shaped rehearsal to
+`noeviction`; the managed Kubernetes Redis must provide the same policy.
 
 ## Analysis idempotency
 

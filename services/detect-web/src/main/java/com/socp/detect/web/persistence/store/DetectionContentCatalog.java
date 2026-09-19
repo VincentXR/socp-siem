@@ -2,7 +2,9 @@ package com.socp.detect.web.persistence.store;
 
 
 import com.socp.rule.util.Json;
+import com.socp.rule.config.RuleSpec;
 import com.socp.rule.model.Severity;
+import com.socp.rule.partition.DetectionRoutingKey;
 import com.socp.rule.time.EventTimePolicy;
 
 import java.io.InputStream;
@@ -118,6 +120,23 @@ public final class DetectionContentCatalog {
         }
         boolean stateful = List.of("threshold", "correlation", "correlation-set", "baseline", "rare")
                 .contains(type);
+        // The window grammar has exactly one owner. Validating it here with a
+        // second, looser parser is what let a document pass validation and then
+        // throw while the engine constructed the rule out of it.
+        Object window = spec.get("window");
+        if (window != null && !String.valueOf(window).isBlank()) {
+            try {
+                RuleSpec.parseWindow(String.valueOf(window));
+            } catch (RuntimeException failure) {
+                errors.add("invalid window: " + failure.getMessage());
+            }
+        }
+        for (String field : List.of("sigma", "baselineWindows", "warmup", "minCount")) {
+            Object value = spec.get(field);
+            if (value != null && !(value instanceof Number)) {
+                errors.add(field + " must be a number");
+            }
+        }
         String groupBy = text(spec.get("groupBy"));
         String keyField = text(spec.get("keyField"));
         String routingField = text(spec.get("routingField"));
@@ -167,6 +186,42 @@ public final class DetectionContentCatalog {
             }
         }
         return errors;
+    }
+
+    /**
+     * Static partition-locality audit for one rule document.
+     *
+     * <p>Persistence validates a rule against its own document only: it cannot
+     * see the events the rule will match. This method derives the dimension the
+     * default routing policy picks first for each declared data source and
+     * reports a grouping that can lose to it, which is the honest version of the
+     * claim that cross-entity grouping is rejected. Advisories never reject,
+     * because rejecting would also reject packaged content that already routes
+     * on another dimension; they are logged and counted on the event path.</p>
+     */
+    public static List<String> partitionLocalAdvisories(Map<String, Object> spec) {
+        if (spec == null) return List.of();
+        String type = String.valueOf(spec.getOrDefault("type", "")).toLowerCase();
+        if (!List.of("threshold", "correlation", "correlation-set", "baseline", "rare").contains(type)) {
+            return List.of();
+        }
+        String grouping = text(spec.get("groupBy"));
+        if (grouping == null) grouping = text(spec.get("keyField"));
+        if (grouping == null) return List.of();
+        if (!(spec.get("dataSources") instanceof List<?> dataSources) || dataSources.isEmpty()) {
+            return List.of();
+        }
+        List<String> advisories = new ArrayList<>();
+        for (Object dataSource : dataSources) {
+            String source = String.valueOf(dataSource);
+            String primary = DetectionRoutingKey.primaryDimension(source);
+            if (!primary.equals(grouping)) {
+                advisories.add("rule groups by '" + grouping + "' but events from source '" + source
+                        + "' route by '" + primary + "' whenever that field is present, so its state is"
+                        + " partition-local only for events without a higher-priority dimension");
+            }
+        }
+        return advisories;
     }
 
     private static void validateConditionGroups(List<String> errors, Object raw, String label) {

@@ -30,6 +30,7 @@ python3 build/verify-style.py
 python3 build/verify-frontend-i18n.py
 python3 build/verify-event-schema.py
 python3 build/verify-production.py
+python3 build/verify-prod-compose.py
 python3 build/verify-helm.py
 python3 build/validate-detection-content.py
 python3 build/generate-detection-summary.py --check-readme

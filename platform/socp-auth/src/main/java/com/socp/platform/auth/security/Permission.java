@@ -29,18 +29,24 @@ public enum Permission {
     public String wireName() { return wireName; }
 
     /**
-     * Role defaults follow the SOAR design (docs/soar-design.md §13.1):
-     * view -> viewer/analyst/admin; edit/execute/task:complete/connections:view ->
-     * analyst/admin; publish/operations/connections:manage -> admin; approve -> approver/admin.
+     * Roles the platform can actually issue a session for. The gateway admits
+     * exactly this set ({@code GatewayFilter.ROLES}) and the local/OIDC login
+     * paths re-sign tokens with a role from it, so a role outside the set has no
+     * issuance path and must not carry defaults here.
+     */
+    public static final Set<String> ISSUABLE_ROLES = Set.of("admin", "analyst", "viewer");
+
+    /**
+     * Role defaults are the minimum grant set of an issuable role. Approval
+     * authority ({@code soar:approve}) belongs to {@code admin} only; a
+     * dedicated approver identity must be modelled as an IdP role carrying an
+     * explicit {@code permissions} claim (see docs/soar-design.md §13 for the
+     * advisory per-role suggestion), never as an unissuable built-in default.
      */
     public static Set<String> roleDefaults(String role) {
         String normalized = role == null ? "" : role.toLowerCase(Locale.ROOT);
         if ("admin".equals(normalized)) {
             return Arrays.stream(values()).map(Permission::wireName).collect(Collectors.toUnmodifiableSet());
-        }
-        if ("approver".equals(normalized)) {
-            return Set.of(ALARM_READ.wireName, SOAR_VIEW.wireName, SOAR_APPROVE.wireName,
-                    SOAR_TASK_COMPLETE.wireName);
         }
         if ("analyst".equals(normalized)) {
             return Set.of(ALARM_READ.wireName, ALARM_TRIAGE.wireName, CASE_WRITE.wireName,

@@ -1,6 +1,5 @@
 package com.socp.soar.web.api.controller;
 
-import com.socp.platform.error.api.ApiResult;
 import com.socp.soar.web.config.SoarRuntimeProperties;
 import com.socp.soar.web.connector.SecretResolver;
 import com.socp.soar.web.connector.ConnectorDescriptor;
@@ -69,10 +68,11 @@ class HealthControllerDetailCoverageTest {
                 new ConnectorDescriptor("endpoint", 1, "Endpoint Response", false, List.of()),
                 new ConnectorDescriptor("firewall", 1, "Firewall Response", false, List.of())));
 
-        ApiResult<Map<String, Object>> result = new HealthController(
+        var result = new HealthController(
                 properties, healthEndpoint, temporalProvider, soarProvider, connectorProvider).health();
 
-        Map<String, Object> details = result.data();
+        Map<String, Object> details = result.getBody().data();
+        assertThat(result.getStatusCodeValue()).isEqualTo(200);
         assertThat(details.get("service")).isEqualTo("soar-web");
         assertThat(details.get("status")).isEqualTo("UP");
         assertThat(details.get("platform")).isEqualTo("UP");
@@ -92,11 +92,12 @@ class HealthControllerDetailCoverageTest {
         given(temporal.isAvailable()).willReturn(true);
         given(secretProvider.getIfAvailable()).willReturn(secretResolver);
 
-        ApiResult<Map<String, Object>> result = new HealthController(
+        var result = new HealthController(
                 properties, healthEndpoint, temporalProvider, soarProvider, connectorProvider, secretProvider).health();
 
         @SuppressWarnings("unchecked")
-        Map<String, Object> secretDetails = (Map<String, Object>) result.data().get("secretResolver");
+        Map<String, Object> secretDetails = (Map<String, Object>) result.getBody().data().get("secretResolver");
+        assertThat(result.getStatusCodeValue()).isEqualTo(200);
         assertThat(secretDetails).containsEntry("status", "UP");
         assertThat(secretDetails.get("provider")).asString().startsWith("SecretResolver");
     }
@@ -106,10 +107,12 @@ class HealthControllerDetailCoverageTest {
         given(temporalProvider.getIfAvailable()).willReturn(temporal);
         given(temporal.isAvailable()).willReturn(false);
 
-        ApiResult<Map<String, Object>> result = new HealthController(
+        var result = new HealthController(
                 properties, healthEndpoint, temporalProvider, soarProvider, connectorProvider).health();
 
-        Map<String, Object> details = result.data();
+        Map<String, Object> details = result.getBody().data();
+        // Degraded execution health is not available; the probe must fail closed.
+        assertThat(result.getStatusCodeValue()).isEqualTo(503);
         assertThat(details.get("status")).isEqualTo("DEGRADED");
         assertThat(details.get("platform")).isEqualTo("UP");
         assertThat(details.get("temporal")).isEqualTo(Map.of("status", "UNAVAILABLE"));

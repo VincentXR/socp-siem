@@ -7,6 +7,7 @@ import com.socp.platform.client.http.ServiceCall;
 import com.socp.platform.error.exception.ApiException;
 import com.socp.search.config.config.IngestRuntimeProperties;
 import com.socp.search.config.config.SearchRuntimeRole;
+import com.socp.search.config.persistence.store.ReferenceSetStore;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
@@ -101,6 +102,15 @@ public class IngestPipeline {
         Map<String, long[]> perCollector = new LinkedHashMap<>();
         List<IngestEventNormalizer.NormalizedEvent> pending = new ArrayList<>(BATCH_SIZE);
         var lines = body.lines().iterator();
+        // One tenant lookup-table snapshot per request: enrichment reads the catalogue once
+        // instead of once per event and per enriched field. A dependency failure here stays
+        // classified as a persistence failure so the uncommitted batch remains retryable.
+        ReferenceSetStore.Snapshot lookups;
+        try {
+            lookups = normalizer.lookupSnapshot();
+        } catch (RuntimeException dependencyFailure) {
+            throw new PersistenceFailure(dependencyFailure);
+        }
         try {
             int lineNumber = 0;
             while (lines.hasNext()) {
@@ -120,9 +130,7 @@ public class IngestPipeline {
                 try {
                     String stableId = idempotencyKey == null ? null
                             : stableBatchIdentity(idempotencyKey, currentLine, raw, defaultCollector);
-                    normalized = idempotencyKey == null
-                            ? normalizer.normalize(raw, defaultCollector)
-                            : normalizer.normalize(raw, defaultCollector, stableId);
+                    normalized = normalizer.normalize(raw, defaultCollector, stableId, lookups);
                 } catch (IngestParseException invalidLine) {
                     skipped++;
                     bump(perCollector, defaultCollector, 0, 1, 0, bytes);

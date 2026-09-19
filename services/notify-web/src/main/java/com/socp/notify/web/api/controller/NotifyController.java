@@ -20,6 +20,7 @@ import java.util.Map;
 import com.socp.platform.auth.security.RequireRole;
 import com.socp.platform.error.api.ApiResult;
 import com.socp.platform.error.api.PageResponse;
+import com.socp.platform.error.exception.ApiException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.RequestParam;
 import jakarta.validation.Valid;
@@ -66,8 +67,7 @@ public class NotifyController {
     @RequireRole({"admin", "analyst"})
     @PostMapping("/channels/{id}/toggle")
     public ApiResult<Map<String, Object>> toggle(@PathVariable String id) {
-        Channel ch = channels.get(id);
-        if (ch == null) return ApiResult.ok(Map.of("error", "not_found"));
+        Channel ch = requireChannel(id);
         Channel updated = new Channel(ch.id(), ch.name(), ch.type(), ch.target(), !ch.enabled(), ch.description());
         channels.add(updated);
         return ApiResult.ok(Map.of("channel", updated));
@@ -91,14 +91,17 @@ public class NotifyController {
     @PostMapping("/channels/{id}/test")
     public ResponseEntity<ApiResult<Map<String, Object>>> test(@PathVariable String id) {
         Map<String, Object> result = dispatcher.test(requireChannel(id));
-        ApiResult<Map<String, Object>> body = ApiResult.ok(result);
-        return ResponseEntity.status("failed".equals(result.get("status"))
-                ? HttpStatus.BAD_GATEWAY : HttpStatus.OK).body(body);
+        boolean failed = "failed".equals(result.get("status"));
+        // HTTP status and envelope code stay in sync: a failed test is never a
+        // code=0 envelope, otherwise clients that only read the code see success.
+        return ResponseEntity.status(failed ? HttpStatus.BAD_GATEWAY : HttpStatus.OK)
+                .body(failed ? ApiResult.of(502, "通知渠道测试未通过，请核对渠道目标地址与凭据后重试", result)
+                        : ApiResult.ok(result));
     }
 
     private Channel requireChannel(String id) {
         Channel channel = channels.get(id);
-        if (channel == null) throw new org.springframework.web.server.ResponseStatusException(HttpStatus.NOT_FOUND, "Channel not found");
+        if (channel == null) throw ApiException.notFound("未找到通知渠道 " + id);
         return channel;
     }
 
@@ -108,8 +111,12 @@ public class NotifyController {
     public ResponseEntity<ApiResult<Map<String, Object>>> notify(@Valid @RequestBody NotifyAlarmRequest request) {
         Map<String, Object> result = dispatcher.dispatch(request.asMap());
         int failed = result.get("failed") instanceof Number number ? number.intValue() : 0;
-        return ResponseEntity.status(failed == 0 ? HttpStatus.OK : HttpStatus.BAD_GATEWAY)
-                .body(ApiResult.ok(result));
+        // The per-channel receipt stays in data; a partial failure is also a
+        // non-zero envelope code so HTTP status and code agree.
+        ApiResult<Map<String, Object>> body = failed == 0
+                ? ApiResult.ok(result)
+                : ApiResult.of(502, "部分通知渠道投递失败，请在通知页查看渠道明细后重试", result);
+        return ResponseEntity.status(failed == 0 ? HttpStatus.OK : HttpStatus.BAD_GATEWAY).body(body);
     }
 
     /** 分发日志：租户级分页（page 从 1 起，size 上限 socp.web.list-max-size）。 */
@@ -125,8 +132,7 @@ public class NotifyController {
 
     private void requireValidRange(int page, int size) {
         if (page < 1 || size < 0 || size > maxListSize) {
-            throw new org.springframework.web.server.ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "分页参数非法：page 从 1 起，size 上限 " + maxListSize);
+            throw ApiException.badRequest("分页参数非法：page 从 1 起，size 上限 " + maxListSize);
         }
     }
 

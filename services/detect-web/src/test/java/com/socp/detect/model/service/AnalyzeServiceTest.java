@@ -112,6 +112,53 @@ class AnalyzeServiceTest {
     }
 
     @Test
+    void stormCollapseRecordsItsOwnOutcomeInsteadOfAFalseCompletion() {
+        AnalyzedRepository repository = mock(AnalyzedRepository.class);
+        AnalysisReceiptStore receipts = mock(AnalysisReceiptStore.class);
+        AlertWindowAggregator window = new AlertWindowAggregator();
+        AnalyzeService service = new AnalyzeService(repository, window, receipts);
+        ReflectionTestUtils.setField(service, "stormSuppressionThreshold", 1L);
+        ReflectionTestUtils.setField(service, "instanceId", "worker-1");
+        when(receipts.claim(any(), any(), any())).thenReturn(true);
+        TenantContext.set("tenant-a");
+        try {
+            var first = service.analyze(alarm("alarm-1"));
+            int derived = ((Number) first.get("analyzedAlerts")).intValue();
+            assertTrue(derived > 0, "测试事件必须能派生出告警，否则本用例没有意义");
+            assertEquals(false, first.get("stormSuppressed"));
+            assertEquals(derived, first.get("persistedAlerts"));
+            verify(receipts).complete("tenant-a", "alarm-1", "v1", derived,
+                    AnalysisReceiptStore.STATUS_COMPLETED);
+
+            var second = service.analyze(alarm("alarm-2"));
+            assertEquals(true, second.get("stormSuppressed"));
+            assertEquals(0, second.get("persistedAlerts"));
+            assertEquals("worker-1", second.get("instance"));
+            verify(receipts).complete("tenant-a", "alarm-2", "v1", 0,
+                    AnalysisReceiptStore.STATUS_SUPPRESSED);
+            verify(repository, org.mockito.Mockito.times(derived)).save(any(AnalyzedEntity.class));
+
+            // The replica-local window must not count what was thrown away.
+            assertEquals(derived, ((Number) window.snapshot("tenant-a").get("total")).longValue());
+            assertEquals(AlertWindowAggregator.REPLICA_LOCAL_SCOPE,
+                    window.snapshot("tenant-a").get("scope"));
+        } finally {
+            TenantContext.clear();
+        }
+    }
+
+    private static java.util.Map<String, Object> alarm(String sourceAlarmId) {
+        return java.util.Map.of(
+                "tenantId", "tenant-a",
+                "sourceAlarmId", sourceAlarmId,
+                "ruleId", "WEB-ATTACK",
+                "source", "web",
+                "entity", "10.0.0.8",
+                "message", "SQLi attempt",
+                "severity", "HIGH");
+    }
+
+    @Test
     void stormCounterCacheIsBoundedDuringScheduledCleanup() {
         AnalyzedRepository repository = mock(AnalyzedRepository.class);
         AnalyzeService service = new AnalyzeService(repository, new AlertWindowAggregator());

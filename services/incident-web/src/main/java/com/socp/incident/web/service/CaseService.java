@@ -9,6 +9,7 @@ import com.socp.incident.web.persistence.store.CaseStore;
 import com.socp.incident.web.persistence.entity.AlarmCaseLinkEntity;
 import com.socp.incident.web.persistence.repository.AlarmCaseLinkRepository;
 import com.socp.incident.web.persistence.entity.CaseTimelineEntity;
+import com.socp.platform.error.exception.ApiException;
 import com.socp.platform.tenant.context.TenantContext;
 import org.springframework.data.domain.Page;
 import org.springframework.stereotype.Service;
@@ -158,7 +159,7 @@ public class CaseService {
 
     public Map<String, Object> setStatus(String id, String status, String assignee) {
         Case c = store.get(id);
-        if (c == null) return Map.of("error", "not_found");
+        if (c == null) throw ApiException.notFound("未找到案件 " + id);
         Case updated = c.withStatus(status, assignee);
         store.save(updated);
         return Map.of("case", updated);
@@ -170,22 +171,23 @@ public class CaseService {
 
     /** Appends by a stable key when supplied; Investigation Agent supplies investigationId. */
     public Map<String, Object> addNote(String id, String author, String content, String idempotencyKey) {
-        Case c = store.get(id);
-        if (c == null) return Map.of("error", "not_found");
+        if (store.get(id) == null) throw ApiException.notFound("未找到案件 " + id);
         String eventKey = idempotencyKey == null || idempotencyKey.isBlank()
                 ? "note:" + UUID.randomUUID() : "note:" + idempotencyKey.trim();
         TimelineEvent event = new TimelineEvent(Instant.now(), "NOTE", author + ": " + content,
                 "analyst", null, eventKey);
         boolean appended = store.appendTimeline(id, event);
         Case updated = store.get(id);
-        if (updated == null) return Map.of("error", "not_found");
+        if (updated == null) throw ApiException.notFound("未找到案件 " + id);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("case", updated);
         if (!appended) result.put("duplicate", true);
         return result;
     }
 
+    /** Timeline page for one case; a missing case is a 404, not an empty success page. */
     public Map<String, Object> timeline(String id, int page, int size) {
+        if (store.get(id) == null) throw ApiException.notFound("未找到案件 " + id);
         var result = store.timeline(id, page, size);
         List<TimelineEvent> items = result.getContent().stream()
                 .map(CaseService::timelineEvent)

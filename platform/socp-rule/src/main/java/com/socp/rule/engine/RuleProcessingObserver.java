@@ -19,4 +19,13 @@ public interface RuleProcessingObserver {
 
     default void processingFailed(SecurityEvent event, Throwable failure) {
     }
+
+    /**
+     * A rule's declared grouping dimension does not match the dimension this
+     * event routes on, so its state is only a fragment of the entity history.
+     * Reported at most once per rule per rule window.
+     */
+    default void routingMismatched(SecurityEvent event, String ruleId,
+                                   String declaredField, String eventRoutingField) {
+    }
 }

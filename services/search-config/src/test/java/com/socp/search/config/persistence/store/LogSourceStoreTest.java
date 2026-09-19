@@ -14,6 +14,8 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class LogSourceStoreTest {
@@ -32,6 +34,8 @@ class LogSourceStoreTest {
         LogSourceEntity entity = LogSourceStore.toEntity(source);
         LogSourceRepository repository = mock(LogSourceRepository.class);
         when(repository.findByTenantId("tenant-source-store")).thenReturn(List.of(entity));
+        when(repository.findIdentityProjections("tenant-source-store"))
+                .thenReturn(List.<Object[]>of(new Object[]{source.id(), source.name()}));
         when(repository.findByTenantIdAndSourceId("tenant-source-store", source.id()))
                 .thenReturn(Optional.of(entity));
         LogSourceStore store = new LogSourceStore(repository);
@@ -40,11 +44,29 @@ class LogSourceStoreTest {
         assertThat(store.findByCollectorTag(" ")).isEmpty();
         assertThat(store.findByCollectorTag(source.collectorTag())).contains(source);
         assertThat(store.findByCollectorTag("missing-tag")).isEmpty();
+        // The tag lookup reads an identity projection instead of deserialising the catalogue.
+        verify(repository, never()).findByTenantId("tenant-source-store");
 
         store.save(source);
-        assertThat(store.revision()).isEqualTo(1L);
+        assertThat(store.revision("tenant-source-store")).isEqualTo(1L);
         assertThat(store.delete(source.id())).isTrue();
-        assertThat(store.revision()).isEqualTo(2L);
+        assertThat(store.revision("tenant-source-store")).isEqualTo(2L);
+    }
+
+    @Test
+    void sourceChangeTokensAreScopedToTheWritingTenant() {
+        TenantContext.set("tenant-a");
+        LogSourceRepository repository = mock(LogSourceRepository.class);
+        LogSourceStore store = new LogSourceStore(repository);
+        LogSource source = LogSource.create("tenant-a-source", SourceType.FILE, ParseFormat.AUTO,
+                "/var/log/a.log", null, null, null, true);
+        LogSourceEntity entity = LogSourceStore.toEntity(source);
+        when(repository.findByTenantIdAndSourceId("tenant-a", source.id())).thenReturn(Optional.of(entity));
+
+        store.save(source);
+
+        assertThat(store.revision("tenant-a")).isEqualTo(1L);
+        assertThat(store.revision("tenant-b")).isZero();
     }
 
     @Test
@@ -56,6 +78,6 @@ class LogSourceStoreTest {
         LogSourceStore store = new LogSourceStore(repository);
 
         assertThat(store.delete("missing")).isFalse();
-        assertThat(store.revision()).isZero();
+        assertThat(store.revision("tenant-source-store")).isZero();
     }
 }

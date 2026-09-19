@@ -59,6 +59,55 @@ class PlaybookActionHandlerRegistryTest {
                 eq(SocpHttpClient.JSON), eq(5000));
     }
 
+    @Test
+    void caseActionRejectsAnErrorSignalCarriedByASuccessEnvelope() {
+        IncidentClient incidents = mock(IncidentClient.class);
+        PlaybookActionHandlerRegistry registry = new PlaybookActionHandlerRegistry(
+                mock(NotifyClient.class), incidents, mock(SocpHttpClient.class));
+        when(incidents.createFromAlarm(any())).thenReturn(new ServiceCall(SocpService.INCIDENT,
+                "http://incident-web", true, 200,
+                "{\"code\":0,\"message\":\"ok\",\"data\":{\"error\":\"not_found\"}}", null, 3, false, 1));
+
+        Map<String, Object> result = registry.find(PlaybookActionType.CASE).handle(
+                new PlaybookActionContext("create-case", Map.of("id", "AL-1"), "soar-key-1", false));
+
+        assertEquals("failed", result.get("status"));
+        assertEquals("DOWNSTREAM_ERROR_RECEIPT", result.get("errorCode"));
+        assertEquals(Boolean.FALSE, result.get("verified"));
+    }
+
+    @Test
+    void notifyActionRejectsAnErrorSignalCarriedByASuccessEnvelope() {
+        NotifyClient notify = mock(NotifyClient.class);
+        PlaybookActionHandlerRegistry registry = new PlaybookActionHandlerRegistry(
+                notify, mock(IncidentClient.class), mock(SocpHttpClient.class));
+        when(notify.notifyAlert(any())).thenReturn(new ServiceCall(SocpService.NOTIFY,
+                "http://notify-web", true, 200,
+                "{\"code\":0,\"message\":\"ok\",\"data\":{\"failed\":0,\"error\":\"not_found\"}}",
+                null, 3, false, 1));
+
+        Map<String, Object> result = registry.find(PlaybookActionType.NOTIFY).handle(
+                new PlaybookActionContext("notify", Map.of("id", "AL-1"), "soar-key-1", false));
+
+        assertEquals("failed", result.get("status"));
+        assertEquals("DOWNSTREAM_ERROR_RECEIPT", result.get("errorCode"));
+    }
+
+    @Test
+    void notifyActionVerifiesAReceiptWithoutErrorSignal() {
+        NotifyClient notify = mock(NotifyClient.class);
+        PlaybookActionHandlerRegistry registry = new PlaybookActionHandlerRegistry(
+                notify, mock(IncidentClient.class), mock(SocpHttpClient.class));
+        when(notify.notifyAlert(any())).thenReturn(call(
+                "{\"code\":0,\"message\":\"ok\",\"data\":{\"failed\":0}}"));
+
+        Map<String, Object> result = registry.find(PlaybookActionType.NOTIFY).handle(
+                new PlaybookActionContext("notify", Map.of("id", "AL-1"), "soar-key-1", false));
+
+        assertEquals("executed", result.get("status"));
+        assertEquals(Boolean.TRUE, result.get("verified"));
+    }
+
     private static ServiceCall call(String body) {
         return new ServiceCall(SocpService.NOTIFY, "https://firewall.example.test/block", true,
                 200, body, null, 3, false, 1);

@@ -35,6 +35,14 @@ public class AuthInterceptor implements HandlerInterceptor {
     private final JwtValidator jwtValidator;
     private final SocpSecurityProperties properties;
     private final CollectorCredentialRegistry collectorCredentials;
+    /**
+     * Replay guard for the signed service/gateway proofs. The claim must survive
+     * the whole skew window: {@code UNAVAILABLE} only covers a store that cannot
+     * be reached (answered as 503), so a shared Redis backend has to be sized
+     * with {@code maxmemory-policy noeviction} — an eviction policy that drops
+     * live keys turns a replay into an accepted request without any error signal.
+     * See docs/production-readiness.md for the instance ownership.
+     */
     private final ServiceNonceStore serviceNonces;
 
     public AuthInterceptor(JwtValidator jwtValidator, SocpSecurityProperties properties) {

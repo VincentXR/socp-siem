@@ -356,6 +356,8 @@ class AuthInterceptorTest {
 
     @Test
     void metricsCredentialIsLimitedToReadOnlyMetrics() throws Exception {
+        // Interceptor-level rules only: real actuator traffic never reaches this
+        // interceptor (ActuatorEndpointRoutingTest covers the filter path).
         properties.setMetricsToken("metrics-token");
         MockHttpServletRequest request = request("metrics-token", null, null);
         request.setMethod("GET");

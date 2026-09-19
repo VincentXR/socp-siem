@@ -1,11 +1,13 @@
 package com.socp.search.config.service;
 
 import com.socp.platform.tenant.context.TenantContext;
+import com.socp.search.config.config.ConfigCacheProperties;
 import com.socp.search.config.config.SearchRuntimeRole;
 import com.socp.search.config.domain.ParseRule;
 import com.socp.search.config.persistence.store.ParseRuleStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -17,6 +19,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * Selects and caches the parser candidates for one configured log source.
  * Explicit source bindings win; otherwise only enabled global/source-scoped
  * rules are used as a sparse-event compatibility fallback.
+ *
+ * <p>Cache invalidation is per tenant (a write by another tenant must not flush this
+ * tenant's compiled pipelines) and TTL-bounded, so a rule saved through another SEARCH
+ * replica becomes visible here within one configuration-cache window instead of staying
+ * stale until a local write or a restart.
  */
 @Component
 @SearchRuntimeRole(SearchRuntimeRole.Role.API)
@@ -26,11 +33,18 @@ public class ParsePipelineResolver {
     private final ParseRuleStore rules;
     private final ParseRuleExecutor executor;
     private final Map<String, List<ParseRuleExecutor.CompiledRule>> cache = new ConcurrentHashMap<>();
-    private volatile long cacheRevision = Long.MIN_VALUE;
+    private final TenantCacheGuard guard;
 
     public ParsePipelineResolver(ParseRuleStore rules, ParseRuleExecutor executor) {
+        this(rules, executor, new ConfigCacheProperties());
+    }
+
+    @Autowired
+    public ParsePipelineResolver(ParseRuleStore rules, ParseRuleExecutor executor,
+                                 ConfigCacheProperties properties) {
         this.rules = rules;
         this.executor = executor;
+        this.guard = new TenantCacheGuard(properties.getTtlMs());
     }
 
     public Result apply(IngestSourceContext context, String original, String rawLog, boolean sparseBase) {
@@ -61,17 +75,14 @@ public class ParsePipelineResolver {
 
     private List<ParseRuleExecutor.CompiledRule> resolve(IngestSourceContext context) {
         String tenant = TenantContext.require();
-        long revision = rules.revision();
-        if (cacheRevision != revision) {
+        long revision = rules.revision(tenant);
+        if (guard.isStale(tenant, revision)) {
             synchronized (cache) {
-                if (cacheRevision != revision) {
-                    cache.clear();
-                    cacheRevision = revision;
-                }
+                cache.keySet().removeIf(key -> key.startsWith(tenant + "|"));
+                guard.markFresh(tenant, revision);
             }
         }
-        String key = tenant + "|" + context.sourceId() + "|"
-                + context.parseRuleIds() + "|" + revision;
+        String key = tenant + "|" + context.sourceId() + "|" + context.parseRuleIds();
         return cache.computeIfAbsent(key, ignored -> compileCandidates(context));
     }
 

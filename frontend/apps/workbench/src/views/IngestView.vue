@@ -47,6 +47,7 @@ import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { onMounted, ref } from 'vue'
 import {
+  ApiError,
   createOutput, createSource, deleteOutput, deleteParseRule, deleteSource, updateSource,
   ingestSummary, listCategories, listIngestTasks, listOutputs, listParseRules, listSources,
   previewParse, renderConfig, startIngestTask, stopIngestTask,
@@ -218,9 +219,34 @@ async function removeSource(id: string) {
   await loadSources()
   })
 }
+/**
+ * Turns a failed vector.toml render into actionable, bilingual guidance.
+ * The backend copy is Chinese-only and hard-coded, so the two known failure
+ * modes (no output target -> 409, viewer role -> 403) are mapped to locale
+ * keys instead of surfacing a message a non-Chinese operator cannot act on.
+ * Any other status keeps the already-localized transport message untouched.
+ */
+function renderFailureHint(failure: unknown): string {
+  if (failure instanceof ApiError && failure.status === 409) return t('ingest.renderNoSinkHint')
+  if (failure instanceof ApiError && failure.status === 403) return t('ingest.renderForbiddenHint')
+  return failure instanceof Error ? failure.message : String(failure)
+}
 async function doRender() {
   renderError.value = ''
-  isolateError(renderError, await mutation.run(async () => { renderText.value = await renderConfig(); showRender.value = true }))
+  renderText.value = ''
+  showRender.value = false
+  let failure: unknown
+  const completed = await mutation.run(async () => {
+    try { renderText.value = await renderConfig(); showRender.value = true }
+    catch (error) { failure = error; throw error }
+  })
+  // A false return with no captured error means the shared action slot was busy:
+  // leave the pending operation's own feedback untouched rather than showing 'undefined'.
+  if (!completed && failure === undefined) return
+  if (completed) return
+  renderError.value = renderFailureHint(failure)
+  // The render surface owns this failure; keep it out of the shared action slot.
+  actionError.value = ''
 }
 async function copyRender() {
   renderError.value = ''
@@ -368,6 +394,7 @@ onMounted(async () => {
 
       <el-tab-pane :label="t('ingest.sourcesTab')" name="sources">
         <div class="add-bar"><el-button v-if="canWrite" type="primary" @click="openCreateSource">+ {{ t('ingest.addSource') }}</el-button><el-button @click="loadSources">{{ t('ingest.refresh') }}</el-button><el-button type="primary" plain @click="doRender">{{ t('ingest.renderConfig') }}</el-button><span class="hint">{{ t('ingest.sourceHint') }}</span></div>
+        <ActionFeedback :error="renderError" />
         <el-drawer v-model="showSourceDialog" :before-close="showSourceDialogGuard.beforeClose" :title="editingSourceId ? t('ingest.editSource') : t('ingest.addSource')" size="min(760px, 96vw)" :close-on-click-modal="false"><ActionFeedback :error="sourceError" />
           <el-form label-position="top" :disabled="actionBusy">
             <FormSection index="01" :title="t('ingest.sourceBasics')" :hint="t('ingest.sourceBasicsHint')">

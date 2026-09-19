@@ -171,9 +171,14 @@ public class AlarmService {
             throw new IllegalArgumentException("alarm tenant does not match authenticated tenant");
         }
         alarm.setTenantId(tenant);
-        if (alarm.getSourceAlertId() != null && !alarm.getSourceAlertId().isBlank()) {
-            var existing = repository.findByTenantIdAndSourceAlertId(tenant, alarm.getSourceAlertId());
+        String sourceAlertId = alarm.getSourceAlertId();
+        if (sourceAlertId != null && !sourceAlertId.isBlank()) {
+            var existing = repository.findByTenantIdAndSourceAlertId(tenant, sourceAlertId);
             if (existing.isPresent()) return existing.get();
+        } else {
+            // A keyless producer must still get a NOT NULL, collision-free identity so
+            // the (tenant_id, source_alert_id) uniqueness contract holds after V20.
+            alarm.setSourceAlertId("manual:" + java.util.UUID.randomUUID());
         }
         if (alarm.getRiskScore() == null) alarm.setRiskScore(initialRisk(alarm));
         alarm.setRiskLevel(com.socp.rule.score.RiskScorer.level(alarm.getRiskScore()));

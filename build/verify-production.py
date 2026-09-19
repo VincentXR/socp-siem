@@ -176,6 +176,15 @@ def main() -> int:
             "SOCP_ALERT_URL: http://alert-web:8080",
             "metricsPath: /detect-web/actuator/prometheus",
             "bearerTokenSecretKey: SOCP_SECURITY_METRICS_TOKEN",
+            # Flyway's two-role contract must be pinned per database workload
+            # through secretEnv, so a missing migration role fails the Pod rather
+            # than resolving to the runtime role via application-pg.yml's nested
+            # default. These keys are required the same way the pg profile now
+            # drops its own `${SOCP_PG_*:default}` fallbacks.
+            "SOCP_PG_USER: SOCP_PG_USER",
+            "SOCP_PG_PASSWORD: SOCP_PG_PASSWORD",
+            "SOCP_PG_MIGRATION_USER: SOCP_PG_MIGRATION_USER",
+            "SOCP_PG_MIGRATION_PASSWORD: SOCP_PG_MIGRATION_PASSWORD",
         }
         for marker in required_values:
             if marker not in values:
@@ -187,53 +196,23 @@ def main() -> int:
         errors.append("missing infra/docker-compose.prod.yml")
     else:
         compose = COMPOSE_PROD.read_text(encoding="utf-8")
-        for name in ("SOCP_PG_RUNTIME_USER", "SOCP_PG_RUNTIME_PASSWORD",
-                     "SOCP_PG_MIGRATION_USER", "SOCP_PG_MIGRATION_PASSWORD"):
-            if not re.search(rf"\$\{{{name}:\?", compose):
-                errors.append(f"production Compose must require {name}")
+        # Compose merges `environment` key by key, so the effective per-service
+        # ProdGuard set, the PG two-role `:?` requirement, gateway trust, and the
+        # shared signing secret are asserted against the merged/rendered result by
+        # build/verify-prod-compose.py (wired into the same CI step). Re-scanning
+        # the overlay text here would duplicate that gate and prove nothing about
+        # the merge, so only checks that are not merge-dependent live here.
         for path in (ROOT / "infra/init-sql/pg/00_roles.sh",
                      ROOT / "infra/init-sql/pg/02_runtime_grants.sh",
                      ROOT / "build/apply-postgres-roles.sh"):
             if not path.is_file():
                 errors.append(f"missing PostgreSQL role contract: {path.relative_to(ROOT)}")
-        for service in ("search-config-api", "search-config-worker",
-                        "detect-web-api", "detect-web-worker", "alert-web"):
-            block = re.search(
-                rf"(?ms)^  {re.escape(service)}:\s*\n.*?(?=^  \S|\Z)",
-                compose,
-            )
-            if block is None or not re.search(
-                r"^\s+SOCP_PG_USER:\s*\$\{SOCP_PG_RUNTIME_USER:\?",
-                block.group(0),
-                re.MULTILINE,
-            ):
-                errors.append(f"production Compose must map {service} to SOCP_PG_RUNTIME_USER")
-            if block is None or not re.search(
-                r"^\s+SOCP_PG_PASSWORD:\s*\$\{SOCP_PG_RUNTIME_PASSWORD:\?",
-                block.group(0),
-                re.MULTILINE,
-            ):
-                errors.append(f"production Compose must map {service} to SOCP_PG_RUNTIME_PASSWORD")
-            for variable in ("SOCP_PG_MIGRATION_USER", "SOCP_PG_MIGRATION_PASSWORD"):
-                if block is None or not re.search(
-                    rf"^\s+{variable}:\s*\$\{{{variable}:\?",
-                    block.group(0),
-                    re.MULTILINE,
-                ):
-                    errors.append(f"production Compose must pass {variable} to {service}")
-            if block is None or not re.search(
-                r"^\s+SOCP_SECURITY_REQUIRE_GATEWAY:\s*['\"]?true['\"]?\s*$",
-                block.group(0),
-                re.MULTILINE,
-            ):
-                errors.append(f"production Compose must require gateway trust for {service}")
-        gateway_block = re.search(r"(?ms)^  api-gateway:\s*\n.*?(?=^  \S|\Z)", compose)
-        if gateway_block is None or "SOCP_SECURITY_SERVICE_SECRET" not in gateway_block.group(0):
-            errors.append("production Compose gateway must have the shared signing secret")
         for name in ("SOCP_API_GATEWAY_IMAGE", "SOCP_SEARCH_CONFIG_IMAGE",
                      "SOCP_DETECT_WEB_IMAGE", "SOCP_ALERT_WEB_IMAGE"):
             if not re.search(rf"\$\{{{name}:\?", compose):
                 errors.append(f"production Compose must require {name}")
+        # Runtime role is only ever set in the overlay (base does not carry it),
+        # so this is a plain presence check rather than a merged-config concern.
         for service, variable, role in (
             ("search-config-api", "SOCP_SEARCH_RUNTIME_ROLE", "api"),
             ("search-config-worker", "SOCP_SEARCH_RUNTIME_ROLE", "worker"),

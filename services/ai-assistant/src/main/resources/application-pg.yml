@@ -15,8 +15,8 @@ spring:
   flyway:
     enabled: true
     url: jdbc:postgresql://${SOCP_PG_HOST:localhost}:${SOCP_PG_PORT:5432}/ai
-    user: ${SOCP_PG_MIGRATION_USER:${SOCP_PG_USER:socp}}
-    password: ${SOCP_PG_MIGRATION_PASSWORD:${SOCP_PG_PASSWORD:socp}}
+    user: ${SOCP_PG_MIGRATION_USER}
+    password: ${SOCP_PG_MIGRATION_PASSWORD}
     baseline-on-migrate: true
     baseline-version: 0
     locations: classpath:db/migration

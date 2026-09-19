@@ -22,6 +22,22 @@ class SocpOpenApiConfigurationTest {
     }
 
     @Test
+    void tenantHeaderIsDescribedButNeverRequired() {
+        // The tenant comes from the verified credential, so a generated SDK must
+        // not be able to select a tenant by sending a header.
+        OpenAPI openApi = new SocpOpenApiConfiguration().socpOpenAPI();
+
+        assertThat(openApi.getComponents().getSecuritySchemes().get("tenantHeader").getName())
+                .isEqualTo("X-Tenant-Id");
+        assertThat(openApi.getComponents().getSecuritySchemes().get("tenantHeader").getDescription())
+                .contains("Informational only");
+        assertThat(openApi.getSecurity())
+                .allSatisfy(requirement -> assertThat(requirement.keySet())
+                        .doesNotContain("tenantHeader")
+                        .allMatch(scheme -> scheme.equals("cookieAuth") || scheme.equals("bearerAuth")));
+    }
+
+    @Test
     void starterIsRestrictedToServletApplications() {
         new SocpPlatformAutoConfiguration();
         ConditionalOnWebApplication condition =

@@ -163,6 +163,13 @@ public class OidcAuthController {
         return new LinkedHashMap<>(claims.getClaims());
     }
 
+    /**
+     * Preference order when the identity provider grants several SOCP roles. It
+     * must stay a permutation of {@code Permission.ISSUABLE_ROLES}: a role the
+     * gateway would reject may never appear here.
+     */
+    static final List<String> ROLE_PRECEDENCE = List.of("admin", "analyst", "viewer");
+
     private String role(Map<String, Object> claims) {
         Set<String> roles = new LinkedHashSet<>();
         Object direct = claims.get("role");
@@ -170,7 +177,7 @@ public class OidcAuthController {
         collectRoles(roles, claims.get("realm_access"));
         Object clients = claims.get("resource_access");
         if (clients instanceof Map<?, ?> access) collectRoles(roles, access.get(clientId));
-        for (String supported : List.of("admin", "analyst", "viewer")) {
+        for (String supported : ROLE_PRECEDENCE) {
             if (roles.contains(supported)) return supported;
         }
         return null;

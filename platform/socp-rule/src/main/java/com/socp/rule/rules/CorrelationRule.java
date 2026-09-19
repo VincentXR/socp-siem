@@ -173,7 +173,9 @@ public final class CorrelationRule extends AbstractRule implements StatefulRule 
         Map<String, Object> snapshot = StateSnapshotCodec.read(serializedState);
         states.clear();
         snapshot.forEach((key, raw) -> {
-            if (!(raw instanceof Map<?, ?> values)) return;
+            // A blank grouping key cannot exist in state produced by accept();
+            // skip corrupt checkpoint content instead of failing the restore.
+            if (key == null || key.isBlank() || !(raw instanceof Map<?, ?> values)) return;
             State state = states.get(key, State::new);
             synchronized (state) {
                 state.step = values.get("step") instanceof Number n ? n.intValue() : 0;

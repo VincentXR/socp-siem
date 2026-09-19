@@ -8,6 +8,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.socp.detect.web.metrics.DetectionPerformanceMetrics;
 import com.socp.detect.web.service.DetectEngineService;
 import com.socp.detect.web.persistence.store.DetectionEventClaim;
+import com.socp.detect.web.persistence.store.DetectionStateOwnership;
 import com.socp.detect.web.persistence.store.DetectionStateStore;
 import com.socp.rule.partition.DetectionRoutingKey;
 import com.socp.rule.model.SecurityEvent;
@@ -58,7 +59,18 @@ final class DetectionRecordProcessor {
                     "Kafka routing key mismatch eventId={} received={} expected={}; using expected ownership",
                     record.event().id(), key, record.routingKey());
         }
-        processNormalized(topic, partition, offset, record.routingKey(), record.event());
+        try {
+            processNormalized(topic, partition, offset, record.routingKey(), record.event());
+        } catch (MalformedDetectionRecordException | DetectionUnavailableException
+                 | TerminalDetectionFailure typed) {
+            throw typed;
+        } catch (RuntimeException failure) {
+            // The record parsed successfully, so the terminal identity and its
+            // tenant travel with the exception instead of being re-derived from
+            // the Kafka routing key when the hand-off runs.
+            throw new TerminalDetectionFailure(record.event().id(), record.event().requireTenantId(),
+                    "detection processing failed: " + failure.getMessage(), failure);
+        }
     }
 
     void processNormalized(Integer partition, Long offset, String routingKey, SecurityEvent normalized) {
@@ -103,7 +115,15 @@ final class DetectionRecordProcessor {
                 throw new IllegalStateException("detection processing timeout", timeout);
             } catch (ExecutionException failed) {
                 Throwable cause = failed.getCause() == null ? failed : failed.getCause();
-                throw new IllegalStateException("durable detection result failed: " + cause.getMessage(), cause);
+                if (isGlobalUnavailable(cause)) {
+                    // Admission backpressure, a recovering engine and a revoked
+                    // ownership fence are worker-wide conditions: the durable
+                    // contract keeps them retryable with the offset pending so a
+                    // dependency outage never terminalises live events.
+                    throw new DetectionUnavailableException(tenant, cause);
+                }
+                throw new TerminalDetectionFailure(normalized.id(), tenant,
+                        "durable detection result failed: " + cause.getMessage(), cause);
             }
             // Mark the journal terminal only after the engine's durable sink
             // and owner-fenced position callback have completed. This also
@@ -212,6 +232,69 @@ final class DetectionRecordProcessor {
     }
 
     record NormalizedDetectionRecord(String routingKey, SecurityEvent event) {
+    }
+
+    /**
+     * Worker-wide conditions that must stay retryable: admission backpressure, an
+     * engine that is not ready, a non-worker runtime role and a revoked ownership
+     * fence. They never consume the dead-letter budget, so a dependency outage
+     * cannot turn live events into terminal ones. The engine reports the recovery
+     * and role conditions as {@link IllegalStateException} messages, which are the
+     * only signal available at this boundary.
+     */
+    private static boolean isGlobalUnavailable(Throwable failure) {
+        for (Throwable current = failure; current != null;
+             current = current.getCause() == current ? null : current.getCause()) {
+            if (current instanceof TenantAdmission.RejectedException
+                    || current instanceof DetectionStateOwnership.StaleStateOwnerException) {
+                return true;
+            }
+            String message = current.getMessage();
+            if (message != null && (message.startsWith("detection state recovery is ")
+                    || message.startsWith("detection runtime role is "))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** A record may not be evaluated while this worker is globally unavailable. */
+    static final class DetectionUnavailableException extends RuntimeException {
+        private final String tenantId;
+
+        DetectionUnavailableException(String tenantId, Throwable cause) {
+            super("detection is temporarily unavailable: " + cause.getMessage(), cause);
+            this.tenantId = tenantId;
+        }
+
+        String tenantId() {
+            return tenantId;
+        }
+    }
+
+    /**
+     * A deterministic processing failure for one already-parsed event. It carries
+     * the journal identity - the normalized event id plus its tenant - because the
+     * Kafka routing key is a routing identity and the tenant scope is closed by
+     * the time the dead-letter hand-off runs.
+     */
+    static final class TerminalDetectionFailure extends RuntimeException {
+        private final String eventId;
+        private final String tenantId;
+
+        TerminalDetectionFailure(String eventId, String tenantId, String message, Throwable cause) {
+            super(message, cause);
+            this.eventId = eventId;
+            this.tenantId = tenantId;
+        }
+
+        String eventId() {
+            return eventId;
+        }
+
+        String tenantId() {
+            return tenantId;
+        }
     }
 
     static final class MalformedDetectionRecordException extends RuntimeException {

@@ -191,6 +191,66 @@ class GatewayFilterTest {
     }
 
     @Test
+    void admitsExactlyTheRolesThePlatformCanIssue() {
+        // The gateway is the only session admission point for browser traffic, so
+        // its accepted vocabulary must equal the role set that carries permission
+        // defaults. Advisory names from docs/soar-design.md (approver, operator)
+        // must not be silently accepted; OidcAuthControllerTest locks the OIDC
+        // side of the same invariant.
+        org.assertj.core.api.Assertions
+                .assertThat(com.socp.platform.auth.security.Permission.ISSUABLE_ROLES)
+                .containsExactlyInAnyOrder("admin", "analyst", "viewer");
+    }
+
+    @Test
+    void rejectsSessionRoleWithoutAnIssuancePath() {
+        GatewayFilter filter = new GatewayFilter(jwtValidator);
+        JWTClaimsSet claims = new JWTClaimsSet.Builder().subject("soar-reviewer")
+                .claim("role", "approver").claim("tenant", "tenant-a").build();
+        given(jwtValidator.isDevBypass()).willReturn(false);
+        given(jwtValidator.validate("approver-token")).willReturn(claims);
+        given(jwtValidator.extractTenant(claims)).willReturn("tenant-a");
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.get("/soar-web/api/v1/approvals/pending")
+                        .header("Authorization", "Bearer approver-token")
+                        .build());
+
+        filter.filter(exchange, chain).block(Duration.ofSeconds(1));
+
+        assertEquals(HttpStatus.UNAUTHORIZED, exchange.getResponse().getStatusCode());
+        org.assertj.core.api.Assertions.assertThat(exchange.getResponse().getBodyAsString().block())
+                .isNotNull()
+                .contains("\"code\":401");
+        verifyNoInteractions(chain);
+    }
+
+    @Test
+    void acceptsEveryIssuableRoleForReadOnlyTraffic() {
+        for (String role : com.socp.platform.auth.security.Permission.ISSUABLE_ROLES) {
+            GatewayFilter filter = new GatewayFilter(jwtValidator);
+            JWTClaimsSet claims = new JWTClaimsSet.Builder().subject(role + "-user")
+                    .claim("role", role).claim("tenant", "tenant-a").build();
+            given(jwtValidator.isDevBypass()).willReturn(false);
+            given(jwtValidator.validate(role + "-token")).willReturn(claims);
+            given(jwtValidator.extractTenant(claims)).willReturn("tenant-a");
+            java.util.concurrent.atomic.AtomicInteger forwarded = new java.util.concurrent.atomic.AtomicInteger();
+            GatewayFilterChain counting = exchange1 -> {
+                forwarded.incrementAndGet();
+                return Mono.empty();
+            };
+            MockServerWebExchange exchange = MockServerWebExchange.from(
+                    MockServerHttpRequest.get("/alert-web/api/v1/alarms")
+                            .header("Authorization", "Bearer " + role + "-token")
+                            .build());
+
+            filter.filter(exchange, counting).block(Duration.ofSeconds(1));
+
+            org.assertj.core.api.Assertions.assertThat(forwarded.get())
+                    .as("session role " + role).isEqualTo(1);
+        }
+    }
+
+    @Test
     void acceptsAllowedOriginForCookieMutation() {
         GatewayFilter filter = new GatewayFilter(jwtValidator);
         JWTClaimsSet claims = new JWTClaimsSet.Builder().subject("analyst-user")

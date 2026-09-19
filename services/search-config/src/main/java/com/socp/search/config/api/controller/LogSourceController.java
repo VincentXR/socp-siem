@@ -3,7 +3,6 @@ package com.socp.search.config.api.controller;
 
 import com.socp.search.config.domain.LogSource;
 import com.socp.search.config.domain.ParseFormat;
-import com.socp.search.config.domain.SinkTarget;
 import com.socp.search.config.domain.SourceType;
 import com.socp.search.config.api.request.LogSourceRequest;
 import com.socp.search.config.config.IngestLimitsProperties;
@@ -11,8 +10,12 @@ import com.socp.search.config.config.VectorProperties;
 import com.socp.search.config.render.VectorConfigRenderer;
 import com.socp.search.config.persistence.store.LogSourceStore;
 import com.socp.search.config.persistence.store.SinkTargetStore;
+import com.socp.platform.audit.api.AuditOperation;
 import com.socp.platform.error.api.ApiResult;
 import com.socp.platform.error.api.PageResponse;
+import com.socp.platform.error.exception.ApiException;
+import com.socp.platform.tenant.context.AuthenticatedIdentity;
+import com.socp.platform.tenant.context.AuthenticatedIdentityContext;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.platform.auth.security.RequireIngestIdentity;
 import com.socp.platform.ratelimit.api.RateLimit;
@@ -29,6 +32,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -41,14 +45,18 @@ import com.socp.platform.auth.security.RequireRole;
  * SEARCH 日志源 REST API——采集链路第一环的配置面 + 接收面。
  *
  * <p>端点（context-path /search-config）：
- *   GET    /api/v1/sources            列出全部日志源
- *   POST   /api/v1/sources            新增日志源（含输入细节/输出目标/解析规则）
+ *   GET    /api/v1/sources            列出日志源（数据库分页）
+ *   POST   /api/v1/sources            新增日志源（admin/analyst）
  *   GET    /api/v1/sources/{id}       详情
- *   PUT    /api/v1/sources/{id}       更新
- *   DELETE /api/v1/sources/{id}       删除
+ *   PUT    /api/v1/sources/{id}       更新（admin/analyst）
+ *   DELETE /api/v1/sources/{id}       删除（admin/analyst）
  *   GET    /api/v1/sources/{id}/vector-config  渲染该源对应的 Vector 片段
- *   POST   /api/v1/render             渲染全部启用源为完整 vector.toml（下载用）
+ *                                          （admin/analyst；凭据默认脱敏）
+ *   POST   /api/v1/render             渲染全部启用源为完整 vector.toml（下载用；同上凭据口径）
  *   POST   /api/v1/ingest             接收 Vector 投递的 NDJSON（解析/落 OpenSearch 为后续步骤）
+ *
+ * <p>缺资源一律抛 {@link ApiException#notFound}，统一由 GlobalExceptionHandler 出
+ * 非零 code 信封；成功信封的 data 内不再携带 {@code error} 字段。
  */
 @RestController
 @com.socp.search.config.config.SearchRuntimeRole(
@@ -79,7 +87,7 @@ public class LogSourceController {
         this.pipeline = pipeline;
         this.ingestLimits = ingestLimits;
         this.vectorToken = vectorProperties.getToken();
-        this.renderer = new VectorConfigRenderer(null, this.vectorToken);
+        this.renderer = new VectorConfigRenderer(this.vectorToken);
     }
 
     @PostConstruct
@@ -95,20 +103,15 @@ public class LogSourceController {
         }
         // 2026-08-12：真实采集链路种子——Vector 监听文件尾部 + syslog TCP 5514，
         // 解析权归 SEARCH（parse_format=AUTO），与 agents/vector-pipeline/vector.toml 对齐
-        if (store.list().stream().noneMatch(s -> "real-file".equals(s.id()))) {
+        if (store.list().stream().noneMatch(s -> "real-file".equals(s.name()))) {
             store.save(LogSource.create("real-file", SourceType.FILE, ParseFormat.AUTO,
                     "demo/sample.log", null, null, "local", true));
         }
-        if (store.list().stream().noneMatch(s -> "real-syslog".equals(s.id()))) {
+        if (store.list().stream().noneMatch(s -> "real-syslog".equals(s.name()))) {
             store.save(LogSource.create("real-syslog", SourceType.SYSLOG, ParseFormat.AUTO,
                     null, "0.0.0.0:5514", null, "local", true));
         }
-        // 输出目标：SEARCH ingest + 机机 token（渲染 Vector 配置时注入 Authorization 头）
-        if (sinkStore.list().isEmpty()) {
-            sinkStore.save(SinkTarget.create("search-ingest", "SEARCH",
-                    "http://localhost:18081/search-config/api/v1/ingest",
-                    "Bearer " + vectorToken, true));
-        }
+        // 输出目标不在这里播种：平台采集入口由 socp.vector.uri 提供，租户目标经 POST /outputs 落库。
         } finally {
             if (previousTenant == null) {
                 TenantContext.clear();
@@ -149,16 +152,15 @@ public class LogSourceController {
     @GetMapping("/sources/{id}")
     public ApiResult<Map<String, Object>> get(@PathVariable String id) {
         Optional<LogSource> s = store.get(id);
-        if (s.isEmpty()) return ApiResult.ok(Map.of("error", "not_found", "id", id));
+        if (s.isEmpty()) throw ApiException.notFound("未找到日志源 " + id);
         return ApiResult.ok(Map.of("source", s.get()));
     }
 
     @RequireRole({"admin", "analyst"})
     @PutMapping("/sources/{id}")
     public ApiResult<Map<String, Object>> update(@PathVariable String id, @Valid @RequestBody LogSourceRequest req) {
-        Optional<LogSource> exist = store.get(id);
-        if (exist.isEmpty()) return ApiResult.ok(Map.of("error", "not_found", "id", id));
-        LogSource updated = req.toDomain(id, exist.get().createdAt());
+        LogSource existing = store.get(id).orElseThrow(() -> ApiException.notFound("未找到日志源 " + id));
+        LogSource updated = req.toDomain(id, existing.createdAt());
         store.save(updated);
         return ApiResult.ok(Map.of("source", updated));
     }
@@ -170,17 +172,36 @@ public class LogSourceController {
         return ApiResult.ok(Map.of("deleted", ok, "id", id));
     }
 
+    /**
+     * 渲染单个日志源的 Vector 片段。该产物内含采集入口凭据位，因此与 {@code POST /render}
+     * 同权（admin/analyst），且默认把凭据渲染为占位符；仅管理员显式 includeSecret=true 才回填明文。
+     */
+    @RequireRole({"admin", "analyst"})
+    @AuditOperation(action = "RENDER_VECTOR_CONFIG", target = "log_source")
     @GetMapping(value = "/sources/{id}/vector-config", produces = "text/plain")
-    public String vectorConfig(@PathVariable String id) {
-        Optional<LogSource> s = store.get(id);
-        if (s.isEmpty()) return "# not_found: " + id;
-        return renderer.render(List.of(s.get()), sinkStore.list());
+    public String vectorConfig(@PathVariable String id,
+                               @RequestParam(required = false, defaultValue = "false") boolean includeSecret) {
+        LogSource source = store.get(id).orElseThrow(() -> ApiException.notFound("未找到日志源 " + id));
+        return renderer.render(List.of(source), sinkStore::resolveForRendering,
+                secretGrant(includeSecret));
     }
 
     @RequireRole({"admin", "analyst"})
+    @AuditOperation(action = "RENDER_VECTOR_CONFIG_ALL", target = "log_source")
     @PostMapping(value = "/render", produces = "text/plain")
-    public String renderAll() {
-        return renderer.render(store.enabled(), sinkStore.list());
+    public String renderAll(@RequestParam(required = false, defaultValue = "false") boolean includeSecret) {
+        return renderer.render(store.enabled(), sinkStore::resolveForRendering,
+                secretGrant(includeSecret));
+    }
+
+    /** Rendering secrets are admin-only; a non-admin request that asks for them is denied. */
+    private static boolean secretGrant(boolean includeSecret) {
+        if (!includeSecret) return false;
+        AuthenticatedIdentity identity = AuthenticatedIdentityContext.current().orElse(null);
+        if (identity == null || !"admin".equalsIgnoreCase(identity.role())) {
+            throw ApiException.forbidden("仅管理员可取回含明文采集凭据的 Vector 配置");
+        }
+        return true;
     }
 
     /**

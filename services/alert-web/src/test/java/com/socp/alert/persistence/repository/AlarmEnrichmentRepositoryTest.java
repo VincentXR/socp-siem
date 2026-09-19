@@ -37,6 +37,7 @@ class AlarmEnrichmentRepositoryTest {
         Alarm alarm = new Alarm("R-1", "IOC", Severity.HIGH,
                 "connection to 203.0.113.10", "203.0.113.10");
         alarm.setTenantId("tenant-a");
+        alarm.setSourceAlertId("enrichment-1");
         alarm.setStatus("CLOSED");
         alarm = repository.saveAndFlush(alarm);
 

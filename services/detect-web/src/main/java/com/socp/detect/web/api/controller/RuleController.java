@@ -72,13 +72,24 @@ public class RuleController {
         return ApiResult.ok(engine.contentManifest());
     }
 
-    /** Validate a rule without persisting or hot-reloading it. */
+    /**
+     * Validate a rule without persisting or hot-reloading it.
+     *
+     * <p>{@code errors} are what persistence would reject. {@code advisories}
+     * never reject: they name a grouping dimension the default routing policy
+     * can outrank for a declared data source, which is the pre-flight version of
+     * the same partition-locality warning the event path counts as
+     * {@code socp_detection_rule_routing_mismatch}. Persistence logs the same
+     * advisories on save.</p>
+     */
     @RequireRole({"admin", "analyst"})
     @PostMapping("/rules/validate")
     public ApiResult<Map<String, Object>> validateRule(@Valid @RequestBody RuleSpecRequest request) {
         Map<String, Object> enriched = DetectionContentCatalog.enrich(request.asMap());
         List<String> errors = DetectionContentCatalog.validateSpec(enriched);
-        return ApiResult.ok(Map.of("valid", errors.isEmpty(), "errors", errors, "spec", enriched));
+        List<String> advisories = DetectionContentCatalog.partitionLocalAdvisories(enriched);
+        return ApiResult.ok(Map.of("valid", errors.isEmpty(), "errors", errors,
+                "advisories", advisories, "spec", enriched));
     }
 
     @RequireRole({"admin", "analyst"})
@@ -132,12 +143,26 @@ public class RuleController {
         return ApiResult.ok(Map.of("removed", engine.deleteRule(id)));
     }
 
+    /**
+     * Submits a ruleset reload for the current tenant.
+     *
+     * <p>{@code reloaded=true} is a submission receipt, not a claim that every
+     * replica is already evaluating the new ruleset: the response says so with
+     * {@code effective="async-per-replica"}. Continuous detection runs in the
+     * worker role, and each replica drains its in-flight work and rebuilds its
+     * own engines independently and asynchronously from the rule-change outbox,
+     * so this call cannot observe (or wait for) the other replicas. The API role
+     * owns no live engine at all and returns without touching any. Per-replica
+     * confirmation is {@code GET /api/v1/stats}, whose {@code ruleStats} and
+     * {@code stateRecovery} are replica-local.</p>
+     */
     @RequireRole({"admin", "analyst"})
     @PostMapping("/rules/reload")
     public ApiResult<Map<String, Object>> reload() {
         Map<String, Object> response = new LinkedHashMap<>();
         engine.reload();
         response.put("reloaded", true);
+        response.put("effective", "async-per-replica");
         response.put("rules", engine.ruleCount());
         return ApiResult.ok(response);
     }

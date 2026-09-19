@@ -200,17 +200,75 @@ class RuleControllerTest {
     }
 
     @Test
-    void reloadReturnsCurrentRuleCount() throws Exception {
+    void reloadIsAReceiptThatTheReloadWasSubmittedNotAppliedEverywhere() throws Exception {
         given(engine.ruleCount()).willReturn(2L);
 
         mvc.perform(post("/api/v1/rules/reload")
                         .header("Authorization", BEARER)
                         .header("X-Role", "analyst"))
                 .andExpect(status().isOk())
+                // reloaded=true is the submission receipt. Each worker replica
+                // drains its in-flight work and rebuilds independently, so this
+                // response can never claim the new ruleset is live everywhere.
                 .andExpect(jsonPath("$.data.reloaded").value(true))
+                .andExpect(jsonPath("$.data.effective").value("async-per-replica"))
                 .andExpect(jsonPath("$.data.rules").value(2));
 
         verify(engine).reload();
+        verify(engine).ruleCount();
+        org.mockito.Mockito.verifyNoMoreInteractions(engine);
+    }
+
+    @Test
+    void validateReportsPartitionLocalAdvisoriesWithoutRejectingTheRule() throws Exception {
+        mvc.perform(post("/api/v1/rules/validate")
+                        .header("Authorization", BEARER).header("X-Role", "analyst")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"id":"validate-advisory","name":"User brute force","type":"threshold",
+                                 "severity":"HIGH","threshold":5,"window":"5m","groupBy":"user",
+                                 "dataSources":["auth"]}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.valid").value(true))
+                .andExpect(jsonPath("$.data.errors.length()").value(0))
+                .andExpect(jsonPath("$.data.advisories[0]")
+                        .value(org.hamcrest.Matchers.containsString("route by 'src_ip'")))
+                .andExpect(jsonPath("$.data.spec.groupBy").value("user"))
+                .andExpect(jsonPath("$.data.spec.routingField").value("user"));
+
+        org.mockito.Mockito.verifyNoInteractions(engine);
+    }
+
+    @Test
+    void validateLeavesAdvisoriesEmptyWhenGroupingMatchesTheRoutingDimension() throws Exception {
+        mvc.perform(post("/api/v1/rules/validate")
+                        .header("Authorization", BEARER).header("X-Role", "analyst")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"id":"validate-clean","name":"Source brute force","type":"threshold",
+                                 "severity":"HIGH","threshold":5,"window":"5m","groupBy":"src_ip",
+                                 "dataSources":["auth"]}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.valid").value(true))
+                .andExpect(jsonPath("$.data.advisories.length()").value(0));
+    }
+
+    @Test
+    void validateStillReportsAdvisoriesAlongsideErrors() throws Exception {
+        mvc.perform(post("/api/v1/rules/validate")
+                        .header("Authorization", BEARER).header("X-Role", "analyst")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"No threshold","type":"threshold","severity":"HIGH",
+                                 "window":"5m","groupBy":"user","dataSources":["auth"]}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.valid").value(false))
+                .andExpect(jsonPath("$.data.errors[0]").value("missing id"))
+                .andExpect(jsonPath("$.data.advisories[0]")
+                        .value(org.hamcrest.Matchers.containsString("'user'")));
     }
 
     @Test

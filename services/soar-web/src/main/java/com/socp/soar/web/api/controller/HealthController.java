@@ -6,6 +6,8 @@ import com.socp.soar.web.connector.SoarConnectorRegistry;
 import com.socp.soar.web.service.SoarService;
 import com.socp.soar.web.service.TemporalExecutor;
 import com.socp.platform.error.api.ApiResult;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.beans.factory.ObjectProvider;
@@ -51,7 +53,7 @@ public class HealthController {
     }
 
     @GetMapping("/health")
-    public ApiResult<Map<String, Object>> health() {
+    public ResponseEntity<ApiResult<Map<String, Object>>> health() {
         HealthEndpoint endpoint = healthEndpoint.getIfAvailable();
         String platformStatus = endpoint == null ? "UP" : endpoint.health().getStatus().getCode();
         boolean temporalAvailable = temporal != null && temporal.getIfAvailable() != null
@@ -68,7 +70,7 @@ public class HealthController {
                 : ("UP".equalsIgnoreCase(platformStatus) && temporalAvailable && productionSecretReady
                 ? "UP" : "DEGRADED");
         if (temporal == null) {
-            return ApiResult.ok(Map.of("service", "soar-web", "status", status,
+            return respond(status, Map.of("service", "soar-web", "status", status,
                     "maturity", properties.getMaturity()));
         }
         Map<String, Object> details = new LinkedHashMap<>();
@@ -89,6 +91,12 @@ public class HealthController {
                     .map(item -> item.id()).toList());
         }
         details.put("checkedAt", Instant.now());
-        return ApiResult.ok(details);
+        return respond(status, details);
+    }
+
+    private static ResponseEntity<ApiResult<Map<String, Object>>> respond(
+            String status, Map<String, Object> body) {
+        HttpStatus code = "UP".equalsIgnoreCase(status) ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE;
+        return ResponseEntity.status(code).body(ApiResult.ok(body));
     }
 }

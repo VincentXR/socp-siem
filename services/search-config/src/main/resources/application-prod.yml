@@ -1,3 +1,11 @@
 spring:
   config:
     import: classpath:application-pg.yml
+
+socp:
+  demo-data:
+    enabled: false
+  vector:
+    # 生产必须显式给出本服务采集入口地址：留空时 Vector 渲染返回 HTTP 409，
+    # 而不是把 loopback 地址写进采集器配置（种子 sink 劫持生产输出的根因）。
+    uri: ${SOCP_VECTOR_URI:}

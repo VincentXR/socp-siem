@@ -22,6 +22,29 @@ The deployment platform must create `socp-system` using
 `socp-runtime-secrets` Secret. The chart never creates secret values and
 application service accounts receive no external cloud permissions by default.
 
+Every Deployment imports that Secret with `envFrom`, which accepts any subset of
+its keys. That is not good enough for the PostgreSQL role pair, because
+`application-pg.yml` resolves Flyway's account as
+`${SOCP_PG_MIGRATION_USER:${SOCP_PG_USER:socp}}`: a Secret without the migration
+keys would run DDL as the restricted runtime role and only fail at the next
+schema change. Each database workload therefore also names
+`SOCP_PG_USER`, `SOCP_PG_PASSWORD`, `SOCP_PG_MIGRATION_USER`, and
+`SOCP_PG_MIGRATION_PASSWORD` through `secretEnv`. A missing key stops the Pod
+with a `CreateContainerConfigError` before the container starts instead of
+changing which role performs migrations. The Compose overlay enforces the same
+four values with `${VAR:?}` interpolation.
+
+`runtime.config` points `SPRING_DATA_REDIS_HOST`/`PORT` at the environment-owned
+Redis. That instance holds the service replay nonces, the revoked-session list,
+and the shared limiter budget, so it must run with `maxmemory-policy noeviction`.
+Eviction is invisible to the application: an evicted nonce makes `SETNX` succeed
+again, so the replay is accepted, and an evicted revocation entry re-activates a
+logged-out session until its token expires. A full instance under `noeviction`
+fails writes instead, and every consumer turns that exception into an explicit
+refusal. When the instance requires authentication, add
+`SPRING_DATA_REDIS_PASSWORD` to `socp-runtime-secrets`; the chart does not pin it
+because a private-network or mTLS-protected managed Redis is a legitimate shape.
+
 Dependency endpoints default to the `socp-data` namespace. Override
 `runtime.extraConfig` through an environment-owned values file when using
 managed or external Kafka, PostgreSQL, OpenSearch, ClickHouse, Redis, or
@@ -86,6 +109,16 @@ Each profile must also declare its monitoring intent explicitly in
 silent inheritance is what let the verifier assert a rendered `PrometheusRule`
 while no real release produced one.
 
+`python build/verify-prod-compose.py` checks this chart against the fail-closed
+prerequisites it shares with `infra/docker-compose.prod.yml`: the startup and
+liveness probes must target a limited health group rather than the aggregated
+endpoint, the readiness timeout must cover the pooled-connection wait the chart
+pins, every database workload must name the four PostgreSQL role keys, and the
+gateway must declare the Redis revocation and OIDC state backends. That gate
+reads the same invariants out of the Compose overlay, so the rehearsal cannot
+drift away from the release baseline in the direction of "works only in the
+chart".
+
 ## Monitoring
 
 The chart ships two optional objects and keeps both off by default:
@@ -125,6 +158,18 @@ what closes that path, because Prometheus cannot produce a gateway signature
 and a bare JWT is rejected. Do not describe the metrics token as the only way
 to read the endpoint.
 
+Actuator authorization is same-port by design for the workloads this chart
+scrapes: the platform guards every non-public actuator path with a servlet
+filter that runs ahead of the request interceptors, and leaves
+`/actuator/health` and its groups public. That keeps one port carrying several
+trust domains coherently, so the chart moves nothing to a `management.server.port`.
+Doing so would put scrape traffic outside the policy that already admits it and
+force a new Service port, a new `NetworkPolicy` port, and a rewritten
+`ServiceMonitor` for no additional boundary; `socp-metrics-ingress` and the
+`ServiceMonitor` endpoint therefore stay on the application port with the
+metrics token. The gateway is a separate case, described next: it exposes no
+metrics endpoint on its application port at all.
+
 `api-gateway` is deliberately not scraped. Its application port exposes health
 only and defers Prometheus samples to a dedicated internal management
 path/port, so the chart declares no `health.metricsPath` for it. The verifier
@@ -141,6 +186,43 @@ The default network policy already admits metrics traffic to port 8080 from
 the namespace labelled `kubernetes.io/metadata.name: monitoring`. A Prometheus
 in a differently named namespace needs `networkPolicy.metricsIngressNamespaceSelector`
 updated in the environment values file, otherwise the scrape is dropped.
+
+## Probes and failure domains
+
+Each container carries three probes, and the two health groups they use are
+deliberately different:
+
+| Probe | Path | Meaning of a failure |
+| --- | --- | --- |
+| `startupProbe` | `<basePath>/liveness` | The process never finished booting, so kubelet restarts it |
+| `readinessProbe` | `<basePath>/readiness` | This replica stops receiving traffic; nothing restarts |
+| `livenessProbe` | `<basePath>/liveness` | The process is wedged, so kubelet restarts it |
+
+`<basePath>/liveness` is the process-local group. The startup probe must not use
+the unqualified `<basePath>`, because Spring's aggregated endpoint folds in the
+`db` contributor and `SOCP_HEALTH_REQUIRED_ENDPOINTS`, so a Kafka, OpenSearch,
+ClickHouse, or downstream outage would keep every *new* container — a rollout
+surge, an HPA scale-up, a rescheduled node — from ever passing startup. Under
+`maxUnavailable: 0` those restart loops repeatedly join and leave the shared
+consumer group and perturb the replicas that are still serving. Waiting for
+dependencies stays a readiness concern, where the cost is one replica out of
+rotation. The endpoint is public by design: the platform's actuator filter keeps
+`/actuator/health` and its groups unauthenticated precisely so kubelet needs no
+credential.
+
+The readiness group also contains the Spring `db` contributor, which borrows a
+pooled connection. `runtime.config` pins
+`SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT` at 2000ms, below the 5s
+`readinessProbe` timeout, so a saturated pool surfaces as a DOWN readiness
+signal rather than a probe timeout. Raising the probe timeout without lowering
+the pool wait leaves the same ambiguity, and the dependency indicator itself
+costs 500ms per configured endpoint, serially.
+
+`SOCP_HEALTH_REQUIRED_ENDPOINTS` lists only what the workload calls
+synchronously. Detection's API role, for example, lists Kafka but not
+`alert-web`: its alert client lives on the worker role, and a transitive hop
+would let one ClickHouse outage pull the northernmost ingest entry out of
+rotation once every tier lost readiness at the same time.
 
 ## Release behavior
 

@@ -4,6 +4,7 @@ import com.nimbusds.jwt.JWTClaimsSet;
 import com.socp.gateway.api.controller.AuthController;
 import com.socp.platform.auth.security.JwtValidationException;
 import com.socp.platform.auth.security.JwtValidator;
+import com.socp.platform.auth.security.Permission;
 import com.socp.platform.obs.trace.TracePropagation;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.platform.tenant.security.ServiceRequestSignature;
@@ -43,7 +44,12 @@ public class GatewayFilter implements GlobalFilter, Ordered {
 
     private static final Logger log = LoggerFactory.getLogger(GatewayFilter.class);
     private static final String BEARER = "Bearer ";
-    private static final Set<String> ROLES = Set.of("admin", "analyst", "viewer");
+    /**
+     * Roles a session may carry. Sourced from the shared permission vocabulary so
+     * the gateway can never forward a role the platform grants no defaults for
+     * (docs/soar-design.md's "approver"/"operator" lines are advisory only).
+     */
+    private static final Set<String> ROLES = Permission.ISSUABLE_ROLES;
     private static final Pattern W3C_TRACE_ID = Pattern.compile("(?!0{32})[0-9a-f]{32}");
 
     private static final TextMapGetter<HttpHeaders> HTTP_GETTER = new TextMapGetter<>() {
@@ -151,8 +157,16 @@ public class GatewayFilter implements GlobalFilter, Ordered {
                 return traced(span, exchange,
                         reject(exchange, traceId, "Invalid or expired session", HttpStatus.UNAUTHORIZED));
             }
-            if (!TenantContext.isValid(tenant) || subject == null || subject.isBlank()
-                    || role == null || !ROLES.contains(role)) {
+            if (role == null || !ROLES.contains(role)) {
+                // A role outside the issuable vocabulary (docs/soar-design.md lists
+                // advisory names such as approver) has no session path here; say so
+                // in the log so the rejection is diagnosable instead of mysterious.
+                log.warn("Session rejected traceId={} path={} reason=unsupported-role role={}",
+                        traceId, path, role);
+                return traced(span, exchange, reject(exchange, traceId,
+                        "Session role is not supported", HttpStatus.UNAUTHORIZED));
+            }
+            if (!TenantContext.isValid(tenant) || subject == null || subject.isBlank()) {
                 return traced(span, exchange, reject(exchange, traceId,
                         "Session identity claims are incomplete", HttpStatus.UNAUTHORIZED));
             }

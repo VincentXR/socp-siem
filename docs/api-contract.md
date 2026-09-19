@@ -1,8 +1,11 @@
 # API contract
 
 The running Spring applications are the canonical HTTP contract. Servlet
-services expose `/v3/api-docs` and `/swagger-ui.html` below their context path;
-the reactive gateway exposes the same endpoints at its root.  For example:
+services expose `/v3/api-docs` below their context path; the reactive gateway
+exposes the same endpoint at its root. No service ships the springdoc
+interactive UI bundle on its classpath, so there is no browser docs page to
+open; review the documents with an OpenAPI client or the generated SDK instead.
+For example:
 
 ```text
 http://localhost:18092/v3/api-docs                 # gateway's own contract
@@ -60,6 +63,44 @@ non-zero business codes are surfaced as `ApiBusinessError` instead of being
 unwrapped as successful data. This is covered by the frontend API-response
 contract tests and applies to both paged and legacy compatibility responses.
 
+## Error envelope and message copy
+
+There is exactly one failure channel. A request that cannot be served fails
+with a non-zero envelope `code` and a synchronized HTTP status, produced by
+`GlobalExceptionHandler` from `ApiException.notFound(...)`,
+`ApiException.badRequest(...)`, or an explicit `ResponseStatusException`.
+
+- `data` never carries error semantics. A success envelope (`code=0`) must not
+  contain an `error` marker or a `not_found` sentinel: `ApiResult.ok(data)`
+  with `{"error": ...}` inside `data` is a second, contradictory failure
+  channel that clients such as `ServiceCall.ok()` and `unwrapApiBody` read as
+  success. Domain outcome fields that describe the state of a resource or of an
+  asynchronous job (`status`, `failed`, `truncated`, `duplicate`, per-action
+  receipts) are not error semantics and stay allowed.
+- Machine gate: `build/verify-contracts.py` rejects the `not_found` sentinel in
+  any service controller or service class and any `"error"`/`"not_found"`
+  literal inside an `ApiResult.ok(...)` argument. Reviewed legacy debt lives in
+  `build/envelope-error-data-baseline.txt` and only ever shrinks.
+- Service-to-service callers keep their receipt checks (`SOAR` case/notify
+  handlers, the AI investigation append) as defense in depth: a 2xx response
+  whose body carries an error marker or lacks the expected receipt must not
+  terminalize durable state.
+
+`message` is operator-facing copy, because the workbench renders the backend
+sentence when it is meaningful. Keep it a complete, actionable sentence in one
+language:
+
+- say what happened and what to do next; domain detail (permission names,
+  field names, resource ids) is welcome;
+- never put an internal exception text, driver/SQL fragment, stack, internal
+  URL, or bare transport code in it — `GlobalExceptionHandler` maps an
+  unexpected exception to one fixed sentence and logs the original type and
+  message under the request `traceId`, which is also returned in the envelope;
+- never use a `snake_case` token as the whole sentence; expose a stable machine
+  value in `data` (or the `code`) and keep `message` human-readable;
+- a missing diagnostic reason falls back to a fixed per-status sentence, so the
+  client never sees an enum string such as `404 NOT_FOUND`.
+
 ### Incident list and export migration
 
 `GET /api/v1/incidents` uses the shared `PageResponse` shape with one-based
@@ -85,13 +126,11 @@ materialise the complete tenant catalogue in the HTTP handler.
 ## Verification
 
 Builds must include the OpenAPI dependency through `socp-starter` (servlet
-services) or the gateway's WebFlux dependency. A deployment smoke test should
-fetch the documents from every enabled service and fail if an expected document
-is unavailable. OpenAPI generation does not replace authorization tests: the
-negative RBAC and tenant-isolation tests remain the security oracle. Mutation
-requests use bounded DTOs; only event and rule-extension payloads intentionally
-remain JSON objects because their schemas are supplied by the connector/content
-boundary.
+services) or the gateway's WebFlux dependency. OpenAPI generation does not
+replace authorization tests: the negative RBAC and tenant-isolation tests
+remain the security oracle. Mutation requests use bounded DTOs; only event and
+rule-extension payloads intentionally remain JSON objects because their schemas
+are supplied by the connector/content boundary.
 
 The repeatable SDK contract gate is:
 
@@ -99,12 +138,32 @@ The repeatable SDK contract gate is:
 python build/verify-openapi-sdk.py
 ```
 
-It resolves every local `$ref`, checks all operation names and response
-descriptions, and generates a dependency-free TypeScript client that is compiled
-with strict `tsc`. The generated client always sends browser credentials with
+Its coverage, per mode, is deliberately narrow and stated here so nobody reads
+a PASS as full per-service parity:
+
+- Every PR run (offline): the SOAR snapshot is validated (all `$ref`s resolved,
+  every operation name and response description checked), a dependency-free
+  TypeScript client is generated and compiled with strict `tsc`, and a
+  per-service *anchor* asserts each registered module still ships the document
+  surface — `socp-starter` provides springdoc, `api-gateway` declares its own
+  reactive dependency, no module disables `api-docs`, and the contract text
+  only advertises surfaces the build ships. It does not compare runtime
+  documents for the 13 non-SOAR services.
+- Deployment run with `SOAR_OPENAPI_BASE_URL` set: the SOAR runtime document is
+  compared against the snapshot in **both** directions (a snapshot route the
+  runtime lacks and a runtime route the snapshot lack are both failures) and
+  the `cookieAuth`/`tenantHeader`/`bearerAuth`, `If-Match`, and `ETag` contract
+  is re-checked on the live document.
+- Deployment run with `SOCP_GATEWAY_URL` additionally set: every module in
+  `build/ports.env` is fetched at `<gateway>/<context>/v3/api-docs` and must
+  return a non-empty `paths` map with `bearerAuth` and `tenantHeader`. This is
+  the per-service document smoke; it is a deployment-evidence step because it
+  needs a running stack, not a PR gate.
+
+The gate also asserts the reviewed `ApiResult` envelope, `If-Match`, and `ETag`
+contract. The generated client always sends browser credentials with
 `credentials: include`; Node/CI callers can pass `Cookie: SOCP_SESSION=<value>`
-and `X-Tenant-Id` explicitly. The gate also asserts the reviewed `ApiResult`
-envelope, `If-Match`, and `ETag` contract.
+and `X-Tenant-Id` explicitly.
 
 For a deployment-backed verification, start the gateway and SOAR service and
 provide a test account (never commit its cookie):

@@ -71,13 +71,13 @@ class ReportControllerTest {
     }
 
     @Test
-    void reportsArchiveFailureInsteadOfReturningAFalseSuccess() {
+    void archiveFailureBecomesAnErrorEnvelopeInsteadOfAFalseSuccess() {
         when(service.dailyReport()).thenThrow(new IllegalStateException("ClickHouse unavailable"));
 
-        Map<String, Object> result = controller.archive().data();
-
-        assertThat(result).containsEntry("archived", false)
-                .containsEntry("error", "ClickHouse unavailable");
+        assertThatThrownBy(controller::archive)
+                .isInstanceOf(com.socp.platform.error.exception.ApiException.class)
+                .hasFieldOrPropertyWithValue("code", 503)
+                .hasMessageNotContaining("ClickHouse unavailable");
     }
 
     @Test

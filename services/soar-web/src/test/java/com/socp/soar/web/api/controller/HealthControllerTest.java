@@ -20,7 +20,8 @@ class HealthControllerTest {
 
         var result = new HealthController(properties, health).health();
 
-        assertThat(result.data()).containsExactlyInAnyOrderEntriesOf(
+        assertThat(result.getStatusCodeValue()).isEqualTo(200);
+        assertThat(result.getBody().data()).containsExactlyInAnyOrderEntriesOf(
                 Map.of("service", "soar-web", "status", "UP", "maturity", "preview"));
     }
 }

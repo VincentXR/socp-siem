@@ -7,7 +7,9 @@ import com.socp.alert.api.request.AlarmTagRequest;
 import com.socp.alert.service.AlarmDispositionService;
 import com.socp.alert.service.AlarmService;
 
+import com.socp.platform.audit.api.AuditOperation;
 import com.socp.platform.error.exception.ApiException;
+import com.socp.platform.tenant.context.AuthenticatedIdentityContext;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -24,10 +26,10 @@ import com.socp.platform.error.api.ApiResult;
 
 /**
  * 告警处置 API（工单化）：状态流转 / 分配 / 备注。
- * 挂载到告警资源下：/api/alarms/{id}/disposition
+ * 挂载到告警资源下，与告警族其它控制器保持 canonical(v1) + legacy 双挂。
  */
 @RestController
-@RequestMapping("/api/alarms/{id}")
+@RequestMapping({"/api/v1/alarms/{id}", "/api/alarms/{id}"})
 public class AlarmDispositionController {
 
     private final AlarmService alarmService;
@@ -46,6 +48,7 @@ public class AlarmDispositionController {
 
     @RequireRole({"admin", "analyst"})
     @RequirePermission("alarm:triage")
+    @AuditOperation(action = "UPDATE_ALARM_STATUS", target = "t_alarm_disposition")
     @PutMapping("/status")
     public ApiResult<AlarmDispositionService.Disposition> setStatus(@PathVariable String id, @Valid @RequestBody AlarmStatusRequest body) {
         alarmService.get(id);
@@ -54,6 +57,7 @@ public class AlarmDispositionController {
 
     @RequireRole({"admin", "analyst"})
     @RequirePermission("alarm:triage")
+    @AuditOperation(action = "ASSIGN_ALARM", target = "t_alarm_disposition")
     @PostMapping("/assign")
     public ApiResult<AlarmDispositionService.Disposition> assign(@PathVariable String id, @Valid @RequestBody AlarmAssignmentRequest body) {
         alarmService.get(id);
@@ -64,16 +68,17 @@ public class AlarmDispositionController {
 
     @RequireRole({"admin", "analyst"})
     @RequirePermission("alarm:triage")
+    @AuditOperation(action = "ADD_ALARM_NOTE", target = "t_alarm_disposition")
     @PostMapping("/notes")
     public ApiResult<AlarmDispositionService.Disposition> addNote(@PathVariable String id, @Valid @RequestBody AlarmNoteRequest body,
                                                        @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
         alarmService.get(id);
-        String author = body.author() == null || body.author().isBlank() ? "operator" : body.author();
-        return ApiResult.ok(disp.addNote(id, author, body.content(), idempotencyKey));
+        return ApiResult.ok(disp.addNote(id, DispositionActor.resolve(body.author()), body.content(), idempotencyKey));
     }
 
     @RequireRole({"admin", "analyst"})
     @RequirePermission("alarm:triage")
+    @AuditOperation(action = "ADD_ALARM_TAG", target = "t_alarm_disposition")
     @PostMapping("/tags")
     public ApiResult<AlarmDispositionService.Disposition> addTag(@PathVariable String id,
                                                        @Valid @RequestBody AlarmTagRequest body) {

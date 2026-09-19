@@ -2,6 +2,7 @@ package com.socp.detect.web.engine;
 
 import com.socp.detect.web.service.DetectEngineService;
 import com.socp.detect.web.persistence.store.DetectionEventClaim;
+import com.socp.detect.web.persistence.store.DetectionStateOwnership;
 import com.socp.detect.web.persistence.store.DetectionStateStore;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
@@ -26,6 +27,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.nio.charset.StandardCharsets;
 import java.util.Queue;
 import java.lang.reflect.Field;
@@ -271,6 +273,113 @@ class KafkaEventConsumerTest {
         // headers, so unlike the polled path there is no originating trace to
         // inherit - which is why the hand-off is called with null.
         assertEquals(1, dlq.size(), "the exhausted replay must be dead-lettered");
+    }
+
+    @Test
+    @Timeout(20)
+    void exhaustedRetriesTerminaliseTheNormalizedEventUnderItsOwnTenant() throws Exception {
+        given(stateStore.claim(any(SecurityEvent.class), any(), any(), anyString()))
+                .willReturn(DetectionEventClaim.NEW);
+        given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))
+                .willReturn(CompletableFuture.failedFuture(
+                        new IllegalStateException("durable sink rejected this event")));
+        KafkaEventConsumer consumer = new KafkaEventConsumer(engine, stateStore);
+        ReflectionTestUtils.setField(consumer, "processingMaxAttempts", 1);
+        List<Map.Entry<String, String>> dlq = new ArrayList<>();
+        consumer.setDlqSink((eventId, raw) -> dlq.add(new AbstractMap.SimpleEntry<>(eventId, raw)));
+        AtomicReference<String> tenantDuringHandOff = new AtomicReference<>();
+        org.mockito.Mockito.doAnswer(invocation -> {
+            tenantDuringHandOff.set(com.socp.platform.tenant.context.TenantContext.get());
+            return null;
+        }).when(stateStore).recordDeadLettered(anyString(), anyString(), any(), any(), anyString());
+        ConsumerRecord<String, String> record = new ConsumerRecord<>("socp-events", 3, 12L,
+                "default|src_ip|198.51.100.7",
+                "{\"eventId\":\"poison-identity-1\",\"tenantId\":\"default\",\"source\":\"auth\","
+                        + "\"host\":\"web-1\",\"msg\":\"login failed\","
+                        + "\"fields\":{\"src_ip\":\"198.51.100.7\"}}");
+
+        consumer.processWithRetry(record, 3L);
+
+        // The Kafka routing key is shared by every event of one entity, so it can
+        // never be the identity of a terminal record: the DLQ key and the journal
+        // sourceEventId are the normalized event id on both hand-off paths.
+        assertEquals(1, dlq.size());
+        assertEquals("poison-identity-1", dlq.get(0).getKey());
+        assertEquals(record.value(), dlq.get(0).getValue());
+        verify(stateStore).recordDeadLettered(eq("poison-identity-1"), eq(record.value()),
+                eq(3), eq(12L), anyString());
+        // The tenant scope is closed by the time the lane hands off, so the write
+        // only lands in the journal when the hand-off installs it explicitly.
+        assertEquals("default", tenantDuringHandOff.get(),
+                "the terminal journal row must be written in the event's tenant scope");
+        assertEquals(1, completionsOf(consumer).size());
+    }
+
+    @Test
+    @Timeout(30)
+    void aGloballyUnavailableWorkerWithholdsTheOffsetInsteadOfDeadLettering() throws Exception {
+        List<Throwable> globalFailures = List.of(
+                new TenantAdmission.RejectedException("default", TenantAdmission.RejectionReason.RATE),
+                new TenantAdmission.RejectedException("default",
+                        TenantAdmission.RejectionReason.PENDING_BYTES),
+                new IllegalStateException("detection state recovery is DEGRADED"),
+                new IllegalStateException("detection runtime role is API"),
+                new DetectionStateOwnership.StaleStateOwnerException(
+                        "Kafka partition is no longer assigned: 3"));
+        given(stateStore.claim(any(SecurityEvent.class), any(), any(), anyString()))
+                .willReturn(DetectionEventClaim.NEW);
+        for (Throwable global : globalFailures) {
+            KafkaEventConsumer consumer = new KafkaEventConsumer(engine, stateStore);
+            ReflectionTestUtils.setField(consumer, "processingMaxAttempts", 2);
+            List<Map.Entry<String, String>> dlq = new ArrayList<>();
+            consumer.setDlqSink((eventId, raw) -> dlq.add(new AbstractMap.SimpleEntry<>(eventId, raw)));
+            given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))
+                    .willReturn(CompletableFuture.failedFuture(global));
+            ConsumerRecord<String, String> record = new ConsumerRecord<>("socp-events", 3, 40L,
+                    "default|src_ip|198.51.100.7",
+                    "{\"eventId\":\"unavailable-1\",\"tenantId\":\"default\",\"source\":\"auth\","
+                            + "\"host\":\"web-1\",\"msg\":\"login failed\","
+                            + "\"fields\":{\"src_ip\":\"198.51.100.7\"}}");
+
+            consumer.processWithRetry(record, 3L);
+
+            // A worker-wide outage must not be silently converted into a committed
+            // offset over an unevaluated event: no dead-letter, no terminal journal
+            // row, and no completion, so the offset stays pending and redelivery or
+            // the PENDING journal row drives the record again once the worker heals.
+            assertEquals(List.of(), dlq, "unavailable failure " + global + " must not dead-letter");
+            assertEquals(0, completionsOf(consumer).size(),
+                    "unavailable failure " + global + " must not commit an offset");
+            verify(stateStore, never()).recordDeadLettered(anyString(), anyString(), any(), any(),
+                    anyString());
+        }
+        // Two attempts per condition: the budget is spent, then the record is
+        // withheld rather than terminalised.
+        verify(engine, times(globalFailures.size() * 2)).ingestFromKafkaAndAwait(
+                any(SecurityEvent.class), anyString(), any(), any());
+        // A worker-wide outage is not instance state corruption: rebuilding the
+        // whole engine once per withheld record would amplify one outage into a
+        // rebuild storm on every lane.
+        verify(engine, never()).rebuildForPartitions(any());
+    }
+
+    @Test
+    @Timeout(30)
+    void aWithheldJournalReplayStaysPendingAndIsNotTerminalised() {
+        given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), any(), any()))
+                .willReturn(CompletableFuture.failedFuture(
+                        new IllegalStateException("detection state recovery is RECOVERING")));
+        KafkaEventConsumer consumer = new KafkaEventConsumer(engine, stateStore);
+        ReflectionTestUtils.setField(consumer, "processingMaxAttempts", 2);
+        List<Map.Entry<String, String>> dlq = new ArrayList<>();
+        consumer.setDlqSink((eventId, raw) -> dlq.add(new AbstractMap.SimpleEntry<>(eventId, raw)));
+        SecurityEvent event = new SecurityEvent(Instant.now(), "auth", "web-1", "replay target",
+                Map.of("tenantId", "default", "src_ip", "198.51.100.7"), Severity.INFO);
+
+        consumer.processPendingWithRetry(new PendingDetectionEvent(event, 3, 41L));
+
+        assertEquals(List.of(), dlq, "a replay blocked by global unavailability must stay PENDING");
+        verify(stateStore, never()).recordDeadLettered(anyString(), anyString(), any(), any(), anyString());
     }
 
     private static java.util.Queue<?> completionsOf(KafkaEventConsumer consumer) throws Exception {

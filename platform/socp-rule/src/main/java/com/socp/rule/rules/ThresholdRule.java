@@ -151,6 +151,10 @@ public final class ThresholdRule extends AbstractRule implements StatefulRule {
         Map<String, Object> snapshot = StateSnapshotCodec.read(serializedState);
         buckets.clear();
         snapshot.forEach((key, raw) -> {
+            // accept() never stores a blank grouping key, so a blank key in a
+            // checkpoint is corrupt content; skip it instead of failing the
+            // whole restore.
+            if (key == null || key.isBlank()) return;
             BucketState state = buckets.get(key, BucketState::new);
             synchronized (state) {
                 state.events.clear();

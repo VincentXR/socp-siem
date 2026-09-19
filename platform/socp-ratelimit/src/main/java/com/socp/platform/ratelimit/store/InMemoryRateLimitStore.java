@@ -1,6 +1,7 @@
 package com.socp.platform.ratelimit.store;
 import com.socp.platform.ratelimit.model.TokenBucket;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import java.util.Comparator;
@@ -8,6 +9,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 @Component
+@Profile("!prod")
 @ConditionalOnProperty(name = "socp.ratelimit.backend", havingValue = "memory", matchIfMissing = true)
 public class InMemoryRateLimitStore implements RateLimitStore {
 

@@ -1,7 +1,9 @@
 package com.socp.rule.state;
 
+import java.util.Comparator;
 import java.util.Map;
 import java.util.Objects;
+import java.util.PriorityQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
@@ -11,19 +13,26 @@ import java.util.function.Supplier;
  * Bounded, idle-expiring state map for high-cardinality rule keys.
  *
  * <p>Cleanup is amortized so event processing does not scan the whole map on
- * every event.  Eviction is best effort: a concurrent event may recreate a key
- * after it has been selected for eviction, which is safe because rule state is
- * only an optimization window and durable detection state remains authoritative.
+ * every event.  Capacity enforcement is amortized the same way: one bounded
+ * pass removes a batch of least-recently-used keys, and the following
+ * insertions stay under the limit without another scan.  Eviction is best
+ * effort: a concurrent event may recreate a key after it has been selected for
+ * eviction, which is safe because rule state is only an optimization window and
+ * durable detection state remains authoritative.
  */
 public final class RuleStateMap<V> {
 
     private static final int CLEANUP_MASK = 1023;
+    /** One capacity pass frees this fraction of the bound, then earns credit. */
+    private static final int EVICTION_BATCH_DIVISOR = 10;
 
     private final ConcurrentHashMap<String, Entry<V>> entries = new ConcurrentHashMap<>();
     private final int maxKeys;
+    private final int evictionBatch;
     private final long idleNanos;
     private final AtomicLong operations = new AtomicLong();
     private final AtomicLong evictions = new AtomicLong();
+    private final AtomicLong capacityPasses = new AtomicLong();
 
     public RuleStateMap() {
         this(RuleStateLimits.defaults());
@@ -32,6 +41,7 @@ public final class RuleStateMap<V> {
     public RuleStateMap(RuleStateLimits limits) {
         Objects.requireNonNull(limits, "limits");
         this.maxKeys = limits.maxKeys();
+        this.evictionBatch = Math.max(1, this.maxKeys / EVICTION_BATCH_DIVISOR);
         this.idleNanos = limits.idleTtl().toNanos();
     }
 
@@ -42,7 +52,7 @@ public final class RuleStateMap<V> {
         entry.lastAccessNanos = now;
         long op = operations.incrementAndGet();
         if ((op & CLEANUP_MASK) == 0) cleanup(now);
-        if (entries.size() > maxKeys) evictOldest(now);
+        if (entries.size() > maxKeys) evictOldest(evictionBatch);
         return entry.value;
     }
 
@@ -60,6 +70,11 @@ public final class RuleStateMap<V> {
         return evictions.get();
     }
 
+    /** Number of full scans spent on capacity enforcement; the amortization proof. */
+    public long evictionPasses() {
+        return capacityPasses.get();
+    }
+
     /** Remove every state key, used when restoring a complete snapshot. */
     public void clear() {
         entries.clear();
@@ -67,7 +82,8 @@ public final class RuleStateMap<V> {
 
     public Map<String, Object> stats() {
         return Map.of("stateKeys", size(), "stateMaxKeys", maxKeys,
-                "stateIdleTtlMs", idleNanos / 1_000_000L, "stateEvictions", evictions());
+                "stateIdleTtlMs", idleNanos / 1_000_000L, "stateEvictions", evictions(),
+                "stateEvictionPasses", evictionPasses());
     }
 
     private void cleanup(long now) {
@@ -77,19 +93,27 @@ public final class RuleStateMap<V> {
         });
     }
 
-    private void evictOldest(long now) {
-        cleanup(now);
-        while (entries.size() > maxKeys) {
-            String oldestKey = null;
-            Entry<V> oldest = null;
-            for (Map.Entry<String, Entry<V>> candidate : entries.entrySet()) {
-                if (oldest == null || candidate.getValue().lastAccessNanos < oldest.lastAccessNanos) {
-                    oldestKey = candidate.getKey();
-                    oldest = candidate.getValue();
-                }
+    /**
+     * One bounded pass over the map selects the {@code count} least recently
+     * accessed keys. Removal therefore costs one scan per {@code count}
+     * insertions instead of one scan per insertion.
+     */
+    private void evictOldest(int count) {
+        capacityPasses.incrementAndGet();
+        Comparator<Map.Entry<String, Entry<V>>> byAccess =
+                Comparator.comparingLong(candidate -> candidate.getValue().lastAccessNanos);
+        PriorityQueue<Map.Entry<String, Entry<V>>> oldest =
+                new PriorityQueue<>(count, byAccess.reversed());
+        for (Map.Entry<String, Entry<V>> candidate : entries.entrySet()) {
+            if (oldest.size() < count) {
+                oldest.add(candidate);
+            } else if (byAccess.compare(candidate, oldest.peek()) < 0) {
+                oldest.poll();
+                oldest.add(candidate);
             }
-            if (oldestKey == null || !entries.remove(oldestKey, oldest)) break;
-            evictions.incrementAndGet();
+        }
+        for (Map.Entry<String, Entry<V>> candidate : oldest) {
+            if (entries.remove(candidate.getKey(), candidate.getValue())) evictions.incrementAndGet();
         }
     }
 

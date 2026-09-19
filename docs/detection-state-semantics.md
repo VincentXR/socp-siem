@@ -24,10 +24,19 @@ The default routing policy is:
 - other events: `src_ip`, then `user`, then `host`, then `dst_ip`;
 - an explicit routing field/value takes precedence.
 
-A stateful rule must declare `groupBy`, and its canonical value must equal the
-event `detection_routing_field` (the older `keyField` field is retained as a
-compatibility alias). A rule grouping by a different entity is rejected by the
-content contract until an explicit repartition/fan-out plan exists.
+A stateful rule must declare `groupBy`; inside one document, `groupBy`, the
+compatibility alias `keyField` and the optional `routingField` must name the
+same dimension, and the document must compile into an executable rule. Both are
+HTTP 400 rejections at write time.
+
+Persistence never sees events, so it cannot compare a declared dimension with
+the one an event resolves to. A rule that groups by a dimension the routing
+policy ranks below another field is therefore accepted and runs with partial,
+per-partition state; that gap is measured rather than promised away (see
+`docs/detection-state-sharding.md`): writing such a rule logs a partition-locality
+advisory per affected data source, and the engine reports an actual mismatch at
+most once per rule window. An explicit repartition or fan-out plan is still
+required before such a rule can be called cluster-wide correct.
 
 Stateful rules also expose an event-time policy:
 
@@ -99,7 +108,11 @@ Rule evaluation has a per-rule circuit breaker. A malformed rule failure
 other runtime failures open the rule after three attempts. The rule's mutable
 state is restored to its pre-event snapshot before isolation, while healthy
 rules on the same event continue. The circuit is cleared by rule reload or
-after its cooldown probe.
+after its cooldown probe. Assembly is defensive in the same direction: rule
+documents are filtered on their lifecycle status before anything is parsed, and
+each remaining document is compiled inside its own guard, so a rule that cannot
+be constructed at all is skipped and counted in `stats().isolatedRules` instead
+of failing the whole tenant engine.
 
 ## Event lifecycle
 
@@ -145,7 +158,11 @@ rule-version map, digest-only before/after state changes, candidate and emitted
 alert lists, suppression decision, and `tenant|eventId` idempotency key. The
 Alert Outbox stores this metadata beside each emitted alert; state bytes remain
 in the versioned snapshot store. A failed durable commit therefore never
-publishes a result whose in-memory state is treated as successful.
+publishes a result whose in-memory state is treated as successful. That
+rollback restores serialized state **and** discards the candidate alerts each
+rule had accumulated for the failed event, because pending alerts are not part
+of the serialized snapshot; without it a rolled back event would deliver its
+alerts against the next event's result.
 
 For Kafka records, the durable sink evaluates the current state-unit fence
 inside that transaction before the Outbox/journal commit. Checkpoint rows also
@@ -156,11 +173,26 @@ ingestion keeps the source-compatible no-owner path.
 
 ## Error classes
 
-Terminal input errors are sent to the configured Kafka DLQ and may advance the
-offset only after the producer acknowledgement succeeds. Temporary
-infrastructure failures remain `PENDING`, stay on the partition lane, and are
-retried with backoff. A failed DLQ publish is also retried and never treated as
-terminal.
+Terminal input errors produce one dead-letter decision that covers two durable
+writes: the record on the configured Kafka DLQ and the journal's
+`DEAD_LETTERED` row for the normalized `eventId` under the event's own tenant.
+Both share a single bounded retry (`socp.kafka.dlq-handoff-max-attempts`,
+default 5, first wait `socp.kafka.dlq-handoff-retry-delay-ms`), and the
+partition offset advances only after both succeeded. Temporary infrastructure
+failures remain `PENDING`, stay on the partition lane, and are retried with
+backoff. A worker-wide outage - recovery not ready, ownership lost, or a
+non-serving runtime role - is classified apart from a per-record failure and is
+withheld instead of terminalised: no DLQ write and no offset commit, so the
+record is redelivered once the worker serves again.
+
+When the hand-off itself exhausts its attempts it is abandoned rather than
+retried forever: the completion is withheld, the offset stays pinned at that
+gap, the record is redelivered on the next poll, rebalance or consumer-session
+restart, and `socp.detection.dlq.handoff{outcome="abandoned"}` plus an ERROR log
+report it. A permanent wait would block every later record on the partition, and
+silently skipping would turn a broker outage into lost stream position. The
+Kafka routing key is never used as the dead-letter identity; it travels as the
+`detection-routing-key` header for entity-level correlation.
 
 This distinction prevents a PostgreSQL timeout or broker outage from being
 silently converted into a committed offset.
@@ -193,7 +225,19 @@ maintenance.
 On a transient sink/database failure, the assigned partition's in-memory rule
 engine is rebuilt from completed journal rows before retrying the pending
 event. This prevents a failed attempt from leaving threshold/correlation state
-incremented twice.
+incremented twice. The rebuild replaces every owned engine, so it runs once per
+failed record and never for a worker-wide outage: rebuilding behind every
+withheld record would turn one outage into a full rebuild per record per lane.
+
+A rule hot reload is narrower than a rebuild and is scoped to the tenant that
+edited content. Only that tenant's engine keys enter `RECOVERING`, their live
+engines are drained without being closed, the replacement reads the journal,
+and the swap then happens under the lifecycle write lock. A reload that fails at
+any of those steps keeps the previous engines serving and leaves the affected
+keys for the recovery schedule to retry, so one tenant's rule edit neither stops
+the tenant's detection nor opens a rejection window for the other tenants in the
+process. Process-wide recovery remains reserved for startup and a full Kafka
+assignment rebuild.
 
 On owner loss, the old worker fails the fence before the durable sink or
 transactional checkpoint. Any result that completed before the takeover is
@@ -236,12 +280,15 @@ intentional at-least-once trade-off that permits the shorter happy path.
 | After Outbox + `COMPLETED`, before Kafka commit | Kafka redelivery sees `COMPLETED` and skips it |
 | After Alert Web publish, before stage update | HTTP replay is idempotent by `sourceAlertId` |
 | After original alarm publish, before stage update | At-least-once duplicate is absorbed by alert identity |
-| Terminal input before DLQ acknowledgement | Offset remains uncommitted and DLQ publication is retried |
+| Terminal input, DLQ publish not yet acknowledged | No journal terminal row and no commit; the hand-off is retried within its bound |
+| Terminal input, hand-off bound exhausted | Hand-off abandoned with `outcome="abandoned"` and an ERROR log; the offset stays pinned at that gap and the record is redelivered on the next poll, rebalance or session restart |
+| Journal `DEAD_LETTERED` row written, DLQ publish retried afterwards | Redelivery skips the event on the `DEAD_LETTERED` row; the DLQ entry is the payload evidence, and `COMPLETED` never overwrites a terminal row and vice versa |
+| Worker-wide / global unavailability (`DetectionUnavailableException`: store down, recovery not ready, ownership lost, or a non-serving role) | Withheld, not terminalised: reported by `socp.detection.processing.withheld{outcome="globally_unavailable"}`; no DLQ write, no offset commit, and the bounded DLQ hand-off budget is **not** consumed (the outage is not this record's fault). The `PENDING` row is redelivered once the worker serves again. |
 
 ## Rule version boundary
 
 Pending events are evaluated by the currently active ruleset after restart.
-Rule reloads should drain affected in-flight work before replacing the active
+Rule reloads drain affected in-flight work before replacing the active
 ruleset. The journal is not a historical rule-runtime store.
 
 Stateful snapshots use a composite compatibility version in the form
@@ -258,6 +305,21 @@ as its idempotency boundary; `t_entity_risk_profile` is updated under a row
 lock. Consequently, any Detection instance can serve the same accumulated
 risk after rebalance without relying on instance-local memory.
 
+## Secondary analysis scope
+
+The alarm follow-up (`AnalyzeService`, `socp-alarm-original`) splits durable and
+replica-local state. `t_analyzed`, its source-alarm receipt and the entity-risk
+projection are durable and shared, so any replica answers the same rows. Storm
+collapsing and the five-minute window are this process's own counters: the
+alarm key is the alert identity, so one `(tenant, rule, entity)` storm is spread
+over every partition and over the worker replicas, and a replica therefore judges
+the threshold on roughly its own share of the stream. The threshold is
+configurable (`socp.detect.model.storm-suppression-threshold`), the collapse is
+counted (`socp.detect.storm.suppressed`), and it is no longer invisible on the
+durable receipt: a collapsed analysis records `SUPPRESSED` with
+`result_count` equal to the rows actually persisted, and `/stats`, `/window` and
+`/analyze` carry the deciding `instance` with `scope=replica-local`.
+
 ## Explicit non-guarantees
 
 The current design does not claim:
@@ -267,6 +329,8 @@ The current design does not claim:
 - strict multi-instance correctness for a rule grouping field different from
   the event routing field;
 - recovery beyond the configured retention/lateness window;
+- cluster-wide storm collapsing or cluster-wide five-minute window aggregation
+  in the secondary-analysis path; both are per-replica counters today;
 - loss-free recovery if the Detection database remains permanently unavailable
   and no external durable Kafka/DLQ capacity remains.
 

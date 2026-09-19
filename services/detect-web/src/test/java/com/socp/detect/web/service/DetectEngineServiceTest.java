@@ -37,6 +37,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.verify;
@@ -315,6 +316,88 @@ class DetectEngineServiceTest {
     }
 
     @Test
+    void undeployableRuleDocumentsAreSkippedInsteadOfStoppingTheTenant() {
+        Map<String, Object> poison = new LinkedHashMap<>();
+        poison.put("id", "POISON");
+        poison.put("name", "poison");
+        poison.put("type", "made-up-type");
+        poison.put("severity", "HIGH");
+        poison.put("message", "x");
+        poison.put("status", "ACTIVE");
+        Map<String, Object> deadDraft = new LinkedHashMap<>(poison);
+        deadDraft.put("id", "DRAFT-POISON");
+        deadDraft.put("status", "DRAFT");
+        // Assembly filters lifecycle status before parsing, so a dead draft can no
+        // longer detonate the build; an undeployable live document is isolated and
+        // counted instead of taking the tenant's detection (and every other tenant
+        // through the old process-wide gate) down to the dead-letter path.
+        when(store.list("default")).thenReturn(List.of(deadDraft, poison, thresholdRule()));
+        when(store.tenant()).thenReturn("default");
+
+        DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null),
+                forwarder, rulePublisher);
+        try {
+            service.start();
+            assertTrue(service.ingest(new SecurityEvent(Instant.now(), "system", "host-1",
+                    "heartbeat", Map.of("tenant_id", "default"), Severity.INFO)));
+            Map<String, Object> stats = service.stats();
+            assertEquals(1, stats.get("isolatedRules"), "只有无法构造的活跃文档被隔离");
+            assertEquals("READY", asMap(stats.get("stateRecovery")).get("status"),
+                    "单条坏文档不得把恢复态拖成 DEGRADED");
+            assertFalse(((List<?>) stats.get("ruleStats")).isEmpty(), "健康规则仍在引擎里");
+
+            when(store.tenant()).thenReturn("tenant-b");
+            when(store.list("tenant-b")).thenReturn(List.of());
+            Map<String, Object> other = service.stats();
+            assertEquals(0, other.get("isolatedRules"), "隔离计数不得跨租户串数");
+        } finally {
+            service.stop();
+        }
+    }
+
+    @Test
+    void failedRebuildKeepsTheLiveEngineServingAndIsRetried() throws Exception {
+        when(store.list("default")).thenReturn(List.of(thresholdRule()));
+        when(store.tenant()).thenReturn("default");
+        when(stateStore.claim(org.mockito.ArgumentMatchers.any(SecurityEvent.class)))
+                .thenReturn(com.socp.detect.web.persistence.store.DetectionEventClaim.NEW);
+        AtomicInteger replays = new AtomicInteger();
+        doAnswer(invocation -> {
+            if (replays.incrementAndGet() == 2) throw new IllegalStateException("journal unavailable");
+            return null;
+        }).when(stateStore).replayRecentForTenant(org.mockito.ArgumentMatchers.eq("default"),
+                org.mockito.ArgumentMatchers.any(Duration.class), org.mockito.ArgumentMatchers.any());
+
+        DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null),
+                forwarder, rulePublisher, stateStore);
+        try {
+            service.start();
+            assertTrue(service.ingest(new SecurityEvent(Instant.now(), "system", "host-1",
+                    "heartbeat", Map.of("tenant_id", "default"), Severity.INFO)));
+
+            service.reload();
+            Map<String, Object> recovery = asMap(service.stats().get("stateRecovery"));
+            assertTrue(recovery.containsKey("pendingRebuilds"), "失败的重建必须留在重试队列里");
+            // The engines that were live keep serving this tenant: a rebuild
+            // failure is no longer the same thing as stopping ingestion.
+            assertTrue(service.ingest(new SecurityEvent(Instant.now(), "system", "host-1",
+                    "heartbeat-2", Map.of("tenant_id", "default"), Severity.INFO)));
+
+            service.retryDegradedEngines();
+            assertFalse(asMap(service.stats().get("stateRecovery")).containsKey("pendingRebuilds"),
+                    "重试成功后不得留下待重建项");
+            assertTrue(replays.get() >= 3, "重试必须再次读取 journal，实际=" + replays.get());
+        } finally {
+            service.stop();
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> asMap(Object value) {
+        return value instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
+    }
+
+    @Test
     void boundsTenantEnginesAndRestoresAnEvictedTenant() throws Exception {
         when(store.list(org.mockito.ArgumentMatchers.anyString())).thenReturn(List.of());
         DetectEngineService service = new DetectEngineService(
@@ -509,7 +592,8 @@ class DetectEngineServiceTest {
         DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null),
                 forwarder, rulePublisher);
         try {
-            org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    com.socp.platform.error.exception.ApiException.class,
                     () -> service.updateRule(Map.of("id", "missing")));
             Map<String, Object> disabled = new LinkedHashMap<>(active);
             disabled.remove("status");
@@ -522,7 +606,8 @@ class DetectEngineServiceTest {
             verify(rulePublisher, org.mockito.Mockito.atLeastOnce()).publish("R1", "update");
             org.junit.jupiter.api.Assertions.assertTrue(service.deleteRule("R1"));
             verify(rulePublisher).publish("R1", "delete");
-            org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    com.socp.platform.error.exception.ApiException.class,
                     () -> service.activateRule("missing"));
         } finally {
             service.stop();
