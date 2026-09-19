@@ -4,8 +4,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.error.api.ApiResult;
 import com.socp.soar.web.api.request.SaveVersionRequest;
-import com.socp.soar.web.service.SoarAutomationRuleService;
-import com.socp.soar.web.service.SoarConnectorService;
 import com.socp.soar.web.service.SoarService;
 import com.socp.soar.web.service.SoarTemplateService;
 import org.junit.jupiter.api.Test;
@@ -32,16 +30,12 @@ class SoarEtagConformanceTest {
     @Mock
     private SoarService service;
     @Mock
-    private SoarAutomationRuleService automationRules;
-    @Mock
-    private SoarConnectorService connectors;
-    @Mock
     private SoarTemplateService templates;
 
     private final ObjectMapper mapper = new ObjectMapper();
 
     private SoarController controller() {
-        return new SoarController(service, automationRules, connectors, templates);
+        return new SoarController(service, templates);
     }
 
     @Test

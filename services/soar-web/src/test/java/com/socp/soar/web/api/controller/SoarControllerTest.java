@@ -41,7 +41,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@WebMvcTest(SoarController.class)
+@WebMvcTest({SoarController.class, SoarAutomationController.class, SoarConnectorController.class})
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
         "socp.security.dev-bypass=true",

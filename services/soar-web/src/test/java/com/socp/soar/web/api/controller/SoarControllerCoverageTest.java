@@ -66,11 +66,15 @@ class SoarControllerCoverageTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
     private SoarController controller;
+    private SoarAutomationController automationController;
+    private SoarConnectorController connectorController;
 
     @BeforeEach
     void setUp() {
         TenantContext.set("tenant-a");
-        controller = new SoarController(service, automationRules, connectors, templates);
+        controller = new SoarController(service, templates);
+        automationController = new SoarAutomationController(automationRules);
+        connectorController = new SoarConnectorController(connectors);
     }
 
     @AfterEach
@@ -427,18 +431,19 @@ class SoarControllerCoverageTest {
         given(automationRules.evaluate(event)).willReturn(Map.of("matched", true));
         given(automationRules.explain(event)).willReturn(List.of(Map.of("ruleId", "rule-1")));
 
-        assertThat(controller.createAutomationRule(request).getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        assertThat(controller.updateAutomationRule("rule-1", request).data()).containsEntry("id", "rule-1");
-        assertThat(controller.patchAutomationRule("rule-1", Map.of("priority", 9)).data()).containsEntry("priority", 9);
-        assertThat(controller.deleteAutomationRule("rule-1").data()).containsEntry("removed", true);
-        assertThat(controller.enableAutomationRule("rule-1").data()).containsEntry("enabled", true);
-        assertThat(controller.disableAutomationRule("rule-1").data()).containsEntry("enabled", false);
-        assertThat(controller.automationRules(null, 300).data()).isInstanceOf(Map.class);
-        assertThat(controller.automationRules(null, null).data()).isInstanceOf(List.class);
-        assertThat(controller.getAutomationRule("rule-1").data()).containsEntry("id", "rule-1");
-        assertThat(controller.evaluateAutomationRules(event).data()).containsEntry("matched", true);
-        assertThat(controller.testAutomationRules(event).data()).hasSize(1);
-        assertThat(controller.evaluateEvent(event).data()).containsEntry("matched", true);
+        assertThat(automationController.createAutomationRule(request).getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(automationController.updateAutomationRule("rule-1", request).data()).containsEntry("id", "rule-1");
+        assertThat(automationController.patchAutomationRule("rule-1", Map.of("priority", 9)).data())
+                .containsEntry("priority", 9);
+        assertThat(automationController.deleteAutomationRule("rule-1").data()).containsEntry("removed", true);
+        assertThat(automationController.enableAutomationRule("rule-1").data()).containsEntry("enabled", true);
+        assertThat(automationController.disableAutomationRule("rule-1").data()).containsEntry("enabled", false);
+        assertThat(automationController.automationRules(null, 300).data()).isInstanceOf(Map.class);
+        assertThat(automationController.automationRules(null, null).data()).isInstanceOf(List.class);
+        assertThat(automationController.getAutomationRule("rule-1").data()).containsEntry("id", "rule-1");
+        assertThat(automationController.evaluateAutomationRules(event).data()).containsEntry("matched", true);
+        assertThat(automationController.testAutomationRules(event).data()).hasSize(1);
+        assertThat(automationController.evaluateEvent(event).data()).containsEntry("matched", true);
     }
 
     // ------------------------------------------------------------------
@@ -457,18 +462,18 @@ class SoarControllerCoverageTest {
         given(connectors.setEnabled("conn-1", false)).willReturn(Map.of("enabled", false));
         given(connectors.softDelete("conn-1")).willReturn(Map.of("deleted", true));
 
-        assertThat(controller.connectors().data()).hasSize(1);
-        assertThat(controller.connections(null, 300).data()).isInstanceOf(Map.class);
-        assertThat(controller.getConnector("conn-1").data()).containsEntry("id", "conn-1");
-        assertThat(controller.getConnection("conn-1").data()).containsEntry("id", "conn-1");
-        assertThat(controller.actions().data()).hasSize(1);
-        assertThat(controller.testConnector("conn-1").data()).containsEntry("status", "HEALTHY");
-        assertThat(controller.testConnection("conn-1").data()).containsEntry("status", "HEALTHY");
-        assertThat(controller.enableConnector("conn-1").data()).containsEntry("enabled", true);
-        assertThat(controller.disableConnector("conn-1").data()).containsEntry("enabled", false);
-        assertThat(controller.enableConnection("conn-1").data()).containsEntry("enabled", true);
-        assertThat(controller.disableConnection("conn-1").data()).containsEntry("enabled", false);
-        assertThat(controller.deleteConnection("conn-1").data()).containsEntry("deleted", true);
+        assertThat(connectorController.connectors().data()).hasSize(1);
+        assertThat(connectorController.connections(null, 300).data()).isInstanceOf(Map.class);
+        assertThat(connectorController.getConnector("conn-1").data()).containsEntry("id", "conn-1");
+        assertThat(connectorController.getConnection("conn-1").data()).containsEntry("id", "conn-1");
+        assertThat(connectorController.actions().data()).hasSize(1);
+        assertThat(connectorController.testConnector("conn-1").data()).containsEntry("status", "HEALTHY");
+        assertThat(connectorController.testConnection("conn-1").data()).containsEntry("status", "HEALTHY");
+        assertThat(connectorController.enableConnector("conn-1").data()).containsEntry("enabled", true);
+        assertThat(connectorController.disableConnector("conn-1").data()).containsEntry("enabled", false);
+        assertThat(connectorController.enableConnection("conn-1").data()).containsEntry("enabled", true);
+        assertThat(connectorController.disableConnection("conn-1").data()).containsEntry("enabled", false);
+        assertThat(connectorController.deleteConnection("conn-1").data()).containsEntry("deleted", true);
         verify(connectors).list(PageRequest.of(0, 200));
     }
 
@@ -481,10 +486,10 @@ class SoarControllerCoverageTest {
         given(connectors.update("conn-1", "fw", "endpoint", "https://fw.example", "secret://fw",
                 List.of("fw.example"), true, 7L)).willReturn(Map.of("id", "conn-1"));
 
-        assertThat(controller.createConnection(request).getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        assertThat(controller.updateConnection("conn-1", request).data()).containsEntry("id", "conn-1");
-        assertThat(controller.createConnector(request).getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        assertThat(controller.updateConnector("conn-1", request).data()).containsEntry("id", "conn-1");
+        assertThat(connectorController.createConnection(request).getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(connectorController.updateConnection("conn-1", request).data()).containsEntry("id", "conn-1");
+        assertThat(connectorController.createConnector(request).getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(connectorController.updateConnector("conn-1", request).data()).containsEntry("id", "conn-1");
     }
 
     @Test
@@ -495,7 +500,7 @@ class SoarControllerCoverageTest {
         given(connectors.update("conn-1", "new", "endpoint", "https://old", null,
                 List.of("a.example"), false, 4L)).willReturn(Map.of("id", "conn-1"));
 
-        ApiResult<Map<String, Object>> result = controller.patchConnection("conn-1",
+        ApiResult<Map<String, Object>> result = connectorController.patchConnection("conn-1",
                 Map.of("name", "new", "enabled", "false", "rowVersion", 4));
 
         assertThat(result.data()).containsEntry("id", "conn-1");
@@ -509,7 +514,7 @@ class SoarControllerCoverageTest {
         given(connectors.update(eq("conn-1"), eq("old"), isNull(), isNull(), isNull(),
                 eq(List.of("b.example")), eq(true), isNull())).willReturn(Map.of("id", "conn-1"));
 
-        controller.patchConnection("conn-1",
+        connectorController.patchConnection("conn-1",
                 Map.of("allowedHosts", List.of("b.example"), "enabled", true));
 
         verify(connectors).update(eq("conn-1"), eq("old"), isNull(), isNull(), isNull(),
@@ -534,7 +539,7 @@ class SoarControllerCoverageTest {
     @Test
     void templateRoutesFailFastWithoutATemplateCatalog() {
         SoarController withoutTemplates =
-                new SoarController(service, automationRules, connectors);
+                new SoarController(service);
 
         assertThat(withoutTemplates.templates().data()).isEqualTo(List.of());
         assertThatThrownBy(() -> withoutTemplates.installTemplate("tpl-1"))

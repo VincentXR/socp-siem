@@ -2,7 +2,6 @@ package com.socp.soar.web.api.controller;
 
 import com.socp.platform.error.api.ApiResult;
 import com.socp.platform.tenant.context.TenantContext;
-import com.socp.soar.web.service.SoarAutomationRuleService;
 import com.socp.soar.web.service.SoarConnectorService;
 import com.socp.soar.web.service.SoarService;
 import com.socp.soar.web.service.SoarTemplateService;
@@ -41,18 +40,18 @@ class SoarControllerEdgeCoverageTest {
     @Mock
     private SoarService service;
     @Mock
-    private SoarAutomationRuleService automationRules;
-    @Mock
     private SoarConnectorService connectors;
     @Mock
     private SoarTemplateService templates;
 
     private SoarController controller;
+    private SoarConnectorController connectorController;
 
     @BeforeEach
     void setUp() {
         TenantContext.set("tenant-a");
-        controller = new SoarController(service, automationRules, connectors, templates);
+        controller = new SoarController(service, templates);
+        connectorController = new SoarConnectorController(connectors);
     }
 
     @AfterEach
@@ -83,7 +82,7 @@ class SoarControllerEdgeCoverageTest {
     void connectionListWithoutPaginationUsesCompatibilityAlias() {
         given(connectors.list()).willReturn(List.of(Map.of("id", "c1")));
 
-        ApiResult<Object> result = controller.connections(null, null);
+        ApiResult<Object> result = connectorController.connections(null, null);
 
         assertThat((List<?>) result.data()).hasSize(1);
         verify(connectors).list();
@@ -151,7 +150,7 @@ class SoarControllerEdgeCoverageTest {
                 .willReturn(Map.of("id", "c1"));
 
         ApiResult<Map<String, Object>> result =
-                controller.patchConnection("c1", Map.<String, Object>of("rowVersion", "abc"));
+                connectorController.patchConnection("c1", Map.<String, Object>of("rowVersion", "abc"));
 
         assertThat(result.code()).isZero();
         assertThat(result.data()).containsEntry("id", "c1");

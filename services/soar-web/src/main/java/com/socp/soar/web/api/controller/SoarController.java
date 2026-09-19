@@ -2,15 +2,11 @@ package com.socp.soar.web.api.controller;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.socp.platform.auth.security.RequirePermission;
-import com.socp.platform.auth.security.RequireService;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.platform.error.api.ApiResult;
 import com.socp.soar.web.api.request.CreatePlaybookRequest;
-import com.socp.soar.web.api.request.CreateAutomationRuleRequest;
-import com.socp.soar.web.api.request.CreateConnectorRequest;
 import com.socp.soar.web.api.request.ApprovalDecisionRequest;
 import com.socp.soar.web.api.request.DryRunRequest;
-import com.socp.soar.web.api.request.PatchConnectionRequest;
 import com.socp.soar.web.api.request.PlaybookExecutionRequest;
 import com.socp.soar.web.api.request.ReasonRequest;
 import com.socp.soar.web.api.request.RerunRequest;
@@ -22,8 +18,6 @@ import com.socp.soar.web.api.request.UpdatePlaybookRequest;
 import com.socp.soar.web.domain.DefinitionValidationResult;
 import com.socp.soar.web.config.SoarRuntimeProperties;
 import com.socp.soar.web.service.SoarService;
-import com.socp.soar.web.service.SoarAutomationRuleService;
-import com.socp.soar.web.service.SoarConnectorService;
 import com.socp.soar.web.service.SoarTemplateService;
 import com.socp.soar.web.service.SoarRunQueryService;
 import io.swagger.v3.oas.annotations.headers.Header;
@@ -45,7 +39,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.http.MediaType;
 import org.springframework.web.server.ResponseStatusException;
@@ -54,41 +47,43 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.time.Instant;
-import java.time.format.DateTimeParseException;
+
+import static com.socp.soar.web.api.controller.SoarHttpSupport.badRequest;
+import static com.socp.soar.web.api.controller.SoarHttpSupport.clampSize;
+import static com.socp.soar.web.api.controller.SoarHttpSupport.optionalLong;
+import static com.socp.soar.web.api.controller.SoarHttpSupport.optionalString;
+import static com.socp.soar.web.api.controller.SoarHttpSupport.optionalStringList;
+import static com.socp.soar.web.api.controller.SoarHttpSupport.page;
+import static com.socp.soar.web.api.controller.SoarHttpSupport.parseInstant;
+import static com.socp.soar.web.api.controller.SoarHttpSupport.parseSequence;
+import static com.socp.soar.web.api.controller.SoarHttpSupport.reasonFromLegacy;
+import static com.socp.soar.web.api.controller.SoarHttpSupport.toObjectMap;
 
 /** SOAR HTTP API. */
 @RestController
 @RequestMapping("/api")
 public class SoarController {
     private final SoarService service;
-    private final SoarAutomationRuleService automationRules;
-    private final SoarConnectorService connectors;
     private final SoarTemplateService templates;
     private final ScheduledExecutorService streams;
     private final SoarRuntimeProperties runtimeProperties;
     private final SoarControllerReadSupport reads;
 
     @org.springframework.beans.factory.annotation.Autowired
-    public SoarController(SoarService service, SoarAutomationRuleService automationRules,
-                            SoarConnectorService connectors, SoarTemplateService templates,
+    public SoarController(SoarService service, SoarTemplateService templates,
                             @org.springframework.beans.factory.annotation.Qualifier("soarSseScheduler")
                             ObjectProvider<ScheduledExecutorService> schedulerProvider,
                             SoarRuntimeProperties runtimeProperties) {
-        this(service, automationRules, connectors, templates,
+        this(service, templates,
                 schedulerProvider.getIfAvailable(SoarController::compatibilityScheduler), runtimeProperties);
     }
 
-    private SoarController(SoarService service, SoarAutomationRuleService automationRules,
-                             SoarConnectorService connectors, SoarTemplateService templates,
+    private SoarController(SoarService service, SoarTemplateService templates,
                              ScheduledExecutorService streams, SoarRuntimeProperties runtimeProperties) {
         this.service = service;
-        this.automationRules = automationRules;
-        this.connectors = connectors;
         this.templates = templates;
         // The scheduler is a normal application bean, but sliced MVC tests and
         // small compatibility deployments may deliberately omit the optional
@@ -101,16 +96,13 @@ public class SoarController {
 
     /** Spring wiring overload retained for deployments that do not expose the
      * optional template catalog bean. */
-    public SoarController(SoarService service, SoarAutomationRuleService automationRules,
-                            SoarConnectorService connectors, SoarTemplateService templates) {
-        this(service, automationRules, connectors, templates, compatibilityScheduler(),
-                new SoarRuntimeProperties());
+    public SoarController(SoarService service, SoarTemplateService templates) {
+        this(service, templates, compatibilityScheduler(), new SoarRuntimeProperties());
     }
 
     /** Compatibility constructor for isolated controller tests. */
-    public SoarController(SoarService service, SoarAutomationRuleService automationRules,
-                            SoarConnectorService connectors) {
-        this(service, automationRules, connectors, null);
+    public SoarController(SoarService service) {
+        this(service, null);
     }
 
     /** Injected separately so compatibility constructors and MVC slices can
@@ -769,343 +761,4 @@ public class SoarController {
         return ApiResult.ok(service.decideApproval(id, false, reasonFromLegacy(legacyBody, null)));
     }
 
-    @GetMapping("/automation-rules")
-    @RequirePermission("soar:view")
-    public ApiResult<Object> automationRules(@RequestParam(required = false) Integer page,
-                                             @RequestParam(required = false) Integer size) {
-        if (page != null || size != null) {
-            return ApiResult.ok(page(automationRules.list(PageRequest.of(
-                    Math.max(0, page == null ? 0 : page), clampSize(size == null ? 100 : size)))));
-        }
-        return ApiResult.ok(automationRules.list());
-    }
-
-    @GetMapping("/automation-rules/{id}")
-    @RequirePermission("soar:view")
-    public ApiResult<Map<String, Object>> getAutomationRule(@PathVariable String id) {
-        return ApiResult.ok(automationRules.get(id));
-    }
-
-    @PostMapping("/automation-rules")
-    @RequirePermission("soar:edit")
-    public ResponseEntity<ApiResult<Map<String, Object>>> createAutomationRule(
-            @Valid @RequestBody CreateAutomationRuleRequest request) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResult.ok(automationRules.create(
-                request.name(), request.triggerType(), request.priority(), request.enabled(),
-                request.conditions(), request.actions(), request.suppression())));
-    }
-
-    @PutMapping("/automation-rules/{id}")
-    @RequirePermission("soar:edit")
-    public ApiResult<Map<String, Object>> updateAutomationRule(@PathVariable String id,
-                                                                @Valid @RequestBody CreateAutomationRuleRequest request) {
-        return ApiResult.ok(automationRules.update(id, request.name(), request.triggerType(), request.priority(),
-                request.enabled(), request.conditions(), request.actions(), request.suppression(), request.rowVersion()));
-    }
-
-    @PatchMapping("/automation-rules/{id}")
-    @RequirePermission("soar:edit")
-    public ApiResult<Map<String, Object>> patchAutomationRule(@PathVariable String id,
-                                                               @RequestBody(required = false) Map<String, Object> body) {
-        return ApiResult.ok(automationRules.patch(id, body));
-    }
-
-    @DeleteMapping("/automation-rules/{id}")
-    @RequirePermission("soar:edit")
-    public ApiResult<Map<String, Object>> deleteAutomationRule(@PathVariable String id) {
-        return ApiResult.ok(automationRules.remove(id));
-    }
-
-    @PostMapping("/automation-rules/{id}/enable")
-    @RequirePermission("soar:publish")
-    public ApiResult<Map<String, Object>> enableAutomationRule(@PathVariable String id) {
-        return ApiResult.ok(automationRules.setEnabled(id, true));
-    }
-
-    @PostMapping("/automation-rules/{id}/disable")
-    @RequirePermission("soar:publish")
-    public ApiResult<Map<String, Object>> disableAutomationRule(@PathVariable String id) {
-        return ApiResult.ok(automationRules.setEnabled(id, false));
-    }
-
-    @PostMapping("/automation-rules/evaluate")
-    @RequirePermission("soar:execute")
-    public ApiResult<Map<String, Object>> evaluateAutomationRules(
-            @RequestBody Map<String, Object> event) {
-        return ApiResult.ok(automationRules.evaluate(event));
-    }
-
-    @PostMapping("/automation-rules/test")
-    @RequirePermission("soar:edit")
-    public ApiResult<List<Map<String, Object>>> testAutomationRules(
-            @RequestBody Map<String, Object> event) {
-        return ApiResult.ok(automationRules.explain(event));
-    }
-
-    /** Service/event-bus entry point; callers must pass the service identity at the gateway. */
-    @PostMapping("/events/evaluate")
-    @RequireService
-    @RequirePermission("soar:execute")
-    public ApiResult<Map<String, Object>> evaluateEvent(@RequestBody Map<String, Object> event) {
-        // Alert Web may still send an already-persisted alarm-shaped payload.
-        // Normalize it to the typed event envelope so the durable evaluator
-        // remains the only execution path.
-        return ApiResult.ok(automationRules.evaluate(normalizeEventEnvelope(event)));
-    }
-
-    private static Map<String, Object> normalizeEventEnvelope(Map<String, Object> event) {
-        Map<String, Object> source = event == null ? Map.of() : new LinkedHashMap<>(event);
-        if (source.containsKey("schemaVersion") || source.containsKey("eventType")) return source;
-        String eventId = optionalString(source.get("eventId"));
-        if (eventId == null) eventId = optionalString(source.get("id"));
-        if (eventId == null) return source;
-        String tenantId = optionalString(source.get("tenantId"));
-        if (tenantId == null) tenantId = optionalString(source.get("tenant_id"));
-        String occurredAt = optionalString(source.get("occurredAt"));
-        if (occurredAt == null) occurredAt = Instant.now().toString();
-        Map<String, Object> envelope = new LinkedHashMap<>();
-        envelope.put("schemaVersion", "soar.event");
-        envelope.put("eventId", eventId);
-        envelope.put("eventType", "alert.created");
-        if (tenantId != null) envelope.put("tenantId", tenantId);
-        envelope.put("occurredAt", occurredAt);
-        envelope.put("producer", "alert-web");
-        envelope.put("subject", Map.of("type", "alert", "id", eventId));
-        envelope.put("data", source);
-        envelope.put("trace", Map.of(
-                "correlationId", eventId,
-                "causationId", optionalString(source.get("triggerEventId")) == null
-                        ? eventId : optionalString(source.get("triggerEventId")),
-                "automationDepth", 0));
-        return envelope;
-    }
-
-    @GetMapping("/connectors")
-    @RequirePermission("soar:view")
-    public ApiResult<List<Map<String, Object>>> connectors() {
-        return ApiResult.ok(connectors.list());
-    }
-
-    @GetMapping("/connectors/{id}")
-    @RequirePermission("soar:view")
-    public ApiResult<Map<String, Object>> getConnector(@PathVariable String id) {
-        return ApiResult.ok(connectors.get(id));
-    }
-
-    @GetMapping("/connections/{id}")
-    @RequirePermission("soar:connections:view")
-    public ApiResult<Map<String, Object>> getConnection(@PathVariable String id) {
-        return ApiResult.ok(connectors.get(id));
-    }
-
-    @GetMapping("/actions")
-    @RequirePermission("soar:view")
-    public ApiResult<List<Map<String, Object>>> actions() {
-        return ApiResult.ok(connectors.actions());
-    }
-
-    /** Connection is the public name in the SOAR design; connectors remains a compatibility alias. */
-    @GetMapping("/connections")
-    @RequirePermission("soar:connections:view")
-    public ApiResult<Object> connections(@RequestParam(required = false) Integer page,
-                                         @RequestParam(required = false) Integer size) {
-        if (page != null || size != null) {
-            return ApiResult.ok(page(connectors.list(PageRequest.of(
-                    Math.max(0, page == null ? 0 : page), clampSize(size == null ? 100 : size)))));
-        }
-        return ApiResult.ok(connectors.list());
-    }
-
-    @PostMapping("/connections")
-    @RequirePermission("soar:connections:manage")
-    public ResponseEntity<ApiResult<Map<String, Object>>> createConnection(
-            @Valid @RequestBody CreateConnectorRequest request) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResult.ok(connectors.create(
-                request.name(), request.connectorType(), request.endpoint(), request.authSecretRef(),
-                request.allowedHosts(), request.enabled())));
-    }
-
-    @PutMapping("/connections/{id}")
-    @RequirePermission("soar:connections:manage")
-    public ApiResult<Map<String, Object>> updateConnection(@PathVariable String id,
-                                                            @Valid @RequestBody CreateConnectorRequest request) {
-        return ApiResult.ok(connectors.update(id, request.name(), request.connectorType(), request.endpoint(),
-                request.authSecretRef(), request.allowedHosts(), request.enabled(), request.rowVersion()));
-    }
-
-    @PatchMapping("/connections/{id}")
-    @RequirePermission("soar:connections:manage")
-    public ApiResult<Map<String, Object>> patchConnection(@PathVariable String id,
-                                                           @Valid @RequestBody PatchConnectionRequest request) {
-        return patchConnectionInternal(id, request);
-    }
-
-    /** Compatibility overload for map-shaped partial connection updates. */
-    public ApiResult<Map<String, Object>> patchConnection(String id, Object legacyBody) {
-        if (legacyBody instanceof PatchConnectionRequest request) {
-            return patchConnectionInternal(id, request);
-        }
-        if (!(legacyBody instanceof Map<?, ?> map)) {
-            throw badRequest("connection patch must be an object");
-        }
-        return patchConnectionFromMap(id, toObjectMap(map));
-    }
-
-    private ApiResult<Map<String, Object>> patchConnectionInternal(String id, PatchConnectionRequest request) {
-        Map<String, Object> current = connectors.get(id);
-        if (request == null) return patchConnectionFromMap(id, Map.of());
-        String name = request.name() == null ? optionalString(current.get("name")) : request.name();
-        String type = request.connectorType() == null ? optionalString(current.get("connectorType")) : request.connectorType();
-        String endpoint = request.endpoint() == null ? optionalString(current.get("endpoint")) : request.endpoint();
-        String secret = request.authSecretRef();
-        List<String> allowedHosts = request.allowedHosts() == null
-                ? optionalStringList(current.get("allowedHosts")) : request.allowedHosts();
-        boolean enabled = request.enabled() == null
-                ? Boolean.TRUE.equals(current.get("enabled")) : request.enabled();
-        return ApiResult.ok(connectors.update(id, name, type, endpoint, secret, allowedHosts, enabled,
-                request.rowVersion()));
-    }
-
-    private ApiResult<Map<String, Object>> patchConnectionFromMap(String id, Map<String, Object> payload) {
-        Map<String, Object> current = connectors.get(id);
-        String name = optionalString(payload.getOrDefault("name", current.get("name")));
-        String type = optionalString(payload.getOrDefault("connectorType", current.get("connectorType")));
-        String endpoint = optionalString(payload.getOrDefault("endpoint", current.get("endpoint")));
-        String secret = payload.containsKey("authSecretRef") ? optionalString(payload.get("authSecretRef")) : null;
-        @SuppressWarnings("unchecked")
-        List<String> allowedHosts = payload.get("allowedHosts") instanceof List<?> list
-                ? list.stream().map(String::valueOf).toList()
-                : optionalStringList(current.get("allowedHosts"));
-        boolean enabled = payload.containsKey("enabled")
-                ? Boolean.parseBoolean(String.valueOf(payload.get("enabled")))
-                : Boolean.TRUE.equals(current.get("enabled"));
-        return ApiResult.ok(connectors.update(id, name, type, endpoint, secret, allowedHosts, enabled,
-                optionalLong(payload.get("rowVersion"))));
-    }
-
-    @PostMapping("/connectors")
-    @RequirePermission("soar:connections:manage")
-    public ResponseEntity<ApiResult<Map<String, Object>>> createConnector(
-            @Valid @RequestBody CreateConnectorRequest request) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResult.ok(connectors.create(
-                request.name(), request.connectorType(), request.endpoint(), request.authSecretRef(),
-                request.allowedHosts(), request.enabled())));
-    }
-
-    @PutMapping("/connectors/{id}")
-    @RequirePermission("soar:connections:manage")
-    public ApiResult<Map<String, Object>> updateConnector(@PathVariable String id,
-                                                           @Valid @RequestBody CreateConnectorRequest request) {
-        return ApiResult.ok(connectors.update(id, request.name(), request.connectorType(), request.endpoint(),
-                request.authSecretRef(), request.allowedHosts(), request.enabled(), request.rowVersion()));
-    }
-
-    @PostMapping("/connectors/{id}/enable")
-    @RequirePermission("soar:connections:manage")
-    public ApiResult<Map<String, Object>> enableConnector(@PathVariable String id) {
-        return ApiResult.ok(connectors.setEnabled(id, true));
-    }
-
-    @PostMapping("/connectors/{id}/disable")
-    @RequirePermission("soar:connections:manage")
-    public ApiResult<Map<String, Object>> disableConnector(@PathVariable String id) {
-        return ApiResult.ok(connectors.setEnabled(id, false));
-    }
-
-    @PostMapping("/connectors/{id}/test")
-    @RequirePermission("soar:connections:manage")
-    public ApiResult<Map<String, Object>> testConnector(@PathVariable String id) {
-        return ApiResult.ok(connectors.test(id));
-    }
-
-    @PostMapping("/connections/{id}/test")
-    @RequirePermission("soar:connections:manage")
-    public ApiResult<Map<String, Object>> testConnection(@PathVariable String id) {
-        return ApiResult.ok(connectors.test(id));
-    }
-
-    /** Connection spelling of the compatibility enable/disable operations. */
-    @PostMapping("/connections/{id}/enable")
-    @RequirePermission("soar:connections:manage")
-    public ApiResult<Map<String, Object>> enableConnection(@PathVariable String id) {
-        return ApiResult.ok(connectors.setEnabled(id, true));
-    }
-
-    @PostMapping("/connections/{id}/disable")
-    @RequirePermission("soar:connections:manage")
-    public ApiResult<Map<String, Object>> disableConnection(@PathVariable String id) {
-        return ApiResult.ok(connectors.setEnabled(id, false));
-    }
-
-    @DeleteMapping("/connections/{id}")
-    @RequirePermission("soar:connections:manage")
-    public ApiResult<Map<String, Object>> deleteConnection(@PathVariable String id) {
-        return ApiResult.ok(connectors.softDelete(id));
-    }
-
-    private static Map<String, Object> page(Page<Map<String, Object>> result) {
-        Map<String, Object> out = new LinkedHashMap<>();
-        // SOAR's unversioned compatibility surface accepts a legacy 0-based
-        // request index.  Keep that input contract stable, but expose the
-        // complete pagination metadata so clients can advance safely without
-        // guessing from the current page length.
-        out.put("page", result.getNumber());
-        out.put("size", result.getSize());
-        out.put("total", result.getTotalElements());
-        out.put("totalPages", result.getSize() <= 0 ? null : result.getTotalPages());
-        out.put("items", result.getContent());
-        return out;
-    }
-
-    private static int clampSize(int size) {
-        return Math.min(200, Math.max(1, size));
-    }
-
-    private static long parseSequence(String value) {
-        if (value == null || value.isBlank()) return 0;
-        try { return Math.max(0, Long.parseLong(value.trim())); }
-        catch (NumberFormatException ignored) { return 0; }
-    }
-
-    private static Map<String, Object> toObjectMap(Map<?, ?> value) {
-        Map<String, Object> output = new LinkedHashMap<>();
-        value.forEach((key, item) -> output.put(String.valueOf(key), item));
-        return output;
-    }
-
-    private static String reasonFromLegacy(Object value, String defaultReason) {
-        if (value == null) return defaultReason;
-        if (value instanceof ReasonRequest request) return request.reason();
-        if (value instanceof Map<?, ?> map) return optionalString(toObjectMap(map).get("reason"));
-        throw badRequest("request must be an object");
-    }
-
-    private static ResponseStatusException badRequest(String message) {
-        return new ResponseStatusException(HttpStatus.BAD_REQUEST, message);
-    }
-
-    private static String optionalString(Object value) {
-        return value == null ? null : String.valueOf(value);
-    }
-
-    private static Long optionalLong(Object value) {
-        if (value == null) return null;
-        if (value instanceof Number number) return number.longValue();
-        try { return Long.valueOf(String.valueOf(value)); }
-        catch (NumberFormatException ignored) { return null; }
-    }
-
-    private static List<String> optionalStringList(Object value) {
-        if (!(value instanceof List<?> list)) return null;
-        return list.stream().map(String::valueOf).toList();
-    }
-
-    private static Instant parseInstant(String value, String field) {
-        if (value == null || value.isBlank()) return null;
-        try { return Instant.parse(value.trim()); }
-        catch (DateTimeParseException failure) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    field + " must be an ISO-8601 instant", failure);
-        }
-    }
 }
