@@ -37,6 +37,7 @@ class RuntimePropertiesTest {
         assertTrue(indexer.isEnabled());
         assertEquals(1_000L, indexer.getRetryBackoffMs());
         assertEquals("dev-vector-token", vector.getToken());
+        assertEquals("", vector.getUri());
 
         cache.setMaxTenants(8);
         indexer.setEnabled(false);
