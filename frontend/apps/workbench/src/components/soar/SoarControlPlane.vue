@@ -6,9 +6,11 @@ import 'element-plus/es/components/switch/style/css.mjs'
 import 'element-plus/es/components/input-number/style/css.mjs'
 import ElDialog from 'element-plus/es/components/dialog/index.mjs'
 import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
+import ElForm from 'element-plus/es/components/form/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import 'element-plus/es/components/dialog/style/css.mjs'
 import 'element-plus/es/components/drawer/style/css.mjs'
+import 'element-plus/es/components/form/style/css.mjs'
 import 'element-plus/es/components/input/style/css.mjs'
 import SchemaInputForm from '../SchemaInputForm.vue'
 const showRuleTest = ref(false)
@@ -62,13 +64,12 @@ import {
 } from '../../api'
 import type { FieldDef, RuleCondition, SoarPage } from '../../api'
 
-export type SoarControlPlaneSection = 'rules' | 'connections' | 'tasks' | 'operations' | 'connections-and-ops' | 'all'
+export type SoarControlPlaneSection = 'rules' | 'tasks' | 'connections-and-ops'
 type Tab = 'rules' | 'connections' | 'tasks' | 'operations'
 
 const props = withDefaults(defineProps<{
-  initialTab?: Tab
   hideTabs?: boolean
-  section?: SoarControlPlaneSection
+  section: SoarControlPlaneSection
   canWrite?: boolean
   /** Fine-grained capabilities mirror the controller guards. */
   canPublish?: boolean
@@ -77,9 +78,7 @@ const props = withDefaults(defineProps<{
   canOperate?: boolean
   canCompleteTasks?: boolean
 }>(), {
-  initialTab: 'rules',
   hideTabs: false,
-  section: 'all',
   canWrite: true,
   canPublish: true,
   canViewConnections: true,
@@ -88,21 +87,22 @@ const props = withDefaults(defineProps<{
   canCompleteTasks: true,
 })
 
-const tab = ref<Tab>(
-  props.section && props.section !== 'all' && props.section !== 'connections-and-ops'
-    ? props.section
-    : (props.initialTab || 'rules')
-)
+const tab = ref<Tab>(props.section === 'connections-and-ops' ? 'connections' : props.section)
 
 watch(() => props.section, (val) => {
-  if (val && val !== 'all' && val !== 'connections-and-ops') {
+  if (val !== 'connections-and-ops') {
     tab.value = val
-  } else if (val === 'connections-and-ops' && !['connections', 'operations'].includes(tab.value)) {
+  } else if (tab.value !== 'connections' && tab.value !== 'operations') {
     tab.value = 'connections'
   }
 })
-// A row error belongs to the table that raised it.
-watch(tab, () => { rowError.value = '' })
+let loadPending = false
+// A row error belongs to the table that raised it. Each tab also owns its
+// data load so a hidden control-plane section does not fan out six requests.
+watch(tab, () => {
+  rowError.value = ''
+  void load()
+})
 const loading = ref(false)
 const message = ref('')
 /** Card-level banner: the shared catalog load failed, so a list may be stale. */
@@ -155,7 +155,6 @@ const taskOpen = ref(false)
 const taskGuard = useFormDialog(taskOpen, () => taskValue.value, () => taskBusy.value)
 const ruleGuard = useFormDialog(showRuleForm, () => ruleForm, () => ruleFormBusy.value)
 const connectionGuard = useFormDialog(showConnectionForm, () => connectionForm, () => connectionFormBusy.value)
-const pendingCount = computed(() => tasks.value.filter(item => item.status === 'PENDING').length)
 const connectorTypeOptions = computed(() => Array.from(new Set([
   connectionForm.connectorType,
   ...actions.value.map(action => action.connectorId),
@@ -177,30 +176,41 @@ function parseJson(value: string, fallback: unknown = {}) {
 }
 
 async function load() {
-  if (loading.value) return
+  if (loading.value) {
+    loadPending = true
+    return
+  }
   loading.value = true
   clearFeedback()
+  const showRules = tab.value === 'rules'
+  const showConnections = tab.value === 'connections'
+  const showTasks = tab.value === 'tasks'
+  const showOperations = tab.value === 'operations'
   const emptyConnections: SoarPage<SoarConnection> = {
     page: 0, size: 100, total: 0, totalPages: 0, items: [],
   }
   const results = await Promise.allSettled([
-    listAutomationRules(0, 100),
-    props.canViewConnections ? listConnections(0, 100) : Promise.resolve(emptyConnections),
-    listActions(),
-    listManualTasksPage(true, 0, 100),
-    props.canOperate ? listDeadDispatches() : Promise.resolve([] as SoarDeadLetter[]),
-    getStats(),
+    showRules ? listAutomationRules(0, 100) : Promise.resolve(null),
+    showConnections && props.canViewConnections ? listConnections(0, 100) : Promise.resolve(emptyConnections),
+    showConnections ? listActions() : Promise.resolve([] as SoarActionDescriptor[]),
+    showTasks ? listManualTasksPage(true, 0, 100) : Promise.resolve(null),
+    showOperations && props.canOperate ? listDeadDispatches() : Promise.resolve([] as SoarDeadLetter[]),
+    showOperations ? getStats() : Promise.resolve(null),
   ])
   const [ruleResult, connectionResult, actionResult, taskResult, deadResult, statsResult] = results
-  if (ruleResult.status === 'fulfilled') rules.value = ruleResult.value.items
+  if (ruleResult.status === 'fulfilled' && ruleResult.value) rules.value = ruleResult.value.items
   if (connectionResult.status === 'fulfilled') connections.value = connectionResult.value.items
   if (actionResult.status === 'fulfilled') actions.value = actionResult.value
-  if (taskResult.status === 'fulfilled') tasks.value = taskResult.value.items
+  if (taskResult.status === 'fulfilled' && taskResult.value) tasks.value = taskResult.value.items
   if (deadResult.status === 'fulfilled') deadLetters.value = deadResult.value
-  if (statsResult.status === 'fulfilled') stats.value = statsResult.value
+  if (statsResult.status === 'fulfilled' && statsResult.value) stats.value = statsResult.value
   const failures = results.filter(item => item.status === 'rejected')
   if (failures.length) loadError.value = failureText(failures[0].reason)
   loading.value = false
+  if (loadPending) {
+    loadPending = false
+    void load()
+  }
 }
 
 async function loadPublishedVersionOptions(): Promise<void> {
@@ -553,12 +563,7 @@ function controlSubtitle(): string {
       </div>
     </template>
 
-    <div v-if="!hideTabs && (!section || section === 'all')" class="soar-tabs" role="tablist" :aria-label="t('soar.controlPlane')">
-      <button v-for="item in (['rules', 'connections', 'tasks', 'operations'] as Tab[])" :key="item" type="button" :class="{ active: tab === item }" role="tab" :aria-selected="tab === item" @click="tab = item">
-        {{ item === 'rules' ? t('soar.automationRules') : item === 'connections' ? t('soar.connections') : item === 'tasks' ? t('soar.manualTasks', { count: pendingCount }) : t('soar.operations') }}
-      </button>
-    </div>
-    <div v-else-if="!hideTabs && section === 'connections-and-ops'" class="soar-tabs" role="tablist" :aria-label="t('soar.controlConnections')">
+    <div v-if="!hideTabs && section === 'connections-and-ops'" class="soar-tabs" role="tablist" :aria-label="t('soar.controlConnections')">
       <button v-for="item in (['connections', 'operations'] as Tab[])" :key="item" type="button" :class="{ active: tab === item }" role="tab" :aria-selected="tab === item" @click="tab = item">
         {{ item === 'connections' ? t('soar.connectionsCatalog') : t('soar.deadLetterOperations') }}
       </button>
@@ -619,7 +624,7 @@ function controlSubtitle(): string {
         </template>
       </el-drawer>
       <el-dialog v-if="props.canWrite" v-model="showRuleTest" :title="t('forms.test')" width="720px"><div v-if="formError" role="alert" class="soar-feedback error">{{ formError }}</div><div class="soar-test-box"><el-input type="textarea" v-model="ruleEventText" :rows="3" spellcheck="false" :aria-label="t('soar.actionTestEvent')"  /><pre v-if="ruleTestResult">{{ JSON.stringify(ruleTestResult, null, 2) }}</pre></div><template #footer><el-button :loading="ruleTestBusy" @click="testRules">{{ t('forms.test') }}</el-button></template></el-dialog>
-      <div class="soar-table-scroll"><table><thead><tr><th>{{ t('common.name') }}</th><th>{{ t('soar.triggerType') }}</th><th>{{ t('soar.priority') }}</th><th>{{ t('soar.revision') }}</th><th>{{ t('common.status') }}</th><th>{{ t('soar.publishedVersions') }}</th><th v-if="props.canWrite || props.canPublish">{{ t('common.actions') }}</th></tr></thead><tbody><tr v-for="rule in rules" :key="rule.id"><td><b>{{ rule.name }}</b><small>{{ rule.id }}</small></td><td>{{ rule.triggerType }}</td><td>{{ rule.priority }}</td><td>{{ rule.revision || 1 }}</td><td><el-tag size="small" :type="rule.enabled ? 'success' : 'info'">{{ statusLabel(rule.enabled ? 'ENABLED' : 'DISABLED') }}</el-tag></td><td class="mono">{{ JSON.stringify(rule.actions) }}</td><td v-if="props.canWrite || props.canPublish" class="nowrap"><el-button v-if="props.canPublish" link size="small" :loading="ruleAction[rule.id] === 'toggle'" :disabled="Boolean(ruleAction[rule.id])" @click="toggleRule(rule)">{{ rule.enabled ? t('common.disable') : t('common.enable') }}</el-button><el-button v-if="props.canWrite" link size="small" @click="editRule(rule)">{{ t('common.edit') }}</el-button></td></tr></tbody></table><div v-if="!rules.length" class="soar-empty">{{ t('soar.noAutomationRules') }}</div></div>
+      <div class="soar-table-scroll"><table><thead><tr><th>{{ t('common.name') }}</th><th>{{ t('soar.triggerType') }}</th><th>{{ t('soar.priority') }}</th><th>{{ t('soar.revision') }}</th><th>{{ t('common.status') }}</th><th>{{ t('soar.publishedVersions') }}</th><th v-if="props.canWrite || props.canPublish">{{ t('common.actions') }}</th></tr></thead><tbody><tr v-for="rule in rules" :key="rule.id"><td><b>{{ rule.name }}</b><small>{{ rule.id }}</small></td><td>{{ rule.triggerType }}</td><td>{{ rule.priority }}</td><td>{{ rule.revision || 1 }}</td><td><el-tag size="small" :type="rule.enabled ? 'success' : 'info'">{{ statusLabel(rule.enabled ? 'ENABLED' : 'DISABLED') }}</el-tag></td><td class="mono">{{ JSON.stringify(rule.actions) }}</td><td v-if="props.canWrite || props.canPublish" class="nowrap"><el-button v-if="props.canPublish" link size="small" :loading="ruleAction[rule.id] === 'toggle'" :disabled="Boolean(ruleAction[rule.id])" @click="toggleRule(rule)">{{ rule.enabled ? t('common.disable') : t('common.enable') }}</el-button><el-button v-if="props.canWrite" link size="small" @click="editRule(rule)">{{ t('common.edit') }}</el-button></td></tr></tbody></table><div v-if="!loading && !rules.length" class="soar-empty">{{ t('soar.noAutomationRules') }}</div></div>
     </section>
 
     <section v-else-if="tab === 'connections'" class="soar-control-section">
@@ -642,19 +647,19 @@ function controlSubtitle(): string {
           <el-button v-if="props.canWrite" type="primary" :loading="connectionFormBusy" @click="createConnection">{{ t('common.create') }}</el-button>
         </template>
       </el-dialog>
-      <div class="soar-table-scroll"><table><thead><tr><th>{{ t('common.name') }}</th><th>{{ t('common.type') }}</th><th>{{ t('soar.httpsEndpoint') }}</th><th>{{ t('common.status') }}</th><th>{{ t('soar.connectionTest') }}</th><th v-if="props.canWrite">{{ t('common.actions') }}</th></tr></thead><tbody><tr v-for="connection in connections" :key="connection.id"><td><b>{{ connection.name }}</b><small>{{ connection.id }}</small></td><td>{{ connection.connectorType }}</td><td class="mono">{{ connection.endpoint }}</td><td><el-tag size="small" :type="connection.status === 'HEALTHY' ? 'success' : connection.enabled ? 'warning' : 'info'">{{ statusLabel(connection.status) }}</el-tag></td><td>{{ connection.lastTestAt || '-' }}<small>{{ connection.lastTestError || '' }}</small></td><td v-if="props.canWrite" class="nowrap"><el-button link size="small" :loading="connectionAction[connection.id] === 'test'" :disabled="Boolean(connectionAction[connection.id])" @click="testConnection(connection)">{{ t('soar.connectionTest') }}</el-button><el-button link size="small" :loading="connectionAction[connection.id] === 'enable'" :disabled="Boolean(connectionAction[connection.id])" @click="toggleConnection(connection)">{{ connection.enabled ? t('common.disable') : t('common.enable') }}</el-button><el-button link type="danger" size="small" :loading="connectionAction[connection.id] === 'delete'" :disabled="Boolean(connectionAction[connection.id])" @click="removeConnection(connection)">{{ t('common.delete') }}</el-button></td></tr></tbody></table><div v-if="!connections.length" class="soar-empty">{{ t('soar.noConnections') }}</div></div>
+      <div class="soar-table-scroll"><table><thead><tr><th>{{ t('common.name') }}</th><th>{{ t('common.type') }}</th><th>{{ t('soar.httpsEndpoint') }}</th><th>{{ t('common.status') }}</th><th>{{ t('soar.connectionTest') }}</th><th v-if="props.canWrite">{{ t('common.actions') }}</th></tr></thead><tbody><tr v-for="connection in connections" :key="connection.id"><td><b>{{ connection.name }}</b><small>{{ connection.id }}</small></td><td>{{ connection.connectorType }}</td><td class="mono">{{ connection.endpoint }}</td><td><el-tag size="small" :type="connection.status === 'HEALTHY' ? 'success' : connection.enabled ? 'warning' : 'info'">{{ statusLabel(connection.status) }}</el-tag></td><td>{{ connection.lastTestAt || '-' }}<small>{{ connection.lastTestError || '' }}</small></td><td v-if="props.canWrite" class="nowrap"><el-button link size="small" :loading="connectionAction[connection.id] === 'test'" :disabled="Boolean(connectionAction[connection.id])" @click="testConnection(connection)">{{ t('soar.connectionTest') }}</el-button><el-button link size="small" :loading="connectionAction[connection.id] === 'enable'" :disabled="Boolean(connectionAction[connection.id])" @click="toggleConnection(connection)">{{ connection.enabled ? t('common.disable') : t('common.enable') }}</el-button><el-button link type="danger" size="small" :loading="connectionAction[connection.id] === 'delete'" :disabled="Boolean(connectionAction[connection.id])" @click="removeConnection(connection)">{{ t('common.delete') }}</el-button></td></tr></tbody></table><div v-if="!loading && !connections.length" class="soar-empty">{{ t('soar.noConnections') }}</div></div>
     </section>
 
     <section v-else-if="tab === 'tasks'" class="soar-control-section">
       <div class="soar-section-toolbar"><div><b>{{ t('soar.humanTasks') }}</b><small>{{ t('soar.humanTasksHint') }}</small></div></div>
-      <div class="soar-table-scroll"><table><thead><tr><th>{{ t('forms.task') }}</th><th>{{ t('soar.runNode') }}</th><th>{{ t('forms.assign') }}</th><th>{{ t('soar.due') }}</th><th>{{ t('common.actions') }}</th></tr></thead><tbody><tr v-for="task in tasks" :key="task.id"><td><b>{{ task.id }}</b><small>{{ statusLabel(task.status) }}</small></td><td class="mono">{{ task.runId }} / {{ task.nodeId }}</td><td>{{ task.assignee || t('soar.anyApprover') }}</td><td>{{ task.dueAt || '-' }}</td><td><el-button size="small" type="primary" plain @click="openTask(task)">{{ t('forms.task') }}</el-button></td></tr></tbody></table><div v-if="!tasks.length" class="soar-empty">{{ t('soar.noPendingTasks') }}</div></div>
+      <div class="soar-table-scroll"><table><thead><tr><th>{{ t('forms.task') }}</th><th>{{ t('soar.runNode') }}</th><th>{{ t('forms.assign') }}</th><th>{{ t('soar.due') }}</th><th>{{ t('common.actions') }}</th></tr></thead><tbody><tr v-for="task in tasks" :key="task.id"><td><b>{{ task.id }}</b><small>{{ statusLabel(task.status) }}</small></td><td class="mono">{{ task.runId }} / {{ task.nodeId }}</td><td>{{ task.assignee || t('soar.anyApprover') }}</td><td>{{ task.dueAt || '-' }}</td><td><el-button size="small" type="primary" plain @click="openTask(task)">{{ t('forms.task') }}</el-button></td></tr></tbody></table><div v-if="!loading && !tasks.length" class="soar-empty">{{ t('soar.noPendingTasks') }}</div></div>
     </section>
 
     <section v-else class="soar-control-section">
       <div class="soar-stat-grid"><div><b>{{ stats?.dispatchBacklog ?? 0 }}</b><small>{{ t('soar.dispatchBacklog') }}</small></div><div><b>{{ stats?.signalBacklog ?? 0 }}</b><small>{{ t('soar.signalBacklog') }}</small></div><div><b>{{ deadLetters.length }}</b><small>{{ t('soar.deadLetters') }}</small></div><div><b>{{ Object.values(stats?.runsByStatus || {}).reduce((sum, value) => sum + value, 0) }}</b><small>{{ t('soar.projectedRuns') }}</small></div></div>
       <div class="soar-section-toolbar"><div><b>{{ t('soar.deadLetterOperations') }}</b><small>{{ t('soar.deadLetterHint') }}</small></div></div>
       <div v-if="rowError" role="alert" class="soar-feedback error">{{ rowError }}</div>
-      <div class="soar-table-scroll"><table><thead><tr><th>{{ t('common.type') }}</th><th>{{ t('soar.runNode').split(' / ')[0] }}</th><th>{{ t('soar.signalKey') }}</th><th>{{ t('soar.attempts') }}</th><th>{{ t('soar.lastError') }}</th><th v-if="props.canOperate">{{ t('common.actions') }}</th></tr></thead><tbody><tr v-for="letter in deadLetters" :key="deadLetterKey(letter)"><td>{{ letter.kind || 'DISPATCH' }}<small>{{ letter.signalType || '' }}</small></td><td class="mono">{{ letter.runId }}</td><td class="mono">{{ letter.signalKey || '-' }}</td><td>{{ letter.attempts }}</td><td>{{ letter.lastError || '-' }}</td><td v-if="props.canOperate" class="nowrap"><el-button link size="small" :loading="deadLetterAction[deadLetterKey(letter)] === 'requeue'" :disabled="Boolean(deadLetterAction[deadLetterKey(letter)])" @click="requeue(letter)">{{ t('soar.requeue') }}</el-button><el-button link type="danger" size="small" :loading="deadLetterAction[deadLetterKey(letter)] === 'discard'" :disabled="Boolean(deadLetterAction[deadLetterKey(letter)])" @click="discard(letter)">{{ t('soar.discard') }}</el-button></td></tr></tbody></table><div v-if="!deadLetters.length" class="soar-empty">{{ t('soar.noDeadLetters') }}</div></div>
+      <div class="soar-table-scroll"><table><thead><tr><th>{{ t('common.type') }}</th><th>{{ t('soar.runNode').split(' / ')[0] }}</th><th>{{ t('soar.signalKey') }}</th><th>{{ t('soar.attempts') }}</th><th>{{ t('soar.lastError') }}</th><th v-if="props.canOperate">{{ t('common.actions') }}</th></tr></thead><tbody><tr v-for="letter in deadLetters" :key="deadLetterKey(letter)"><td>{{ letter.kind || 'DISPATCH' }}<small>{{ letter.signalType || '' }}</small></td><td class="mono">{{ letter.runId }}</td><td class="mono">{{ letter.signalKey || '-' }}</td><td>{{ letter.attempts }}</td><td>{{ letter.lastError || '-' }}</td><td v-if="props.canOperate" class="nowrap"><el-button link size="small" :loading="deadLetterAction[deadLetterKey(letter)] === 'requeue'" :disabled="Boolean(deadLetterAction[deadLetterKey(letter)])" @click="requeue(letter)">{{ t('soar.requeue') }}</el-button><el-button link type="danger" size="small" :loading="deadLetterAction[deadLetterKey(letter)] === 'discard'" :disabled="Boolean(deadLetterAction[deadLetterKey(letter)])" @click="discard(letter)">{{ t('soar.discard') }}</el-button></td></tr></tbody></table><div v-if="!loading && !deadLetters.length" class="soar-empty">{{ t('soar.noDeadLetters') }}</div></div>
     </section>
     <el-drawer v-model="taskOpen" :before-close="taskGuard.beforeClose" :title="t('forms.task')" size="min(760px, 96vw)" :close-on-click-modal="false">
       <template v-if="selectedTask"><p>{{ selectedTask.runId }} · {{ selectedTask.nodeId }}</p><div v-if="formError" role="alert" class="soar-feedback error">{{ formError }}</div><SchemaInputForm :key="selectedTask.id" v-model="taskValue" :schema="selectedTask.formSchema" :disabled="taskBusy" @valid="taskValid = $event" /></template>
@@ -672,6 +677,7 @@ function controlSubtitle(): string {
 .soar-subtitle, .soar-section-toolbar small { display: block; margin-top: 4px; color: var(--ns-text-3); font-size: 13px; }
 .soar-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--ns-border); margin-bottom: 12px; }
 .soar-tabs button { border: 0; border-bottom: 2px solid transparent; padding: 8px 11px; background: transparent; color: var(--ns-text-2); cursor: pointer; font: inherit; font-size: 13px; }
+.soar-tabs button:focus-visible { outline: none; box-shadow: var(--ns-focus); }
 .soar-tabs button:hover, .soar-tabs button.active { border-bottom-color: var(--ns-accent); color: var(--ns-accent); }
 .soar-feedback { margin: 8px 0; padding: 7px 10px; border-radius: 5px; font-size: 13px; }.soar-feedback.success { color: var(--ns-success); background: color-mix(in srgb, var(--ns-success) 9%, transparent); }.soar-feedback.error { color: var(--ns-danger); background: color-mix(in srgb, var(--ns-danger) 9%, transparent); }
 .soar-control-section { min-width: 0; }.soar-section-toolbar { margin-bottom: 10px; }.soar-section-toolbar > div:first-child { min-width: 0; }

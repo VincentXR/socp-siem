@@ -20,6 +20,7 @@ import PageHeader from '../components/PageHeader.vue'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { useDebouncedWatch } from '../composables/useDebouncedWatch'
 import { useLatestRequest } from '../composables/useLatestRequest'
+import { useListQuery } from '../composables/useListQuery'
 import { assetApi, endpointApi, type Asset, type Endpoint, type EndpointEvent } from '../api/domains'
 import { useI18n } from '../composables/useI18n'
 import { useWriteAccess } from '../composables/useWriteAccess'
@@ -40,19 +41,15 @@ const assets = ref<Asset[]>([])
 const detailOpen = ref(false)
 const detailEndpoint = ref<Endpoint | null>(null)
 const endpoints = ref<Endpoint[]>([])
-const page = ref(1)
 const size = ref(10)
-const keyword = ref('')
-const loading = ref(false)
 const endpointTotal = ref(0)
+const listQuery = useListQuery({ routeName: 'endpoints', total: endpointTotal, size })
+const page = listQuery.page
+const keyword = listQuery.keyword
+const loading = ref(false)
 const latestRequest = useLatestRequest()
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('endpoints')
 
-function syncEndpointQuery(): void {
-  const query = typeof route.query.q === 'string' ? route.query.q : ''
-  if (keyword.value !== query) keyword.value = query
-  page.value = 1
-}
 const relatedAsset = computed(() => {
   const endpoint = detailEndpoint.value
   if (!endpoint) return null
@@ -102,7 +99,7 @@ async function loadEndpoints() {
   eventsError.value = ''
   try {
     const [endpointResult, statResult, eventResult, assetResult] = await Promise.allSettled([
-      endpointApi.list(page.value, size.value, keyword.value, { signal: request.signal }), endpointApi.stats({ signal: request.signal }), endpointApi.events(1, 200, { signal: request.signal }),
+      endpointApi.list(page.value, size.value, listQuery.keywordParam.value, { signal: request.signal }), endpointApi.stats({ signal: request.signal }), endpointApi.events(1, 200, { signal: request.signal }),
       // Asset lookup enriches the drawer only; endpoint health remains usable if it is unavailable.
       assetApi.list(1, 500, undefined, { signal: request.signal }),
     ])
@@ -137,15 +134,12 @@ async function removeEndpoint(id: string) {
   }
 }
 
-onMounted(() => {
-  syncEndpointQuery()
-  void loadEndpoints()
-})
-watch(() => route.query.q, syncEndpointQuery)
-watch([page, size], () => { void loadEndpoints() })
+onMounted(loadEndpoints)
+watch(() => [route.query.q, route.query.page], () => { listQuery.applyRouteQuery() })
+watch([page, size], () => { listQuery.sync(); void loadEndpoints() })
 useDebouncedWatch(keyword, () => {
   if (page.value !== 1) page.value = 1
-  else void loadEndpoints()
+  else { listQuery.sync(); void loadEndpoints() }
 })
 </script>
 

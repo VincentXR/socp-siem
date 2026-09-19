@@ -40,6 +40,7 @@ import PageHeader from '../components/PageHeader.vue'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { useDebouncedWatch } from '../composables/useDebouncedWatch'
 import { useLatestRequest } from '../composables/useLatestRequest'
+import { useListQuery } from '../composables/useListQuery'
 import { assetApi, endpointApi, type Asset, type Endpoint } from '../api/domains'
 import { readImportRows, type ImportRow } from '../lib/resource-import'
 import { useI18n } from '../composables/useI18n'
@@ -85,11 +86,12 @@ const rowValue = (row: ImportRow, ...keys: string[]) => {
   return key ? String(row[key] ?? '').trim() : ''
 }
 const assets = ref<Asset[]>([])
-const page = ref(1)
 const size = ref(10)
-const keyword = ref('')
-const loading = ref(false)
 const assetTotal = ref(0)
+const listQuery = useListQuery({ routeName: 'assets', total: assetTotal, size })
+const page = listQuery.page
+const keyword = listQuery.keyword
+const loading = ref(false)
 const latestRequest = useLatestRequest()
 const detailEndpoints = computed(() => {
   const asset = detailAsset.value
@@ -110,7 +112,7 @@ async function loadAssets() {
   endpointInventoryError.value = ''
   try {
     const [listResult, statResult, endpointResult] = await Promise.allSettled([
-      assetApi.list(page.value, size.value, keyword.value, { signal: request.signal }),
+      assetApi.list(page.value, size.value, listQuery.keywordParam.value, { signal: request.signal }),
       assetApi.stats({ signal: request.signal }),
       // The drawer enrichment is intentionally bounded; the list itself is
       // server-paged and never downloads the tenant inventory.
@@ -248,10 +250,10 @@ async function importAssetFile(event: Event) {
 
 const showAssetDialogGuard = useFormDialog(showAssetDialog, () => assetForm.value, () => actionBusy.value)
 onMounted(loadAssets)
-watch([page, size], () => { void loadAssets() })
+watch([page, size], () => { listQuery.sync(); void loadAssets() })
 useDebouncedWatch(keyword, () => {
   if (page.value !== 1) page.value = 1
-  else void loadAssets()
+  else { listQuery.sync(); void loadAssets() }
 })
 watch(() => route.query.assetId, openAssetFromQuery)
 watch(assetDetailOpen, visible => {

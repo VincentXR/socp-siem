@@ -57,3 +57,51 @@ export const router = createRouter({
     { path: '/:pathMatch(.*)*', name: NOT_FOUND_ROUTE, redirect: MENU_PATHS.overview },
   ],
 })
+
+// A rolling deployment can leave an open tab pointing at a chunk name that the
+// next build no longer serves. One guarded reload recovers that tab without an
+// infinite loop when the deployment is genuinely broken. The one-shot budget is
+// a per-incident timestamp: App.vue clears it once the router is ready, so a
+// later, unrelated failure gets its own single reload instead of inheriting a
+// spent flag.
+export const CHUNK_RELOAD_KEY = 'socp.workbench.chunk-reload'
+const CHUNK_ERROR = /failed to fetch dynamically imported module|error loading dynamically imported module|importing a module script failed|loading chunk .* failed/i
+
+export function isChunkLoadError(message: string): boolean {
+  return CHUNK_ERROR.test(message)
+}
+
+/**
+ * Returns true only when it spent the reload budget and fired the reload. An
+ * offline tab is never charged: a reload could not refetch the chunk anyway.
+ */
+export function guardChunkReload(deps: {
+  message: string
+  online: boolean
+  storage: Pick<Storage, 'getItem' | 'setItem'>
+  reload: () => void
+}): boolean {
+  if (!isChunkLoadError(deps.message)) return false
+  if (!deps.online) return false
+  try {
+    if (deps.storage.getItem(CHUNK_RELOAD_KEY)) return false
+    deps.storage.setItem(CHUNK_RELOAD_KEY, String(Date.now()))
+  } catch {
+    // Without a durable guard a blocked storage implementation would turn a
+    // recoverable chunk error into an infinite reload loop.
+    return false
+  }
+  deps.reload()
+  return true
+}
+
+if (typeof window !== 'undefined') {
+  router.onError(error => {
+    guardChunkReload({
+      message: error instanceof Error ? error.message : String(error),
+      online: window.navigator.onLine,
+      storage: window.sessionStorage,
+      reload: () => window.location.reload(),
+    })
+  })
+}

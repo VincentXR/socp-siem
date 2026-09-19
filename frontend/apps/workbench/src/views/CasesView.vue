@@ -43,6 +43,7 @@ import SevBadge from '../components/SevBadge.vue'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { useDebouncedWatch } from '../composables/useDebouncedWatch'
 import { useLatestRequest } from '../composables/useLatestRequest'
+import { useListQuery } from '../composables/useListQuery'
 import { caseApi, type CaseInfo, type TimelineEvent } from '../api/domains'
 import { useI18n } from '../composables/useI18n'
 import { tOr } from '../utils/i18nLabel'
@@ -62,13 +63,15 @@ const createDialogVisible = ref(false)
 const caseForm = ref({ title: '', entity: '', severity: 'HIGH', assignee: '' })
 const newStatus = ref('')
 const detailAssignee = ref('')
-const statusFilter = ref('')
+const CASE_STATUSES = ['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']
 const loadError = ref('')
 const cases = ref<CaseInfo[]>([])
-const page = ref(1)
 const size = ref(20)
 const total = ref(0)
-const keyword = ref('')
+const listQuery = useListQuery({ routeName: 'case', total, size, fields: [{ key: 'status', validate: status => CASE_STATUSES.includes(status) ? status : '' }] })
+const page = listQuery.page
+const keyword = listQuery.keyword
+const statusFilter = listQuery.filters.status
 const loading = ref(false)
 const latestRequest = useLatestRequest()
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('cases')
@@ -84,7 +87,7 @@ async function loadCases() {
   loadError.value = ''
   try {
     const [caseResult, statResult] = await Promise.allSettled([
-      caseApi.list(page.value, size.value, keyword.value, statusFilter.value || undefined, { signal: request.signal }),
+      caseApi.list(page.value, size.value, listQuery.keywordParam.value, statusFilter.value || undefined, { signal: request.signal }),
       caseApi.stats({ signal: request.signal }),
     ])
     if (!request.isCurrent()) return
@@ -173,10 +176,10 @@ async function saveCase() {
 const createDialogVisibleGuard = useFormDialog(createDialogVisible, () => caseForm.value, () => actionBusy.value)
 const detailGuard = useFormDialog(drawerVisible, () => ({ status: newStatus.value, assignee: detailAssignee.value }), () => actionBusy.value)
 onMounted(loadCases)
-watch([page, size], () => { void loadCases() })
+watch([page, size], () => { listQuery.sync(); void loadCases() })
 useDebouncedWatch([keyword, statusFilter], () => {
   if (page.value !== 1) page.value = 1
-  else void loadCases()
+  else { listQuery.sync(); void loadCases() }
 })
 watch(() => route.query.caseId, openCaseFromQuery)
 watch(drawerVisible, visible => {

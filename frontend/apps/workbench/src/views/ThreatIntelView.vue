@@ -32,6 +32,7 @@ import FormSection from '../components/FormSection.vue'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { useDebouncedWatch } from '../composables/useDebouncedWatch'
 import { useLatestRequest } from '../composables/useLatestRequest'
+import { useListQuery } from '../composables/useListQuery'
 import { useFormDialog } from '../composables/useFormDialog'
 import { useConfirm } from '../composables/useConfirm'
 import { tOr } from '../utils/i18nLabel'
@@ -47,7 +48,6 @@ const { confirmDanger } = useConfirm()
 const IOC_TYPES = ['IP', 'DOMAIN', 'URL', 'SHA256', 'MD5', 'EMAIL']
 const tiStat = ref<{ total?: number; byType?: Record<string, number> }>({})
 const loadError = ref('')
-const iocType = ref('')
 const matchValue = ref('')
 const showIocDialog = ref(false)
 const showDetailDrawer = ref(false)
@@ -63,14 +63,17 @@ const matchBusy = ref(false)
 const newIoc = ref({ type: 'IP', value: '', severity: 'HIGH', source: 'manual', description: '', tags: '' })
 const tiMatchResult = ref<{ value: string; matched: boolean; ioc?: Ioc } | null>(null)
 const iocs = ref<Ioc[]>([])
-const iocPage = ref(1)
 const iocSize = ref(10)
-const iocKeyword = ref('')
-const loading = ref(false)
 const iocTotal = ref(0)
+const listQuery = useListQuery({ routeName: 'threat-intel', total: iocTotal, size: iocSize, fields: [{ key: 'type', validate: type => IOC_TYPES.includes(type) ? type : '' }] })
+const iocPage = listQuery.page
+const iocKeyword = listQuery.keyword
+const iocType = listQuery.filters.type
+const loading = ref(false)
 const latestRequest = useLatestRequest()
 const matchRequest = useLatestRequest()
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('threat-intel')
+
 const lifecycleLabel = (value: unknown) => {
   const ioc = value as Ioc
   if (ioc.revoked) return { text: t('threat.revoked'), type: 'danger' as const }
@@ -91,7 +94,7 @@ async function loadTi(): Promise<void> {
   loadError.value = ''
   try {
     const [listResult, statResult] = await Promise.allSettled([
-      threatIntelApi.list(iocType.value || undefined, iocPage.value, iocSize.value, iocKeyword.value, { signal: request.signal }),
+      threatIntelApi.list(iocType.value || undefined, iocPage.value, iocSize.value, listQuery.keywordParam.value, { signal: request.signal }),
       threatIntelApi.stats({ signal: request.signal }),
     ])
     if (!request.isCurrent()) return
@@ -208,13 +211,14 @@ async function confirmIocImport(): Promise<void> {
 
 const iocDialogGuard = useFormDialog(showIocDialog, () => newIoc.value, () => iocBusy.value)
 onMounted(loadTi)
-watch([iocPage, iocSize], () => { void loadTi() })
+watch([iocPage, iocSize], () => { listQuery.sync(); void loadTi() })
 useDebouncedWatch(iocKeyword, () => {
   if (iocPage.value !== 1) iocPage.value = 1
-  else void loadTi()
+  else { listQuery.sync(); void loadTi() }
 })
 function onIocTypeChange(): void {
   iocPage.value = 1
+  listQuery.sync()
   void loadTi()
 }
 </script>

@@ -870,6 +870,7 @@ export const zhCN = {
       DEAD: '失败终止',
       ACTION_UNKNOWN: '动作结果未知',
       CANCELLING: '取消中',
+      PENDING: '待处理',
       APPROVED: '已通过',
       REJECTED: '已驳回',
       DRAFT: '草稿',
@@ -1307,6 +1308,8 @@ export const zhCN = {
     enterName: '请输入技术名称',
     updated: 'ATT&CK 技术已更新',
     updateFailed: '更新 ATT&CK 技术失败',
+    linkBlocked: '无法打开该链接，仅支持 https 地址',
+    cellAriaHits: '{id} {name}，{count} 次告警命中',
   },
   assets: {
     title: '资产管理台账',

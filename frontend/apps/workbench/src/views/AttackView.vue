@@ -87,7 +87,22 @@ function techStyle(technique: { covered: boolean; count: number }) {
   return 'background:var(--ns-bg-inset);color:var(--ns-text-3);border-color:var(--ns-border)'
 }
 
-function openUrl(url: string) { if (url) window.open(url, '_blank') }
+function openUrl(url: string): void {
+  let target: URL | null = null
+  try { target = url ? new URL(url, window.location.origin) : null } catch { target = null }
+  if (!target || target.protocol !== 'https:') {
+    ElMessage.warning(t('attack.linkBlocked'))
+    return
+  }
+  const opened = window.open(target.href, '_blank', 'noopener,noreferrer')
+  if (opened) opened.opener = null
+}
+
+function cellAria(technique: { id: string; name: string; count: number }): string {
+  return technique.count > 0
+    ? t('attack.cellAriaHits', { id: technique.id, name: technique.name, count: technique.count })
+    : `${technique.id} ${technique.name}`
+}
 
 async function openTechniqueEdit(technique: Technique) {
   editingTechniqueId.value = technique.id
@@ -148,7 +163,7 @@ onMounted(loadAttack)
       <div class="attack-matrix">
         <div v-for="column in attackMatrix" :key="column.tac.id" class="am-col">
           <div class="am-head">{{ column.tac.name }}<span class="am-cov">{{ column.covered }}/{{ column.total }}</span></div>
-          <div v-for="technique in column.techs" :key="technique.id" class="am-cell" :style="techStyle(technique)" @click="openUrl(technique.url)" :title="technique.id + ' ' + technique.name">
+          <div v-for="technique in column.techs" :key="technique.id" class="am-cell" :style="techStyle(technique)" role="button" :tabindex="technique.url ? 0 : -1" :aria-disabled="technique.url ? undefined : 'true'" @click="openUrl(technique.url)" @keydown.enter.space.prevent="openUrl(technique.url)" :title="technique.id + ' ' + technique.name" :aria-label="cellAria(technique)">
             <span class="am-id">{{ technique.id }}</span><span v-if="technique.count" class="am-badge">{{ technique.count }}</span>
           </div>
         </div>

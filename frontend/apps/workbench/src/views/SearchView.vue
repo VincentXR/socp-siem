@@ -21,7 +21,7 @@ import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import ElTooltip from 'element-plus/es/components/tooltip/index.mjs'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import EmptyState from '../components/EmptyState.vue'
 import PageHeader from '../components/PageHeader.vue'
@@ -54,6 +54,11 @@ const pageSize = ref(50)
 const pageCursors = ref<Array<string | null>>([null])
 const pageSizes = [25, 50, 100]
 const MAX_BROWSE_ROWS = 10_000
+const MAX_DEEP_LINK_PAGE = 20
+const requestedPage = (() => {
+  const value = Number(route.query.page)
+  return Number.isInteger(value) && value >= 1 && value <= MAX_DEEP_LINK_PAGE ? value : 1
+})()
 const timeRangeOptions: Array<{ key: TimeRangeKey; label: string; durationMs?: number }> = [
   { key: '15m', label: 'search.timeRanges.last15Minutes', durationMs: 15 * 60_000 },
   { key: '30m', label: 'search.timeRanges.last30Minutes', durationMs: 30 * 60_000 },
@@ -82,6 +87,8 @@ const saveDialogVisible = ref(false)
 const savedQueryName = ref('')
 const SAVED_QUERY_KEY = 'socp.search.saved-queries'
 let requestSequence = 0
+let cancelled = false
+onBeforeUnmount(() => { cancelled = true; requestSequence += 1 })
 const examples = [
   'source=auth severity=HIGH',
   'msg contains "blocked" | top src_ip 5',
@@ -152,6 +159,7 @@ function sourceLabel(source: string | null | undefined): string {
 }
 
 function syncUrl(page = 1): void {
+  if (route.name !== 'search') return
   void router.replace({ query: { ...route.query, q: query.value.trim() || '*', range: selectedTimeRange.value, sort: eventSortProp.value || undefined, order: eventSortOrder.value || undefined, page: page > 1 ? String(page) : undefined } })
 }
 
@@ -282,45 +290,83 @@ function removeSavedQuery(id: string): void {
   persistSavedQueries()
 }
 
+async function fetchSilently(page: number, pageCursor: string | null, previousResult: SearchResult | null): Promise<SearchResult> {
+  const nextResult = await splSearch(activeQuery.value || buildScopedQuery(query.value, activeTimeRange.value), {
+    cursor: pageCursor,
+    limit: pageSize.value,
+    timeline: page === 1,
+  })
+  if (page > 1 && !nextResult.timeline?.length && previousResult?.timeline?.length) {
+    nextResult.timeline = previousResult.timeline
+    nextResult.timelineApproximate = previousResult.timelineApproximate
+  }
+  return nextResult
+}
+
 async function fetchPage(page: number, pageCursor: string | null): Promise<void> {
   const sequence = requestSequence
   loading.value = true
   error.value = ''
   try {
-    const previousResult = result.value
-    const nextResult = await splSearch(activeQuery.value || buildScopedQuery(query.value, activeTimeRange.value), {
-      cursor: pageCursor,
-      limit: pageSize.value,
-      timeline: page === 1,
-    })
-    if (sequence !== requestSequence) return
-    if (page > 1 && !nextResult.timeline?.length && previousResult?.timeline?.length) {
-      nextResult.timeline = previousResult.timeline
-      nextResult.timelineApproximate = previousResult.timelineApproximate
-    }
+    const nextResult = await fetchSilently(page, pageCursor, result.value)
+    if (sequence !== requestSequence || cancelled || route.name !== 'search') return
     result.value = nextResult
     currentPage.value = page
     pageCursors.value[page - 1] = pageCursor
-    if (result.value.nextCursor) pageCursors.value[page] = result.value.nextCursor
+    if (nextResult.nextCursor) pageCursors.value[page] = nextResult.nextCursor
     syncUrl(page)
   } catch (cause) {
-    if (sequence !== requestSequence) return
+    if (sequence !== requestSequence || cancelled) return
     if (page === 1) result.value = null
     error.value = `${t('search.failed')}${cause instanceof Error ? cause.message : String(cause)}`
   } finally {
-    if (sequence === requestSequence) loading.value = false
+    if (sequence === requestSequence && !cancelled) loading.value = false
   }
 }
 
-async function search(): Promise<void> {
-  requestSequence += 1
+async function search(targetPage = 1): Promise<void> {
+  const sequence = ++requestSequence
   activeTimeRange.value = selectedTimeRange.value
   activeQuery.value = buildScopedQuery(query.value, activeTimeRange.value)
   currentPage.value = 1
   pageCursors.value = [null]
   result.value = null
-  syncUrl()
-  await fetchPage(1, null)
+  error.value = ''
+  loading.value = true
+  // Cursor pagination cannot jump to an arbitrary page directly, so a shared
+  // deep link replays a bounded chain of cursors. Every intermediate page stays
+  // private: result, currentPage and the URL are landed once, at the terminal
+  // state, and a failed or exhausted replay stops immediately instead of
+  // continuing with a stale cursor while keeping the error visible.
+  const cursors: Array<string | null> = [null]
+  let landed: SearchResult | null = null
+  let landedPage = 1
+  for (let page = 1; page <= targetPage; page += 1) {
+    if (requestSequence !== sequence || cancelled || route.name !== 'search') { loading.value = false; return }
+    try {
+      landed = await fetchSilently(page, cursors[page - 1] ?? null, landed)
+      landedPage = page
+    } catch (cause) {
+      if (requestSequence !== sequence || cancelled || route.name !== 'search') { loading.value = false; return }
+      error.value = `${t('search.failed')}${cause instanceof Error ? cause.message : String(cause)}`
+      break
+    }
+    if (page >= targetPage) break
+    const nextCursor = landed?.nextCursor ?? null
+    cursors[page] = nextCursor
+    if (!nextCursor) break
+  }
+  if (requestSequence !== sequence || cancelled || route.name !== 'search') { loading.value = false; return }
+  if (landed) {
+    result.value = landed
+    currentPage.value = landedPage
+    pageCursors.value = cursors
+    syncUrl(landedPage)
+  } else {
+    result.value = null
+    syncUrl(1)
+  }
+  loading.value = false
 }
 
 async function previousPage(): Promise<void> {
@@ -360,7 +406,7 @@ const browseLimitVisible = computed(() => Boolean(result.value && result.value.t
 onMounted(() => {
   if (pendingQuery) window.sessionStorage.removeItem('socp.search.query')
   readSavedQueries()
-  void Promise.allSettled([loadFields(), search()])
+  void Promise.allSettled([loadFields(), search(requestedPage)])
 })
 </script>
 
@@ -387,8 +433,8 @@ onMounted(() => {
       <section class="search-main-column">
         <el-card shadow="never" class="search-toolbar">
           <div class="search-query-row">
-            <el-input v-model="query" :placeholder="t('search.queryPlaceholder')" clearable @keyup.enter="search" />
-            <el-tooltip :content="t('search.queryLimitHint')" placement="top"><el-button type="primary" :loading="loading" @click="search">{{ t('search.runQuery') }}</el-button></el-tooltip>
+            <el-input v-model="query" :placeholder="t('search.queryPlaceholder')" clearable @keyup.enter="() => search()" />
+            <el-tooltip :content="t('search.queryLimitHint')" placement="top"><el-button type="primary" :loading="loading" @click="() => search()">{{ t('search.runQuery') }}</el-button></el-tooltip>
             <el-tooltip :content="t('search.exportLimitHint')" placement="top"><el-button size="small" :disabled="!result" @click="exportCurrent('json')">{{ t('common.exportJson') }}</el-button></el-tooltip>
             <el-tooltip :content="t('search.exportLimitHint')" placement="top"><el-button size="small" :disabled="!result" @click="exportCurrent('csv')">{{ t('common.exportCsv') }}</el-button></el-tooltip>
           </div>
@@ -406,7 +452,7 @@ onMounted(() => {
             </div>
             <span class="search-time-filter-applied">{{ t('search.timeRangeApplied', { range: activeTimeRangeLabel }) }}</span>
           </div>
-          <div class="search-examples"><el-tag v-for="example in examples" :key="example" size="small" @click="runExample(example)">{{ example }}</el-tag></div>
+          <div class="search-examples"><el-tag v-for="example in examples" :key="example" size="small" role="button" tabindex="0" :aria-label="example" @click="runExample(example)" @keydown.enter.space.prevent="runExample(example)">{{ example }}</el-tag></div>
         </el-card>
 
         <el-alert v-if="error" :title="error" type="error" :closable="false" class="search-error" />

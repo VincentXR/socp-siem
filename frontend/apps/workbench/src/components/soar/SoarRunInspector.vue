@@ -47,7 +47,9 @@ const props = withDefaults(defineProps<{
   canWrite?: boolean
   canExecute?: boolean
   canOperate?: boolean
-}>(), { canWrite: true, canExecute: true, canOperate: true })
+  /** False while the runs pane is hidden; pauses projection polling and the live stream. */
+  active?: boolean
+}>(), { canWrite: true, canExecute: true, canOperate: true, active: true })
 const emit = defineEmits<{ 'open-in-editor': [payload: RunOpenRequest] }>()
 
 const { t } = useI18n()
@@ -251,7 +253,7 @@ async function loadAttempts() {
 
 function openStream() {
   closeStream()
-  if (!selectedRunId.value || typeof EventSource === 'undefined') {
+  if (!props.active || !selectedRunId.value || typeof EventSource === 'undefined') {
     streamState.value = 'polling'
     return
   }
@@ -378,12 +380,31 @@ async function viewArtifact(artifact: SoarArtifact) {
 watch(selectedRunId, () => { void refreshRun() })
 watch(selectedNodeRunId, () => { void loadAttempts() })
 
-onMounted(() => {
-  void loadRuns()
+function startPolling(): void {
+  stopPolling()
   pollTimer = setInterval(() => { if (streamState.value !== 'live') void refreshProjection() }, 5000)
+}
+function stopPolling(): void {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = undefined }
+}
+watch(() => props.active, active => {
+  if (!active) {
+    stopPolling()
+    closeStream()
+    streamState.value = 'closed'
+    return
+  }
+  void loadRuns()
+  startPolling()
+})
+
+onMounted(() => {
+  if (!props.active) return
+  void loadRuns()
+  startPolling()
 })
 onUnmounted(() => {
-  if (pollTimer) clearInterval(pollTimer)
+  stopPolling()
   closeStream()
 })
 

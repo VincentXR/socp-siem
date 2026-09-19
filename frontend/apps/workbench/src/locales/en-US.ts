@@ -872,6 +872,7 @@ export const enUS: LocaleMessages = {
       DEAD: 'Dead',
       ACTION_UNKNOWN: 'Action outcome unknown',
       CANCELLING: 'Cancelling',
+      PENDING: 'Pending',
       APPROVED: 'Approved',
       REJECTED: 'Rejected',
       DRAFT: 'Draft',
@@ -1309,6 +1310,8 @@ export const enUS: LocaleMessages = {
     enterName: 'Please enter a technique name',
     updated: 'ATT&CK technique updated',
     updateFailed: 'Failed to update ATT&CK technique',
+    linkBlocked: 'This link cannot be opened; only https addresses are supported',
+    cellAriaHits: '{id} {name}, {count} alert hits',
   },
   assets: {
     title: 'Asset Inventory',

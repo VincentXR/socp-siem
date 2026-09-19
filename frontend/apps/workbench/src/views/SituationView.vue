@@ -345,7 +345,7 @@ onUnmounted(() => {
                 </template>
                 <div class="feed">
                   <div v-if="!feedView.length" class="feed-empty">{{ t('situation.noLiveAlarmsHint') }}</div>
-                  <div v-for="a in feedView" :key="a.id" class="feed-item situation-clickable" :class="{ fresh: a._new }" role="button" tabindex="0" @click="openAlarm(a.id)" @keydown.enter="openAlarm(a.id)">
+                  <div v-for="a in feedView" :key="a.id" class="feed-item situation-clickable" :class="{ fresh: a._new }" role="button" tabindex="0" @click="openAlarm(a.id)" @keydown.enter.space.prevent="openAlarm(a.id)">
                     <span class="feed-dot" :style="{ background: sevColor(a.severity) }" />
                     <div class="feed-body">
                       <div class="feed-top">

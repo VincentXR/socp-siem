@@ -380,6 +380,7 @@ body {
 .search-time-filter-applied { color: var(--ns-text-3); font-size: 11px; }
 .search-examples { display: flex; flex-wrap: wrap; gap: var(--ns-space-2); margin-top: var(--ns-space-3); }
 .search-examples .el-tag { cursor: pointer; }
+.search-examples .el-tag:focus-visible { outline: 2px solid var(--ns-accent); outline-offset: 2px; box-shadow: var(--ns-focus); }
 .search-error { margin-bottom: var(--ns-space-4); }
 .search-result-card { margin-bottom: var(--ns-space-4); }
 .search-result-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -685,6 +686,7 @@ body {
 }
 .feed-item:hover { background: var(--ns-hover); }
 .feed-item.fresh { background: var(--ns-accent-subtle); }
+.feed-item.situation-clickable:focus-visible { outline: 2px solid var(--ns-accent); outline-offset: -2px; box-shadow: var(--ns-focus); }
 .feed-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex: none; }
 .feed-body { flex: 1; min-width: 0; }
 .feed-top { display: flex; align-items: center; gap: 8px; }
@@ -739,6 +741,7 @@ body {
   display: flex; align-items: center; justify-content: center; background: var(--ns-surface);
 }
 .am-cell:hover { transform: scale(1.04); border-color: var(--ns-accent); z-index: 2; }
+.am-cell:focus-visible { outline: 2px solid var(--ns-accent); outline-offset: 2px; box-shadow: var(--ns-focus); z-index: 2; }
 .am-id { font-family: 'SFMono-Regular', Consolas, Menlo, monospace; }
 .am-badge {
   position: absolute; top: -6px; right: -6px; background: var(--ns-surface); color: var(--ns-danger);
@@ -1026,6 +1029,12 @@ body {
 .el-button.is-round { border-radius: 6px; }
 .el-button--primary { font-weight: 600; }
 .el-button:focus-visible { outline: none; box-shadow: var(--ns-focus) !important; }
+/* Bottom-line focus ring for any generic role=button widget; :where() keeps this
+   specificity below every dedicated rule so it never overrides an existing one. */
+:where([role='button']):focus-visible { outline: 2px solid var(--ns-accent); outline-offset: 2px; box-shadow: var(--ns-focus); }
+/* .soar-issue lives in SoarEditor's scoped styles (outline:none + low-contrast
+   box-shadow over a translucent fill); strengthen it here with a solid outline. */
+.soar-issue:focus-visible { outline: 2px solid var(--ns-accent) !important; outline-offset: 2px; }
 .el-input__wrapper, .el-select__wrapper {
   min-height: 32px;
   border-radius: 6px;

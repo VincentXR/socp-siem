@@ -14,7 +14,7 @@ import { useOverview } from './composables/useOverview'
 import { useTheme } from './composables/useTheme'
 import { useWorkbenchRoute } from './composables/useWorkbenchRoute'
 import { accessibleMenu, isMenuKey } from './app/routes'
-import { NOT_FOUND_ROUTE } from './app/router'
+import { CHUNK_RELOAD_KEY, NOT_FOUND_ROUTE } from './app/router'
 import { useI18n } from './composables/useI18n'
 import { WORKBENCH_STATE } from './app/workbenchState'
 
@@ -109,6 +109,10 @@ onMounted(async () => {
   // for the router before normalising the active menu, otherwise a deep link
   // such as /soar is transiently seen as / and redirected to /overview.
   await router.isReady()
+  // The first navigation resolved from the current chunk set, so the rolling-
+  // deploy recovery budget for this boot is spent; clear it so an unrelated
+  // failure later can arm its own single reload.
+  try { window.sessionStorage.removeItem(CHUNK_RELOAD_KEY) } catch { /* storage unavailable */ }
   if (!await auth.initAuth()) return
   onMenuChange(activeMenu.value)
 })

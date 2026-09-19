@@ -4,6 +4,7 @@ import 'element-plus/es/components/card/style/css.mjs'
 import 'element-plus/es/components/dialog/style/css.mjs'
 import 'element-plus/es/components/form/style/css.mjs'
 import 'element-plus/es/components/input/style/css.mjs'
+import 'element-plus/es/components/loading/style/css.mjs'
 import 'element-plus/es/components/message/style/css.mjs'
 import 'element-plus/es/components/table/style/css.mjs'
 import 'element-plus/es/components/tabs/style/css.mjs'
@@ -14,6 +15,7 @@ import ElDialog from 'element-plus/es/components/dialog/index.mjs'
 import { ElForm, ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import ElMessage from 'element-plus/es/components/message/index.mjs'
+import { vLoading } from 'element-plus/es/components/loading/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
@@ -72,9 +74,14 @@ const editorRef = ref<{
 /** Pending "open this run in the visual editor" hand-off to SoarEditor. */
 const openRunRequest = ref<RunOpenRequest | null>(null)
 const loading = ref(false)
+const approvalsLoading = ref(false)
+/** Trailing re-entry so a request that lands mid-flight is never silently dropped. */
+let approvalsPending = false
 const contextAlarmId = computed(() => typeof route.query.alarmId === 'string' ? route.query.alarmId : '')
 // Approval decision state
 const approvalFilter = ref<'PENDING' | 'ALL'>('PENDING')
+/** Approvals own their error banner; a stale list must not grey out the page. */
+const approvalsError = ref('')
 const displayedApprovals = computed(() => {
   if (approvalFilter.value === 'PENDING') {
     return approvals.value.filter(item => item.status === 'PENDING')
@@ -128,32 +135,57 @@ async function submitApprovalDecision() {
     }
     approvalVisible.value = false
     ElMessage.success(t('soar.approvalRecorded'))
-    await loadPlaybooks()
+    await loadApprovals()
   } catch (failure) { modal.error = String(failure) } finally {
     modal.loading = false
   }
 }
 
-async function loadPlaybooks() {
+async function loadBaseData() {
   if (loading.value) return
   loading.value = true
   loadError.value = ''
   try {
-    const [playbookResult, runResult, approvalResult, templateResult] = await Promise.allSettled([
+    const [playbookResult, runResult, templateResult] = await Promise.allSettled([
       listPlaybooks(0, 100),
       listRuns(),
-      listApprovals(),
       listTemplates(),
     ])
     if (playbookResult.status === 'fulfilled') playbooks.value = playbookResult.value.items
     if (runResult.status === 'fulfilled') runs.value = runResult.value.items
-    if (approvalResult.status === 'fulfilled') approvals.value = approvalResult.value
     if (templateResult.status === 'fulfilled') templates.value = templateResult.value
-    const firstFailure = [playbookResult, runResult, approvalResult, templateResult].find(result => result.status === 'rejected')
+    const firstFailure = [playbookResult, runResult, templateResult].find(result => result.status === 'rejected')
     if (firstFailure?.status === 'rejected') loadError.value = firstFailure.reason instanceof Error ? firstFailure.reason.message : 'Unable to load SOAR data'
   } finally {
     loading.value = false
   }
+}
+
+async function loadApprovals(): Promise<void> {
+  if (approvalsLoading.value) {
+    approvalsPending = true
+    return
+  }
+  approvalsLoading.value = true
+  approvalsError.value = ''
+  try {
+    approvals.value = await listApprovals()
+  } catch (failure) {
+    approvalsError.value = failure instanceof Error ? failure.message : 'Unable to load SOAR approvals'
+  } finally {
+    approvalsLoading.value = false
+    if (approvalsPending) {
+      approvalsPending = false
+      void loadApprovals()
+    }
+  }
+}
+
+async function refreshSoarPage(): Promise<void> {
+  await Promise.all([
+    loadBaseData(),
+    activeTab.value === 'approvals' ? loadApprovals() : Promise.resolve(),
+  ])
 }
 
 async function installTemplate(id: string) {
@@ -162,7 +194,7 @@ async function installTemplate(id: string) {
   templateError.value = ''
   try {
     const result = await installTemplateApi(id) as { playbook?: { id?: string } }
-    await loadPlaybooks()
+    await loadBaseData()
     const playbookId = String(result?.playbook?.id || '')
     chooseTemplate.value = false
     ElMessage.success(t('soar.createdDraft'))
@@ -252,17 +284,47 @@ watch(() => route.fullPath, () => {
   selectedPlaybookId.value = String(route.params.playbookId || '')
   createRequestToken.value = route.name === 'playbook-new' ? createRequestToken.value + 1 : 0
 })
+// Deep-link contract: /soar?tab=<pane>&filter=PENDING|ALL is shareable.
+const SOAR_TABS: readonly SoarTab[] = ['playbooks', 'rules', 'runs', 'approvals', 'connections']
+let applyingRouteQuery = false
+function readRouteQuery(): void {
+  const tab = typeof route.query.tab === 'string' ? route.query.tab : ''
+  activeTab.value = SOAR_TABS.includes(tab as SoarTab) ? tab as SoarTab : 'playbooks'
+  approvalFilter.value = route.query.filter === 'ALL' ? 'ALL' : 'PENDING'
+}
+function writeRouteQuery(): void {
+  if (applyingRouteQuery || route.name !== 'soar') return
+  // Carry over unrelated params (alarmId context deep-links included); only
+  // tab/filter are owned here, and defaults stay out of the URL.
+  const query: Record<string, string> = {}
+  for (const [key, value] of Object.entries(route.query)) {
+    if (key !== 'tab' && key !== 'filter' && typeof value === 'string') query[key] = value
+  }
+  if (activeTab.value !== 'playbooks') query.tab = activeTab.value
+  if (approvalFilter.value !== 'PENDING') query.filter = approvalFilter.value
+  void router.replace({ query })
+}
+readRouteQuery()
+watch([activeTab, approvalFilter], writeRouteQuery)
+watch(() => route.query, () => {
+  applyingRouteQuery = true
+  readRouteQuery()
+  applyingRouteQuery = false
+}, { deep: true })
+watch(activeTab, tab => {
+  if (tab === 'approvals') void loadApprovals()
+})
 const canLeaveEditor = async (): Promise<boolean> => !editorRef.value?.hasUnsavedChanges || await discardEditorChanges()
 onBeforeRouteLeave(canLeaveEditor)
 onBeforeRouteUpdate((to, from) => to.path === from.path || canLeaveEditor())
-onMounted(loadPlaybooks)
+onMounted(() => { void refreshSoarPage() })
 </script>
 
 <template>
   <div class="page-pad view-enter soar-view">
     <PageHeader :eyebrow="t('menuGroup.detectAndResponse')" :title="t('soar.title')" :description="t('soar.description')">
       <template #actions>
-        <el-button size="small" :loading="loading" @click="loadPlaybooks">{{ t('common.refresh') }}</el-button>
+        <el-button size="small" :loading="loading || approvalsLoading" @click="refreshSoarPage">{{ t('common.refresh') }}</el-button>
         <el-button v-if="canWrite && !showEditor" type="primary" size="small" @click="chooseTemplate = true">{{ t('soar.createPlaybook') }}</el-button>
       </template>
     </PageHeader>
@@ -284,7 +346,7 @@ onMounted(loadPlaybooks)
     </el-dialog>
     <el-tabs v-if="!showEditor" v-model="activeTab" class="soar-tabs">
       <!-- 14.1 剧本 (Playbooks) -->
-      <el-tab-pane :label="t('soar.tabPlaybooks')" name="playbooks">
+      <el-tab-pane :label="t('soar.tabPlaybooks')" name="playbooks" lazy>
         <div class="soar-tab-content">
           <!-- Playbook List -->
           <el-card shadow="never" class="soar-card">
@@ -294,7 +356,7 @@ onMounted(loadPlaybooks)
                 <small class="soar-header-hint">{{ t('soar.playbookListHint') }}</small>
               </div>
             </template>
-            <el-table :data="playbooks" size="small">
+            <el-table v-loading="loading" :data="playbooks" size="small" :empty-text="t('common.empty')">
               <el-table-column :label="t('common.name')" min-width="220" show-overflow-tooltip>
                 <template #default="{ row }">
                   <div class="soar-playbook-name">{{ row.name }}</div>
@@ -334,22 +396,22 @@ onMounted(loadPlaybooks)
       </el-tab-pane>
 
       <!-- 14.2 自动化规则 (Automation Rules) -->
-      <el-tab-pane :label="t('soar.tabRules')" name="rules">
+      <el-tab-pane :label="t('soar.tabRules')" name="rules" lazy>
         <div class="soar-tab-content">
           <SoarControlPlane section="rules" :hide-tabs="true" :can-write="canWrite" :can-publish="soarAccess.canPublish.value" :can-view-connections="soarAccess.canViewConnections.value" :can-operate="soarAccess.canOperate.value" />
         </div>
       </el-tab-pane>
 
       <!-- 14.3 运行 (Runs) -->
-      <el-tab-pane :label="t('soar.tabRuns')" name="runs">
+      <el-tab-pane :label="t('soar.tabRuns')" name="runs" lazy>
         <div class="soar-tab-content">
           <!-- Interactive Inspector -->
-          <SoarRunInspector :can-write="canWrite" :can-execute="soarAccess.canExecute.value" :can-operate="soarAccess.canOperate.value" @open-in-editor="handleOpenRunInEditor" />
+          <SoarRunInspector :active="activeTab === 'runs'" :can-write="canWrite" :can-execute="soarAccess.canExecute.value" :can-operate="soarAccess.canOperate.value" @open-in-editor="handleOpenRunInEditor" />
         </div>
       </el-tab-pane>
 
       <!-- 14.4 审批与人工任务 (Approvals & Tasks) -->
-      <el-tab-pane :label="t('soar.tabApprovals')" name="approvals">
+      <el-tab-pane :label="t('soar.tabApprovals')" name="approvals" lazy>
         <div class="soar-tab-content">
           <!-- Approvals Table with filter -->
           <el-card shadow="never" class="soar-card">
@@ -365,7 +427,8 @@ onMounted(loadPlaybooks)
                 </div>
               </div>
             </template>
-            <el-table :data="displayedApprovals" size="small" border class="soar-approval-table">
+            <div v-if="approvalsError" class="soar-load-error" role="alert">{{ approvalsError }}</div>
+            <el-table v-loading="approvalsLoading" :data="displayedApprovals" size="small" border class="soar-approval-table" :empty-text="t('common.empty')">
               <el-table-column prop="runId" :label="t('soar.runId')" min-width="180" show-overflow-tooltip />
               <el-table-column prop="actionRef" :label="t('soar.action')" min-width="140" show-overflow-tooltip />
               <el-table-column prop="reason" :label="t('soar.reason')" min-width="250" show-overflow-tooltip />
@@ -393,7 +456,7 @@ onMounted(loadPlaybooks)
       </el-tab-pane>
 
       <!-- 14.5 连接与运维 (Connections & Ops) -->
-      <el-tab-pane :label="t('soar.tabConnections')" name="connections">
+      <el-tab-pane :label="t('soar.tabConnections')" name="connections" lazy>
         <div class="soar-tab-content">
           <SoarControlPlane section="connections-and-ops" :can-write="soarAccess.canManageConnections.value" :can-view-connections="soarAccess.canViewConnections.value" :can-manage-connections="soarAccess.canManageConnections.value" :can-operate="soarAccess.canOperate.value" />
         </div>
