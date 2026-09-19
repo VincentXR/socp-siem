@@ -133,7 +133,7 @@ function severityLabel(level: string): string {
       <el-card shadow="never" class="ov-card">
         <template #header><span>{{ t('overview.topRiskTitle', { value: t('overview.riskEntities') }) }}</span></template>
         <div v-if="topRisk.length" class="ov-risk">
-            <div v-for="(risk, index) in topRisk" :key="risk.id" class="ov-risk-item" role="button" tabindex="0" @click="openRecentAlarm(risk)" @keydown.enter.prevent="openRecentAlarm(risk)">
+            <div v-for="(risk, index) in topRisk" :key="risk.id" class="ov-risk-item" role="button" tabindex="0" @click="openRecentAlarm(risk)" @keydown.enter.space.prevent="openRecentAlarm(risk)">
             <span class="ov-rank mono">{{ index + 1 }}</span>
             <div class="ov-risk-body">
               <div class="ov-risk-name">{{ risk.ruleName }}</div>

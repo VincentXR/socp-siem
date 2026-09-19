@@ -1086,7 +1086,7 @@ onUnmounted(() => {
       </div>
       <div v-if="validation" class="soar-validation-panel">
         <div class="soar-panel-title">{{ t('soar.validationResult') }}</div>
-        <div v-for="issue in [...(validation.errors || []), ...(validation.warnings || [])]" :key="`${issue.code}-${issue.path}-${issue.message}`" class="soar-issue" :class="{ warning: issueIsWarning(issue) }" role="button" tabindex="0" @click="onIssueClick(issue)" @keydown.enter="onIssueClick(issue)">
+        <div v-for="issue in [...(validation.errors || []), ...(validation.warnings || [])]" :key="`${issue.code}-${issue.path}-${issue.message}`" class="soar-issue" :class="{ warning: issueIsWarning(issue) }" role="button" tabindex="0" @click="onIssueClick(issue)" @keydown.enter.space.prevent="onIssueClick(issue)">
           <b>{{ issue.code || t('soar.issue') }}</b><span>{{ issue.nodeId ? `${issue.nodeId} · ` : '' }}{{ issue.path || '' }}</span><p>{{ issue.message }}</p>
         </div>
         <div v-if="validation.definitionHash" class="soar-hash">{{ t('soar.definitionHash') }}: {{ validation.definitionHash }}</div>
