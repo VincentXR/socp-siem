@@ -25,4 +25,6 @@ if ($settings -and $settings -ne 'none' -and (Test-Path -LiteralPath $settings))
 $arguments += @('-f', (Join-Path $repositoryRoot 'pom.xml'))
 $arguments += $MavenArguments
 & $maven.Source @arguments
-exit $LASTEXITCODE
+if ($LASTEXITCODE -ne 0) {
+    throw "Maven exited with code $LASTEXITCODE"
+}

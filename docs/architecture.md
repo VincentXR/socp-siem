@@ -70,11 +70,11 @@ notification, SOAR, and analytics consumers.
 | Reporting | ClickHouse alarm consumer and `report-web` | Aggregation does not compete with alert writes |
 | Response | `incident-web`, `notify-web`, `soar-web`, optional Temporal | Workflow state and compensation |
 
-The startup scripts default to `dev,pg`, which uses PostgreSQL for alert,
-incident, SOC base, and threat-intelligence data while keeping the nine
-lower-resource stateful services on file-backed H2 unless their
-`application-pg.yml` profile is enabled. Set `SOCP_RUNTIME_PROFILES=dev` for
-the intentional all-H2 fallback.
+The startup scripts default to `dev,pg`. Every service that ships an
+`application-pg.yml` overlay therefore uses PostgreSQL; stateless services and
+adapters without that overlay keep their own non-relational dependencies. Set
+`SOCP_RUNTIME_PROFILES=dev` for the intentional file-backed H2 fallback where
+the service supports it.
 
 ## Reliability semantics
 

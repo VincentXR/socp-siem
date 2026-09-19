@@ -80,10 +80,15 @@ socp_pnpm_version() {
 }
 
 socp_pnpm() {
-  local want; want="$(socp_pnpm_version)"
+  local want want_version actual_version
+  want="$(socp_pnpm_version)"
   [ -z "$want" ] && want="pnpm"
+  want_version="${want#pnpm@}"
   if command -v pnpm >/dev/null 2>&1; then
-    printf 'pnpm'; return 0
+    actual_version="$(pnpm --version 2>/dev/null || true)"
+    if [ "$want" = "pnpm" ] || [ "$actual_version" = "$want_version" ]; then
+      printf 'pnpm'; return 0
+    fi
   fi
   if command -v corepack >/dev/null 2>&1; then
     printf 'corepack %s' "$want"; return 0

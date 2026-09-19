@@ -10,8 +10,11 @@ behavior; Python checks exercise running services and middleware.
 # Java reactor tests
 bash build/mvnw.sh test -Dsurefire.failIfNoSpecifiedTests=false
 
-# Complete quality gate: coverage, SpotBugs, migrations, contracts, and frontend
+# Local quality gate: coverage, repository contracts, SpotBugs, and frontend
 bash build/quality-gate.sh
+
+# Native Windows equivalent; both wrappers consume build/verify-repository.py
+powershell -File build/quality-gate.ps1
 
 # Focused backend slice
 bash build/mvnw.sh -pl services/api-gateway,services/alert-web,services/detect-web -am test
@@ -195,13 +198,15 @@ for `/search-config/api/v1/ingest`.
 
 ## CI ownership
 
-`.github/workflows/ci.yml` runs on pushes and pull requests to `main`, nightly,
-and manually. It builds the Java reactor, enables the Testcontainers contract
+`.github/workflows/ci.yml` runs on pushes and pull requests to `main`, and
+manually. It builds the Java reactor, enables the Testcontainers contract
 suite, verifies the workbench, and runs a minimal service slice plus the Kafka
-pipeline E2E job. Nightly/manual runs add deterministic duplicate-delivery and
-Detection Outbox replay evidence. Compose-dependent process/database/
+pipeline E2E job. Every Change CI trigger runs deterministic duplicate-delivery
+and Detection Outbox replay evidence. Compose-dependent process/database/
 OpenSearch outage checks are intentionally kept in the weekly full-stack job,
-where the named services and volumes exist.
+where the named services and volumes exist. Repository-level Python contracts
+come from `build/verify-repository.py`, the same manifest used by both local
+quality-gate wrappers.
 
 `.github/workflows/full-stack.yml` runs manually and on the weekly schedule.
 It starts the extended Compose profile and fixed three-instance Detection

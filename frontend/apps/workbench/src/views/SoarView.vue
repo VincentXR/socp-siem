@@ -226,29 +226,31 @@ async function toggleEditor(): Promise<void> {
  */
 async function handleOpenRunInEditor(request: RunOpenRequest): Promise<void> {
   if (editorRef.value?.hasUnsavedChanges && !(await confirmDanger(t('soar.runHighlightDiscardChanges'), { title: t('forms.unsavedTitle') }))) return
-  showEditor.value = true
-  activeTab.value = 'playbooks'
   selectedPlaybookId.value = request.playbookId
   openRunRequest.value = { ...request }
-  void router.push({ name: 'playbook-edit', params: { playbookId: request.playbookId } })
+  // Complete the route transition before changing the tab. Otherwise the
+  // tab-query watcher can race this push with a replace back to `/soar`.
+  await router.push({ name: 'playbook-edit', params: { playbookId: request.playbookId } })
+  activeTab.value = 'playbooks'
+  showEditor.value = true
 }
 
 async function openEditorForCreate(): Promise<void> {
   if (showEditor.value && editorRef.value?.hasUnsavedChanges && !(await discardEditorChanges())) return
-  activeTab.value = 'playbooks'
   selectedPlaybookId.value = ''
-  showEditor.value = true
   chooseTemplate.value = false
-  void router.push({ name: 'playbook-new' })
+  await router.push({ name: 'playbook-new' })
+  activeTab.value = 'playbooks'
+  showEditor.value = true
 }
 
 async function openEditorForPlaybook(id: string): Promise<void> {
   if (showEditor.value && editorRef.value?.hasUnsavedChanges && !(await discardEditorChanges())) return
-  activeTab.value = 'playbooks'
   selectedPlaybookId.value = id
-  showEditor.value = true
   chooseTemplate.value = false
-  void router.push({ name: 'playbook-edit', params: { playbookId: id } })
+  await router.push({ name: 'playbook-edit', params: { playbookId: id } })
+  activeTab.value = 'playbooks'
+  showEditor.value = true
 }
 
 function playbookName(id: string): string {

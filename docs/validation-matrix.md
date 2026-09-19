@@ -9,7 +9,7 @@ correctness and recovery behavior, not a production capacity or HA claim.
 | Layer | Command | Pass evidence | Cadence |
 |---|---|---|---|
 | Java modules | `bash build/mvnw.sh test -Dsurefire.failIfNoSpecifiedTests=false` | Reactor tests pass, including auth, rules, Detection, Alert, incident, and shared error handling | Every change |
-| Quality gate | `bash build/quality-gate.sh` | Coverage floor, SpotBugs, toolchain policy, migration/deployment contracts, detection content, and workbench checks | Every pull request |
+| Quality gate | `bash build/quality-gate.sh` or `powershell -File build/quality-gate.ps1` | Coverage floor, SpotBugs, toolchain policy, the shared `build/verify-repository.py` contract manifest, detection content, and workbench checks | Before merge; Change CI runs the same repository manifest |
 | Dependency audit | GitHub `Dependency Audit` workflow | No Java/frontend dependency at or above the configured high-severity threshold | Weekly/release candidate |
 | Workbench | `cd frontend/apps/workbench && pnpm test && pnpm test:e2e && pnpm verify` | API contracts, cookie login, navigation permissions/history, SOAR draft/publish/run/human-gate flow, type check, production build, artifact assertions | Frontend change |
 | Cross-cutting slice | `python build/verify-slice.py` | Authentication, tenancy, audit, rate limiting, and trace propagation | PR/release candidate |

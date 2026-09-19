@@ -337,8 +337,11 @@ def main() -> int:
         errors.append("full-stack production evidence contract missing: verify-actuator-auth.py")
     if not (ROOT / "build/verify-runtime-consolidation.py").is_file():
         errors.append("missing evidence-gated runtime consolidation verifier")
-    if "verify-runtime-consolidation.py" not in ci:
-        errors.append("CI deployment contract missing: verify-runtime-consolidation.py")
+    repository_verifier = (ROOT / "build/verify-repository.py").read_text(encoding="utf-8")
+    if "verify-repository.py" not in ci:
+        errors.append("CI deployment contract missing: verify-repository.py")
+    if "build/verify-runtime-consolidation.py" not in repository_verifier:
+        errors.append("repository gate missing: verify-runtime-consolidation.py")
     for marker in ("chaos-pipeline.py --scenario all", "--scenario multi_instance", "verify-soar-live.py"):
         if marker not in full_stack:
             errors.append(f"full-stack production evidence contract missing: {marker}")

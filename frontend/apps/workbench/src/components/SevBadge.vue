@@ -3,7 +3,6 @@
  * 告警级别徽标（CRITICAL/HIGH/MEDIUM/LOW/INFO → 配色）。
  */
 import { computed } from 'vue'
-import { SeverityTag } from '@socp/soc-ui'
 
 const props = defineProps<{ value?: string | null }>()
 const rawValue = computed(() => String(props.value ?? '').trim().toUpperCase())
@@ -35,5 +34,5 @@ const tone = computed(() => {
 </script>
 
 <template>
-  <SeverityTag :severity="displayValue" class="sev-badge" :data-tone="tone" />
+  <span class="sev-badge" :data-tone="tone">{{ displayValue }}</span>
 </template>

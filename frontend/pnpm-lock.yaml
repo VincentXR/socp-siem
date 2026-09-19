@@ -24,12 +24,6 @@ importers:
 
   apps/workbench:
     dependencies:
-      '@socp/library':
-        specifier: workspace:*
-        version: link:../../packages/library
-      '@socp/soc-ui':
-        specifier: workspace:*
-        version: link:../../packages/soc-ui
       '@tanstack/vue-query':
         specifier: 5.59.0
         version: 5.59.0(vue@3.5.41(typescript@5.9.3))
@@ -85,33 +79,6 @@ importers:
       vue-tsc:
         specifier: 3.3.9
         version: 3.3.9(typescript@5.9.3)
-
-  packages/dev-deps:
-    devDependencies:
-      typescript:
-        specifier: 5.9.3
-        version: 5.9.3
-      vue-tsc:
-        specifier: 3.3.9
-        version: 3.3.9(typescript@5.9.3)
-
-  packages/library:
-    dependencies:
-      element-plus:
-        specifier: 2.14.3
-        version: 2.14.3(vue@3.5.41(typescript@5.9.3))
-
-  packages/soc-ui:
-    dependencies:
-      '@socp/library':
-        specifier: workspace:*
-        version: link:../library
-      element-plus:
-        specifier: 2.14.3
-        version: 2.14.3(vue@3.5.41(typescript@5.9.3))
-      vue:
-        specifier: 3.5.41
-        version: 3.5.41(typescript@5.9.3)
 
 packages:
 

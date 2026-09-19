@@ -18,25 +18,10 @@ if [[ -z "${SOCP_TESTCONTAINERS:-}" ]]; then
   fi
 fi
 
-bash build/mvnw.sh test -Pcoverage -Dsurefire.failIfNoSpecifiedTests=false
+bash build/mvnw.sh verify -Pcoverage,quality -Dsurefire.failIfNoSpecifiedTests=false
 python3 build/verify-coverage.py
 python3 build/verify-changed-coverage.py
-python3 build/verify-migrations.py
-python3 build/verify-contracts.py
-python3 build/verify-middleware-images.py
-python3 build/verify-package-layout.py
-python3 build/verify-architecture.py
-python3 build/verify-style.py
-python3 build/verify-frontend-i18n.py
-python3 build/verify-event-schema.py
-python3 build/verify-production.py
-python3 build/verify-prod-compose.py
-python3 build/verify-helm.py
-python3 build/validate-detection-content.py
-python3 build/generate-detection-summary.py --check-readme
-python3 build/verify-investigation-dataset.py
-python3 build/eval-investigation.py --results services/ai-assistant/target/investigation-eval-results.json
-bash build/mvnw.sh verify -Pquality -DskipTests
+python3 build/verify-repository.py
 
 cd frontend
 # Reuse the repository toolchain resolver so local Git Bash works with a

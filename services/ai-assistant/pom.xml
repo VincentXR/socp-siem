@@ -11,7 +11,7 @@
     </parent>
     <artifactId>ai-assistant</artifactId>
     <name>AiAssistant</name>
-    <description>AI 助手（LangChain4j 网关，AIP14）</description>
+    <description>AI 助手（证据约束调查与可选 HTTP LLM 网关，AIP14）</description>
 
     <dependencies>
         <dependency>

@@ -20,54 +20,52 @@ try {
             Write-Warning '[quality-gate] Docker unavailable; Testcontainers contracts are skipped'
         }
     }
-    mvn -s build/settings-mirror.xml -f pom.xml test -Pcoverage '-Dsurefire.failIfNoSpecifiedTests=false'
-    if ($LASTEXITCODE -ne 0) { throw 'Maven coverage tests failed' }
+    & (Join-Path $root 'build/mvnw.ps1') verify '-Pcoverage,quality' '-Dsurefire.failIfNoSpecifiedTests=false'
+    if ($LASTEXITCODE -ne 0) { throw 'Maven tests or static analysis failed' }
     python build/verify-coverage.py
     if ($LASTEXITCODE -ne 0) { throw 'Coverage gate failed' }
     python build/verify-changed-coverage.py
     if ($LASTEXITCODE -ne 0) { throw 'Changed-line coverage gate failed' }
-    python build/verify-migrations.py
-    if ($LASTEXITCODE -ne 0) { throw 'Migration gate failed' }
-    python build/verify-contracts.py
-    if ($LASTEXITCODE -ne 0) { throw 'Contract gate failed' }
-    python build/verify-middleware-images.py
-    if ($LASTEXITCODE -ne 0) { throw 'Middleware image contract gate failed' }
-    python build/verify-package-layout.py
-    if ($LASTEXITCODE -ne 0) { throw 'Package layout gate failed' }
-    python build/verify-architecture.py
-    if ($LASTEXITCODE -ne 0) { throw 'Architecture gate failed' }
-    python build/verify-style.py
-    if ($LASTEXITCODE -ne 0) { throw 'Style debt gate failed' }
-    python build/verify-frontend-i18n.py
-    if ($LASTEXITCODE -ne 0) { throw 'Frontend i18n gate failed' }
-    python build/verify-event-schema.py
-    if ($LASTEXITCODE -ne 0) { throw 'Canonical event schema gate failed' }
-    python build/verify-production.py
-    if ($LASTEXITCODE -ne 0) { throw 'Production deployment contract gate failed' }
-    python build/verify-helm.py
-    if ($LASTEXITCODE -ne 0) { throw 'Helm release contract gate failed' }
-    python build/validate-detection-content.py
-    if ($LASTEXITCODE -ne 0) { throw 'Detection content gate failed' }
-    python build/generate-detection-summary.py --check-readme
-    if ($LASTEXITCODE -ne 0) { throw 'Detection summary/documentation gate failed' }
-    python build/verify-investigation-dataset.py
-    if ($LASTEXITCODE -ne 0) { throw 'Investigation dataset gate failed' }
-    python build/eval-investigation.py --results services/ai-assistant/target/investigation-eval-results.json
-    if ($LASTEXITCODE -ne 0) { throw 'Investigation evaluation gate failed' }
-    mvn -s build/settings-mirror.xml -f pom.xml verify -Pquality -DskipTests
-    if ($LASTEXITCODE -ne 0) { throw 'Static analysis gate failed' }
+    python build/verify-repository.py
+    if ($LASTEXITCODE -ne 0) { throw 'Repository contract gate failed' }
 
     Push-Location frontend
     try {
-        pnpm install --frozen-lockfile
+        $packageManager = (Get-Content -Raw package.json | ConvertFrom-Json).packageManager
+        $expectedPnpmVersion = $packageManager -replace '^pnpm@', ''
+        $pnpmExecutable = $null
+        $pnpmPrefix = @()
+        $pnpm = Get-Command pnpm -ErrorAction SilentlyContinue
+        if ($null -ne $pnpm) {
+            $actualPnpmVersion = (& $pnpm.Source --version).Trim()
+            if ($actualPnpmVersion -eq $expectedPnpmVersion) {
+                $pnpmExecutable = $pnpm.Source
+            }
+        }
+        if ($null -eq $pnpmExecutable) {
+            $corepack = Get-Command corepack -ErrorAction SilentlyContinue
+            if ($null -ne $corepack) {
+                $pnpmExecutable = $corepack.Source
+                $pnpmPrefix = @($packageManager)
+            } else {
+                $npx = Get-Command npx -ErrorAction SilentlyContinue
+                if ($null -eq $npx) {
+                    throw "pnpm $expectedPnpmVersion is required, but no matching pnpm, corepack, or npx was found"
+                }
+                $pnpmExecutable = $npx.Source
+                $pnpmPrefix = @('--yes', $packageManager)
+            }
+        }
+
+        & $pnpmExecutable @pnpmPrefix install --frozen-lockfile
         if ($LASTEXITCODE -ne 0) { throw 'Frontend install failed' }
-        pnpm --dir apps/workbench test
+        & $pnpmExecutable @pnpmPrefix --dir apps/workbench test
         if ($LASTEXITCODE -ne 0) { throw 'Frontend tests failed' }
-        pnpm --dir apps/workbench lint
+        & $pnpmExecutable @pnpmPrefix --dir apps/workbench lint
         if ($LASTEXITCODE -ne 0) { throw 'Frontend lint failed' }
-        pnpm --dir apps/workbench format:check
+        & $pnpmExecutable @pnpmPrefix --dir apps/workbench format:check
         if ($LASTEXITCODE -ne 0) { throw 'Frontend format check failed' }
-        pnpm --dir apps/workbench verify
+        & $pnpmExecutable @pnpmPrefix --dir apps/workbench verify
         if ($LASTEXITCODE -ne 0) { throw 'Frontend verification failed' }
     } finally {
         Pop-Location

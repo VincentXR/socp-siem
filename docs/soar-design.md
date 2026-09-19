@@ -1,14 +1,14 @@
 # SOCP SOAR 设计书
 
-> 状态：实施基线（Implementation Baseline）
-> 版本：1.0
-> 日期：2026-09-03
+> 状态：当前架构与验收基线（Current Architecture and Acceptance Baseline）
+> 版本：1.1
+> 日期：2026-09-20
 > 适用范围：`services/soar-web`、`frontend/apps/workbench` 及其与 Alert、Incident、Search、Asset、HIPS、Threat、Notify 的集成
 > 读者：后端、前端、测试、安全与平台工程师，以及负责后续实现的 coding agent
 
 ## 1. 结论
 
-当前 `soar-web` 不是可投入真实 SOC 使用的 SOAR，只是一个具备少量安全护栏的线性动作执行原型。它保留了一些值得复用的基础设施，但剧本模型、编排语义、连接器体系、运行可观测性和操作台都需要按新模型重写。
+当前 `soar-web` 已实现版本化图剧本、持久运行投影、Temporal 工作流、审批/人工任务、连接器控制面、自动化规则和可视化工作台。它达到了本仓库定义的核心功能与正确性基线，但真实厂商连接器验收、目标环境容量、HA、密钥轮换和运维 SLO 仍属于部署侧准入条件，不能仅凭本地或 CI 结果宣称生产就绪。
 
 本设计的目标不是堆几个演示按钮，而是在现有 Java 21/Spring Boot、Vue 3、PostgreSQL、Temporal 和统一认证体系上，交付一个达到主流 SIEM/SOAR **核心能力基线**的 SOAR：
 
@@ -26,36 +26,29 @@
 
 ## 2. 现状审计
 
-### 2.1 已有实现
+### 2.1 当前实现
 
 当前实现包含：
 
-- `Playbook` 元数据和 `t_playbook` 持久化；
-- 告警评估去重、定时触发 claim、执行摘要和审批记录；
-- `soar:execute`、`soar:approve` 权限及租户上下文；
-- 通知、建案、Webhook、隔离/防火墙/快照适配器的初步 handler；
-- 外部动作幂等键和“不能只凭 HTTP 2xx 判断成功”的连接器回执约束；
-- 可选 Temporal Workflow，以及开发环境进程内回退；
-- 剧本列表、创建、启停、删除和最近执行表格。
+- Playbook/Version 草稿、校验、发布、弃用、回滚和不可变版本；
+- 图节点、分支、并行、汇聚、审批、人工任务、子剧本与有界执行预算；
+- Run/Node/Attempt/Event/Artifact 持久投影，以及取消、重试、重跑和未知结果处置；
+- PostgreSQL claim、幂等 receipt、dispatch 恢复和多实例准入边界；
+- Temporal Workflow/Activity 执行，生产 profile 禁止非持久副作用回退；
+- Automation Rule、定时触发、告警事件触发和循环防护；
+- Connector/Connection/Action Catalog、密钥引用、目标限制、回执和 SSRF 防护；
+- Playbook 编辑器、运行检查器、审批/人工任务和连接管理工作台；
+- OpenAPI、租户隔离、细粒度权限、审计、指标和 live/multi-instance 验证。
 
-这些能力说明模块并非完全空白，但只构成重写时可复用的地基。
+### 2.2 剩余准入缺口
 
-### 2.2 关键缺口
-
-| 领域 | 当前证据 | 问题 | SOAR 要求 |
-|---|---|---|---|
-| 剧本模型 | `Playbook.java` 是 `trigger: String + actions: List<String>` | 无图、节点、边、端口、输入输出、错误路径和版本 | 不可变发布版本 + 类型化工作流定义 |
-| 触发匹配 | `PlaybookExecutor.matches()` 做字符串包含判断 | 条件不可验证、不可解释，易误触发 | 独立 Automation Rule + 类型化事件 + CEL 条件 |
-| 执行流 | `PlaybookWorkflowImpl` 顺序遍历字符串 | 无条件、并行、循环、等待、人工任务和子剧本 | 持久图解释器和明确的节点状态机 |
-| API | 创建、删除、toggle、同步 execute、最近 200 条执行 | 无更新、草稿、发布、分页、取消、详情、节点日志 | 完整控制面和异步运行 API |
-| Temporal | HTTP 请求同步等待 Workflow 完成 | 长任务占用请求；无 signal/update；历史兼容策略缺失 | `202 Accepted`、稳定 Workflow ID、Signal、Worker 安全部署 |
-| 降级 | Temporal 不可用时进程内执行副作用 | 生产语义分叉，重启丢状态 | 生产 fail-closed；只允许持久化排队，不执行内存降级 |
-| 动作 | 从字符串猜动作类型，handler 固定注册 | 无动作 schema、连接实例、密钥管理和能力发现 | Connector SDK + Action Catalog + Connection |
-| 审批 | 基于整个剧本和动作字符串判断 | 不能逐节点、双人复核、拒绝/过期分支和防自批 | 节点级审批、策略评估、职责分离 |
-| 运行记录 | 一行 execution + `results_json` | 无节点尝试、等待态、未知态、远程回执和实时事件 | Run/Node/Attempt/Event 四层投影 |
-| 安全 | 有权限注解，但剧本变更未统一审计 | 无发布权分离、SSRF 策略、secret redaction、目标范围 | 细粒度 RBAC、密钥引用、出站策略、全操作审计 |
-| 前端 | `SoarView.vue` 只有两个表格和文本输入 | 不能构建、测试、排障或审批真实流程 | 五个工作台 + 可视化编辑器 + 运行检查器 |
-| 集成上下文 | `AlarmEvaluationRequest` 丢弃风险分、证据等字段 | 剧本拿不到调查所需上下文 | 版本化事件信封，保留实体、证据、风险和因果链 |
+| 领域 | 仓库内证据 | 尚需关闭的边界 |
+|---|---|---|
+| 外部连接器 | reference adapter、回执、幂等、SSRF 和审批测试 | 每个真实厂商 sandbox、权限、限流、超时和撤销能力验收 |
+| 生产运行 | PostgreSQL/Temporal live、多实例 fence、恢复与 retention 测试 | 目标集群 HA、容量、备份恢复、升级窗口和 SLO 演练 |
+| 密钥治理 | secret reference、redaction、禁止定义内明文 | 部署平台 KMS/Vault、轮换、审计和应急吊销流程 |
+| 历史兼容 | 版本化 definition、迁移和 replay 测试 | 长期运行的真实 Temporal History 与历史租户数据升级验收 |
+| 产品验收 | 工作台、OpenAPI 和五类黄金场景 | 目标 SOC 的角色矩阵、审批策略、内容包和操作流程签收 |
 
 ### 2.3 必须保留的能力
 
@@ -1041,9 +1034,9 @@ python build/failure-tests.py
 
 新增 `build/verify-soar.py` 作为 P0 端到端验收入口；若依赖真实厂商，测试环境使用契约一致的 reference adapter，并在报告中明确标注，不能伪装成厂商认证。
 
-## 18. 实施计划
+## 18. 历史实施顺序
 
-后续实现 agent 应按以下顺序提交小步、可运行的变更，禁止同时重写所有层。
+以下阶段记录本基线形成时采用的实施顺序，不是当前 backlog 或完成度看板。当前能力与准入状态以本文件第 2 节、`maturity-matrix.md`、迁移、OpenAPI 和可执行验证为准；后续变更仍应保持小步、可运行，禁止同时重写所有层。
 
 ### 阶段 0：契约冻结与测试脚手架
 

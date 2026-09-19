@@ -1,6 +1,5 @@
 /** Shared UI formatting helpers. All user-facing copy comes from Vue I18n. */
 
-import { severityColor } from '@socp/library'
 import { formatDate, formatNumber, translate } from '../i18n'
 
 function cssToken(variable: string, fallback: string): string {
@@ -21,7 +20,7 @@ function severityToken(level: string): { background: string; foreground: string 
 }
 
 export function sevColor(s: string): string {
-  return severityToken(s).background || severityColor(s)
+  return severityToken(s).background
 }
 
 export function sevBg(s: string): string {
