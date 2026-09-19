@@ -38,11 +38,16 @@ import FilterToolbar from '../components/FilterToolbar.vue'
 import MetricCard from '../components/MetricCard.vue'
 import PageHeader from '../components/PageHeader.vue'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
+import { useDebouncedWatch } from '../composables/useDebouncedWatch'
+import { useLatestRequest } from '../composables/useLatestRequest'
 import { assetApi, endpointApi, type Asset, type Endpoint } from '../api/domains'
 import { readImportRows, type ImportRow } from '../lib/resource-import'
 import { useI18n } from '../composables/useI18n'
+import { useConfirm } from '../composables/useConfirm'
+import { tOr } from '../utils/i18nLabel'
 
 const { t, d } = useI18n()
+const { confirmDanger } = useConfirm()
 const route = useRoute()
 const router = useRouter()
 
@@ -85,7 +90,7 @@ const size = ref(10)
 const keyword = ref('')
 const loading = ref(false)
 const assetTotal = ref(0)
-let loadSequence = 0
+const latestRequest = useLatestRequest()
 const detailEndpoints = computed(() => {
   const asset = detailAsset.value
   if (!asset) return []
@@ -99,31 +104,33 @@ const detailEndpoints = computed(() => {
 })
 
 async function loadAssets() {
-  const sequence = ++loadSequence
+  const request = latestRequest.start()
   loading.value = true
   loadError.value = ''
   endpointInventoryError.value = ''
   try {
     const [listResult, statResult, endpointResult] = await Promise.allSettled([
-      assetApi.list(page.value, size.value, keyword.value),
-      assetApi.stats(),
+      assetApi.list(page.value, size.value, keyword.value, { signal: request.signal }),
+      assetApi.stats({ signal: request.signal }),
       // The drawer enrichment is intentionally bounded; the list itself is
       // server-paged and never downloads the tenant inventory.
-      endpointApi.list(1, 500),
+      endpointApi.list(1, 500, undefined, { signal: request.signal }),
     ])
+    if (!request.isCurrent()) return
     if (listResult.status === 'fulfilled') {
-      if (sequence !== loadSequence) return
       assets.value = listResult.value.items
       assetTotal.value = listResult.value.total
       if (detailAsset.value) detailAsset.value = listResult.value.items.find(item => item.id === detailAsset.value?.id) ?? detailAsset.value
       openAssetFromQuery()
     }
     else loadError.value = listResult.reason instanceof Error ? listResult.reason.message : String(listResult.reason)
+    if (!request.isCurrent()) return
     if (statResult.status === 'fulfilled') assetStat.value = statResult.value
+    if (!request.isCurrent()) return
     if (endpointResult.status === 'fulfilled') endpointInventory.value = endpointResult.value.items
     else endpointInventoryError.value = endpointResult.reason instanceof Error ? endpointResult.reason.message : String(endpointResult.reason)
   } finally {
-    if (sequence === loadSequence) loading.value = false
+    if (request.isCurrent()) loading.value = false
   }
 }
 
@@ -173,7 +180,7 @@ function formatTime(value: string): string {
 }
 
 async function removeAsset(id: string) {
-  if (!confirm(t('forms.confirmDelete'))) return
+  if (!await confirmDanger(t('assets.deleteConfirm'), { title: t('common.delete') })) return
   return mutation.run(async () => {
   try {
     await assetApi.remove(id)
@@ -242,7 +249,7 @@ async function importAssetFile(event: Event) {
 const showAssetDialogGuard = useFormDialog(showAssetDialog, () => assetForm.value, () => actionBusy.value)
 onMounted(loadAssets)
 watch([page, size], () => { void loadAssets() })
-watch(keyword, () => {
+useDebouncedWatch(keyword, () => {
   if (page.value !== 1) page.value = 1
   else void loadAssets()
 })
@@ -328,6 +335,7 @@ watch(assetDetailOpen, visible => {
         </FormSection>
       </el-form>
       <template #footer>
+        <p v-if="canWrite && (!assetForm.name.trim() || !assetForm.ip.trim())" class="dialog-hint">{{ t('forms.fieldRequired', { field: t('common.name') }) }} / {{ t('forms.fieldRequired', { field: t('common.ip') }) }}</p>
         <el-button @click="showAssetDialogGuard.cancel">{{ t('common.cancel') }}</el-button>
         <el-button v-if="canWrite" type="primary" :disabled="!assetForm.name.trim() || !assetForm.ip.trim()" :loading="actionBusy" @click="saveAsset">{{ t('common.save') }}</el-button>
       </template>
@@ -353,7 +361,7 @@ watch(assetDetailOpen, visible => {
           <p v-if="endpointInventoryError" class="asset-detail-error">{{ t('assets.endpointLookupUnavailable') }} · {{ endpointInventoryError }}</p>
           <el-table v-else-if="detailEndpoints.length" :data="detailEndpoints" size="small">
             <el-table-column prop="hostname" :label="t('endpoints.hostname')" min-width="150" show-overflow-tooltip />
-            <el-table-column prop="status" :label="t('common.status')" width="90"><template #default="{ row }"><el-tag :type="row.status === 'ONLINE' ? 'success' : 'info'" size="small">{{ t('statuses.' + row.status) || row.status }}</el-tag></template></el-table-column>
+            <el-table-column prop="status" :label="t('common.status')" width="90"><template #default="{ row }"><el-tag :type="row.status === 'ONLINE' ? 'success' : 'info'" size="small">{{ tOr(t, 'statuses.' + row.status, row.status) }}</el-tag></template></el-table-column>
             <el-table-column prop="lastHeartbeat" :label="t('endpoints.lastHeartbeat')" width="160" show-overflow-tooltip><template #default="{ row }">{{ formatTime(row.lastHeartbeat) }}</template></el-table-column>
           </el-table>
           <p v-else class="asset-detail-muted">{{ t('assets.noRelatedEndpoints') }}</p>

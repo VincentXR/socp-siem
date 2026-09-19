@@ -21,6 +21,7 @@ import { archiveReport, dailyReport, downloadArchivedReport, listArchive, trend7
 import { useI18n } from '../composables/useI18n'
 import { sevColor } from '../lib/ui'
 import { useWriteAccess } from '../composables/useWriteAccess'
+import { tOr } from '../utils/i18nLabel'
 
 const props = defineProps<{ theme: 'light' | 'dark' }>()
 const { t, n, locale } = useI18n()
@@ -45,6 +46,11 @@ function severityLabel(severity: string): string {
   const key = 'severities.' + severity
   const translated = t(key)
   return translated === key ? severity : translated
+}
+
+/** Backend report-source enum; unknown or missing values keep the raw token. */
+function sourceLabel(source: string | null | undefined): string {
+  return tOr(t, `report.sources.${source ?? 'unspecified'}`, source ?? '—')
 }
 
 function tc(light: string, dark: string): string { return props.theme === 'dark' ? dark : light }
@@ -155,13 +161,13 @@ onUnmounted(() => {
       <span v-if="archiveInfo" style="font-size:12px;color:var(--ns-text-3)">{{ t('report.archivedObjects', { count: archiveInfo.count }) }}</span>
     </div>
     <el-alert v-if="reportError" type="error" :title="t('report.loadFailed')" show-icon closable @close="reportRequest.reset" />
-    <el-alert v-if="report?.degraded" type="warning" :title="t('report.degradedTitle', { source: report.source })"
+    <el-alert v-if="report?.degraded" type="warning" :title="t('report.degradedTitle', { source: sourceLabel(report.source) })"
       :description="report.degradationReason || t('report.degradedDescription')" show-icon :closable="false" style="margin-bottom:12px" />
-    <el-row :gutter="12" style="margin-bottom:14px" v-if="report">
-      <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ report.total }}</div><div class="label">{{ t('report.todayAlarms') }}</div></div></el-card></el-col>
-      <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-danger)">{{ report.bySeverity.CRITICAL ?? 0 }}</div><div class="label">{{ severityLabel('CRITICAL') }}</div></div></el-card></el-col>
-      <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-danger)">{{ report.bySeverity.HIGH ?? 0 }}</div><div class="label">{{ severityLabel('HIGH') }}</div></div></el-card></el-col>
-      <el-col :span="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-warning)">{{ report.bySeverity.MEDIUM ?? 0 }}</div><div class="label">{{ severityLabel('MEDIUM') }}</div></div></el-card></el-col>
+    <el-row class="metrics-row" :gutter="12" style="margin-bottom:14px" v-if="report">
+      <el-col :xs="24" :sm="12" :md="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ report.total }}</div><div class="label">{{ t('report.todayAlarms') }}</div></div></el-card></el-col>
+      <el-col :xs="24" :sm="12" :md="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-danger)">{{ report.bySeverity.CRITICAL ?? 0 }}</div><div class="label">{{ severityLabel('CRITICAL') }}</div></div></el-card></el-col>
+      <el-col :xs="24" :sm="12" :md="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-danger)">{{ report.bySeverity.HIGH ?? 0 }}</div><div class="label">{{ severityLabel('HIGH') }}</div></div></el-card></el-col>
+      <el-col :xs="24" :sm="12" :md="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-warning)">{{ report.bySeverity.MEDIUM ?? 0 }}</div><div class="label">{{ severityLabel('MEDIUM') }}</div></div></el-card></el-col>
     </el-row>
     <el-row :gutter="12">
       <el-col :span="12"><el-card shadow="never"><div ref="barEl" style="height:300px" /></el-card></el-col>

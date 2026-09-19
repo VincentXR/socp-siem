@@ -10,6 +10,11 @@ vi.mock('../../../../api', () => ({
     id: 'socp.alert/get', actionRef: 'socp.alert/get@1', connectorId: 'socp.alert', connectorVersion: 1,
     production: true, displayName: 'Get alert', riskLevel: 'LOW', sideEffect: 'READ',
     idempotency: 'NATURAL', requiresConnection: false,
+    inputSchema: {
+      type: 'object',
+      properties: { limit: { title: 'Limit', type: 'integer' } },
+      required: ['limit'],
+    },
   }]),
   listConnections: vi.fn(async () => ({ items: [] })),
   listPlaybooks: vi.fn(async () => ({ items: [] })),
@@ -67,6 +72,61 @@ describe('SOAR property panel edits', () => {
     await concurrency.setValue('3')
     expect(node.limits).toMatchObject({ concurrency: 3, maxItems: 100 })
     expect(typeof (node.limits as Record<string, unknown>).concurrency).toBe('number')
+    wrapper.unmount()
+  })
+
+  it('reports a rejected retry value inline and echoes the stored one back', async () => {
+    const { wrapper, node, touched } = mountPanel({
+      id: 'act', type: 'ACTION', name: 'Get alert', actionRef: 'socp.alert/get@1',
+      retry: { maxAttempts: 3, backoffSeconds: 30 },
+    })
+    await flushPromises()
+    const maxAttempts = wrapper.findAll('.soar-flow-retry-grid input[type="number"]')[0]
+    await maxAttempts.setValue('99')
+    expect(node.retry).toEqual({ maxAttempts: 3, backoffSeconds: 30 })
+    expect(touched).not.toHaveBeenCalled()
+    expect((maxAttempts.element as HTMLInputElement).value).toBe('3')
+    expect(wrapper.find('.soar-flow-retry-grid .soar-flow-field-error').exists()).toBe(true)
+    await maxAttempts.setValue('5')
+    expect(node.retry).toEqual({ maxAttempts: 5, backoffSeconds: 30 })
+    expect(wrapper.find('.soar-flow-retry-grid .soar-flow-field-error').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('shows why an integer action parameter was refused instead of dropping it', async () => {
+    const { wrapper, node, touched } = mountPanel({
+      id: 'act', type: 'ACTION', name: 'Get alert', actionRef: 'socp.alert/get@1',
+    })
+    await flushPromises()
+    const limit = wrapper.findAll('.soar-flow-parameter-form input')[0]
+    await limit.setValue('1.5')
+    expect(node.parameters).toBeUndefined()
+    expect(touched).not.toHaveBeenCalled()
+    expect(wrapper.find('.soar-flow-parameter-form .soar-flow-field-error').exists()).toBe(true)
+    await limit.setValue('4')
+    expect(node.parameters).toEqual({ limit: 4 })
+    expect(wrapper.find('.soar-flow-parameter-form .soar-flow-field-error').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('refuses to apply invalid advanced JSON and normalizes the text area on success', async () => {
+    const { wrapper, node, touched } = mountPanel({
+      id: 'act', type: 'ACTION', name: 'Get alert', parameters: { keep: 1 },
+    })
+    await flushPromises()
+    const parametersText = wrapper.findAll('textarea')[0]
+    const applyButtons = wrapper.findAll('.soar-flow-advanced-details button')
+    await parametersText.setValue('[1,2]')
+    await applyButtons[0].trigger('click')
+    expect(node.parameters).toEqual({ keep: 1 })
+    expect(touched).not.toHaveBeenCalled()
+    expect(wrapper.find('.soar-flow-advanced-details .soar-flow-field-error').exists()).toBe(true)
+    await parametersText.setValue('{"limit":2}')
+    await applyButtons[0].trigger('click')
+    expect(node.parameters).toEqual({ limit: 2 })
+    expect(touched).toHaveBeenCalled()
+    expect((wrapper.findAll('textarea')[0].element as HTMLTextAreaElement).value).toBe('{\n  "limit": 2\n}')
+    expect(wrapper.find('.soar-flow-advanced-details .soar-flow-field-error').exists()).toBe(false)
     wrapper.unmount()
   })
 })

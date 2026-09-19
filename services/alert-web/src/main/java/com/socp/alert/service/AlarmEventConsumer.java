@@ -67,14 +67,26 @@ public class AlarmEventConsumer {
             consumer.subscribe(List.of(topic));
             while (!Thread.currentThread().isInterrupted()) {
                 var records = consumer.poll(Duration.ofMillis(500));
-                if (processBatch(records)) {
-                    KafkaClientSupport.rewindBatch(consumer, records);
-                } else if (!records.isEmpty()) {
-                    consumer.commitSync();
-                }
+                applyPolledBatch(consumer, records);
             }
         } catch (RuntimeException failure) {
             log.warn("Alarm event reconciler stopped: {}", failure.getMessage());
+        }
+    }
+
+    /**
+     * Applies one polled batch: rewind it when it must be retried, commit it once
+     * the batch has been registered. Separated from {@link #run()} for the same
+     * reason as {@link #processBatch}: this is the decision that decides whether a
+     * restart replays the batch or skips it, and that is worth testing without a
+     * broker.
+     */
+    void applyPolledBatch(KafkaConsumer<String, String> consumer,
+                          ConsumerRecords<String, String> records) {
+        if (processBatch(records)) {
+            KafkaClientSupport.rewindBatch(consumer, records);
+        } else if (!records.isEmpty()) {
+            consumer.commitSync();
         }
     }
 

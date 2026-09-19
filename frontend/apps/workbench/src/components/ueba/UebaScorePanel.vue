@@ -17,6 +17,7 @@ import { computed } from 'vue'
 import SevBadge from '../SevBadge.vue'
 import type { ScoreBreakdown } from '../../api'
 import { useI18n } from '../../composables/useI18n'
+import { tOr } from '../../utils/i18nLabel'
 
 type ScoreForm = { severity: string; mitre: string; tiHits: number; recentAlerts: number; assetCriticality: number }
 
@@ -53,7 +54,7 @@ function riskColor(level: string) {
         <el-form label-position="top" size="small">
           <el-form-item :label="t('ueba.severityBaseline')">
             <el-select v-model="form.severity" @change="emit('calculate')" style="width:160px">
-              <el-option v-for="severity in severities" :key="severity" :label="t('severities.' + severity) || severity" :value="severity" />
+              <el-option v-for="severity in severities" :key="severity" :label="tOr(t, 'severities.' + severity, severity)" :value="severity" />
             </el-select>
           </el-form-item>
           <el-form-item :label="t('ueba.attackTechnique')">

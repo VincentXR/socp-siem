@@ -18,12 +18,17 @@ import FilterToolbar from '../components/FilterToolbar.vue'
 import MetricCard from '../components/MetricCard.vue'
 import PageHeader from '../components/PageHeader.vue'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
+import { useDebouncedWatch } from '../composables/useDebouncedWatch'
+import { useLatestRequest } from '../composables/useLatestRequest'
 import { assetApi, endpointApi, type Asset, type Endpoint, type EndpointEvent } from '../api/domains'
 import { useI18n } from '../composables/useI18n'
 import { useWriteAccess } from '../composables/useWriteAccess'
+import { useConfirm } from '../composables/useConfirm'
+import { tOr } from '../utils/i18nLabel'
 
 const { t, d } = useI18n()
 const canWrite = useWriteAccess()
+const { confirmDanger } = useConfirm()
 const route = useRoute()
 
 const endpointStat = ref<{ total: number; online: number; byType?: Record<string, number>; eventByType?: Record<string, number>; events?: number } | null>(null)
@@ -40,7 +45,7 @@ const size = ref(10)
 const keyword = ref('')
 const loading = ref(false)
 const endpointTotal = ref(0)
-let loadSequence = 0
+const latestRequest = useLatestRequest()
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('endpoints')
 
 function syncEndpointQuery(): void {
@@ -91,32 +96,35 @@ function onEndpointCommand(command: string, endpoint: Endpoint): void {
 }
 
 async function loadEndpoints() {
-  const sequence = ++loadSequence
+  const request = latestRequest.start()
   loading.value = true
   loadError.value = ''
   eventsError.value = ''
   try {
     const [endpointResult, statResult, eventResult, assetResult] = await Promise.allSettled([
-      endpointApi.list(page.value, size.value, keyword.value), endpointApi.stats(), endpointApi.events(1, 200),
+      endpointApi.list(page.value, size.value, keyword.value, { signal: request.signal }), endpointApi.stats({ signal: request.signal }), endpointApi.events(1, 200, { signal: request.signal }),
       // Asset lookup enriches the drawer only; endpoint health remains usable if it is unavailable.
-      assetApi.list(1, 500),
+      assetApi.list(1, 500, undefined, { signal: request.signal }),
     ])
+    if (!request.isCurrent()) return
     if (endpointResult.status === 'fulfilled') {
-      if (sequence !== loadSequence) return
       endpoints.value = endpointResult.value.items
       endpointTotal.value = endpointResult.value.total
     } else loadError.value = endpointResult.reason instanceof Error ? endpointResult.reason.message : String(endpointResult.reason)
+    if (!request.isCurrent()) return
     if (statResult.status === 'fulfilled') endpointStat.value = statResult.value
+    if (!request.isCurrent()) return
     if (eventResult.status === 'fulfilled') endpointEvents.value = eventResult.value.items
     else eventsError.value = eventResult.reason instanceof Error ? eventResult.reason.message : String(eventResult.reason)
+    if (!request.isCurrent()) return
     if (assetResult.status === 'fulfilled') assets.value = assetResult.value.items
   } finally {
-    if (sequence === loadSequence) loading.value = false
+    if (request.isCurrent()) loading.value = false
   }
 }
 
 async function removeEndpoint(id: string) {
-  if (!confirm(t('endpoints.unregisterConfirm'))) return
+  if (!await confirmDanger(t('endpoints.unregisterConfirm'), { title: t('endpoints.unregister') })) return
   actionBusy.value = true
   try {
     await endpointApi.remove(id)
@@ -135,7 +143,7 @@ onMounted(() => {
 })
 watch(() => route.query.q, syncEndpointQuery)
 watch([page, size], () => { void loadEndpoints() })
-watch(keyword, () => {
+useDebouncedWatch(keyword, () => {
   if (page.value !== 1) page.value = 1
   else void loadEndpoints()
 })
@@ -166,7 +174,7 @@ watch(keyword, () => {
         <el-table-column prop="os" column-key="os" :label="t('endpoints.os')" :width="columnWidth('os', 170)" sortable="custom" show-overflow-tooltip />
         <el-table-column prop="agentVersion" column-key="agentVersion" :label="t('endpoints.agentVersion')" :width="columnWidth('agentVersion', 120)" sortable="custom" show-overflow-tooltip />
         <el-table-column prop="status" column-key="status" :label="t('common.status')" :width="columnWidth('status', 80)" sortable="custom">
-          <template #default="{ row }"><el-tag :type="row.status === 'ONLINE' ? 'success' : 'info'" size="small">{{ t('statuses.' + row.status) || row.status }}</el-tag></template>
+          <template #default="{ row }"><el-tag :type="row.status === 'ONLINE' ? 'success' : 'info'" size="small">{{ tOr(t, 'statuses.' + row.status, row.status) }}</el-tag></template>
         </el-table-column>
         <el-table-column prop="lastHeartbeat" column-key="lastHeartbeat" :label="t('endpoints.lastHeartbeat')" :width="columnWidth('lastHeartbeat', 165)" sortable="custom">
           <template #default="{ row }"><span class="table-text">{{ formatTime(row.lastHeartbeat) }}</span></template>
@@ -186,7 +194,7 @@ watch(keyword, () => {
     <el-drawer v-model="detailOpen" :title="detailEndpoint?.hostname || t('endpoints.endpointDetails')" size="min(620px, 96vw)">
       <template v-if="detailEndpoint">
         <div class="endpoint-detail-status">
-          <el-tag :type="detailEndpoint.status === 'ONLINE' ? 'success' : 'info'" size="small">{{ t('statuses.' + detailEndpoint.status) || detailEndpoint.status }}</el-tag>
+          <el-tag :type="detailEndpoint.status === 'ONLINE' ? 'success' : 'info'" size="small">{{ tOr(t, 'statuses.' + detailEndpoint.status, detailEndpoint.status) }}</el-tag>
           <span class="mono">{{ detailEndpoint.ip }}</span>
         </div>
         <dl class="endpoint-detail-grid">

@@ -494,7 +494,8 @@ public class KafkaEventConsumer {
     }
 
 
-    private void processPendingWithRetry(PendingDetectionEvent row) {
+    /** Package-private hook used by focused tests. */
+    void processPendingWithRetry(PendingDetectionEvent row) {
         long delay = 250;
         int attempts = 0;
         while (running.get() && !Thread.currentThread().isInterrupted()) {

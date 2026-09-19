@@ -18,6 +18,35 @@ routed with the same `tenantId + detectionRoutingField + detectionRoutingValue`
 hash used by the Kafka key, and every shard has its own serial rule engine and
 snapshot namespace. The default remains one shard for backwards compatibility.
 
+## Operating the shard count
+
+Raising the shard count is the available mitigation for a specific symptom, not
+a general tuning knob. The symptom is rule evaluation becoming the constraint:
+`socp_detection_event_stage` for `rule_evaluation` grows while
+`socp_kafka_consumer_lag` stays near zero. That combination says the engine is
+behind, not the broker, and it is what the state-cardinality growth described
+below looks like from the outside.
+
+What raising the count buys: each shard owns an independent engine and state
+namespace, so the per-event cost - which is proportional to the state a rule
+holds - is divided across shards **only to the extent the routing hash is
+balanced**. Raising the count on a workload whose events concentrate on few
+routing values moves the same state into one shard and changes nothing.
+
+What it does not fix: a single rule's per-event cost stays proportional to that
+shard's state. Sharding divides the problem; it does not bound it. The durable
+path also snapshots rule state to detect changes and to roll back a failed
+event, and that cost is paid per event regardless of shard count.
+
+**Shard balance is not observable from metrics today.** Neither the configured
+shard count nor per-shard state size is exported, so a change cannot be
+confirmed from the dashboards. Until that is instrumented, verify by comparing
+the `rule_evaluation` distribution before and after: the p95 should fall
+roughly in proportion to the shard count. If it does not, the routing values
+are concentrated and the split is not helping. The authoritative view of the
+distribution is the `(input topic, partition, state shard)` rows in
+`t_detection_state_owner` and the per-shard snapshot rows.
+
 For Kafka-backed processing, `t_detection_state_owner` is the durable lease for
 one `(input topic, partition, state shard)` unit. Claiming or taking over the
 row increments `fencing_epoch`; partition revoke immediately invalidates the

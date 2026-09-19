@@ -35,17 +35,25 @@ const menuRoutes: RouteRecordRaw[] = (Object.keys(MENU_PATHS) as MenuKey[]).map(
   meta: { menu },
 }))
 
+/**
+ * The catch-all keeps a name so the shell can tell a dead deep link apart from
+ * a role-based fallback: the router records the unmatched location as
+ * `route.redirectedFrom`, and only this route carries this name.
+ */
+export const NOT_FOUND_ROUTE = 'not-found'
+
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/', redirect: MENU_PATHS.overview },
     ...menuRoutes,
-    { path: '/detect/rules/new', name: 'rule-new', component: pageComponents.detect, meta: { menu: 'detect', editor: true } },
-    { path: '/detect/rules/:ruleId/edit', name: 'rule-edit', component: pageComponents.detect, meta: { menu: 'detect', editor: true } },
-    { path: '/soar/playbooks/new', name: 'playbook-new', component: pageComponents.soar, meta: { menu: 'soar', editor: true } },
-    { path: '/soar/playbooks/:playbookId/edit', name: 'playbook-edit', component: pageComponents.soar, meta: { menu: 'soar', editor: true } },
-    { path: '/ingest/parsers/new', name: 'parser-new', component: () => import('../views/ParseRuleEditorView.vue'), meta: { menu: 'ingest' } },
+    { path: '/detect/rules/new', name: 'rule-new', component: pageComponents.detect, meta: { menu: 'detect', editor: true, crumbKey: 'detect.createRule' } },
+    { path: '/detect/rules/:ruleId/edit', name: 'rule-edit', component: pageComponents.detect, meta: { menu: 'detect', editor: true, crumbKey: 'detect.editRule' } },
+    { path: '/soar/playbooks/new', name: 'playbook-new', component: pageComponents.soar, meta: { menu: 'soar', editor: true, crumbKey: 'soar.createPlaybook' } },
+    { path: '/soar/playbooks/:playbookId/edit', name: 'playbook-edit', component: pageComponents.soar, meta: { menu: 'soar', editor: true, crumbKey: 'soar.editorTitle' } },
+    // `parser-edit` has no dedicated message key yet, so it keeps the two-segment breadcrumb.
+    { path: '/ingest/parsers/new', name: 'parser-new', component: () => import('../views/ParseRuleEditorView.vue'), meta: { menu: 'ingest', crumbKey: 'ingest.addParseRule' } },
     { path: '/ingest/parsers/:parserId/edit', name: 'parser-edit', component: () => import('../views/ParseRuleEditorView.vue'), meta: { menu: 'ingest' } },
-    { path: '/:pathMatch(.*)*', redirect: MENU_PATHS.overview },
+    { path: '/:pathMatch(.*)*', name: NOT_FOUND_ROUTE, redirect: MENU_PATHS.overview },
   ],
 })

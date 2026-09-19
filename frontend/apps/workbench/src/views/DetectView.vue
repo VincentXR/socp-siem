@@ -13,6 +13,7 @@ import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/card/style/css.mjs'
 import 'element-plus/es/components/form/style/css.mjs'
 import 'element-plus/es/components/input/style/css.mjs'
+import 'element-plus/es/components/loading/style/css.mjs'
 import 'element-plus/es/components/select/style/css.mjs'
 import 'element-plus/es/components/switch/style/css.mjs'
 import 'element-plus/es/components/table/style/css.mjs'
@@ -21,6 +22,7 @@ import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElCard from 'element-plus/es/components/card/index.mjs'
 import { ElForm, ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
+import { vLoading } from 'element-plus/es/components/loading/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import ElSwitch from 'element-plus/es/components/switch/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
@@ -38,9 +40,14 @@ import {
   type DetectionIngestEvent, type FieldDef, type GasStats, type LateEventPolicy, type ReferenceSet, type RuleCondition, type RuleSpec, type Technique,
 } from '../api'
 import { useI18n } from '../composables/useI18n'
+import { useConfirm } from '../composables/useConfirm'
+import { useTableColumnWidths } from '../composables/useTableColumnWidths'
+import { tOr } from '../utils/i18nLabel'
 import { traceRuleConditions } from '../lib/detection-test'
 
 const { t } = useI18n()
+const { confirmDanger } = useConfirm()
+const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('detect-rules')
 const state = inject(WORKBENCH_STATE, null)
 const currentRole = computed(() => state?.currentRole.value ?? '')
 const canActivate = computed(() => ['admin', 'role_admin'].includes(currentRole.value.toLowerCase()))
@@ -80,6 +87,15 @@ const referenceLoadError = ref('')
 const techniqueLoadError = ref('')
 const actionMessage = ref('')
 const saveError = ref('')
+const saveNotice = ref('')
+/** Row-level problems per condition block, rendered inline by the builders. */
+type ConditionErrors = { match: Record<number, string>; matchAny: Record<number, Record<number, string>>; steps: Record<number, Record<number, string>>; whitelist: Record<number, string> }
+const emptyConditionErrors = (): ConditionErrors => ({ match: {}, matchAny: {}, steps: {}, whitelist: {} })
+const conditionErrors = ref<ConditionErrors>(emptyConditionErrors())
+const ruleFieldErrors = ref<Record<string, string>>({})
+const scopeSection = ref<HTMLElement>()
+const logicSection = ref<HTMLElement>()
+const alertSection = ref<HTMLElement>()
 const showRuleEditor = ref(false)
 const ruleEditingId = ref<string | null>(null)
 const sourceRule = ref<RuleSpec | null>(null)
@@ -214,7 +230,7 @@ async function syncEditorRoute() {
     return
   }
   const rule = id ? allRules.value.find(item => String(item.id) === id) : null
-  if (id && !rule) { loadError.value = 'Rule not found: ' + id; showRuleEditor.value = false; return }
+  if (id && !rule) { loadError.value = t('detect.ruleNotFound', { id }); showRuleEditor.value = false; return }
   ruleEditingId.value = rule && !route.query.copy ? String(rule.id) : null
   sourceRule.value = rule ? clone(rule) : null
   ruleForm.value = rule ? formFromRule(rule) : emptyRuleForm()
@@ -226,7 +242,8 @@ async function syncEditorRoute() {
     ruleForm.value.enabled = false
   }
   advancedJson.value = JSON.stringify(sourceRule.value ?? {}, null, 2)
-  saveError.value = ''; advancedError.value = ''
+  saveError.value = ''; advancedError.value = ''; saveNotice.value = ''
+  ruleFieldErrors.value = {}; conditionErrors.value = emptyConditionErrors()
   showRuleEditor.value = true
   changes.markSaved()
 }
@@ -235,26 +252,115 @@ async function closeRuleEditor(): Promise<void> {
   await router.push({ name: 'detect' })
 }
 
-function cleanConditions(conditions: RuleCondition[]): RuleCondition[] {
-  return conditions.map(condition => {
-    if (!condition.field?.trim() || !condition.op?.trim() || !condition.value?.trim()) throw new Error(t('forms.required'))
+/** Blank, half-typed, or usable: a row with neither field nor value is blank. */
+function conditionState(condition: RuleCondition): 'blank' | 'incomplete' | 'ok' {
+  const field = textValue(condition.field).trim()
+  const op = textValue(condition.op).trim()
+  const value = textValue(condition.value).trim()
+  if (!field && !value) return 'blank'
+  if (!field || !op || !value) return 'incomplete'
+  return 'ok'
+}
+
+function cleanConditions(conditions: RuleCondition[], errors: Record<number, string>): { rows: RuleCondition[]; blank: number; incomplete: number } {
+  const rows: RuleCondition[] = []
+  let blank = 0
+  let incomplete = 0
+  conditions.forEach((condition, index) => {
+    const state = conditionState(condition)
+    if (state === 'blank') { blank++; return }
+    if (state === 'incomplete') { incomplete++; errors[index] = t('detect.conditionIncomplete'); rows.push(condition); return }
     // Literal values can contain meaningful spaces; nested metadata belongs to
     // the condition and must survive a visual edit or an advanced JSON edit.
-    return { ...clone(condition), field: condition.field.trim(), op: condition.op.trim(), value: condition.value }
+    rows.push({ ...clone(condition), field: condition.field.trim(), op: condition.op.trim(), value: condition.value })
   })
+  return { rows, blank, incomplete }
 }
-function cleanGroups(groups: RuleCondition[][]): RuleCondition[][] {
-  return groups.map(group => {
-    if (!group.length) throw new Error(t('forms.required'))
-    return cleanConditions(group)
+
+function cleanGroups(groups: RuleCondition[][], errors: Record<number, Record<number, string>>): { groups: RuleCondition[][]; blank: number; incomplete: number } {
+  const kept: RuleCondition[][] = []
+  let blank = 0
+  let incomplete = 0
+  groups.forEach((group, groupIndex) => {
+    const rowErrors: Record<number, string> = {}
+    const result = cleanConditions(group ?? [], rowErrors)
+    blank += result.blank
+    incomplete += result.incomplete
+    if (result.incomplete) errors[groupIndex] = rowErrors
+    // A group whose rows were all blank carries no meaning; keep the payload clean.
+    if (result.rows.length) kept.push(result.rows)
   })
+  return { groups: kept, blank, incomplete }
+}
+
+type ConditionBlocks = { match: RuleCondition[]; matchAny: RuleCondition[][]; steps: RuleCondition[][]; whitelist: RuleCondition[] }
+
+/**
+ * Prunes blank rows and refuses to save half-typed conditions. Only the blocks
+ * the editor actually renders for this rule type are enforced: a correlation
+ * rule shows steps, never match/matchAny inputs.
+ */
+function checkConditions(): { blocks: ConditionBlocks; blank: number; problem: string } {
+  const correlation = ruleForm.value.type === 'correlation'
+  const errors = emptyConditionErrors()
+  const incompleteBlocks: string[] = []
+  const missingBlocks: string[] = []
+  let blank = 0
+
+  const flat = (key: 'match' | 'whitelist', label: string, rows: RuleCondition[], enforced: boolean): RuleCondition[] => {
+    const found: Record<number, string> = {}
+    const result = cleanConditions(rows, found)
+    blank += result.blank
+    if (result.incomplete && enforced) incompleteBlocks.push(label)
+    errors[key] = enforced ? found : {}
+    return result.rows
+  }
+  const nested = (key: 'matchAny' | 'steps', label: string, groups: RuleCondition[][], enforced: boolean, requireOne: boolean): RuleCondition[][] => {
+    const found: Record<number, Record<number, string>> = {}
+    const result = cleanGroups(groups, found)
+    blank += result.blank
+    if (result.incomplete && enforced) incompleteBlocks.push(label)
+    if (requireOne && !result.groups.length) missingBlocks.push(label)
+    errors[key] = enforced ? found : {}
+    return result.groups
+  }
+
+  const blocks: ConditionBlocks = {
+    match: flat('match', t('detect.allConditions'), ruleForm.value.match, !correlation),
+    matchAny: nested('matchAny', t('detect.anyConditionGroup'), ruleForm.value.matchAny, !correlation, false),
+    steps: nested('steps', t('detect.correlationSteps'), ruleForm.value.steps, correlation, correlation),
+    whitelist: flat('whitelist', t('detect.editor.whitelist'), ruleForm.value.whitelist, true),
+  }
+  conditionErrors.value = errors
+
+  const messages: string[] = []
+  if (incompleteBlocks.length) messages.push(`${t('detect.conditionIncomplete')} ${[...new Set(incompleteBlocks)].join('、')}`)
+  // A correlation rule without a single step has nothing to correlate; the
+  // section already explains that requirement next to the empty list.
+  if (missingBlocks.length) messages.push(t('detect.addStepHint'))
+  return { blocks, blank, problem: messages.join(' · ') }
+}
+
+function focusFirstProblemSection(): void {
+  const element = ruleFieldErrors.value.name ? scopeSection.value
+    : Object.keys(conditionErrors.value.match).length || Object.keys(conditionErrors.value.matchAny).length || Object.keys(conditionErrors.value.steps).length ? logicSection.value
+      : Object.keys(conditionErrors.value.whitelist).length ? alertSection.value
+        : undefined
+  if (element && typeof element.scrollIntoView === 'function') element.scrollIntoView({ block: 'center' })
+}
+
+/** A draft with unusable conditions cannot be dry-run either. */
+function draftConditions(): ConditionBlocks {
+  const checked = checkConditions()
+  if (checked.problem) throw new Error(checked.problem)
+  return checked.blocks
 }
 function setOptional(target: Record<string, unknown>, key: string, value: unknown): void {
   if (value === null || value === undefined || (typeof value === 'string' && !value.trim())) delete target[key]
   else target[key] = value
 }
 
-function buildRuleSpec(): Partial<RuleSpec> {
+function buildRuleSpec(conditions: ConditionBlocks): Partial<RuleSpec> {
   const spec = (sourceRule.value ? clone(sourceRule.value) : {}) as Record<string, unknown>
   spec.name = ruleForm.value.name.trim(); spec.type = ruleForm.value.type; spec.severity = ruleForm.value.severity
   setOptional(spec, 'message', ruleForm.value.message); setOptional(spec, 'window', ruleForm.value.window); setOptional(spec, 'keyField', ruleForm.value.keyField)
@@ -276,7 +382,7 @@ function buildRuleSpec(): Partial<RuleSpec> {
   const alert = (spec.alert && typeof spec.alert === 'object' ? clone(spec.alert) : {}) as Record<string, unknown>
   setOptional(alert, 'title', ruleForm.value.alertTitle); setOptional(alert, 'description', ruleForm.value.alertDescription)
   if (Object.keys(alert).length) spec.alert = alert; else delete spec.alert
-  spec.match = cleanConditions(ruleForm.value.match); spec.matchAny = cleanGroups(ruleForm.value.matchAny); spec.steps = cleanGroups(ruleForm.value.steps); spec.whitelist = cleanConditions(ruleForm.value.whitelist)
+  spec.match = conditions.match; spec.matchAny = conditions.matchAny; spec.steps = conditions.steps; spec.whitelist = conditions.whitelist
   delete spec.allowlist
 
   // Lifecycle transitions are separate operations. An edit cannot promote a
@@ -294,15 +400,29 @@ function buildRuleSpec(): Partial<RuleSpec> {
 async function saveRule(): Promise<void> {
   if (!canManageRules.value) return
   saveError.value = ''
-  if (!ruleForm.value.name.trim()) { saveError.value = t('detect.nameRequired'); return }
+  saveNotice.value = ''
+  ruleFieldErrors.value = {}
+  if (!ruleForm.value.name.trim()) {
+    ruleFieldErrors.value.name = t('forms.fieldRequired', { field: t('common.name') })
+    saveError.value = t('detect.nameRequired')
+    focusFirstProblemSection()
+    return
+  }
+  const checked = checkConditions()
+  if (checked.problem) {
+    saveError.value = checked.problem
+    focusFirstProblemSection()
+    return
+  }
   saving.value = true
   try {
-    const spec = buildRuleSpec()
+    const spec = buildRuleSpec(checked.blocks)
     const saved = ruleEditingId.value ? await updateGasRule(ruleEditingId.value, spec) : await createGasRule(spec)
     const normalized = normalizeRuleSpec(saved)
     if (normalized) { ruleEditingId.value = String(normalized.id); sourceRule.value = clone(normalized); ruleForm.value = formFromRule(normalized); advancedJson.value = JSON.stringify(normalized, null, 2) }
     changes.markSaved()
     await loadRules()
+    if (checked.blank) saveNotice.value = t('detect.ignoredEmptyConditions', { count: checked.blank })
     if (ruleEditingId.value) await router.replace({ name: 'rule-edit', params: { ruleId: ruleEditingId.value } })
   } catch (error) {
     saveError.value = t('detect.saveFailed', { message: error instanceof Error ? error.message : String(error) })
@@ -349,7 +469,7 @@ async function removeRule(row: unknown): Promise<void> {
     actionMessage.value = t('detect.disableBeforeDelete')
     return
   }
-  if (!confirm(t('detect.deleteRuleConfirm'))) return
+  if (!await confirmDanger(t('detect.deleteRuleConfirm'))) return
   try { await deleteGasRule(String(rule.id)); await loadRules() }
   catch (error) { actionMessage.value = error instanceof Error ? error.message : String(error) }
 }
@@ -379,23 +499,17 @@ function statusTag(status: string): 'success' | 'warning' | 'danger' | 'info' | 
 }
 function lifecycleStatusLabel(status: string): string {
   const value = String(status ?? '')
-  if (!value) return ''
-  const key = 'detect.status.' + value
-  const translated = t(key)
-  return translated === key ? value : translated
+  return value ? tOr(t, 'detect.status.' + value, value) : ''
 }
 function typeLabel(type: string): string {
   const value = String(type ?? '')
   if (!value) return ''
-  const key = 'detect.ruleTypes.' + value
-  const translated = t(key)
-  if (translated !== key) return translated
+  const translated = tOr(t, 'detect.ruleTypes.' + value, '')
+  if (translated) return translated
   return ADVANCED_TYPES.includes(value) ? `${value} · ${t('detect.advancedType')}` : value
 }
 function testStateLabel(state: RuleTestTrace['state']): string {
-  const key = 'detect.testStates.' + state
-  const translated = t(key)
-  return translated === key ? state : translated
+  return tOr(t, 'detect.testStates.' + state, state)
 }
 function conditionScopeLabel(scope?: string): string {
   if (!scope) return ''
@@ -420,7 +534,7 @@ async function runIsolatedTest(): Promise<void> {
       msg: testInput.value.message, fields,
     }]
     if (!Array.isArray(events) || !events.length || events.length > 100) throw new Error(t('detect.sampleLimit'))
-    const selected = showRuleEditor.value ? [{ ...buildRuleSpec(), id: ruleEditingId.value || 'dry-run-draft' }]
+    const selected = showRuleEditor.value ? [{ ...buildRuleSpec(draftConditions()), id: ruleEditingId.value || 'dry-run-draft' }]
       : testRuleId.value ? rules.value.filter(rule => String(rule.id) === testRuleId.value) : rules.value
     if (!selected.length || selected.length > 20) throw new Error(t('detect.ruleTestLimit'))
     const result = await testGasRules(selected, events)
@@ -469,31 +583,30 @@ onMounted(async () => { await loadRules(); await syncEditorRoute() })
 
     <section v-if="showRuleEditor" class="detect-editor-workspace" :class="{ 'detect-editor-readonly': !canManageRules }">
       <div class="workspace-section-head"><div><div class="page-eyebrow">{{ t('detect.editorEyebrow') }}</div><h2>{{ ruleEditingId ? t('detect.editor.editRule') : t('detect.createRule') }}</h2><p>{{ t('detect.editorHint') }}</p></div><div class="workspace-section-actions"><el-tag v-if="ruleEditingId" :type="statusTag(ruleForm.status)" size="small">{{ lifecycleStatusLabel(ruleForm.status) }}</el-tag><el-button size="small" @click="closeRuleEditor">{{ t('common.cancel') }}</el-button></div></div>
-      <div v-if="saveError" class="detect-feedback error" role="alert">{{ saveError }}</div>
       <el-form label-position="top" class="detect-editor-form" :disabled="!canManageRules">
-        <section class="detect-form-section"><div class="detect-form-section-title"><span>01</span><div><h3>{{ t('detect.dataScope') }}</h3><p>{{ t('detect.dataScopeHint') }}</p></div></div><div class="detect-form-grid"><el-form-item :label="t('common.name')" required><el-input v-model="ruleForm.name" :placeholder="t('detect.editor.namePlaceholder')" /></el-form-item><el-form-item :label="t('common.type')"><el-select v-model="ruleForm.type"><el-option v-if="rawOnlyRuleType" :label="typeLabel(ruleForm.type)" :value="ruleForm.type" /><el-option v-for="type in RULE_TYPES" :key="type" :label="typeLabel(type)" :value="type" /></el-select></el-form-item><el-form-item :label="t('common.severity')"><el-select v-model="ruleForm.severity"><el-option v-for="severity in SEVERITIES" :key="severity" :label="t('severities.' + severity) || severity" :value="severity" /></el-select></el-form-item><el-form-item :label="t('detect.editor.window')"><el-input v-model="ruleForm.window" :placeholder="t('detect.editor.windowPlaceholder')" /></el-form-item></div></section>
+        <section ref="scopeSection" class="detect-form-section"><div class="detect-form-section-title"><span>01</span><div><h3>{{ t('detect.dataScope') }}</h3><p>{{ t('detect.dataScopeHint') }}</p></div></div><div class="detect-form-grid"><el-form-item :label="t('common.name')" required :error="ruleFieldErrors.name"><el-input v-model="ruleForm.name" :placeholder="t('detect.editor.namePlaceholder')" /></el-form-item><el-form-item :label="t('common.type')"><el-select v-model="ruleForm.type"><el-option v-if="rawOnlyRuleType" :label="typeLabel(ruleForm.type)" :value="ruleForm.type" /><el-option v-for="type in RULE_TYPES" :key="type" :label="typeLabel(type)" :value="type" /></el-select></el-form-item><el-form-item :label="t('common.severity')"><el-select v-model="ruleForm.severity"><el-option v-for="severity in SEVERITIES" :key="severity" :label="tOr(t, 'severities.' + severity, severity)" :value="severity" /></el-select></el-form-item><el-form-item :label="t('detect.editor.window')"><el-input v-model="ruleForm.window" :placeholder="t('detect.editor.windowPlaceholder')" /></el-form-item></div></section>
 
-        <section class="detect-form-section">
+        <section ref="logicSection" class="detect-form-section">
           <div class="detect-form-section-title"><span>02</span><div><h3>{{ t('detect.detectionLogic') }}</h3><p>{{ t('detect.detectionLogicHint') }}</p></div></div>
           <template v-if="ruleForm.type === 'correlation'">
             <div class="condition-block">
               <div class="condition-block-head"><b>{{ t('detect.correlationSteps') }}</b><el-button v-if="canManageRules" size="small" plain @click="addStep">{{ t('detect.addStep') }}</el-button></div>
               <div v-for="(step, stepIndex) in ruleForm.steps" :key="stepIndex" class="condition-group">
                 <div class="condition-group-head"><span>{{ t('detect.step') }} {{ stepIndex + 1 }}</span><el-button v-if="canManageRules && ruleForm.steps.length > 1" link type="danger" size="small" @click="ruleForm.steps.splice(stepIndex, 1)">{{ t('common.delete') }}</el-button></div>
-                <FieldConditionBuilder v-model="ruleForm.steps[stepIndex]" :read-only="!canManageRules" :fields="fieldDefs" :reference-sets="referenceSets" :add-label="t('detect.addCondition')" :empty-hint="t('detect.noConditions')" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" />
+                <FieldConditionBuilder v-model="ruleForm.steps[stepIndex]" :read-only="!canManageRules" :errors="conditionErrors.steps[stepIndex]" :fields="fieldDefs" :reference-sets="referenceSets" :add-label="t('detect.addCondition')" :empty-hint="t('detect.noConditions')" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" />
               </div>
               <EmptyState v-if="!ruleForm.steps.length" :title="t('detect.noSteps')" :description="t('detect.addStepHint')" />
             </div>
           </template>
           <template v-else>
             <div class="condition-block">
-              <FieldConditionBuilder v-model="ruleForm.match" :read-only="!canManageRules" :title="t('detect.allConditions')" :add-label="t('detect.addCondition')" :empty-hint="t('detect.noConditions')" :fields="fieldDefs" :reference-sets="referenceSets" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" />
+              <FieldConditionBuilder v-model="ruleForm.match" :read-only="!canManageRules" :errors="conditionErrors.match" :title="t('detect.allConditions')" :add-label="t('detect.addCondition')" :empty-hint="t('detect.noConditions')" :fields="fieldDefs" :reference-sets="referenceSets" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" />
             </div>
             <div class="condition-block">
               <div class="condition-block-head"><b>{{ t('detect.anyConditionGroup') }}</b><el-button v-if="canManageRules" size="small" plain @click="addMatchAnyGroup">{{ t('detect.addGroup') }}</el-button></div>
               <div v-for="(group, groupIndex) in ruleForm.matchAny" :key="groupIndex" class="condition-group">
                 <div class="condition-group-head"><span>{{ t('detect.conditionGroup') }} {{ groupIndex + 1 }}</span><el-button v-if="canManageRules" link type="danger" size="small" @click="ruleForm.matchAny.splice(groupIndex, 1)">{{ t('common.delete') }}</el-button></div>
-                <FieldConditionBuilder v-model="ruleForm.matchAny[groupIndex]" :read-only="!canManageRules" :fields="fieldDefs" :reference-sets="referenceSets" :add-label="t('detect.addCondition')" :empty-hint="t('detect.noConditions')" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" />
+                <FieldConditionBuilder v-model="ruleForm.matchAny[groupIndex]" :read-only="!canManageRules" :errors="conditionErrors.matchAny[groupIndex]" :fields="fieldDefs" :reference-sets="referenceSets" :add-label="t('detect.addCondition')" :empty-hint="t('detect.noConditions')" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" />
               </div>
               <p v-if="!ruleForm.matchAny.length" class="form-hint">{{ t('detect.noAnyGroupHint') }}</p>
             </div>
@@ -507,12 +620,14 @@ onMounted(async () => { await loadRules(); await syncEditorRoute() })
           </div>
         </section>
 
-        <section class="detect-form-section"><div class="detect-form-section-title"><span>03</span><div><h3>{{ t('detect.alertContent') }}</h3><p>{{ t('detect.alertContentHint') }}</p></div></div><div class="detect-form-grid"><el-form-item :label="t('detect.editor.alertTitle')"><el-input v-model="ruleForm.alertTitle" :placeholder="t('detect.editor.alertTitlePlaceholder')" /></el-form-item><el-form-item :label="t('detect.editor.alertDescription')"><el-input v-model="ruleForm.alertDescription" :placeholder="t('detect.editor.alertDescriptionPlaceholder')" /></el-form-item><el-form-item :label="t('detect.compatMessage')"><el-input v-model="ruleForm.message" /></el-form-item><el-form-item :label="t('detect.mitre')"><el-select v-model="ruleForm.mitre" filterable default-first-option clearable placeholder="T1110"><el-option v-if="ruleForm.mitre && !techniques.some(item => item.id === ruleForm.mitre)" :label="ruleForm.mitre + ' (custom)'" :value="ruleForm.mitre" /><el-option v-for="technique in techniques" :key="technique.id" :label="`${technique.id} · ${technique.name}`" :value="technique.id" /></el-select><span v-if="techniqueLoadError" class="form-hint">{{ t('detect.fieldCatalogFallback') }}</span></el-form-item></div><div class="condition-block"><FieldConditionBuilder v-model="ruleForm.whitelist" :read-only="!canManageRules" :title="t('detect.editor.whitelist')" :add-label="t('detect.editor.addWhitelist')" :empty-hint="t('detect.noWhitelistHint')" :fields="fieldDefs" :reference-sets="referenceSets" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" /></div></section>
+        <section ref="alertSection" class="detect-form-section"><div class="detect-form-section-title"><span>03</span><div><h3>{{ t('detect.alertContent') }}</h3><p>{{ t('detect.alertContentHint') }}</p></div></div><div class="detect-form-grid"><el-form-item :label="t('detect.editor.alertTitle')"><el-input v-model="ruleForm.alertTitle" :placeholder="t('detect.editor.alertTitlePlaceholder')" /></el-form-item><el-form-item :label="t('detect.editor.alertDescription')"><el-input v-model="ruleForm.alertDescription" :placeholder="t('detect.editor.alertDescriptionPlaceholder')" /></el-form-item><el-form-item :label="t('detect.compatMessage')"><el-input v-model="ruleForm.message" /></el-form-item><el-form-item :label="t('detect.mitre')"><el-select v-model="ruleForm.mitre" filterable default-first-option clearable placeholder="T1110"><el-option v-if="ruleForm.mitre && !techniques.some(item => item.id === ruleForm.mitre)" :label="ruleForm.mitre + ' (custom)'" :value="ruleForm.mitre" /><el-option v-for="technique in techniques" :key="technique.id" :label="`${technique.id} · ${technique.name}`" :value="technique.id" /></el-select><span v-if="techniqueLoadError" class="form-hint">{{ t('detect.fieldCatalogFallback') }}</span></el-form-item></div><div class="condition-block"><FieldConditionBuilder v-model="ruleForm.whitelist" :read-only="!canManageRules" :errors="conditionErrors.whitelist" :title="t('detect.editor.whitelist')" :add-label="t('detect.editor.addWhitelist')" :empty-hint="t('detect.noWhitelistHint')" :fields="fieldDefs" :reference-sets="referenceSets" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" /></div></section>
 
         <section class="detect-form-section"><div class="detect-form-section-title"><span>04</span><div><h3>{{ t('detect.advancedFields') }}</h3><p>{{ t('detect.advancedFieldsHint') }}</p></div></div><div v-if="ADVANCED_TYPES.includes(ruleForm.type) || rawOnlyRuleType" class="detect-advanced-warning"><b>{{ t('detect.advancedType') }}</b><span>{{ t('detect.advancedTypeHint') }}</span></div><div class="detect-form-grid compact-grid"><el-form-item :label="t('detect.routingField')"><el-select v-model="ruleForm.routingField" disabled :placeholder="t('detect.fieldPlaceholder')"><el-option v-if="ruleForm.routingField && !fieldDefs.some(field => field.fieldName === ruleForm.routingField)" :label="ruleForm.routingField" :value="ruleForm.routingField" /><el-option v-for="field in fieldDefs" :key="field.fieldName" :label="field.fieldName" :value="field.fieldName" /></el-select><span class="form-hint">{{ t('detect.routingField') }} = {{ t('detect.groupBy') }}</span></el-form-item><el-form-item v-if="STATEFUL_TYPES.includes(ruleForm.type)" :label="t('detect.allowedLateness')"><el-input v-model="ruleForm.lateAllowedLateness" :placeholder="t('detect.allowedLatenessPlaceholder')" /></el-form-item><el-form-item v-if="STATEFUL_TYPES.includes(ruleForm.type)" :label="t('detect.lateHandling')"><el-select v-model="ruleForm.lateHandling"><el-option :label="t('detect.lateHandlingDrop')" value="DROP" /><el-option :label="t('detect.lateHandlingAccept')" value="ACCEPT" /></el-select></el-form-item><el-form-item v-if="ruleForm.type === 'baseline'" :label="t('detect.warmup')"><el-input v-model.number="ruleForm.warmup" type="number" min="1" /></el-form-item><el-form-item v-if="ruleForm.type === 'baseline'" :label="t('detect.baselineWindows')"><el-input v-model.number="ruleForm.baselineWindows" type="number" min="1" /></el-form-item><el-form-item v-if="ruleForm.type === 'baseline'" :label="t('detect.sigma')"><el-input v-model.number="ruleForm.sigma" type="number" min="0" max="100" /></el-form-item><el-form-item :label="t('detect.ruleVersion')"><el-input v-model="ruleForm.version" /></el-form-item><el-form-item :label="t('detect.owner')"><el-select v-model="ruleForm.owner" filterable default-first-option allow-create clearable :placeholder="t('detect.ownerPlaceholder')"><el-option v-for="owner in ownerOptions" :key="owner" :label="owner" :value="owner" /></el-select></el-form-item><el-form-item :label="t('detect.contentPack')"><el-input v-model="ruleForm.contentPack" /></el-form-item><el-form-item :label="t('detect.contentVersion')"><el-input v-model="ruleForm.contentVersion" /></el-form-item></div><details class="advanced-json"><summary>{{ t('detect.rawRuleJson') }}</summary><p>{{ t('detect.rawRuleJsonHint') }}</p><textarea v-model="advancedJson" :readonly="!canManageRules" rows="12" spellcheck="false" /><div v-if="advancedError" class="detect-feedback error">{{ advancedError }}</div><el-button v-if="canManageRules" size="small" @click="applyAdvancedJson">{{ t('detect.applyRawJson') }}</el-button></details></section>
 
         <section class="detect-form-section lifecycle-section"><div class="detect-form-section-title"><span>05</span><div><h3>{{ t('detect.testAndRelease') }}</h3><p>{{ t('detect.testAndReleaseHint') }}</p></div></div><div class="lifecycle-row"><div><span class="form-label">{{ t('detect.ruleStatus') }}</span><el-tag :type="statusTag(ruleForm.status)" size="small">{{ lifecycleStatusLabel(ruleForm.status) }}</el-tag><span class="form-hint inline-hint">{{ ruleEditingId ? t('detect.lifecycleReadOnly') : t('detect.newRuleTesting') }}</span></div><div class="lifecycle-toggle"><span>{{ t('detect.executionToggle') }}</span><el-switch v-model="ruleForm.enabled" :disabled="!ruleEditingId || ruleForm.status !== 'ACTIVE'" /></div></div></section>
       </el-form>
+      <div v-if="saveError" class="detect-feedback error detect-save-feedback" role="alert">{{ saveError }}</div>
+      <div v-if="!saveError && saveNotice" class="detect-feedback notice" role="status">{{ saveNotice }}</div>
       <div class="detect-editor-footer"><el-button v-if="canManageRules" @click="showTest = true">{{ t('forms.test') }}</el-button><el-button @click="closeRuleEditor">{{ t('common.cancel') }}</el-button><el-button v-if="canManageRules" type="primary" :loading="saving" @click="saveRule">{{ t('common.save') }}</el-button></div>
     </section>
 
@@ -523,7 +638,7 @@ onMounted(async () => { await loadRules(); await syncEditorRoute() })
         <div class="detect-test-form">
           <label>{{ t('detect.testRule') }}<el-select v-model="testRuleId" clearable :placeholder="t('detect.allRules')"><el-option :label="t('detect.allRules')" value="" /><el-option v-for="rule in rules" :key="rule.id" :label="rule.name" :value="String(rule.id)" /></el-select></label>
           <label>{{ t('common.source') }}<el-input v-model="testInput.source" /></label><label>{{ t('common.host') }}<el-input v-model="testInput.host" /></label>
-          <label>{{ t('common.severity') }}<el-select v-model="testInput.severity"><el-option v-for="severity in SEVERITIES" :key="severity" :label="t('severities.' + severity) || severity" :value="severity" /></el-select></label>
+          <label>{{ t('common.severity') }}<el-select v-model="testInput.severity"><el-option v-for="severity in SEVERITIES" :key="severity" :label="tOr(t, 'severities.' + severity, severity)" :value="severity" /></el-select></label>
           <label class="full-width">{{ t('detect.testMessage') }}<el-input v-model="testInput.message" /></label><label class="full-width">{{ t('detect.testFields') }}<el-input v-model="testInput.fieldsText" type="textarea" :rows="4" spellcheck="false" /></label>
           <details class="full-width"><summary>{{ t('detect.sampleSequence') }}</summary><el-input v-model="sampleEventsText" type="textarea" :rows="5" placeholder='[{"timestamp":"2026-01-01T00:00:00Z","source":"auth","msg":"Failed password","fields":{}}]' /></details>
           <p v-if="showRuleEditor" class="full-width form-hint">{{ t('detect.testingDraft') }}</p>
@@ -538,7 +653,7 @@ onMounted(async () => { await loadRules(); await syncEditorRoute() })
       </div>
     </section>
     </el-drawer>
-    <section v-if="!showRuleEditor" class="detect-list-section"><el-input v-model="ruleKeyword" :placeholder="t('forms.search')" clearable style="margin-bottom:12px" /><div class="workspace-section-head list-head"><div><h2>{{ t('detect.rules') }}</h2><p>{{ t('detect.lifecycleHint') }}</p></div><span class="toolbar-count">{{ t('common.total', { total: rules.length }) }}</span></div><el-card shadow="never" class="detect-table-card"><el-table :data="rules" size="small" row-key="id"><el-table-column prop="name" :label="t('common.name')" min-width="180" show-overflow-tooltip /><el-table-column prop="type" :label="t('common.type')" width="150"><template #default="{ row }"><span>{{ typeLabel(row.type) }}</span></template></el-table-column><el-table-column prop="severity" :label="t('common.severity')" width="110"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column><el-table-column :label="t('detect.matchingConditions')" min-width="260" show-overflow-tooltip><template #default="{ row }"><span v-if="row.match?.length" class="mono">{{ row.match.map((condition: RuleCondition) => `${condition.field} ${condition.op} ${condition.value}`).join(' AND ') }}</span><span v-else-if="row.steps?.length">{{ t('detect.stepCount', { count: row.steps.length }) }}</span><span v-else>—</span></template></el-table-column><el-table-column :label="t('detect.ruleStatus')" width="110"><template #default="{ row }"><el-tag :type="statusTag(ruleStatus(row))" size="small">{{ lifecycleStatusLabel(ruleStatus(row)) }}</el-tag></template></el-table-column><el-table-column :label="t('common.actions')" width="250" fixed="right"><template #default="{ row }"><el-button v-if="canManageRules" link type="primary" size="small" @click="openRuleEditor(row)">{{ t('common.edit') }}</el-button><el-button v-if="canManageRules && ['DRAFT', 'TESTING'].includes(ruleStatus(row))" link size="small" @click="testSingleRule(row)">{{ t('detect.testRule') }}</el-button><el-button v-if="canActivate && ruleStatus(row) === 'ACTIVE'" link size="small" @click="toggleRule(row)">{{ t('common.disable') }}</el-button><el-button v-if="canActivate && ['DISABLED', 'DRAFT', 'TESTING'].includes(ruleStatus(row))" link size="small" @click="toggleRule(row)">{{ t('common.enable') }}</el-button><el-button v-if="canManageRules && ruleStatus(row) !== 'ARCHIVED'" link size="small" @click="copyRuleAsDraft(row)">{{ t('common.copy') }}</el-button><el-button v-if="canManageRules && ['DRAFT', 'DISABLED'].includes(ruleStatus(row))" link type="danger" size="small" @click="removeRule(row)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table><EmptyState v-if="!loading && !rules.length" :title="t('detect.noRules')" :description="t('detect.noRulesHint')" /><div v-if="loading" class="detect-loading">{{ t('common.loading') }}</div></el-card></section>
+    <section v-if="!showRuleEditor" class="detect-list-section"><el-input v-model="ruleKeyword" :placeholder="t('forms.search')" clearable style="margin-bottom:12px" /><div class="workspace-section-head list-head"><div><h2>{{ t('detect.rules') }}</h2><p>{{ t('detect.lifecycleHint') }}</p></div><span class="toolbar-count">{{ t('common.total', { total: rules.length }) }}</span></div><el-card shadow="never" class="detect-table-card"><el-table v-loading="loading" :data="rules" size="small" row-key="id" border allow-drag-last-column @header-dragend="onHeaderDragEnd"><el-table-column prop="name" column-key="name" :label="t('common.name')" :width="columnWidth('name')" min-width="180" show-overflow-tooltip /><el-table-column prop="type" column-key="type" :label="t('common.type')" :width="columnWidth('type', 150)"><template #default="{ row }"><span>{{ typeLabel(row.type) }}</span></template></el-table-column><el-table-column prop="severity" column-key="severity" :label="t('common.severity')" :width="columnWidth('severity', 110)"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column><el-table-column column-key="match" :label="t('detect.matchingConditions')" :width="columnWidth('match')" min-width="260" show-overflow-tooltip><template #default="{ row }"><span v-if="row.match?.length" class="mono">{{ row.match.map((condition: RuleCondition) => `${condition.field} ${condition.op} ${condition.value}`).join(' AND ') }}</span><span v-else-if="row.steps?.length">{{ t('detect.stepCount', { count: row.steps.length }) }}</span><span v-else>—</span></template></el-table-column><el-table-column column-key="status" :label="t('detect.ruleStatus')" :width="columnWidth('status', 110)"><template #default="{ row }"><el-tag :type="statusTag(ruleStatus(row))" size="small">{{ lifecycleStatusLabel(ruleStatus(row)) }}</el-tag></template></el-table-column><el-table-column :label="t('common.actions')" width="250" fixed="right" :resizable="false"><template #default="{ row }"><el-button v-if="canManageRules" link type="primary" size="small" @click="openRuleEditor(row)">{{ t('common.edit') }}</el-button><el-button v-if="canManageRules && ['DRAFT', 'TESTING'].includes(ruleStatus(row))" link size="small" @click="testSingleRule(row)">{{ t('detect.testRule') }}</el-button><el-button v-if="canActivate && ruleStatus(row) === 'ACTIVE'" link size="small" @click="toggleRule(row)">{{ t('common.disable') }}</el-button><el-button v-if="canActivate && ['DISABLED', 'DRAFT', 'TESTING'].includes(ruleStatus(row))" link size="small" @click="toggleRule(row)">{{ t('common.enable') }}</el-button><el-button v-if="canManageRules && ruleStatus(row) !== 'ARCHIVED'" link size="small" @click="copyRuleAsDraft(row)">{{ t('common.copy') }}</el-button><el-button v-if="canManageRules && ['DRAFT', 'DISABLED'].includes(ruleStatus(row))" link type="danger" size="small" @click="removeRule(row)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table><EmptyState v-if="!loading && !rules.length" :title="t('detect.noRules')" :description="t('detect.noRulesHint')" /></el-card></section>
   </div>
 </template>
 
@@ -546,11 +661,12 @@ onMounted(async () => { await loadRules(); await syncEditorRoute() })
 .detect-view { display: flex; flex-direction: column; gap: 16px; }
 .detect-stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .detect-stat { display: flex; flex-direction: column; gap: 8px; }.detect-stat span, .workspace-section-head p, .detect-form-section-title p, .form-hint { color: var(--ns-text-3); font-size: 12px; }.detect-stat b { color: var(--ns-text); font-size: 26px; line-height: 1; font-variant-numeric: tabular-nums; }.danger-text { color: var(--ns-danger) !important; }
-.detect-feedback { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-radius: var(--ns-radius-md); font-size: 12px; }.detect-feedback span { overflow-wrap: anywhere; }.detect-feedback.error { color: var(--ns-danger); border: 1px solid color-mix(in srgb, var(--ns-danger) 28%, var(--ns-border)); background: color-mix(in srgb, var(--ns-danger) 7%, var(--ns-surface)); }
+.detect-feedback { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-radius: var(--ns-radius-md); font-size: 12px; }.detect-feedback span { overflow-wrap: anywhere; }.detect-feedback.error { color: var(--ns-danger); border: 1px solid color-mix(in srgb, var(--ns-danger) 28%, var(--ns-border)); background: color-mix(in srgb, var(--ns-danger) 7%, var(--ns-surface)); }.detect-feedback.notice { color: var(--ns-warning); border: 1px solid color-mix(in srgb, var(--ns-warning) 28%, var(--ns-border)); background: color-mix(in srgb, var(--ns-warning) 7%, var(--ns-surface)); }
+.detect-save-feedback, .detect-feedback.notice { margin: 14px 0 0; overflow-wrap: anywhere; }
 .detect-test-workspace, .detect-editor-workspace, .detect-list-section { min-width: 0; }.detect-test-workspace, .detect-editor-workspace { padding: 18px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-md); background: var(--ns-surface); }.workspace-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }.workspace-section-head h2 { margin: 0; color: var(--ns-text); font-size: 17px; font-weight: 650; }.workspace-section-head p { margin: 5px 0 0; line-height: 1.5; }
 .detect-test-grid { display: grid; grid-template-columns: minmax(360px, .9fr) minmax(0, 1.1fr); gap: 18px; }.detect-test-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-content: start; }.detect-test-form label, .lifecycle-row > div { display: flex; flex-direction: column; gap: 5px; color: var(--ns-text-2); font-size: 12px; }.detect-test-form label .el-input, .detect-test-form label .el-select { width: 100%; }.full-width { grid-column: 1 / -1; }.detect-test-actions { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; margin-top: 3px; }.detect-test-actions span { color: var(--ns-text-3); font-size: 11px; }.detect-test-result { min-width: 0; min-height: 270px; padding: 12px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-sm); background: var(--ns-bg-subtle); }.detect-test-result :deep(.empty-state) { padding: 42px 16px; }
 .test-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; color: var(--ns-text-2); font-size: 12px; }.test-trace { margin-bottom: 8px; padding: 10px; border: 1px solid var(--ns-border); border-left: 3px solid var(--ns-info); border-radius: var(--ns-radius-sm); background: var(--ns-surface); }.test-trace.matched { border-left-color: var(--ns-success); }.test-trace.candidate { border-left-color: var(--ns-warning); }.test-trace-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }.test-trace-head > div { min-width: 0; }.test-trace-head b, .test-trace-head .mono { display: block; }.test-trace-head b { color: var(--ns-text); }.test-trace-head .mono { margin-top: 2px; color: var(--ns-text-3); font-size: 10px; }.test-trace p { margin: 5px 0 8px; color: var(--ns-text-2); font-size: 11px; }.test-condition-list { display: grid; gap: 4px; }.test-condition-head { display: grid; grid-template-columns: minmax(0, 1fr) minmax(55px, .5fr); gap: 5px; color: var(--ns-text-3); font-size: 10px; font-weight: 600; }.test-condition { display: grid; grid-template-columns: 16px minmax(0, 1fr) minmax(55px, .5fr); gap: 5px; align-items: center; color: var(--ns-text-3); font-size: 10px; }.test-condition.matched { color: var(--ns-text-2); }.condition-mark { font-weight: 700; color: var(--ns-danger); }.test-condition.matched .condition-mark { color: var(--ns-success); }.test-condition-expression { min-width: 0; }.test-condition-expression small { display: block; margin-bottom: 2px; color: var(--ns-text-3); font-size: 9px; }.test-condition .mono { overflow-wrap: anywhere; }.test-no-condition { color: var(--ns-text-3); font-size: 11px; }
-.detect-editor-workspace { padding-bottom: 0; }.workspace-section-actions { display: flex; align-items: center; gap: 8px; }.detect-editor-form { display: flex; flex-direction: column; gap: 12px; }.detect-form-section { padding: 16px 0; border-top: 1px solid var(--ns-border); }.detect-form-section:first-child { border-top: 0; padding-top: 0; }.detect-form-section-title { display: flex; gap: 10px; margin-bottom: 14px; }.detect-form-section-title > span { color: var(--ns-accent-fg); font-family: var(--ns-font-mono); font-size: 11px; font-weight: 700; }.detect-form-section-title h3 { margin: 0; color: var(--ns-text); font-size: 14px; font-weight: 650; }.detect-form-section-title p { margin: 4px 0 0; }.detect-form-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 12px; }.compact-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }.detect-form-grid :deep(.el-form-item) { margin-bottom: 0; }.detect-form-grid :deep(.el-select), .detect-form-grid :deep(.el-input) { width: 100%; }.condition-block { margin-top: 10px; padding: 11px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-sm); background: var(--ns-bg-subtle); }.condition-block-head, .condition-group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }.condition-block-head b { color: var(--ns-text-2); font-size: 12px; }.condition-group { margin-top: 8px; padding: 9px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-sm); background: var(--ns-surface); }.condition-group-head { margin-bottom: 6px; color: var(--ns-text-3); font-size: 11px; }.condition-row { display: grid; grid-template-columns: minmax(140px, .85fr) 130px minmax(140px, 1fr) auto; gap: 6px; align-items: center; margin-bottom: 6px; }.condition-row :deep(.el-input), .condition-row :deep(.el-select) { width: 100%; }.form-hint { margin: 8px 0 0; line-height: 1.5; }.inline-hint { margin-left: 8px; }.detect-advanced-warning { display: flex; gap: 8px; align-items: baseline; margin-bottom: 12px; padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--ns-warning) 30%, var(--ns-border)); border-radius: var(--ns-radius-sm); background: color-mix(in srgb, var(--ns-warning) 8%, var(--ns-surface)); font-size: 12px; }.detect-advanced-warning b { color: var(--ns-warning); }.detect-advanced-warning span { color: var(--ns-text-2); }.advanced-json { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--ns-border); }.advanced-json summary { color: var(--ns-text-2); cursor: pointer; font-size: 12px; font-weight: 600; }.advanced-json p { color: var(--ns-text-3); font-size: 11px; }.advanced-json textarea { display: block; width: 100%; box-sizing: border-box; margin: 8px 0; padding: 10px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-sm); background: var(--ns-bg-inset); color: var(--ns-text); font: 11px/1.5 var(--ns-font-mono); resize: vertical; }.lifecycle-section { padding-bottom: 18px; }.lifecycle-row { display: flex; justify-content: space-between; gap: 16px; align-items: center; }.lifecycle-row > div { flex-direction: row; align-items: center; }.form-label { color: var(--ns-text-2); font-size: 12px; }.lifecycle-toggle { white-space: nowrap; }.detect-editor-footer { position: sticky; bottom: 0; z-index: 5; background: var(--ns-surface); display: flex; justify-content: flex-end; gap: 8px; padding: 14px 0 0; border-top: 1px solid var(--ns-border); }.detect-list-section { padding-top: 2px; }.list-head { align-items: center; margin-bottom: 10px; }.toolbar-count { color: var(--ns-text-3); font-size: 12px; }.detect-table-card .el-card__body { padding: 0; }.detect-loading { padding: 20px; color: var(--ns-text-3); text-align: center; font-size: 12px; }
+.detect-editor-workspace { padding-bottom: 0; }.workspace-section-actions { display: flex; align-items: center; gap: 8px; }.detect-editor-form { display: flex; flex-direction: column; gap: 12px; }.detect-form-section { padding: 16px 0; border-top: 1px solid var(--ns-border); }.detect-form-section:first-child { border-top: 0; padding-top: 0; }.detect-form-section-title { display: flex; gap: 10px; margin-bottom: 14px; }.detect-form-section-title > span { color: var(--ns-accent-fg); font-family: var(--ns-font-mono); font-size: 11px; font-weight: 700; }.detect-form-section-title h3 { margin: 0; color: var(--ns-text); font-size: 14px; font-weight: 650; }.detect-form-section-title p { margin: 4px 0 0; }.detect-form-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 12px; }.compact-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }.detect-form-grid :deep(.el-form-item) { margin-bottom: 0; }.detect-form-grid :deep(.el-select), .detect-form-grid :deep(.el-input) { width: 100%; }.condition-block { margin-top: 10px; padding: 11px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-sm); background: var(--ns-bg-subtle); }.condition-block-head, .condition-group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }.condition-block-head b { color: var(--ns-text-2); font-size: 12px; }.condition-group { margin-top: 8px; padding: 9px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-sm); background: var(--ns-surface); }.condition-group-head { margin-bottom: 6px; color: var(--ns-text-3); font-size: 11px; }.condition-row { display: grid; grid-template-columns: minmax(140px, .85fr) 130px minmax(140px, 1fr) auto; gap: 6px; align-items: center; margin-bottom: 6px; }.condition-row :deep(.el-input), .condition-row :deep(.el-select) { width: 100%; }.form-hint { margin: 8px 0 0; line-height: 1.5; }.inline-hint { margin-left: 8px; }.detect-advanced-warning { display: flex; gap: 8px; align-items: baseline; margin-bottom: 12px; padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--ns-warning) 30%, var(--ns-border)); border-radius: var(--ns-radius-sm); background: color-mix(in srgb, var(--ns-warning) 8%, var(--ns-surface)); font-size: 12px; }.detect-advanced-warning b { color: var(--ns-warning); }.detect-advanced-warning span { color: var(--ns-text-2); }.advanced-json { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--ns-border); }.advanced-json summary { color: var(--ns-text-2); cursor: pointer; font-size: 12px; font-weight: 600; }.advanced-json p { color: var(--ns-text-3); font-size: 11px; }.advanced-json textarea { display: block; width: 100%; box-sizing: border-box; margin: 8px 0; padding: 10px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-sm); background: var(--ns-bg-inset); color: var(--ns-text); font: 11px/1.5 var(--ns-font-mono); resize: vertical; }.lifecycle-section { padding-bottom: 18px; }.lifecycle-row { display: flex; justify-content: space-between; gap: 16px; align-items: center; }.lifecycle-row > div { flex-direction: row; align-items: center; }.form-label { color: var(--ns-text-2); font-size: 12px; }.lifecycle-toggle { white-space: nowrap; }.detect-editor-footer { position: sticky; bottom: 0; z-index: 5; background: var(--ns-surface); display: flex; justify-content: flex-end; gap: 8px; padding: 14px 0 0; border-top: 1px solid var(--ns-border); }.detect-list-section { padding-top: 2px; }.list-head { align-items: center; margin-bottom: 10px; }.toolbar-count { color: var(--ns-text-3); font-size: 12px; }.detect-table-card .el-card__body { padding: 0; }
 .field-option { display: flex; flex-direction: column; gap: 2px; line-height: 1.25; }.field-option small { color: var(--ns-text-3); font-size: 10px; }
 @media (max-width: 1000px) { .detect-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.detect-test-grid { grid-template-columns: 1fr; }.detect-form-grid, .compact-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 640px) { .detect-stat-grid, .detect-test-form, .detect-form-grid, .compact-grid { grid-template-columns: 1fr; }.full-width { grid-column: auto; }.condition-row { grid-template-columns: 1fr; }.lifecycle-row { align-items: flex-start; flex-direction: column; }.lifecycle-row > div { align-items: flex-start; flex-direction: column; }.workspace-section-head { flex-direction: column; }.workspace-section-actions { width: 100%; justify-content: space-between; } }

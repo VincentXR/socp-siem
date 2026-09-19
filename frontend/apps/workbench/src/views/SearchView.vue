@@ -30,6 +30,7 @@ import FormField from '../components/FormField.vue'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { exportSearch, listAlarmsByEvent, listFields, splSearch, type Alarm, type FieldDef, type SearchEvent, type SearchResult } from '../api'
 import { useI18n } from '../composables/useI18n'
+import { tOr } from '../utils/i18nLabel'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -144,6 +145,11 @@ const activeTimeRangeLabel = computed(() => {
   const option = timeRangeOptions.find(candidate => candidate.key === activeTimeRange.value) ?? timeRangeOptions[1]
   return t(option.label)
 })
+
+/** Backend search-backend enum; unknown or missing values keep the raw token. */
+function sourceLabel(source: string | null | undefined): string {
+  return tOr(t, `search.sources.${source ?? 'unspecified'}`, source ?? '—')
+}
 
 function syncUrl(page = 1): void {
   void router.replace({ query: { ...route.query, q: query.value.trim() || '*', range: selectedTimeRange.value, sort: eventSortProp.value || undefined, order: eventSortOrder.value || undefined, page: page > 1 ? String(page) : undefined } })
@@ -406,7 +412,7 @@ onMounted(() => {
         <el-alert v-if="error" :title="error" type="error" :closable="false" class="search-error" />
 
         <template v-if="result">
-          <el-alert v-if="result.degraded" type="warning" :title="t('search.degradedTo', { source: result.source })" :description="result.degradationReason || t('search.localCacheOnly')" :closable="false" show-icon class="search-error" />
+          <el-alert v-if="result.degraded" type="warning" :title="t('search.degradedTo', { source: sourceLabel(result.source) })" :description="result.degradationReason || t('search.localCacheOnly')" :closable="false" show-icon class="search-error" />
           <el-alert v-if="browseLimitVisible" type="info" :title="t('search.browseLimit')" :closable="false" show-icon class="search-error" />
           <el-card shadow="never" class="search-result-card">
             <template #header><div class="search-result-head"><span>{{ t('search.matchedEvents', { count: result.total }) }}</span><span class="search-result-meta">{{ result.source }} · {{ result.elapsedMs ?? 0 }} ms</span></div></template>
@@ -441,7 +447,7 @@ onMounted(() => {
       <template #footer><el-button @click="saveDialogVisible = false">{{ t('common.cancel') }}</el-button><el-button type="primary" :disabled="!savedQueryName.trim()" @click="saveQuery">{{ t('common.save') }}</el-button></template>
     </el-dialog>
 
-    <el-drawer :model-value="Boolean(selectedEvent)" :title="t('search.eventDetails')" size="620px" @close="closeEvent">
+    <el-drawer :model-value="Boolean(selectedEvent)" :title="t('search.eventDetails')" size="min(620px, 96vw)" @close="closeEvent">
       <template v-if="selectedEvent">
         <div class="search-event-summary"><SevBadge :value="selectedEvent.severity" /><span class="mono">{{ selectedEvent.timestamp }}</span><span>{{ selectedEvent.host || t('time.notAvailable') }}</span></div>
         <div class="search-event-message">{{ selectedEvent.msg || t('time.notAvailable') }}</div>

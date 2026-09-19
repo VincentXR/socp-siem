@@ -388,6 +388,41 @@ class RuleEngineTest {
         }
     }
 
+    /**
+     * A durable event used to serialize every stateful rule three times: once as
+     * the whole-event rollback baseline, once again as that rule's own rollback
+     * baseline, and once more to compute the state-change digest. The first two
+     * are the same bytes at the same instant, so the third call was pure work.
+     * This pins the count so the duplication cannot come back unnoticed.
+     */
+    @Test
+    void aDurableEventSerializesEachStatefulRuleTwiceNotThreeTimes() throws Exception {
+        AtomicInteger snapshots = new AtomicInteger();
+        StatefulRule counted = new StatefulRule() {
+            @Override public String id() { return "COUNTED"; }
+            @Override public String name() { return "counted"; }
+            @Override public void accept(SecurityEvent event) { }
+            @Override public List<Alert> drain() { return List.of(); }
+            @Override public String stateVersion() { return "v1"; }
+            @Override public byte[] snapshotState() {
+                snapshots.incrementAndGet();
+                return bytes("state-" + snapshots.get());
+            }
+            @Override public void restoreState(byte[] serializedState) { }
+        };
+        try (RuleEngine engine = new RuleEngine(List.of(counted), List.of())) {
+            engine.start();
+            engine.ingestAndAwait(ev("system", "snapshot-count", "count-host", null))
+                    .get(3, TimeUnit.SECONDS);
+        }
+
+        // The rollback baseline reused as this rule's own baseline, plus the
+        // state-change digest. A third would mean the full state is serialized
+        // twice for the same instant.
+        assertEquals(2, snapshots.get(),
+                "a durable event must serialize each stateful rule twice, not three times");
+    }
+
     private static byte[] bytes(String value) {
         return value.getBytes(java.nio.charset.StandardCharsets.UTF_8);
     }

@@ -3,8 +3,8 @@ import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/card/style/css.mjs'
 import 'element-plus/es/components/empty/style/css.mjs'
 import 'element-plus/es/components/input/style/css.mjs'
+import 'element-plus/es/components/loading/style/css.mjs'
 import 'element-plus/es/components/message/style/css.mjs'
-import 'element-plus/es/components/pagination/style/css.mjs'
 import 'element-plus/es/components/select/style/css.mjs'
 import 'element-plus/es/components/table/style/css.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
@@ -12,7 +12,7 @@ import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElEmpty from 'element-plus/es/components/empty/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import ElMessage from 'element-plus/es/components/message/index.mjs'
-import ElPagination from 'element-plus/es/components/pagination/index.mjs'
+import { vLoading } from 'element-plus/es/components/loading/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import { onMounted, ref, watch } from 'vue'
@@ -20,12 +20,14 @@ import { useRoute, useRouter } from 'vue-router'
 import AlarmDispositionDrawer from '../components/AlarmDispositionDrawer.vue'
 import EmptyState from '../components/EmptyState.vue'
 import PageHeader from '../components/PageHeader.vue'
+import PagerBar from '../components/PagerBar.vue'
 import SevBadge from '../components/SevBadge.vue'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { relTime } from '../lib/ui'
 import { listRules, SEVERITIES, type Alarm, type RuleSpec } from '../api'
 import { batchUpdateAlarmDisposition } from '../api/alarms'
 import { useI18n } from '../composables/useI18n'
+import { tOr } from '../utils/i18nLabel'
 
 const props = defineProps<{
   filteredAlarms: Alarm[]
@@ -150,6 +152,9 @@ watch(drawerVisible, visible => {
   }
 })
 
+// PagerBar 只暴露 v-model，翻页/换页容量都在这一个 watcher 里收敛成一次加载（同 tick 的双变更不会重复请求）。
+watch([pageNum, pageSize], () => { props.loadPage() })
+
 onMounted(() => { void loadRuleOptions() })
 
 async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void>): Promise<void> {
@@ -163,22 +168,22 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
 </script>
 
 <template>
-  <div class="page-pad view-enter">
+  <div class="page-pad view-enter view--alarms">
     <PageHeader :eyebrow="t('menuGroup.alarmsAndEvents')" :title="t('alarms.title')" :description="t('alarms.description')" />
     <div class="alarm-toolbar">
       <div class="alarm-filter-controls">
-        <el-input v-model="keyword" class="alarm-keyword-input" :placeholder="t('alarms.keywordPlaceholder')" clearable style="width:240px" @keyup.enter="props.onSearch" @clear="props.onSearch" />
-        <el-select v-model="rule" class="alarm-rule-input" filterable clearable :loading="ruleCatalogLoading" :placeholder="t('alarms.ruleFilter')" style="width:210px" @change="props.onSearch">
+        <el-input v-model="keyword" class="alarm-keyword-input" :placeholder="t('alarms.keywordPlaceholder')" clearable @keyup.enter="props.onSearch" @clear="props.onSearch" />
+        <el-select v-model="rule" class="alarm-rule-input" filterable clearable :loading="ruleCatalogLoading" :placeholder="t('alarms.ruleFilter')" @change="props.onSearch">
           <el-option v-if="rule && !ruleOptions.some(item => item.id === rule)" :label="rule" :value="rule" />
           <el-option v-for="item in ruleOptions" :key="item.id" :label="item.name" :value="item.id">
             <div class="alarm-rule-option"><b>{{ item.name }}</b><small>{{ item.id }}</small></div>
           </el-option>
         </el-select>
         <el-select v-model="severity" :placeholder="t('alarms.severityFilter')" clearable style="width:140px" @change="props.onSearch">
-          <el-option v-for="item in SEVERITIES" :key="item" :label="t('severities.' + item) || item" :value="item" />
+          <el-option v-for="item in SEVERITIES" :key="item" :label="tOr(t, 'severities.' + item, item)" :value="item" />
         </el-select>
         <el-select v-model="status" :placeholder="t('alarms.statusFilter')" clearable style="width:150px" @change="props.onSearch">
-          <el-option v-for="item in DISP_STATUSES" :key="item" :label="t('statuses.' + item) || item" :value="item" />
+          <el-option v-for="item in DISP_STATUSES" :key="item" :label="tOr(t, 'statuses.' + item, item)" :value="item" />
         </el-select>
         <el-button size="small" @click="props.onSearch">{{ t('common.search') }}</el-button>
         <small v-if="ruleCatalogError" class="alarm-catalog-hint" :title="ruleCatalogError">{{ t('alarms.ruleCatalogUnavailable') }}</small>
@@ -195,7 +200,7 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
       <span>{{ t('alarms.batchHint') }}</span>
       <el-select v-model="batchOperation" size="small" style="width:150px"><el-option :label="t('forms.assign')" value="assign" /><el-option :label="t('forms.changeStatus')" value="status" /></el-select>
       <el-select v-if="batchOperation === 'status'" v-model="batchStatus" size="small" style="width:150px">
-        <el-option v-for="item in DISP_STATUSES" :key="item" :label="t('statuses.' + item) || item" :value="item" />
+        <el-option v-for="item in DISP_STATUSES" :key="item" :label="tOr(t, 'statuses.' + item, item)" :value="item" />
       </el-select>
       <el-select v-else v-model="batchAssignee" filterable default-first-option clearable size="small" :placeholder="t('drawer.assigneePlaceholder')" style="width:180px">
         <el-option v-for="assignee in props.assigneeOptions ?? []" :key="assignee" :label="assignee" :value="assignee" />
@@ -213,25 +218,24 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
     </div>
 
     <el-card shadow="never" class="alarm-table-card">
-      <el-table :data="props.filteredAlarms" class="alarm-table" height="calc(100vh - 368px)" size="small" row-key="id" border allow-drag-last-column :class="{ 'is-loading': props.loading }" @header-dragend="onHeaderDragEnd" @sort-change="handleSortChange" @row-click="openAlarmRow" @selection-change="handleSelectionChange">
+      <el-table v-loading="props.loading" :data="props.filteredAlarms" class="alarm-table" height="100%" size="small" row-key="id" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @sort-change="handleSortChange" @row-click="openAlarmRow" @selection-change="handleSelectionChange">
         <el-table-column v-if="props.canWrite" type="selection" width="44" fixed="left" />
         <el-table-column prop="occurredAt" column-key="occurredAt" :label="t('alarms.occurredAt')" :width="columnWidth('occurredAt', 172)" sortable="custom"><template #default="{ row }"><span class="mono">{{ relTime(row.occurredAt) }}</span></template></el-table-column>
         <el-table-column prop="severity" column-key="severity" :label="t('common.severity')" :width="columnWidth('severity', 100)" sortable="custom"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
         <el-table-column prop="title" column-key="title" :label="t('alarms.alertTitle')" :width="columnWidth('title', 220)" min-width="180" show-overflow-tooltip><template #default="{ row }">{{ row.title || row.ruleName || row.ruleId }}</template></el-table-column>
         <el-table-column prop="ruleName" column-key="ruleName" :label="t('alarms.ruleName')" :width="columnWidth('ruleName')" min-width="180" sortable="custom" show-overflow-tooltip><template #default="{ row }">{{ row.ruleName || row.ruleId }}</template></el-table-column>
         <el-table-column prop="entity" column-key="entity" :label="t('common.entity')" :width="columnWidth('entity')" min-width="150" sortable="custom" show-overflow-tooltip />
-        <el-table-column prop="status" column-key="status" :label="t('common.status')" :width="columnWidth('status', 125)" sortable="custom"><template #default="{ row }"><span class="alarm-status" :class="(row.status || 'OPEN').toLowerCase()">{{ t('statuses.' + (row.status || 'OPEN')) || row.status }}</span></template></el-table-column>
+        <el-table-column prop="status" column-key="status" :label="t('common.status')" :width="columnWidth('status', 125)" sortable="custom"><template #default="{ row }"><span class="alarm-status" :class="(row.status || 'OPEN').toLowerCase()">{{ tOr(t, 'statuses.' + (row.status || 'OPEN'), row.status ?? '') }}</span></template></el-table-column>
         <el-table-column prop="riskScore" column-key="riskScore" :label="t('alarms.riskScore')" :width="columnWidth('riskScore', 90)" sortable="custom"><template #default="{ row }">{{ row.riskScore ?? '—' }}</template></el-table-column>
         <el-table-column prop="message" column-key="message" :label="t('common.message')" :width="columnWidth('message')" min-width="260" show-overflow-tooltip />
         <el-table-column :label="t('common.actions')" width="78" fixed="right" :resizable="false"><template #default="{ row }"><el-button link type="primary" size="small" @click.stop="openAlarmRow(row)">{{ t('alarms.triage') }}</el-button></template></el-table-column>
+        <template #empty>
+          <EmptyState v-if="!props.loading && !props.error" :title="t('alarms.noAlarmsFound')" :description="t('alarms.adjustFiltersHint')" />
+        </template>
       </el-table>
-      <div v-if="props.loading" class="alarm-loading">{{ t('common.loading') }}</div>
-      <EmptyState v-else-if="!props.error && !props.filteredAlarms.length" :title="t('alarms.noAlarmsFound')" :description="t('alarms.adjustFiltersHint')" />
     </el-card>
 
-    <div class="alarm-pagination">
-      <el-pagination v-model:current-page="pageNum" v-model:page-size="pageSize" :total="props.alarmPageData.total" :page-sizes="[10, 20, 50, 100]" layout="total, sizes, prev, pager, next" @current-change="props.loadPage" @size-change="() => { pageNum = 1; props.loadPage() }" />
-    </div>
+    <PagerBar class="alarm-pagination" v-model:current-page="pageNum" v-model:page-size="pageSize" :total="props.alarmPageData.total" :page-sizes="[10, 20, 50, 100]" />
 
     <AlarmDispositionDrawer v-model="drawerVisible" :alarm="currentAlarm" :go-case="props.goCase" :go-search="props.goSearch" :go-ai="props.goAi" :go-soar="props.goSoar" :assignee-options="props.assigneeOptions" :can-write="props.canWrite" @updated="props.loadPage" />
   </div>

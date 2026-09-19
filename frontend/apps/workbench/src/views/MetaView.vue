@@ -2,19 +2,24 @@
 import { useWriteAccess } from '../composables/useWriteAccess'
 const canWrite = useWriteAccess()
 import { useFormDialog } from '../composables/useFormDialog'
+import { useConfirm } from '../composables/useConfirm'
 import { useMutation } from '../composables/useMutation'
+import { useTableColumnWidths } from '../composables/useTableColumnWidths'
+import { tOr } from '../utils/i18nLabel'
 import ActionFeedback from '../components/ActionFeedback.vue'
 import FormField from '../components/FormField.vue'
 import FormGrid from '../components/FormGrid.vue'
 import FormSection from '../components/FormSection.vue'
 const mutation = useMutation()
 const { busy: actionBusy, error: actionError } = mutation
+const { confirmDanger } = useConfirm()
 import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/card/style/css.mjs'
 import 'element-plus/es/components/checkbox/style/css.mjs'
 import 'element-plus/es/components/dialog/style/css.mjs'
 import 'element-plus/es/components/form/style/css.mjs'
 import 'element-plus/es/components/input/style/css.mjs'
+import 'element-plus/es/components/loading/style/css.mjs'
 import 'element-plus/es/components/select/style/css.mjs'
 import 'element-plus/es/components/switch/style/css.mjs'
 import 'element-plus/es/components/table/style/css.mjs'
@@ -26,6 +31,9 @@ import ElCheckbox from 'element-plus/es/components/checkbox/index.mjs'
 import ElDialog from 'element-plus/es/components/dialog/index.mjs'
 import { ElForm, ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
+// The table skeleton is a directive, not a prop: `:loading` on `el-table` was
+// silently ignored, so a slow load looked like an empty registry.
+import { vLoading } from 'element-plus/es/components/loading/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import ElSwitch from 'element-plus/es/components/switch/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
@@ -43,17 +51,13 @@ import {
 import { useI18n } from '../composables/useI18n'
 
 const { t } = useI18n()
+const { columnWidth: dsColumnWidth, onHeaderDragEnd: onDsHeaderDragEnd } = useTableColumnWidths('meta-datasource-types')
+const { columnWidth: categoryColumnWidth, onHeaderDragEnd: onCategoryHeaderDragEnd } = useTableColumnWidths('meta-log-categories')
+const { columnWidth: fieldColumnWidth, onHeaderDragEnd: onFieldHeaderDragEnd } = useTableColumnWidths('meta-fields')
 const metaTab = ref('ds')
 const editingId = ref('')
 const loading = ref(false)
 const loadError = ref('')
-function editMetadata(kind: 'ds' | 'category' | 'field', row: DataSourceType | LogCategory | FieldDef) {
-  if (!canWrite.value) return
-  editingId.value = row.id
-  if (kind === 'ds') { newDsType.value = { ...(row as DataSourceType) }; showDsDialog.value = true }
-  if (kind === 'category') { newCategory.value = { ...(row as LogCategory) }; showCatDialog.value = true }
-  if (kind === 'field') { newField.value = { ...(row as FieldDef) }; showFieldDialog.value = true }
-}
 const dataSourceTypes = ref<DataSourceType[]>([])
 const logCategories = ref<LogCategory[]>([])
 const fieldDefs = ref<FieldDef[]>([])
@@ -64,13 +68,49 @@ const newDsType = ref({ code: '', name: '', description: '', enabled: true })
 const newCategory = ref({ code: '', name: '', description: '', defaultSeverity: 'MEDIUM', enabled: true })
 const newField = ref({ fieldName: '', fieldLabel: '', fieldType: 'string', source: 'custom', searchable: true, aggregatable: true, stored: true, description: '' })
 
+/** Per-field messages instead of one "complete the required fields" banner. */
+const dsErrors = ref<Record<string, string>>({})
+const categoryErrors = ref<Record<string, string>>({})
+const fieldErrors = ref<Record<string, string>>({})
+
+function requiredMessage(label: string): string { return t('forms.fieldRequired', { field: label }) }
+
+function validateDsType(): boolean {
+  dsErrors.value = {}
+  if (!newDsType.value.code.trim()) dsErrors.value.code = requiredMessage(t('meta.code'))
+  if (!newDsType.value.name.trim()) dsErrors.value.name = requiredMessage(t('meta.name'))
+  return !Object.keys(dsErrors.value).length
+}
+
+function validateCategory(): boolean {
+  categoryErrors.value = {}
+  if (!newCategory.value.code.trim()) categoryErrors.value.code = requiredMessage(t('meta.code'))
+  if (!newCategory.value.name.trim()) categoryErrors.value.name = requiredMessage(t('meta.name'))
+  return !Object.keys(categoryErrors.value).length
+}
+
+function validateFieldDef(): boolean {
+  fieldErrors.value = {}
+  if (!newField.value.fieldName.trim()) fieldErrors.value.fieldName = requiredMessage(t('meta.fieldName'))
+  if (!newField.value.fieldLabel.trim()) fieldErrors.value.fieldLabel = requiredMessage(t('meta.fieldLabel'))
+  return !Object.keys(fieldErrors.value).length
+}
+
+function editMetadata(kind: 'ds' | 'category' | 'field', row: DataSourceType | LogCategory | FieldDef) {
+  if (!canWrite.value) return
+  editingId.value = row.id
+  if (kind === 'ds') { newDsType.value = { ...(row as DataSourceType) }; dsErrors.value = {}; showDsDialog.value = true }
+  if (kind === 'category') { newCategory.value = { ...(row as LogCategory) }; categoryErrors.value = {}; showCatDialog.value = true }
+  if (kind === 'field') { newField.value = { ...(row as FieldDef) }; fieldErrors.value = {}; showFieldDialog.value = true }
+}
+
 function openNewMetadata(kind: 'ds' | 'category' | 'field') {
   if (!canWrite.value) return
   editingId.value = ''
   actionError.value = ''
-  if (kind === 'ds') { newDsType.value = { code: '', name: '', description: '', enabled: true }; showDsDialog.value = true }
-  if (kind === 'category') { newCategory.value = { code: '', name: '', description: '', defaultSeverity: 'MEDIUM', enabled: true }; showCatDialog.value = true }
-  if (kind === 'field') { newField.value = { fieldName: '', fieldLabel: '', fieldType: 'string', source: 'custom', searchable: true, aggregatable: true, stored: true, description: '' }; showFieldDialog.value = true }
+  if (kind === 'ds') { newDsType.value = { code: '', name: '', description: '', enabled: true }; dsErrors.value = {}; showDsDialog.value = true }
+  if (kind === 'category') { newCategory.value = { code: '', name: '', description: '', defaultSeverity: 'MEDIUM', enabled: true }; categoryErrors.value = {}; showCatDialog.value = true }
+  if (kind === 'field') { newField.value = { fieldName: '', fieldLabel: '', fieldType: 'string', source: 'custom', searchable: true, aggregatable: true, stored: true, description: '' }; fieldErrors.value = {}; showFieldDialog.value = true }
 }
 
 async function loadMeta() {
@@ -93,9 +133,8 @@ async function loadMeta() {
 }
 
 async function addDsType() {
+  if (!canWrite.value || !validateDsType()) return
   return mutation.run(async () => {
-  if (!canWrite.value) return
-  if (!(newDsType.value.code.trim() && newDsType.value.name.trim())) throw new Error(t('forms.required'))
   if (editingId.value) await updateDataSourceType(editingId.value, newDsType.value)
   else await createDataSourceType(newDsType.value)
   editingId.value = ''
@@ -107,15 +146,14 @@ async function addDsType() {
 async function removeDsType(id: string) {
   return mutation.run(async () => {
   if (!canWrite.value) return
-  if (!confirm(t('meta.deleteDataSourceTypeConfirm'))) return
+  if (!await confirmDanger(t('meta.deleteDataSourceTypeConfirm'))) return
   await deleteDataSourceType(id)
   await loadMeta()
   })
 }
 async function addCategory() {
+  if (!canWrite.value || !validateCategory()) return
   return mutation.run(async () => {
-  if (!canWrite.value) return
-  if (!(newCategory.value.code.trim() && newCategory.value.name.trim())) throw new Error(t('forms.required'))
   if (editingId.value) await updateCategory(editingId.value, newCategory.value)
   else await createCategory(newCategory.value)
   editingId.value = ''
@@ -127,15 +165,14 @@ async function addCategory() {
 async function removeCategory(id: string) {
   return mutation.run(async () => {
   if (!canWrite.value) return
-  if (!confirm(t('meta.deleteCategoryConfirm'))) return
+  if (!await confirmDanger(t('meta.deleteCategoryConfirm'))) return
   await deleteCategory(id)
   await loadMeta()
   })
 }
 async function addField() {
+  if (!canWrite.value || !validateFieldDef()) return
   return mutation.run(async () => {
-  if (!canWrite.value) return
-  if (!(newField.value.fieldName.trim() && newField.value.fieldLabel.trim())) throw new Error(t('forms.required'))
   if (editingId.value) await updateField(editingId.value, newField.value)
   else await createField(newField.value)
   editingId.value = ''
@@ -147,7 +184,7 @@ async function addField() {
 async function removeField(id: string) {
   return mutation.run(async () => {
   if (!canWrite.value) return
-  if (!confirm(t('meta.deleteFieldConfirm'))) return
+  if (!await confirmDanger(t('meta.deleteFieldConfirm'))) return
   await deleteField(id)
   await loadMeta()
   })
@@ -178,10 +215,10 @@ onMounted(() => { void loadMeta() })
         <el-dialog v-model="showDsDialog" :before-close="showDsDialogGuard.beforeClose" :title="editingId ? t('common.edit') : t('meta.addDataSourceType')" width="520px"><ActionFeedback :error="actionError" />
           <el-form :disabled="actionBusy" label-position="top">
             <FormGrid :columns="2">
-              <FormField :label="t('meta.code')" required :hint="t('meta.codeHint')">
+              <FormField :label="t('meta.code')" required :hint="t('meta.codeHint')" :error="dsErrors.code">
                 <el-input :disabled="Boolean(editingId)" v-model="newDsType.code" :placeholder="t('meta.syslogPlaceholder')" />
               </FormField>
-              <FormField :label="t('meta.name')" required>
+              <FormField :label="t('meta.name')" required :error="dsErrors.name">
                 <el-input v-model="newDsType.name" :placeholder="t('meta.syslogNamePlaceholder')" />
               </FormField>
               <FormField :label="t('meta.explanation')" full>
@@ -192,16 +229,16 @@ onMounted(() => { void loadMeta() })
               </FormField>
             </FormGrid>
           </el-form>
-          <template #footer><el-button @click="showDsDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="success" :loading="actionBusy" @click="addDsType">{{ t('common.save') }}</el-button></template>
+          <template #footer><el-button @click="showDsDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="addDsType">{{ t('common.save') }}</el-button></template>
         </el-dialog>
         <el-card shadow="never">
           <template #header>{{ t('meta.registryTitle') }}</template>
-          <el-table :data="dataSourceTypes" size="small" border :loading="loading" :empty-text="t('common.empty')">
-            <el-table-column prop="code" :label="t('meta.code')" width="130" />
-            <el-table-column prop="name" :label="t('meta.name')" width="150" />
-            <el-table-column prop="description" :label="t('meta.explanation')" min-width="300" show-overflow-tooltip />
-            <el-table-column :label="t('meta.enabled')" width="65"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('meta.yes') : t('meta.no') }}</el-tag></template></el-table-column>
-            <el-table-column v-if="canWrite" :label="t('meta.operation')" width="130"><template #default="{ row }"><el-button link size="small" @click="editMetadata('ds', row as DataSourceType)">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeDsType(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column>
+          <el-table v-loading="loading" :data="dataSourceTypes" size="small" border allow-drag-last-column :empty-text="t('common.empty')" @header-dragend="onDsHeaderDragEnd">
+            <el-table-column prop="code" column-key="code" :label="t('meta.code')" :width="dsColumnWidth('code', 130)" />
+            <el-table-column prop="name" column-key="name" :label="t('meta.name')" :width="dsColumnWidth('name', 150)" />
+            <el-table-column prop="description" column-key="description" :label="t('meta.explanation')" :width="dsColumnWidth('description')" min-width="300" show-overflow-tooltip />
+            <el-table-column column-key="enabled" :label="t('meta.enabled')" :width="dsColumnWidth('enabled', 65)"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('meta.yes') : t('meta.no') }}</el-tag></template></el-table-column>
+            <el-table-column v-if="canWrite" :label="t('meta.operation')" width="130" :resizable="false"><template #default="{ row }"><el-button link size="small" @click="editMetadata('ds', row as DataSourceType)">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeDsType(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column>
           </el-table>
         </el-card>
       </el-tab-pane>
@@ -214,14 +251,14 @@ onMounted(() => { void loadMeta() })
         <el-dialog v-model="showCatDialog" :before-close="showCatDialogGuard.beforeClose" :title="editingId ? t('common.edit') : t('meta.addLogCategory')" width="640px"><ActionFeedback :error="actionError" />
           <el-form :disabled="actionBusy" label-position="top">
             <FormGrid :columns="2">
-              <FormField :label="t('meta.code')" required :hint="t('meta.codeHint')">
+              <FormField :label="t('meta.code')" required :hint="t('meta.codeHint')" :error="categoryErrors.code">
                 <el-input :disabled="Boolean(editingId)" v-model="newCategory.code" :placeholder="t('meta.authPlaceholder')" />
               </FormField>
-              <FormField :label="t('meta.name')" required>
+              <FormField :label="t('meta.name')" required :error="categoryErrors.name">
                 <el-input v-model="newCategory.name" :placeholder="t('meta.name')" />
               </FormField>
               <FormField :label="t('meta.baselineSeverity')" :hint="t('meta.baselineSeverityHint')">
-                <el-select v-model="newCategory.defaultSeverity"><el-option v-for="s in SEVERITIES" :key="s" :label="t('severities.' + s) || s" :value="s" /></el-select>
+                <el-select v-model="newCategory.defaultSeverity"><el-option v-for="s in SEVERITIES" :key="s" :label="tOr(t, 'severities.' + s, s)" :value="s" /></el-select>
               </FormField>
               <FormField :label="t('meta.enabled')">
                 <el-switch v-model="newCategory.enabled" />
@@ -231,17 +268,17 @@ onMounted(() => { void loadMeta() })
               </FormField>
             </FormGrid>
           </el-form>
-          <template #footer><el-button @click="showCatDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="success" :loading="actionBusy" @click="addCategory">{{ t('common.save') }}</el-button></template>
+          <template #footer><el-button @click="showCatDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="addCategory">{{ t('common.save') }}</el-button></template>
         </el-dialog>
         <el-card shadow="never">
           <template #header>{{ t('meta.taxonomyTitle') }}</template>
-          <el-table :data="logCategories" size="small" border :loading="loading" :empty-text="t('common.empty')">
-            <el-table-column prop="code" :label="t('meta.code')" width="120" />
-            <el-table-column prop="name" :label="t('meta.name')" width="130" />
-            <el-table-column prop="description" :label="t('meta.explanation')" min-width="260" show-overflow-tooltip />
-            <el-table-column :label="t('meta.baselineSeverity')" width="100"><template #default="{ row }"><SevBadge :value="row.defaultSeverity" /></template></el-table-column>
-            <el-table-column :label="t('meta.enabled')" width="65"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('meta.yes') : t('meta.no') }}</el-tag></template></el-table-column>
-            <el-table-column v-if="canWrite" :label="t('meta.operation')" width="130"><template #default="{ row }"><el-button link size="small" @click="editMetadata('category', row as LogCategory)">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeCategory(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column>
+          <el-table v-loading="loading" :data="logCategories" size="small" border allow-drag-last-column :empty-text="t('common.empty')" @header-dragend="onCategoryHeaderDragEnd">
+            <el-table-column prop="code" column-key="code" :label="t('meta.code')" :width="categoryColumnWidth('code', 120)" />
+            <el-table-column prop="name" column-key="name" :label="t('meta.name')" :width="categoryColumnWidth('name', 130)" />
+            <el-table-column prop="description" column-key="description" :label="t('meta.explanation')" :width="categoryColumnWidth('description')" min-width="260" show-overflow-tooltip />
+            <el-table-column column-key="defaultSeverity" :label="t('meta.baselineSeverity')" :width="categoryColumnWidth('defaultSeverity', 100)"><template #default="{ row }"><SevBadge :value="row.defaultSeverity" /></template></el-table-column>
+            <el-table-column column-key="enabled" :label="t('meta.enabled')" :width="categoryColumnWidth('enabled', 65)"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('meta.yes') : t('meta.no') }}</el-tag></template></el-table-column>
+            <el-table-column v-if="canWrite" :label="t('meta.operation')" width="130" :resizable="false"><template #default="{ row }"><el-button link size="small" @click="editMetadata('category', row as LogCategory)">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeCategory(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column>
           </el-table>
         </el-card>
       </el-tab-pane>
@@ -254,10 +291,10 @@ onMounted(() => { void loadMeta() })
         <el-dialog v-model="showFieldDialog" :before-close="showFieldDialogGuard.beforeClose" :title="editingId ? t('common.edit') : t('meta.addField')" width="640px"><ActionFeedback :error="actionError" />
           <el-form :disabled="actionBusy" label-position="top">
             <FormGrid :columns="2">
-              <FormField :label="t('meta.fieldName')" required :hint="t('meta.fieldNameHint')">
+              <FormField :label="t('meta.fieldName')" required :hint="t('meta.fieldNameHint')" :error="fieldErrors.fieldName">
                 <el-input :disabled="Boolean(editingId)" v-model="newField.fieldName" :placeholder="t('meta.fieldNamePlaceholder')" />
               </FormField>
-              <FormField :label="t('meta.fieldLabel')" required>
+              <FormField :label="t('meta.fieldLabel')" required :error="fieldErrors.fieldLabel">
                 <el-input v-model="newField.fieldLabel" :placeholder="t('meta.fieldLabelPlaceholder')" />
               </FormField>
               <FormField :label="t('meta.dataType')">
@@ -276,18 +313,18 @@ onMounted(() => { void loadMeta() })
               </FormField>
             </FormGrid>
           </el-form>
-          <template #footer><el-button @click="showFieldDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="success" :loading="actionBusy" @click="addField">{{ t('common.save') }}</el-button></template>
+          <template #footer><el-button @click="showFieldDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="addField">{{ t('common.save') }}</el-button></template>
         </el-dialog>
         <el-card shadow="never">
           <template #header>{{ t('meta.fieldDictionaryTitle') }}</template>
-          <el-table :data="fieldDefs" size="small" border :loading="loading" :empty-text="t('common.empty')">
-            <el-table-column prop="fieldName" :label="t('meta.fieldName')" width="130" />
-            <el-table-column prop="fieldLabel" :label="t('meta.fieldLabel')" width="110" />
-            <el-table-column prop="fieldType" :label="t('meta.dataType')" width="80" />
-            <el-table-column :label="t('meta.source')" width="100"><template #default="{ row }"><el-tag size="small" :type="row.source === 'system' ? 'info' : row.source === 'parse' ? 'success' : 'warning'">{{ row.source === 'system' ? t('meta.sourceSystem') : row.source === 'parse' ? t('meta.sourceParse') : t('meta.sourceCustom') }}</el-tag></template></el-table-column>
-            <el-table-column :label="t('meta.indexStrategy')" width="150"><template #default="{ row }"><el-tag v-if="row.searchable" size="small" type="success" style="margin-right:4px">{{ t('common.search') }}</el-tag><el-tag v-if="row.aggregatable" size="small" type="warning" style="margin-right:4px">{{ t('meta.aggregation') }}</el-tag><el-tag v-if="row.stored" size="small" type="info">{{ t('meta.storage') }}</el-tag></template></el-table-column>
-            <el-table-column prop="description" :label="t('meta.explanation')" min-width="200" show-overflow-tooltip />
-            <el-table-column v-if="canWrite" :label="t('meta.operation')" width="130"><template #default="{ row }"><el-button v-if="row.source !== 'system'" link size="small" @click="editMetadata('field', row as FieldDef)">{{ t('common.edit') }}</el-button><el-button v-if="row.source !== 'system'" link type="danger" size="small" @click="removeField(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column>
+          <el-table v-loading="loading" :data="fieldDefs" size="small" border allow-drag-last-column :empty-text="t('common.empty')" @header-dragend="onFieldHeaderDragEnd">
+            <el-table-column prop="fieldName" column-key="fieldName" :label="t('meta.fieldName')" :width="fieldColumnWidth('fieldName', 130)" />
+            <el-table-column prop="fieldLabel" column-key="fieldLabel" :label="t('meta.fieldLabel')" :width="fieldColumnWidth('fieldLabel', 110)" />
+            <el-table-column prop="fieldType" column-key="fieldType" :label="t('meta.dataType')" :width="fieldColumnWidth('fieldType', 80)" />
+            <el-table-column column-key="source" :label="t('meta.source')" :width="fieldColumnWidth('source', 100)"><template #default="{ row }"><el-tag size="small" :type="row.source === 'system' ? 'info' : row.source === 'parse' ? 'success' : 'warning'">{{ row.source === 'system' ? t('meta.sourceSystem') : row.source === 'parse' ? t('meta.sourceParse') : t('meta.sourceCustom') }}</el-tag></template></el-table-column>
+            <el-table-column column-key="indexStrategy" :label="t('meta.indexStrategy')" :width="fieldColumnWidth('indexStrategy', 150)"><template #default="{ row }"><el-tag v-if="row.searchable" size="small" type="success" style="margin-right:4px">{{ t('common.search') }}</el-tag><el-tag v-if="row.aggregatable" size="small" type="warning" style="margin-right:4px">{{ t('meta.aggregation') }}</el-tag><el-tag v-if="row.stored" size="small" type="info">{{ t('meta.storage') }}</el-tag></template></el-table-column>
+            <el-table-column prop="description" column-key="description" :label="t('meta.explanation')" :width="fieldColumnWidth('description')" min-width="200" show-overflow-tooltip />
+            <el-table-column v-if="canWrite" :label="t('meta.operation')" width="130" :resizable="false"><template #default="{ row }"><el-button v-if="row.source !== 'system'" link size="small" @click="editMetadata('field', row as FieldDef)">{{ t('common.edit') }}</el-button><el-button v-if="row.source !== 'system'" link type="danger" size="small" @click="removeField(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column>
           </el-table>
         </el-card>
       </el-tab-pane>

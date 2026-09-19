@@ -15,7 +15,10 @@ import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { RunOpenRequest } from './editor/runHighlight'
+import { useConfirm } from '../../composables/useConfirm'
+import { useFormDialog } from '../../composables/useFormDialog'
 import { useI18n } from '../../composables/useI18n'
+import { tOr } from '../../utils/i18nLabel'
 import {
   cancelWorkflowRun,
   getArtifactContent,
@@ -48,6 +51,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{ 'open-in-editor': [payload: RunOpenRequest] }>()
 
 const { t } = useI18n()
+const { confirmDanger, promptInput } = useConfirm()
 
 const runs = ref<SoarRun[]>([])
 const selectedRunId = ref('')
@@ -72,6 +76,7 @@ const queueForm = ref({
   subject: '{}',
   inputs: '{\n  "eventId": "workbench-manual-run",\n  "eventType": "manual.test"\n}',
 })
+const queueGuard = useFormDialog(queueDialogVisible, () => queueForm.value, () => queueLoading.value)
 let pollTimer: ReturnType<typeof setInterval> | undefined
 let stream: EventSource | undefined
 
@@ -291,8 +296,8 @@ async function refreshProjection() {
 
 async function cancel() {
   if (!props.canExecute || !selectedRunId.value) return
-  const reason = window.prompt(t('soar.cancelReason'), '')
-  if (reason === null) return
+  const reason = await promptInput(t('soar.cancelReason'))
+  if (!reason) return
   errorMessage.value = ''
   controlBusy.value = 'cancel'
   try {
@@ -307,8 +312,8 @@ async function cancel() {
 
 async function retry() {
   if (!props.canExecute || !selectedRunId.value) return
-  const reason = window.prompt(t('soar.retryReason'), '')
-  if (reason === null) return
+  const reason = await promptInput(t('soar.retryReason'))
+  if (!reason) return
   errorMessage.value = ''
   controlBusy.value = 'retry'
   try {
@@ -322,7 +327,8 @@ async function retry() {
 }
 
 async function rerun() {
-  if (!props.canExecute || !selectedRunId.value || !window.confirm(t('soar.rerunConfirm'))) return
+  if (!props.canExecute || !selectedRunId.value) return
+  if (!(await confirmDanger(t('soar.rerunConfirm')))) return
   errorMessage.value = ''
   controlBusy.value = 'rerun'
   try {
@@ -337,9 +343,9 @@ async function rerun() {
 
 async function resolveUnknown(node: SoarNodeRun, resolution: 'CONFIRMED_SUCCEEDED' | 'CONFIRMED_NOT_EXECUTED') {
   if (!props.canOperate) return
-  const evidence = window.prompt(t('soar.evidenceRequired'))
+  const evidence = await promptInput(t('soar.evidenceRequired'))
   if (!evidence) return
-  const reason = window.prompt(t('soar.resolutionReasonRequired'))
+  const reason = await promptInput(t('soar.resolutionReasonRequired'))
   if (!reason) return
   errorMessage.value = ''
   controlBusy.value = 'resolve'
@@ -382,15 +388,11 @@ onUnmounted(() => {
 })
 
 function statusLabel(status: string): string {
-  const key = 'soar.status.' + status
-  const translated = t(key)
-  return translated === key ? status : translated
+  return tOr(t, 'soar.status.' + status, status)
 }
 
 function nodeTypeLabel(type: string): string {
-  const key = 'soar.nodeType.' + type
-  const translated = t(key)
-  return translated === key ? type : translated
+  return tOr(t, 'soar.nodeType.' + type, type)
 }
 
 function streamLabel(state: 'closed' | 'live' | 'polling'): string {
@@ -462,7 +464,7 @@ function streamLabel(state: 'closed' | 'live' | 'polling'): string {
         <section class="soar-run-panel">
           <div class="soar-panel-title">{{ t('soar.actionAttempts') }} <span v-if="selectedNode">· {{ selectedNode.nodeId }}</span></div>
           <div class="soar-table-scroll"><table><thead><tr><th>#</th><th>{{ t('common.status') }}</th><th>{{ t('soar.remoteReceipt') }}</th><th>{{ t('common.error') }}</th></tr></thead><tbody><tr v-for="attempt in attempts" :key="attempt.id"><td>{{ attempt.attemptNo }}</td><td>{{ statusLabel(attempt.status) }}</td><td class="mono">{{ attempt.remoteOperationId || json(attempt.receipt) || '-' }}</td><td>{{ attempt.errorCode || attempt.errorMessage || '-' }}</td></tr></tbody></table><div v-if="!attempts.length" class="soar-empty">{{ t('soar.noActionAttempts') }}</div></div>
-          <div class="soar-panel-title soar-events-title">{{ t('soar.eventTimeline') }} · {{ events.length }} {{ t('common.itemsSuffix') || 'events' }}</div>
+          <div class="soar-panel-title soar-events-title">{{ t('soar.eventTimeline') }} · {{ events.length }} {{ tOr(t, 'common.itemsSuffix', 'events') }}</div>
           <div class="soar-event-list"><div v-for="event in [...events].reverse()" :key="event.id" class="soar-event"><span class="soar-event-seq">#{{ event.sequence }}</span><span><b>{{ event.eventType }}</b><small>{{ event.summary }}</small></span><time>{{ event.createdAt || '' }}</time></div><div v-if="!events.length" class="soar-empty">{{ t('soar.noEvents') }}</div></div>
         </section>
 
@@ -478,7 +480,7 @@ function streamLabel(state: 'closed' | 'live' | 'polling'): string {
     <div v-else class="soar-empty soar-no-run">{{ t('soar.noRunSelected') }}</div>
     <div v-if="queueMessage" class="soar-queue-message" role="status">{{ queueMessage }}</div>
 
-    <el-dialog v-if="props.canExecute" v-model="queueDialogVisible" :title="t('soar.queuePublishedRun')" width="520px">
+    <el-dialog v-if="props.canExecute" v-model="queueDialogVisible" :before-close="queueGuard.beforeClose" :title="t('soar.queuePublishedRun')" width="520px" :close-on-click-modal="false">
       <p class="soar-dialog-hint">{{ t('soar.queueHint') }}</p>
       <el-form label-position="top">
         <el-form-item :label="t('soar.publishedPlaybookVersion')" required>
@@ -506,7 +508,7 @@ function streamLabel(state: 'closed' | 'live' | 'polling'): string {
       </el-form>
       <div v-if="queueError" class="soar-inspector-error" role="alert">{{ queueError }}</div>
       <template #footer>
-        <el-button @click="queueDialogVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button @click="queueGuard.cancel">{{ t('common.cancel') }}</el-button>
         <el-button type="primary" :loading="queueLoading" :disabled="!publishedVersions.length" @click="submitQueue">{{ t('soar.acceptAndQueue') }}</el-button>
       </template>
     </el-dialog>

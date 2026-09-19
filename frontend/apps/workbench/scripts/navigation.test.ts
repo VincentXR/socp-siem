@@ -24,6 +24,24 @@ test('analyst navigation exposes ingestion and detection management', () => {
   assert.ok(keys.includes('notify'))
 })
 
+test('role-prefixed viewer fails closed and approver keeps only approval surfaces', () => {
+  const viewerKeys = getVisibleMenuGroups('ROLE_VIEWER').flatMap(group => group.items.map(item => item.key))
+  const approverKeys = getVisibleMenuGroups('role_approver').flatMap(group => group.items.map(item => item.key))
+
+  assert.ok(!viewerKeys.includes('detect'))
+  assert.ok(!viewerKeys.includes('ingest'))
+  assert.ok(approverKeys.includes('soar'))
+  assert.ok(!approverKeys.includes('detect'))
+  assert.ok(!approverKeys.includes('notify'))
+})
+
+test('unknown roles fail closed like viewers', () => {
+  const keys = getVisibleMenuGroups('external-unknown').flatMap(group => group.items.map(item => item.key))
+
+  assert.ok(!keys.includes('detect'))
+  assert.ok(!keys.includes('soar'))
+})
+
 test('admin navigation exposes the same operator pages', () => {
   const keys = getVisibleMenuGroups('admin').flatMap(group => group.items.map(item => item.key))
 

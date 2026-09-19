@@ -1,5 +1,6 @@
 import { computed, inject } from 'vue'
 import { WORKBENCH_STATE } from '../app/workbenchState'
+import { normalizeRole } from '../app/roles.ts'
 
 /** Permissions enforced by the SOAR controller. Keep this list aligned with
  * platform/socp-auth Permission.roleDefaults so the workbench does not render
@@ -41,7 +42,7 @@ const ROLE_PERMISSIONS: Readonly<Record<string, ReadonlySet<SoarPermission>>> = 
 }
 
 export function normalizeSoarRole(role: string | undefined | null): string {
-  return (role ?? '').toLowerCase().replace(/^role_/, '')
+  return normalizeRole(role)
 }
 
 export function hasSoarPermission(role: string | undefined | null, permission: SoarPermission): boolean {

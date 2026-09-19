@@ -200,7 +200,7 @@ public final class RuleEngine implements AutoCloseable {
                 log.warn("Skipping isolated detection rule ruleId={} eventId={}", rule.id(), event.id());
                 continue;
             }
-            acceptRule(rule, event);
+            acceptRule(rule, event, before);
         }
 
         List<Alert> candidates = new ArrayList<>();
@@ -255,9 +255,22 @@ public final class RuleEngine implements AutoCloseable {
      * rule must not prevent healthy rules from producing a durable result for
      * the same event; transient failures still escape to the caller so the
      * event remains retryable.
+     *
+     * @param durableBefore snapshot of every stateful rule taken before any of
+     *        them ran, keyed by rule. The durable path needs it anyway for the
+     *        whole-event rollback in {@link #process}, and it is byte-identical
+     *        to what this rule would snapshot for itself: both are taken inside
+     *        the same lock and before any rule has mutated state. Re-serializing
+     *        here cost one full state snapshot per rule per event. The entry can
+     *        still be absent - non-durable items pass an empty map - so the
+     *        per-rule snapshot remains as the fallback.
      */
-    private void acceptRule(Rule rule, SecurityEvent event) {
-        byte[] before = rule instanceof StatefulRule stateful ? stateful.snapshotState() : null;
+    private void acceptRule(Rule rule, SecurityEvent event, Map<StatefulRule, byte[]> durableBefore) {
+        byte[] before = null;
+        if (rule instanceof StatefulRule stateful) {
+            before = durableBefore.get(stateful);
+            if (before == null) before = stateful.snapshotState();
+        }
         try {
             rule.accept(event);
             ruleCircuits.computeIfAbsent(rule.id(), ignored -> new RuleCircuitState()).success();

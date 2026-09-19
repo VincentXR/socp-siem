@@ -28,6 +28,7 @@ import {
   type AlarmStats, type GasAlert, type GasStats, type IngestSummary,
 } from '../api'
 import { useI18n } from '../composables/useI18n'
+import { tOr } from '../utils/i18nLabel'
 
 const props = defineProps<{ theme: 'light' | 'dark' }>()
 const emit = defineEmits<{ 'session-expired': []; 'go-alarm': [id: string] }>()
@@ -37,8 +38,13 @@ const { t, d, locale } = useI18n()
 const liveFeed = ref<Array<GasAlert & { _new?: boolean }>>([])
 const liveOn = ref(true)
 const liveSevFilter = ref('')
+type AlertStreamState = 'off' | 'connecting' | 'connected' | 'reconnecting'
+const alertStreamState = ref<AlertStreamState>('connecting')
 const epsHistory = ref<number[]>([])
 let alertStream: EventSource | null = null
+let reconnectTimer: number | null = null
+let reconnectAttempt = 0
+let streamGeneration = 0
 const gaugeEl = ref<HTMLElement>()
 const donutEl = ref<HTMLElement>()
 const epsEl = ref<HTMLElement>()
@@ -91,6 +97,9 @@ function sevColor(severity: string) {
   return cssToken('--ns-info', '#667085')
 }
 function tc(light: string, dark: string) { return props.theme === 'dark' ? dark : light }
+function severityLabel(severity: string): string {
+  return tOr(t, `severities.${severity}`, severity)
+}
 const feedView = computed(() => liveSevFilter.value ? liveFeed.value.filter(alert => alert.severity === liveSevFilter.value) : liveFeed.value)
 const queuePct = computed(() => Math.round((sitEngine.value?.queueLoad ?? 0) * 1000) / 10)
 const queueColor = computed(() => queuePct.value > 70
@@ -106,10 +115,42 @@ function openRiskRow(row: { id?: string }): void {
   openAlarm(row.id)
 }
 
-function openAlertStream() {
+function clearReconnectTimer(): void {
+  if (reconnectTimer !== null) {
+    window.clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+}
+
+function scheduleAlertReconnect(): void {
+  if (!liveOn.value || document.visibilityState === 'hidden') {
+    alertStreamState.value = 'off'
+    return
+  }
+  clearReconnectTimer()
+  const delay = Math.min(30_000, 1_000 * 2 ** Math.min(reconnectAttempt++, 5))
+  alertStreamState.value = 'reconnecting'
+  reconnectTimer = window.setTimeout(() => {
+    reconnectTimer = null
+    openAlertStream()
+  }, delay)
+}
+
+function openAlertStream(): void {
+  if (!liveOn.value || document.visibilityState === 'hidden' || alertStream) return
+  clearReconnectTimer()
+  const generation = ++streamGeneration
+  alertStreamState.value = 'connecting'
   try {
-    alertStream = new EventSource('/detect-web/api/v1/stream')
-    alertStream.addEventListener('alert', (event: MessageEvent) => {
+    const source = new EventSource('/detect-web/api/v1/stream')
+    alertStream = source
+    source.onopen = () => {
+      if (generation !== streamGeneration) return
+      reconnectAttempt = 0
+      alertStreamState.value = 'connected'
+    }
+    source.addEventListener('alert', (event: MessageEvent) => {
+      if (generation !== streamGeneration) return
       try {
         const value = JSON.parse(event.data)
         if (value && value.ruleId) {
@@ -123,19 +164,22 @@ function openAlertStream() {
         }
       } catch { /* 忽略异常帧 */ }
     })
-    alertStream.onerror = () => {
-      setTimeout(async () => {
-        try {
-          await currentSession()
-        } catch {
-          emit('session-expired')
-        }
-      }, 600)
+    source.onerror = () => {
+      if (generation !== streamGeneration) return
+      source.close()
+      alertStream = null
+      void currentSession().catch(() => emit('session-expired'))
+      scheduleAlertReconnect()
     }
-  } catch { /* 不支持 SSE 时退化为轮询 */ }
+  } catch {
+    if (generation === streamGeneration) scheduleAlertReconnect()
+  }
 }
-function closeAlertStream() {
+function closeAlertStream(): void {
+  streamGeneration += 1
+  clearReconnectTimer()
   if (alertStream) { alertStream.close(); alertStream = null }
+  alertStreamState.value = 'off'
 }
 async function loadSituation() { await situationQuery.refetch() }
 function mergeFeed(incoming: GasAlert[]) {
@@ -177,6 +221,7 @@ function renderSitCharts() {
 function toggleLive() {
   liveOn.value = !liveOn.value
   if (liveOn.value) {
+    reconnectAttempt = 0
     if (document.visibilityState === 'visible') openAlertStream()
     void loadSituation()
   } else {
@@ -198,7 +243,7 @@ watch(() => situationQuery.data.value, snapshot => {
   renderSitCharts()
 })
 onMounted(() => {
-  if (liveOn.value) openAlertStream()
+  if (liveOn.value && document.visibilityState === 'visible') openAlertStream()
   window.addEventListener('resize', onResize)
   document.addEventListener('visibilitychange', onVisibilityChange)
 })
@@ -252,8 +297,8 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <el-row :gutter="12" style="margin-bottom:12px">
-            <el-col :span="6">
+          <el-row class="metrics-row" :gutter="12" style="margin-bottom:12px">
+            <el-col :xs="24" :md="12">
               <el-card shadow="never" class="sit-card">
                 <template #header>{{ t('situation.threatScore') }}（0–100）</template>
                 <div ref="gaugeEl" style="height:180px"></div>
@@ -263,19 +308,19 @@ onUnmounted(() => {
                 </div>
               </el-card>
             </el-col>
-            <el-col :span="6">
+            <el-col :xs="24" :md="12">
               <el-card shadow="never" class="sit-card">
                 <template #header>{{ t('situation.sevenDayRiskDistribution') }}</template>
                 <div ref="donutEl" style="height:210px"></div>
               </el-card>
             </el-col>
-            <el-col :span="6">
+            <el-col :xs="24" :md="12">
               <el-card shadow="never" class="sit-card">
                 <template #header>{{ t('situation.sevenDayTrend') }}</template>
                 <TrendChart :data="sitStats?.trend7d" variant="situation" style="height:210px" />
               </el-card>
             </el-col>
-            <el-col :span="6">
+            <el-col :xs="24" :md="12">
               <el-card shadow="never" class="sit-card">
                 <template #header>{{ t('situation.ingestThroughput') }}（EPS）</template>
                 <div ref="epsEl" style="height:210px"></div>
@@ -288,10 +333,11 @@ onUnmounted(() => {
               <el-card shadow="never" class="sit-card">
                 <template #header>
                   <div style="display:flex;align-items:center;gap:10px">
-                    <span class="live-dot" :class="{ off: !liveOn }" />
+                    <span class="live-dot" :class="{ off: !liveOn || alertStreamState !== 'connected', reconnecting: alertStreamState === 'reconnecting' }" />
                     <span>{{ t('situation.liveEventStream') }}</span>
+                    <span class="live-status">{{ t(`situation.stream${alertStreamState.charAt(0).toUpperCase()}${alertStreamState.slice(1)}`) }}</span>
                     <el-select v-model="liveSevFilter" :placeholder="t('situation.allLevels')" clearable size="small" style="width:120px">
-                      <el-option v-for="s in SEVERITIES" :key="s" :label="t('severities.' + s) || s" :value="s" />
+                      <el-option v-for="s in SEVERITIES" :key="s" :label="severityLabel(s)" :value="s" />
                     </el-select>
                     <el-button size="small" @click="toggleLive">{{ liveOn ? t('situation.pause') : t('situation.resume') }}</el-button>
                     <span style="margin-left:auto;font-size:12px;color:var(--ns-text-3)">{{ t('situation.eventCount', { count: feedView.length }) }}</span>

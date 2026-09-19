@@ -46,6 +46,8 @@ import {
   type SoarVersion,
 } from '../../api'
 import { useDefinitionFlow, normalizeDefinition } from './editor/useDefinitionFlow'
+import { useConfirm } from '../../composables/useConfirm'
+import { tOr } from '../../utils/i18nLabel'
 import { diffDefinitions, type DefinitionDiff } from './editor/definitionDiff'
 import SoarFlowNode from './editor/SoarFlowNode.vue'
 import SoarFlowPalette from './editor/SoarFlowPalette.vue'
@@ -102,6 +104,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{ saved: [SoarVersion]; created: [id: string]; 'dirty-change': [dirty: boolean] }>()
 
 const { t } = useI18n()
+const { confirmDanger, promptInput } = useConfirm()
 
 const flowStore = useVueFlow(FLOW_ID)
 const flow = useDefinitionFlow(flowStore, text => { errorMessage.value = text })
@@ -119,6 +122,9 @@ const dryRunText = ref('')
 const dryRunResult = ref<JsonObject | null>(null)
 const loading = ref(false)
 const saving = ref(false)
+const validating = ref(false)
+const dryRunBusy = ref(false)
+const publishing = ref(false)
 const runBusy = ref(false)
 const message = ref('')
 const errorMessage = ref('')
@@ -176,9 +182,9 @@ watch(() => flow.dirty.value, (dirty) => {
   else window.removeEventListener('beforeunload', beforeUnloadHandler)
 })
 
-function discardGuard(): boolean {
+async function discardGuard(): Promise<boolean> {
   if (!flow.dirty.value) return true
-  return window.confirm(t('forms.unsaved'))
+  return confirmDanger(t('forms.unsaved'), { title: t('forms.unsavedTitle') })
 }
 
 /**
@@ -194,7 +200,7 @@ function unsavedDraftBlocks(): boolean {
 
 /* ---------------- playbook/version API (unchanged clients) ---------------- */
 async function loadCatalog() {
-  if (!discardGuard()) return
+  if (!(await discardGuard())) return
   loading.value = true
   errorMessage.value = ''
   try {
@@ -273,8 +279,8 @@ async function overlayRun(runId: string): Promise<void> {
 /** Resume the overlaid run from its failed nodes (engine keeps the variables snapshot). */
 async function retryRunFromCanvas(): Promise<void> {
   if (!props.canExecute || !activeRunId.value || runActionBusy.value) return
-  const reason = window.prompt(t('soar.retryReason'), '')
-  if (reason === null) return
+  const reason = await promptInput(t('soar.retryReason'))
+  if (!reason) return
   runActionBusy.value = 'retry'
   errorMessage.value = ''
   try {
@@ -291,7 +297,7 @@ async function retryRunFromCanvas(): Promise<void> {
 /** Start a fresh execution series from the overlaid run. */
 async function rerunFromCanvas(): Promise<void> {
   if (!props.canExecute || !activeRunId.value || runActionBusy.value) return
-  if (!window.confirm(t('soar.rerunConfirm'))) return
+  if (!(await confirmDanger(t('soar.rerunConfirm')))) return
   runActionBusy.value = 'rerun'
   errorMessage.value = ''
   try {
@@ -354,9 +360,9 @@ async function handleOpenRunRequest(request: RunOpenRequest): Promise<void> {
   }
 }
 
-function openNewPlaybookDialog(): void {
+async function openNewPlaybookDialog(): Promise<void> {
   if (!props.canWrite) return
-  if (!discardGuard()) return
+  if (!(await discardGuard())) return
   newPlaybookError.value = ''
   newPlaybookForm.value = { name: '', description: '', tags: '' }
   newPlaybookVisible.value = true
@@ -364,7 +370,7 @@ function openNewPlaybookDialog(): void {
 
 async function createPlaybookAndVersion() {
   if (!props.canWrite || newPlaybookSaving.value) return
-  if (!discardGuard()) return
+  if (!(await discardGuard())) return
   const name = newPlaybookForm.value.name.trim()
   if (!name) {
     newPlaybookError.value = t('soar.playbookNameRequired')
@@ -397,7 +403,8 @@ async function createPlaybookAndVersion() {
 }
 
 async function createVersion() {
-  if (!props.canWrite || !discardGuard() || !selectedPlaybookId.value) return
+  if (!props.canWrite || !selectedPlaybookId.value) return
+  if (!(await discardGuard())) return
   loading.value = true
   try {
     const result = await createVersionApi(selectedPlaybookId.value)
@@ -416,18 +423,18 @@ async function createVersion() {
 
 /* ---------------- selectors / change handlers ---------------- */
 async function changeVersion(version: number): Promise<void> {
-  if (loading.value || !discardGuard()) return
+  if (loading.value || !(await discardGuard())) return
   await loadVersion(version)
 }
 
 /* ---------------- apply JSON ---------------- */
-function applyDefinitionJson() {
+async function applyDefinitionJson() {
   if (!props.canWrite) return
   let parsed: unknown
   try {
     parsed = JSON.parse(definitionText.value)
   } catch (failure) {
-    const detail = failure instanceof Error ? failure.message : t('soar.invalidJson')
+    const detail = failure instanceof Error ? failure.message : t('soar.invalidJsonPayload')
     errorMessage.value = `${t('soar.definitionInvalid')}: ${detail}`
     return
   }
@@ -442,7 +449,7 @@ function applyDefinitionJson() {
     return
   }
   const current = flow.nodeCount.value
-  if (incomingNodes.length < current && !window.confirm(t('soar.applyJsonConfirmNodes', { current, next: incomingNodes.length }))) return
+  if (incomingNodes.length < current && !(await confirmDanger(t('soar.applyJsonConfirmNodes', { current, next: incomingNodes.length })))) return
   flow.applyWorkingCopy(parsed)
   syncDefinitionText()
   validation.value = null
@@ -476,8 +483,9 @@ async function save(): Promise<boolean> {
 
 /** Returns true only when the server produced a verdict that marks the draft publishable. */
 async function validate(): Promise<boolean> {
-  if (!props.canWrite || !selectedPlaybookId.value || !selectedVersionNo.value) return false
+  if (!props.canWrite || !selectedPlaybookId.value || !selectedVersionNo.value || validating.value) return false
   if (unsavedDraftBlocks()) return false
+  validating.value = true
   try {
     const result = await validateVersion(selectedPlaybookId.value, selectedVersionNo.value) as ValidationResult
     validation.value = result
@@ -495,12 +503,15 @@ async function validate(): Promise<boolean> {
     flow.applyIssues([])
     errorMessage.value = failure instanceof Error ? failure.message : t('soar.validationFailed')
     return false
+  } finally {
+    validating.value = false
   }
 }
 
 async function dryRun() {
-  if (!props.canExecute || !selectedPlaybookId.value || !selectedVersionNo.value) return
+  if (!props.canExecute || !selectedPlaybookId.value || !selectedVersionNo.value || dryRunBusy.value) return
   if (unsavedDraftBlocks()) return
+  dryRunBusy.value = true
   try {
     const inputs = JSON.parse(dryRunText.value) as JsonObject
     dryRunResult.value = await dryRunVersion(selectedPlaybookId.value, selectedVersionNo.value, contextSubject(), inputs) as JsonObject
@@ -508,6 +519,8 @@ async function dryRun() {
   } catch (failure) {
     const detail = failure instanceof Error ? failure.message : t('soar.invalidInput')
     errorMessage.value = `${t('soar.dryRunFailed')}: ${detail}`
+  } finally {
+    dryRunBusy.value = false
   }
 }
 
@@ -540,19 +553,24 @@ async function queueRun(): Promise<void> {
 }
 
 async function publish() {
-  if (!props.canPublish || !selectedPlaybookId.value || !selectedVersionNo.value || !isDraft.value) return
+  const versionNo = selectedVersionNo.value
+  if (!props.canPublish || !selectedPlaybookId.value || !versionNo || !isDraft.value || publishing.value) return
   // Publish is only allowed once the canvas edits are saved and the stored
   // revision has a fresh server verdict of "valid" — never on a stale result.
   if (unsavedDraftBlocks()) return
-  if (!(await validate())) return
+  if (!(await confirmDanger(t('soar.publishConfirm', { version: versionNo })))) return
+  publishing.value = true
   try {
-    const result = await publishVersion(selectedPlaybookId.value, selectedVersionNo.value)
+    if (!(await validate())) return
+    const result = await publishVersion(selectedPlaybookId.value, versionNo)
     versions.value = versions.value.map(item => item.version === result.version ? result : item)
     rowVersion.value = result.rowVersion
     await loadVersions()
     message.value = t('soar.publishedRevision', { version: result.version })
   } catch (failure) {
     errorMessage.value = failure instanceof Error ? failure.message : t('soar.publishFailed')
+  } finally {
+    publishing.value = false
   }
 }
 
@@ -624,14 +642,16 @@ function openNodeContextMenu(event: NodeMouseEvent): void {
 
 function onNodeDoubleClick(event: NodeMouseEvent): void {
   if (!props.canWrite) return
-  renameNodePrompt(event.node.id)
+  void renameNodePrompt(event.node.id)
 }
 
 /** Prompt-based rename; writes the same raw field the property panel edits. */
-function renameNodePrompt(nodeId: string): void {
+async function renameNodePrompt(nodeId: string): Promise<void> {
   const raw = flow.getDefinition().nodes.find(node => node.id === nodeId)
   if (!raw) return
-  const next = window.prompt(t('soar.contextMenu.renamePrompt'), typeof raw.name === 'string' ? raw.name : '')
+  const next = await promptInput(t('soar.contextMenu.renamePrompt'), {
+    defaultValue: typeof raw.name === 'string' ? raw.name : '',
+  })
   if (next === null) return
   const trimmed = next.trim()
   if (trimmed) raw.name = trimmed
@@ -639,7 +659,7 @@ function renameNodePrompt(nodeId: string): void {
   flow.touchAfterNodeEdit()
 }
 
-function contextAction(action: 'copy' | 'delete' | 'rename'): void {
+async function contextAction(action: 'copy' | 'delete' | 'rename'): Promise<void> {
   const menu = contextMenu.value
   closeContextMenu()
   if (!menu) return
@@ -649,17 +669,17 @@ function contextAction(action: 'copy' | 'delete' | 'rename'): void {
     return
   }
   if (action === 'delete') {
-    flow.deleteSelection()
+    await flow.deleteSelection()
     return
   }
-  renameNodePrompt(menu.nodeId)
+  await renameNodePrompt(menu.nodeId)
 }
 
 /** Retires a published revision; the server keeps it for audit but stops running it. */
 async function deprecateSelected(): Promise<void> {
   const version = selectedVersion.value
   if (!props.canPublish || !selectedPlaybookId.value || !version || version.status !== 'PUBLISHED') return
-  if (!window.confirm(t('soar.deprecateConfirm', { version: version.version }))) return
+  if (!(await confirmDanger(t('soar.deprecateConfirm', { version: version.version })))) return
   loading.value = true
   errorMessage.value = ''
   try {
@@ -681,8 +701,8 @@ async function deprecateSelected(): Promise<void> {
 async function rollbackSelected(): Promise<void> {
   const version = selectedVersion.value
   if (!props.canWrite || !selectedPlaybookId.value || !version || version.status === 'DRAFT') return
-  if (!discardGuard()) return
-  if (!window.confirm(t('soar.rollbackConfirm', { version: version.version }))) return
+  if (!(await discardGuard())) return
+  if (!(await confirmDanger(t('soar.rollbackConfirm', { version: version.version })))) return
   loading.value = true
   errorMessage.value = ''
   try {
@@ -709,7 +729,7 @@ function onCanvasDrop(event: DragEvent): void {
   flow.addFromDrop(type, { x: event.clientX, y: event.clientY })
 }
 
-function onKeyDown(event: KeyboardEvent): void {
+async function onKeyDown(event: KeyboardEvent): Promise<void> {
   if (!props.canWrite) return
   const target = event.target as HTMLElement | null
   if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return
@@ -733,7 +753,7 @@ function onKeyDown(event: KeyboardEvent): void {
   }
   if (modified && key === 'x') {
     event.preventDefault()
-    flow.cutSelection()
+    await flow.cutSelection()
     return
   }
   if (modified && key === 'v') {
@@ -744,7 +764,7 @@ function onKeyDown(event: KeyboardEvent): void {
   if (event.key !== 'Delete' && event.key !== 'Backspace') return
   if (!flowStore.getSelectedNodes.value.length && !flowStore.getSelectedEdges.value.length) return
   event.preventDefault()
-  flow.deleteSelection()
+  await flow.deleteSelection()
 }
 
 function onIssueClick(issue: ValidationIssue): void {
@@ -774,9 +794,7 @@ function issueIsWarning(issue: ValidationIssue): boolean {
 }
 
 function statusLabel(status: string): string {
-  const key = 'soar.status.' + status
-  const translated = t(key)
-  return translated === key ? status : translated
+  return tOr(t, 'soar.status.' + status, status)
 }
 
 watch(() => props.initialPlaybookId, (value) => {
@@ -794,7 +812,7 @@ watch(() => props.createRequest, (request) => {
   if (!request) { handledCreateRequest.value = 0; return }
   if (request && request !== handledCreateRequest.value) {
     handledCreateRequest.value = request
-    openNewPlaybookDialog()
+    void openNewPlaybookDialog()
   }
 })
 
@@ -817,7 +835,7 @@ onMounted(() => {
   }
   if (props.createRequest && props.createRequest !== handledCreateRequest.value) {
     handledCreateRequest.value = props.createRequest
-    openNewPlaybookDialog()
+    void openNewPlaybookDialog()
   }
 })
 
@@ -901,14 +919,14 @@ onUnmounted(() => {
       <el-tag v-if="validation" size="small" :type="flow.validationStale.value ? 'info' : validation.valid ? 'success' : 'danger'">
         {{ flow.validationStale.value ? t('soar.validationOutdated') : validation.valid ? t('soar.validationValid') : t('soar.validationInvalid') }}{{ issueCount ? ` · ${issueCount}` : '' }}
       </el-tag>
-      <el-button v-if="props.canWrite" size="small" @click="validate" :disabled="!selectedVersionNo">{{ t('soar.validate') }}</el-button>
+      <el-button v-if="props.canWrite" size="small" :loading="validating" @click="validate" :disabled="!selectedVersionNo || validating || publishing">{{ t('soar.validate') }}</el-button>
       <el-button
         v-if="props.canWrite"
         size="small"
         :disabled="!publishedVersion || selectedVersionNo === publishedVersion.version"
         @click="openPublishedDiff"
       >{{ t('soar.diff.compareWithPublished') }}</el-button>
-      <el-button v-if="props.canExecute" size="small" @click="dryRun" :disabled="!selectedVersionNo">{{ t('soar.dryRun') }}</el-button>
+      <el-button v-if="props.canExecute" size="small" :loading="dryRunBusy" @click="dryRun" :disabled="!selectedVersionNo || dryRunBusy">{{ t('soar.dryRun') }}</el-button>
       <el-button v-if="props.canExecute" size="small" type="warning" plain :loading="runBusy" :disabled="selectedVersion?.status !== 'PUBLISHED'" @click="queueRun">{{ t('soar.queueRun') }}</el-button>
       <el-button
         v-if="props.canWrite"
@@ -918,7 +936,7 @@ onUnmounted(() => {
         :disabled="!isDraft || !hasUnsavedChanges"
         @click="save"
       >{{ t('soar.saveDraft') }}</el-button>
-      <el-button v-if="props.canPublish" size="small" type="success" @click="publish" :disabled="!isDraft">{{ t('soar.publish') }}</el-button>
+      <el-button v-if="props.canPublish" size="small" type="success" :loading="publishing" @click="publish" :disabled="!isDraft || publishing">{{ t('soar.publish') }}</el-button>
     </div>
 
     <div v-if="message" class="soar-editor-message">{{ message }}</div>

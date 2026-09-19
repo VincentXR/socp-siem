@@ -54,7 +54,52 @@ describe('rule editor identity', () => {
     await wrapper.findAll('button').find(item => item.text() === '保存')!.trigger('click')
     await flushPromises()
     expect(mocks.updateGasRule).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('请填写必填字段')
+    // The refusing message names the block, and the row itself is marked.
+    expect(wrapper.text()).toContain('条件未填写完整：需要字段、操作符和值。 全部满足')
+    expect(wrapper.find('.field-condition-error').text()).toContain('条件未填写完整')
+    expect(wrapper.find('.field-condition-row-invalid').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('prunes blank condition rows, saves, and states how many were dropped', async () => {
+    mocks.listRules.mockResolvedValueOnce([{ id: 'blank', name: 'Blank rows', type: 'pattern', severity: 'HIGH', enabled: false, status: 'DRAFT',
+      match: [{ field: '', op: 'eq', value: '' }, { field: 'msg', op: 'eq', value: 'alert' }] }])
+    mocks.updateGasRule.mockResolvedValueOnce(null)
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/detect/rules/:ruleId/edit', name: 'rule-edit', component: DetectView, meta: { editor: true } }] })
+    await router.push('/detect/rules/blank/edit')
+    await router.isReady()
+    const wrapper = mount({ render: () => h(RouterView) }, { global: { plugins: [router], provide: { [WORKBENCH_STATE as symbol]: { currentRole: ref('admin') } } } })
+    await flushPromises()
+    await wrapper.findAll('button').find(item => item.text() === '保存')!.trigger('click')
+    await flushPromises()
+    // Blank rows are pruned rather than blocking the save; the payload keeps
+    // only the real condition and the success notice states the drop count.
+    expect(mocks.updateGasRule).toHaveBeenCalledTimes(1)
+    const spec = mocks.updateGasRule.mock.calls[0][1]
+    expect(spec.match).toHaveLength(1)
+    expect(spec.match[0].value).toBe('alert')
+    expect(wrapper.find('.detect-feedback.notice').text()).toContain('已忽略 1 个空条件')
+    // Only half-typed conditions are marked inline; a blank row is not one.
+    expect(wrapper.findAll('.field-condition-row-invalid').length).toBe(0)
+    wrapper.unmount()
+  })
+
+  it('validates only the correlation steps a correlation editor actually shows', async () => {
+    mocks.listRules.mockResolvedValueOnce([{ id: 'corr', name: 'Correlation', type: 'correlation', severity: 'HIGH', enabled: false, status: 'DRAFT',
+      window: '60s', groupBy: 'host',
+      steps: [[{ field: 'msg', op: 'eq', value: 'start' }], [{ field: 'msg', op: 'eq', value: '' }]],
+      match: [{ field: 'msg', op: 'eq', value: '' }] }])
+    mocks.updateGasRule.mockResolvedValueOnce(null)
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/detect/rules/:ruleId/edit', name: 'rule-edit', component: DetectView, meta: { editor: true } }] })
+    await router.push('/detect/rules/corr/edit')
+    await router.isReady()
+    const wrapper = mount({ render: () => h(RouterView) }, { global: { plugins: [router], provide: { [WORKBENCH_STATE as symbol]: { currentRole: ref('admin') } } } })
+    await flushPromises()
+    await wrapper.findAll('button').find(item => item.text() === '保存')!.trigger('click')
+    await flushPromises()
+    // The unrendered match block cannot block the save; the half-typed step can.
+    expect(mocks.updateGasRule).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('条件未填写完整：需要字段、操作符和值。 关联步骤')
     wrapper.unmount()
   })
 

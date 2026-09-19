@@ -55,6 +55,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
+import com.socp.detect.web.persistence.store.PendingDetectionEvent;
 
 @ExtendWith(MockitoExtension.class)
 class KafkaEventConsumerTest {
@@ -250,6 +251,26 @@ class KafkaEventConsumerTest {
 
         assertEquals(1, dlq.size());
         verifyNoInteractions(engine);
+    }
+
+    @Test
+    void anExhaustedJournalReplayIsDeadLettered() {
+        given(stateStore.claim(any(SecurityEvent.class), any(), any(), anyString()))
+                .willThrow(new IllegalStateException("journal unavailable"));
+        KafkaEventConsumer consumer = new KafkaEventConsumer(engine, stateStore);
+        ReflectionTestUtils.setField(consumer, "processingMaxAttempts", 1);
+        List<Map.Entry<String, String>> dlq = new ArrayList<>();
+        consumer.setDlqSink((eventId, raw) -> dlq.add(new AbstractMap.SimpleEntry<>(eventId, raw)));
+        SecurityEvent event = new SecurityEvent(Instant.now(), "auth", "web-1", "replay target",
+                Map.of("tenantId", "default", "src_ip", "198.51.100.7"), Severity.INFO);
+
+        consumer.processPendingWithRetry(new PendingDetectionEvent(event, 3, 21L));
+
+        // A replayed row was already accepted once, so it must not be retried
+        // forever: exhausting the attempts dead-letters it. It carries no Kafka
+        // headers, so unlike the polled path there is no originating trace to
+        // inherit - which is why the hand-off is called with null.
+        assertEquals(1, dlq.size(), "the exhausted replay must be dead-lettered");
     }
 
     private static java.util.Queue<?> completionsOf(KafkaEventConsumer consumer) throws Exception {

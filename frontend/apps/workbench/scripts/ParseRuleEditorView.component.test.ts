@@ -62,4 +62,17 @@ describe('parse editor route ownership', () => {
     expect(wrapper.text()).toContain('Database unavailable')
     wrapper.unmount()
   })
+
+  it('refuses a non-array filter payload with the localized contract message', async () => {
+    mocks.listParseRules.mockResolvedValue(rules)
+    const { wrapper } = await openEditor('/parsers/a/edit')
+    const filtersField = wrapper.findAll('textarea').find(field => field.element.value === '[]')
+    expect(filtersField).toBeDefined()
+    await filtersField!.setValue('{}')
+    await wrapper.find('.editor-footer button').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('筛选条件（filters）必须是 JSON 数组。')
+    expect(mocks.updateParseRule).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
 })

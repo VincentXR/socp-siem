@@ -41,8 +41,11 @@ import MetricCard from '../components/MetricCard.vue'
 import PageHeader from '../components/PageHeader.vue'
 import SevBadge from '../components/SevBadge.vue'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
+import { useDebouncedWatch } from '../composables/useDebouncedWatch'
+import { useLatestRequest } from '../composables/useLatestRequest'
 import { caseApi, type CaseInfo, type TimelineEvent } from '../api/domains'
 import { useI18n } from '../composables/useI18n'
+import { tOr } from '../utils/i18nLabel'
 import { WORKBENCH_STATE } from '../app/workbenchState'
 
 const { t } = useI18n()
@@ -67,7 +70,7 @@ const size = ref(20)
 const total = ref(0)
 const keyword = ref('')
 const loading = ref(false)
-let loadSequence = 0
+const latestRequest = useLatestRequest()
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('cases')
 const assigneeOptions = computed(() => Array.from(new Set([
   ...(workbenchState?.operatorOptions.value ?? []),
@@ -76,26 +79,26 @@ const assigneeOptions = computed(() => Array.from(new Set([
 ].filter(Boolean))))
 
 async function loadCases() {
-  if (loading.value) return
-  const sequence = ++loadSequence
+  const request = latestRequest.start()
   loading.value = true
   loadError.value = ''
   try {
     const [caseResult, statResult] = await Promise.allSettled([
-      caseApi.list(page.value, size.value, keyword.value, statusFilter.value || undefined),
-      caseApi.stats(),
+      caseApi.list(page.value, size.value, keyword.value, statusFilter.value || undefined, { signal: request.signal }),
+      caseApi.stats({ signal: request.signal }),
     ])
-    if (sequence !== loadSequence) return
+    if (!request.isCurrent()) return
     if (caseResult.status === 'fulfilled') {
       cases.value = caseResult.value.items
       total.value = caseResult.value.total
     } else {
       loadError.value = caseResult.reason instanceof Error ? caseResult.reason.message : String(caseResult.reason)
     }
+    if (!request.isCurrent()) return
     if (statResult.status === 'fulfilled') stats.value = statResult.value
     openCaseFromQuery()
   } finally {
-    if (sequence === loadSequence) loading.value = false
+    if (request.isCurrent()) loading.value = false
   }
 }
 
@@ -104,6 +107,7 @@ async function openCase(item: CaseInfo) {
   newStatus.value = item.status
   detailAssignee.value = item.assignee ?? ''
   drawerVisible.value = true
+  detailGuard.markSaved()
   timeline.value = []; timelineError.value = ''
   try { timeline.value = (await caseApi.timeline(item.id)).items } catch (failure) { timelineError.value = String(failure) }
 }
@@ -132,6 +136,7 @@ async function updateStatus() {
     const result = await caseApi.updateStatus(detail.value.id, newStatus.value, detailAssignee.value.trim() || undefined)
     detail.value = result.case
     detailAssignee.value = result.case.assignee ?? detailAssignee.value
+    detailGuard.markSaved()
     await loadCases()
   } catch (error) {
     throw error
@@ -166,9 +171,10 @@ async function saveCase() {
 }
 
 const createDialogVisibleGuard = useFormDialog(createDialogVisible, () => caseForm.value, () => actionBusy.value)
+const detailGuard = useFormDialog(drawerVisible, () => ({ status: newStatus.value, assignee: detailAssignee.value }), () => actionBusy.value)
 onMounted(loadCases)
 watch([page, size], () => { void loadCases() })
-watch([keyword, statusFilter], () => {
+useDebouncedWatch([keyword, statusFilter], () => {
   if (page.value !== 1) page.value = 1
   else void loadCases()
 })
@@ -203,7 +209,7 @@ watch(drawerVisible, visible => {
         <FilterToolbar :count="total">
         <el-input v-model="keyword" :placeholder="t('cases.searchPlaceholder')" clearable @input="page = 1" />
         <el-select v-model="statusFilter" :placeholder="t('cases.allStatuses')" clearable @change="page = 1">
-          <el-option v-for="status in ['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']" :key="status" :label="t('statuses.' + status) || status" :value="status" />
+          <el-option v-for="status in ['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']" :key="status" :label="tOr(t, 'statuses.' + status, status)" :value="status" />
         </el-select>
         </FilterToolbar>
       </template>
@@ -212,7 +218,7 @@ watch(drawerVisible, visible => {
         <el-table-column prop="title" column-key="title" :label="t('cases.caseTitle')" :width="columnWidth('title')" min-width="180" show-overflow-tooltip />
         <el-table-column prop="entity" column-key="entity" :label="t('common.entity')" :width="columnWidth('entity', 130)" show-overflow-tooltip />
         <el-table-column prop="severity" column-key="severity" :label="t('common.severity')" :width="columnWidth('severity', 90)"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
-        <el-table-column prop="status" column-key="status" :label="t('common.status')" :width="columnWidth('status', 120)"><template #default="{ row }"><el-tag :type="row.status === 'OPEN' ? 'danger' : row.status === 'RESOLVED' || row.status === 'CLOSED' ? 'success' : 'warning'" size="small">{{ t('statuses.' + row.status) || row.status }}</el-tag></template></el-table-column>
+        <el-table-column prop="status" column-key="status" :label="t('common.status')" :width="columnWidth('status', 120)"><template #default="{ row }"><el-tag :type="row.status === 'OPEN' ? 'danger' : row.status === 'RESOLVED' || row.status === 'CLOSED' ? 'success' : 'warning'" size="small">{{ tOr(t, 'statuses.' + row.status, row.status) }}</el-tag></template></el-table-column>
         <el-table-column prop="alarmCount" column-key="alarmCount" :label="t('cases.associatedAlarms')" :width="columnWidth('alarmCount', 90)"><template #default="{ row }">{{ row.alarmIds.length }}</template></el-table-column>
         <el-table-column :label="t('common.actions')" width="100" :resizable="false"><template #default="{ row }"><el-button link type="primary" size="small" @click="openCaseRow(row)">{{ t('cases.detailsTimeline') }}</el-button></template></el-table-column>
       </el-table>
@@ -229,30 +235,30 @@ watch(drawerVisible, visible => {
               <el-input v-model="caseForm.entity" :placeholder="t('cases.entityPlaceholder')" />
             </FormField>
             <FormField :label="t('common.severity')" :hint="t('cases.severityHint')">
-              <el-select v-model="caseForm.severity"><el-option v-for="level in ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']" :key="level" :label="t('severities.' + level) || level" :value="level" /></el-select>
+              <el-select v-model="caseForm.severity"><el-option v-for="level in ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']" :key="level" :label="tOr(t, 'severities.' + level, level)" :value="level" /></el-select>
             </FormField>
             <FormField :label="t('cases.assignee')" :hint="t('cases.assigneeHint')">
-              <el-select v-model="caseForm.assignee" filterable default-first-option clearable :placeholder="t('cases.assigneePlaceholder')"><el-option v-for="assignee in assigneeOptions" :key="assignee" :label="assignee" :value="assignee" /></el-select>
+              <el-select v-model="caseForm.assignee" filterable default-first-option allow-create clearable :placeholder="t('cases.assigneePlaceholder')"><el-option v-for="assignee in assigneeOptions" :key="assignee" :label="assignee" :value="assignee" /></el-select>
             </FormField>
           </FormGrid>
         </FormSection>
       </el-form>
       <template #footer>
         <el-button @click="createDialogVisibleGuard.cancel">{{ t('common.cancel') }}</el-button>
-        <el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="saveCase">{{ t('cases.createCase') }}</el-button>
+        <el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="saveCase">{{ t('common.save') }}</el-button>
       </template>
     </el-dialog>
 
-    <el-drawer v-model="drawerVisible" :title="`${t('cases.title')} · ${detail?.title ?? ''}`" size="520px">
+    <el-drawer v-model="drawerVisible" :before-close="detailGuard.beforeClose" :title="`${t('cases.title')} · ${detail?.title ?? ''}`" size="min(520px, 96vw)">
       <template v-if="detail">
         <el-descriptions :column="2" size="small" border>
           <el-descriptions-item :label="t('cases.caseId')">{{ detail.id }}</el-descriptions-item>
           <el-descriptions-item v-if="detail.caseNo" :label="t('cases.caseNo')">{{ detail.caseNo }}</el-descriptions-item>
           <el-descriptions-item :label="t('common.entity')">{{ detail.entity }}</el-descriptions-item>
           <el-descriptions-item :label="t('common.severity')"><SevBadge :value="detail.severity" /></el-descriptions-item>
-          <el-descriptions-item :label="t('common.status')">{{ t('statuses.' + detail.status) || detail.status }}</el-descriptions-item>
+          <el-descriptions-item :label="t('cases.status')">{{ tOr(t, 'statuses.' + detail.status, detail.status) }}</el-descriptions-item>
           <el-descriptions-item :label="t('cases.assignee')">
-            <el-select v-if="canWrite" v-model="detailAssignee" filterable default-first-option clearable :placeholder="t('cases.assigneePlaceholder')" style="width:100%">
+            <el-select v-if="canWrite" v-model="detailAssignee" filterable default-first-option allow-create clearable :placeholder="t('cases.assigneePlaceholder')" style="width:100%">
               <el-option v-for="assignee in assigneeOptions" :key="assignee" :label="assignee" :value="assignee" />
             </el-select>
             <span v-else>{{ detail.assignee || '—' }}</span>
@@ -266,7 +272,14 @@ watch(drawerVisible, visible => {
             <span v-else>—</span>
           </el-descriptions-item>
         </el-descriptions>
-        <div v-if="canWrite" class="case-status-row"><el-select v-model="newStatus"><el-option v-for="status in ['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']" :key="status" :label="t('statuses.' + status) || status" :value="status" /></el-select><el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="updateStatus">{{ t('cases.updateStatus') }}</el-button></div>
+        <template v-if="canWrite">
+          <p class="dialog-hint">{{ t('forms.changeStatus') }}</p>
+          <div class="case-status-row">
+            <el-select v-model="newStatus"><el-option v-for="status in ['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']" :key="status" :label="tOr(t, 'statuses.' + status, status)" :value="status" /></el-select>
+            <el-button type="primary" :loading="actionBusy" @click="updateStatus">{{ t('cases.updateStatus') }}</el-button>
+          </div>
+          <p class="drawer-readonly-hint">{{ t('forms.changeStatus') }} + {{ t('forms.assign') }}</p>
+        </template>
         <el-divider content-position="left">{{ t('cases.timeline') }}</el-divider>
         <ActionFeedback :error="timelineError" /><el-timeline><el-timeline-item v-for="(event, index) in timeline" :key="index" :timestamp="event.ts" placement="top"><div>{{ event.message }}</div><div class="case-event-meta">{{ event.type }} · {{ event.source }}</div></el-timeline-item></el-timeline>
       </template>

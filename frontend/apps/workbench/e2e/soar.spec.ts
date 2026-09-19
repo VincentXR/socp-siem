@@ -218,6 +218,11 @@ test('SOAR workbench covers draft lifecycle, run inspection and human controls',
   await page.getByRole('button', { name: 'Validate' }).click()
   await expect(page.locator('.soar-editor-message')).toContainText('Definition is publishable')
   await page.locator('.soar-editor').getByRole('button', { name: 'Publish', exact: true }).click()
+  // Publishing asks for an explicit confirmation (an Element Plus message box)
+  // that carries the revision number being made live.
+  const publishConfirm = page.locator('.el-message-box')
+  await expect(publishConfirm).toContainText('Publish version 1')
+  await publishConfirm.getByRole('button', { name: /Confirm|确认/ }).click()
   await expect(page.locator('.soar-editor-message')).toContainText('Published revision 1')
   await page.screenshot({ path: testInfo.outputPath('soar-editor.png'), fullPage: true })
 
@@ -292,8 +297,11 @@ test('SOAR run controls surface permission failures without breaking the inspect
   })
   await page.goto('/soar')
   await page.getByRole('tab', { name: 'Runs' }).click({ force: true })
-  page.once('dialog', dialog => dialog.accept())
+  // The rerun confirmation is an Element Plus message box, not a native dialog.
   await page.getByRole('button', { name: 'Rerun' }).click()
+  const rerunConfirm = page.locator('.el-message-box')
+  await expect(rerunConfirm).toBeVisible()
+  await rerunConfirm.getByRole('button', { name: /Confirm|确认/ }).click()
   await expect(page.locator('.soar-inspector-error[role="alert"]')).toContainText('SOAR rerun permission required')
   await expect(page.locator('.soar-run-summary')).toContainText('run-1')
   expect(state.unknown).toEqual([])

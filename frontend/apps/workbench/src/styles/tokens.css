@@ -10,6 +10,14 @@
   --ns-radius-md: 8px;
   --ns-radius-lg: 12px;
   --ns-radius-pill: 999px;
+  /* 字阶（唯一的正数字号档位；页面不得再写 12.5px 这类小数号） */
+  --ns-fs-hero: 30px;
+  --ns-fs-title: 24px;
+  --ns-fs-subtitle: 16px;
+  --ns-fs-body: 13px;
+  --ns-fs-label: 12px;
+  --ns-fs-meta: 11px;
+  --ns-fs-badge: 10px;
   --ns-content-max: 1440px;
   --ns-sidebar-width: 216px;
   --ns-header-height: 56px;

@@ -25,11 +25,13 @@ import UebaScorePanel from '../components/ueba/UebaScorePanel.vue'
 import UebaWatchlistsPanel from '../components/ueba/UebaWatchlistsPanel.vue'
 import { useI18n } from '../composables/useI18n'
 import { useWriteAccess } from '../composables/useWriteAccess'
+import { useConfirm } from '../composables/useConfirm'
 
 const props = defineProps<{ theme: 'light' | 'dark' }>()
 const emit = defineEmits<{ 'go-alarms': [entity: string] }>()
 const { t } = useI18n()
 const canWrite = useWriteAccess()
+const { confirmDanger } = useConfirm()
 
 const loadError = ref('')
 const techniqueError = ref('')
@@ -80,7 +82,7 @@ async function createWatchlist(name: string, values: string[]) { if (!canWrite.v
 async function appendToWatchlist(name: string, values: string[]) { if (!canWrite.value) return; await appendWatchlist(name, values); await refreshWatchlists() }
 async function removeWatchlist(name: string) {
   if (!canWrite.value) return
-  if (!confirm(t('ueba.deleteWatchlistConfirm', { name }))) return
+  if (!await confirmDanger(t('ueba.deleteWatchlistConfirm', { name }), { title: t('common.delete') })) return
   try { await deleteWatchlist(name); await refreshWatchlists() }
   catch (failure) { loadError.value = String(failure) }
 }
@@ -103,12 +105,12 @@ onMounted(loadUeba)
     <ActionFeedback :error="loadError" />
     <div v-if="!canWrite" class="page-readonly-hint">{{ t('ueba.readOnly') }}</div>
     <el-alert v-if="techniqueError" :title="t('ueba.techniqueDictionaryUnavailable')" :description="techniqueError" type="warning" :closable="false" show-icon style="margin-bottom:12px" />
-    <el-row :gutter="12" style="margin-bottom:14px">
-      <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num">{{ riskSummary?.entities ?? '—' }}</div><div class="label">{{ t('ueba.entityCount') }}</div></div></el-card></el-col>
-      <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-danger)">{{ riskSummary?.maxRisk ?? '—' }}</div><div class="label">{{ t('ueba.maxRisk') }}</div></div></el-card></el-col>
-      <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-warning)">{{ (riskSummary?.byLevel?.CRITICAL ?? 0) + (riskSummary?.byLevel?.HIGH ?? 0) }}</div><div class="label">{{ t('ueba.highRiskEntities') }}</div></div></el-card></el-col>
-      <el-col :span="5"><el-card shadow="never"><div class="stat-card"><div class="num">{{ riskSummary?.halfLifeHours ?? 0 }}h</div><div class="label">{{ t('ueba.halfLife') }}</div></div></el-card></el-col>
-      <el-col :span="4"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-accent-fg)">{{ watchlists.length }}</div><div class="label">{{ t('ueba.watchlists') }}</div></div></el-card></el-col>
+    <el-row class="metrics-row" :gutter="12" style="margin-bottom:14px">
+      <el-col :xs="24" :sm="12" :md="5"><el-card shadow="never"><div class="stat-card"><div class="num">{{ riskSummary?.entities ?? '—' }}</div><div class="label">{{ t('ueba.entityCount') }}</div></div></el-card></el-col>
+      <el-col :xs="24" :sm="12" :md="5"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-danger)">{{ riskSummary?.maxRisk ?? '—' }}</div><div class="label">{{ t('ueba.maxRisk') }}</div></div></el-card></el-col>
+      <el-col :xs="24" :sm="12" :md="5"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-warning)">{{ (riskSummary?.byLevel?.CRITICAL ?? 0) + (riskSummary?.byLevel?.HIGH ?? 0) }}</div><div class="label">{{ t('ueba.highRiskEntities') }}</div></div></el-card></el-col>
+      <el-col :xs="24" :sm="12" :md="5"><el-card shadow="never"><div class="stat-card"><div class="num">{{ riskSummary?.halfLifeHours ?? 0 }}h</div><div class="label">{{ t('ueba.halfLife') }}</div></div></el-card></el-col>
+      <el-col :xs="24" :sm="12" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-accent-fg)">{{ watchlists.length }}</div><div class="label">{{ t('ueba.watchlists') }}</div></div></el-card></el-col>
     </el-row>
 
     <el-tabs v-model="uebaTab">

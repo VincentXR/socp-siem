@@ -11,4 +11,4 @@ export const setIocRevoked = (id: string, revoked: boolean) => patch<Ioc>(`/thre
 export const importIocs = (items: Array<{ type: string; value: string; severity?: string; source?: string; description?: string; tags?: string[] }>) => post<{ imported: number; skipped: number; errors: string[] }>('/threat-web/api/v1/iocs/import', items)
 export const deleteIoc = (id: string) => del(`/threat-web/api/v1/iocs/${encodeURIComponent(id)}`)
 export const tiMatch = (value: string, options?: ApiRequestOptions) => get<{ value: string; matched: boolean; ioc?: Ioc }>(withQuery('/threat-web/api/v1/iocs/match', { value }), options)
-export const tiStats = () => get<{ total: number; byType: Record<string, number> }>('/threat-web/api/v1/stats')
+export const tiStats = (options?: ApiRequestOptions) => get<{ total: number; byType: Record<string, number> }>('/threat-web/api/v1/stats', options)

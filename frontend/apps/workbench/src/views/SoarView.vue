@@ -4,6 +4,7 @@ import 'element-plus/es/components/card/style/css.mjs'
 import 'element-plus/es/components/dialog/style/css.mjs'
 import 'element-plus/es/components/form/style/css.mjs'
 import 'element-plus/es/components/input/style/css.mjs'
+import 'element-plus/es/components/message/style/css.mjs'
 import 'element-plus/es/components/table/style/css.mjs'
 import 'element-plus/es/components/tabs/style/css.mjs'
 import 'element-plus/es/components/tag/style/css.mjs'
@@ -12,6 +13,7 @@ import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElDialog from 'element-plus/es/components/dialog/index.mjs'
 import { ElForm, ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
+import ElMessage from 'element-plus/es/components/message/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
@@ -36,14 +38,21 @@ import {
   type SoarTemplate,
 } from '../api'
 import { useI18n } from '../composables/useI18n'
+import { useConfirm } from '../composables/useConfirm'
+import { useFormDialog } from '../composables/useFormDialog'
 import { useSoarAccess } from '../composables/useSoarAccess'
+import { tOr } from '../utils/i18nLabel'
 
 const { t } = useI18n()
+const { confirmDanger } = useConfirm()
 const soarAccess = useSoarAccess()
 const canWrite = soarAccess.canEdit
 const route = useRoute()
 const router = useRouter()
 const chooseTemplate = ref(false)
+/** Template id whose install request is in flight (guards a double submit). */
+const installingTemplateId = ref('')
+const templateError = ref('')
 
 type SoarTab = 'playbooks' | 'rules' | 'runs' | 'approvals' | 'connections'
 const activeTab = ref<SoarTab>('playbooks')
@@ -81,7 +90,16 @@ const approvalModal = ref({
   isApprove: true,
   reason: '',
   loading: false,
+  error: '',
 })
+
+/** useFormDialog owns a boolean ref, so the dialog's own visibility is projected. */
+const approvalVisible = computed<boolean>({
+  get: () => approvalModal.value.visible,
+  set: value => { approvalModal.value.visible = value },
+})
+const approvalGuard = useFormDialog(approvalVisible, () => approvalModal.value.reason, () => approvalModal.value.loading)
+const approvalReasonMissing = computed(() => !approvalModal.value.reason.trim())
 
 function openApprovalModal(row: any, approve: boolean) {
   if (!soarAccess.canApprove.value) return
@@ -93,22 +111,26 @@ function openApprovalModal(row: any, approve: boolean) {
     isApprove: approve,
     reason: '',
     loading: false,
+    error: '',
   }
 }
 
 async function submitApprovalDecision() {
-  if (!soarAccess.canApprove.value || !approvalModal.value.reason.trim()) return
-  approvalModal.value.loading = true
+  const modal = approvalModal.value
+  if (!soarAccess.canApprove.value || !modal.reason.trim()) return
+  modal.loading = true
+  modal.error = ''
   try {
-    if (approvalModal.value.isApprove) {
-      await approve(approvalModal.value.approvalId, approvalModal.value.reason.trim())
+    if (modal.isApprove) {
+      await approve(modal.approvalId, modal.reason.trim())
     } else {
-      await reject(approvalModal.value.approvalId, approvalModal.value.reason.trim())
+      await reject(modal.approvalId, modal.reason.trim())
     }
-    approvalModal.value.visible = false
+    approvalVisible.value = false
+    ElMessage.success(t('soar.approvalRecorded'))
     await loadPlaybooks()
-  } catch (failure) { loadError.value = String(failure) } finally {
-    approvalModal.value.loading = false
+  } catch (failure) { modal.error = String(failure) } finally {
+    modal.loading = false
   }
 }
 
@@ -135,23 +157,33 @@ async function loadPlaybooks() {
 }
 
 async function installTemplate(id: string) {
-  if (!canWrite.value) return
+  if (!canWrite.value || installingTemplateId.value) return
+  installingTemplateId.value = id
+  templateError.value = ''
   try {
     const result = await installTemplateApi(id) as { playbook?: { id?: string } }
     await loadPlaybooks()
     const playbookId = String(result?.playbook?.id || '')
-    if (playbookId) openEditorForPlaybook(playbookId)
+    chooseTemplate.value = false
+    ElMessage.success(t('soar.createdDraft'))
+    if (playbookId) await openEditorForPlaybook(playbookId)
   } catch (failure) {
-    loadError.value = failure instanceof Error ? failure.message : 'Unable to install the playbook template'
+    templateError.value = String(failure)
+  } finally {
+    installingTemplateId.value = ''
   }
+}
+
+function discardEditorChanges(): Promise<boolean> {
+  return confirmDanger(t('soar.discardChanges'), { title: t('forms.unsavedTitle') })
 }
 
 /**
  * Hiding the editor unmounts it, so warn when it still holds unsaved changes
  * (the dirty state is tracked by SoarEditor and surfaced through its ref).
  */
-function toggleEditor(): void {
-  if (showEditor.value && editorRef.value?.hasUnsavedChanges && !confirm(t('soar.discardChanges'))) return
+async function toggleEditor(): Promise<void> {
+  if (showEditor.value && editorRef.value?.hasUnsavedChanges && !(await discardEditorChanges())) return
   showEditor.value = !showEditor.value
 }
 
@@ -160,8 +192,8 @@ function toggleEditor(): void {
  * editor, then let SoarEditor load the exact run version and overlay the run
  * node statuses (Slice 4). Unsaved graph edits are discarded after a confirm.
  */
-function handleOpenRunInEditor(request: RunOpenRequest): void {
-  if (editorRef.value?.hasUnsavedChanges && !confirm(t('soar.runHighlightDiscardChanges'))) return
+async function handleOpenRunInEditor(request: RunOpenRequest): Promise<void> {
+  if (editorRef.value?.hasUnsavedChanges && !(await confirmDanger(t('soar.runHighlightDiscardChanges'), { title: t('forms.unsavedTitle') }))) return
   showEditor.value = true
   activeTab.value = 'playbooks'
   selectedPlaybookId.value = request.playbookId
@@ -169,8 +201,8 @@ function handleOpenRunInEditor(request: RunOpenRequest): void {
   void router.push({ name: 'playbook-edit', params: { playbookId: request.playbookId } })
 }
 
-function openEditorForCreate(): void {
-  if (showEditor.value && editorRef.value?.hasUnsavedChanges && !confirm(t('soar.discardChanges'))) return
+async function openEditorForCreate(): Promise<void> {
+  if (showEditor.value && editorRef.value?.hasUnsavedChanges && !(await discardEditorChanges())) return
   activeTab.value = 'playbooks'
   selectedPlaybookId.value = ''
   showEditor.value = true
@@ -178,8 +210,8 @@ function openEditorForCreate(): void {
   void router.push({ name: 'playbook-new' })
 }
 
-function openEditorForPlaybook(id: string): void {
-  if (showEditor.value && editorRef.value?.hasUnsavedChanges && !confirm(t('soar.discardChanges'))) return
+async function openEditorForPlaybook(id: string): Promise<void> {
+  if (showEditor.value && editorRef.value?.hasUnsavedChanges && !(await discardEditorChanges())) return
   activeTab.value = 'playbooks'
   selectedPlaybookId.value = id
   showEditor.value = true
@@ -206,9 +238,7 @@ function runTag(status?: string): 'success' | 'warning' | 'danger' | 'info' | 'p
 }
 
 function statusLabel(status: string): string {
-  const key = 'soar.status.' + status
-  const translated = t(key)
-  return translated === key ? status : translated
+  return tOr(t, 'soar.status.' + status, status)
 }
 
 const statusSummary = computed(() => {
@@ -222,7 +252,7 @@ watch(() => route.fullPath, () => {
   selectedPlaybookId.value = String(route.params.playbookId || '')
   createRequestToken.value = route.name === 'playbook-new' ? createRequestToken.value + 1 : 0
 })
-const canLeaveEditor = () => !editorRef.value?.hasUnsavedChanges || confirm(t('soar.discardChanges'))
+const canLeaveEditor = async (): Promise<boolean> => !editorRef.value?.hasUnsavedChanges || await discardEditorChanges()
 onBeforeRouteLeave(canLeaveEditor)
 onBeforeRouteUpdate((to, from) => to.path === from.path || canLeaveEditor())
 onMounted(loadPlaybooks)
@@ -244,9 +274,13 @@ onMounted(loadPlaybooks)
 
     <el-button v-if="showEditor" @click="router.push({ name: 'soar' })">{{ t('forms.back') }}</el-button>
     <SoarEditor v-if="showEditor" ref="editorRef" :initial-playbook-id="selectedPlaybookId" :open-run="openRunRequest" :create-request="createRequestToken" :context-alarm-id="contextAlarmId" :can-write="canWrite" :can-publish="soarAccess.canPublish.value" :can-execute="soarAccess.canExecute.value" @created="id => router.replace({ name: 'playbook-edit', params: { playbookId: id } })" />
-    <el-dialog v-model="chooseTemplate" :title="t('forms.selectTemplate')" width="640px">
+    <el-dialog v-model="chooseTemplate" :title="t('forms.selectTemplate')" width="640px" :close-on-click-modal="false">
       <el-button v-if="canWrite" type="primary" @click="openEditorForCreate">{{ t('forms.blank') }}</el-button>
-      <div v-for="template in templates" :key="template.id" class="template-choice"><div><b>{{ template.name }}</b><p>{{ template.description }}</p></div><el-button v-if="canWrite" @click="installTemplate(String(template.id))">{{ t('soar.installDraft') }}</el-button></div>
+      <div v-for="template in templates" :key="template.id" class="template-choice"><div><b>{{ template.name }}</b><p>{{ template.description }}</p></div><el-button v-if="canWrite" :loading="installingTemplateId === String(template.id)" :disabled="Boolean(installingTemplateId)" @click="installTemplate(String(template.id))">{{ t('soar.installDraft') }}</el-button></div>
+      <div v-if="templateError" class="soar-load-error" role="alert">{{ templateError }}</div>
+      <template #footer>
+        <el-button @click="chooseTemplate = false">{{ t('common.cancel') }}</el-button>
+      </template>
     </el-dialog>
     <el-tabs v-if="!showEditor" v-model="activeTab" class="soar-tabs">
       <!-- 14.1 剧本 (Playbooks) -->
@@ -369,19 +403,32 @@ onMounted(loadPlaybooks)
     <div v-if="loadError" class="soar-load-error" role="alert">{{ loadError }}</div>
 
     <!-- Approval Decision Dialog -->
-    <el-dialog v-model="approvalModal.visible" :title="approvalModal.isApprove ? t('soar.approve') : t('soar.reject')" width="520px">
+    <el-dialog
+      v-model="approvalVisible"
+      :before-close="approvalGuard.beforeClose"
+      :title="approvalModal.isApprove ? t('soar.approve') : t('soar.reject')"
+      width="520px"
+      :close-on-click-modal="false"
+    >
       <div class="soar-approval-dialog-body">
         <p><strong>{{ t('soar.runId') }}:</strong> {{ approvalModal.runId }}</p>
         <p v-if="approvalModal.actionRef"><strong>{{ t('soar.action') }}:</strong> {{ approvalModal.actionRef }}</p>
         <el-form label-position="top">
-          <el-form-item :label="t('soar.decisionReason')">
+          <el-form-item :label="t('soar.decisionReason')" required :error="approvalModal.error">
             <el-input v-model="approvalModal.reason" type="textarea" :rows="3" :placeholder="t('soar.decisionPlaceholder')" />
+            <p v-if="approvalReasonMissing" class="soar-approval-hint">{{ t('forms.fieldRequired', { field: t('soar.decisionReason') }) }}</p>
           </el-form-item>
         </el-form>
       </div>
       <template #footer>
-        <el-button @click="approvalModal.visible = false">{{ t('common.cancel') }}</el-button>
-        <el-button v-if="soarAccess.canApprove.value" :type="approvalModal.isApprove ? 'success' : 'danger'" :loading="approvalModal.loading" @click="submitApprovalDecision">
+        <el-button @click="approvalGuard.cancel">{{ t('common.cancel') }}</el-button>
+        <el-button
+          v-if="soarAccess.canApprove.value"
+          :type="approvalModal.isApprove ? 'success' : 'danger'"
+          :loading="approvalModal.loading"
+          :disabled="approvalReasonMissing"
+          @click="submitApprovalDecision"
+        >
           {{ approvalModal.isApprove ? t('soar.approve') : t('soar.reject') }}
         </el-button>
       </template>
@@ -407,5 +454,6 @@ onMounted(loadPlaybooks)
 .soar-summary { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .soar-approval-table { margin-top: 8px; }
 .soar-approval-dialog-body p { margin-bottom: 8px; font-size: 12px; color: var(--ns-text-2); }
+.soar-approval-dialog-body p.soar-approval-hint { margin: 4px 0 0; color: var(--ns-warning); }
 .soar-text-muted { color: var(--ns-text-3); font-size: 11px; }
 </style>

@@ -14,6 +14,7 @@ import ElTag from 'element-plus/es/components/tag/index.mjs'
 import SevBadge from '../SevBadge.vue'
 import type { RiskEntity } from '../../api'
 import { useI18n } from '../../composables/useI18n'
+import { tOr } from '../../utils/i18nLabel'
 
 defineProps<{ modelValue: boolean; entity: RiskEntity | null }>()
 const emit = defineEmits<{ 'update:modelValue': [value: boolean]; 'go-alarms': [] }>()
@@ -23,13 +24,13 @@ function formatTime(value: string | null) { return value ? d(value, 'dateTime') 
 </script>
 
 <template>
-  <el-drawer :model-value="modelValue" size="480px" :title="entity?.entity ?? t('ueba.entityProfile')" @update:model-value="emit('update:modelValue', $event)">
+  <el-drawer :model-value="modelValue" size="min(480px, 96vw)" :title="entity?.entity ?? t('ueba.entityProfile')" @update:model-value="emit('update:modelValue', $event)">
     <div v-if="entity">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
         <span class="risk-pill lg" :class="`risk-${String(entity.level || 'INFO').toLowerCase()}`">{{ entity.risk }}</span>
         <div>
           <div style="font-weight:600" class="mono">{{ entity.entity }}</div>
-          <div style="font-size:12px;color:var(--ns-text-3)">{{ t('severities.' + entity.level) || entity.level }} · {{ t('ueba.alertCount', { count: entity.alerts }) }}</div>
+          <div style="font-size:12px;color:var(--ns-text-3)">{{ tOr(t, 'severities.' + entity.level, entity.level) }} · {{ t('ueba.alertCount', { count: entity.alerts }) }}</div>
         </div>
         <el-tag v-if="entity.critical" type="danger" effect="dark" style="margin-left:auto">{{ t('ueba.coreAsset') }}</el-tag>
       </div>

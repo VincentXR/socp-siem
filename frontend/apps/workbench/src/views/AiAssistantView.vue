@@ -12,6 +12,7 @@ import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
 import { aiAsk, appendInvestigationToIncident, investigateAlert, type AiResult, type InvestigationResult } from '../api'
 import { useI18n } from '../composables/useI18n'
+import { tOr } from '../utils/i18nLabel'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -20,6 +21,7 @@ const router = useRouter()
 const question = ref('')
 const result = ref<AiResult | null>(null)
 const loading = ref(false)
+const askError = ref('')
 const alertId = ref('')
 const investigation = ref<InvestigationResult | null>(null)
 const investigationLoading = ref(false)
@@ -46,8 +48,11 @@ async function ask(queryText?: string) {
   if (!query || loading.value) return
   question.value = query
   loading.value = true
+  askError.value = ''
   try {
     result.value = await aiAsk(query)
+  } catch (error) {
+    askError.value = error instanceof Error ? error.message : String(error)
   } finally {
     loading.value = false
   }
@@ -56,6 +61,7 @@ async function ask(queryText?: string) {
 function clear() {
   question.value = ''
   result.value = null
+  askError.value = ''
 }
 
 async function investigate() {
@@ -113,6 +119,11 @@ onMounted(() => {
         <el-button v-if="result || question" @click="clear">{{ t('ai.resetBtn') }}</el-button>
       </div>
 
+      <div v-if="askError" class="ai-error" role="alert">
+        <span>{{ askError }}</span>
+        <el-button link type="primary" size="small" @click="ask()">{{ t('common.retry') }}</el-button>
+      </div>
+
       <div class="ai-quick-prompts">
         <span class="ai-quick-label">{{ t('ai.quickPromptLabel') }}</span>
         <el-tag
@@ -121,7 +132,11 @@ onMounted(() => {
           size="small"
           effect="plain"
           class="ai-quick-tag"
+          role="button"
+          tabindex="0"
+          :aria-label="prompt"
           @click="ask(prompt)"
+          @keydown.enter.space.prevent="ask(prompt)"
         >
           {{ prompt }}
         </el-tag>
@@ -134,7 +149,7 @@ onMounted(() => {
           <span class="ai-emphasis">{{ t('ai.suggestionTitle') }}</span>{{ result.suggestion }}
         </div>
         <div class="ai-result-meta">
-          <el-tag size="small" effect="plain">{{ result.source }}</el-tag>
+          <el-tag size="small" effect="plain">{{ tOr(t, 'ai.sources.' + result.source.toLowerCase(), result.source) }}</el-tag>
           <span>{{ t('ai.elapsed', { ms: result.elapsedMs }) }}</span>
         </div>
       </div>

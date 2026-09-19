@@ -5,6 +5,7 @@ import com.socp.search.config.domain.ParseFormat;
 import com.socp.search.config.domain.SourceType;
 import com.socp.search.config.api.request.LogSourceRequest;
 import com.socp.search.config.api.request.ParseRuleRequest;
+import com.socp.search.config.api.request.SinkTargetRequest;
 import jakarta.validation.Validation;
 import jakarta.validation.Validator;
 import jakarta.validation.ValidatorFactory;
@@ -65,5 +66,18 @@ class RequestValidationTest {
         var source = request.toNewDomain();
         assertTrue(source.id() != null && !source.id().isBlank());
         assertTrue(source.createdAt() != null);
+    }
+
+    @Test
+    void sinkTargetRequestAcceptsGlsIngestAndRejectsUnknownType() {
+        SinkTargetRequest glsIngest = new SinkTargetRequest(
+                "SEARCH 默认 ingest", "GLS_INGEST",
+                "http://localhost:18081/search-config/api/v1/ingest", null, true);
+        assertTrue(validator.validate(glsIngest).isEmpty());
+
+        SinkTargetRequest unknown = new SinkTargetRequest(
+                "bad", "FTP", "http://localhost:18081/ingest", null, true);
+        assertTrue(validator.validate(unknown).stream()
+                .anyMatch(v -> "type".equals(v.getPropertyPath().toString())));
     }
 }

@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, provide, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import 'element-plus/es/components/message/style/css.mjs'
 import ElConfigProvider from 'element-plus/es/components/config-provider/index.mjs'
+import ElMessage from 'element-plus/es/components/message/index.mjs'
 import LoginView from './LoginView.vue'
 import AppShell from './components/AppShell.vue'
 import { getVisibleMenuGroups } from './app/navigation'
@@ -12,6 +14,7 @@ import { useOverview } from './composables/useOverview'
 import { useTheme } from './composables/useTheme'
 import { useWorkbenchRoute } from './composables/useWorkbenchRoute'
 import { accessibleMenu, isMenuKey } from './app/routes'
+import { NOT_FOUND_ROUTE } from './app/router'
 import { useI18n } from './composables/useI18n'
 import { WORKBENCH_STATE } from './app/workbenchState'
 
@@ -19,8 +22,10 @@ const { t, elLocale } = useI18n()
 const auth = useAuth()
 const { currentUser, currentRole, operatorOptions, isAuthed, userInitials } = auth
 const router = useRouter()
+const route = useRoute()
 const { activeMenu, navigate } = useWorkbenchRoute()
 const menuGroups = computed(() => getVisibleMenuGroups(currentRole.value, t))
+const routeMenuAllowed = computed(() => menuGroups.value.some(group => group.items.some(item => item.key === activeMenu.value)))
 const activeLabel = computed(() => {
   for (const group of menuGroups.value) {
     const item = group.items.find(menuItem => menuItem.key === activeMenu.value)
@@ -41,10 +46,25 @@ function onLoginDone(user: string, role: string) {
   auth.onLoginDone(user, role)
 }
 
+/**
+ * Landing back on Overview has two distinct causes, and an operator needs the
+ * right one: the role cannot open the requested page, or the deep link matched
+ * no route at all and the catch-all already rewrote it. `grouping` keeps the
+ * mount-time guard and the menu watcher from stacking duplicate notices.
+ */
+function announceFallback(reason: 'forbidden' | 'not-found') {
+  ElMessage.warning({
+    message: t(reason === 'not-found' ? 'errors.NOT_FOUND' : 'nav.accessRedirected'),
+    grouping: true,
+  })
+}
+
 function onMenuChange(key: string) {
   if (!isMenuKey(key)) return
   const visibleMenus = new Set(menuGroups.value.flatMap(group => group.items.map(item => item.key)))
-  navigate(accessibleMenu(key, visibleMenus))
+  const allowed = accessibleMenu(key, visibleMenus)
+  if (allowed !== key) announceFallback('forbidden')
+  navigate(allowed)
 }
 
 provide(WORKBENCH_STATE, {
@@ -67,8 +87,17 @@ watch([activeMenu, isAuthed], ([key, authed]) => {
 watch(menuGroups, groups => {
   const visibleMenus = new Set(groups.flatMap(group => group.items.map(item => item.key)))
   const allowed = accessibleMenu(activeMenu.value, visibleMenus)
-  if (allowed !== activeMenu.value) navigate(allowed, true)
+  if (allowed !== activeMenu.value) {
+    announceFallback('forbidden')
+    navigate(allowed, true)
+  }
 })
+
+// The router resolves a dead link through the named catch-all before this
+// component settles, so the original address only survives on `redirectedFrom`.
+watch(() => route.redirectedFrom, from => {
+  if (from?.name === NOT_FOUND_ROUTE) announceFallback('not-found')
+}, { immediate: true })
 
 onMounted(async () => {
   initTheme()
@@ -104,7 +133,7 @@ onMounted(async () => {
       @toggle-theme="toggleTheme"
       @logout="auth.doLogout"
     >
-      <main class="socp-content"><RouterView /></main>
+      <main class="socp-content"><RouterView v-if="routeMenuAllowed" /></main>
     </AppShell>
   </el-config-provider>
 </template>

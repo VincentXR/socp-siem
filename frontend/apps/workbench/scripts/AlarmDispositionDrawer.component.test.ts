@@ -55,4 +55,28 @@ describe('AlarmDispositionDrawer', () => {
     expect(window.sessionStorage.getItem('socp.search.query')).toBe('eventId:evt-1')
     expect(goSearch).toHaveBeenCalledOnce()
   })
+
+  it('sends one Idempotency-Key per note and reuses it when the submit is retried', async () => {
+    mocks.addAlarmNote.mockRejectedValueOnce(new Error('network down'))
+    const wrapper = mount(AlarmDispositionDrawer, {
+      props: { modelValue: true, alarm, goCase: vi.fn(), goSearch: vi.fn() },
+    })
+    await flushPromises()
+
+    const addButton = wrapper.findAll('button').find(button => button.text() === '添加')
+    expect(addButton).toBeTruthy()
+    await wrapper.find('input[placeholder="添加调查备注"]').setValue('  已确认是扫描流量  ')
+    await addButton!.trigger('click')
+    await flushPromises()
+    expect(mocks.addAlarmNote).toHaveBeenCalledTimes(1)
+    const [alarmId, content, , idempotencyKey] = mocks.addAlarmNote.mock.calls[0]
+    expect(alarmId).toBe('alarm-1')
+    expect(content).toBe('已确认是扫描流量')
+    expect(String(idempotencyKey)).toMatch(/^workbench-note-/)
+
+    await addButton!.trigger('click')
+    await flushPromises()
+    expect(mocks.addAlarmNote).toHaveBeenCalledTimes(2)
+    expect(mocks.addAlarmNote.mock.calls[1][3]).toBe(idempotencyKey)
+  })
 })

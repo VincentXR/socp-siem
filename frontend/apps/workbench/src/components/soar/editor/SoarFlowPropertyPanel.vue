@@ -18,6 +18,7 @@ import { rawNodeType, isUnsupportedNodeType, readSwitchCases, type SoarFlowApi }
 import type { FieldDef, RuleCondition } from '../../../api'
 import type { EditorNode, ValidationIssue } from './types'
 import { useI18n } from '../../../composables/useI18n'
+import { tOr } from '../../../utils/i18nLabel'
 import { WORKBENCH_STATE } from '../../../app/workbenchState'
 
 const props = withDefaults(defineProps<{
@@ -30,6 +31,19 @@ const props = withDefaults(defineProps<{
 
 const { t } = useI18n()
 const workbenchState = inject(WORKBENCH_STATE, null)
+
+/**
+ * Inline validation messages keyed by control (`parameter:<key>`,
+ * `retry:<field>`, `json:<area>`). A rejected edit used to be silent, so the
+ * operator typed on and believed the node had their value.
+ */
+const fieldErrors = ref<Record<string, string>>({})
+function setError(key: string, message: string): void {
+  const next = { ...fieldErrors.value }
+  if (message) next[key] = message
+  else delete next[key]
+  fieldErrors.value = next
+}
 
 const END_OUTCOMES = ['SUCCEEDED', 'PARTIALLY_SUCCEEDED', 'SUPPRESSED', 'FAILED', 'TIMED_OUT', 'CANCELLED']
 
@@ -156,9 +170,7 @@ function updateErrorPolicy(value: string): void {
 }
 
 function errorPolicyLabel(value: string): string {
-  const key = `soar.onErrorValues.${value}`
-  const translated = t(key)
-  return translated === key ? value : translated
+  return tOr(t, `soar.onErrorValues.${value}`, value)
 }
 
 /* ---------- scalar field helpers (empty trimmed string deletes) ---------- */
@@ -341,6 +353,10 @@ function syncJsonEditors(): void {
   nodeConfigText.value = stringifyJson(configOfNode(node))
   parametersText.value = stringifyJson(node.parameters)
   targetText.value = stringifyJson(node.target)
+  // The textareas now mirror the node, so an earlier parse error is stale.
+  setError('json:node', '')
+  setError('json:parameters', '')
+  setError('json:target', '')
 }
 
 function configOfNode(node: EditorNode): Record<string, unknown> {
@@ -351,42 +367,57 @@ function configOfNode(node: EditorNode): Record<string, unknown> {
   return config
 }
 
+/** Parses an advanced JSON editor; a rejected edit keeps the draft untouched. */
+function readJsonObject(area: 'node' | 'parameters' | 'target', label: string, text: string): Record<string, unknown> | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch (failure) {
+    const detail = failure instanceof Error ? failure.message : ''
+    setError(`json:${area}`, detail ? `${t('soar.invalidJson', { label })}: ${detail}` : t('soar.invalidJson', { label }))
+    return undefined
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    setError(`json:${area}`, t('soar.jsonObjectRequired', { label }))
+    return undefined
+  }
+  setError(`json:${area}`, '')
+  return parsed as Record<string, unknown>
+}
+
 function applyNodeConfigJson(): void {
   if (props.readOnly) return
   const node = props.node
   if (!node) return
-  try {
-    const parsed = JSON.parse(nodeConfigText.value) as Record<string, unknown>
-    for (const key of Object.keys(node)) if (!['id', 'type', 'name'].includes(key)) delete node[key]
-    Object.assign(node, parsed)
-    props.flow.touchAfterNodeEdit()
-  } catch {
-    // invalid JSON is surfaced by leaving the text area untouched
-  }
-}
-
-function applyJsonInto(field: string, text: string): void {
-  const node = props.node
-  if (!node) return
-  try {
-    const parsed = JSON.parse(text) as unknown
-    if (parsed === null || Array.isArray(parsed)) return
-    if (typeof parsed === 'object') node[field] = parsed
-  } catch {
-    // ignore invalid JSON until Apply is re-run with valid content
-  }
+  const parsed = readJsonObject('node', t('soar.property.advancedNodeJson'), nodeConfigText.value)
+  if (!parsed) return
+  for (const key of Object.keys(node)) if (!['id', 'type', 'name'].includes(key)) delete node[key]
+  Object.assign(node, parsed)
+  props.flow.touchAfterNodeEdit()
+  // Echo the normalized result so the textarea cannot drift from the node.
+  syncJsonEditors()
 }
 
 function commitParameters(): void {
   if (props.readOnly) return
-  applyJsonInto('parameters', parametersText.value)
+  const node = props.node
+  if (!node) return
+  const parsed = readJsonObject('parameters', t('soar.property.advancedParameters'), parametersText.value)
+  if (!parsed) return
+  node.parameters = parsed
   props.flow.touchAfterNodeEdit()
+  syncJsonEditors()
 }
 
 function commitTarget(): void {
   if (props.readOnly) return
-  applyJsonInto('target', targetText.value)
+  const node = props.node
+  if (!node) return
+  const parsed = readJsonObject('target', t('soar.property.advancedTarget'), targetText.value)
+  if (!parsed) return
+  node.target = parsed
   props.flow.touchAfterNodeEdit()
+  syncJsonEditors()
 }
 
 /* ---------- ACTION retry row ---------- */
@@ -401,12 +432,31 @@ function hasRetry(): boolean {
   return Boolean(props.node && props.node.retry && typeof props.node.retry === 'object')
 }
 
-function updateRetry(field: string, raw: string, min: number, max: number): void {
+/** Displayed retry value; the same fallback is echoed back after a rejected edit. */
+function retryValue(field: 'maxAttempts' | 'backoffSeconds'): string {
+  const value = retryConfig.value?.[field]
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  return field === 'maxAttempts' ? '1' : '0'
+}
+
+function updateRetry(event: Event, field: 'maxAttempts' | 'backoffSeconds', min: number, max: number): void {
   if (props.readOnly) return
   const node = props.node
   if (!node) return
-  const parsed = Number(raw)
-  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < min || parsed > max) return
+  const input = event.target as HTMLInputElement
+  const parsed = Number(input.value)
+  const echo = () => { input.value = retryValue(field) }
+  if (!input.value.trim() || !Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+    setError(`retry:${field}`, t('forms.schemaValidation.type'))
+    echo()
+    return
+  }
+  if (parsed < min || parsed > max) {
+    setError(`retry:${field}`, t('forms.schemaValidation.range'))
+    echo()
+    return
+  }
+  setError(`retry:${field}`, '')
   const current = node.retry && typeof node.retry === 'object' ? node.retry as Record<string, unknown> : {}
   node.retry = { ...current, [field]: parsed }
   props.flow.touchAfterNodeEdit()
@@ -455,9 +505,7 @@ function runStatusTagType(status: string): 'success' | 'danger' | 'warning' | 'i
 }
 
 function runStatusLabel(status: string): string {
-  const key = 'soar.status.' + status
-  const translated = t(key)
-  return translated === key ? status : translated
+  return tOr(t, 'soar.status.' + status, status)
 }
 
 function hasRunDetail(row: SoarNodeRun): boolean {
@@ -483,6 +531,8 @@ const ownIssues = computed<ValidationIssue[]>(() => {
 })
 
 watch(() => props.node, syncJsonEditors, { immediate: true })
+// Messages belong to the node that raised them.
+watch(() => props.node, () => { fieldErrors.value = {} }, { immediate: true })
 
 function showAdvanced(): void {
   syncJsonEditors()
@@ -718,12 +768,17 @@ function updateParameterValue(field: ActionInputField, value: string): void {
   if (props.readOnly) return
   const node = props.node
   if (!node) return
+  const errorKey = `parameter:${field.key}`
   const current = node.parameters && typeof node.parameters === 'object' && !Array.isArray(node.parameters)
     ? { ...(node.parameters as Record<string, unknown>) } : {}
-  if (!value.trim()) delete current[field.key]
+  if (!value.trim()) { delete current[field.key]; setError(errorKey, '') }
   else if (field.type === 'number' || field.type === 'integer') {
     const parsed = Number(value)
-    if (!Number.isFinite(parsed)) return
+    // Same rigor as updateRetry: never drop an edit on the floor, and an
+    // integer parameter keeps its integer spelling.
+    if (!Number.isFinite(parsed)) { setError(errorKey, t('forms.schemaValidation.type')); return }
+    if (field.type === 'integer' && !Number.isInteger(parsed)) { setError(errorKey, t('soar.conditionErrors.integer')); return }
+    setError(errorKey, '')
     current[field.key] = parsed
   }
   else if (field.type === 'boolean') current[field.key] = value === 'true'
@@ -864,10 +919,11 @@ function subPlaybookVersionKnown(id: string): boolean {
               <el-select v-else-if="field.type === 'boolean'" :model-value="parameterValue(field.key)" :disabled="props.readOnly" clearable @change="updateParameterValue(field, String($event ?? ''))"><el-option label="true" value="true" /><el-option label="false" value="false" /></el-select>
               <VariableSelector v-else-if="field.type === 'string'" :model-value="parameterValue(field.key)" :variables="variableOptions" :disabled="props.readOnly" :placeholder="t('soar.actionParameterPlaceholder')" @update:model-value="value => updateParameterValue(field, value)" />
               <el-input v-else :model-value="parameterValue(field.key)" :disabled="props.readOnly" :type="field.type === 'number' || field.type === 'integer' ? 'number' : 'text'" @update:model-value="value => updateParameterValue(field, String(value ?? ''))" />
+              <p v-if="fieldErrors[`parameter:${field.key}`]" role="alert" class="soar-flow-field-error">{{ fieldErrors[`parameter:${field.key}`] }}</p>
               <small v-if="field.description">{{ field.description }}</small>
             </label>
           </div>
-          <details class="soar-flow-advanced-details"><summary>{{ t('soar.property.advancedParameters') }}</summary><textarea v-model="parametersText" :readonly="props.readOnly" rows="4" spellcheck="false" /><el-button v-if="!props.readOnly" size="small" @click="commitParameters">{{ t('soar.property.applyJson') }}</el-button></details>
+          <details class="soar-flow-advanced-details"><summary>{{ t('soar.property.advancedParameters') }}</summary><textarea v-model="parametersText" :readonly="props.readOnly" rows="4" spellcheck="false" /><el-button v-if="!props.readOnly" size="small" @click="commitParameters">{{ t('soar.property.applyJson') }}</el-button><p v-if="fieldErrors['json:parameters']" role="alert" class="soar-flow-field-error">{{ fieldErrors['json:parameters'] }}</p></details>
         </div>
         <div class="soar-flow-inspector-section">
           <span>{{ t('soar.property.target') }}</span>
@@ -876,12 +932,13 @@ function subPlaybookVersionKnown(id: string): boolean {
             <VariableSelector :model-value="targetPath()" :variables="variableOptions" :disabled="props.readOnly" :placeholder="t('soar.property.selectEventOutput')" @update:model-value="updateTargetPath" />
             <small>{{ t('soar.property.targetStorageHint') }}</small>
           </label>
-          <details class="soar-flow-advanced-details" open><summary>{{ t('soar.property.advancedTarget') }}</summary><textarea v-model="targetText" :readonly="props.readOnly" rows="4" spellcheck="false" /><el-button v-if="!props.readOnly" size="small" @click="commitTarget">{{ t('soar.property.applyJson') }}</el-button></details>
+          <details class="soar-flow-advanced-details"><summary>{{ t('soar.property.advancedTarget') }}</summary><textarea v-model="targetText" :readonly="props.readOnly" rows="4" spellcheck="false" /><el-button v-if="!props.readOnly" size="small" @click="commitTarget">{{ t('soar.property.applyJson') }}</el-button><p v-if="fieldErrors['json:target']" role="alert" class="soar-flow-field-error">{{ fieldErrors['json:target'] }}</p></details>
         </div>
 
         <div v-if="hasRetry()" class="soar-flow-retry-grid">
-          <label>{{ t('soar.property.maxAttempts') }}<input type="number" min="1" max="10" :disabled="props.readOnly" :value="String(retryConfig?.maxAttempts ?? 1)" @input="updateRetry('maxAttempts', ($event.target as HTMLInputElement).value, 1, 10)" /></label>
-          <label>{{ t('soar.property.backoffSeconds') }}<input type="number" min="0" max="300" :disabled="props.readOnly" :value="String(retryConfig?.backoffSeconds ?? 0)" @input="updateRetry('backoffSeconds', ($event.target as HTMLInputElement).value, 0, 300)" /></label>
+          <label>{{ t('soar.property.maxAttempts') }}<input type="number" min="1" max="10" :disabled="props.readOnly" :value="retryValue('maxAttempts')" @input="updateRetry($event, 'maxAttempts', 1, 10)" /></label>
+          <label>{{ t('soar.property.backoffSeconds') }}<input type="number" min="0" max="300" :disabled="props.readOnly" :value="retryValue('backoffSeconds')" @input="updateRetry($event, 'backoffSeconds', 0, 300)" /></label>
+          <p v-if="fieldErrors['retry:maxAttempts'] || fieldErrors['retry:backoffSeconds']" role="alert" class="soar-flow-field-error">{{ fieldErrors['retry:maxAttempts'] || fieldErrors['retry:backoffSeconds'] }}</p>
           <el-button v-if="!props.readOnly" size="small" plain @click="removeRetry">{{ t('soar.property.removeRetry') }}</el-button>
         </div>
         <el-button v-else-if="!props.readOnly" size="small" plain @click="addRetry">{{ t('soar.property.addRetry') }}</el-button>
@@ -1088,6 +1145,7 @@ function subPlaybookVersionKnown(id: string): boolean {
         <span>{{ t('soar.property.advancedNodeJson') }}</span>
         <textarea v-model="nodeConfigText" :readonly="props.readOnly" rows="8" spellcheck="false" @focus="showAdvanced" />
         <el-button v-if="!props.readOnly" size="small" @click="applyNodeConfigJson">{{ t('soar.property.applyNodeJson') }}</el-button>
+        <p v-if="fieldErrors['json:node']" role="alert" class="soar-flow-field-error">{{ fieldErrors['json:node'] }}</p>
       </div>
 
       <!-- Selected node validation issues -->
@@ -1246,6 +1304,7 @@ function subPlaybookVersionKnown(id: string): boolean {
 .soar-flow-parameter-form small { display: block; margin-top: 2px; color: var(--ns-text-3); font-size: 9px; line-height: 1.35; }
 .soar-flow-advanced-details { margin-top: 8px; }
 .soar-flow-advanced-details summary { color: var(--ns-text-3); cursor: pointer; font-size: 10px; }
+.soar-flow-field-error { margin: 2px 0 0; color: var(--ns-danger); font-size: 10px; line-height: 1.4; }
 
 .soar-flow-warn-line {
   margin: -4px 0 9px;
@@ -1275,7 +1334,8 @@ function subPlaybookVersionKnown(id: string): boolean {
   margin-bottom: 0;
 }
 
-.soar-flow-retry-grid > .el-button {
+.soar-flow-retry-grid > .el-button,
+.soar-flow-retry-grid > .soar-flow-field-error {
   grid-column: 1 / -1;
 }
 

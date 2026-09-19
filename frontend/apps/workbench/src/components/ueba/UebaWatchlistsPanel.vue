@@ -54,7 +54,7 @@ function openDialog() { if (!props.canWrite) return; newWatchlist.value = { name
 async function submitCreate() {
   if (!props.canWrite) return
   const name = newWatchlist.value.name.trim()
-  if (!name) { error.value = t('forms.required'); return }
+  if (!name) { error.value = t('forms.fieldRequired', { field: t('ueba.watchlistName') }); return }
   if (props.watchlists.some(item => item.name.toLowerCase() === name.toLowerCase())) { error.value = t('forms.duplicateName'); return }
   if (!await mutation.run(() => props.create(name, splitValues(newWatchlist.value.values)))) return
   dialogVisible.value = false

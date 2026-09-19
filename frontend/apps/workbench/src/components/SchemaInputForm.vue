@@ -12,6 +12,7 @@ import 'element-plus/es/components/input-number/style/css.mjs'
 import 'element-plus/es/components/select/style/css.mjs'
 import ActionFeedback from './ActionFeedback.vue'
 import { useI18n } from '../composables/useI18n'
+import { tOr } from '../utils/i18nLabel'
 import { validateSchemaInput } from '../utils/schemaValidation'
 
 /**
@@ -39,6 +40,38 @@ const schema = computed(() => props.schema && typeof props.schema === 'object' ?
 const required = computed(() => Array.isArray(schema.value.required) ? schema.value.required.map(String) : [])
 const fields = computed(() => Object.entries((schema.value.properties || {}) as Record<string, Record<string, unknown>>))
 const validation = computed(() => validateSchemaInput(model.value, props.schema))
+
+/** The label the operator sees, so a message can point at a field by name. */
+const titles = computed<Record<string, string>>(() => Object.fromEntries(fields.value.map(([key, field]) => [key, String(field.title || key)])))
+
+/** Top-level field a JSONPath belongs to, or `$` when nothing owns it. */
+function issueFieldKey(path: string): string {
+  const rest = path.startsWith('$.') ? path.slice(2) : path.replace(/^\$/, '')
+  return rest.split(/[.[]/)[0] || '$'
+}
+
+function issueMessage(issue: { path: string; code: string }): string {
+  const message = tOr(t, `forms.schemaValidation.${issue.code}`, t('forms.schemaValidation.schema'))
+  const key = issueFieldKey(issue.path)
+  const detail = issue.path.startsWith(`$.${key}`) ? issue.path.slice(key.length + 2).replace(/^\./, '') : ''
+  return [titles.value[key] ?? key, detail, message].filter(Boolean).join(' · ')
+}
+
+const knownFields = computed(() => new Set(fields.value.map(([key]) => key)))
+
+/** Issues mapped onto the control that can fix them. */
+const fieldIssues = computed<Record<string, string>>(() => {
+  const grouped: Record<string, string[]> = {}
+  for (const issue of validation.value) {
+    const key = issueFieldKey(issue.path)
+    if (!knownFields.value.has(key)) continue
+    ;(grouped[key] ??= []).push(issueMessage(issue))
+  }
+  return Object.fromEntries(Object.entries(grouped).map(([key, messages]) => [key, messages.join(' · ')]))
+})
+
+/** Issues no control can carry (undeclared keys, whole-object failures). */
+const summaryCount = computed(() => validation.value.filter(issue => !knownFields.value.has(issueFieldKey(issue.path))).length)
 watch([validation, errors], () => emit('valid', !validation.value.length && !Object.keys(errors.value).length), { immediate: true, deep: true })
 watch(model, value => {
   if (errors.value.$) return
@@ -63,6 +96,11 @@ watch(fields, entries => {
 }, { immediate: true })
 
 function update(key: string, value: unknown) { model.value = { ...model.value, [key]: value } }
+
+/** A 500-character one-line box is unusable; long text gets a real textarea. */
+function isLongText(field: Record<string, unknown>): boolean {
+  return Number(field.maxLength) > 200
+}
 
 /** Keep the value typed where it can be: `true` stays a boolean, `42` a number. */
 function coerce(text: string): unknown {
@@ -104,29 +142,36 @@ function removeArrayRow(key: string, index: number) {
 }
 
 function updateJson(key: string, value: string) {
+  const label = key === '$' ? t('forms.advanced') : titles.value[key] ?? key
   if (key === '$') raw.value = value
   else jsonDrafts.value[key] = value
+  let parsed: unknown
   try {
-    const parsed: unknown = JSON.parse(value)
-    if (key === '$') {
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Expected an object')
-      jsonDrafts.value = {}
-      errors.value = {}
-      model.value = parsed as Record<string, unknown>
-    } else {
-      const type = fields.value.find(([name]) => name === key)?.[1].type
-      if (type === 'array' && !Array.isArray(parsed)) throw new Error('Expected an array')
-      if (type === 'object' && (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))) throw new Error('Expected an object')
-      update(key, parsed)
-    }
-    delete errors.value[key]
-  } catch (failure) { errors.value[key] = String(failure) }
+    parsed = JSON.parse(value) as unknown
+  } catch {
+    // Parser output is English diagnostics text; the operator gets the localized
+    // "this is not valid JSON" for this field instead of `Unexpected token`.
+    errors.value[key] = t('soar.invalidJson', { label })
+    return
+  }
+  if (key === '$') {
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) { errors.value[key] = t('soar.jsonObjectRequired', { label }); return }
+    jsonDrafts.value = {}
+    errors.value = {}
+    model.value = parsed as Record<string, unknown>
+    return
+  }
+  const type = fields.value.find(([name]) => name === key)?.[1].type
+  if (type === 'array' && !Array.isArray(parsed)) { errors.value[key] = t('forms.schemaValidation.type'); return }
+  if (type === 'object' && (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))) { errors.value[key] = t('soar.jsonObjectRequired', { label }); return }
+  update(key, parsed)
+  delete errors.value[key]
 }
 </script>
 <template>
   <el-form label-position="top" :disabled="disabled">
-    <el-form-item v-for="[key, field] in fields" :key="key" :label="String(field.title || key)" :required="required.includes(key)">
-      <el-select v-if="Array.isArray(field.enum)" :model-value="model[key] as string" clearable @change="value => update(key, value)"><el-option v-for="(value, index) in field.enum" :key="index" :label="String(value)" :value="value as string" /></el-select>
+    <el-form-item v-for="[key, field] in fields" :key="key" :label="String(field.title || key)" :required="required.includes(key)" :error="errors[key] || fieldIssues[key]">
+      <el-select v-if="Array.isArray(field.enum)" :model-value="model[key] as string" clearable :filterable="(field.enum as unknown[]).length > 8" @change="value => update(key, value)"><el-option v-for="(value, index) in field.enum" :key="index" :label="String(value)" :value="value as string" /></el-select>
       <el-select v-else-if="field.type === 'boolean'" :model-value="model[key] as boolean | undefined" clearable @change="value => update(key, value)"><el-option :label="t('common.yes')" :value="true" /><el-option :label="t('common.no')" :value="false" /></el-select>
       <el-input-number v-else-if="field.type === 'number' || field.type === 'integer'" :model-value="model[key] as number | undefined" :precision="field.type === 'integer' ? 0 : undefined" :min="field.minimum as number | undefined" :max="field.maximum as number | undefined" @change="value => update(key, value)" />
 
@@ -147,13 +192,13 @@ function updateJson(key: string, value: string) {
         <el-button v-if="!disabled" link type="primary" size="small" @click="addArrayRow(key)">+ {{ t('forms.addEntry') }}</el-button>
       </div>
 
+      <el-input v-else-if="isLongText(field)" :model-value="String(model[key] ?? '')" type="textarea" :rows="4" :maxlength="field.maxLength as number | undefined" show-word-limit @update:model-value="value => update(key, value)" />
       <el-input v-else :model-value="String(model[key] ?? '')" :maxlength="field.maxLength as number | undefined" @update:model-value="value => update(key, value)" />
       <small v-if="field.description">{{ field.description }}</small>
       <small v-if="field.pattern" class="schema-constraint">{{ t('forms.serverPattern', { pattern: String(field.pattern) }) }}</small>
-      <ActionFeedback :error="errors[key]" />
     </el-form-item>
     <details><summary>{{ t('forms.advanced') }}</summary><p>{{ t('forms.advancedHint') }}</p><el-input v-model="raw" type="textarea" :rows="8" @input="value => updateJson('$', value)" /><ActionFeedback :error="errors.$" /></details>
-    <ActionFeedback v-for="(issue, index) in validation" :key="index" :error="`${issue.path}: ${t('forms.schemaValidation.' + issue.code)}`" />
+    <ActionFeedback v-if="summaryCount" :error="`${t('forms.invalidInput')} · ${summaryCount}`" />
   </el-form>
 </template>
 <style scoped>

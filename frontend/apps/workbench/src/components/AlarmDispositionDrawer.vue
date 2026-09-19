@@ -27,6 +27,7 @@ import type { Alarm, AlarmEvidenceResponse, CaseInfo, Disposition, Ioc } from '.
 import { addAlarmNote, assignAlarm, getAlarmEvidence, getDisposition, setDispositionStatus } from '../api/alarms'
 import { createCaseFromAlarm, listCases as loadCases } from '../api/incidents'
 import { useI18n } from '../composables/useI18n'
+import { tOr } from '../utils/i18nLabel'
 
 const props = withDefaults(defineProps<{
   modelValue: boolean
@@ -64,9 +65,26 @@ const detailsLoading = ref(false)
 const newStatus = ref('OPEN')
 const newAssignee = ref('')
 const newNote = ref('')
+const statusBusy = ref(false)
+const assignBusy = ref(false)
+const noteBusy = ref(false)
 const creatingCase = ref(false)
 const actionError = ref('')
+const actionPending = computed(() => statusBusy.value || assignBusy.value || noteBusy.value)
 let loadToken = 0
+// Retrying the same unsent note must reuse its key so the backend set-once
+// Idempotency-Key window can absorb the duplicate instead of appending twice.
+let noteKey = ''
+
+function newNoteKey(): string {
+  if (!noteKey) {
+    const suffix = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2)
+    noteKey = `workbench-note-${suffix}`
+  }
+  return noteKey
+}
 
 const tiHits = computed<Ioc[]>(() => {
   try {
@@ -83,9 +101,7 @@ const assigneeOptions = computed(() => {
 function statusLabel(status: string): string {
   const value = String(status || '')
   if (!value) return t('time.notAvailable')
-  const key = 'statuses.' + value
-  const translated = t(key)
-  return translated === key ? value : translated
+  return tOr(t, 'statuses.' + value, value)
 }
 
 async function loadDetails(alarm: Alarm) {
@@ -101,6 +117,7 @@ async function loadDetails(alarm: Alarm) {
   newStatus.value = alarm.status || 'OPEN'
   newAssignee.value = ''
   newNote.value = ''
+  noteKey = ''
   const [disp, ev, cases] = await Promise.allSettled([getDisposition(alarm.id), getAlarmEvidence(alarm.id), loadCases()])
   if (token !== loadToken) return
   detailsLoading.value = false
@@ -121,40 +138,59 @@ watch(() => [props.modelValue, props.alarm?.id] as const, ([visible]) => {
 }, { immediate: true })
 
 async function changeStatus() {
-  if (!props.alarm || !props.canWrite) return
+  if (!props.alarm || !props.canWrite || statusBusy.value) return
+  statusBusy.value = true
   actionError.value = ''
   try {
     await setDispositionStatus(props.alarm.id, newStatus.value)
     disposition.value = await getDisposition(props.alarm.id)
+    ElMessage.success(t('common.updated'))
     emit('updated')
   } catch (error) {
     actionError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    statusBusy.value = false
   }
 }
 
 async function doAssign() {
-  if (!props.alarm || !props.canWrite || !newAssignee.value.trim()) return
+  if (!props.alarm || !props.canWrite) return
+  const assignee = newAssignee.value.trim()
+  if (!assignee) { ElMessage.warning(t('forms.fieldRequired', { field: t('cases.assignee') })); return }
+  if (assignBusy.value) return
+  assignBusy.value = true
   actionError.value = ''
   try {
-    await assignAlarm(props.alarm.id, newAssignee.value.trim())
+    await assignAlarm(props.alarm.id, assignee)
     newAssignee.value = ''
     disposition.value = await getDisposition(props.alarm.id)
+    ElMessage.success(t('common.updated'))
     emit('updated')
   } catch (error) {
     actionError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    assignBusy.value = false
   }
 }
 
 async function doAddNote() {
-  if (!props.alarm || !props.canWrite || !newNote.value.trim()) return
+  if (!props.alarm || !props.canWrite) return
+  const content = newNote.value.trim()
+  if (!content) { ElMessage.warning(t('forms.fieldRequired', { field: t('common.notes') })); return }
+  if (noteBusy.value) return
+  noteBusy.value = true
   actionError.value = ''
   try {
-    await addAlarmNote(props.alarm.id, newNote.value.trim())
+    await addAlarmNote(props.alarm.id, content, 'operator', newNoteKey())
     newNote.value = ''
+    noteKey = ''
     disposition.value = await getDisposition(props.alarm.id)
+    ElMessage.success(t('common.saved'))
     emit('updated')
   } catch (error) {
     actionError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    noteBusy.value = false
   }
 }
 
@@ -244,16 +280,22 @@ function openEvidenceSearch() {
       <el-alert v-else-if="dispositionError" :title="dispositionError" type="error" :closable="false" show-icon>
         <el-button size="small" type="primary" plain @click="retryDetails">{{ t('common.retry') }}</el-button>
       </el-alert>
-      <div v-else-if="props.canWrite" style="display:flex;gap:8px;margin-bottom:8px">
-        <el-select v-model="newStatus" style="flex:1"><el-option v-for="s in DISP_STATUSES" :key="s" :label="t('statuses.' + s) || s" :value="s" /></el-select>
-        <el-button type="primary" @click="changeStatus">{{ t('common.update') }}</el-button>
-      </div>
-      <div v-if="props.canWrite && !detailsLoading && !dispositionError" style="display:flex;gap:8px;margin-bottom:14px">
-        <el-select v-model="newAssignee" filterable default-first-option clearable :placeholder="t('drawer.assigneePlaceholder')" style="flex:1">
-          <el-option v-for="assignee in assigneeOptions" :key="assignee" :label="assignee" :value="assignee" />
-        </el-select><el-button @click="doAssign">{{ t('common.assign') }}</el-button>
-      </div>
-      <div v-else-if="!detailsLoading && !dispositionError" class="drawer-readonly-hint">{{ t('drawer.readOnly') }}</div>
+      <template v-else-if="disposition">
+        <div class="drawer-readonly-hint" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+          <span>{{ t('common.status') }}</span><el-tag size="small">{{ statusLabel(disposition.status) }}</el-tag>
+          <span style="margin-left:8px">{{ t('cases.assignee') }}</span><span>{{ disposition.assignee || '—' }}</span>
+        </div>
+        <div v-if="props.canWrite" style="display:flex;gap:8px;margin-bottom:8px">
+          <el-select v-model="newStatus" :disabled="actionPending" style="flex:1"><el-option v-for="s in DISP_STATUSES" :key="s" :label="tOr(t, 'statuses.' + s, s)" :value="s" /></el-select>
+          <el-button type="primary" :loading="statusBusy" :disabled="actionPending" @click="changeStatus">{{ t('common.update') }}</el-button>
+        </div>
+        <div v-if="props.canWrite" style="display:flex;gap:8px;margin-bottom:14px">
+          <el-select v-model="newAssignee" :disabled="actionPending" filterable default-first-option clearable :placeholder="t('drawer.assigneePlaceholder')" style="flex:1">
+            <el-option v-for="assignee in assigneeOptions" :key="assignee" :label="assignee" :value="assignee" />
+          </el-select><el-button :loading="assignBusy" :disabled="actionPending" @click="doAssign">{{ t('common.assign') }}</el-button>
+        </div>
+        <div v-else class="drawer-readonly-hint">{{ t('drawer.readOnly') }}</div>
+      </template>
 
       <el-divider content-position="left">{{ t('drawer.notesTitle') }}</el-divider>
       <div v-if="detailsLoading" class="drawer-loading-hint">{{ t('common.loading') }}</div>
@@ -265,7 +307,7 @@ function openEvidenceSearch() {
       </div>
       <el-empty v-else-if="disposition" :description="t('drawer.noNotes')" :image-size="50" />
       <div v-if="props.canWrite && !detailsLoading && !dispositionError" style="display:flex;gap:8px;margin-top:8px">
-        <el-input v-model="newNote" :placeholder="t('drawer.addNotePlaceholder')" @keyup.enter="doAddNote" /><el-button type="success" @click="doAddNote">{{ t('common.add') }}</el-button>
+        <el-input v-model="newNote" :placeholder="t('drawer.addNotePlaceholder')" @keyup.enter="doAddNote" /><el-button type="success" :loading="noteBusy" :disabled="actionPending" @click="doAddNote">{{ t('common.add') }}</el-button>
       </div>
 
       <el-divider content-position="left">{{ t('drawer.relatedCase') }}</el-divider>

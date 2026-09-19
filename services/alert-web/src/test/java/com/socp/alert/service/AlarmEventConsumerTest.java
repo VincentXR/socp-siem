@@ -11,6 +11,7 @@ import io.opentelemetry.sdk.OpenTelemetrySdk;
 import io.opentelemetry.sdk.trace.SdkTracerProvider;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
@@ -36,6 +37,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
@@ -140,6 +142,46 @@ class AlarmEventConsumerTest {
 
         assertTrue(consumer.processBatch(
                 batchWith(record("AL-202", "{\"tenantId\":\"tenant-a\"}", null))));
+    }
+
+    @Test
+    void aBatchThatMustBeRetriedIsRewoundRatherThanCommitted() {
+        AlarmEventConsumer consumer = new AlarmEventConsumer(registrar);
+        ReflectionTestUtils.setField(consumer, "dlqProducer", dlqAcknowledging(false));
+        KafkaConsumer<String, String> kafka = mock(KafkaConsumer.class);
+
+        consumer.applyPolledBatch(kafka,
+                batchWith(record("AL-301", "{\"tenantId\":\"tenant-a\"}", null)));
+
+        // The dead letter was never acknowledged, so the batch is the only durable
+        // record of the work: rewind it and leave the offset uncommitted. Committing
+        // here would drop the record on the next restart.
+        verify(kafka).seek(any(TopicPartition.class), anyLong());
+        verify(kafka, never()).commitSync();
+    }
+
+    @Test
+    void aRegisteredBatchIsCommitted() {
+        AlarmEventConsumer consumer = new AlarmEventConsumer(registrar);
+        ReflectionTestUtils.setField(consumer, "dlqProducer", dlqAcknowledging(true));
+        KafkaConsumer<String, String> kafka = mock(KafkaConsumer.class);
+
+        consumer.applyPolledBatch(kafka,
+                batchWith(record("AL-302", "{\"tenantId\":\"tenant-a\"}", null)));
+
+        verify(kafka).commitSync();
+        verify(kafka, never()).seek(any(TopicPartition.class), anyLong());
+    }
+
+    @Test
+    void anEmptyPollCommitsNothingAndRewindsNothing() {
+        AlarmEventConsumer consumer = new AlarmEventConsumer(registrar);
+        KafkaConsumer<String, String> kafka = mock(KafkaConsumer.class);
+
+        consumer.applyPolledBatch(kafka, ConsumerRecords.empty());
+
+        verify(kafka, never()).commitSync();
+        verify(kafka, never()).seek(any(TopicPartition.class), anyLong());
     }
 
     @Test

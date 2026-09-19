@@ -16,6 +16,7 @@ import { HEALTH_TARGETS } from '../api'
 import type { Alarm } from '../api'
 import { sevColor } from '../lib/ui'
 import { useI18n } from '../composables/useI18n'
+import { tOr } from '../utils/i18nLabel'
 
 const props = defineProps<{
   stat: { total: number; critical: number; high: number; activeCases: number; online: number }
@@ -60,7 +61,7 @@ function openRecentAlarm(row: unknown): void {
 const timeOnly = (iso: string) => (iso?.length >= 19 ? iso.slice(11, 19) : '—')
 
 function getStatusLabel(status: string): string {
-  return t('statuses.' + status) || status
+  return tOr(t, `statuses.${status}`, status)
 }
 function severityLabel(level: string): string {
   const key = 'severities.' + level

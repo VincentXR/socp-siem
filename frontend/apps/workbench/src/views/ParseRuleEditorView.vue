@@ -41,9 +41,9 @@ const previewStale = ref(false)
 watch([form, filtersText, sample], () => { if (preview.value) previewStale.value = true }, { deep: true, flush: 'sync' })
 
 function payload(): Partial<ParseRule> {
-  if (!form.value.name?.trim()) throw new Error(t('forms.required'))
+  if (!form.value.name?.trim()) throw new Error(t('forms.fieldRequired', { field: t('common.name') }))
   const filters: unknown = JSON.parse(filtersText.value)
-  if (!Array.isArray(filters)) throw new Error('Filters must be an array')
+  if (!Array.isArray(filters)) throw new Error(t('ingest.filtersMustBeArray'))
   return { ...form.value, filters, mapping: form.value.mapping ?? [], setFields: form.value.setFields ?? [] }
 }
 async function save() {

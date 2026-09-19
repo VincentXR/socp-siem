@@ -1,4 +1,4 @@
-import { del, downloadFile, get, post, put, type ApiRequestOptions } from './core'
+import { del, downloadFile, get, post, put, requestJson, type ApiRequestOptions } from './core'
 import type {
   Alarm, AlarmBatchDispositionResult, AlarmFeedback, AlarmFeedbackKind,
   AlarmEvidenceResponse, AlarmPage, AlarmSortField, AlarmSortOrder, AlarmStats, Disposition,
@@ -18,7 +18,15 @@ export const getDisposition = (id: string) => get<Disposition>(`/alert-web/api/a
 export const getAlarmEvidence = (id: string) => get<AlarmEvidenceResponse>(`/alert-web/api/alarms/${encodeURIComponent(id)}/evidence`)
 export const setDispositionStatus = (id: string, status: string) => put<Disposition>(`/alert-web/api/alarms/${encodeURIComponent(id)}/status`, { status })
 export const assignAlarm = (id: string, assignee: string) => post<Disposition>(`/alert-web/api/alarms/${encodeURIComponent(id)}/assign`, { assignee })
-export const addAlarmNote = (id: string, content: string, author = 'operator') => post<Disposition>(`/alert-web/api/alarms/${encodeURIComponent(id)}/notes`, { content, author })
+export const addAlarmNote = (id: string, content: string, author = 'operator', idempotencyKey?: string) =>
+  requestJson<Disposition>(`/alert-web/api/alarms/${encodeURIComponent(id)}/notes`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
+    },
+    body: JSON.stringify({ content, author }),
+  })
 export const batchUpdateAlarmDisposition = (alarmIds: string[], mutation: { status?: string; assignee?: string; reason?: string }) =>
   post<AlarmBatchDispositionResult>('/alert-web/api/v1/alarms/batch/disposition', { alarmIds, ...mutation })
 export const listAlarmFeedback = (id: string) =>

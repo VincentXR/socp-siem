@@ -1,5 +1,4 @@
-import { unwrapApiBody } from '../lib/api-response'
-import { translate } from '../i18n'
+import { localizedErrorMessage, unwrapApiBody } from '../lib/api-response'
 import { getCurrentLocale } from '../i18n/locale-manager'
 
 const DEFAULT_TIMEOUT_MS = 15_000
@@ -13,9 +12,20 @@ export interface ApiRequestOptions {
 }
 
 export class ApiError extends Error {
-  constructor(public readonly status: number, message: string) {
+  readonly status: number
+  /** Backend copy, kept for logs and diagnostics only; `message` is the renderable text. */
+  readonly rawMessage: string
+
+  constructor(status: number, message: string, rawMessage: string = message) {
     super(message)
     this.name = 'ApiError'
+    this.status = status
+    this.rawMessage = rawMessage
+  }
+
+  /** Renderable form: `String(error)` must show the localized copy, not `ApiError: HTTP 502`. */
+  override toString(): string {
+    return this.message
   }
 }
 
@@ -27,18 +37,15 @@ let unauthorizedHandler: (() => void) | null = null
 export function setUnauthorizedHandler(fn: (() => void) | null): void { unauthorizedHandler = fn }
 
 async function assertOk(res: Response, notifyUnauthorized = true): Promise<void> {
-  if (res.status === 401) {
-    if (notifyUnauthorized) unauthorizedHandler?.()
-    throw new ApiError(401, translate('errors.UNAUTHORIZED'))
-  }
   if (res.ok) return
-  let message = `HTTP ${res.status}`
+  if (res.status === 401 && notifyUnauthorized) unauthorizedHandler?.()
+  let rawMessage = `HTTP ${res.status}`
   try {
     const body = await res.clone().json()
-    if (body?.message) message = String(body.message)
-    else if (body?.error) message = String(body.error)
+    if (typeof body?.message === 'string' && body.message) rawMessage = body.message
+    else if (typeof body?.error === 'string' && body.error) rawMessage = body.error
   } catch { /* retain the HTTP status for non-JSON errors */ }
-  throw new ApiError(res.status, message)
+  throw new ApiError(res.status, localizedErrorMessage(res.status, rawMessage), rawMessage)
 }
 
 function createRequestSignal(options: ApiRequestOptions): { signal: AbortSignal; cleanup: () => void } {

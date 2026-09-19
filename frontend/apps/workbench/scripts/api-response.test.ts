@@ -1,8 +1,16 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { useRequest } from '../src/composables/useRequest.ts'
-import { unwrapApiBody, ApiBusinessError, type ApiEnvelope } from '../src/lib/api-response.ts'
+import {
+  ApiBusinessError,
+  errorKeyForCode,
+  localizedErrorMessage,
+  unwrapApiBody,
+  type ApiEnvelope,
+} from '../src/lib/api-response.ts'
 import { withQuery } from '../src/lib/query.ts'
+import { tOr } from '../src/utils/i18nLabel.ts'
+import { translate } from '../src/i18n/index.ts'
 import type { ReportSummary, ReportTrend, SearchResult } from '../src/api.ts'
 
 test('unwraps successful API envelopes', () => {
@@ -12,35 +20,66 @@ test('unwraps successful API envelopes', () => {
   assert.deepEqual(unwrapApiBody<{ id: string }>(response), { id: 'a-1' })
 })
 
-test('raises the server message for failed API envelopes', () => {
+test('keeps the backend copy for business codes without an HTTP status meaning', () => {
   assert.throws(
     () => unwrapApiBody({ code: 1003, message: 'invalid query', data: null }),
-    { message: 'invalid query' },
+    { message: 'invalid query', rawMessage: 'invalid query' },
   )
 })
 
-test('raises a business error for failed envelopes serialized without a data key', () => {
-  // ApiResult serializes with NON_NULL, so fail() drops the null data key.
+test('raises a localized business error for codes that mirror an HTTP status', () => {
+  // ApiResult is serialized without a data key on failed API envelopes: NON_NULL drops the null payload.
   try {
-    unwrapApiBody({ code: 1003, message: 'invalid query', traceId: 'trace-1', timestamp: '2026-09-13T00:00:00Z' })
+    unwrapApiBody({ code: 403, message: 'role viewer cannot publish', traceId: 'trace-1', timestamp: '2026-09-13T00:00:00Z' })
     assert.fail('expected unwrapApiBody to throw')
   } catch (error) {
     assert.ok(error instanceof ApiBusinessError)
-    assert.equal(error.code, 1003)
-    assert.equal(error.message, 'invalid query')
+    assert.equal(error.code, 403)
+    // A meaningful backend sentence is the operator-facing text; plumbing is what
+    // the localized `errors.*` fallback exists for.
+    assert.equal(error.message, 'role viewer cannot publish')
+    assert.equal(error.rawMessage, 'role viewer cannot publish')
     assert.equal(error.traceId, 'trace-1')
+    // String(error) must stay renderable: no `ApiBusinessError: ` prefix, no raw code.
+    assert.equal(String(error), error.message)
   }
 })
 
-test('raises a business error with the fallback message when the envelope omits message', () => {
+test('localizes a failed envelope that omits the message', () => {
   try {
     unwrapApiBody({ code: 500, message: null, data: null })
     assert.fail('expected unwrapApiBody to throw')
   } catch (error) {
     assert.ok(error instanceof ApiBusinessError)
     assert.equal(error.code, 500)
-    assert.equal(error.message, 'code=500')
+    assert.equal(error.message, translate('errors.SERVER_ERROR'))
+    assert.equal(error.rawMessage, 'code=500')
   }
+})
+
+test('maps HTTP statuses and mirror-coded business codes to localized error keys', () => {
+  assert.equal(errorKeyForCode(401), 'errors.UNAUTHORIZED')
+  assert.equal(errorKeyForCode(403), 'errors.FORBIDDEN')
+  assert.equal(errorKeyForCode(404), 'errors.NOT_FOUND')
+  assert.equal(errorKeyForCode(429), 'errors.RATE_LIMIT_EXCEEDED')
+  assert.equal(errorKeyForCode(500), 'errors.SERVER_ERROR')
+  assert.equal(errorKeyForCode(502), 'errors.SERVER_ERROR')
+  // 4xx client details and custom business codes carry their own backend copy.
+  assert.equal(errorKeyForCode(400), null)
+  assert.equal(errorKeyForCode(409), null)
+  assert.equal(errorKeyForCode(1003), null)
+  assert.equal(errorKeyForCode(10001), null)
+  assert.equal(errorKeyForCode(200), null)
+})
+
+test('renders mapped statuses from locale text instead of transport plumbing', () => {
+  assert.equal(localizedErrorMessage(502, 'HTTP 502'), translate('errors.SERVER_ERROR'))
+  assert.equal(localizedErrorMessage(404, 'HTTP 404'), translate('errors.NOT_FOUND'))
+  assert.equal(localizedErrorMessage(429, 'Too many authentication attempts'), 'Too many authentication attempts')
+  // Unmapped codes keep the useful backend sentence and only hide technical placeholders.
+  assert.equal(localizedErrorMessage(400, 'name: must not be blank'), 'name: must not be blank')
+  assert.equal(localizedErrorMessage(400, 'HTTP 400'), translate('common.failed'))
+  assert.equal(localizedErrorMessage(1003, 'code=1003'), translate('common.failed'))
 })
 
 test('unwraps Void success envelopes without a data key to undefined', () => {
@@ -96,6 +135,14 @@ test('keeps search and report provenance metadata from successful responses', ()
 
 test('encodes query values and omits empty values', () => {
   assert.equal(withQuery('/search', { q: 'a b&c', page: 1, empty: '', missing: undefined }), '/search?q=a+b%26c&page=1')
+})
+
+test('falls back only when a message key is genuinely missing', () => {
+  // vue-i18n echoes the key on a miss, so `t(key) || fallback` keeps the key path.
+  const translated = translate('report.sources.alert-web')
+  assert.notEqual(translated, 'report.sources.alert-web')
+  assert.equal(tOr(translate, 'report.sources.alert-web', 'alert-web'), translated)
+  assert.equal(tOr(translate, 'report.sources.missing-entry', 'alert-web'), 'alert-web')
 })
 
 test('aborts a stale request when a newer request starts', async () => {

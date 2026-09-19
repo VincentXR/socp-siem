@@ -2,8 +2,11 @@
 import 'element-plus/es/components/button/style/css.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import { MENU_ICONS, type MenuGroup } from '../app/navigation'
+import CommandPalette from './CommandPalette.vue'
 import { useI18n } from '../composables/useI18n'
-import { computed, ref, watch } from 'vue'
+import { tOr } from '../utils/i18nLabel'
+import { useRoute } from 'vue-router'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
 type Theme = 'light' | 'dark'
 
@@ -25,8 +28,41 @@ const emit = defineEmits<{
 
 const { t, toggleLocale } = useI18n()
 
+const route = useRoute()
+
+/** Editor and detail routes carry `meta.crumbKey`; the label stays empty when no message defines it. */
+const subCrumb = computed(() => {
+  const key = route.meta.crumbKey
+  return typeof key === 'string' ? tOr(t, key, '') : ''
+})
+
+function goOverview(): void {
+  emit('menu-change', 'overview')
+}
+
 const collapsedGroups = ref<Record<string, boolean>>({})
 const recentMenuKeys = ref<string[]>([])
+const paletteOpen = ref(false)
+
+/**
+ * Global quick-jump hotkey. It deliberately fires while a field has focus, so
+ * the browser's native search-field shortcut is suppressed instead. SOAR's
+ * editor owns Ctrl+S and the canvas shortcuts, never Ctrl+K.
+ */
+function onGlobalKeydown(event: KeyboardEvent): void {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return
+  if (event.key.toLowerCase() !== 'k') return
+  event.preventDefault()
+  paletteOpen.value = true
+}
+
+function jumpTo(key: string): void {
+  paletteOpen.value = false
+  emit('menu-change', key)
+}
+
+const isCompactViewport = () => typeof window !== 'undefined' && Boolean(window.matchMedia?.('(max-width: 640px)').matches)
+const compactSidebar = ref(isCompactViewport())
 const COLLAPSED_GROUPS_KEY = 'socp.sidebar.collapsed-groups'
 const RECENT_MENU_KEY = 'socp.sidebar.recent-menus'
 
@@ -49,7 +85,13 @@ const recentItems = computed(() => {
 })
 
 function isGroupCollapsed(group: MenuGroup): boolean {
-  return collapsedGroups.value[groupKey(group)] === true
+  // The compact sidebar hides group headers, so a desktop collapse preference
+  // must not make icon-only routes unreachable on phones.
+  return !compactSidebar.value && collapsedGroups.value[groupKey(group)] === true
+}
+
+function updateSidebarMode(): void {
+  compactSidebar.value = isCompactViewport()
 }
 
 function toggleGroup(group: MenuGroup): void {
@@ -68,12 +110,21 @@ watch(() => props.activeMenu, activeMenu => {
   }
 }, { immediate: true })
 
+onMounted(() => {
+  window.addEventListener('resize', updateSidebarMode)
+  document.addEventListener('keydown', onGlobalKeydown)
+})
+onUnmounted(() => {
+  window.removeEventListener('resize', updateSidebarMode)
+  document.removeEventListener('keydown', onGlobalKeydown)
+})
+
 </script>
 
 <template>
   <div class="socp-shell">
     <aside class="socp-sider">
-      <div class="socp-logo"><span class="dot" />{{ t('app.title') }}</div>
+      <button type="button" class="socp-logo" :title="t('menu.overview')" :aria-label="t('menu.overview')" @click="goOverview"><span class="dot" />{{ t('app.title') }}</button>
       <div v-if="recentItems.length > 0" class="socp-recent-nav">
         <div class="socp-recent-label">{{ t('common.recent') }}</div>
         <button
@@ -123,11 +174,19 @@ watch(() => props.activeMenu, activeMenu => {
     <div class="socp-main">
       <header class="socp-header">
         <span class="header-crumb">
-          <span>{{ t('app.console') }}</span>
+          <button type="button" class="header-crumb-link" :title="t('menu.overview')" @click="goOverview">{{ t('app.console') }}</button>
           <span class="header-separator">/</span>
-          <span class="header-crumb-cur">{{ activeLabel }}</span>
+          <button v-if="subCrumb" type="button" class="header-crumb-link" :title="activeLabel" @click="emit('menu-change', activeMenu)">{{ activeLabel }}</button>
+          <span v-else class="header-crumb-cur">{{ activeLabel }}</span>
+          <template v-if="subCrumb">
+            <span class="header-separator">/</span>
+            <span class="header-crumb-cur">{{ subCrumb }}</span>
+          </template>
         </span>
         <span class="header-spacer" />
+        <el-button size="small" :title="t('nav.commandPalette')" :aria-label="t('nav.commandPalette')" @click="paletteOpen = true">
+          <span class="header-icon" aria-hidden="true" v-html="`<svg viewBox='0 0 24 24' width='14' height='14' fill='none' stroke='currentColor' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'>${MENU_ICONS.search}</svg>`" />
+        </el-button>
         <el-button size="small" :title="t('app.langToggle')" @click="toggleLocale">
           <span class="header-icon" aria-hidden="true">🌐</span>
           {{ t('app.languageCode') }}
@@ -146,6 +205,34 @@ watch(() => props.activeMenu, activeMenu => {
         </span>
       </header>
       <slot />
+      <CommandPalette v-model="paletteOpen" :menu-groups="menuGroups" @select="jumpTo" />
     </div>
   </div>
 </template>
+
+<style scoped>
+/* Navigation affordances are real buttons, so neutralise the UA button chrome
+   without touching the layout declarations the global sheet owns. The logo's
+   border-bottom is deliberately left to styles.css. */
+button.socp-logo {
+  margin: 0;
+  appearance: none;
+  border-top: 0;
+  border-right: 0;
+  border-left: 0;
+  background: transparent;
+  font-family: inherit;
+  cursor: pointer;
+}
+.header-crumb-link {
+  margin: 0;
+  padding: 0;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.header-crumb-link:hover { color: var(--ns-accent-fg); }
+</style>

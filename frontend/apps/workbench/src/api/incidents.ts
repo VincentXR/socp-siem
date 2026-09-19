@@ -2,8 +2,8 @@ import { downloadFile, get, post, type ApiRequestOptions } from './core'
 import type { Alarm, CaseInfo, Paged, TimelineEvent } from './models'
 import { withQuery } from '../lib/query'
 
-export const listCases = (page = 1, size = 20, q?: string, status?: string) =>
-  get<Paged<CaseInfo>>(withQuery('/incident-web/api/v1/incidents', { page, size, q, status }))
+export const listCases = (page = 1, size = 20, q?: string, status?: string, options?: ApiRequestOptions) =>
+  get<Paged<CaseInfo>>(withQuery('/incident-web/api/v1/incidents', { page, size, q, status }), options)
 export const createCase = (item: { title: string; entity?: string; severity: string; assignee?: string }) => post<{ case: CaseInfo }>('/incident-web/api/v1/incidents', item)
 /** 案件时间线：page 为 1-based（后端存储层 0-based，Controller 负责换算）。 */
 export const caseTimeline = (id: string, page = 1, size = 100) => get<Paged<TimelineEvent>>(withQuery(`/incident-web/api/v1/incidents/${encodeURIComponent(id)}/timeline`, { page, size }))

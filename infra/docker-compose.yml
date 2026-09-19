@@ -103,10 +103,18 @@ services:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: "broker,controller"
       KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
-      # 宿主可达：advertised 用 localhost（search/detect 等业务服务跑在宿主机，连 localhost:9092）
-      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
-      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:9092"
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      # 两个 listener，因为两类客户端需要不同的宣告地址（broker 在握手后会要求客户端
+      # 按 advertised 地址重连，宣告错了客户端就会连到不存在的地方）：
+      #   PLAINTEXT      9092  advertised=localhost:9092
+      #                  宿主机跑的业务服务（search/detect 等）连 localhost:9092。
+      #   PLAINTEXT_KIND 29092 advertised=kafka.socp-data.svc.cluster.local:29092
+      #                  本地 kind 演练集群里的 Pod 用这个名字；它们无法解析
+      #                  localhost（那是 Pod 自己的 loopback），也解析不到裸 kafka
+      #                  （Pod 在 socp-system 命名空间）。宿主机侧行为不变。
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,PLAINTEXT_KIND://:29092,CONTROLLER://:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:9092,PLAINTEXT_KIND://kafka.socp-data.svc.cluster.local:29092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_KIND:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
       KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
       # 演示环境开 auto-create，避免容器重建后 topic 丢失需手动重建
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"

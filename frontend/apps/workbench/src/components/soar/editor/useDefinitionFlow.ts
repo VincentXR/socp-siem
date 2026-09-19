@@ -15,6 +15,7 @@ import { createHistory, deepClone } from './history'
 import { isCreationType, nodeTypeMeta, retypeNode, uniqueNodeId } from './nodeRegistry'
 import { mapIssuesToNodes } from './validation'
 import { translate } from '../../../i18n'
+import { useConfirm } from '../../../composables/useConfirm'
 import {
   mergeRunHighlights,
   preferredRunStatus,
@@ -351,7 +352,7 @@ export interface SoarFlowApi {
   undo: () => void
   redo: () => void
   copySelection: () => boolean
-  cutSelection: () => boolean
+  cutSelection: () => Promise<boolean>
   pasteSelection: () => boolean
   autoLayout: () => void
   nodeCount: ComputedRef<number>
@@ -364,8 +365,8 @@ export interface SoarFlowApi {
   addNode: (type: string, at?: { x: number; y: number }) => string | null
   addFromDrop: (type: string, clientPoint: { x: number; y: number }) => string | null
   addAtViewportCenter: (type: string) => string | null
-  removeNode: (id: string) => void
-  deleteSelection: () => void
+  removeNode: (id: string) => Promise<void>
+  deleteSelection: () => Promise<void>
   getDefinition: () => EditorDefinition
   selectNode: (id: string) => void
   clearSelection: () => void
@@ -644,6 +645,26 @@ export function useDefinitionFlow(
 
   /* ---------------- deletion ---------------- */
 
+  const { confirmDanger } = useConfirm()
+  let readOnlyDeletePending = false
+
+  /**
+   * Localized confirmation for deleting a node type the editor can load but not
+   * create. Native `window.confirm` blocked the event loop, so a held Delete key
+   * could not stack prompts; the message box is async and needs an explicit
+   * re-entrancy guard. A second request while one is open is refused
+   * (fail-closed) rather than stacking dialogs on the same canvas.
+   */
+  async function confirmReadOnlyDelete(name: string): Promise<boolean> {
+    if (readOnlyDeletePending) return false
+    readOnlyDeletePending = true
+    try {
+      return await confirmDanger(translate('soar.editorErrors.deleteReadOnlyNode', { name }))
+    } finally {
+      readOnlyDeletePending = false
+    }
+  }
+
   function removeNodeRaw(id: string): void {
     rawRoot.value.nodes = rawRoot.value.nodes.filter(node => node.id !== id)
     rawRoot.value.edges = rawRoot.value.edges.filter(edge => edge.from !== id && edge.to !== id)
@@ -651,7 +672,7 @@ export function useDefinitionFlow(
     if (selectedNodeId.value === id) selectFirstAvailable()
   }
 
-  function removeNode(id: string): void {
+  async function removeNode(id: string): Promise<void> {
     const raw = rawRoot.value.nodes.find(node => node.id === id)
     if (!raw) return
     const upper = rawNodeType(raw)
@@ -659,7 +680,7 @@ export function useDefinitionFlow(
       error(translate('soar.editorErrors.startNotRemovable'))
       return
     }
-    if (!isCreationType(upper) && !window.confirm(translate('soar.editorErrors.deleteReadOnlyNode', { name: String(raw.name || id) }))) return
+    if (!isCreationType(upper) && !await confirmReadOnlyDelete(String(raw.name || id))) return
     removeNodeRaw(id)
     markStale()
     rebuild()
@@ -674,7 +695,7 @@ export function useDefinitionFlow(
    * Deleting a read-only node itself does cascade to its edges — the confirm
    * text says so.
    */
-  function deleteSelection(): void {
+  async function deleteSelection(): Promise<void> {
     const selectedNodes = [...store.getSelectedNodes.value]
     const selectedEdges = [...store.getSelectedEdges.value]
     if (!selectedNodes.length && !selectedEdges.length) return
@@ -690,7 +711,7 @@ export function useDefinitionFlow(
     })
     for (const node of unsupported) {
       const name = String(node.data?.raw?.name ?? node.id)
-      if (!window.confirm(translate('soar.editorErrors.deleteReadOnlyNode', { name }))) return
+      if (!await confirmReadOnlyDelete(name)) return
     }
 
     let changed = false
@@ -740,9 +761,9 @@ export function useDefinitionFlow(
     return true
   }
 
-  function cutSelection(): boolean {
+  async function cutSelection(): Promise<boolean> {
     if (!copySelection()) return false
-    deleteSelection()
+    await deleteSelection()
     return true
   }
 
@@ -1027,7 +1048,7 @@ export function useDefinitionFlow(
     selectedNodeId.value = ''
   })
 
-  store.onNodesChange((changes) => {
+  store.onNodesChange(async (changes) => {
     const removals = changes.filter(change => change.type === 'remove')
     if (!removals.length) return
     let mutated = false
@@ -1043,10 +1064,11 @@ export function useDefinitionFlow(
         continue
       }
       if (!isCreationType(upper)) {
-        if (!window.confirm(translate('soar.editorErrors.deleteReadOnlyNode', { name: String(raw.name || id) }))) {
-          restoreNodeInStore(id)
-          continue
-        }
+        // Vue Flow has already dropped the node from its own store, so put it
+        // back before awaiting: a native confirm froze painting, but an async
+        // message box would otherwise show a deletion the operator may refuse.
+        restoreNodeInStore(id)
+        if (!await confirmReadOnlyDelete(String(raw.name || id))) continue
       }
       removeNodeRaw(id)
       mutated = true

@@ -7,7 +7,7 @@ import jakarta.validation.constraints.Size;
 /** API input for an output target; id and creation time are server-owned. */
 public record SinkTargetRequest(
         @NotBlank @Size(max = 128) String name,
-        @NotBlank @Pattern(regexp = "(?i)SEARCH|OPENSEARCH|HTTP|KAFKA") String type,
+        @NotBlank @Pattern(regexp = "(?i)SEARCH|OPENSEARCH|HTTP|KAFKA|GLS_INGEST") String type,
         @NotBlank @Size(max = 2048)
         @Pattern(regexp = "(?i)^(https?|kafka|opensearch)://.*$") String uri,
         @Size(max = 4096) String authToken,

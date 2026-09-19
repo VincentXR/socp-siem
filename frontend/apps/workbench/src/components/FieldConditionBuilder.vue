@@ -20,6 +20,8 @@ const props = withDefaults(defineProps<{
   fieldPlaceholder?: string
   valuePlaceholder?: string
   readOnly?: boolean
+  /** Row index -> message, for a save the parent refused. */
+  errors?: Record<number, string>
 }>(), {
   fields: () => [],
   referenceSets: () => [],
@@ -31,6 +33,7 @@ const props = withDefaults(defineProps<{
   fieldPlaceholder: 'Search field',
   valuePlaceholder: 'Value',
   readOnly: false,
+  errors: undefined,
 })
 
 const emit = defineEmits<{ 'update:modelValue': [RuleCondition[]] }>()
@@ -120,7 +123,7 @@ function fieldMeta(fieldName: string): string {
       <b>{{ title }}</b>
       <el-button v-if="!props.readOnly && modelValue.length < maxConditions" size="small" plain @click="addCondition">{{ addLabel }}</el-button>
     </div>
-    <div v-for="(condition, index) in modelValue" :key="index" class="field-condition-row">
+    <div v-for="(condition, index) in modelValue" :key="index" class="field-condition-row" :class="{ 'field-condition-row-invalid': errors?.[index] }">
       <el-select
         :model-value="condition.field"
         :disabled="props.readOnly"
@@ -156,6 +159,7 @@ function fieldMeta(fieldName: string): string {
       <el-input v-else :model-value="condition.value" :disabled="props.readOnly" :type="isNumberField(condition.field) ? 'number' : 'text'" :placeholder="valuePlaceholder" @update:model-value="value => updateRow(index, { value: String(value ?? '') })" />
       <el-button v-if="!props.readOnly" link type="danger" :aria-label="t('common.removeCondition', { index: index + 1 })" @click="removeCondition(index)">×</el-button>
       <small v-if="fieldMeta(condition.field)" class="field-condition-meta">{{ fieldMeta(condition.field) }}</small>
+      <small v-if="errors?.[index]" class="field-condition-error" role="alert">{{ errors[index] }}</small>
     </div>
     <div v-if="!modelValue.length" class="field-condition-empty">{{ emptyHint }}</div>
     <el-button v-if="!props.readOnly && !title && modelValue.length < maxConditions" size="small" plain @click="addCondition">{{ addLabel }}</el-button>
@@ -169,6 +173,8 @@ function fieldMeta(fieldName: string): string {
 .field-condition-builder-head b { color: var(--ns-text-2); font-size: 12px; }
 .field-condition-row { display: grid; grid-template-columns: minmax(150px, .9fr) 120px minmax(140px, 1fr) auto; gap: 6px; align-items: center; }
 .field-condition-row :deep(.el-input), .field-condition-row :deep(.el-select) { width: 100%; }
+.field-condition-row-invalid :deep(.el-input__wrapper), .field-condition-row-invalid :deep(.el-select__wrapper) { box-shadow: 0 0 0 1px var(--ns-danger) inset; }
+.field-condition-error { grid-column: 1 / -1; color: var(--ns-danger); font-size: 11px; line-height: 1.35; }
 .field-condition-option { display: flex; flex-direction: column; gap: 2px; line-height: 1.25; }
 .field-condition-option small { color: var(--ns-text-3); font-size: 10px; }
 .field-condition-meta { grid-column: 1 / -1; margin: -3px 0 2px; color: var(--ns-text-3); font-size: 10px; line-height: 1.35; }
