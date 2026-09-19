@@ -11,7 +11,6 @@ import com.socp.soar.web.domain.DefinitionValidationResult;
 import com.socp.soar.web.domain.SoarPlaybookVersionStatus;
 import com.socp.soar.web.domain.SoarRunStatus;
 import com.socp.soar.web.persistence.entity.PlaybookVersionEntity;
-import com.socp.soar.web.persistence.entity.SoarDispatchOutboxEntity;
 import com.socp.soar.web.persistence.entity.SoarNodeRunEntity;
 import com.socp.soar.web.persistence.entity.SoarPlaybookEntity;
 import com.socp.soar.web.persistence.entity.SoarRunEntity;
@@ -49,26 +48,15 @@ import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
 import java.util.UUID;
 import java.util.Set;
-import java.util.Optional;
 
 /** Application service for the durable SOAR control plane. */
 @Service
 public class SoarService {
-    private static final int MAX_APPROVAL_SNAPSHOT_BYTES = 64 * 1024;
-    private static final int MAX_SUB_PLAYBOOK_DEPTH = 5;
-    private static final String DEFAULT_DEFINITION = "{\"schemaVersion\":\"soar.playbook\","
-            + "\"entryNodeId\":\"start\",\"nodes\":["
-            + "{\"id\":\"start\",\"type\":\"START\",\"name\":\"Start\"},"
-            + "{\"id\":\"end\",\"type\":\"END\",\"name\":\"End\",\"outcome\":\"SUCCEEDED\"}],"
-            + "\"edges\":[{\"from\":\"start\",\"to\":\"end\"}]}";
-
     final SoarPlaybookRepository playbooks;
     final PlaybookVersionRepository versions;
     final SoarRunRepository runs;
@@ -94,6 +82,8 @@ public class SoarService {
     private final SoarRunCommandService runCommands;
     private final SoarArtifactCommandService artifactCommands;
     private final SoarApprovalCommandService approvalCommands;
+    private final SoarOutboxCommandService outboxCommands;
+    private final SoarDefinitionPolicy definitionPolicy;
     private final SoarQueryService queries;
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -126,6 +116,8 @@ public class SoarService {
         this.runCommands = new SoarRunCommandService(this);
         this.artifactCommands = new SoarArtifactCommandService(this);
         this.approvalCommands = new SoarApprovalCommandService(this);
+        this.outboxCommands = new SoarOutboxCommandService(this);
+        this.definitionPolicy = new SoarDefinitionPolicy(this);
         this.queries = new SoarQueryService(this);
     }
 
@@ -437,117 +429,13 @@ public class SoarService {
     @Transactional
     @AuditOperation(action = "SOAR_REQUEUE_DEAD_OUTBOX", target = "t_soar_dispatch_outbox")
     public Map<String, Object> requeueDead(String id, String reason) {
-        String why = redactFreeText(reason == null ? "" : reason, 1024);
-        String tenant = tenant();
-        Optional<SoarDispatchOutboxEntity> dispatch = dispatches.findByTenantIdAndId(tenant, id);
-        if (dispatch != null && dispatch.isPresent()) {
-            SoarDispatchOutboxEntity row = dispatch.get();
-            if (!"DEAD".equals(row.getStatus())) {
-                throw error(HttpStatus.CONFLICT, "SOAR_OUTBOX_NOT_DEAD", "outbox is not dead");
-            }
-            Instant now = Instant.now();
-            row.setStatus("PENDING"); row.setAttempts(0); row.setLastError("requeued: " + why);
-            row.setNextAttemptAt(now); row.setUpdatedAt(now); dispatches.save(row);
-            runs.findByTenantIdAndId(tenant, row.getRunId()).ifPresent(run -> {
-                // DEAD is the one recoverable run projection: requeueing its
-                // dispatch intentionally returns it to QUEUED. A stale dead
-                // outbox attached to any other terminal run must not resurrect
-                // that run merely because an operator retried the row.
-                if (dispatchRunCanBeRequeued(run)) {
-                    run.setStatus("QUEUED"); run.setUpdatedAt(now); runs.save(run);
-                }
-            });
-            return Map.of("id", id, "kind", "DISPATCH", "status", "PENDING");
-        }
-        // Dead-letter operations expose dispatch and signal rows through one
-        // operator endpoint.  A signal used to be visible in the list but
-        // impossible to requeue because this method only looked in the
-        // dispatch table; resolve the same public id against both stores.
-        if (signals != null) {
-            Optional<SoarSignalOutboxEntity> signal = signals.findByTenantIdAndId(tenant, id);
-            if (signal != null && signal.isPresent()) {
-                SoarSignalOutboxEntity row = signal.get();
-                if (!"DEAD".equals(row.getStatus())) {
-                    throw error(HttpStatus.CONFLICT, "SOAR_OUTBOX_NOT_DEAD", "outbox is not dead");
-                }
-                // A signal is only recoverable while its owning run is still
-                // resumable.  An operator retry must not requeue a late
-                // approval/manual decision for a terminal or cancelling run;
-                // the signal worker's fence is a second line of defence, not
-                // a reason to report a misleading PENDING success here.
-                Optional<SoarRunEntity> owner = runs.findByTenantIdAndIdForUpdate(tenant, row.getRunId());
-                if (owner == null || owner.isEmpty()) owner = runs.findByTenantIdAndId(tenant, row.getRunId());
-                if (owner != null && owner.isPresent()
-                        && (terminalRunProjection(owner.get())
-                        || SoarRunStatus.CANCELLING.name().equals(owner.get().getStatus()))) {
-                    throw error(HttpStatus.CONFLICT, "SOAR_RUN_NOT_RESUMABLE",
-                            "the signal owner run is already terminal or cancelling");
-                }
-                Instant now = Instant.now();
-                row.setStatus("PENDING"); row.setAttempts(0); row.setLastError("requeued: " + why);
-                row.setNextAttemptAt(now); row.setUpdatedAt(now); signals.save(row);
-                return Map.of("id", id, "kind", "SIGNAL", "status", "PENDING",
-                        "signalType", nullSafe(row.getSignalType()),
-                        "signalKey", nullSafe(row.getSignalKey()));
-            }
-        }
-        throw error(HttpStatus.NOT_FOUND, "SOAR_OUTBOX_NOT_FOUND", "outbox not found");
+        return outboxCommands.requeueDead(id, reason);
     }
 
     @Transactional
     @AuditOperation(action = "SOAR_DISCARD_DEAD_OUTBOX", target = "t_soar_dispatch_outbox")
     public Map<String, Object> discardDead(String id, String reason) {
-        String why = redactFreeText(required(reason, "reason", 2048), 2048);
-        String tenant = tenant();
-        Optional<SoarDispatchOutboxEntity> dispatch = dispatches.findByTenantIdAndId(tenant, id);
-        if (dispatch != null && dispatch.isPresent()) {
-            SoarDispatchOutboxEntity row = dispatch.get();
-            if (!"DEAD".equals(row.getStatus())) {
-                throw error(HttpStatus.CONFLICT, "SOAR_OUTBOX_NOT_DEAD", "outbox is not dead");
-            }
-            Instant now = Instant.now();
-            row.setStatus("DISCARDED"); row.setLastError("discarded: " + why);
-            row.setUpdatedAt(now); dispatches.save(row);
-            Optional<SoarRunEntity> lockedRun = runs.findByTenantIdAndIdForUpdate(tenant, row.getRunId());
-            if (lockedRun == null) lockedRun = runs.findByTenantIdAndId(tenant, row.getRunId());
-            lockedRun.ifPresent(run -> {
-                if (!terminalRunProjection(run)) {
-                    run.setStatus("SUPPRESSED"); run.setErrorCode("DISPATCH_DISCARDED");
-                    run.setErrorMessage(why); run.setCompletedAt(now); run.setUpdatedAt(now); runs.save(run);
-                }
-            });
-            return Map.of("id", id, "kind", "DISPATCH", "status", "DISCARDED");
-        }
-        if (signals != null) {
-            Optional<SoarSignalOutboxEntity> signal = signals.findByTenantIdAndId(tenant, id);
-            if (signal != null && signal.isPresent()) {
-                SoarSignalOutboxEntity row = signal.get();
-                if (!"DEAD".equals(row.getStatus())) {
-                    throw error(HttpStatus.CONFLICT, "SOAR_OUTBOX_NOT_DEAD", "outbox is not dead");
-                }
-                Instant now = Instant.now();
-                row.setStatus("DISCARDED"); row.setLastError("discarded: " + why);
-                row.setUpdatedAt(now); signals.save(row);
-                // A dead human/unknown signal must not leave a run waiting
-                // forever.  Discard is an explicit operator terminal choice,
-                // so suppress the run and retain the reason in its projection.
-                Optional<SoarRunEntity> lockedRun = runs.findByTenantIdAndIdForUpdate(tenant, row.getRunId());
-                if (lockedRun == null) lockedRun = runs.findByTenantIdAndId(tenant, row.getRunId());
-                lockedRun.ifPresent(run -> {
-                    if (!terminalRunProjection(run)) {
-                        run.setStatus("SUPPRESSED"); run.setErrorCode("SIGNAL_DISCARDED");
-                        run.setErrorMessage(why); run.setCompletedAt(now); run.setUpdatedAt(now); runs.save(run);
-                        appendEvent(run.getId(), "SIGNAL_DISCARDED", actor(),
-                                "Dead signal discarded by operator", Map.of("signalId", id,
-                                        "signalType", nullSafe(row.getSignalType())));
-                    }
-                });
-                return Map.of("id", id, "kind", "SIGNAL", "status", "DISCARDED",
-                        "signalType", nullSafe(row.getSignalType()),
-                        "signalKey", nullSafe(row.getSignalKey()));
-            }
-        }
-        throw error(HttpStatus.NOT_FOUND, "SOAR_OUTBOX_NOT_FOUND", "outbox not found");
+        return outboxCommands.discardDead(id, reason);
     }
 
     @Transactional
@@ -628,79 +516,13 @@ public class SoarService {
 
 
     void validateConnections(String definitionJson, String tenant) {
-        if (connectors == null || connectorRegistry == null) return;
-        try {
-            JsonNode nodesJson = mapper.readTree(definitionJson).path("nodes");
-            if (!nodesJson.isArray()) return;
-            for (JsonNode node : nodesJson) {
-                if (!"ACTION".equalsIgnoreCase(node.path("type").asText())) continue;
-                String actionRef = node.path("actionRef").asText("");
-                var descriptor = connectorRegistry.descriptorForAction(actionRef).orElse(null);
-                if (descriptor == null) throw error(HttpStatus.BAD_REQUEST, "SOAR_ACTION_NOT_FOUND", "unknown action: " + actionRef);
-                if (runtimeProperties != null
-                        && "production".equalsIgnoreCase(runtimeProperties.getMaturity())
-                        && !descriptor.production()) {
-                    throw error(HttpStatus.CONFLICT, "SOAR_CONNECTOR_NOT_PRODUCTION_READY",
-                            "action connector is test-only until a production adapter is certified: " + actionRef);
-                }
-                String canonicalActionRef = connectorRegistry.canonicalActionRef(actionRef);
-                String actionName = canonicalActionRef.substring(canonicalActionRef.indexOf('/') + 1).split("@")[0].toLowerCase();
-                var action = descriptor.actions().stream().filter(item -> item.id().equals(actionName)).findFirst().orElse(null);
-                String connectionId = node.path("connectionRef").asText("");
-                if (action != null && action.requiresConnection() && connectionId.isBlank()) {
-                    throw error(HttpStatus.BAD_REQUEST, "SOAR_CONNECTION_UNAVAILABLE", "action requires connection: " + actionRef);
-                }
-                if (!connectionId.isBlank()) {
-                    var connection = connectors.findByTenantIdAndId(tenant, connectionId)
-                            .orElseThrow(() -> error(HttpStatus.BAD_REQUEST, "SOAR_CONNECTION_UNAVAILABLE", "connection not found: " + connectionId));
-                    if (!connection.isEnabled() || connection.getDeletedAt() != null) {
-                        throw error(HttpStatus.BAD_REQUEST, "SOAR_CONNECTION_UNAVAILABLE", "connection is disabled: " + connectionId);
-                    }
-                    String connectorType = connection.getConnectorType().toLowerCase();
-                    if (!connectorType.equals(descriptor.id()) && !("net.firewall".equals(connectorType) && "firewall".equals(descriptor.id()))) {
-                        throw error(HttpStatus.BAD_REQUEST, "SOAR_CONNECTION_UNAVAILABLE", "connection type does not match action");
-                    }
-                }
-            }
-        } catch (ResponseStatusException failure) { throw failure; }
-        catch (Exception failure) { throw error(HttpStatus.BAD_REQUEST, "SOAR_DEFINITION_INVALID", "invalid definition"); }
+        definitionPolicy.validateConnections(definitionJson, tenant);
     }
 
     /** Per-connection readiness summary referenced by a definition. Used by the
      * publish result (design 6.4); never treated as a live connectivity test. */
     List<Map<String, Object>> connectionHealth(String definitionJson, String tenant) {
-        List<Map<String, Object>> health = new ArrayList<>();
-        if (connectors == null || definitionJson == null || definitionJson.isBlank()) return health;
-        try {
-            JsonNode nodesJson = mapper.readTree(definitionJson).path("nodes");
-            if (!nodesJson.isArray()) return health;
-            Set<String> seen = new LinkedHashSet<>();
-            for (JsonNode node : nodesJson) {
-                if (!"ACTION".equalsIgnoreCase(node.path("type").asText(""))) continue;
-                String connectionId = node.path("connectionRef").asText("").trim();
-                if (connectionId.isBlank() || !seen.add(connectionId)) continue;
-                Map<String, Object> entry = new LinkedHashMap<>();
-                entry.put("connectionRef", connectionId);
-                // validateConnections has already verified existence/enabled/type
-                // before publish; a missing row here means a concurrent delete and
-                // the summary simply omits it rather than guessing state.
-                connectors.findByTenantIdAndId(tenant, connectionId).ifPresent(row -> {
-                    entry.put("name", nullSafe(row.getName()));
-                    entry.put("connectorType", nullSafe(row.getConnectorType()));
-                    entry.put("enabled", row.isEnabled());
-                    entry.put("deleted", row.getDeletedAt() != null);
-                    entry.put("status", row.getStatus() == null ? (row.isEnabled() ? "HEALTHY_UNKNOWN" : "DISABLED") : row.getStatus());
-                    entry.put("lastTestAt", row.getLastTestAt());
-                    entry.put("lastTestStatus", nullSafe(row.getLastTestStatus()));
-                    entry.put("ready", row.isEnabled() && row.getDeletedAt() == null);
-                    health.add(entry);
-                });
-            }
-        } catch (Exception ignored) {
-            // The definition was already validated before publish; malformed
-            // legacy JSON must not hide the publish result with a failure.
-        }
-        return health;
+        return definitionPolicy.connectionHealth(definitionJson, tenant);
     }
 
     record ApprovalContext(String actionRef, String inputHash, String targetSnapshotJson) {
@@ -716,103 +538,11 @@ public class SoarService {
      * actionRef instead of pretending that the first action is the only one.
      */
     ApprovalContext buildApprovalContext(String definitionJson, String inputJson) {
-        List<Map<String, Object>> risky = new ArrayList<>();
-        try {
-            JsonNode nodesJson = mapper.readTree(definitionJson == null ? "{}" : definitionJson).path("nodes");
-            if (nodesJson.isArray()) for (JsonNode node : nodesJson) {
-                if (!"ACTION".equalsIgnoreCase(node.path("type").asText(""))) continue;
-                String actionRef = node.path("actionRef").asText("").trim();
-                if (!isHighRiskActionRef(actionRef)) continue;
-                Map<String, Object> row = new LinkedHashMap<>();
-                row.put("nodeId", limit(node.path("id").asText(""), 64));
-                row.put("actionRef", limit(actionRef, 255));
-                if (node.has("target")) row.put("target", redact(readMap(node.path("target").toString())));
-                if (node.path("connectionRef").isTextual()
-                        && !node.path("connectionRef").asText("").isBlank()) {
-                    row.put("connectionRef", limit(node.path("connectionRef").asText(""), 255));
-                }
-                risky.add(row);
-                if (risky.size() >= 64) break;
-            }
-        } catch (JsonProcessingException ignored) {
-            // The version was already validated before a run can be queued;
-            // preserve a bounded evidence object if legacy data is malformed.
-        }
-        Map<String, Object> snapshot = new LinkedHashMap<>();
-        snapshot.put("actions", risky);
-        // A pre-dispatch gate has no concrete APPROVAL node to carry its
-        // policy.  Allow the immutable definition root to declare the same
-        // role/group allow-list; absent policy intentionally preserves the
-        // legacy soar:approve + self-approval behavior.
-        try {
-            JsonNode root = mapper.readTree(definitionJson == null ? "{}" : definitionJson);
-            JsonNode policy = root.path("approvalPolicy").isObject()
-                    ? root.path("approvalPolicy") : root.path("policy");
-            Map<String, Object> policySnapshot = approvalPolicySnapshot(policy);
-            if (!policySnapshot.isEmpty()) snapshot.put("approvalPolicy", policySnapshot);
-        } catch (JsonProcessingException ignored) {
-            // The version was already validated before admission; a malformed
-            // optional policy cannot make the bounded approval evidence grow.
-        }
-        String snapshotJson = write(snapshot);
-        int bytes = snapshotJson.getBytes(StandardCharsets.UTF_8).length;
-        if (bytes > MAX_APPROVAL_SNAPSHOT_BYTES) {
-            snapshotJson = write(Map.of("truncated", true, "sha256", sha256(snapshotJson),
-                    "originalBytes", bytes, "actionCount", risky.size()));
-        }
-        String actionRef = risky.isEmpty() ? "" : risky.size() == 1
-                ? String.valueOf(risky.get(0).get("actionRef")) : "MULTIPLE";
-        return new ApprovalContext(actionRef, sha256((inputJson == null ? "" : inputJson)
-                + "\u0000" + snapshotJson), snapshotJson);
-    }
-
-    /** Copy only bounded, non-secret approval policy fields into evidence. */
-    private Map<String, Object> approvalPolicySnapshot(JsonNode policy) {
-        if (policy == null || !policy.isObject()) return Map.of();
-        Map<String, Object> result = new LinkedHashMap<>();
-        copyApprovalPolicyList(policy, result, "allowedRoles", "approverRoles");
-        copyApprovalPolicyList(policy, result, "allowedGroups", "approverGroups");
-        JsonNode required = policy.has("approvalsRequired") ? policy.get("approvalsRequired")
-                : policy.get("requiredApprovals");
-        if (required != null && required.isIntegralNumber() && required.canConvertToInt()) {
-            result.put("approvalsRequired", Math.max(1, Math.min(20, required.asInt())));
-        }
-        return result;
-    }
-
-    private void copyApprovalPolicyList(JsonNode policy, Map<String, Object> target,
-                                        String canonical, String alias) {
-        JsonNode values = policy.path(canonical).isArray() ? policy.path(canonical) : policy.path(alias);
-        if (values == null || !values.isArray()) return;
-        List<String> safe = new ArrayList<>();
-        for (JsonNode value : values) {
-            if (value != null && value.isTextual() && !value.asText().isBlank()
-                    && value.asText().length() <= 128 && safe.size() < 64) {
-                safe.add(value.asText().trim());
-            }
-        }
-        if (!safe.isEmpty()) target.put(canonical, safe);
+        return definitionPolicy.buildApprovalContext(definitionJson, inputJson);
     }
 
     String approvalPolicyJson(String targetSnapshotJson) {
-        JsonNode snapshot = readTree(targetSnapshotJson);
-        JsonNode policy = snapshot.path("approvalPolicy");
-        return policy.isObject() ? write(policy) : null;
-    }
-
-    private boolean isHighRiskActionRef(String actionRef) {
-        String value = actionRef == null ? "" : actionRef.toLowerCase(Locale.ROOT);
-        if (value.contains("isolate") || value.contains("block") || value.contains("disable")
-                || value.contains("delete") || value.contains("snapshot")) return true;
-        if (connectorRegistry == null) return false;
-        var descriptor = connectorRegistry.descriptorForAction(actionRef).orElse(null);
-        if (descriptor == null) return false;
-        String canonical = connectorRegistry.canonicalActionRef(actionRef);
-        int slash = canonical.indexOf('/');
-        String actionId = slash < 0 ? "" : canonical.substring(slash + 1).split("@")[0];
-        return descriptor.actions().stream().filter(item -> item.id().equals(actionId))
-                .anyMatch(item -> "HIGH".equalsIgnoreCase(item.riskLevel())
-                        || "CRITICAL".equalsIgnoreCase(item.riskLevel()));
+        return definitionPolicy.approvalPolicyJson(targetSnapshotJson);
     }
 
     Map<String, Object> attemptView(SoarActionAttemptEntity attempt) {
@@ -944,13 +674,6 @@ public class SoarService {
                 SoarRunStatus.DEAD.name()).contains(run.getStatus());
     }
 
-    /** A dead dispatch can only move a run that is still waiting to start. */
-    private static boolean dispatchRunCanBeRequeued(SoarRunEntity run) {
-        return run != null && run.getStatus() != null
-                && Set.of(SoarRunStatus.DEAD.name(), SoarRunStatus.QUEUED.name(),
-                SoarRunStatus.DISPATCHING.name()).contains(run.getStatus());
-    }
-
     SoarPlaybookEntity playbook(String id) {
         return playbooks.findByTenantIdAndId(tenant(), id)
                 .orElseThrow(() -> error(HttpStatus.NOT_FOUND, "SOAR_PLAYBOOK_NOT_FOUND", "playbook not found"));
@@ -965,84 +688,7 @@ public class SoarService {
      * has to be pinned before it can be executed.
      */
     void validateSubPlaybookGraph(String tenant, PlaybookVersionEntity rootVersion) {
-        if (rootVersion == null || rootVersion.getDefinitionJson() == null) return;
-        Set<String> visiting = new LinkedHashSet<>();
-        validateSubPlaybookVersion(tenant, rootVersion, 0, visiting);
-    }
-
-    private void validateSubPlaybookVersion(String tenant, PlaybookVersionEntity version,
-                                            int depth, Set<String> visiting) {
-        String versionId = version.getId();
-        String pathId = versionId == null || versionId.isBlank()
-                ? version.getPlaybookId() + ":" + version.getVersionNo() : versionId;
-        if (!visiting.add(pathId)) {
-            throw error(HttpStatus.CONFLICT, "SOAR_SUB_PLAYBOOK_CYCLE",
-                    "sub-playbook call graph contains a cycle at " + pathId);
-        }
-        JsonNode definition;
-        try {
-            definition = mapper.readTree(version.getDefinitionJson());
-        } catch (Exception invalid) {
-            visiting.remove(pathId);
-            throw error(HttpStatus.CONFLICT, "SOAR_SUB_PLAYBOOK_DEFINITION_INVALID",
-                    "sub-playbook definition is not valid JSON");
-        }
-        if (definition == null || !definition.isObject()) {
-            visiting.remove(pathId);
-            throw error(HttpStatus.CONFLICT, "SOAR_SUB_PLAYBOOK_DEFINITION_INVALID",
-                    "sub-playbook definition must be an object");
-        }
-        JsonNode nodes = definition.path("nodes");
-        if (nodes.isArray()) {
-            for (JsonNode node : nodes) {
-                if (!"SUB_PLAYBOOK".equalsIgnoreCase(node.path("type").asText(""))) continue;
-                String nodeId = node.path("id").asText("sub-playbook");
-                if (node.path("definition").isObject()) {
-                    visiting.remove(pathId);
-                    throw error(HttpStatus.BAD_REQUEST, "SOAR_SUB_PLAYBOOK_INLINE_FORBIDDEN",
-                            "SUB_PLAYBOOK " + nodeId + " must reference a published version");
-                }
-                String targetId = node.path("playbookVersionId").asText("").trim();
-                if (targetId.isBlank()) {
-                    targetId = node.path("config").path("playbookVersionId").asText("").trim();
-                }
-                if (targetId.isBlank()) {
-                    visiting.remove(pathId);
-                    throw error(HttpStatus.BAD_REQUEST, "SOAR_SUB_PLAYBOOK_REFERENCE_REQUIRED",
-                            "SUB_PLAYBOOK " + nodeId + " requires playbookVersionId");
-                }
-                if (depth >= MAX_SUB_PLAYBOOK_DEPTH) {
-                    visiting.remove(pathId);
-                    throw error(HttpStatus.CONFLICT, "SOAR_SUB_PLAYBOOK_DEPTH_EXCEEDED",
-                            "sub-playbook call graph exceeds depth " + MAX_SUB_PLAYBOOK_DEPTH);
-                }
-                if (visiting.contains(targetId)) {
-                    visiting.remove(pathId);
-                    throw error(HttpStatus.CONFLICT, "SOAR_SUB_PLAYBOOK_CYCLE",
-                            "sub-playbook call graph contains a cycle through " + targetId);
-                }
-                String referencedId = targetId;
-                PlaybookVersionEntity target = versions.findByTenantIdAndId(tenant, referencedId)
-                        .orElseThrow(() -> error(HttpStatus.CONFLICT, "SOAR_SUB_PLAYBOOK_NOT_FOUND",
-                                "referenced playbook version does not exist: " + referencedId));
-                if (!SoarPlaybookVersionStatus.PUBLISHED.name().equals(target.getStatus())) {
-                    visiting.remove(pathId);
-                    throw error(HttpStatus.CONFLICT, "SOAR_SUB_PLAYBOOK_NOT_PUBLISHED",
-                            "referenced playbook version is not published: " + targetId);
-                }
-                SoarPlaybookEntity targetPlaybook = playbooks.findByTenantIdAndId(
-                                tenant, target.getPlaybookId())
-                        .orElseThrow(() -> error(HttpStatus.CONFLICT, "SOAR_SUB_PLAYBOOK_NOT_FOUND",
-                                "owning playbook does not exist for referenced version: " + referencedId));
-                if (!"ACTIVE".equalsIgnoreCase(targetPlaybook.getStatus())) {
-                    visiting.remove(pathId);
-                    throw error(HttpStatus.CONFLICT, "SOAR_SUB_PLAYBOOK_ARCHIVED",
-                            "referenced playbook is archived: " + target.getPlaybookId());
-                }
-                validateSubPlaybookVersion(tenant, target, depth + 1, visiting);
-            }
-        }
-        visiting.remove(pathId);
+        definitionPolicy.validateSubPlaybookGraph(tenant, rootVersion);
     }
 
     PlaybookVersionEntity version(String playbookId, int versionNo) {
