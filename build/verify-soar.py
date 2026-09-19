@@ -128,13 +128,40 @@ def main() -> int:
           and "SoarManualFormValidator.validate" in read(
               "services/soar-web/src/main/java/com/socp/soar/web/definition/SoarDefinitionValidator.java"))
 
-    controller = read("services/soar-web/src/main/java/com/socp/soar/web/api/controller/SoarController.java")
+    controller_dir = "services/soar-web/src/main/java/com/socp/soar/web/api/controller"
+    playbook_controller = read(f"{controller_dir}/SoarController.java")
+    run_controller = read(f"{controller_dir}/SoarRunController.java")
+    automation_controller = read(f"{controller_dir}/SoarAutomationController.java")
+    connector_controller = read(f"{controller_dir}/SoarConnectorController.java")
+    http_support = read(f"{controller_dir}/SoarHttpSupport.java")
+    controllers = "\n".join((playbook_controller, run_controller,
+                              automation_controller, connector_controller))
+    controller_budgets = {
+        "playbook": (playbook_controller, 400),
+        "run": (run_controller, 550),
+        "automation": (automation_controller, 250),
+        "connector": (connector_controller, 300),
+    }
+    for name, (source, maximum) in controller_budgets.items():
+        line_count = len(source.splitlines())
+        check(f"SOAR {name} controller remains bounded", line_count <= maximum,
+              f"lines={line_count}, max={maximum}")
     soar_client = read("platform/socp-client/src/main/java/com/socp/platform/client/service/SoarClient.java")
-    for route in ("/runs", "/dry-run", "/definition-schema", "/resolve-unknown", "/artifacts", "@PatchMapping(\"/playbooks/{id}\")"):
-        check(f"SOAR route {route}", route in controller)
+    route_owners = {
+        "/runs": run_controller,
+        "/dry-run": playbook_controller,
+        "/definition-schema": playbook_controller,
+        "/resolve-unknown": run_controller,
+        "/artifacts": run_controller,
+        "/automation-rules": automation_controller,
+        "/connections": connector_controller,
+        "@PatchMapping(\"/playbooks/{id}\")": playbook_controller,
+    }
+    for route, owner in route_owners.items():
+        check(f"SOAR route {route}", route in owner)
     check("Alert service client enters event evaluation",
           '"/api/events/evaluate"' in soar_client
-          and "normalizeEventEnvelope" in controller)
+          and "normalizeEventEnvelope" in automation_controller)
     live_probe = ROOT / "build/verify-soar-live.py"
     full_stack = read(".github/workflows/full-stack.yml")
     live_source = live_probe.read_text(encoding="utf-8") if live_probe.is_file() else ""
@@ -154,11 +181,11 @@ def main() -> int:
                          "ApprovalDecisionRequest", "PatchConnectionRequest"):
         check(f"typed SOAR request {request_type}", (request_dir / f"{request_type}.java").is_file())
     check("high-risk SOAR handlers use validated request DTOs",
-          "@Valid @RequestBody(required = false)\n                                                         UpdatePlaybookRequest" in controller
-          and "@Valid @RequestBody UnknownResolutionRequest" in controller
-          and "@Valid @RequestBody ApprovalDecisionRequest" in controller
-          and "@RequestBody PlaybookExecutionRequest" in controller)
-    dynamic_body_count = len(re.findall(r"@RequestBody(?:\([^)]*\))?\s+Map<", controller))
+          "@Valid @RequestBody(required = false)\n                                                         UpdatePlaybookRequest" in playbook_controller
+          and "@Valid @RequestBody UnknownResolutionRequest" in run_controller
+          and "@Valid @RequestBody ApprovalDecisionRequest" in run_controller
+          and "@RequestBody PlaybookExecutionRequest" in run_controller)
+    dynamic_body_count = len(re.findall(r"@RequestBody(?:\([^)]*\))?\s+Map<", controllers))
     check("SOAR dynamic request maps stay at JSON extension boundaries",
           dynamic_body_count == 4, f"found={dynamic_body_count}; patch/evaluation routes are explicit extension boundaries")
 
@@ -174,6 +201,7 @@ def main() -> int:
     service_sources = read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarService.java")
     service_sources += read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarApprovalCommandService.java")
     service_sources += read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarArtifactCommandService.java")
+    service_sources += read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarDefinitionPolicy.java")
     definition_sources = read("services/soar-web/src/main/java/com/socp/soar/web/definition/SoarDefinitionValidator.java")
     definition_sources += read("services/soar-web/src/main/java/com/socp/soar/web/definition/SoarActionContractValidator.java")
     checks = {
@@ -229,7 +257,7 @@ def main() -> int:
         and 'return "{}"' not in workflow and "SoarWorkflowJsonException" in workflow,
         "SSE scheduler has an application lifecycle": "soarSseScheduler" in read(
             "services/soar-web/src/main/java/com/socp/soar/web/config/SoarSseConfiguration.java")
-        and "getIfAvailable" in controller,
+        and "getIfAvailable" in run_controller,
         "SSE bounds are configurable": "sse-poll-interval-ms" in application
         and "sse-timeout-ms" in application and "sse-scheduler-threads" in production,
     }
@@ -292,7 +320,7 @@ def main() -> int:
     check("OpenAPI exposes complete SOAR pagination metadata",
           "required: [page, size, total, totalPages, items]" in openapi
           and "totalPages:" in openapi
-          and 'out.put("totalPages"' in controller
+          and 'out.put("totalPages"' in http_support
           and "totalPages: number | null" in frontend)
     check("OpenAPI uses the real session cookie and ApiResult schema",
           "name: SOCP_SESSION" in openapi and "schemas/ApiResult" in openapi

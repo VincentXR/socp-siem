@@ -66,6 +66,7 @@ class SoarControllerCoverageTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
     private SoarController controller;
+    private SoarRunController runController;
     private SoarAutomationController automationController;
     private SoarConnectorController connectorController;
 
@@ -73,6 +74,7 @@ class SoarControllerCoverageTest {
     void setUp() {
         TenantContext.set("tenant-a");
         controller = new SoarController(service, templates);
+        runController = new SoarRunController(service);
         automationController = new SoarAutomationController(automationRules);
         connectorController = new SoarConnectorController(connectors);
     }
@@ -231,9 +233,9 @@ class SoarControllerCoverageTest {
 
         RunRequest request = new RunRequest("req-1", "ver-1", Map.of("id", "al-1"), Map.of("k", "v"));
 
-        ResponseEntity<ApiResult<Map<String, Object>>> first = controller.queueRun(request);
+        ResponseEntity<ApiResult<Map<String, Object>>> first = runController.queueRun(request);
         assertThat(first.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
-        ResponseEntity<ApiResult<Map<String, Object>>> second = controller.queueRun(request);
+        ResponseEntity<ApiResult<Map<String, Object>>> second = runController.queueRun(request);
         assertThat(second.getStatusCode()).isEqualTo(HttpStatus.OK);
     }
 
@@ -243,11 +245,11 @@ class SoarControllerCoverageTest {
                 eq(Instant.parse("2026-01-01T00:00:00Z")), isNull()))
                 .willReturn(Page.empty());
 
-        ApiResult<Map<String, Object>> result = controller.listRuns(0, 20, "RUNNING", "ver-1", "manual",
+        ApiResult<Map<String, Object>> result = runController.listRuns(0, 20, "RUNNING", "ver-1", "manual",
                 "alice", "2026-01-01T00:00:00Z", null);
 
         assertThat(result.code()).isZero();
-        assertThatThrownBy(() -> controller.listRuns(0, 20, null, null, null, null, "not-a-date", null))
+        assertThatThrownBy(() -> runController.listRuns(0, 20, null, null, null, null, "not-a-date", null))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("createdFrom");
     }
@@ -262,10 +264,10 @@ class SoarControllerCoverageTest {
         given(service.rerun("run-1", "operator requested rerun", true))
                 .willReturn(Map.of("runId", "run-3", "status", "QUEUED"));
 
-        assertThat(controller.getRun("run-1").data()).containsEntry("runId", "run-1");
-        assertThat(controller.cancel("run-1", null).data()).containsEntry("status", "CANCELLING");
-        assertThat(controller.retry("run-1", null).getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
-        assertThat(controller.rerun("run-1", Map.of("confirm", true)).getStatusCode())
+        assertThat(runController.getRun("run-1").data()).containsEntry("runId", "run-1");
+        assertThat(runController.cancel("run-1", null).data()).containsEntry("status", "CANCELLING");
+        assertThat(runController.retry("run-1", null).getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
+        assertThat(runController.rerun("run-1", Map.of("confirm", true)).getStatusCode())
                 .isEqualTo(HttpStatus.ACCEPTED);
         verify(service).rerun("run-1", "operator requested rerun", true);
     }
@@ -279,12 +281,12 @@ class SoarControllerCoverageTest {
         given(service.listNodeAttempts("node-1", PageRequest.of(1, 10)))
                 .willReturn(new PageImpl<>(List.of(Map.of("attemptNo", 2)), PageRequest.of(1, 10), 1));
 
-        ApiResult<Object> pagedNodes = controller.nodes("run-1", 0, 500);
+        ApiResult<Object> pagedNodes = runController.nodes("run-1", 0, 500);
         assertThat(pagedNodes.data()).isInstanceOf(Map.class);
-        ApiResult<Object> plainNodes = controller.nodes("run-1", null, null);
+        ApiResult<Object> plainNodes = runController.nodes("run-1", null, null);
         assertThat(plainNodes.data()).isInstanceOf(List.class);
-        assertThat(controller.artifacts("run-1", null, null).data()).isInstanceOf(List.class);
-        ApiResult<Map<String, Object>> attempts = controller.attempts("node-1", 1, 10);
+        assertThat(runController.artifacts("run-1", null, null).data()).isInstanceOf(List.class);
+        ApiResult<Map<String, Object>> attempts = runController.attempts("node-1", 1, 10);
         assertThat(attempts.data()).isInstanceOf(Map.class);
         verify(service).listNodes("run-1", PageRequest.of(0, 200));
         verify(service).listNodeAttempts("node-1", PageRequest.of(1, 10));
@@ -299,12 +301,12 @@ class SoarControllerCoverageTest {
         given(service.getArtifactContent("art-1")).willReturn("{\"a\":1}");
 
         ResponseEntity<ApiResult<Map<String, Object>>> uploaded =
-                controller.uploadArtifact("run-1", "node-1", "text/csv", "RESTRICTED", body);
+                runController.uploadArtifact("run-1", "node-1", "text/csv", "RESTRICTED", body);
         assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         assertThat(uploaded.getBody().data()).containsEntry("id", "art-1");
 
-        assertThat(controller.artifact("art-1").data()).containsEntry("sizeBytes", 3);
-        ResponseEntity<String> content = controller.artifactContent("art-1");
+        assertThat(runController.artifact("art-1").data()).containsEntry("sizeBytes", 3);
+        ResponseEntity<String> content = runController.artifactContent("art-1");
         assertThat(content.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(content.getBody()).isEqualTo("{\"a\":1}");
     }
@@ -315,9 +317,9 @@ class SoarControllerCoverageTest {
                 .willReturn(new PageImpl<>(List.of(Map.of("sequence", 7L)), PageRequest.of(0, 100), 1));
         given(service.listEvents("run-1")).willReturn(List.of(Map.of("sequence", 1L)));
 
-        ApiResult<Object> paged = controller.events("run-1", null, null, 5L);
+        ApiResult<Object> paged = runController.events("run-1", null, null, 5L);
         assertThat(paged.data()).isInstanceOf(Map.class);
-        ApiResult<Object> plain = controller.events("run-1", null, null, 0L);
+        ApiResult<Object> plain = runController.events("run-1", null, null, 0L);
         assertThat(plain.data()).isInstanceOf(List.class);
         verify(service).listEvents("run-1", 5L, PageRequest.of(0, 100));
     }
@@ -326,7 +328,7 @@ class SoarControllerCoverageTest {
     void streamCapturesTheTenantAndReturnsAnEmitter() {
         lenient().when(service.listEvents(eq("run-1"), anyLong(), any(Pageable.class))).thenReturn(Page.empty());
 
-        SseEmitter emitter = controller.stream("run-1", "3");
+        SseEmitter emitter = runController.stream("run-1", "3");
 
         assertThat(emitter).isNotNull();
     }
@@ -340,7 +342,7 @@ class SoarControllerCoverageTest {
         given(service.resolveUnknown("node-1", "CONFIRMED_SUCCEEDED", "evidence", "why"))
                 .willReturn(Map.of("nodeRunId", "node-1"));
 
-        ApiResult<Map<String, Object>> result = controller.resolveUnknown("node-1",
+        ApiResult<Map<String, Object>> result = runController.resolveUnknown("node-1",
                 Map.of("resolution", "CONFIRMED_SUCCEEDED", "evidence", "evidence", "reason", "why"));
 
         assertThat(result.data()).containsEntry("nodeRunId", "node-1");
@@ -354,9 +356,9 @@ class SoarControllerCoverageTest {
         given(service.completeManualTask("task-1", Map.of("confirmed", true)))
                 .willReturn(Map.of("id", "task-1", "status", "COMPLETED"));
 
-        assertThat(controller.manualTasks(true, null, null).data()).isInstanceOf(List.class);
-        assertThat(controller.manualTasks(false, null, 300).data()).isInstanceOf(Map.class);
-        assertThat(controller.completeManualTask("task-1", Map.of("confirmed", true)).data())
+        assertThat(runController.manualTasks(true, null, null).data()).isInstanceOf(List.class);
+        assertThat(runController.manualTasks(false, null, 300).data()).isInstanceOf(Map.class);
+        assertThat(runController.completeManualTask("task-1", Map.of("confirmed", true)).data())
                 .containsEntry("status", "COMPLETED");
         verify(service).listManualTasks(false, PageRequest.of(0, 200));
     }
@@ -368,10 +370,10 @@ class SoarControllerCoverageTest {
         given(service.requeueDead("dead-1", "operator requeue")).willReturn(Map.of("id", "dead-1"));
         given(service.discardDead("dead-1", "junk")).willReturn(Map.of("id", "dead-1", "status", "DISCARDED"));
 
-        assertThat(controller.stats().data()).containsEntry("dispatchBacklog", 0);
-        assertThat(controller.deadDispatches().data()).hasSize(1);
-        assertThat(controller.requeueDead("dead-1", null).data()).containsEntry("id", "dead-1");
-        assertThat(controller.discardDead("dead-1", Map.of("reason", "junk")).data())
+        assertThat(runController.stats().data()).containsEntry("dispatchBacklog", 0);
+        assertThat(runController.deadDispatches().data()).hasSize(1);
+        assertThat(runController.requeueDead("dead-1", null).data()).containsEntry("id", "dead-1");
+        assertThat(runController.discardDead("dead-1", Map.of("reason", "junk")).data())
                 .containsEntry("status", "DISCARDED");
     }
 
@@ -386,13 +388,14 @@ class SoarControllerCoverageTest {
         given(service.listApprovals()).willReturn(List.of(Map.of("id", "appr-1")));
         given(service.decideApproval("appr-1", true, "authorized")).willReturn(Map.of("status", "APPROVED"));
 
-        assertThat(controller.approvals(null, 300).data()).isInstanceOf(Map.class);
-        assertThat(controller.approvals(null, null).data()).isInstanceOf(List.class);
+        assertThat(runController.approvals(null, 300).data()).isInstanceOf(Map.class);
+        assertThat(runController.approvals(null, null).data()).isInstanceOf(List.class);
 
-        assertThatThrownBy(() -> controller.decideApproval("appr-1", Map.of("decision", "MAYBE")))
+        assertThatThrownBy(() -> runController.decideApproval("appr-1", Map.of("decision", "MAYBE")))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("APPROVE or REJECT");
-        assertThat(controller.decideApproval("appr-1", Map.of("decision", "approve", "reason", "authorized")).data())
+        assertThat(runController.decideApproval(
+                "appr-1", Map.of("decision", "approve", "reason", "authorized")).data())
                 .containsEntry("status", "APPROVED");
     }
 
@@ -401,8 +404,9 @@ class SoarControllerCoverageTest {
         given(service.decideApproval("appr-1", true, "ok")).willReturn(Map.of("status", "APPROVED"));
         given(service.decideApproval("appr-1", false, null)).willReturn(Map.of("status", "REJECTED"));
 
-        assertThat(controller.approve("appr-1", Map.of("reason", "ok")).data()).containsEntry("status", "APPROVED");
-        assertThat(controller.reject("appr-1", null).data()).containsEntry("status", "REJECTED");
+        assertThat(runController.approve("appr-1", Map.of("reason", "ok")).data())
+                .containsEntry("status", "APPROVED");
+        assertThat(runController.reject("appr-1", null).data()).containsEntry("status", "REJECTED");
     }
 
     // ------------------------------------------------------------------

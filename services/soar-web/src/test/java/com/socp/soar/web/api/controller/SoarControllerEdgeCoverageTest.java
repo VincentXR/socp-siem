@@ -4,7 +4,6 @@ import com.socp.platform.error.api.ApiResult;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.soar.web.service.SoarConnectorService;
 import com.socp.soar.web.service.SoarService;
-import com.socp.soar.web.service.SoarTemplateService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -41,16 +40,13 @@ class SoarControllerEdgeCoverageTest {
     private SoarService service;
     @Mock
     private SoarConnectorService connectors;
-    @Mock
-    private SoarTemplateService templates;
-
-    private SoarController controller;
+    private SoarRunController runController;
     private SoarConnectorController connectorController;
 
     @BeforeEach
     void setUp() {
         TenantContext.set("tenant-a");
-        controller = new SoarController(service, templates);
+        runController = new SoarRunController(service);
         connectorController = new SoarConnectorController(connectors);
     }
 
@@ -65,7 +61,7 @@ class SoarControllerEdgeCoverageTest {
                 .willReturn(new PageImpl<>(List.of(Map.of("id", "a-1")), PageRequest.of(0, 20), 1));
         given(service.listArtifacts("run-1")).willReturn(List.of(Map.of("id", "a-1")));
 
-        ApiResult<Object> paged = controller.artifacts("run-1", 0, 20);
+        ApiResult<Object> paged = runController.artifacts("run-1", 0, 20);
         @SuppressWarnings("unchecked")
         Map<String, Object> pageView = (Map<String, Object>) paged.data();
         assertThat(pageView).containsEntry("page", 0)
@@ -73,7 +69,7 @@ class SoarControllerEdgeCoverageTest {
                 .containsEntry("total", 1L);
         verify(service).listArtifacts(eq("run-1"), any(Pageable.class));
 
-        ApiResult<Object> plain = controller.artifacts("run-1", null, null);
+        ApiResult<Object> plain = runController.artifacts("run-1", null, null);
         assertThat((List<?>) plain.data()).hasSize(1);
         verify(service).listArtifacts("run-1");
     }
@@ -95,7 +91,7 @@ class SoarControllerEdgeCoverageTest {
                         PageRequest.of(0, 100), 1));
 
         // A non-numeric Last-Event-ID is treated as sequence 0.
-        SseEmitter emitter = controller.stream("run-1", "abc");
+        SseEmitter emitter = runController.stream("run-1", "abc");
 
         verify(service, timeout(5_000).atLeastOnce())
                 .listEvents(eq("run-1"), anyLong(), any(Pageable.class));
@@ -113,7 +109,7 @@ class SoarControllerEdgeCoverageTest {
                     throw new IllegalStateException("db down");
                 });
 
-        SseEmitter emitter = controller.stream("run-1", null);
+        SseEmitter emitter = runController.stream("run-1", null);
         failureGate.countDown();
         verify(service, timeout(5_000).atLeastOnce())
                 .listEvents(eq("run-1"), anyLong(), any(Pageable.class));
