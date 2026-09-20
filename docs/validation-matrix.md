@@ -28,7 +28,7 @@ correctness and recovery behavior, not a production capacity or HA claim.
 | Detection same-session recovery | `bash build/mvnw.sh -pl services/detect-web -am test -Dtest=DetectionRecordProcessorTest,KafkaEventConsumerTest,DetectionDeadLetterJournalTest -Dsurefire.failIfNoSpecifiedTests=false` | DB claim/sink/finalization failures stay retryable, attempt-round exhaustion recovers without rebalance, DLQ outage recovers, offset gaps stay pinned, stale owner cannot finalize, PENDING prefetch remains bounded | Detection consumer/persistence change |
 | Search retention PostgreSQL | `SOCP_TESTCONTAINERS=true bash build/mvnw.sh -pl services/search-config -am test -Dtest=SearchConfigPostgresMigrationTest -Dsurefire.failIfNoSpecifiedTests=false` | Actual repository delete SQL migrates cleanly, skips competing row locks, preserves unresolved outbox-linked events, and drains eligible backlog in bounded batches | Search persistence/retention change |
 | Secondary-analysis PostgreSQL upgrade | `SOCP_TESTCONTAINERS=true bash build/mvnw.sh -pl services/detect-web -Dtest=SecondaryAnalysisPostgresMigrationTest test -Dsurefire.failIfNoSpecifiedTests=false` | Existing V1 rows upgrade through V4, tenant backfill is preserved, and receipt identity remains unique after detect-model consolidation | Detection persistence change/CI integration |
-| Multi-instance | `bash build/detection-cluster.sh start && python build/chaos-pipeline.py --scenario multi_instance` | Three-instance disjoint ownership, rebalance, exact alert set, duplicate count, Kafka lag, delivery receipts, ClickHouse logical uniqueness, and `pendingEvents == 0` | Weekly/release candidate |
+| Routed multi-instance | `SOCP_DETECT_INPUT_TOPIC=socp-detection-routed-v2 SOCP_DETECT_ROUTING_MODE=primary SOCP_DETECT_OUTPUT_MODE=primary SOCP_DETECT_ROUTING_PUBLISHER_ENABLED=true bash build/detection-cluster.sh start && RECOVERY_TOPIC=socp-detection-routed-v2 python build/chaos-pipeline.py --scenario multi_instance --rebalance-cycles 3` | Exactly 3 Detection instances / 6 routed partitions, disjoint ownership before/after repeated rebalance, independent exact alert-ID oracle, same-user correlation across different IP/host, same username isolated across tenants, one canonical source receipt per source position, bounded fan-out <= 5, distinct delivery journal identities, zero routed/source lag, no duplicates, and `pendingEvents == 0` | Weekly/release candidate |
 | Full API | `python build/verify-full.py` | Resource CRUD, tenancy, import/export, threat, and response contracts | Scheduled/release candidate |
 | OpenAPI SDK | `python build/verify-openapi-sdk.py` (add `SOAR_OPENAPI_REQUIRE_RUNTIME=true` and runtime URLs for deployment mode) | 71-operation TypeScript SDK generation, strict compilation, runtime `/v3/api-docs` parity, `SOCP_SESSION`, `X-Tenant-Id`, `ApiResult`, ETag/If-Match, status codes, and error envelopes | Every API change/release candidate |
 | Actuator boundary | `python build/verify-actuator-auth.py` | Gateway health remains probeable while info, metrics, and route metadata return 401 without credentials | Full-stack/release candidate |
@@ -61,8 +61,15 @@ correctness and recovery behavior, not a production capacity or HA claim.
   every report query uses logical `(tenant_id, alarm_id)` uniqueness.
 - Stopping Detection increases Kafka lag rather than silently losing the
   backlog; after restart, the consumer catches up.
-- Multi-instance assignments are disjoint and stateful rules whose grouping
-  field equals the routing field produce one logical result after rebalance.
+- Routed multi-instance assignments are disjoint across exactly six partitions;
+  every supported stateful grouping dimension is routed independently, so
+  cross-IP/host user correlation remains complete across three replicas and
+  repeated rebalances. The oracle is an explicit expected alert-ID set, not a
+  comparison against a single-instance implementation.
+- Canonical source receipts and routed delivery journal rows retain separate
+  source/delivery Kafka positions. Duplicate source records at different
+  offsets reuse the same delivery identities, while same-named entities in
+  different tenants never share state.
 - OpenSearch degradation does not claim search success; recovery restores the
   search path.
 - Viewer writes and service-only side effects are rejected at the owning service
