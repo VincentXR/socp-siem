@@ -76,6 +76,21 @@ CREATE INDEX IF NOT EXISTS idx_detection_route_outbox_delivery
 CREATE INDEX IF NOT EXISTS idx_detection_route_outbox_tenant_source
     ON t_detection_route_outbox (tenant_id, source_event_id);
 
+-- Routing topology is pinned durably per tenant and delivery routing version.
+-- Normal rule tuning may keep the same topology fingerprint; changing grouping
+-- dimensions or source coverage requires a new explicit routing-version cutover.
+CREATE TABLE IF NOT EXISTS t_detection_route_topology (
+    id              VARCHAR(36) PRIMARY KEY,
+    tenant_id       VARCHAR(64) NOT NULL,
+    routing_version VARCHAR(64) NOT NULL,
+    plan_version    VARCHAR(64) NOT NULL,
+    created_at      TIMESTAMP(6) WITH TIME ZONE NOT NULL,
+    CONSTRAINT uk_detection_route_topology_tenant_version
+        UNIQUE (tenant_id, routing_version)
+);
+CREATE INDEX IF NOT EXISTS idx_detection_route_topology_plan
+    ON t_detection_route_topology (tenant_id, plan_version);
+
 -- Snapshot generations are namespaced by input topic. Legacy and routed states
 -- can coexist, which makes cutover rollback executable without state deletion.
 UPDATE t_detection_state_snapshot
