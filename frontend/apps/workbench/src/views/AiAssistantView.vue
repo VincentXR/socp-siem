@@ -66,7 +66,7 @@ function clear() {
 
 async function investigate() {
   const id = alertId.value.trim()
-  if (!id || investigationLoading.value) return
+  if (!id || investigationLoading.value || appendLoading.value) return
   if (route.query.alarmId !== id) void router.replace({ query: { ...route.query, alarmId: id } })
   investigationLoading.value = true
   investigationError.value = ''
@@ -86,10 +86,15 @@ function openAlarm(): void {
 
 async function appendToIncident() {
   if (!investigation.value || appendLoading.value || investigation.value.summaryAppended) return
+  const targetInvestigationId = investigation.value.investigationId
   appendLoading.value = true
   investigationError.value = ''
   try {
-    investigation.value = await appendInvestigationToIncident(investigation.value.investigationId)
+    const updated = await appendInvestigationToIncident(targetInvestigationId)
+    // A newer investigate() may have replaced the card while this request was
+    // in flight; writing its stale result would show the previous alarm's
+    // analysis under the current alarm's input.
+    if (investigation.value?.investigationId === targetInvestigationId) investigation.value = updated
   } catch (error) {
     investigationError.value = error instanceof Error ? error.message : String(error)
   } finally {

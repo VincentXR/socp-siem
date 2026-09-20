@@ -24,15 +24,18 @@ application service accounts receive no external cloud permissions by default.
 
 Every Deployment imports that Secret with `envFrom`, which accepts any subset of
 its keys. That is not good enough for the PostgreSQL role pair, because
-`application-pg.yml` resolves Flyway's account as
-`${SOCP_PG_MIGRATION_USER:${SOCP_PG_USER:socp}}`: a Secret without the migration
-keys would run DDL as the restricted runtime role and only fail at the next
-schema change. Each database workload therefore also names
-`SOCP_PG_USER`, `SOCP_PG_PASSWORD`, `SOCP_PG_MIGRATION_USER`, and
-`SOCP_PG_MIGRATION_PASSWORD` through `secretEnv`. A missing key stops the Pod
-with a `CreateContainerConfigError` before the container starts instead of
-changing which role performs migrations. The Compose overlay enforces the same
-four values with `${VAR:?}` interpolation.
+`application-pg.yml` binds Flyway's account to `${SOCP_PG_MIGRATION_USER}` /
+`${SOCP_PG_MIGRATION_PASSWORD}` with no default: a Secret missing those keys
+makes placeholder resolution fail and the application refuses to start
+(CrashLoop). Each database workload therefore also names `SOCP_PG_USER`,
+`SOCP_PG_PASSWORD`, `SOCP_PG_MIGRATION_USER`, and
+`SOCP_PG_MIGRATION_PASSWORD` through `secretEnv`, which moves the failure
+earlier, to a visible `CreateContainerConfigError` before the container starts.
+Naming the runtime pair matters independently: `application-pg.yml` still gives
+`${SOCP_PG_USER:socp}`/`${SOCP_PG_PASSWORD:socp}` local fallbacks, and only an
+explicit `secretKeyRef` guarantees a missing runtime credential cannot silently
+resolve to the default account instead of the operator-managed one. The Compose
+overlay enforces the same four values with `${VAR:?}` interpolation.
 
 `runtime.config` points `SPRING_DATA_REDIS_HOST`/`PORT` at the environment-owned
 Redis. That instance holds the service replay nonces, the revoked-session list,

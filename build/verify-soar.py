@@ -126,7 +126,7 @@ def main() -> int:
           "final class SoarGraphValidator" in graph_validator
           and "final class SoarManualFormValidator" in manual_validator
           and "SoarManualFormValidator.validate" in read(
-              "services/soar-web/src/main/java/com/socp/soar/web/definition/SoarDefinitionValidator.java"))
+              "services/soar-web/src/main/java/com/socp/soar/web/definition/SoarExecutionPolicyValidator.java"))
 
     controller_dir = "services/soar-web/src/main/java/com/socp/soar/web/api/controller"
     playbook_controller = read(f"{controller_dir}/SoarController.java")

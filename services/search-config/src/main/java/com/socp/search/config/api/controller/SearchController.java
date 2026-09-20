@@ -164,6 +164,12 @@ public class SearchController {
 
     private static String csv(String value) {
         if (value == null) return "";
-        return "\"" + value.replace("\"", "\"\"") + "\"";
+        // Spreadsheet formula-injection guard: msg/source/host carry ingested
+        // log text, so neutralize formula-leading characters before quoting.
+        String escaped = value;
+        if (!escaped.isEmpty() && "=+-@\t\r".indexOf(escaped.charAt(0)) >= 0) {
+            escaped = "'" + escaped;
+        }
+        return "\"" + escaped.replace("\"", "\"\"") + "\"";
     }
 }

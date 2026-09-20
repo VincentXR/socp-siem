@@ -631,7 +631,11 @@ public class SoarService {
         return readModels.approvalView(tenant(), approval);
     }
 
-    @Transactional
+    // No @Transactional here on purpose: this facade hands the raw target (not a
+    // proxy) to the package-private command services, so an annotation on this
+    // method would never be intercepted. The FOR UPDATE below is only durable
+    // inside the caller's transaction — every public facade method that reaches
+    // this path is @Transactional and is invoked through the Spring proxy.
     protected void appendEvent(String runId, String type, String actor, String summary, Map<String, Object> detail) {
         String tenant = tenant();
         // Event sequence numbers are part of the public SSE cursor contract.

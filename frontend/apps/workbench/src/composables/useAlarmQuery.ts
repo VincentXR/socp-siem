@@ -1,11 +1,54 @@
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useRequest } from './useRequest'
 import { listAlarmsPaged, type AlarmPage, type AlarmSortField, type AlarmSortOrder } from '../api'
 
-export function useAlarmQuery() {
-  const route = useRoute()
-  const router = useRouter()
+// Structural stand-ins for the vue-router objects so the composable can be
+// exercised with plain fakes in tests (useListQuery convention) while the
+// real call site keeps the zero-argument form.
+export interface AlarmQueryRoute {
+  name: unknown
+  query: Record<string, unknown>
+}
+
+export interface AlarmQueryRouter {
+  replace: (to: { query: Record<string, unknown> }) => unknown
+}
+
+export interface AlarmQueryParams {
+  page: number
+  size: number
+  q?: string
+  severity?: string
+  status?: string
+  rule?: string
+  sort: AlarmSortField
+  order: AlarmSortOrder
+  signal: AbortSignal
+}
+
+export interface AlarmQueryOptions {
+  route?: AlarmQueryRoute
+  router?: AlarmQueryRouter
+  fetchPage?: (params: AlarmQueryParams) => Promise<AlarmPage>
+}
+
+const SORT_FIELDS: string[] = ['occurredAt', 'severity', 'ruleName', 'entity', 'status', 'riskScore']
+
+export function useAlarmQuery(options: AlarmQueryOptions = {}) {
+  const route = options.route ?? (useRoute() as unknown as AlarmQueryRoute)
+  const router = options.router ?? (useRouter() as unknown as AlarmQueryRouter)
+  const fetchPage = options.fetchPage ?? (params => listAlarmsPaged(
+    params.page,
+    params.size,
+    params.q,
+    params.severity,
+    params.status,
+    params.rule,
+    params.sort,
+    params.order,
+    { signal: params.signal },
+  ))
   const alarmSeverity = ref('')
   const alarmKeyword = ref('')
   const alarmStatus = ref('')
@@ -22,16 +65,20 @@ export function useAlarmQuery() {
   let applyingRouteQuery = false
 
   function readRouteQuery(): void {
+    if (route.name !== 'alarms') return
     const query = route.query
     alarmKeyword.value = typeof query.q === 'string' ? query.q : ''
     alarmSeverity.value = typeof query.severity === 'string' ? query.severity : ''
     alarmStatus.value = typeof query.status === 'string' ? query.status : ''
     alarmRule.value = typeof query.rule === 'string' ? query.rule : ''
-    alarmPageNum.value = Number.isFinite(Number(query.page)) && Number(query.page) > 0 ? Number(query.page) : 1
+    // Integers only, matching useListQuery: '2.5' must not reach the request
+    // (the backend @RequestParam Integer answers it with a 500) or the URL.
+    const nextPage = Number(query.page)
+    alarmPageNum.value = Number.isInteger(nextPage) && nextPage >= 1 ? nextPage : 1
     alarmPageSize.value = [10, 20, 50, 100].includes(Number(query.size)) ? Number(query.size) : 10
     const sort = String(query.sort || '')
     alarmSort.value = 'occurredAt'
-    if (['occurredAt', 'severity', 'ruleName', 'entity', 'status', 'riskScore'].includes(sort)) {
+    if (SORT_FIELDS.includes(sort)) {
       alarmSort.value = sort as AlarmSortField
     }
     const order = String(query.order || '')
@@ -41,24 +88,32 @@ export function useAlarmQuery() {
 
   function writeRouteQuery(): void {
     if (applyingRouteQuery || route.name !== 'alarms') return
-    const query: Record<string, string> = {}
-    if (alarmKeyword.value.trim()) query.q = alarmKeyword.value.trim()
-    if (alarmSeverity.value) query.severity = alarmSeverity.value
-    if (alarmStatus.value) query.status = alarmStatus.value
-    if (alarmRule.value.trim()) query.rule = alarmRule.value.trim()
-    if (alarmPageNum.value > 1) query.page = String(alarmPageNum.value)
-    if (alarmPageSize.value !== 10) query.size = String(alarmPageSize.value)
-    if (alarmSort.value !== 'occurredAt') query.sort = alarmSort.value
-    if (alarmOrder.value !== 'descending') query.order = alarmOrder.value
+    // Start from the live query so unmanaged but functionally-consumed keys
+    // (alarmId deep links in particular) survive; managed keys clear to
+    // undefined instead of being dropped silently.
+    const query: Record<string, unknown> = { ...route.query }
+    query.q = alarmKeyword.value.trim() || undefined
+    query.severity = alarmSeverity.value || undefined
+    query.status = alarmStatus.value || undefined
+    query.rule = alarmRule.value.trim() || undefined
+    query.page = alarmPageNum.value > 1 ? String(alarmPageNum.value) : undefined
+    query.size = alarmPageSize.value !== 10 ? String(alarmPageSize.value) : undefined
+    query.sort = alarmSort.value !== 'occurredAt' ? alarmSort.value : undefined
+    query.order = alarmOrder.value !== 'descending' ? alarmOrder.value : undefined
     void router.replace({ query })
   }
 
   readRouteQuery()
   watch(() => route.query, () => {
+    if (route.name !== 'alarms') return
     applyingRouteQuery = true
     readRouteQuery()
-    applyingRouteQuery = false
-    if (route.name === 'alarms') void loadAlarmPage()
+    // The [page,size] watcher below is pre-flush and runs in the same tick as
+    // this one; resetting the echo guard synchronously here let it observe the
+    // just-read values and re-issue a replace() that clobbered the route we
+    // were applying. nextTick keeps the guard up for that watcher.
+    void nextTick(() => { applyingRouteQuery = false })
+    void loadAlarmPage()
   }, { deep: true })
 
   watch([alarmPageNum, alarmPageSize], () => {
@@ -66,17 +121,17 @@ export function useAlarmQuery() {
   })
 
   async function loadAlarmPage() {
-    await request.execute(signal => listAlarmsPaged(
-      alarmPageNum.value,
-      alarmPageSize.value,
-      alarmKeyword.value.trim() || undefined,
-      alarmSeverity.value || undefined,
-      alarmStatus.value || undefined,
-      alarmRule.value.trim() || undefined,
-      alarmSort.value,
-      alarmOrder.value,
-      { signal },
-    ))
+    await request.execute(signal => fetchPage({
+      page: alarmPageNum.value,
+      size: alarmPageSize.value,
+      q: alarmKeyword.value.trim() || undefined,
+      severity: alarmSeverity.value || undefined,
+      status: alarmStatus.value || undefined,
+      rule: alarmRule.value.trim() || undefined,
+      sort: alarmSort.value,
+      order: alarmOrder.value,
+      signal,
+    }))
   }
 
   function onAlarmSearch() {

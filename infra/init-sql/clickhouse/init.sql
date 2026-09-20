@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS alert_agg.alarm_detail
 (
     tenant_id String,
     alarm_id String,
-    ts DateTime64(3),
+    ts DateTime64(3, 'UTC'),
     severity LowCardinality(String),
     rule_id String,
     rule_name String,

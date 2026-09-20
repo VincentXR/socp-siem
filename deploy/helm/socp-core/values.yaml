@@ -25,12 +25,14 @@ serviceAccount:
 runtime:
   # Each database workload below names the four PostgreSQL role keys in
   # `secretEnv` instead of relying on the `envFrom` import alone. `envFrom`
-  # accepts any subset of keys, and application-pg.yml resolves Flyway's
-  # credentials as `${SOCP_PG_MIGRATION_USER:${SOCP_PG_USER:socp}}`, so a Secret
-  # that omits the migration pair silently runs migrations as the restricted
-  # runtime role and only fails at the next schema change. An explicit
-  # secretKeyRef is required by kubelet: the missing key then stops the Pod with
-  # a visible CreateContainerConfigError before anything starts.
+  # accepts any subset of keys. For the migration pair
+  # (`${SOCP_PG_MIGRATION_USER}`/`${SOCP_PG_MIGRATION_PASSWORD}`) a missing key
+  # now makes Spring placeholder resolution fail and the Pod CrashLoops; the
+  # explicit secretKeyRef moves that failure earlier to a visible
+  # CreateContainerConfigError before the container starts. The runtime pair
+  # still has `${SOCP_PG_USER:socp}`-style local fallbacks in
+  # application-pg.yml, so naming it explicitly is what guarantees a missing
+  # Secret key cannot silently resolve to the default account.
   existingSecret: socp-runtime-secrets
   config:
     # The pg profile is what points spring.datasource at PostgreSQL; without

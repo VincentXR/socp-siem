@@ -57,7 +57,7 @@ public class OutboxPublisher {
     private final long maxDrainDurationNanos;
     private final int cleanupBatchSize;
     private final int cleanupMaxBatches;
-    private Instant nextRecoveryAt = Instant.EPOCH;
+    private volatile Instant nextRecoveryAt = Instant.EPOCH;
 
     @Autowired
     public OutboxPublisher(OutboxRepository outboxRepo, AlertKafkaPublisher kafkaPublisher,
@@ -169,7 +169,7 @@ public class OutboxPublisher {
                 if (pending.size() < 100) break;
             }
         } catch (Exception failure) {
-            log.warn("Alert outbox scan failed; next scan will retry: {}", failure.getMessage());
+            log.warn("Alert outbox scan failed; next scan will retry: {}", failure.toString());
         } finally {
             if (performanceMetrics != null) {
                 performanceMetrics.outboxDrain("alarm_event", rounds, System.nanoTime() - started);
@@ -186,7 +186,7 @@ public class OutboxPublisher {
                     outboxRepo.countByStatus("DEAD"),
                     outboxRepo.findOldestUpdatedAtByStatus("DEAD"));
         } catch (RuntimeException failure) {
-            log.warn("Alert outbox backlog metrics deferred: {}", failure.getMessage());
+            log.warn("Alert outbox backlog metrics deferred: {}", failure.toString());
         }
     }
 

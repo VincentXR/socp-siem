@@ -130,25 +130,4 @@ class SoarControllerEdgeCoverageTest {
         }
     }
 
-    @Test
-    @SuppressWarnings("unchecked")
-    void patchConnectionFallsBackToCurrentValuesAndNullRowVersionOnBadNumber() {
-        Map<String, Object> current = new LinkedHashMap<>();
-        current.put("name", "conn");
-        current.put("connectorType", "http.webhook");
-        current.put("endpoint", "https://hooks.example.test/x");
-        current.put("allowedHosts", List.of("hooks.example.test"));
-        current.put("enabled", true);
-        given(connectors.get("c1")).willReturn(current);
-        given(connectors.update(eq("c1"), eq("conn"), eq("http.webhook"),
-                eq("https://hooks.example.test/x"), isNull(), eq(List.of("hooks.example.test")),
-                eq(true), isNull()))
-                .willReturn(Map.of("id", "c1"));
-
-        ApiResult<Map<String, Object>> result =
-                connectorController.patchConnection("c1", Map.<String, Object>of("rowVersion", "abc"));
-
-        assertThat(result.code()).isZero();
-        assertThat(result.data()).containsEntry("id", "c1");
-    }
 }

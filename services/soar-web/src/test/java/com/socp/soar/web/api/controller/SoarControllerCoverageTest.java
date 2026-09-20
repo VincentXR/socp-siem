@@ -8,6 +8,7 @@ import com.socp.soar.web.api.request.CreateAutomationRuleRequest;
 import com.socp.soar.web.api.request.CreateConnectorRequest;
 import com.socp.soar.web.api.request.CreatePlaybookRequest;
 import com.socp.soar.web.api.request.ImportPlaybookRequest;
+import com.socp.soar.web.api.request.PatchConnectionRequest;
 import com.socp.soar.web.api.request.RunRequest;
 import com.socp.soar.web.api.request.SaveVersionRequest;
 import com.socp.soar.web.domain.DefinitionValidationResult;
@@ -44,6 +45,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 /**
@@ -497,32 +499,27 @@ class SoarControllerCoverageTest {
     }
 
     @Test
-    void patchConnectionMergesThePayloadOverTheCurrentConnection() {
-        Map<String, Object> current = Map.of("name", "old", "connectorType", "endpoint",
-                "endpoint", "https://old", "allowedHosts", List.of("a.example"), "enabled", true);
-        given(connectors.get("conn-1")).willReturn(current);
-        given(connectors.update("conn-1", "new", "endpoint", "https://old", null,
-                List.of("a.example"), false, 4L)).willReturn(Map.of("id", "conn-1"));
+    void patchConnectionHandsSparseFieldsToTheLockedRowMerge() {
+        given(connectors.updatePatch("conn-1", "new", null, null, null, null, false, 4L))
+                .willReturn(Map.of("id", "conn-1"));
 
         ApiResult<Map<String, Object>> result = connectorController.patchConnection("conn-1",
-                Map.of("name", "new", "enabled", "false", "rowVersion", 4));
+                new PatchConnectionRequest("new", null, null, null, null, false, 4L));
 
         assertThat(result.data()).containsEntry("id", "conn-1");
-        verify(connectors).update("conn-1", "new", "endpoint", "https://old", null,
-                List.of("a.example"), false, 4L);
+        verify(connectors).updatePatch("conn-1", "new", null, null, null, null, false, 4L);
+        verify(connectors, never()).get("conn-1");
     }
 
     @Test
     void patchConnectionUsesAnExplicitAllowedHostsList() {
-        given(connectors.get("conn-1")).willReturn(Map.of("name", "old"));
-        given(connectors.update(eq("conn-1"), eq("old"), isNull(), isNull(), isNull(),
-                eq(List.of("b.example")), eq(true), isNull())).willReturn(Map.of("id", "conn-1"));
+        given(connectors.updatePatch("conn-1", null, null, null, null, List.of("b.example"), true, null))
+                .willReturn(Map.of("id", "conn-1"));
 
         connectorController.patchConnection("conn-1",
-                Map.of("allowedHosts", List.of("b.example"), "enabled", true));
+                new PatchConnectionRequest(null, null, null, null, List.of("b.example"), true, null));
 
-        verify(connectors).update(eq("conn-1"), eq("old"), isNull(), isNull(), isNull(),
-                eq(List.of("b.example")), eq(true), isNull());
+        verify(connectors).updatePatch("conn-1", null, null, null, null, List.of("b.example"), true, null);
     }
 
     // ------------------------------------------------------------------

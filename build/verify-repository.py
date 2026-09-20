@@ -32,6 +32,7 @@ CHECKS: tuple[Check, ...] = (
     Check("middleware image catalog", ("build/verify-middleware-images.py",)),
     Check("package layout", ("build/verify-package-layout.py",)),
     Check("architecture boundaries", ("build/verify-architecture.py",)),
+    Check("SOAR static contract", ("build/verify-soar.py",)),
     Check("source style debt", ("build/verify-style.py",)),
     Check("runtime consolidation policy", ("build/verify-runtime-consolidation.py",)),
     Check("frontend i18n", ("build/verify-frontend-i18n.py",)),

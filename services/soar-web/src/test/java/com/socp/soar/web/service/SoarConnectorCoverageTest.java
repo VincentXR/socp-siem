@@ -311,6 +311,44 @@ class SoarConnectorCoverageTest {
                 .hasMessageContaining("connector not found");
     }
 
+    // ---------------------------------------------------------------- updatePatch
+
+    @Test
+    void updatePatchMergesSparseFieldsOntoTheLockedRow() {
+        SoarConnectorEntity row = row("conn-1", false);
+        given(connectors.findByTenantIdAndId("tenant-a", "conn-1")).willReturn(Optional.of(row));
+
+        Map<String, Object> updated = service.updatePatch("conn-1", "renamed", null, null,
+                null, null, false, null);
+
+        // Omitted fields come from the locked row read inside this same
+        // transaction — never from a caller-held snapshot of a prior GET.
+        assertThat(row.getName()).isEqualTo("renamed");
+        assertThat(row.getConnectorType()).isEqualTo("ENDPOINT");
+        assertThat(row.getEndpoint()).isEqualTo("https://edr.example.com/api");
+        assertThat(row.getAuthSecretRef()).isEqualTo("secret://vault/soar/edr");
+        assertThat(row.isEnabled()).isFalse();
+        assertThat(updated).containsEntry("endpoint", "https://edr.example.com/api")
+                .containsEntry("enabled", false);
+        verify(connectors).save(row);
+    }
+
+    @Test
+    void updatePatchRejectsStaleRowVersionAndDeletedRows() {
+        SoarConnectorEntity row = row("conn-1", false);
+        given(connectors.findByTenantIdAndId("tenant-a", "conn-1")).willReturn(Optional.of(row));
+        assertThatThrownBy(() -> service.updatePatch("conn-1", null, null, null, null, null, null,
+                row.getRowVersion() + 1))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("connector was changed by another operator");
+
+        SoarConnectorEntity gone = row("conn-2", true);
+        given(connectors.findByTenantIdAndId("tenant-a", "conn-2")).willReturn(Optional.of(gone));
+        assertThatThrownBy(() -> service.updatePatch("conn-2", "x", null, null, null, null, null, null))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("connector not found");
+    }
+
     // ---------------------------------------------------------------- setEnabled
 
     @Test

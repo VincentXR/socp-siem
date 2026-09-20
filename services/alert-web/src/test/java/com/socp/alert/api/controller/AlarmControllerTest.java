@@ -118,6 +118,26 @@ class AlarmControllerTest {
     }
 
     @Test
+    void exportNeutralizesSpreadsheetFormulaLeadingCharacters() throws Exception {
+        Alarm alarm = new Alarm("R-1", "=cmd|'/C calc'!A0", Severity.HIGH,
+                "+1-2", "@SUM(1+1)");
+        alarm.setId("alarm-formula");
+        given(service.count(null, null, null, null, "occurredAt", "descending"))
+                .willReturn(1L);
+        given(service.page(null, null, null, null, "occurredAt", "descending", 1, 500))
+                .willReturn(new PageImpl<>(List.of(alarm)));
+
+        String csv = mvc.perform(get("/api/alarms/export"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+
+        org.assertj.core.api.Assertions.assertThat(csv)
+                .contains("\"'=cmd|'/C calc'!A0\"")
+                .contains("\"'+1-2\"")
+                .contains("\"'@SUM(1+1)\"");
+    }
+
+    @Test
     void exportRejectsRowsAboveTheHardLimitBeforeOpeningTheResponse() throws Exception {
         given(service.count(null, null, null, null, "occurredAt", "descending"))
                 .willReturn(10_001L);

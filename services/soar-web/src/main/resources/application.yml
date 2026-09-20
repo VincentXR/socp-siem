@@ -18,6 +18,13 @@ spring:
     open-in-view: false
   flyway:
     enabled: true
+  # soar-web carries eight @Scheduled workers; Spring Boot's default scheduler
+  # is a single thread, so one slow tick (Temporal RPC, retention scans, legacy
+  # playbook HTTP) head-of-line-blocks every 1s poller. Give them a real pool.
+  task:
+    scheduling:
+      pool:
+        size: ${SOCP_SOAR_SCHEDULER_POOL_SIZE:4}
 
 socp:
   demo-data:

@@ -291,14 +291,14 @@ watch(assetDetailOpen, visible => {
         </FilterToolbar>
       </template>
       <el-table :data="assets" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @row-click="row => openAssetDetail(row as Asset)">
-        <el-table-column prop="name" column-key="name" :label="t('common.name')" :width="columnWidth('name')" min-width="180" sortable="custom" show-overflow-tooltip />
-        <el-table-column prop="type" column-key="type" :label="t('common.type')" :width="columnWidth('type', 100)" sortable="custom">
+        <el-table-column prop="name" column-key="name" :label="t('common.name')" :width="columnWidth('name')" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="type" column-key="type" :label="t('common.type')" :width="columnWidth('type', 100)">
           <template #default="{ row }">{{ assetTypes.find(item => item.value === row.type)?.label ?? row.type }}</template>
         </el-table-column>
-        <el-table-column prop="ip" column-key="ip" :label="t('common.ip')" :width="columnWidth('ip', 120)" sortable="custom" />
-        <el-table-column prop="os" column-key="os" :label="t('endpoints.os')" :width="columnWidth('os', 170)" sortable="custom" show-overflow-tooltip />
-        <el-table-column prop="owner" column-key="owner" :label="t('assets.owner')" :width="columnWidth('owner', 100)" sortable="custom" show-overflow-tooltip />
-        <el-table-column prop="criticality" column-key="criticality" :label="t('assets.criticality')" :width="columnWidth('criticality', 90)" sortable="custom">
+        <el-table-column prop="ip" column-key="ip" :label="t('common.ip')" :width="columnWidth('ip', 120)" />
+        <el-table-column prop="os" column-key="os" :label="t('endpoints.os')" :width="columnWidth('os', 170)" show-overflow-tooltip />
+        <el-table-column prop="owner" column-key="owner" :label="t('assets.owner')" :width="columnWidth('owner', 100)" show-overflow-tooltip />
+        <el-table-column prop="criticality" column-key="criticality" :label="t('assets.criticality')" :width="columnWidth('criticality', 90)">
           <template #default="{ row }"><el-tag :type="row.criticality === 'CRITICAL' ? 'danger' : row.criticality === 'HIGH' ? 'warning' : 'info'" size="small">{{ criticalityOptions.find(item => item.value === row.criticality)?.label ?? row.criticality }}</el-tag></template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="190" :resizable="false">
