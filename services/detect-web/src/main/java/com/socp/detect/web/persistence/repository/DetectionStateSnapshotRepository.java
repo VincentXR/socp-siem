@@ -8,6 +8,6 @@ import java.util.Optional;
 public interface DetectionStateSnapshotRepository
         extends TenantScopedRepository<DetectionStateSnapshotEntity, String> {
 
-    Optional<DetectionStateSnapshotEntity> findByTenantIdAndRuleIdAndShardId(
-            String tenantId, String ruleId, int shardId);
+    Optional<DetectionStateSnapshotEntity> findByTenantIdAndRuleIdAndShardIdAndInputTopic(
+            String tenantId, String ruleId, int shardId, String inputTopic);
 }
