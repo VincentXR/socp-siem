@@ -136,7 +136,7 @@ public class DetectionEventJournal implements DetectionStateStore {
             repository.saveAndFlush(new DetectionEventEntity(
                     tenant, deliveryId, DetectionDelivery.sourceEventId(event),
                     DetectionDelivery.routingVersion(event),
-                    safe(event.source(), "unknown", 64),
+                    safe(event.source(), "unknown", 128),
                     safe(event.host(), "unknown", 255), safe(event.raw(), "", 8192),
                     fields, event.severity() == null ? Severity.INFO.name() : event.severity().name(),
                     event.timestamp() == null ? Instant.now() : event.timestamp(),
