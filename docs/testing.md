@@ -281,6 +281,11 @@ matching only its probe entity before ingesting the alert. It checks the
 service-signed alert reaches that version and completes through Temporal,
 then deletes the trigger rule and archives the playbook while preserving run
 evidence. No external response action is part of this fixture.
+The full verifier and Golden Demo use `SOAR_VERIFY_USERNAME/PASSWORD`
+(local default `admin/admin123`) only for SOAR provisioning. Business queries
+retain the analyst session, and the full verifier also requires analyst
+publishing to return 403. Dependency failure probes inherit `PIPELINE_OS`
+and `PIPELINE_OS_AUTH`; explicit `FAILURE_OS_URL/AUTH` values take precedence.
 
 ## CI ownership
 

@@ -433,8 +433,12 @@ def main():
             return 1
 
     try:
-        playbook = ensure_playbook(token)
-        automation_rule = ensure_automation_rule(token, playbook)
+        # Publishing is a separate permission from the analyst's event and
+        # investigation flow. Use the publisher only to provision SOAR fixtures.
+        publisher_token = login_token(GATEWAY_URL, os.environ.get("SOAR_VERIFY_USERNAME", "admin"),
+                                      os.environ.get("SOAR_VERIFY_PASSWORD", "admin123"))
+        playbook = ensure_playbook(publisher_token)
+        automation_rule = ensure_automation_rule(publisher_token, playbook)
         channel = ensure_channel(token)
     except RuntimeError as error:
         print(f"[FAIL] Demo prerequisites: {error}")

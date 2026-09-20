@@ -63,10 +63,10 @@ def _api_data(body):
     return body
 
 
-def call(url, method="GET", body=None, timeout=10):
+def call(url, method="GET", body=None, timeout=10, auth_token=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("Authorization", "Bearer " + token())
+    req.add_header("Authorization", "Bearer " + (auth_token if auth_token is not None else token()))
     req.add_header("X-Tenant-Id", "default")
     if data:
         req.add_header("Content-Type", "application/json")
@@ -126,14 +126,15 @@ _SOAR_FIXTURE = {}
 def cleanup_soar_fixture():
     rule_id = _SOAR_FIXTURE.get("ruleId")
     if rule_id:
-        status, body = call(U["soar-web"] + "/soar-web/api/automation-rules/" + rule_id, "DELETE")
+        status, body = call(U["soar-web"] + "/soar-web/api/automation-rules/" + rule_id, "DELETE",
+                            auth_token=_SOAR_FIXTURE.get("token"))
         check("清理 SOAR 探针规则", status in (200, 204), body if status not in (200, 204) else "")
         if status in (200, 204):
             _SOAR_FIXTURE.pop("ruleId", None)
     playbook_id = _SOAR_FIXTURE.get("playbookId")
     if playbook_id:
         status, body = call(U["soar-web"] + "/soar-web/api/playbooks/" + playbook_id,
-                            "PATCH", {"status": "ARCHIVED"})
+                            "PATCH", {"status": "ARCHIVED"}, auth_token=_SOAR_FIXTURE.get("token"))
         check("归档 SOAR 探针剧本并保留运行证据", status == 200, body if status != 200 else "")
         if status == 200:
             _SOAR_FIXTURE.pop("playbookId", None)
@@ -143,6 +144,9 @@ def install_soar_fixture(entity):
     # Published automation is explicit configuration, never an assumed demo
     # default. This fixture only matches the probe entity and has no action node.
     atexit.register(cleanup_soar_fixture)
+    fixture_token = login_token(GATEWAY_URL, os.environ.get("SOAR_VERIFY_USERNAME", "admin"),
+                                os.environ.get("SOAR_VERIFY_PASSWORD", "admin123"), timeout=10)
+    _SOAR_FIXTURE["token"] = fixture_token
     name = "Full-stack alert probe " + str(time.time_ns())
     status, draft = call(U["soar-web"] + "/soar-web/api/playbooks/import", "POST", {
         "name": name, "description": "Isolated event delivery verification", "tags": ["ci"],
@@ -153,19 +157,21 @@ def install_soar_fixture(entity):
                       {"id": "end", "type": "END", "name": "End", "outcome": "SUCCEEDED"}],
             "edges": [{"from": "start", "to": "end"}],
         }, "layout": {},
-    })
+    }, auth_token=fixture_token)
     if status not in (200, 201) or not draft.get("playbookId") or not draft.get("id"):
         raise RuntimeError("SOAR fixture import failed: %s %s" % (status, draft))
     _SOAR_FIXTURE.update(playbookId=draft["playbookId"], versionId=draft["id"])
     version_path = "/soar-web/api/playbooks/%s/versions/%s" % (draft["playbookId"], draft["version"])
-    status, published = call(U["soar-web"] + version_path + "/publish", "POST")
+    status, _ = call(U["soar-web"] + version_path + "/publish", "POST")
+    check("分析员不能发布 SOAR 剧本", status == 403, status)
+    status, published = call(U["soar-web"] + version_path + "/publish", "POST", auth_token=fixture_token)
     if status != 200 or published.get("status") != "PUBLISHED":
         raise RuntimeError("SOAR fixture publish failed: %s %s" % (status, published))
     status, rule = call(U["soar-web"] + "/soar-web/api/automation-rules", "POST", {
         "name": name, "triggerType": "alert.created", "priority": 1, "enabled": True,
         "conditions": {"field": "data.entity", "operator": "equals", "value": entity},
         "actions": [{"playbookVersionId": draft["id"]}], "suppression": {},
-    })
+    }, auth_token=fixture_token)
     if status not in (200, 201) or not rule.get("id"):
         raise RuntimeError("SOAR fixture rule failed: %s %s" % (status, rule))
     _SOAR_FIXTURE["ruleId"] = rule["id"]
