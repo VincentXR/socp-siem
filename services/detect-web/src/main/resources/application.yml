@@ -62,6 +62,11 @@ socp:
       outbox-initial-delay-ms: ${SOCP_DETECT_ROUTING_OUTBOX_INITIAL_DELAY_MS:250}
       # 0 retries forever; routing publication must not silently turn into loss.
       outbox-max-attempts: ${SOCP_DETECT_ROUTING_OUTBOX_MAX_ATTEMPTS:0}
+      published-retention: ${SOCP_DETECT_ROUTING_PUBLISHED_RETENTION:7d}
+      cleanup-batch-size: ${SOCP_DETECT_ROUTING_CLEANUP_BATCH_SIZE:1000}
+      cleanup-max-batches: ${SOCP_DETECT_ROUTING_CLEANUP_MAX_BATCHES:10}
+      cleanup-interval-ms: ${SOCP_DETECT_ROUTING_CLEANUP_INTERVAL_MS:3600000}
+      cleanup-initial-delay-ms: ${SOCP_DETECT_ROUTING_CLEANUP_INITIAL_DELAY_MS:60000}
     engine:
       idle-ttl-ms: ${SOCP_DETECT_ENGINE_IDLE_TTL_MS:1800000}
       max-tenants: ${SOCP_DETECT_ENGINE_MAX_TENANTS:1000}
