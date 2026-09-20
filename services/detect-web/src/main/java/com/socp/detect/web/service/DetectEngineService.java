@@ -9,18 +9,15 @@ import com.socp.detect.web.persistence.store.DetectionEventClaim;
 import com.socp.detect.web.persistence.store.DetectionStateOwnership;
 import com.socp.detect.web.persistence.store.InMemoryDetectionStateStore;
 import com.socp.detect.web.persistence.store.RuleSpecStore;
-import com.socp.rule.config.RuleSpec;
 import com.socp.rule.engine.RuleEngine;
 import com.socp.rule.engine.RuleProcessingObserver;
 import com.socp.rule.engine.Suppressor;
 import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.partition.DetectionRoutingKey;
-import com.socp.rule.rules.Rule;
 import com.socp.rule.state.DetectionStateSnapshot;
 import com.socp.rule.state.DetectionStateSnapshotStore;
 import com.socp.rule.state.StateRoutingKey;
-import com.socp.rule.state.StatefulRule;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.springframework.beans.factory.annotation.Value;
@@ -61,13 +58,11 @@ public class DetectEngineService {
     private final Suppressor suppressor = new Suppressor(Duration.ofMinutes(5));
     private final Map<String, RuleEngine> engines = new ConcurrentHashMap<>();
     private final Map<String, Long> engineLastAccess = new ConcurrentHashMap<>();
-    private final RuleChangePublisher rulePublisher;
+    private final DetectionRuleService ruleService;
+    private final DetectionEngineFactory engineFactory;
     private final DetectionStateStore stateStore;
-    private final RuleProcessingObserver processingObserver;
     private final DetectionStateSnapshotStore snapshotStore;
     private final Map<String, AtomicLong> snapshotCounters = new ConcurrentHashMap<>();
-    /** Rules this engine could not build, counted per engine key. */
-    private final Map<String, Integer> isolatedRules = new ConcurrentHashMap<>();
     /** State rebuilds that found no journaled history and warmed an empty engine. */
     private final AtomicLong warmedWithoutHistory = new AtomicLong();
     /** Last durable Kafka position included in each tenant/shard snapshot. */
@@ -172,11 +167,11 @@ public class DetectEngineService {
         this.store = store;
         this.sink = sink;
         this.forwarder = forwarder;
-        this.rulePublisher = rulePublisher;
+        this.ruleService = new DetectionRuleService(store, rulePublisher);
         this.stateStore = stateStore;
-        this.processingObserver = performanceMetrics;
         this.snapshotStore = snapshotStore;
         this.stateOwnership = stateOwnership == null ? DetectionStateOwnership.noop() : stateOwnership;
+        this.engineFactory = new DetectionEngineFactory(store, sink, suppressor, performanceMetrics);
     }
 
     /** Source-compatible constructor for callers that do not configure snapshots. */
@@ -192,11 +187,11 @@ public class DetectEngineService {
         this.store = store;
         this.sink = sink;
         this.forwarder = forwarder;
-        this.rulePublisher = rulePublisher;
+        this.ruleService = new DetectionRuleService(store, rulePublisher);
         this.stateStore = stateStore;
-        this.processingObserver = RuleProcessingObserver.NOOP;
         this.snapshotStore = null;
         this.stateOwnership = DetectionStateOwnership.noop();
+        this.engineFactory = new DetectionEngineFactory(store, sink, suppressor, RuleProcessingObserver.NOOP);
     }
 
     /** Unit-test/source compatibility constructor; production uses the JPA journal. */
@@ -333,7 +328,7 @@ public class DetectEngineService {
             engineLastAccess.clear();
             snapshotCounters.clear();
             snapshotOffsets.clear();
-            isolatedRules.clear();
+            engineFactory.clearIsolation();
             engineRecovery.clear();
             pendingRebuilds.clear();
             suppressor.close();
@@ -382,77 +377,9 @@ public class DetectEngineService {
         return buildEngine(engineKey(tenant, 0), tenant, history, null);
     }
 
-    /**
-     * Assemble one engine from the tenant's stored rule documents.
-     *
-     * <p>Documents are filtered on their lifecycle before anything is parsed,
-     * and every remaining document is compiled inside its own guard. A rule that
-     * cannot be built is therefore skipped and counted instead of throwing,
-     * which used to take the whole tenant's detection - and, through the
-     * process-wide recovery gate, every other tenant - down to the dead-letter
-     * path.</p>
-     */
     private RuleEngine buildEngine(String engineKey, String tenant, List<SecurityEvent> history,
                                    Runnable durableCommitGuard) {
-        List<Map<String, Object>> documents = new java.util.ArrayList<>();
-        for (Map<String, Object> document : store.list(tenant)) {
-            if (RuleSpec.isLive(document)) documents.add(document);
-        }
-        List<Rule> rules = new java.util.ArrayList<>(documents.size());
-        Map<String, String> stateCompatibilityVersions = new LinkedHashMap<>();
-        Map<String, RuleEngine.RoutingDimension> routingDimensions = new LinkedHashMap<>();
-        int isolated = 0;
-        for (Map<String, Object> document : documents) {
-            String documentId = String.valueOf(document.get("id"));
-            try {
-                RuleSpec spec = new RuleSpec(document);
-                Rule rule = spec.toRule();
-                rules.add(rule);
-                if (rule instanceof StatefulRule stateful) {
-                    stateCompatibilityVersions.put(spec.id,
-                            stateful.stateVersion() + ":" + spec.stateSemanticsFingerprint());
-                    if (spec.groupBy != null && !spec.groupBy.isBlank()) {
-                        routingDimensions.put(spec.id, new RuleEngine.RoutingDimension(
-                                spec.groupBy, Math.max(1L, spec.window.getSeconds())));
-                    }
-                } else {
-                    // The result envelope needs a version for stateless rules as
-                    // well. Keep the same semantic fingerprint so a result can
-                    // be explained against the exact published content.
-                    stateCompatibilityVersions.put(spec.id,
-                            "stateless-v1:" + spec.stateSemanticsFingerprint());
-                }
-            } catch (RuntimeException ruleFailure) {
-                isolated++;
-                org.slf4j.LoggerFactory.getLogger(DetectEngineService.class).warn(
-                        "Skipping undetectable rule tenant={} rule={}: {}",
-                        tenant, documentId, describe(ruleFailure), ruleFailure);
-            }
-        }
-        if (isolated > 0) {
-            isolatedRules.put(engineKey, isolated);
-        } else {
-            isolatedRules.remove(engineKey);
-        }
-        RuleEngine engine = new RuleEngine(
-                rules, List.of(sink), suppressor, processingObserver,
-                event -> {
-                    var tenantScope = com.socp.platform.tenant.context.TenantContext.open(
-                            event.requireTenantId());
-                    return tenantScope::close;
-                }, durableCommitGuard, stateCompatibilityVersions, routingDimensions);
-        // The journal itself clamps this to its configured retention. Keep the
-        // replay boundary configurable so rule windows can be sized safely.
-        // Any restore failure is propagated so readiness cannot claim a
-        // partially reconstructed detector is healthy.
-        try {
-            engine.restore(history);
-        } catch (RuntimeException failure) {
-            engine.close();
-            isolatedRules.remove(engineKey);
-            throw failure;
-        }
-        return engine;
+        return engineFactory.build(engineKey, tenant, history, durableCommitGuard);
     }
 
     private RuleEngine engineFor(String tenant) {
@@ -864,7 +791,7 @@ public class DetectEngineService {
             engineLastAccess.clear();
             snapshotCounters.clear();
             snapshotOffsets.clear();
-            isolatedRules.clear();
+            engineFactory.clearIsolation();
             java.util.function.Consumer<List<SecurityEvent>> restoreBatch = events -> {
                 Map<String, List<SecurityEvent>> byEngine = events.stream()
                         .collect(java.util.stream.Collectors.groupingBy(event ->
@@ -909,7 +836,7 @@ public class DetectEngineService {
             engineLastAccess.clear();
             snapshotCounters.clear();
             snapshotOffsets.clear();
-            isolatedRules.clear();
+            engineFactory.clearIsolation();
             throw failure;
         } finally {
             engineLifecycle.writeLock().unlock();
@@ -950,7 +877,7 @@ public class DetectEngineService {
                 engineLastAccess.remove(tenant);
                 snapshotCounters.remove(tenant);
                 snapshotOffsets.remove(tenant);
-                isolatedRules.remove(tenant);
+                engineFactory.removeIsolation(tenant);
                 if (removed == null) {
                     // A pending rebuild for an engine that is no longer cached is
                     // meaningless; the next event rebuilds it lazily instead.
@@ -969,54 +896,36 @@ public class DetectEngineService {
     }
 
     public List<Map<String, Object>> listRules() {
-        return store.list();
+        return ruleService.listRules();
     }
 
     /** Bounded compatibility view for API callers that omit pagination. */
     public List<Map<String, Object>> listRules(int limit) {
-        return store.list(limit);
+        return ruleService.listRules(limit);
     }
 
     public long ruleCount() {
-        return store.count();
+        return ruleService.ruleCount();
     }
 
     public org.springframework.data.domain.Page<Map<String, Object>> listRulesPage(int page, int size) {
-        return store.page(page, size);
+        return ruleService.listRulesPage(page, size);
     }
 
     public Map<String, Object> contentManifest() {
-        return store.contentManifest();
+        return ruleService.contentManifest();
     }
 
     @org.springframework.transaction.annotation.Transactional
     public Map<String, Object> addRule(Map<String, Object> spec) {
-        Map<String, Object> saved = store.save(spec);
-        rulePublisher.publish(String.valueOf(saved.get("id")), "add");
+        Map<String, Object> saved = ruleService.addRule(spec);
         reloadAfterCommit();
         return saved;
     }
 
     @org.springframework.transaction.annotation.Transactional
     public Map<String, Object> updateRule(Map<String, Object> spec) {
-        String id = String.valueOf(spec.get("id"));
-        Map<String, Object> current = store.get(id);
-        if (current == null) {
-            throw com.socp.platform.error.exception.ApiException.notFound("规则不存在: " + spec.get("id"));
-        }
-        // Preserve lifecycle status when older clients only send the legacy
-        // enabled flag. Disabling a live rule is safe; promotion to ACTIVE is
-        // intentionally reserved for activateRule().
-        spec = new java.util.LinkedHashMap<>(spec);
-        if (!spec.containsKey("status") && current.get("status") != null) {
-            spec.put("status", current.get("status"));
-        }
-        if (Boolean.FALSE.equals(spec.get("enabled"))
-                && "ACTIVE".equalsIgnoreCase(String.valueOf(current.get("status")))) {
-            spec.put("status", "DISABLED");
-        }
-        Map<String, Object> saved = store.save(spec);
-        rulePublisher.publish(String.valueOf(saved.get("id")), "update");
+        Map<String, Object> saved = ruleService.updateRule(spec);
         reloadAfterCommit();
         return saved;
     }
@@ -1024,23 +933,15 @@ public class DetectEngineService {
     /** Promote a tested rule into the live engine under an explicit approval permission. */
     @org.springframework.transaction.annotation.Transactional
     public Map<String, Object> activateRule(String id) {
-        Map<String, Object> current = store.get(id);
-        if (current == null) {
-            throw com.socp.platform.error.exception.ApiException.notFound("规则不存在: " + id);
-        }
-        Map<String, Object> activated = new java.util.LinkedHashMap<>(current);
-        activated.put("status", "ACTIVE");
-        activated.put("enabled", true);
-        return updateRule(activated);
+        Map<String, Object> activated = ruleService.activateRule(id);
+        reloadAfterCommit();
+        return activated;
     }
 
     @org.springframework.transaction.annotation.Transactional
     public boolean deleteRule(String id) {
-        boolean removed = store.delete(id);
-        if (removed) {
-            rulePublisher.publish(id, "delete");
-            reloadAfterCommit();
-        }
+        boolean removed = ruleService.deleteRule(id);
+        if (removed) reloadAfterCommit();
         return removed;
     }
 
@@ -1300,9 +1201,7 @@ public class DetectEngineService {
         m.put("ruleStats", ruleStats);
         // Isolation is counted per engine key, so a tenant view must not add up
         // another tenant's skipped rules into its own number.
-        m.put("isolatedRules", isolatedRules.entrySet().stream()
-                .filter(entry -> entry.getKey().startsWith(keyPrefix))
-                .mapToInt(Map.Entry::getValue).sum());
+        m.put("isolatedRules", engineFactory.isolatedCount(keyPrefix));
         m.put("routingMismatchWindows", tenantEngines.stream()
                 .mapToLong(RuleEngine::routingMismatchWindows).sum());
         m.put("instance", instanceId);

@@ -326,11 +326,26 @@ def main() -> int:
 
     ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     full_stack = (ROOT / ".github/workflows/full-stack.yml").read_text(encoding="utf-8")
-    for marker in ("SOCP_TESTCONTAINERS", "verify-prod-boot.py", "duplicate_delivery", "detection_outbox_replay",
-                   "RedisTokenRevocationStoreContainerTest", "ProductionDatabaseRoleGuardPostgresTest",
-                   "TenantRlsPostgresTest"):
+    for marker in ("SOCP_TESTCONTAINERS", "verify-prod-boot.py", "duplicate_delivery",
+                   "detection_outbox_replay"):
         if marker not in ci:
             errors.append(f"CI production verification contract missing: {marker}")
+
+    # Container-backed security contracts are executed by the main Maven verify
+    # whenever SOCP_TESTCONTAINERS is enabled. Verify their sources still exist
+    # instead of coupling this repository contract to an explicit -Dtest list
+    # in a separate integration job.
+    container_contract_tests = (
+        "platform/socp-auth/src/test/java/com/socp/platform/auth/security/"
+        "ProductionDatabaseRoleGuardPostgresTest.java",
+        "platform/socp-tenant/src/test/java/com/socp/platform/tenant/persistence/"
+        "TenantRlsPostgresTest.java",
+        "services/api-gateway/src/test/java/com/socp/gateway/security/"
+        "RedisTokenRevocationStoreContainerTest.java",
+    )
+    for relative in container_contract_tests:
+        if not (ROOT / relative).is_file():
+            errors.append(f"missing CI container security contract: {relative}")
     if not (ROOT / "build/verify-actuator-auth.py").is_file():
         errors.append("missing deployment-backed Actuator authentication verifier")
     if "verify-actuator-auth.py" not in full_stack:
