@@ -7,6 +7,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.engine.DetectionResult;
 import com.socp.rule.model.Severity;
+import com.socp.rule.partition.DetectionDelivery;
 import com.socp.platform.tenant.persistence.TenantSystemJob;
 import com.socp.platform.tenant.context.TenantContext;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -51,6 +52,7 @@ public class DetectionEventJournal implements DetectionStateStore {
     private final int replayPendingMax;
     private final int cleanupBatchSize;
     private final int cleanupMaxBatches;
+    private final String inputTopic;
 
     /** Spring constructor keeps replay and terminal-retention policies explicit. */
     @Autowired
@@ -61,7 +63,8 @@ public class DetectionEventJournal implements DetectionStateStore {
                                  @Value("${socp.detect.state.dead-letter-retention:90d}") String deadLetterRetention,
                                  @Value("${socp.detect.state.cleanup-batch-size:1000}") int cleanupBatchSize,
                                  @Value("${socp.detect.state.cleanup-max-batches:10}") int cleanupMaxBatches,
-                                 @Value("${socp.detect.state.replay-pending-max:100}") int replayPendingMax) {
+                                 @Value("${socp.detect.state.replay-pending-max:100}") int replayPendingMax,
+                                 @Value("${socp.detect.input-topic:${socp.kafka.topic:socp-events}}") String inputTopic) {
         this.repository = repository;
         this.retention = parsePositiveDuration(retention, Duration.ofHours(24));
         Duration configuredCompletedRetention = parsePositiveDuration(
@@ -76,6 +79,7 @@ public class DetectionEventJournal implements DetectionStateStore {
         this.replayPendingMax = Math.max(1, Math.min(10_000, replayPendingMax));
         this.cleanupBatchSize = Math.max(1, Math.min(10_000, cleanupBatchSize));
         this.cleanupMaxBatches = Math.max(1, Math.min(100, cleanupMaxBatches));
+        this.inputTopic = inputTopic == null || inputTopic.isBlank() ? "socp-events" : inputTopic.trim();
     }
 
     /** Compatibility constructor used by focused policy tests. */
@@ -84,7 +88,7 @@ public class DetectionEventJournal implements DetectionStateStore {
                                  String deadLetterRetention, int cleanupBatchSize,
                                  int cleanupMaxBatches) {
         this(repository, retention, replayPageSize, completedRetention, deadLetterRetention,
-                cleanupBatchSize, cleanupMaxBatches, 100);
+                cleanupBatchSize, cleanupMaxBatches, 100, "socp-events");
     }
 
     /** Compatibility constructor used by focused policy tests. */
@@ -92,7 +96,7 @@ public class DetectionEventJournal implements DetectionStateStore {
                                  int replayPageSize, String completedRetention,
                                  String deadLetterRetention) {
         this(repository, retention, replayPageSize, completedRetention, deadLetterRetention,
-                1_000, 10, 100);
+                1_000, 10, 100, "socp-events");
     }
 
     /** Compatibility constructor used by focused unit tests and local callers. */
@@ -104,29 +108,41 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Override
     @Transactional
     public DetectionEventClaim claim(SecurityEvent event) {
-        return claim(event, null, null, null);
+        return claim(event, inputTopic, null, null, null);
     }
 
     @Override
     @Transactional
     public DetectionEventClaim claim(SecurityEvent event, Integer partition, Long offset,
                                      String routingKey) {
+        return claim(event, inputTopic, partition, offset, routingKey);
+    }
+
+    @Override
+    @Transactional
+    public DetectionEventClaim claim(SecurityEvent event, String deliveryTopic,
+                                     Integer partition, Long offset, String routingKey) {
         if (event == null || event.id() == null || event.id().isBlank()) {
             throw new IllegalArgumentException("event id is required");
         }
         String tenant = event.requireTenantId();
-        var existing = repository.findByTenantIdAndSourceEventId(tenant, event.id());
+        String deliveryId = DetectionDelivery.deliveryId(event);
+        var existing = repository.findByTenantIdAndDeliveryId(tenant, deliveryId);
         if (existing.isPresent()) return claimOf(existing.get());
 
         try {
             String fields = com.socp.rule.util.Json.mapper().writeValueAsString(
                     event.fields() == null ? Map.of() : event.fields());
             repository.saveAndFlush(new DetectionEventEntity(
-                    tenant, event.id(), safe(event.source(), "unknown", 64),
+                    tenant, deliveryId, DetectionDelivery.sourceEventId(event),
+                    DetectionDelivery.routingVersion(event),
+                    safe(event.source(), "unknown", 64),
                     safe(event.host(), "unknown", 255), safe(event.raw(), "", 8192),
                     fields, event.severity() == null ? Severity.INFO.name() : event.severity().name(),
                     event.timestamp() == null ? Instant.now() : event.timestamp(),
-                    partition, offset, routingKey));
+                    DetectionDelivery.sourceTopic(event),
+                    DetectionDelivery.sourcePartition(event), DetectionDelivery.sourceOffset(event),
+                    deliveryTopic, partition, offset, routingKey));
             return DetectionEventClaim.NEW;
         } catch (DataIntegrityViolationException duplicate) {
             // The primary key is the final arbiter when two consumers race.
@@ -164,12 +180,13 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Transactional
     public void markCompleted(DetectionResult result) {
         if (result == null || result.event() == null) return;
-        markCompletedInternal(result.event().requireTenantId(), result.event().id(), result);
+        markCompletedInternal(result.event().requireTenantId(),
+                DetectionDelivery.deliveryId(result.event()), result);
     }
 
     private void markCompletedInternal(String tenantId, String eventId, DetectionResult result) {
         if (eventId == null || eventId.isBlank()) return;
-        repository.findByTenantIdAndSourceEventId(tenantId, eventId).ifPresent(row -> {
+        repository.findByTenantIdAndDeliveryId(tenantId, eventId).ifPresent(row -> {
             if (DetectionEventStatus.DEAD_LETTERED.name().equals(row.getStatus())) return;
             Instant now = Instant.now();
             row.setStatus(DetectionEventStatus.COMPLETED.name());
@@ -197,7 +214,7 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Transactional
     public void markDeadLettered(String tenantId, String eventId, String reason) {
         if (eventId == null || eventId.isBlank()) return;
-        repository.findByTenantIdAndSourceEventId(tenantId, eventId).ifPresent(row -> {
+        repository.findByTenantIdAndDeliveryId(tenantId, eventId).ifPresent(row -> {
             if (DetectionEventStatus.COMPLETED.name().equals(row.getStatus())) {
                 // Completion is the durable receipt of every required write for
                 // this event. A late hand-off - possibly from a replica that lost
@@ -223,7 +240,7 @@ public class DetectionEventJournal implements DetectionStateStore {
             log.warn("Skipping terminal Detection journal row without a tenant eventId={}", eventId);
             return;
         }
-        var existing = repository.findByTenantIdAndSourceEventId(tenant, eventId);
+        var existing = repository.findByTenantIdAndDeliveryId(tenant, eventId);
         if (existing.isPresent()) {
             markDeadLettered(tenant, eventId, reason);
             return;
@@ -247,7 +264,7 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Transactional
     public void remove(String tenantId, String eventId) {
         if (eventId == null || eventId.isBlank()) return;
-        repository.findByTenantIdAndSourceEventId(tenantId, eventId).ifPresent(repository::delete);
+        repository.findByTenantIdAndDeliveryId(tenantId, eventId).ifPresent(repository::delete);
     }
 
     @Override
@@ -255,14 +272,14 @@ public class DetectionEventJournal implements DetectionStateStore {
     public List<SecurityEvent> recent(Duration window) {
         if (TenantContext.isSystemScope()) {
             return readPages((page, size) -> repository
-                    .findByStatusAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
-                            DetectionEventStatus.COMPLETED.name(), cutoff(window),
+                    .findByStatusAndDeliveryTopicAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
+                            DetectionEventStatus.COMPLETED.name(), inputTopic, cutoff(window),
                             org.springframework.data.domain.PageRequest.of(page, size)), true);
         }
         String tenant = TenantContext.require();
         return readPages((page, size) -> repository
-                .findByTenantIdAndStatusAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
-                        tenant, DetectionEventStatus.COMPLETED.name(), cutoff(window),
+                .findByTenantIdAndStatusAndDeliveryTopicAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
+                        tenant, DetectionEventStatus.COMPLETED.name(), inputTopic, cutoff(window),
                         org.springframework.data.domain.PageRequest.of(page, size)), true);
     }
 
@@ -272,14 +289,14 @@ public class DetectionEventJournal implements DetectionStateStore {
         if (partitions == null || partitions.isEmpty()) return List.of();
         if (TenantContext.isSystemScope()) {
             return readPages((page, size) -> repository
-                    .findByStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
-                            DetectionEventStatus.COMPLETED.name(), partitions, cutoff(window),
+                    .findByStatusAndTopicAndKafkaPartitionInAfter(
+                            DetectionEventStatus.COMPLETED.name(), inputTopic, partitions, cutoff(window),
                             org.springframework.data.domain.PageRequest.of(page, size)), false);
         }
         String tenant = TenantContext.require();
         return readPages((page, size) -> repository
-                .findByTenantIdAndStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
-                        tenant, DetectionEventStatus.COMPLETED.name(), partitions, cutoff(window),
+                .findByTenantStatusTopicAndKafkaPartitionInAfter(
+                        tenant, DetectionEventStatus.COMPLETED.name(), inputTopic, partitions, cutoff(window),
                         org.springframework.data.domain.PageRequest.of(page, size)), false);
     }
 
@@ -287,15 +304,15 @@ public class DetectionEventJournal implements DetectionStateStore {
     public void replayRecent(Duration window, Consumer<List<SecurityEvent>> batchConsumer) {
         if (TenantContext.isSystemScope()) {
             replayPages((page, size) -> repository
-                    .findByStatusAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
-                            DetectionEventStatus.COMPLETED.name(), cutoff(window),
+                    .findByStatusAndDeliveryTopicAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
+                            DetectionEventStatus.COMPLETED.name(), inputTopic, cutoff(window),
                             org.springframework.data.domain.PageRequest.of(page, size)), batchConsumer);
             return;
         }
         String tenant = TenantContext.require();
         replayPages((page, size) -> repository
-                .findByTenantIdAndStatusAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
-                        tenant, DetectionEventStatus.COMPLETED.name(), cutoff(window),
+                .findByTenantIdAndStatusAndDeliveryTopicAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
+                        tenant, DetectionEventStatus.COMPLETED.name(), inputTopic, cutoff(window),
                         org.springframework.data.domain.PageRequest.of(page, size)), batchConsumer);
     }
 
@@ -305,15 +322,15 @@ public class DetectionEventJournal implements DetectionStateStore {
         if (partitions == null || partitions.isEmpty()) return;
         if (TenantContext.isSystemScope()) {
             replayPages((page, size) -> repository
-                    .findByStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
-                            DetectionEventStatus.COMPLETED.name(), partitions, cutoff(window),
+                    .findByStatusAndTopicAndKafkaPartitionInAfter(
+                            DetectionEventStatus.COMPLETED.name(), inputTopic, partitions, cutoff(window),
                             org.springframework.data.domain.PageRequest.of(page, size)), batchConsumer);
             return;
         }
         String tenant = TenantContext.require();
         replayPages((page, size) -> repository
-                .findByTenantIdAndStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
-                        tenant, DetectionEventStatus.COMPLETED.name(), partitions, cutoff(window),
+                .findByTenantStatusTopicAndKafkaPartitionInAfter(
+                        tenant, DetectionEventStatus.COMPLETED.name(), inputTopic, partitions, cutoff(window),
                         org.springframework.data.domain.PageRequest.of(page, size)), batchConsumer);
     }
 
@@ -321,8 +338,8 @@ public class DetectionEventJournal implements DetectionStateStore {
     public void replayRecentForTenant(String tenantId, Duration window,
                                       Consumer<List<SecurityEvent>> batchConsumer) {
         replayPages((page, size) -> repository
-                .findByTenantIdAndStatusAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
-                        tenantId, DetectionEventStatus.COMPLETED.name(), cutoff(window),
+                .findByTenantIdAndStatusAndDeliveryTopicAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
+                        tenantId, DetectionEventStatus.COMPLETED.name(), inputTopic, cutoff(window),
                         org.springframework.data.domain.PageRequest.of(page, size)), batchConsumer);
     }
 
@@ -332,14 +349,14 @@ public class DetectionEventJournal implements DetectionStateStore {
         if (partitions == null || partitions.isEmpty()) return List.of();
         if (TenantContext.isSystemScope()) {
             return readPages((page, size) -> repository
-                    .findByStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
-                            DetectionEventStatus.PENDING.name(), partitions, cutoff(window),
+                    .findByStatusAndTopicAndKafkaPartitionInAfter(
+                            DetectionEventStatus.PENDING.name(), inputTopic, partitions, cutoff(window),
                             org.springframework.data.domain.PageRequest.of(page, size)), false);
         }
         String tenant = TenantContext.require();
         return readPages((page, size) -> repository
-                .findByTenantIdAndStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
-                        tenant, DetectionEventStatus.PENDING.name(), partitions, cutoff(window),
+                .findByTenantStatusTopicAndKafkaPartitionInAfter(
+                        tenant, DetectionEventStatus.PENDING.name(), inputTopic, partitions, cutoff(window),
                         org.springframework.data.domain.PageRequest.of(page, size)), false);
     }
 
@@ -352,10 +369,10 @@ public class DetectionEventJournal implements DetectionStateStore {
         org.springframework.data.domain.Pageable request =
                 org.springframework.data.domain.PageRequest.of(0, replayPendingMax);
         List<DetectionEventEntity> rows = tenant == null
-                ? repository.findByStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
-                        DetectionEventStatus.PENDING.name(), partitions, cutoff(window), request)
-                : repository.findByTenantIdAndStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
-                        tenant, DetectionEventStatus.PENDING.name(), partitions, cutoff(window), request);
+                ? repository.findByStatusAndTopicAndKafkaPartitionInAfter(
+                            DetectionEventStatus.PENDING.name(), inputTopic, partitions, cutoff(window), request)
+                : repository.findByTenantStatusTopicAndKafkaPartitionInAfter(
+                        tenant, DetectionEventStatus.PENDING.name(), inputTopic, partitions, cutoff(window), request);
         return rows.stream().map(this::pendingRow).filter(java.util.Objects::nonNull).toList();
     }
 
@@ -363,14 +380,16 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Transactional(readOnly = true)
     public long pendingCount() {
         return TenantContext.isSystemScope()
-                ? repository.countByStatus(DetectionEventStatus.PENDING.name())
-                : repository.countByTenantIdAndStatus(TenantContext.require(), DetectionEventStatus.PENDING.name());
+                ? repository.countByStatusAndDeliveryTopic(DetectionEventStatus.PENDING.name(), inputTopic)
+                : repository.countByTenantIdAndStatusAndDeliveryTopic(
+                        TenantContext.require(), DetectionEventStatus.PENDING.name(), inputTopic);
     }
 
     @Override
     @Transactional(readOnly = true)
     public long pendingCount(String tenantId) {
-        return repository.countByTenantIdAndStatus(tenantId, DetectionEventStatus.PENDING.name());
+        return repository.countByTenantIdAndStatusAndDeliveryTopic(
+                tenantId, DetectionEventStatus.PENDING.name(), inputTopic);
     }
 
     @Override
@@ -392,10 +411,11 @@ public class DetectionEventJournal implements DetectionStateStore {
             org.springframework.data.domain.Pageable request =
                     org.springframework.data.domain.PageRequest.of(page, replayPageSize);
             List<DetectionEventEntity> rows = partitions == null || partitions.isEmpty()
-                    ? repository.findByTenantIdAndStatusAndCompletedAtAfterOrderByCompletedAt(
-                            tenantId, DetectionEventStatus.COMPLETED.name(), checkpoint, request)
-                    : repository.findByTenantIdAndStatusAndKafkaPartitionInAndCompletedAtAfterOrderByCompletedAt(
-                            tenantId, DetectionEventStatus.COMPLETED.name(), partitions, checkpoint, request);
+                    ? repository.findByTenantStatusTopicCompletedAfter(
+                            tenantId, DetectionEventStatus.COMPLETED.name(), inputTopic, checkpoint, request)
+                    : repository.findByTenantStatusTopicPartitionsCompletedAfter(
+                            tenantId, DetectionEventStatus.COMPLETED.name(), inputTopic,
+                            partitions, checkpoint, request);
             List<SecurityEvent> events = fromRows(rows);
             if (!events.isEmpty()) batchConsumer.accept(events);
             if (rows.size() < replayPageSize) break;
@@ -423,10 +443,10 @@ public class DetectionEventJournal implements DetectionStateStore {
             org.springframework.data.domain.Pageable request =
                     org.springframework.data.domain.PageRequest.of(page, replayPageSize);
             List<DetectionEventEntity> rows = owned.isEmpty()
-                    ? repository.findByTenantIdAndStatusAndOrderByKafkaPosition(
-                            tenantId, DetectionEventStatus.COMPLETED.name(), request)
-                    : repository.findByTenantIdAndStatusAndKafkaPartitionInOrderByKafkaPosition(
-                            tenantId, DetectionEventStatus.COMPLETED.name(), owned, request);
+                    ? repository.findByTenantStatusTopicOrderByKafkaPosition(
+                            tenantId, DetectionEventStatus.COMPLETED.name(), inputTopic, request)
+                    : repository.findByTenantStatusTopicPartitionsOrderByKafkaPosition(
+                            tenantId, DetectionEventStatus.COMPLETED.name(), inputTopic, owned, request);
             List<DetectionEventEntity> tail = rows.stream()
                     .filter(row -> row.getKafkaPartition() != null && row.getKafkaOffset() != null)
                     .filter(row -> row.getKafkaOffset() > offsets.getOrDefault(row.getKafkaPartition(), -1L))
@@ -517,6 +537,20 @@ public class DetectionEventJournal implements DetectionStateStore {
                 Map<String, String> fields = com.socp.rule.util.Json.mapper()
                         .readValue(row.getFieldsJson(), FIELDS);
                 fields.putIfAbsent("tenant_id", row.getTenantId());
+                fields.putIfAbsent(DetectionDelivery.DELIVERY_ID_FIELD, row.getDeliveryId());
+                fields.putIfAbsent(DetectionDelivery.SOURCE_EVENT_ID_FIELD, row.getSourceEventId());
+                fields.putIfAbsent(DetectionDelivery.ROUTING_VERSION_FIELD, row.getRoutingVersion());
+                if (row.getSourceTopic() != null) {
+                    fields.putIfAbsent(DetectionDelivery.SOURCE_TOPIC_FIELD, row.getSourceTopic());
+                }
+                if (row.getSourcePartition() != null) {
+                    fields.putIfAbsent(DetectionDelivery.SOURCE_PARTITION_FIELD,
+                            String.valueOf(row.getSourcePartition()));
+                }
+                if (row.getSourceOffset() != null) {
+                    fields.putIfAbsent(DetectionDelivery.SOURCE_OFFSET_FIELD,
+                            String.valueOf(row.getSourceOffset()));
+                }
                 Severity severity;
                 try {
                     severity = Severity.valueOf(row.getSeverity().toUpperCase());
