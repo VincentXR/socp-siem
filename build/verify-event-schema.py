@@ -36,6 +36,32 @@ def validate_current(data):
         raise ValueError("tenantId must remain a string")
 
 
+def validate_detection_delivery():
+    path = SCHEMA_DIR / "detection-delivery-2.0.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    required = set(data.get("required", []))
+    expected_top = {"eventId", "tenantId", "timestamp", "source", "host", "fields"}
+    if not expected_top <= required:
+        raise ValueError(f"detection delivery schema missing top-level fields: {sorted(expected_top - required)}")
+    fields = data.get("properties", {}).get("fields", {})
+    required_fields = set(fields.get("required", []))
+    expected_fields = {
+        "detection_delivery_id", "detection_source_event_id", "detection_delivery_kind",
+        "detection_delivery_dimension", "detection_delivery_value", "detection_routing_version",
+        "detection_route_plan_version", "detection_delivery_schema", "detection_source_topic",
+        "detection_source_partition", "detection_source_offset",
+        "detection_routing_field", "detection_routing_value",
+    }
+    if not expected_fields <= required_fields:
+        raise ValueError(
+            f"detection delivery schema missing routed fields: {sorted(expected_fields - required_fields)}")
+    props = fields.get("properties", {})
+    if props.get("detection_routing_version", {}).get("const") != "detection-routing-v2":
+        raise ValueError("detection delivery routing version must be detection-routing-v2")
+    if props.get("detection_delivery_schema", {}).get("const") != "detection-delivery-schema-v2":
+        raise ValueError("detection delivery schema marker mismatch")
+
+
 def main():
     try:
         versions = load_schemas()
@@ -57,7 +83,8 @@ def main():
                 new_property = new_data.get("properties", {}).get(field, {})
                 if old_property.get("type") != new_property.get("type"):
                     raise ValueError(f"schema {new[2].name} changed type of {field}")
-        print(f"canonical event schemas valid: {len(versions)} version(s)")
+        validate_detection_delivery()
+        print(f"canonical event schemas valid: {len(versions)} version(s); routed detection delivery valid")
         return 0
     except (OSError, ValueError, json.JSONDecodeError) as failure:
         print(f"canonical event schema validation failed: {failure}", file=sys.stderr)
