@@ -69,6 +69,9 @@ public class DetectionAlertOutboxPublisher {
     private final int cleanupBatchSize;
     private final int cleanupMaxBatches;
 
+    @Value("${socp.detect.output-mode:primary}")
+    private String outputMode = "primary";
+
     @org.springframework.beans.factory.annotation.Autowired
     public DetectionAlertOutboxPublisher(DetectionAlertOutboxRepository repository,
                                          AlertClient alertClient,
@@ -148,6 +151,7 @@ public class DetectionAlertOutboxPublisher {
 
     /** Triggers an immediate asynchronous outbox publish cycle on alert enqueue. */
     public void triggerAsync() {
+        if (!formalOutput()) return;
         if (activeTrigger.compareAndSet(false, true)) {
             deliveryExecutor.execute(() -> {
                 try {
@@ -165,6 +169,7 @@ public class DetectionAlertOutboxPublisher {
             initialDelayString = "${socp.detect.alert-outbox.initial-delay-ms:1000}")
     @TenantSystemJob
     public void publishDue() {
+        if (!formalOutput()) return;
         long started = System.nanoTime();
         int rounds = 0;
         try {
@@ -396,6 +401,11 @@ public class DetectionAlertOutboxPublisher {
         } catch (RuntimeException failure) {
             log.warn("Detection alert outbox retention cleanup deferred: {}", failure.getMessage());
         }
+    }
+
+    private boolean formalOutput() {
+        return outputMode == null || outputMode.isBlank()
+                || "primary".equalsIgnoreCase(outputMode.trim());
     }
 
     private void lifecycle(String outcome, int count) {
