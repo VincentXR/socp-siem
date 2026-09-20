@@ -183,7 +183,7 @@ public class DetectionRouteOutboxService {
             rows.add(new DetectionRouteOutboxEntity(
                     deliveryId, context.tenant(), context.sourceEventId(),
                     plan.routingVersion(), plan.version(), route.kind().name(),
-                    route.dimension(), route.value(), routingKey,
+                    route.dimension(), auditRouteValue(route.value()), routingKey,
                     context.sourceTopic(), context.sourcePartition(), context.sourceOffset(),
                     deliveryTopic, payload, now));
         }
@@ -277,7 +277,7 @@ public class DetectionRouteOutboxService {
                     "default", sourceTopic, sourcePartition, sourceOffset,
                     sourceEventId, DetectionDelivery.ROUTING_VERSION,
                     "unresolved", 0, null, "DEAD",
-                    failure.getClass().getSimpleName() + ": " + failure.getMessage(),
+                    truncate(failure.getClass().getSimpleName() + ": " + failure.getMessage()),
                     Instant.now()));
         }
         return new RouteResult("default", sourceEventId, "unresolved", 0,
@@ -406,6 +406,18 @@ public class DetectionRouteOutboxService {
             if (value != null && !value.isBlank()) return value;
         }
         return null;
+    }
+
+    private static String auditRouteValue(String value) {
+        if (value == null || value.length() <= 1024) return value;
+        try {
+            String digest = java.util.HexFormat.of().formatHex(
+                    java.security.MessageDigest.getInstance("SHA-256")
+                            .digest(value.getBytes(StandardCharsets.UTF_8))).substring(0, 32);
+            return value.substring(0, 960) + "#sha256=" + digest;
+        } catch (Exception failure) {
+            return value.substring(0, 1024);
+        }
     }
 
     private static MalformedCanonicalEventException malformed(String message) {
