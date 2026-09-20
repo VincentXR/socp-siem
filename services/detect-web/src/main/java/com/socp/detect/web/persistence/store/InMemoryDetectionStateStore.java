@@ -2,6 +2,7 @@ package com.socp.detect.web.persistence.store;
 
 
 import com.socp.rule.model.SecurityEvent;
+import com.socp.rule.partition.DetectionDelivery;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -28,16 +29,20 @@ public final class InMemoryDetectionStateStore implements DetectionStateStore {
             throw new IllegalArgumentException("event id is required");
         }
         event.requireTenantId();
-        Entry existing = events.get(event.scopedId());
+        Entry existing = events.get(deliveryKey(event));
         if (existing != null) return existing.status() == DetectionEventStatus.PENDING
                 ? DetectionEventClaim.PENDING
                 : existing.status() == DetectionEventStatus.DEAD_LETTERED
                 ? DetectionEventClaim.DEAD_LETTERED : DetectionEventClaim.COMPLETED;
         Entry created = new Entry(event, partition, offset, routingKey, DetectionEventStatus.PENDING);
-        Entry raced = events.putIfAbsent(event.scopedId(), created);
+        Entry raced = events.putIfAbsent(deliveryKey(event), created);
         return raced == null ? DetectionEventClaim.NEW
                 : raced.status() == DetectionEventStatus.PENDING
                 ? DetectionEventClaim.PENDING : DetectionEventClaim.COMPLETED;
+    }
+
+    private static String deliveryKey(SecurityEvent event) {
+        return event.requireTenantId() + "|" + DetectionDelivery.deliveryId(event);
     }
 
     @Override
