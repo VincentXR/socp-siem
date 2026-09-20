@@ -27,7 +27,7 @@ public class DetectionRouteOutboxEntity {
     @Column(name = "tenant_id", nullable = false, length = 64)
     private String tenantId;
 
-    @Column(name = "source_event_id", nullable = false, length = 128)
+    @Column(name = "source_event_id", nullable = false, length = 255)
     private String sourceEventId;
 
     @Column(name = "routing_version", nullable = false, length = 64)
