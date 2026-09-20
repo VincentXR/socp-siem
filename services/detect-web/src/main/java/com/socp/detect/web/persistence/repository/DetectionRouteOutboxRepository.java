@@ -24,6 +24,15 @@ public interface DetectionRouteOutboxRepository
 
     @Modifying
     @Transactional
+    @Query(value = "delete from t_detection_route_outbox where delivery_id in ("
+            + "select delivery_id from t_detection_route_outbox "
+            + "where status = 'PUBLISHED' and published_at < :cutoff "
+            + "order by published_at asc limit :batchSize)", nativeQuery = true)
+    int deletePublishedBatchBefore(@Param("cutoff") Instant cutoff,
+                                   @Param("batchSize") int batchSize);
+
+    @Modifying
+    @Transactional
     @Query("update DetectionRouteOutboxEntity e set e.status = 'PROCESSING', "
             + "e.attempts = e.attempts + 1, e.updatedAt = :now "
             + "where e.deliveryId = :id and e.status = 'PENDING' "
