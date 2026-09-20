@@ -15,15 +15,18 @@ public class DetectionRoutingPlanRegistry {
 
     private final RuleSpecStore store;
     private final int maxDimensions;
+    private final int maxCachedTenants;
     private final long refreshNanos;
     private final ConcurrentHashMap<String, Entry> plans = new ConcurrentHashMap<>();
 
     public DetectionRoutingPlanRegistry(
             RuleSpecStore store,
             @Value("${socp.detect.routing.max-stateful-dimensions:8}") int maxDimensions,
+            @Value("${socp.detect.routing.plan-cache-max-tenants:1000}") int maxCachedTenants,
             @Value("${socp.detect.routing.plan-refresh-ms:1000}") long refreshMs) {
         this.store = store;
         this.maxDimensions = Math.max(1, Math.min(32, maxDimensions));
+        this.maxCachedTenants = Math.max(1, Math.min(10_000, maxCachedTenants));
         this.refreshNanos = Duration.ofMillis(Math.max(100L, Math.min(60_000L, refreshMs))).toNanos();
     }
 
@@ -35,6 +38,7 @@ public class DetectionRoutingPlanRegistry {
         DetectionRoutingPlan loaded = TenantContext.callWith(resolved,
                 () -> DetectionRoutingPlan.compile(store.list(resolved), maxDimensions));
         plans.put(resolved, new Entry(loaded, now));
+        evictIfNeeded(resolved);
         return loaded;
     }
 
@@ -51,6 +55,17 @@ public class DetectionRoutingPlanRegistry {
 
     public boolean hasKnownUnsupportedPlan() {
         return plans.values().stream().map(Entry::plan).anyMatch(plan -> !plan.supported());
+    }
+
+    private void evictIfNeeded(String retainedTenant) {
+        while (plans.size() > maxCachedTenants) {
+            String oldest = plans.entrySet().stream()
+                    .filter(entry -> !entry.getKey().equals(retainedTenant))
+                    .min(java.util.Comparator.comparingLong(entry -> entry.getValue().loadedAtNanos()))
+                    .map(Map.Entry::getKey)
+                    .orElse(null);
+            if (oldest == null || plans.remove(oldest) == null) break;
+        }
     }
 
     private record Entry(DetectionRoutingPlan plan, long loadedAtNanos) {
