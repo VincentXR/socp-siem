@@ -57,7 +57,7 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
     private final AtomicLong oldestDeadAgeSecondsGauge = new AtomicLong();
     private final AtomicInteger drainRoundsGauge = new AtomicInteger();
     private final AtomicLong drainDurationMsGauge = new AtomicLong();
-    private Instant nextRecoveryAt = Instant.EPOCH;
+    private volatile Instant nextRecoveryAt = Instant.EPOCH;
 
     @Autowired
     public IngestionOutboxPublisher(IngestionOutboxRepository repository,
@@ -182,7 +182,7 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
                 if (pending.size() < 200) break;
             }
         } catch (Exception failure) {
-            log.warn("Ingestion outbox scan failed; next scan will retry: {}", failure.getMessage());
+            log.warn("Ingestion outbox scan failed; next scan will retry: {}", failure.toString());
         } finally {
             updateBacklogMetrics(lastBatchSize, Instant.now());
             recordDrain(rounds, System.nanoTime() - started);
@@ -208,7 +208,7 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
             oldestDeadAgeSecondsGauge.set(oldestDead == null
                     ? 0 : Math.max(0, Duration.between(oldestDead, now).toSeconds()));
         } catch (RuntimeException failure) {
-            log.warn("Ingestion outbox backlog metrics deferred: {}", failure.getMessage());
+            log.warn("Ingestion outbox backlog metrics deferred: {}", failure.toString());
         }
     }
 

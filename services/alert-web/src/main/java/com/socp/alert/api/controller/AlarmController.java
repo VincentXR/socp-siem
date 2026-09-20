@@ -251,7 +251,14 @@ public class AlarmController {
 
     private static String csv(String s) {
         if (s == null) return "";
-        return "\"" + s.replace("\"", "\"\"") + "\"";
+        // Spreadsheet formula-injection guard: attacker-controlled log text can
+        // reach these cells, so neutralize formula-leading characters before the
+        // RFC4180 quoting below.
+        String value = s;
+        if (!value.isEmpty() && "=+-@\t\r".indexOf(value.charAt(0)) >= 0) {
+            value = "'" + value;
+        }
+        return "\"" + value.replace("\"", "\"\"") + "\"";
     }
 
     private static String toJson(Alarm alarm) {

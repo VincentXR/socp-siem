@@ -98,6 +98,22 @@ class SearchControllerTest {
         assertThat(result.timeline()).containsExactly(Map.of("key", "2026-08-23", "count", 1L));
     }
 
+    @Test
+    void exportCsvNeutralizesSpreadsheetFormulaLeadingCharacters() {
+        SplEngine engine = mock(SplEngine.class);
+        SearchStore store = mock(SearchStore.class);
+        OsEventReader reader = mock(OsEventReader.class);
+        SearchEvent event = new SearchEvent("formula-1", Instant.parse("2026-08-23T10:00:00Z"),
+                "auth", "host-1", "HIGH", "=cmd|'/C calc'!A0", Map.of(), Map.of());
+        given(reader.search("source=auth", 5_000))
+                .willReturn(new SplEngine.QueryResult(1, List.of(event), null));
+
+        String csv = new SearchController(engine, store, reader)
+                .export("source=auth", "csv", null, null).getBody();
+
+        assertThat(csv).contains("\"'=cmd|'/C calc'!A0\"");
+    }
+
     private static SearchEvent event(String id, String timestamp) {
         return new SearchEvent(id, Instant.parse(timestamp), "auth", "host-1", "HIGH", "failed login",
                 Map.of("tenant_id", "default"), Map.of());

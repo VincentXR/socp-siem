@@ -6,7 +6,7 @@ ClickHouse 写入均采用至少一次传输；“没有重复副作用”必须
 
 | 副作用 | 业务幂等键 | 重复请求/并发请求 | 远端成功、本地未确认 | replay / DEAD | 证明方式 |
 |---|---|---|---|---|---|
-| Alert `t_alarm` | `(tenant_id, source_alert_id)`，`source_alert_id` 自 V20 起 NOT NULL | PostgreSQL 唯一约束；已有事实直接返回；无键手工写入派生 `manual:<uuid>` | 重试命中同一 `source_alert_id`，不新建告警 | Detection outbox 可重放；Alert Web 只接收同一事实 | `count(*)` 与 `count(distinct tenant_id, source_alert_id)` |
+| Alert `t_alarm` | `(tenant_id, source_alert_id)`，`source_alert_id` 自 V20 起 NOT NULL | PostgreSQL 唯一约束；首写为准：命中同键直接返回既有事实，异内容载荷不合并、不返回 409（刻意区别于 SEARCH ingest 的内容冲突 409 语义，因告警含每次投递都会变化的运行时元数据，尚无排除它们的 canonical 指纹）；无键手工写入派生 `manual:<uuid>` | 重试命中同一 `source_alert_id`，不新建告警 | Detection outbox 可重放；Alert Web 只接收同一事实 | `count(*)` 与 `count(distinct tenant_id, source_alert_id)` |
 | 告警处置 note（单条与批处置） | 单条：调用方 `Idempotency-Key`；批处置：`batch:<sha256(actor|status|assignee|reason)>`，actor 取认证主体 | 行级 note-key 账本 set-once（每行上限 2048，FIFO 驱逐）；同参重放不重复落 note；状态/指派为绝对值写入，重复应用是 no-op | 写行成功即视为受理；账本满驱逐最旧键后极远期同键重放理论上可再落一条（运维量级假设） | 无 replay 语义；DEAD 不适用 | note 的 `batch:`/前缀键可查询；`@AuditOperation` 留独立调用痕迹 |
 | Detection event journal | `(tenant_id, event_id)` | 事件 claim 状态机，重复事件不再次评估 | Kafka offset 保持未提交，恢复后从 journal/outbox 重放 | terminal DEAD 只能由 DLQ/人工处理 | journal `PENDING=0`、Kafka lag=0、DLQ 有记录 |
 | Alert delivery outbox | `(tenant_id, alarm_id, destination)` | 数据库唯一约束 + 原子 claim；并发 worker 只有一个 PROCESSING | 收据未确认则回到 PENDING/恢复 stale 后重试 | DEAD 不自动重放，必须显式 requeue | 各目标一条 delivery，状态和 attempts 可审计 |

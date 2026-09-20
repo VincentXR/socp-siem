@@ -176,11 +176,13 @@ def main() -> int:
             "SOCP_ALERT_URL: http://alert-web:8080",
             "metricsPath: /detect-web/actuator/prometheus",
             "bearerTokenSecretKey: SOCP_SECURITY_METRICS_TOKEN",
-            # Flyway's two-role contract must be pinned per database workload
-            # through secretEnv, so a missing migration role fails the Pod rather
-            # than resolving to the runtime role via application-pg.yml's nested
-            # default. These keys are required the same way the pg profile now
-            # drops its own `${SOCP_PG_*:default}` fallbacks.
+            # The four PostgreSQL role keys must be pinned per database
+            # workload through secretEnv: the migration pair has no default in
+            # application-pg.yml and must fail the Pod rather than crash-loop
+            # later, and the explicit reference is what keeps the runtime pair
+            # (which still carries ${SOCP_PG_*:socp} local fallbacks) from
+            # silently resolving to the default account when the Secret omits
+            # it.
             "SOCP_PG_USER: SOCP_PG_USER",
             "SOCP_PG_PASSWORD: SOCP_PG_PASSWORD",
             "SOCP_PG_MIGRATION_USER: SOCP_PG_MIGRATION_USER",

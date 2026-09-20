@@ -213,8 +213,14 @@ async function loadRuns() {
   }
 }
 
+// Guards against a late response for a previous run overwriting the current
+// one: every run-level load carries the generation it started with and drops
+// its results once a newer selection (or reload) has taken over.
+let loadGeneration = 0
+
 async function refreshRun() {
   if (!selectedRunId.value) return
+  const generation = ++loadGeneration
   loading.value = true
   errorMessage.value = ''
   try {
@@ -224,6 +230,7 @@ async function refreshRun() {
       listEvents(selectedRunId.value, 0, 0, 200),
       listArtifacts(selectedRunId.value),
     ])
+    if (generation !== loadGeneration) return
     run.value = runResult
     nodes.value = nodeResult
     events.value = eventResult.items
@@ -232,20 +239,25 @@ async function refreshRun() {
       selectedNodeRunId.value = nodes.value[0]?.id ?? ''
     }
     await loadAttempts()
+    if (generation !== loadGeneration) return
     openStream()
   } catch (failure) {
+    if (generation !== loadGeneration) return
     errorMessage.value = failure instanceof Error ? failure.message : t('soar.unableLoadRunDetails')
   } finally {
-    loading.value = false
+    if (generation === loadGeneration) loading.value = false
   }
 }
 
 async function loadAttempts() {
-  if (!selectedNodeRunId.value) { attempts.value = []; return }
+  const nodeRunId = selectedNodeRunId.value
+  if (!nodeRunId) { attempts.value = []; return }
   try {
-    const result = await listNodeAttempts(selectedNodeRunId.value, 0, 100)
+    const result = await listNodeAttempts(nodeRunId, 0, 100)
+    if (nodeRunId !== selectedNodeRunId.value) return
     attempts.value = result.items
   } catch (failure) {
+    if (nodeRunId !== selectedNodeRunId.value) return
     attempts.value = []
     errorMessage.value = failure instanceof Error ? failure.message : t('soar.unableLoadAttempts')
   }
@@ -257,9 +269,14 @@ function openStream() {
     streamState.value = 'polling'
     return
   }
-  stream = new EventSource(`/soar-web/api/runs/${encodeURIComponent(selectedRunId.value)}/stream`)
+  const streamRunId = selectedRunId.value
+  const generation = loadGeneration
+  stream = new EventSource(`/soar-web/api/runs/${encodeURIComponent(streamRunId)}/stream`)
   streamState.value = 'live'
   stream.addEventListener('run-event', event => {
+    // An old run's EventSource stays open until the new run's load reaches
+    // openStream(); its late events must not append to the new timeline.
+    if (streamRunId !== selectedRunId.value || generation !== loadGeneration) return
     const payload = (event as MessageEvent<string>).data
     try {
       const item = JSON.parse(payload) as SoarEvent
@@ -282,10 +299,12 @@ function closeStream() {
 
 async function refreshProjection() {
   if (!selectedRunId.value) return
+  const generation = loadGeneration
   try {
     const [runResult, nodeResult, artifactResult] = await Promise.all([
       getRun(selectedRunId.value), listNodes(selectedRunId.value), listArtifacts(selectedRunId.value),
     ])
+    if (generation !== loadGeneration) return
     run.value = runResult
     nodes.value = nodeResult
     if (!nodes.value.some(node => node.id === selectedNodeRunId.value)) {

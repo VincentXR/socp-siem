@@ -118,13 +118,17 @@ class SocControllerTest {
     }
 
     @Test
-    void authenticatedRolesCanReadTenantDirectoryAndOverview() throws Exception {
+    void tenantDirectoryIsAdminOnlyWhileOverviewStaysReadable() throws Exception {
         given(store.list()).willReturn(List.of(TenantInfo.create("默认租户", "default")));
-        for (String role : List.of("admin", "analyst", "viewer")) {
+        mvc.perform(get("/api/v1/tenants")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "admin"))
+                .andExpect(status().isOk());
+        for (String role : List.of("analyst", "viewer")) {
             mvc.perform(get("/api/v1/tenants")
                             .header(HttpHeaders.AUTHORIZATION, BEARER)
                             .header("X-Role", role))
-                    .andExpect(status().isOk());
+                    .andExpect(status().isForbidden());
             mvc.perform(get("/api/v1/overview")
                             .header(HttpHeaders.AUTHORIZATION, BEARER)
                             .header("X-Role", role))
@@ -134,7 +138,7 @@ class SocControllerTest {
 
     @Test
     void tenantReadEndpointsAllowRecognizedRolesAndCreateIsAdminOnly() {
-        assertRoles("listTenants", "admin", "analyst", "viewer");
+        assertRoles("listTenants", "admin");
         assertRoles("createTenant", "admin");
         assertRoles("overview", "admin", "analyst", "viewer");
     }

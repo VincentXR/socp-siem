@@ -382,11 +382,12 @@ def check_helm_parity(errors: list[str]) -> None:
         if block is None:
             errors.append(f"Helm values omit workload {workload}")
             continue
-        # application-pg.yml resolves Flyway's credentials as
-        # ${SOCP_PG_MIGRATION_USER:${SOCP_PG_USER:socp}}. envFrom accepts any
-        # subset of Secret keys, so only an explicit secretKeyRef turns a missing
-        # migration role into a Pod that never starts instead of a runtime-role
-        # DDL attempt at the next schema change.
+        # application-pg.yml binds Flyway's pair without defaults
+        # (${SOCP_PG_MIGRATION_USER}), so a missing key CrashLoops the app; the
+        # runtime pair still carries ${SOCP_PG_USER:socp}-style fallbacks.
+        # envFrom accepts any subset of Secret keys, so only an explicit
+        # secretKeyRef fails the Pod at CreateContainerConfigError before the
+        # container starts with the intended, operator-managed credentials.
         for key in ("SOCP_PG_USER", "SOCP_PG_PASSWORD", "SOCP_PG_MIGRATION_USER", "SOCP_PG_MIGRATION_PASSWORD"):
             if re.search(rf"(?m)^\s+{key}:\s*{key}\s*$", block.group(0)) is None:
                 errors.append(f"Helm workload {workload} must pin {key} through secretEnv")

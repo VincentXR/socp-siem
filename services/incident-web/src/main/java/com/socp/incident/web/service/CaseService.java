@@ -157,9 +157,16 @@ public class CaseService {
         return store.get(id);
     }
 
+    /** The documented Case lifecycle; anything else is a client error, not storage. */
+    private static final java.util.Set<String> ALLOWED_STATUSES =
+            java.util.Set.of("OPEN", "INVESTIGATING", "CONTAINED", "RESOLVED", "CLOSED");
+
     public Map<String, Object> setStatus(String id, String status, String assignee) {
         Case c = store.get(id);
         if (c == null) throw ApiException.notFound("未找到案件 " + id);
+        if (status == null || !ALLOWED_STATUSES.contains(status)) {
+            throw ApiException.badRequest("非法案件状态 " + status + "; 允许: " + ALLOWED_STATUSES);
+        }
         Case updated = c.withStatus(status, assignee);
         store.save(updated);
         return Map.of("case", updated);
@@ -199,10 +206,14 @@ public class CaseService {
     public Map<String, Object> stats() {
         Map<String, Object> out = new LinkedHashMap<>();
         long total = store.count();
-        long open = store.countByStatusIn(List.of("OPEN", "INVESTIGATING"));
+        // CONTAINED is contained-but-not-closed work, so it belongs to "open".
+        // resolved counts only terminal statuses instead of total-minus-open,
+        // which previously swallowed CONTAINED (and any pre-validation junk).
+        long open = store.countByStatusIn(List.of("OPEN", "INVESTIGATING", "CONTAINED"));
+        long resolved = store.countByStatusIn(List.of("RESOLVED", "CLOSED"));
         out.put("total", total);
         out.put("open", open);
-        out.put("resolved", total - open);
+        out.put("resolved", resolved);
         return out;
     }
 

@@ -202,6 +202,35 @@ public class SoarConnectorService {
         return view(row);
     }
 
+    /**
+     * PATCH semantics executed against the locked row inside one transaction.
+     * The merge base is read under the same {@code FOR UPDATE} lock that the
+     * write holds, so a client that omitted a field can never overwrite a
+     * concurrently committed value with its stale snapshot — the failure mode
+     * of merging from an earlier cross-transaction GET.
+     */
+    @Transactional
+    @AuditOperation(action = "SOAR_UPDATE_CONNECTION", target = "t_soar_connector")
+    public Map<String, Object> updatePatch(String id, String name, String type, String endpoint,
+                                           String secretRef, List<String> allowedHosts, Boolean enabled,
+                                           Long expectedRowVersion) {
+        requireControlPlane();
+        String tenant = TenantContext.require();
+        SoarConnectorEntity row = findForUpdate(tenant, id);
+        if (row.getDeletedAt() != null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "connector not found");
+        if (expectedRowVersion != null && !expectedRowVersion.equals(row.getRowVersion())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "connector was changed by another operator");
+        }
+        return update(id,
+                name != null ? name : row.getName(),
+                type != null ? type : row.getConnectorType(),
+                endpoint != null ? endpoint : row.getEndpoint(),
+                secretRef,
+                allowedHosts != null ? allowedHosts : readList(row.getAllowedHostsJson()),
+                enabled != null ? enabled : row.isEnabled(),
+                expectedRowVersion);
+    }
+
     @Transactional
     @AuditOperation(action = "SOAR_TEST_CONNECTION", target = "t_soar_connector")
     public Map<String, Object> test(String id) {

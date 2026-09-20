@@ -26,7 +26,11 @@ public class CkReporter {
 
     private static final Logger log = LoggerFactory.getLogger(CkReporter.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final DateTimeFormatter CK_TS = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
+    // ClickHouse parses zone-less strings with the server/session timezone (UTC on every
+    // baseline here). Format in fixed UTC so writer, today()/toDate() readers and the
+    // Java degradation path share one timezone authority regardless of JVM default.
+    static final DateTimeFormatter CK_TS =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS").withZone(java.time.ZoneOffset.UTC);
 
     private final ClickHouseProperties properties;
 
@@ -60,10 +64,7 @@ public class CkReporter {
     private boolean doReport(Alarm alarm) {
         HttpURLConnection connection = null;
         try {
-            String ts = alarm.getOccurredAt() == null
-                    ? java.time.LocalDateTime.now().format(CK_TS)
-                    : java.time.LocalDateTime.ofInstant(alarm.getOccurredAt(), java.time.ZoneId.systemDefault())
-                    .format(CK_TS);
+            String ts = CK_TS.format(alarm.getOccurredAt() == null ? java.time.Instant.now() : alarm.getOccurredAt());
             Map<String, Object> values = new LinkedHashMap<>();
             values.put("tenant_id", alarm.getTenantId());
             values.put("alarm_id", alarm.getId());

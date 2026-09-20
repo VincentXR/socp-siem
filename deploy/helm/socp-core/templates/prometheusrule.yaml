@@ -95,4 +95,73 @@ spec:
             severity: critical
           annotations:
             summary: SOCP OpenSearch indexer is sending events to DLQ
+        # Detection-side wedges below are silent to every health probe by
+        # design: the consumer keeps polling while a partition commit is
+        # pinned, a rule sits isolated, or a poison record is being retried
+        # toward the DLQ. Thresholds follow docs/observability-stage-metrics.md
+        # ("Alert thresholds"): a healthy pipeline sits well clear, and every
+        # expression resolves once the underlying state clears.
+        - alert: SocpDetectionRuleIsolated
+          expr: max(socp_detection_rules_isolated_count) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: SOCP detection engine is isolating a rule
+            description: A rule failed at evaluation time and is being skipped,
+              so matching detections are silently lost until an operator fixes
+              or disables it. Consumer-lag absent() cannot cover this state:
+              the pipeline stays green while the rule is dead.
+        - alert: SocpDetectionOffsetPinned
+          expr: max(socp_detection_offset_pinned) > 10000
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: SOCP detection commit watermark is pinned behind a gap
+            description: More than 10000 completed-or-waiting offsets cannot
+              cross the contiguous commit watermark. Transient retries keep
+              this far below the threshold; sustained growth means a lane is
+              wedged on a record that never finalizes.
+        - alert: SocpDetectionRetryBlocked
+          expr: max(socp_detection_partition_retry_blocked) > 0 and
+            max(socp_detection_partition_retry_oldest_seconds) > 300
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: SOCP detection partition is blocked for failure recovery
+            description: A partition has been retry-blocked for over five
+              minutes. Group socp_detection_processing_failure by category and
+              stage before intervening; do not purge PENDING rows.
+        - alert: SocpDetectionDlqHandoffGrowth
+          expr: increase(socp_detection_dlq_handoff_total{outcome="committed"}[15m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: SOCP detection sent poison records to the dead-letter topic
+            description: Dependency outages should leave this flat; growth
+              means events are terminalizing as poison records and need the
+              DLQ redrive procedure.
+        - alert: SocpDetectionRoutingMismatchGrowth
+          expr: increase(socp_detection_rule_routing_mismatch_total[30m]) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: SOCP detection rule routing contract is being violated
+            description: A rule evaluated events whose routing field does not
+              carry the declared key, so partition-local state can diverge.
+              This is a content-quality ticket, not an outage.
+        - alert: SocpSearchRetentionLag
+          expr: max(socp_search_event_retention_lag_seconds) > 3600
+          for: 2h
+          labels:
+            severity: warning
+          annotations:
+            summary: SOCP search event retention cleanup is falling behind
+            description: The bounded retention worker runs hourly; two hours
+              of lag means delete throughput is below ingest growth or rows
+              are pinned by unresolved outbox work.
 {{- end }}

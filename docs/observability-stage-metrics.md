@@ -44,7 +44,8 @@ per event:
   `COUNT(*)`; `socp.search.event.retention{outcome=deleted|failure}` remains
   the lifecycle counter.
 * `socp.detection.rule.routing.mismatch{rule,declared_field,event_field}`
-  (Prometheus `socp_detection_rule_routing_mismatch`) emits one report per rule
+  (Prometheus `socp_detection_rule_routing_mismatch_total`; Micrometer counters
+  export with a `_total` suffix) emits one report per rule
   per window when an event's routing field does not carry the key the rule
   declared, making the partition-local state contract a falsifiable observation;
   its series count is bounded by the rule catalogue and the field vocabulary,
@@ -74,8 +75,12 @@ can resolve again.
 | `Socp*OutboxOldestAge` | `> 300s` pending | Two drain cycles should clear a row; five minutes of pending means the publisher is wedged rather than briefly behind. |
 | `Socp*OutboxDead` | `delta(...[15m]) > 0` | Dead rows are retained deliberately for investigation and replay, so the count never returns to zero. Alerting on the absolute count latches forever; alerting on growth resolves once the backlog stops worsening. |
 | `SocpDeadLetterGrowth` | `increase(...[15m]) > 0` | The indexer counter is monotonic, so `increase()` is the correct function here; the dead counts above are gauges and use `delta()`. |
-| Detection retry blocked | blocked partitions `> 0` and oldest block `> 300s` | Five minutes distinguishes ordinary dependency jitter from a recovery path that needs operator attention. Alert on age, not every retry attempt. |
-| Search retention lag | `socp.search.event.retention.lag.seconds > 3600` for two cleanup windows | The worker is designed to catch up in bounded rounds; sustained lag means delete throughput is below ingest/backlog growth or rows are protected by unresolved outbox work. |
+| `SocpDetectionRuleIsolated` | `max(socp_detection_rules_isolated_count) > 0` for 5m | Isolation is the last-resort path that keeps a bad rule from killing the engine; it is silent unless paged, and resolves when the operator fixes or disables the rule. |
+| `SocpDetectionOffsetPinned` | `max(socp_detection_offset_pinned) > 10000` for 15m | Normal in-flight processing keeps the pin far below one lane queue; a sustained six-digit pin means a record never finalizes and the commit watermark cannot advance. |
+| Detection retry blocked (`SocpDetectionRetryBlocked`) | blocked partitions `> 0` and oldest block `> 300s` | Five minutes distinguishes ordinary dependency jitter from a recovery path that needs operator attention. Alert on age, not every retry attempt. |
+| `SocpDetectionDlqHandoffGrowth` | `increase(socp_detection_dlq_handoff_total{outcome="committed"}[15m]) > 0` | Dependency outages must leave the committed hand-off flat; growth means poison records reached the dead-letter topic and need the redrive procedure. |
+| `SocpDetectionRoutingMismatchGrowth` | `increase(socp_detection_rule_routing_mismatch_total[30m]) > 0` for 10m | A falsifiable observation of the partition-local state contract; ticket-level content quality, not an outage. |
+| Search retention lag (`SocpSearchRetentionLag`) | `socp_search_event_retention_lag_seconds > 3600` for two cleanup windows | The worker is designed to catch up in bounded rounds; sustained lag means delete throughput is below ingest/backlog growth or rows are protected by unresolved outbox work. |
 
 Two properties are worth stating because they are easy to get wrong and the
 failure is silent:

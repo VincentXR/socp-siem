@@ -8,7 +8,10 @@
 #   docker exec -i socp-kafka bash < create-topics.sh
 set -e
 BOOTSTRAP=${BOOTSTRAP:-localhost:9092}
-PARTITIONS=${PARTITIONS:-3}
+# 分区数是每 topic 消费并行度的上限：docs/operations/kafka-topic-provisioning.md 要求
+# Detection 代际按「6 分区 × 3 实例」规划，与 compose 的 KAFKA_NUM_PARTITIONS=6 对齐。
+# Kafka 不能缩分区且 --if-not-exists 不改动已建 topic，事后只能用 --alter --partitions 扩。
+PARTITIONS=${PARTITIONS:-6}
 REPLICATION=${REPLICATION:-1}
 # 主链保留 7 天；死信队列是终态取证证据，保留 30 天。
 RETENTION_MS=${RETENTION_MS:-604800000}

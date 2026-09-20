@@ -23,13 +23,8 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 import java.util.Map;
 
-import static com.socp.soar.web.api.controller.SoarHttpSupport.badRequest;
 import static com.socp.soar.web.api.controller.SoarHttpSupport.clampSize;
-import static com.socp.soar.web.api.controller.SoarHttpSupport.optionalLong;
-import static com.socp.soar.web.api.controller.SoarHttpSupport.optionalString;
-import static com.socp.soar.web.api.controller.SoarHttpSupport.optionalStringList;
 import static com.socp.soar.web.api.controller.SoarHttpSupport.page;
-import static com.socp.soar.web.api.controller.SoarHttpSupport.toObjectMap;
 
 /** Connector catalog and tenant connection management HTTP API. */
 @RestController
@@ -102,50 +97,18 @@ public class SoarConnectorController {
         return patchConnectionInternal(id, request);
     }
 
-    /** Compatibility overload for map-shaped partial connection updates. */
-    public ApiResult<Map<String, Object>> patchConnection(String id, Object legacyBody) {
-        if (legacyBody instanceof PatchConnectionRequest request) {
-            return patchConnectionInternal(id, request);
-        }
-        if (!(legacyBody instanceof Map<?, ?> map)) {
-            throw badRequest("connection patch must be an object");
-        }
-        return patchConnectionFromMap(id, toObjectMap(map));
-    }
-
     private ApiResult<Map<String, Object>> patchConnectionInternal(String id, PatchConnectionRequest request) {
-        Map<String, Object> current = connectors.get(id);
-        if (request == null) {
-            return patchConnectionFromMap(id, Map.of());
-        }
-        String name = request.name() == null ? optionalString(current.get("name")) : request.name();
-        String type = request.connectorType() == null
-                ? optionalString(current.get("connectorType")) : request.connectorType();
-        String endpoint = request.endpoint() == null
-                ? optionalString(current.get("endpoint")) : request.endpoint();
-        String secret = request.authSecretRef();
-        List<String> allowedHosts = request.allowedHosts() == null
-                ? optionalStringList(current.get("allowedHosts")) : request.allowedHosts();
-        boolean enabled = request.enabled() == null
-                ? Boolean.TRUE.equals(current.get("enabled")) : request.enabled();
-        return ApiResult.ok(connectors.update(id, name, type, endpoint, secret, allowedHosts, enabled,
-                request.rowVersion()));
-    }
-
-    private ApiResult<Map<String, Object>> patchConnectionFromMap(String id, Map<String, Object> payload) {
-        Map<String, Object> current = connectors.get(id);
-        String name = optionalString(payload.getOrDefault("name", current.get("name")));
-        String type = optionalString(payload.getOrDefault("connectorType", current.get("connectorType")));
-        String endpoint = optionalString(payload.getOrDefault("endpoint", current.get("endpoint")));
-        String secret = payload.containsKey("authSecretRef") ? optionalString(payload.get("authSecretRef")) : null;
-        List<String> allowedHosts = payload.get("allowedHosts") instanceof List<?> list
-                ? list.stream().map(String::valueOf).toList()
-                : optionalStringList(current.get("allowedHosts"));
-        boolean enabled = payload.containsKey("enabled")
-                ? Boolean.parseBoolean(String.valueOf(payload.get("enabled")))
-                : Boolean.TRUE.equals(current.get("enabled"));
-        return ApiResult.ok(connectors.update(id, name, type, endpoint, secret, allowedHosts, enabled,
-                optionalLong(payload.get("rowVersion"))));
+        // Merge against the locked row inside one service transaction; reading a
+        // GET snapshot here would reintroduce the lost-update window the docs
+        // (soar-design If-Match/rowVersion) promise to close.
+        return ApiResult.ok(connectors.updatePatch(id,
+                request == null ? null : request.name(),
+                request == null ? null : request.connectorType(),
+                request == null ? null : request.endpoint(),
+                request == null ? null : request.authSecretRef(),
+                request == null ? null : request.allowedHosts(),
+                request == null ? null : request.enabled(),
+                request == null ? null : request.rowVersion()));
     }
 
     @PostMapping("/connectors")

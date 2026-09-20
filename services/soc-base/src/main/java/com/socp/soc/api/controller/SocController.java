@@ -28,8 +28,12 @@ public class SocController {
         this.store = store;
     }
 
-    /** Tenant directory is readable platform metadata; tenant mutation remains admin-only. */
-    @RequireRole({"admin", "analyst", "viewer"})
+    /**
+     * The directory lists every tenant's id/code/name; t_tenant has no tenant_id
+     * column, so RLS cannot scope it and any tenant's analyst/viewer would see
+     * the whole roster. Admin-only until a per-tenant projection exists.
+     */
+    @RequireRole("admin")
     @GetMapping("/tenants")
     public ApiResult<List<TenantInfo>> listTenants() {
         return ApiResult.ok(store.list());

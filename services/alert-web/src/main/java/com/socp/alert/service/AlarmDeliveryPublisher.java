@@ -58,7 +58,7 @@ public class AlarmDeliveryPublisher {
     private final long maxDrainDurationNanos;
     private final int cleanupBatchSize;
     private final int cleanupMaxBatches;
-    private Instant nextRecoveryAt = Instant.EPOCH;
+    private volatile Instant nextRecoveryAt = Instant.EPOCH;
 
     @Autowired
     public AlarmDeliveryPublisher(AlarmDeliveryRepository repository, CkReporter ckReporter,
@@ -168,7 +168,7 @@ public class AlarmDeliveryPublisher {
                 if (pending.size() < 100) break;
             }
         } catch (RuntimeException failure) {
-            log.warn("Alarm delivery scan failed; next scan will retry: {}", failure.getMessage());
+            log.warn("Alarm delivery scan failed; next scan will retry: {}", failure.toString());
         } finally {
             if (performanceMetrics != null) {
                 performanceMetrics.outboxDrain("alarm_delivery", rounds, System.nanoTime() - started);
@@ -185,7 +185,7 @@ public class AlarmDeliveryPublisher {
                     repository.countByStatus("DEAD"),
                     repository.findOldestUpdatedAtByStatus("DEAD"));
         } catch (RuntimeException failure) {
-            log.warn("Alarm delivery backlog metrics deferred: {}", failure.getMessage());
+            log.warn("Alarm delivery backlog metrics deferred: {}", failure.toString());
         }
     }
 

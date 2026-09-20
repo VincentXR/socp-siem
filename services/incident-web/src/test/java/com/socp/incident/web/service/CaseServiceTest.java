@@ -106,14 +106,32 @@ class CaseServiceTest {
     @Test
     void computesStatsWithDatabaseCounts() {
         given(store.count()).willReturn(5L);
-        given(store.countByStatusIn(List.of("OPEN", "INVESTIGATING"))).willReturn(2L);
+        // One of the three un-closed rows is CONTAINED (real work in progress),
+        // and one legacy row carries a pre-validation junk status; neither may
+        // silently inflate "resolved".
+        given(store.countByStatusIn(List.of("OPEN", "INVESTIGATING", "CONTAINED"))).willReturn(3L);
+        given(store.countByStatusIn(List.of("RESOLVED", "CLOSED"))).willReturn(2L);
         CaseService service = new CaseService(store, alarmLinks);
 
         Map<String, Object> stats = service.stats();
 
         assertEquals(5L, stats.get("total"));
-        assertEquals(2L, stats.get("open"));
-        assertEquals(3L, stats.get("resolved"));
+        assertEquals(3L, stats.get("open"));
+        assertEquals(2L, stats.get("resolved"));
+    }
+
+    @Test
+    void statusWritesRejectValuesOutsideTheDocumentedLifecycle() {
+        given(store.get("case-1")).willReturn(Case.create("case-1", "10.0.0.8", "HIGH"));
+        CaseService service = new CaseService(store, alarmLinks);
+
+        assertThatThrownBy(() -> service.setStatus("case-1", "FIXED_LATER", null))
+                .isInstanceOf(com.socp.platform.error.exception.ApiException.class)
+                .hasFieldOrPropertyWithValue("code", 400);
+        verify(store, never()).save(any(Case.class));
+
+        service.setStatus("case-1", "CONTAINED", "analyst");
+        verify(store).save(any(Case.class));
     }
 
     @Test
