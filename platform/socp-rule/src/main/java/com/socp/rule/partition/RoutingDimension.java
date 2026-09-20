@@ -18,6 +18,7 @@ import java.util.Map;
 public final class RoutingDimension {
 
     public static final int MAX_COMPOSITE_COMPONENTS = 4;
+    public static final int MAX_EXPRESSION_LENGTH = 255;
 
     private static final Map<String, List<String>> ALIASES = aliases();
 
@@ -41,6 +42,7 @@ public final class RoutingDimension {
 
     public static List<String> components(String expression) {
         if (expression == null || expression.isBlank()) return List.of();
+        if (expression.trim().length() > MAX_EXPRESSION_LENGTH) return List.of();
         String[] raw = expression.trim().split("\\+");
         if (raw.length == 0 || raw.length > MAX_COMPOSITE_COMPONENTS) return List.of();
         List<String> out = new ArrayList<>(raw.length);
@@ -56,6 +58,10 @@ public final class RoutingDimension {
         List<String> errors = new ArrayList<>();
         if (expression == null || expression.isBlank()) {
             errors.add("routing dimension is required");
+            return errors;
+        }
+        if (expression.trim().length() > MAX_EXPRESSION_LENGTH) {
+            errors.add("routing dimension exceeds " + MAX_EXPRESSION_LENGTH + " characters");
             return errors;
         }
         String[] raw = expression.trim().split("\\+");
