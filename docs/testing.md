@@ -290,6 +290,9 @@ The OpenSearch outage check requires Search Config liveness to remain 200
 while readiness returns 503, then verifies actual indexing after recovery.
 The single-consumer recovery demo runs before the routed cluster is started;
 its canonical offset oracle must not be mixed with the routed generation.
+Both recovery and chaos probes normalize Kafka's unset committed offset (`-1`)
+to zero and sum lag per partition. Empty uncommitted partitions cannot create
+phantom backlog, and one partition's high offset cannot hide another's lag.
 The incompatible-rule activation probe uses `RULE_VERIFY_USERNAME/PASSWORD`
 (local default `admin/admin123`) so its expected 409 tests the topology guard
 after authorization; normal chaos queries retain `DEMO_USER/PASS`.

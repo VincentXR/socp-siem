@@ -37,6 +37,7 @@ sys.path.insert(0, str(BUILD))
 from ports import GATEWAY_URL, health_url, port_of  # noqa: E402
 from auth_client import login_token  # noqa: E402
 from middleware_images import image  # noqa: E402
+from kafka_offsets import offset_snapshot  # noqa: E402
 
 
 BOOTSTRAP = os.environ.get("PIPELINE_KAFKA", "127.0.0.1:9092")
@@ -447,29 +448,7 @@ def kafka_snapshot(topic=None, group=None):
         consumer.assign(tps)
         ends = consumer.end_offsets(tps)
         committed = admin.list_group_offsets({group: tps}).get(group, {})
-        end_total = sum(ends.values())
-        def committed_value(value):
-            if value is None:
-                return 0
-            if isinstance(value, int):
-                return value
-            return int(getattr(value, "offset", 0))
-
-        per_partition = []
-        committed_total = 0
-        for tp in tps:
-            current = committed_value(committed.get(tp))
-            end = int(ends.get(tp, 0))
-            committed_total += current
-            per_partition.append({"partition": tp.partition,
-                                  "end": end,
-                                  "committed": current,
-                                  "lag": max(0, end - current)})
-        return {"end": end_total, "committed": committed_total,
-                "lag": max(0, end_total - committed_total),
-                "partitions": len(tps),
-                "perPartition": per_partition,
-                "source": "kafka-python"}
+        return offset_snapshot(ends, committed)
     finally:
         if admin is not None:
             admin.close()

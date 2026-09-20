@@ -28,6 +28,7 @@ sys.path.insert(0, str(BUILD))
 
 from ports import GATEWAY_URL, base_url, health_url  # noqa: E402
 from auth_client import login_token  # noqa: E402
+from kafka_offsets import offset_snapshot  # noqa: E402
 
 
 SERVICE = "detect-web"
@@ -138,16 +139,7 @@ def kafka_snapshot():
         consumer.assign(topic_partitions)
         ends = consumer.end_offsets(topic_partitions)
         committed = admin.list_group_offsets({GROUP: topic_partitions}).get(GROUP, {})
-        end_total = sum(ends.values())
-        committed_total = sum(
-            offset if isinstance(offset, int) else (offset.offset if offset is not None else 0)
-            for offset in committed.values()
-        )
-        return {
-            "end": end_total,
-            "committed": committed_total,
-            "lag": max(0, end_total - committed_total),
-        }
+        return offset_snapshot(ends, committed)
     finally:
         admin.close()
         consumer.close()
@@ -244,14 +236,20 @@ def main():
         if not check("detect-web restarted", wait_for("detect-web to start", health_up)):
             return 1
 
+        last_recovery = None
+
         def recovered_snapshot():
-            snapshot = kafka_snapshot()
-            return snapshot if snapshot["committed"] >= queued["end"] else None
+            nonlocal last_recovery
+            last_recovery = kafka_snapshot()
+            return last_recovery if (last_recovery["committed"] >= queued["end"]
+                                     and last_recovery["lag"] == 0) else None
 
         recovered = wait_for(
             "consumer offset to catch up",
             recovered_snapshot,
         )
+        if not recovered:
+            print(f"  last recovery offsets: {last_recovery}")
         if not check("consumer resumes from backlog", bool(recovered), recovered):
             return 1
         if not check("Kafka lag returns to zero", recovered["lag"] == 0, recovered):
