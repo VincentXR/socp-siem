@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://socp.example/schemas/detection-delivery-2.0.json",
+  "title": "SOCP Routed Detection Delivery v2",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["eventId", "tenantId", "timestamp", "source", "host", "fields"],
+  "properties": {
+    "schemaVersion": { "type": "string" },
+    "eventId": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "tenantId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "source": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "host": { "type": "string", "maxLength": 255 },
+    "severity": { "type": "string", "enum": ["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"] },
+    "msg": { "type": "string", "maxLength": 8192 },
+    "fields": {
+      "type": "object",
+      "additionalProperties": {
+        "type": ["string", "number", "boolean", "null"]
+      },
+      "required": [
+        "tenant_id",
+        "detection_delivery_id",
+        "detection_source_event_id",
+        "detection_delivery_kind",
+        "detection_delivery_dimension",
+        "detection_delivery_value",
+        "detection_routing_version",
+        "detection_route_plan_version",
+        "detection_delivery_schema",
+        "detection_source_topic",
+        "detection_source_partition",
+        "detection_source_offset",
+        "detection_routing_field",
+        "detection_routing_value"
+      ],
+      "properties": {
+        "tenant_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$" },
+        "detection_delivery_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "detection_source_event_id": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "detection_delivery_kind": { "type": "string", "enum": ["STATELESS", "STATEFUL"] },
+        "detection_delivery_dimension": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "detection_delivery_value": { "type": "string", "minLength": 1 },
+        "detection_routing_version": { "const": "detection-routing-v2" },
+        "detection_route_plan_version": { "type": "string", "pattern": "^route-plan-" },
+        "detection_delivery_schema": { "const": "detection-delivery-schema-v2" },
+        "detection_source_topic": { "type": "string", "minLength": 1 },
+        "detection_source_partition": { "type": "string", "pattern": "^[0-9]+$" },
+        "detection_source_offset": { "type": "string", "pattern": "^[0-9]+$" },
+        "detection_missing_dimensions": { "type": "string" },
+        "detection_routing_field": { "type": "string", "minLength": 1 },
+        "detection_routing_value": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}
