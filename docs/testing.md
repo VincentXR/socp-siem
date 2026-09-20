@@ -270,6 +270,10 @@ oracle. `routing_rollback` restarts the cluster on the legacy canonical input,
 proves the formal alert path survives there while the deployment reports
 `LEGACY_PARTIAL` (never cross-dimension completeness), and restores the routed
 generation afterwards.
+Rollback evidence preserves instance logs and the manifest before each
+generation switch, plus the legacy Kafka offsets, journal rows, instance stats
+and matching alerts under `.cache/chaos/rollback-*/`. Cleanup must not overwrite
+the failed generation's diagnostic evidence when restoring routed mode.
 
 Chaos event injection is a data-plane operation. Set
 `PIPELINE_COLLECTOR_ID`, `PIPELINE_COLLECTOR_TOKEN`, and

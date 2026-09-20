@@ -21,6 +21,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -1522,6 +1523,8 @@ def scenario_routing_rollback(token, count):
     group_count = max(1, count // max(1, int(dataset.get("groupsPerBatchDivisor", events_per_alert))))
     digest = hashlib.sha256(f"{DATASET_SPEC['seed']}:{RUN_NAMESPACE}:routing-rollback".encode()).digest()
     run_id = run_token("routing-rollback")
+    evidence_dir = REPO / ".cache" / "chaos" / f"rollback-{run_id}"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
 
     def batch(prefix, ip_start):
         events, expected = [], []
@@ -1543,6 +1546,15 @@ def scenario_routing_rollback(token, count):
 
     def restart_cluster(routing_mode, input_topic, publisher_enabled):
         stop_auto_detection_cluster()
+        # The startup helper truncates each instance log. Preserve the previous
+        # generation after shutdown, especially the failed legacy generation
+        # before the mandatory cleanup restores primary mode.
+        log_dir = REPO / ".cache" / "detection-cluster"
+        saved = evidence_dir / f"before-{routing_mode}"
+        saved.mkdir(parents=True, exist_ok=True)
+        for path in [*log_dir.glob("*.log"), log_dir / "manifest.env"]:
+            if path.is_file():
+                shutil.copy2(path, saved / path.name)
         env = dict(os.environ)
         env.update({
             "SOCP_DETECT_INPUT_TOPIC": input_topic,
@@ -1568,6 +1580,33 @@ def scenario_routing_rollback(token, count):
         if ok is None:
             raise RuntimeError(f"detection did not drain after restart in {routing_mode} mode")
 
+    def capture_legacy_evidence(events, expected, entities):
+        evidence = {"expectedAlertIds": sorted(expected), "sourceEvents": events}
+        probes = {
+            "kafka": lambda: kafka_snapshot(CANONICAL_TOPIC, GROUP),
+            "alerts": lambda: [item for item in list_alerts(token)
+                               if item.get("ruleId") == dataset.get("ruleId", "LATERAL-RDP")
+                               and item.get("entity") in entities],
+            "instances": lambda: [direct_instance_stats(url, token) for url in urls],
+            "routingPlan": lambda: request(f"{urls[0]}/detect-web/api/v1/routing-plan",
+                                            headers=auth_headers(token), timeout=10)[1],
+        }
+        quoted = ",".join("'" + item["eventId"].replace("'", "''") + "'" for item in events)
+        probes["journal"] = lambda: json.loads(psql_scalar(
+            "detect", "select coalesce(json_agg(row_to_json(e)), '[]'::json)::text from "
+            "(select source_event_id,delivery_id,status,status_reason,occurred_at,"
+            "source_topic,source_partition,source_offset,delivery_topic,delivery_partition,"
+            "delivery_offset,fields_json,result_json from t_detection_event "
+            f"where tenant_id='default' and source_event_id in ({quoted})) e"))
+        for name, probe in probes.items():
+            try:
+                evidence[name] = probe()
+            except Exception as error:
+                evidence[name] = {"error": str(error)}
+        (evidence_dir / "legacy-state.json").write_text(
+            json.dumps(evidence, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return evidence
+
     restored = False
     try:
         restart_cluster("legacy", CANONICAL_TOPIC, "false")
@@ -1583,8 +1622,14 @@ def scenario_routing_rollback(token, count):
             return values if actual == set(expected) else None
 
         matched = wait_for(legacy_alerts, timeout=240, interval=2)
+        legacy_evidence = capture_legacy_evidence(events, expected, entities)
         if matched is None:
-            raise RuntimeError("rollback to the legacy input topic lost the formal alert path")
+            actual = sorted(str(item.get("sourceAlertId") or "")
+                            for item in legacy_evidence.get("alerts", [])
+                            if isinstance(item, dict))
+            raise RuntimeError("rollback to the legacy input topic lost the formal alert path; "
+                               f"expected={sorted(expected)} actual={actual}; "
+                               f"evidence={evidence_dir.relative_to(REPO)}")
         code, body = request(f"{urls[0]}/detect-web/api/v1/routing-plan",
                              headers=auth_headers(token), timeout=10)
         plan = unwrap(body) if code == 200 else None
@@ -1596,6 +1641,9 @@ def scenario_routing_rollback(token, count):
         restored = True
         return {"legacyFormalOutputRecovered": True,
                 "legacyReportsPartial": True,
+                "legacyExpectedAlertIds": sorted(expected),
+                "legacyActualAlertIds": sorted(item.get("sourceAlertId") for item in matched),
+                "legacyEvidence": str(evidence_dir.relative_to(REPO)),
                 "routedGenerationRestored": True,
                 "pass": True}
     finally:
