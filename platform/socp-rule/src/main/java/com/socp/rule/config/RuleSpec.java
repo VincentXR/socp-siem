@@ -4,6 +4,7 @@ import com.socp.rule.engine.Watchlists;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.rule.partition.DetectionRoutingKey;
+import com.socp.rule.partition.RoutingDimension;
 import com.socp.rule.regex.SafeRegex;
 import com.socp.rule.rules.BaselineRule;
 import com.socp.rule.rules.CorrelationRule;
@@ -216,7 +217,7 @@ public final class RuleSpec {
     /** 通用字段取值器，统一顶层字段与结构化字段的取法 */
     private static Function<SecurityEvent, String> fieldExtractor(String field) {
         if (field == null || field.isBlank()) return e -> null;
-        return e -> fieldValue(e, field);
+        return e -> RoutingDimension.value(e, field);
     }
 
     /** 序列化回 JSON Map（DETECT 规则 CRUD 回显 / 落库） */
