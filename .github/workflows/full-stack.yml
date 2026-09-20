@@ -47,7 +47,7 @@ jobs:
       SOCP_PG_MIGRATION_PASSWORD: ci-full-stack-pg-migration-password-0123456789abcdef
       SOCP_CK_PASSWORD: ci-full-stack-ck-password-0123456789abcdef
       SOCP_MINIO_SECRET: ci-full-stack-minio-secret-0123456789abcdef
-      SOCP_OPENSEARCH_PASSWORD: ci-full-stack-os-password-0123456789abcdef
+      SOCP_OPENSEARCH_PASSWORD: Ci-full-stack-OS!2026-0123456789abcdef
       SOCP_RUNTIME_PROFILES: dev,pg
       # Both the production-context boot smoke and the live dev,pg SOAR
       # instances must target the Temporal service started below.
@@ -69,6 +69,9 @@ jobs:
       # Detection includes routing, JPA, Kafka and runtime OpenAPI generation;
       # the generic 128 MiB metadata cap exhausts Metaspace after startup.
       SOCP_DETECT_WEB_JVM_OPTS: "-Xms16m -Xmx192m -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC"
+      # Alert also loads enrichment, delivery, JPA and OpenAPI. Its first
+      # paginated alarm request exceeds the generic metadata budget.
+      SOCP_ALERT_WEB_JVM_OPTS: "-Xms16m -Xmx192m -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC"
       # SOAR loads the Temporal, connector, auth, and JPA stacks in one JVM.
       # Its steady-state metadata exceeds the generic 128 MiB evidence budget
       # under concurrent alarm evaluation, so keep the override service-local.
@@ -84,7 +87,7 @@ jobs:
       PIPELINE_COLLECTOR_ID: ci-chaos
       PIPELINE_COLLECTOR_TOKEN: ci-chaos-collector-secret-0123456789abcdef
       PIPELINE_OS: https://localhost:9200
-      PIPELINE_OS_AUTH: "admin:ci-full-stack-os-password-0123456789abcdef"
+      PIPELINE_OS_AUTH: "admin:Ci-full-stack-OS!2026-0123456789abcdef"
       PIPELINE_CK: http://localhost:8123
       PIPELINE_CK_AUTH: "default:ci-full-stack-ck-password-0123456789abcdef"
       PIPELINE_KAFKA: localhost:9092
@@ -115,7 +118,7 @@ jobs:
         # prove durable dispatch rather than silently accepting a queued-only
         # run when the orchestration dependency is absent.
         run: >-
-          bash build/compose.sh up -d
+          bash build/compose.sh up -d --wait --wait-timeout 180
           postgres kafka opensearch redis clickhouse minio
 
       - name: Start Temporal for SOAR evidence

@@ -110,6 +110,15 @@ def unwrap(body):
     return body
 
 
+def list_alarms():
+    status, body = call(U["alert-web"] + "/alert-web/api/alarms?size=200")
+    alarms = unwrap(body)
+    if (status != 200 or not isinstance(alarms, list)
+            or any(not isinstance(alarm, dict) or "id" not in alarm for alarm in alarms)):
+        raise RuntimeError("alarm list failed: HTTP %s, response=%s" % (status, str(body)[:500]))
+    return alarms
+
+
 # ---------------------------------------------------------------- 1. 健康
 print("\n=== 1. 默认部署服务健康 ===")
 for name, port in SVC.items():
@@ -165,7 +174,7 @@ check("Webhook verification fixture is ready",
 
 # ---------------------------------------------------------------- 5. 全链路
 print("\n=== 5. 端到端：采集→检测→告警→富化→通知→建案→SOAR ===")
-before_alarms = unwrap(call(U["alert-web"] + "/alert-web/api/alarms?size=200")[1]) or []
+before_alarms = list_alarms()
 before_ids = {a["id"] for a in before_alarms}
 
 st, ing = call(U["detect-web"] + "/detect-web/api/v1/ingest", "POST", {
@@ -187,7 +196,7 @@ def wait_for(fn, timeout=20.0, interval=0.5):
 
 
 def new_alarm_of(entity):
-    cur = unwrap(call(U["alert-web"] + "/alert-web/api/alarms?size=200")[1]) or []
+    cur = list_alarms()
     cand = [a for a in cur if a["id"] not in before_ids and a.get("entity") == entity]
     return cand[0] if cand and cand[0].get("tiHits") else None
 
