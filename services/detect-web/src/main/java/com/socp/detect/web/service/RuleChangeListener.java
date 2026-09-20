@@ -1,6 +1,7 @@
 package com.socp.detect.web.service;
 
 import com.socp.detect.web.config.DetectRuntimeRole;
+import com.socp.detect.web.routing.DetectionRoutingPlanRegistry;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.client.kafka.KafkaClientSupport;
@@ -27,6 +28,7 @@ public class RuleChangeListener {
     private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
 
     private final DetectEngineService engineService;
+    private final DetectionRoutingPlanRegistry routingPlans;
 
     @Value("${socp.kafka.bootstrap:localhost:9092}")
     private String bootstrap;
@@ -45,8 +47,16 @@ public class RuleChangeListener {
     private volatile KafkaProducer<String, String> dlqProducer;
     private Thread worker;
 
+    /** Source-compatible constructor for focused tests. */
     public RuleChangeListener(DetectEngineService engineService) {
+        this(engineService, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public RuleChangeListener(DetectEngineService engineService,
+                              DetectionRoutingPlanRegistry routingPlans) {
         this.engineService = engineService;
+        this.routingPlans = routingPlans;
     }
 
     @PostConstruct
@@ -129,6 +139,7 @@ public class RuleChangeListener {
         }
         TenantContext.set(tenant);
         try {
+            if (routingPlans != null) routingPlans.invalidate(tenant);
             engineService.reload();
         } finally {
             TenantContext.clear();
