@@ -1290,8 +1290,9 @@ def scenario_routed_migration(token, count):
     Three evidence phases demanded by the cross-dimension contract:
       1. duplicate canonical deliveries: republishing the same business events
          at new source offsets must create new source receipts but must not
-         manufacture a second delivery identity or a second alert;
-      2. an unsupported ACTIVE stateful rule must make the router fail closed
+         manufacture new fan-out delivery identities or a second alert;
+      2. the API rejects incompatible activation without persisting a change;
+         an administratively injected unsupported ACTIVE rule then fails closed
          (visible status + uncommitted source), not keep a "healthy detection"
          illusion, and removing the rule must resume exactly the deferred work;
       3. rollback: restarting the cluster on the legacy input topic keeps
@@ -1357,6 +1358,8 @@ def scenario_routed_migration(token, count):
             int(psql_scalar("detect", f"select count(*) from t_detection_route_outbox where {where}") or 0),
             int(psql_scalar("detect",
                             f"select count(distinct delivery_id) from t_detection_route_outbox where {where}") or 0),
+            psql_scalar("detect", "select coalesce(string_agg(delivery_id, ',' order by delivery_id), '') "
+                        f"from t_detection_route_outbox where {where}"),
         )
 
     # -- phase 1: duplicate canonical deliveries --------------------------------
@@ -1374,12 +1377,18 @@ def scenario_routed_migration(token, count):
     settled = wait_for(lambda: observed(entities_a, expected_a), timeout=30, interval=2)
     duplicate_phase = {
         "receiptsBefore": receipts_before[0], "receiptsAfter": receipts_after[0],
-        "deliveryRowsBefore": receipts_after[1], "distinctDeliveriesAfter": receipts_after[2],
+        "deliveryRowsBefore": receipts_before[1], "deliveryRowsAfter": receipts_after[1],
+        "distinctDeliveriesAfter": receipts_after[2],
+        "deliveryIdentitiesUnchanged": receipts_after[3] == receipts_before[3],
         "alertIdsAfter": sorted(expected_a),
     }
     if receipts_after[0] <= receipts_before[0]:
         raise RuntimeError(f"duplicate deliveries did not create new source receipts: {duplicate_phase}")
-    if receipts_after[2] != len(events_a) or receipts_after[1] != receipts_after[2]:
+    # One canonical event can legitimately fan out across several dimensions.
+    # Retries must preserve the entire original identity set, not force one row
+    # per business event or merely keep the same aggregate row count.
+    if (receipts_before[2] < len(events_a) or receipts_after[1:] != receipts_before[1:]
+            or receipts_after[1] != receipts_after[2]):
         raise RuntimeError(f"duplicate deliveries manufactured extra delivery identities: {duplicate_phase}")
     if settled is None:
         raise RuntimeError(f"duplicate deliveries changed the alert set: {duplicate_phase}")
@@ -1401,10 +1410,29 @@ def scenario_routed_migration(token, count):
                            body=bad_rule, headers=auth_headers(token), timeout=20)
     if status != 200:
         raise RuntimeError(f"could not create incompatible rule: {status} {body}")
+    quoted_rule_id = "'" + bad_rule["id"].replace("'", "''") + "'"
+    rule_where = f"tenant_id='default' and rule_id={quoted_rule_id}"
+    stored_spec = psql_scalar("detect", f"select spec from t_rule where {rule_where}")
+    if json.loads(stored_spec).get("status") != "TESTING":
+        raise RuntimeError("incompatible rule did not begin in the review queue")
     status, body = request(f"{instance}/detect-web/api/v1/rules/{bad_rule['id']}/activate",
                            method="POST", headers=auth_headers(token), timeout=20)
-    if status != 200:
-        raise RuntimeError(f"could not activate incompatible rule: {status} {body}")
+    if status != 409:
+        raise RuntimeError(f"incompatible activation was not rejected: {status} {body}")
+    if psql_scalar("detect", f"select spec from t_rule where {rule_where}") != stored_spec:
+        raise RuntimeError("rejected activation changed the persisted rule")
+
+    # This scenario already requires disposable Compose infrastructure. Model
+    # a corrupt restore/administrative write so the runtime fail-closed check
+    # remains covered even though normal API writes now prevent this state.
+    quoted_spec = "'" + stored_spec.replace("'", "''") + "'"
+    injected = psql_scalar(
+        "detect", "with injected as (update t_rule set "
+        "spec=jsonb_set(spec::jsonb, '{status}', '\"ACTIVE\"'::jsonb)::text "
+        f"where {rule_where} and spec={quoted_spec} returning rule_id) "
+        "select rule_id from injected")
+    if injected != bad_rule["id"]:
+        raise RuntimeError("could not inject the isolated persisted-rule fault")
 
     def plan_unsupported():
         code, plan_body = request(f"{instance}/detect-web/api/v1/routing-plan",
@@ -1416,24 +1444,26 @@ def scenario_routed_migration(token, count):
                    if rule.get("ruleId") == bad_rule["id"] and rule.get("status") == "UNSUPPORTED"]
         return plan if reasons else None
 
-    plan = wait_for(plan_unsupported, timeout=60, interval=2)
-    if plan is None:
-        raise RuntimeError("routing plan never surfaced the incompatible ACTIVE rule as UNSUPPORTED")
+    try:
+        plan = wait_for(plan_unsupported, timeout=60, interval=2)
+        if plan is None:
+            raise RuntimeError("routing plan never surfaced the incompatible ACTIVE rule as UNSUPPORTED")
 
-    events_b, expected_b, entities_b = batch("blocked", 120)
-    ingest(token, events_b)
-    time.sleep(20)
-    blocked_alerts = observed(entities_b, expected_b)
-    blocked_lag = kafka_snapshot(CANONICAL_TOPIC, ROUTER_GROUP)
-    if blocked_alerts is not None:
-        raise RuntimeError("router kept delivering as if healthy despite the unsupported rule")
-    if blocked_lag["lag"] == 0:
-        raise RuntimeError("router committed canonical offsets despite failing closed")
+        events_b, expected_b, entities_b = batch("blocked", 120)
+        ingest(token, events_b)
+        time.sleep(20)
+        blocked_alerts = observed(entities_b, expected_b)
+        blocked_lag = kafka_snapshot(CANONICAL_TOPIC, ROUTER_GROUP)
+        if blocked_alerts is not None:
+            raise RuntimeError("router kept delivering as if healthy despite the unsupported rule")
+        if blocked_lag["lag"] == 0:
+            raise RuntimeError("router committed canonical offsets despite failing closed")
 
-    status, _ = request(f"{instance}/detect-web/api/v1/rules/{bad_rule['id']}",
-                        method="DELETE", headers=auth_headers(token), timeout=20)
-    if status != 200:
-        raise RuntimeError(f"could not delete incompatible rule: {status}")
+    finally:
+        status, _ = request(f"{instance}/detect-web/api/v1/rules/{bad_rule['id']}",
+                            method="DELETE", headers=auth_headers(token), timeout=20)
+        if status != 200:
+            raise RuntimeError(f"could not delete incompatible rule: {status}")
     def plan_supported():
         code, plan_body = request(f"{instance}/detect-web/api/v1/routing-plan",
                                   headers=auth_headers(token), timeout=10)
@@ -1452,6 +1482,9 @@ def scenario_routed_migration(token, count):
         "phase1DuplicateDeliveries": duplicate_phase,
         "phase2UnsupportedPlan": {
             "ruleId": bad_rule["id"],
+            "apiActivationStatus": 409,
+            "rejectedActivationPreservedSpec": True,
+            "persistedFaultInjected": True,
             "planReason": plan.get("rules"),
             "blockedKafkaLag": blocked_lag,
             "blockedAlertCount": len(blocked_alerts or []),

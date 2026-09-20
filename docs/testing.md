@@ -256,9 +256,13 @@ python build/chaos-pipeline.py --scenario routing_rollback
 ```
 
 `routed_migration` republishes completed business events at new canonical
-offsets (more source receipts, exactly one delivery identity and one alert),
-then activates an ACTIVE stateful rule whose `routingField` contradicts its
-`groupBy` and proves the router fails closed: `/routing-plan` reports the rule
+offsets (more source receipts, unchanged fan-out delivery identities and no
+duplicate alert),
+then verifies activation of an incompatible stateful rule returns 409 without
+changing its persisted specification. In the disposable Compose database, it
+administratively injects that probe rule as ACTIVE with a `routingField` that
+contradicts its `groupBy`, modeling a corrupt restore or an out-of-band write.
+It proves the router still fails closed: `/routing-plan` reports the rule
 as UNSUPPORTED with its reason, canonical offsets stay uncommitted, no alert is
 pretended, and deleting the rule lets the deferred work drain to the correct
 oracle. `routing_rollback` restarts the cluster on the legacy canonical input,
