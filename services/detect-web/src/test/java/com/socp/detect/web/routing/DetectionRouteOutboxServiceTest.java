@@ -114,14 +114,14 @@ class DetectionRouteOutboxServiceTest {
         DetectionRouteOutboxRepository repository = mock(DetectionRouteOutboxRepository.class);
         DetectionRoutingPlanRegistry registry = mock(DetectionRoutingPlanRegistry.class);
         when(registry.plan("tenant-a")).thenReturn(plan(8));
-        when(repository.existsById(anyString())).thenThrow(new IllegalStateException("db unavailable"));
+        when(repository.saveAllAndFlush(any())).thenThrow(new IllegalStateException("db unavailable"));
         DetectionRouteOutboxService service =
                 new DetectionRouteOutboxService(repository, registry, "socp-detection-routed-v2");
 
         IllegalStateException failure = assertThrows(IllegalStateException.class,
                 () -> service.route("socp-events", 0, 2L, eventJson(true)));
         assertTrue(failure.getMessage().contains("db unavailable"));
-        verify(repository, never()).saveAllAndFlush(any());
+        verify(repository).saveAllAndFlush(any());
     }
 
     private static DetectionRoutingPlan plan(int maxDimensions) {
