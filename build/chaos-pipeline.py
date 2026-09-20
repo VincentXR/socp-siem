@@ -1063,8 +1063,10 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
         }, target_topic=CANONICAL_TOPIC),
     ]
     source_event_ids.update(isolation_ids)
-    forbidden_cross_tenant = expected_ordered_alert_id(
-        "CORR-FAIL-SUDO", isolated_user, isolation_ids, tenant_a)
+    forbidden_cross_tenant = {
+        expected_ordered_alert_id("CORR-FAIL-SUDO", isolated_user, isolation_ids, tenant_a),
+        expected_ordered_alert_id("CORR-FAIL-SUDO", isolated_user, isolation_ids, tenant_b),
+    }
 
     def oracle_alerts():
         values = []
@@ -1159,10 +1161,11 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
                       if item.get("sourceAlertId")}
         duplicate_count = max(0, len(matching_all) - len(actual_ids))
 
+        forbidden_sql = ",".join(
+            "'" + value.replace("'", "''") + "'" for value in sorted(forbidden_cross_tenant))
         forbidden_count = int(psql_scalar(
             "alert",
-            "select count(*) from t_alarm where source_alert_id='"
-            + forbidden_cross_tenant.replace("'", "''") + "'") or 0)
+            f"select count(*) from t_alarm where source_alert_id in ({forbidden_sql})") or 0)
 
         quoted_sources = ",".join(
             "'" + value.replace("'", "''") + "'" for value in sorted(source_event_ids))
@@ -1185,7 +1188,7 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
         source_receipt_rows = int(psql_scalar(
             "detect", f"select count(*) from t_detection_route_source where {route_where}") or 0)
         source_receipt_positions = int(psql_scalar(
-            "detect", f"select count(distinct source_topic || ':' || source_partition || ':' || source_offset) "
+            "detect", f"select count(distinct source_topic || ':' || source_partition::text || ':' || source_offset::text) "
             f"from t_detection_route_source where {route_where}") or 0)
 
         journal_rows = int(psql_scalar(
@@ -1244,7 +1247,7 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
             "missingAlertIds": sorted(expected_ids - actual_ids),
             "unexpectedAlertIds": sorted(actual_ids - expected_ids),
             "duplicateAlertCount": duplicate_count,
-            "forbiddenCrossTenantAlertId": forbidden_cross_tenant,
+            "forbiddenCrossTenantAlertIds": sorted(forbidden_cross_tenant),
             "forbiddenCrossTenantAlertCount": forbidden_count,
             "pendingEventsAfterRecovery": pending_values,
             "sourceKafkaAfterRecovery": source_after,
