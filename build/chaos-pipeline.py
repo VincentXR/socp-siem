@@ -1422,8 +1422,12 @@ def scenario_routed_migration(token, count):
     stored_spec = psql_scalar("detect", f"select spec from t_rule where {rule_where}")
     if json.loads(stored_spec).get("status") != "TESTING":
         raise RuntimeError("incompatible rule did not begin in the review queue")
+    # Exercise the topology conflict after the separate activation permission
+    # check; the analyst session used for normal queries cannot activate rules.
+    activation_token = login_token(GATEWAY_URL, os.environ.get("RULE_VERIFY_USERNAME", "admin"),
+                                   os.environ.get("RULE_VERIFY_PASSWORD", "admin123"))
     status, body = request(f"{instance}/detect-web/api/v1/rules/{bad_rule['id']}/activate",
-                           method="POST", headers=auth_headers(token), timeout=20)
+                           method="POST", headers=auth_headers(activation_token), timeout=20)
     if status != 409:
         raise RuntimeError(f"incompatible activation was not rejected: {status} {body}")
     if psql_scalar("detect", f"select spec from t_rule where {rule_where}") != stored_spec:
