@@ -40,6 +40,15 @@ public interface DetectionRouteOutboxRepository
     int deletePublishedBatchBefore(@Param("cutoff") Instant cutoff,
                                    @Param("batchSize") int batchSize);
 
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query(value = "delete from t_detection_route_outbox where delivery_id in ("
+            + "select delivery_id from t_detection_route_outbox "
+            + "where status = 'DEAD' and updated_at < :cutoff "
+            + "order by updated_at asc limit :batchSize)", nativeQuery = true)
+    int deleteDeadBatchBefore(@Param("cutoff") Instant cutoff,
+                              @Param("batchSize") int batchSize);
+
     @Modifying
     @Transactional
     @Query("update DetectionRouteOutboxEntity e set e.status = 'PROCESSING', "
