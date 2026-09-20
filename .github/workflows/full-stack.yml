@@ -135,8 +135,8 @@ jobs:
               try:
                   probe = subprocess.run([
                       "bash", "build/compose.sh", "--profile", "extra", "exec", "-T",
-                      "temporal", "temporal", "--address", "127.0.0.1:7233",
-                      "operator", "namespace", "describe", "default",
+                      "temporal", "temporal", "--address", "temporal:7233",
+                      "operator", "namespace", "describe", "-n", "default",
                   ], capture_output=True, text=True, timeout=10)
                   last_output = probe.stdout + probe.stderr
                   if probe.returncode == 0:
