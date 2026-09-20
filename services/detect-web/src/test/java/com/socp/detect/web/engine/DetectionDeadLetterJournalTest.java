@@ -102,6 +102,7 @@ class DetectionDeadLetterJournalTest {
         KafkaEventConsumer consumer = new KafkaEventConsumer(engine, journal);
         configureFastRetries(consumer);
         ReflectionTestUtils.setField(consumer, "replayWindow", Duration.ofHours(24));
+        ReflectionTestUtils.setField(consumer, "pendingReplayMax", prefetchLimit);
 
         DetectionRecordProcessor parser = new DetectionRecordProcessor(engine, journal, null);
         List<ConsumerRecord<String, String>> records = new ArrayList<>();

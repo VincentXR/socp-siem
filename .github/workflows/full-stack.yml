@@ -8,6 +8,8 @@ on:
       - 'services/detect-web/**'
       - 'services/search-config/**'
       - 'services/ai-assistant/**'
+      - 'services/api-gateway/**'
+      - 'services/threat-web/**'
       - 'infra/**'
       - 'deploy/docker/minio/**'
       - '.github/workflows/full-stack.yml'
@@ -73,11 +75,11 @@ jobs:
       # 15-service startup burst.
       SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "4"
       SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: "1"
-      SOCP_COLLECTOR_CREDENTIALS: "ci-chaos|default|ci-chaos-collector-secret"
+      SOCP_COLLECTOR_CREDENTIALS: "ci-chaos|default|ci-chaos-collector-secret-0123456789abcdef"
       SOCP_ALLOW_GLOBAL_INGEST_TOKEN: "false"
       PIPELINE_INGEST_URL: http://127.0.0.1:18081/search-config/api/v1/ingest
       PIPELINE_COLLECTOR_ID: ci-chaos
-      PIPELINE_COLLECTOR_TOKEN: ci-chaos-collector-secret
+      PIPELINE_COLLECTOR_TOKEN: ci-chaos-collector-secret-0123456789abcdef
       PIPELINE_OS: https://localhost:9200
       PIPELINE_OS_AUTH: "admin:ci-full-stack-os-password-0123456789abcdef"
       PIPELINE_CK: http://localhost:8123
@@ -148,9 +150,40 @@ jobs:
           SOCP_OPENSEARCH_ENABLED: "false"
           SOCP_OPENSEARCH_USERNAME: ci-prod-smoke
           SOCP_OPENSEARCH_INSECURE_SKIP_VERIFY: "false"
-          SOCP_INGEST_TOKEN: ci-chaos-collector-secret
-          SOCP_VECTOR_TOKEN: ci-chaos-collector-secret
-        run: python3 build/verify-prod-boot.py
+          SOCP_INGEST_TOKEN: ci-chaos-collector-secret-0123456789abcdef
+          SOCP_VECTOR_TOKEN: ci-chaos-collector-secret-0123456789abcdef
+          SOCP_SOAR_ARTIFACT_S3_ENDPOINT: https://localhost:19443
+          SOCP_SOAR_ARTIFACT_S3_BUCKET: socp-soar-artifacts
+        run: |
+          set -euo pipefail
+          # Use a real TLS endpoint and projected secret files for prod guards.
+          source infra/middleware-images.env
+          cleanup() {
+            docker rm -f socp-minio-prod-smoke >/dev/null 2>&1 || true
+            rm -rf -- .cache/prod-boot/minio-certs .cache/prod-boot/secrets .cache/prod-boot/minio-truststore.p12
+          }
+          trap cleanup EXIT
+          mkdir -p .cache/prod-boot/minio-certs .cache/prod-boot/secrets/platform/soar-artifacts
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -subj '/CN=localhost' -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' \
+            -keyout .cache/prod-boot/minio-certs/private.key \
+            -out .cache/prod-boot/minio-certs/public.crt
+          keytool -importcert -noprompt -alias ci-minio \
+            -file .cache/prod-boot/minio-certs/public.crt \
+            -keystore .cache/prod-boot/minio-truststore.p12 -storepass changeit
+          printf '%s' socp_minio > .cache/prod-boot/secrets/platform/soar-artifacts/access-key
+          printf '%s' "$SOCP_MINIO_SECRET" > .cache/prod-boot/secrets/platform/soar-artifacts/secret-key
+          export SOCP_SOAR_K8S_SECRET_MOUNT_PATH="$PWD/.cache/prod-boot/secrets"
+          export JAVA_TOOL_OPTIONS="-Djavax.net.ssl.trustStore=$PWD/.cache/prod-boot/minio-truststore.p12 -Djavax.net.ssl.trustStorePassword=changeit"
+          export SOCP_COLLECTOR_CREDENTIALS="${SOCP_COLLECTOR_CREDENTIALS}|$(python3 -c 'from datetime import datetime,timedelta,timezone; print((datetime.now(timezone.utc)+timedelta(days=1)).isoformat())')"
+          docker run -d --name socp-minio-prod-smoke -p 127.0.0.1:19443:9000 \
+            -v "$PWD/.cache/prod-boot/minio-certs:/certs:ro" \
+            -e MINIO_ROOT_USER=socp_minio -e "MINIO_ROOT_PASSWORD=$SOCP_MINIO_SECRET" \
+            --entrypoint /usr/bin/minio "$SOCP_MINIO_IMAGE" server /data --certs-dir /certs
+          curl --fail --silent --show-error --retry 20 --retry-connrefused --retry-delay 1 \
+            --cacert .cache/prod-boot/minio-certs/public.crt \
+            https://localhost:19443/minio/health/live
+          python3 build/verify-prod-boot.py
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile

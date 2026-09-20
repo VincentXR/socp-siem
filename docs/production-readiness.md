@@ -5,6 +5,21 @@ Compose stack remains a single-node integration environment. A production
 rollout is complete only after the deployment owner supplies the external
 dependencies and records the evidence listed below.
 
+The PostgreSQL threat-intelligence migration path retains the published V2
+checksum. A Flyway callback supplies the legacy `DOUBLE` spelling only while
+V2 executes, converts the confidence column to `DOUBLE PRECISION`, and removes
+its own marked compatibility domain without `CASCADE`. Existing operator-owned
+types are preserved. Existing installations run the later V5 type migration
+normally; do not edit V2 or repair its checksum to perform an upgrade. Standalone
+Flyway invocations for `threat-web` must register `LegacyConfidenceTypeCallback`,
+as the Spring application does automatically.
+
+The CI production-context smoke starts a separate TLS-enabled object store,
+trusts its short-lived certificate, and supplies expiring collector credentials
+and projected secret files. This validates application startup and transport
+configuration; production storage retention and backup recovery still require
+deployment-specific verification.
+
 ## Service readiness matrix
 
 Readiness is recorded by dimension. A green local or CI correctness result is

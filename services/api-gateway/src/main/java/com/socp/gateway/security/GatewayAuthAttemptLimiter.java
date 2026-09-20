@@ -4,6 +4,7 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
@@ -92,6 +93,7 @@ public class GatewayAuthAttemptLimiter implements AuthAttemptLimiter {
     private final AtomicInteger signalLogsEmitted = new AtomicInteger();
     private final AtomicInteger signalLogsSuppressed = new AtomicInteger();
 
+    @Autowired
     public GatewayAuthAttemptLimiter(
             ReactiveStringRedisTemplate redis,
             MeterRegistry meterRegistry,
