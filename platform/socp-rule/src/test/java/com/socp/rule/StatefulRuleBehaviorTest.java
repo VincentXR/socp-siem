@@ -157,6 +157,23 @@ class StatefulRuleBehaviorTest {
     }
 
     @Test
+    void thresholdIncludesExactWindowBoundaryAndRejectsOneTickOlder() {
+        ThresholdRule boundary = new ThresholdRule("boundary", "Boundary", ignored -> true,
+                SecurityEvent::host, 2, Duration.ofSeconds(60), Severity.HIGH, "boundary");
+        boundary.accept(event("boundary-new", 100, "h", "yes"));
+        boundary.accept(event("boundary-exact", 40, "h", "yes"));
+        assertEquals(1, boundary.drain().size(),
+                "event exactly watermark-window remains inside the inclusive window");
+
+        ThresholdRule older = new ThresholdRule("older", "Older", ignored -> true,
+                SecurityEvent::host, 2, Duration.ofSeconds(60), Severity.HIGH, "older");
+        older.accept(event("older-new", 100, "h", "yes"));
+        older.accept(event("older-expired", 39, "h", "yes"));
+        assertTrue(older.drain().isEmpty(),
+                "event before watermark-window must not reopen the window");
+    }
+
+    @Test
     void baselineIgnoresLateBucketsAndRecordsSkippedQuietBuckets() {
         BaselineRule rule = new BaselineRule("baseline", "Baseline", ignored -> true,
                 SecurityEvent::host, Duration.ofSeconds(60), 4, 2, 1.0, 1,
