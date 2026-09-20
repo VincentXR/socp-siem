@@ -8,6 +8,8 @@ on:
       - 'services/detect-web/**'
       - 'services/search-config/**'
       - 'services/ai-assistant/**'
+      - 'infra/**'
+      - 'deploy/docker/minio/**'
       - '.github/workflows/full-stack.yml'
   workflow_dispatch:
   schedule:

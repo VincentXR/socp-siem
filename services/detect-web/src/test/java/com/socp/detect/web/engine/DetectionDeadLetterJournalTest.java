@@ -28,6 +28,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -135,6 +137,13 @@ class DetectionDeadLetterJournalTest {
             }
             awaitPendingCount(journal, 0L);
 
+            // The durable COMPLETED write precedes PendingWork.finally, which
+            // releases memory. Join each lane before checking its accounting.
+            Map<?, ThreadPoolExecutor> lanes =
+                    (Map<?, ThreadPoolExecutor>) ReflectionTestUtils.getField(consumer, "partitionLanes");
+            for (ThreadPoolExecutor lane : lanes.values()) {
+                lane.submit(() -> { }).get(5, TimeUnit.SECONDS);
+            }
             Map<?, AtomicLong> pendingBytes =
                     (Map<?, AtomicLong>) ReflectionTestUtils.getField(consumer, "pendingBytes");
             assertThat(pendingBytes.values()).allSatisfy(bytes -> assertThat(bytes.get()).isZero());

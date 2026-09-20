@@ -279,6 +279,12 @@ services:
   minio:
     <<: *socp-runtime
     image: ${SOCP_MINIO_IMAGE:?load infra/middleware-images.env}
+    build:
+      context: ../deploy/docker/minio
+      args:
+        BUILD_IMAGE: ${SOCP_MINIO_BUILD_IMAGE:?load infra/middleware-images.env}
+        BASE_IMAGE: ${SOCP_MINIO_BASE_IMAGE:?load infra/middleware-images.env}
+    pull_policy: build
     container_name: socp-minio
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
