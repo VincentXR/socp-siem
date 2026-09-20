@@ -366,7 +366,9 @@ def publish_detection_event(event, target_topic=None):
         producer.close(timeout=10)
 
 
-def kafka_cli_snapshot():
+def kafka_cli_snapshot(topic=None, group=None):
+    topic = topic or TOPIC
+    group = group or GROUP
     """Read offsets with the broker image's own CLI when Compose is available.
 
     This keeps the chaos oracle aligned with the running Kafka distribution and
@@ -381,7 +383,7 @@ def kafka_cli_snapshot():
         return None
     result = subprocess.run(
         ["docker", "exec", target, "/opt/kafka/bin/kafka-consumer-groups.sh",
-         "--bootstrap-server", "localhost:9092", "--group", GROUP, "--describe"],
+         "--bootstrap-server", "localhost:9092", "--group", group, "--describe"],
         cwd=REPO, capture_output=True, text=True, timeout=30, check=False)
     if result.returncode != 0:
         return None
@@ -389,7 +391,7 @@ def kafka_cli_snapshot():
     partitions = []
     for line in result.stdout.splitlines():
         fields = line.split()
-        if len(fields) < 6 or fields[0] != GROUP or fields[1] != TOPIC:
+        if len(fields) < 6 or fields[0] != group or fields[1] != topic:
             continue
         try:
             partition = int(fields[2])
@@ -411,8 +413,10 @@ def kafka_cli_snapshot():
             "source": "broker-cli"}
 
 
-def kafka_snapshot():
-    cli_snapshot = kafka_cli_snapshot()
+def kafka_snapshot(topic=None, group=None):
+    topic = topic or TOPIC
+    group = group or GROUP
+    cli_snapshot = kafka_cli_snapshot(topic, group)
     if cli_snapshot is not None:
         return cli_snapshot
     try:
@@ -423,7 +427,7 @@ def kafka_snapshot():
         raise RuntimeError("kafka-python is required for chaos checks") from error
 
     # Do not join the production consumer group just to inspect its offsets.
-    # A diagnostic consumer joining GROUP triggers a rebalance and can revoke
+    # A diagnostic consumer joining the production group triggers a rebalance and can revoke
     # live Detection partitions while a benchmark or chaos scenario is active.
     consumer = KafkaConsumer(
         bootstrap_servers=BOOTSTRAP,
@@ -434,13 +438,13 @@ def kafka_snapshot():
     admin = None
     try:
         admin = KafkaAdminClient(bootstrap_servers=BOOTSTRAP, client_id="socp-chaos-offset-inspector")
-        partitions = consumer.partitions_for_topic(TOPIC)
+        partitions = consumer.partitions_for_topic(topic)
         if not partitions:
-            raise RuntimeError(f"Kafka topic {TOPIC} has no partitions")
-        tps = [TopicPartition(TOPIC, p) for p in sorted(partitions)]
+            raise RuntimeError(f"Kafka topic {topic} has no partitions")
+        tps = [TopicPartition(topic, p) for p in sorted(partitions)]
         consumer.assign(tps)
         ends = consumer.end_offsets(tps)
-        committed = admin.list_group_offsets({GROUP: tps}).get(GROUP, {})
+        committed = admin.list_group_offsets({group: tps}).get(group, {})
         end_total = sum(ends.values())
         def committed_value(value):
             if value is None:
