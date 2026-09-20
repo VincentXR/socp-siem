@@ -10,6 +10,7 @@ import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -50,7 +51,7 @@ public class DetectionRouteOutboxPublisher {
         this.cleanupMaxBatches = Math.max(1, Math.min(100, cleanupMaxBatches));
     }
 
-    @org.springframework.scheduling.annotation.Scheduled(
+    @Scheduled(
             fixedDelayString = "${socp.detect.routing.outbox-poll-ms:250}",
             initialDelayString = "${socp.detect.routing.outbox-initial-delay-ms:250}")
     @TenantSystemJob
@@ -140,7 +141,7 @@ public class DetectionRouteOutboxPublisher {
         }
     }
 
-    @org.springframework.scheduling.annotation.Scheduled(
+    @Scheduled(
             fixedDelayString = "${socp.detect.routing.cleanup-interval-ms:3600000}",
             initialDelayString = "${socp.detect.routing.cleanup-initial-delay-ms:60000}")
     @TenantSystemJob

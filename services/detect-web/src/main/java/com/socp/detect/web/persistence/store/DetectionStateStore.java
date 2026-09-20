@@ -90,6 +90,22 @@ public interface DetectionStateStore {
                 .toList();
     }
 
+    /**
+     * Stream PENDING rows to the consumer page by page up to {@code maxRecords},
+     * so a restart/rebalance never materialises the whole retention window in the
+     * heap before dispatch. Journal-backed stores override this with true paged
+     * reads; the default preserves source compatibility for in-memory stores.
+     */
+    default void replayPendingPages(Set<Integer> partitions, Duration window, int maxRecords,
+                                    Consumer<List<PendingDetectionEvent>> batchConsumer) {
+        if (maxRecords <= 0 || batchConsumer == null) return;
+        List<PendingDetectionEvent> rows = pendingRecordsForPartitions(partitions, window);
+        if (rows.isEmpty()) return;
+        List<PendingDetectionEvent> bounded = rows.size() > maxRecords
+                ? rows.subList(0, maxRecords) : rows;
+        batchConsumer.accept(bounded);
+    }
+
     /** Claim an event id and append the event to the recovery journal. */
     boolean recordIfNew(SecurityEvent event);
 

@@ -3,6 +3,7 @@ package com.socp.detect.web.routing;
 import com.socp.rule.config.RuleSpec;
 import com.socp.rule.partition.DetectionDelivery;
 import com.socp.rule.partition.RoutingDimension;
+import com.socp.rule.state.StatefulRule;
 import com.socp.rule.util.Json;
 
 import java.nio.charset.StandardCharsets;
@@ -61,6 +62,24 @@ public final class DetectionRoutingPlan {
                     reasons.add("routingField must equal groupBy for routed state");
                 }
                 if (grouping != null) reasons.addAll(RoutingDimension.validationErrors(grouping));
+                // Executable compatibility, not just field vocabulary: a stateful
+                // ACTIVE rule that cannot compile is silently isolated by
+                // DetectionEngineFactory at build time and stops detecting with
+                // every health probe green. The plan must surface that instead of
+                // the deployment claiming routed cross-dimension coverage.
+                if (reasons.isEmpty()) {
+                    try {
+                        RuleSpec spec = new RuleSpec(document);
+                        if (!(spec.toRule() instanceof StatefulRule)) {
+                            reasons.add("declared type does not compile to a stateful rule");
+                        }
+                    } catch (RuntimeException compileFailure) {
+                        reasons.add("stateful rule does not compile: "
+                                + (compileFailure.getMessage() == null
+                                        ? compileFailure.getClass().getSimpleName()
+                                        : compileFailure.getMessage()));
+                    }
+                }
 
                 boolean supported = reasons.isEmpty();
                 if (supported) {

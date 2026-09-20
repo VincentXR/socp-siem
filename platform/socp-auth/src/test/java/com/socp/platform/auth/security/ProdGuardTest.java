@@ -285,16 +285,109 @@ class ProdGuardTest {
         assertTrue(error.getMessage().contains("collector-credentials"));
     }
 
+    private static final String COLLECTOR_SECRET = "a-long-production-collector-secret";
+    private static final String COLLECTOR_SECRET_NEXT = "the-next-long-collector-secret-a";
+
+    private static String futureNotAfter(long days) {
+        return java.time.Instant.now().plus(days, java.time.temporal.ChronoUnit.DAYS)
+                .truncatedTo(java.time.temporal.ChronoUnit.SECONDS).toString();
+    }
+
     @Test
     void acceptsSearchConfigWhenVectorCredentialIsRegistered() {
         MockEnvironment env = validProductionEnvironment()
                 .withProperty("spring.application.name", "search-config")
                 .withProperty("socp.security.collector-credentials",
-                        "vector-prod|tenant-a|a-long-production-collector-secret")
+                        "vector-prod|tenant-a|" + COLLECTOR_SECRET + "|" + futureNotAfter(90))
                 .withProperty("socp.security.allow-global-ingest-token", "false")
-                .withProperty("socp.vector.token", "a-long-production-collector-secret");
+                .withProperty("socp.vector.token", COLLECTOR_SECRET);
 
         assertDoesNotThrow(() -> new ProdGuard(env));
+    }
+
+    @Test
+    void acceptsRotationGracePeriodWithTwoLiveSecrets() {
+        // Rolling a collector means both versions validate for a bounded window; the
+        // Vector token may still be the old one while the fleet updates.
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("spring.application.name", "search-config")
+                .withProperty("socp.security.collector-credentials",
+                        "vector-prod|tenant-a|" + COLLECTOR_SECRET + "|" + futureNotAfter(7)
+                                + ";vector-prod|tenant-a|" + COLLECTOR_SECRET_NEXT + "|"
+                                + futureNotAfter(97))
+                .withProperty("socp.security.allow-global-ingest-token", "false")
+                .withProperty("socp.vector.token", COLLECTOR_SECRET);
+
+        assertDoesNotThrow(() -> new ProdGuard(env));
+    }
+
+    @Test
+    void rejectsCollectorCredentialWithoutExpiry() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("spring.application.name", "search-config")
+                .withProperty("socp.security.collector-credentials",
+                        "vector-prod|tenant-a|" + COLLECTOR_SECRET)
+                .withProperty("socp.security.allow-global-ingest-token", "false")
+                .withProperty("socp.vector.token", COLLECTOR_SECRET);
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+
+        assertTrue(error.getMessage().contains("no notAfter"));
+    }
+
+    @Test
+    void rejectsCollectorCredentialBelowTheStrengthFloor() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("spring.application.name", "search-config")
+                .withProperty("socp.security.collector-credentials",
+                        "vector-prod|tenant-a|short-secret|" + futureNotAfter(30))
+                .withProperty("socp.security.allow-global-ingest-token", "false")
+                .withProperty("socp.vector.token", "short-secret");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+
+        assertTrue(error.getMessage().contains("shorter than 32 bytes"));
+    }
+
+    @Test
+    void rejectsAlreadyExpiredOrOverlongCollectorCredentials() {
+        MockEnvironment expired = validProductionEnvironment()
+                .withProperty("spring.application.name", "search-config")
+                .withProperty("socp.security.collector-credentials",
+                        "vector-prod|tenant-a|" + COLLECTOR_SECRET + "|2000-01-01T00:00:00Z")
+                .withProperty("socp.security.allow-global-ingest-token", "false")
+                .withProperty("socp.vector.token", COLLECTOR_SECRET);
+
+        assertTrue(assertThrows(IllegalStateException.class, () -> new ProdGuard(expired))
+                .getMessage().contains("expired at"));
+
+        MockEnvironment overlong = validProductionEnvironment()
+                .withProperty("spring.application.name", "search-config")
+                .withProperty("socp.security.collector-credentials",
+                        "vector-prod|tenant-a|" + COLLECTOR_SECRET + "|" + futureNotAfter(400))
+                .withProperty("socp.security.allow-global-ingest-token", "false")
+                .withProperty("socp.vector.token", COLLECTOR_SECRET);
+
+        assertTrue(assertThrows(IllegalStateException.class, () -> new ProdGuard(overlong))
+                .getMessage().contains("366"));
+    }
+
+    @Test
+    void rejectsUnboundedCollectorRotationGracePeriod() {
+        // Two live secrets are allowed only when the replaced one has a deadline.
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("spring.application.name", "search-config")
+                .withProperty("socp.security.collector-credentials",
+                        "vector-prod|tenant-a|" + COLLECTOR_SECRET + "|" + futureNotAfter(7)
+                                + ";vector-prod|tenant-a|" + COLLECTOR_SECRET_NEXT)
+                .withProperty("socp.security.allow-global-ingest-token", "false")
+                .withProperty("socp.vector.token", COLLECTOR_SECRET);
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+
+        // The registry owns the shape rule and reports it on first use; ProdGuard must
+        // not additionally claim the secret is undated for the vector token match.
+        assertTrue(error.getMessage().contains("collector"));
     }
 
     @Test

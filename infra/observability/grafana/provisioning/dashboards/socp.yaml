@@ -1,0 +1,16 @@
+# Dashboard provider: loads every JSON under /var/lib/grafana/dashboards so the
+# SOCP dashboards become visible without manual import. Mounted into the compose
+# Grafana at /etc/grafana/provisioning/dashboards (mount lines are documented in
+# docs/operations/incident-response.md; this file is owned by infra/observability).
+apiVersion: 1
+providers:
+  - name: SOCP
+    orgId: 1
+    folder: SOCP
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

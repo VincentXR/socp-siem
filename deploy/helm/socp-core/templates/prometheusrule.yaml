@@ -16,6 +16,12 @@ spec:
   groups:
     - name: socp-event-path
       rules:
+        # Every rule carries a runbook_url pointing at the matching section of
+        # docs/operations/incident-response.md, so paging an operator hands them a
+        # disposal procedure ("see X fire -> run Y -> confirm with metric Z") rather
+        # than a bare name. The path is repo-relative because delivery of the
+        # on-call link (hosted docs, wiki, Alertmanager receiver) is owned by the
+        # deployment, not the chart; the anchor stays stable regardless of host.
         # absent() matters here: the lag series only exists while a consumer is
         # reporting. When the consumer wedges, the series disappears and a bare
         # max() evaluates to nothing, so the alert would go quiet exactly when
@@ -29,6 +35,7 @@ spec:
             summary: SOCP detection consumer lag is high or not reporting
             description: Fires on more than 10000 unprocessed records, or when no
               consumer reports a lag at all.
+            runbook_url: docs/operations/incident-response.md#socpdetectionconsumerlag
         - alert: SocpOutboxOldestAge
           expr: max(socp_ingestion_outbox_oldest_pending_age_seconds) > 300
           for: 10m
@@ -38,6 +45,7 @@ spec:
             summary: SOCP ingestion outbox has an old pending row
             description: A row has been pending for over 5 minutes. Two drain
               cycles should clear it; longer means the publisher is wedged.
+            runbook_url: docs/operations/incident-response.md#socpoutboxoldestage
         - alert: SocpAlertOutboxOldestAge
           expr: max(socp_alert_outbox_oldest_pending_age_seconds) > 300
           for: 10m
@@ -46,6 +54,7 @@ spec:
           annotations:
             summary: SOCP Alert outbox has an old pending row
             description: A row has been pending for over 5 minutes.
+            runbook_url: docs/operations/incident-response.md#socpalertoutboxoldestage
         - alert: SocpDetectionOutboxOldestAge
           expr: max(socp_detection_outbox_oldest_pending_age_seconds) > 300
           for: 10m
@@ -54,6 +63,7 @@ spec:
           annotations:
             summary: SOCP Detection outbox has an old pending row
             description: A row has been pending for over 5 minutes.
+            runbook_url: docs/operations/incident-response.md#socpdetectionoutboxoldestage
         # DEAD rows are retained on purpose for investigation and explicit
         # replay, so the dead count never returns to zero. Alerting on the
         # absolute count therefore latches for good: a critical alert that can
@@ -70,6 +80,7 @@ spec:
             description: New rows exhausted their retries and need operator
               action. Historic dead rows retained for investigation do not
               re-alert until the count grows again.
+            runbook_url: docs/operations/incident-response.md#socpoutboxdead-growth
         - alert: SocpAlertOutboxDead
           expr: delta(socp_alert_outbox_dead_count[15m]) > 0
           for: 5m
@@ -79,6 +90,7 @@ spec:
             summary: SOCP Alert outbox gained dead rows
             description: New rows exhausted their retries and need operator
               action.
+            runbook_url: docs/operations/incident-response.md#socpoutboxdead-growth
         - alert: SocpDetectionOutboxDead
           expr: delta(socp_detection_outbox_dead_count[15m]) > 0
           for: 5m
@@ -88,6 +100,7 @@ spec:
             summary: SOCP Detection outbox gained dead rows
             description: New rows exhausted their retries and need operator
               action.
+            runbook_url: docs/operations/incident-response.md#socpoutboxdead-growth
         - alert: SocpDeadLetterGrowth
           expr: increase(socp_opensearch_indexer_records_total{stage="dlq"}[15m]) > 0
           for: 5m
@@ -95,6 +108,7 @@ spec:
             severity: critical
           annotations:
             summary: SOCP OpenSearch indexer is sending events to DLQ
+            runbook_url: docs/operations/incident-response.md#socpdeadlettergrowth
         # Detection-side wedges below are silent to every health probe by
         # design: the consumer keeps polling while a partition commit is
         # pinned, a rule sits isolated, or a poison record is being retried
@@ -110,8 +124,9 @@ spec:
             summary: SOCP detection engine is isolating a rule
             description: A rule failed at evaluation time and is being skipped,
               so matching detections are silently lost until an operator fixes
-              or disables it. Consumer-lag absent() cannot cover this state:
-              the pipeline stays green while the rule is dead.
+              or disables it. Consumer-lag absent() cannot cover this state,
+              so the pipeline stays green while the rule is dead.
+            runbook_url: docs/operations/incident-response.md#socpdetectionruleisolated
         - alert: SocpDetectionOffsetPinned
           expr: max(socp_detection_offset_pinned) > 10000
           for: 15m
@@ -123,6 +138,7 @@ spec:
               cross the contiguous commit watermark. Transient retries keep
               this far below the threshold; sustained growth means a lane is
               wedged on a record that never finalizes.
+            runbook_url: docs/operations/incident-response.md#socpdetectionoffsetpinned
         - alert: SocpDetectionRetryBlocked
           expr: max(socp_detection_partition_retry_blocked) > 0 and
             max(socp_detection_partition_retry_oldest_seconds) > 300
@@ -134,6 +150,7 @@ spec:
             description: A partition has been retry-blocked for over five
               minutes. Group socp_detection_processing_failure by category and
               stage before intervening; do not purge PENDING rows.
+            runbook_url: docs/operations/incident-response.md#socpdetectionretryblocked
         - alert: SocpDetectionDlqHandoffGrowth
           expr: increase(socp_detection_dlq_handoff_total{outcome="committed"}[15m]) > 0
           for: 5m
@@ -144,6 +161,7 @@ spec:
             description: Dependency outages should leave this flat; growth
               means events are terminalizing as poison records and need the
               DLQ redrive procedure.
+            runbook_url: docs/operations/incident-response.md#socpdetectiondlqhandoffgrowth
         - alert: SocpDetectionRoutingMismatchGrowth
           expr: increase(socp_detection_rule_routing_mismatch_total[30m]) > 0
           for: 10m
@@ -154,6 +172,7 @@ spec:
             description: A rule evaluated events whose routing field does not
               carry the declared key, so partition-local state can diverge.
               This is a content-quality ticket, not an outage.
+            runbook_url: docs/operations/incident-response.md#socpdetectionroutingmismatchgrowth
         - alert: SocpSearchRetentionLag
           expr: max(socp_search_event_retention_lag_seconds) > 3600
           for: 2h
@@ -164,4 +183,5 @@ spec:
             description: The bounded retention worker runs hourly; two hours
               of lag means delete throughput is below ingest growth or rows
               are pinned by unresolved outbox work.
+            runbook_url: docs/operations/incident-response.md#socpsearchretentionlag
 {{- end }}

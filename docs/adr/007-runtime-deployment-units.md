@@ -51,8 +51,7 @@ different scaling and security controls.
 
 ## Evidence gate
 
-A candidate may replace its launchers only after it proves all of the following
-for the current commit:
+A candidate may replace its launchers only after commit-scoped evidence proves:
 
 1. every public context path and authentication/tenant boundary is preserved;
 2. each owning schema retains its Flyway history and transaction boundary;

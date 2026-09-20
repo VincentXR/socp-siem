@@ -78,7 +78,9 @@ if [ -d "$REPO_ROOT/docs" ]; then
   rm -rf "$PKG/socp/docs/_local"
 fi
 
-# 5) 生成使用说明
+# 5) 生成使用说明（端口表由 build/ports.py 从 ports.env 渲染，禁止再手抄一份）
+python "$REPO_ROOT/build/ports.py" --markdown-table > "$PKG/.ports-table.md" || {
+  echo "  [错误] 端口表渲染失败"; exit 1; }
 cat > "$PKG/RELEASE.md" <<'EOF'
 # SOCP 安全运营平台 · 发布包
 
@@ -88,7 +90,7 @@ cat > "$PKG/RELEASE.md" <<'EOF'
 
 ## 启动 / 停止 / 状态
 ```bash
-bash socp/build/run-all.sh backend   # 启动默认 14 个进程（采集与二次分析入口已并入领域服务）
+bash socp/build/run-all.sh backend   # 启动注册表（build/ports.env 的 SOCP_SERVICE_NAMES）里的全部进程
 bash socp/build/run-all.sh status full    # 全栈探活
 bash socp/build/run-all.sh stop      # 停止
 ```
@@ -102,18 +104,20 @@ python -m http.server 5188 -d socp/frontend/apps/workbench/dist
 
 ## 端到端验证
 ```bash
-python socp/build/verify-full.py     # 62 项断言（健康/情报/ATT&CK/全链路/UEBA/接入任务/持久化）
-python socp/build/verify-slice.py    # 18 项经网关断言
+python socp/build/verify-full.py     # 全栈断言（健康/情报/ATT&CK/全链路/UEBA/接入任务/持久化）
+python socp/build/verify-slice.py    # 经网关的切片断言
 ```
 
 ## 端口速查
-alert-web 18080 · search-config 18081 · detect-web 18082 · soar-web 18083 · report-web 18084 ·
-asset-web 18085 · soc-base 18086 · hips-web 18087 · ai-assistant 18088 ·
-api-gateway 18092 · threat-web 18094 · attack-web 18095 ·
-notify-web 18096 · incident-web 18097
+EOF
+{
+  cat "$PKG/.ports-table.md"
+  rm -f "$PKG/.ports-table.md"
+  cat <<'EOF'
 
 旧 `/asset-collect/**`、`/hips-collect/**` 与 `/detect-model/**` URL 由网关转发到对应领域服务，不再发布独立进程。
 EOF
+} >> "$PKG/RELEASE.md"
 
 echo "=== 打包 ==="
 cd "$OUT"

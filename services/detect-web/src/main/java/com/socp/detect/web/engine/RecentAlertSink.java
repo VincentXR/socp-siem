@@ -93,7 +93,10 @@ public class RecentAlertSink implements EventAlertSink {
         }
         for (Alert alert : safe) {
             if (alert == null || alert.id() == null || !remember(alert)) continue;
-            if (streamHub != null) streamHub.broadcast(tenantOf(alert), alert);
+            // Shadow mode must not push phantom alerts to the live SSE stream
+            // either: only the formal output path broadcasts (same gate as the
+            // durable forwarder above and the publish(event, alerts, guard) path).
+            if (primaryOutput && streamHub != null) streamHub.broadcast(tenantOf(alert), alert);
         }
         // The guard is executed exactly once above or inside the primary forwarder.
     }

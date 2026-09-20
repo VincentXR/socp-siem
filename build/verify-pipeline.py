@@ -239,7 +239,7 @@ def os_grew():
     except Exception:
         return None
 new_os = wait_for(os_grew, timeout=40)
-check("OpenSearch 出现本次 raw event", new_os is not None, f"host={attack_host}")
+check("OpenSearch 出现探针 raw event", new_os is not None, f"host={attack_host}")
 
 # ---- 5. 检测命中 → PG alert（经 alert-web API 验证） ----
 print("\n== 5. 检测命中 → 告警持久化（PG t_alarm，API 查询验证） ==")

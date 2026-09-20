@@ -6,6 +6,10 @@ import { listAlarmsPaged, type AlarmPage, type AlarmSortField, type AlarmSortOrd
 // Structural stand-ins for the vue-router objects so the composable can be
 // exercised with plain fakes in tests (useListQuery convention) while the
 // real call site keeps the zero-argument form.
+// NOTE: this file intentionally mirrors useListQuery.ts's locked route-query
+// contract (integer page token, nextTick echo reset, `{ ...route.query }`
+// preservation, routeName scope). See the must-read header in useListQuery.ts;
+// build/verify-frontend-conventions.py keeps both composables aligned.
 export interface AlarmQueryRoute {
   name: unknown
   query: Record<string, unknown>

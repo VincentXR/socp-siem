@@ -1,0 +1,17 @@
+# Prometheus datasource for the SOCP compose baseline.
+# Mounted read-only into Grafana at
+#   /etc/grafana/provisioning/datasources  (see docs/operations/incident-response.md
+# for the compose mount lines). The bearer token is supplied by the deployment; this
+# file only declares the datasource so dashboards stop being orphans with no uid.
+apiVersion: 1
+datasources:
+  - name: SOCP-Prometheus
+    uid: socp-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      timeInterval: 15s

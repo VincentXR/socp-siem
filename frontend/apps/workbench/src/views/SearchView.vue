@@ -26,6 +26,7 @@ import { useRoute, useRouter } from 'vue-router'
 import EmptyState from '../components/EmptyState.vue'
 import PageHeader from '../components/PageHeader.vue'
 import SevBadge from '../components/SevBadge.vue'
+import RowActivate from '../components/RowActivate.vue'
 import FormField from '../components/FormField.vue'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { exportSearch, listAlarmsByEvent, listFields, splSearch, type Alarm, type FieldDef, type SearchEvent, type SearchResult } from '../api'
@@ -475,7 +476,7 @@ onMounted(() => {
               <el-table-column prop="source" column-key="source" sortable="custom" :label="t('common.source')" :width="columnWidth('source', 90)" />
               <el-table-column prop="host" column-key="host" sortable="custom" :label="t('common.host')" :width="columnWidth('host', 90)" />
               <el-table-column prop="severity" column-key="severity" sortable="custom" :label="t('common.severity')" :width="columnWidth('severity', 80)"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
-              <el-table-column prop="msg" column-key="msg" sortable="custom" :label="t('common.message')" :width="columnWidth('msg')" min-width="240" show-overflow-tooltip />
+              <el-table-column prop="msg" column-key="msg" sortable="custom" :label="t('common.message')" :width="columnWidth('msg')" min-width="240" show-overflow-tooltip><template #default="{ row }"><RowActivate :aria-label="row.msg || t('common.message')" @activate="openEvent(row as SearchEvent)">{{ row.msg }}</RowActivate></template></el-table-column>
             </el-table>
             <div v-if="showPagination" class="search-pagination"><span class="search-page-summary">{{ t('common.pageSummary', { page: currentPage, total: pageCount }) }}</span><div class="search-page-controls"><span class="search-page-size-label">{{ t('common.pageSize') }}</span><el-select v-model="pageSize" size="small" style="width:92px" @change="changePageSize"><el-option v-for="size in pageSizes" :key="size" :label="String(size)" :value="size" /></el-select><el-button size="small" :disabled="currentPage <= 1 || loading" @click="previousPage">{{ t('common.previousPage') }}</el-button><el-button size="small" :disabled="!result.nextCursor || currentPage >= maxBrowsePages || loading" @click="nextPage">{{ t('common.nextPage') }}</el-button></div></div>
           </el-card>

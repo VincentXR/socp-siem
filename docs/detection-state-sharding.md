@@ -1,164 +1,74 @@
 # Detection state sharding
 
-Stateful rules are routed by the immutable tuple `tenantId + routingField +
-routingValue`. The same tuple always lands on the same shard, while records in
-one shard are processed serially. A rebalance must first advance the assignment
-epoch and stop the previous owner before the new owner restores its snapshot.
+This page owns the operational details of in-process state shards and
+checkpoint storage. The routed-v2 topology, source/delivery identities,
+migration modes, lifecycle, and failure semantics are defined in
+[Detection state semantics](detection-state-semantics.md).
+
+## State unit and checkpoints
+
+Each Kafka `(input topic, partition, state shard)` is a durable ownership unit.
+The owner lease carries a monotonic fencing epoch; a revoked or superseded
+worker cannot commit an alert, journal completion, or checkpoint generation.
 
 `DetectionStateSnapshot` is an opaque, versioned envelope containing the rule
 version, input topic, tenant, shard, partition-offset vector, owner-epoch
-vector and serialized state. Implementations must write snapshots atomically and only
-acknowledge a recovery barrier after the snapshot is durable. The runtime loads
-the latest durable checkpoint and replays journaled events after that
-checkpoint (the default cadence is every 500 durable events).
+vector, and serialized state. Snapshots are written atomically and a recovery
+barrier is acknowledged only after the snapshot is durable. A generation whose
+offset vector does not cover its predecessor is rejected.
 
-That checkpoint fast path applies to the engines assembled by a rule hot reload
-and by the lazily created engine of a tenant that is not cached yet. The Kafka
-assignment rebuild is a different path on purpose: `rebuildForPartitions` closes
-the engines of the current assignment and replays the `COMPLETED` journal rows
-of the configured `socp.detect.state.retention` window (default `24h`) in
-partition/offset order. Recovery therefore never reads the whole journal - it is
-window-bounded and paginated - but it does not start from a checkpoint either,
-so sizing that window is what bounds rebuild cost. Snapshot rows are keyed by
-`(tenant, rule, shard)` while ownership is `(input topic, partition, state
-shard)`, so a generation whose offset vector does not cover every partition of
-its predecessor is rejected rather than partially advanced.
+Startup and partition assignment rebuild state from the configured retention
+window in partition/offset order. Reads are paginated and PENDING prefetch is
+bounded; records beyond that prefix remain behind uncommitted Kafka offsets and
+return through normal delivery. Flyway migration
+`V23__detection_checkpoint_replay_index.sql` supplies the
+`(tenant_id, status, kafka_partition, kafka_offset)` access path. It uses plain
+`CREATE INDEX` because the in-process Flyway runner wraps migrations in a
+transaction. Apply it to a populated database in a maintenance window with a
+bounded migration-role `lock_timeout`.
 
-`socp.detect.state.shards` enables one to 256 in-process shards. Each event is
-routed with the same `tenantId + detectionRoutingField + detectionRoutingValue`
-hash used by the Kafka key, and every shard has its own serial rule engine and
-snapshot namespace. The default remains one shard for backwards compatibility.
+## Operating the in-process shard count
 
-## Operating the shard count
+`socp.detect.state.shards` accepts 1 through 256 and defaults to 1. Each routed
+delivery is assigned with the same
+`tenantId + routingField + routingValue` hash used by the routed Kafka key;
+every shard owns an independent serial rule engine and snapshot namespace.
 
-Raising the shard count is the available mitigation for a specific symptom, not
-a general tuning knob. The symptom is rule evaluation becoming the constraint:
-`socp_detection_event_stage` for `rule_evaluation` grows while
-`socp_kafka_consumer_lag` stays near zero. That combination says the engine is
-behind, not the broker, and it is what the state-cardinality growth described
-below looks like from the outside.
+Increase the shard count only when rule-evaluation latency grows while Kafka
+lag remains low. Sharding can divide state across balanced routing values, but
+it does not reduce the cost of one hot routing value or bound a rule's state.
+Snapshot and rollback work also remains on the per-event path.
 
-What raising the count buys: each shard owns an independent engine and state
-namespace, so the per-event cost - which is proportional to the state a rule
-holds - is divided across shards **only to the extent the routing hash is
-balanced**. Raising the count on a workload whose events concentrate on few
-routing values moves the same state into one shard and changes nothing.
+No Prometheus series exports per-shard state size or balance. Validate a change
+by comparing the `rule_evaluation` latency distribution and inspect
+`t_detection_state_owner` plus the per-shard snapshot rows for the authoritative
+distribution. A shard-count change is a state-layout change and requires a
+controlled restart/rebuild; do not mix counts within one consumer group.
 
-What it does not fix: a single rule's per-event cost stays proportional to that
-shard's state. Sharding divides the problem; it does not bound it. The durable
-path also snapshots rule state to detect changes and to roll back a failed
-event, and that cost is paid per event regardless of shard count.
+## Statistics scope
 
-**Shard balance is not observable from metrics today.** Neither the configured
-shard count nor per-shard state size is exported, so a change cannot be
-confirmed from the dashboards. Until that is instrumented, verify by comparing
-the `rule_evaluation` distribution before and after: the p95 should fall
-roughly in proportion to the shard count. If it does not, the routing values
-are concentrated and the split is not helping. The authoritative view of the
-distribution is the `(input topic, partition, state shard)` rows in
-`t_detection_state_owner` and the per-shard snapshot rows.
+`GET /detect-web/api/v1/stats` reports the replica that served the request and
+labels state recovery as replica-local:
 
-`GET /detect-web/api/v1/stats` answers from the replica that served the request
-and labels it (`instance`, `stateRecovery.scope=replica-local`). Its counters
-have these scopes, and none of them is exported to Prometheus:
+- event, alert, drop, suppression, queue, and rule counters cover the tenant's
+  materialized engines on that replica;
+- `isolatedRules` counts rule documents that could not be compiled there;
+- `routingMismatchWindows` counts bounded routed-state contract mismatches;
+- `stateRecovery.engineScopes` and `pendingRebuilds` identify individual
+  engines still recovering.
 
-- `eventCount`, `alertCount`, `dropCount`, `suppressedCount`, `queueLoad` and
-  `ruleStats` are summed over **this tenant's** materialized shard engines on
-  this replica. `suppressedCount` in particular is counted by each engine for
-  the suppression decisions it made itself, so it is safe to sum across shards
-  and no longer reports the process-wide `Suppressor` total to one tenant. The
-  deduplication window behind it is still process memory: it is not shared with
-  other replicas and it resets on restart.
-- `isolatedRules` is the number of this tenant's rule documents the engine
-  could not build and therefore skipped on this replica.
-- `routingMismatchWindows` counts the low-frequency "state is not
-  partition-local" diagnostics described below, at most one per rule per rule
-  window.
-- `stateRecovery.engineScopes` and `stateRecovery.pendingRebuilds` name the
-  individual engine keys that are recovering or awaiting the retry schedule, so
-  one tenant's hot reload is not read as a process-wide outage.
+Suppression and secondary-analysis storm collapsing are replica-local
+heuristics. They reset on restart and must not be presented as cluster-wide
+deduplication.
 
-For Kafka-backed processing, `t_detection_state_owner` is the durable lease for
-one `(input topic, partition, state shard)` unit. Claiming or taking over the
-row increments `fencing_epoch`; partition revoke immediately invalidates the
-old token. The event-aware Detection sink checks and renews that token inside
-the transaction containing the Alert Outbox and journal completion, so a stale
-worker cannot commit a new durable result after takeover. Snapshot generations
-persist the token alongside each partition offset and reject a superseded
-owner before changing checkpoint rows. `V16` creates the owner table, `V17`
-adds the snapshot owner-epoch vector, and `V18` binds snapshots to the input
-topic.
+## Rule reload
 
-## Cross-entity grouping contract
+A saved rule is compiled before persistence. Engine assembly still isolates
+each document so one undeployable rule is skipped and reported rather than
+stopping the tenant engine.
 
-The current production contract supports partition-local state only. What
-persistence can actually enforce is narrower than that, and the difference is
-observable rather than hidden:
-
-- Validation and storage check the rule **document** against itself: `groupBy`,
-  the compatibility alias `keyField`, and `routingField` must name the same
-  dimension, and the document must compile into an executable rule. Both are
-  HTTP 400 rejections at write time.
-- Validation cannot see events, so it does not - and cannot - compare the
-  declared grouping dimension with the dimension a future event resolves to.
-  `DetectionRoutingKey.isPartitionLocal` is evaluated per event on the engine
-  path, not per document at write time.
-- A stateful rule whose grouping dimension can lose to a higher-priority
-  routing dimension is therefore accepted, and it runs with **partial state**:
-  its window only covers the events of the partitions whose key resolved to its
-  grouping field. Packaged content contains such rules today (for example
-  `CORR-FAIL-SUDO`, `BASELINE-AUTH-VOLUME`, `UEBA-NEW-GEO`, `UEBA-USER-VOLUME`
-  group by `user`, while the default policy picks `src_ip` first for
-  non-endpoint sources and `host` for endpoint sources).
-- Writing such a rule logs one partition-locality advisory per affected data
-  source (`RuleSpecStore.save`), and the engine reports a mismatch for an actual
-  event at most once per rule window (`WARN`, `ruleStats[].routingMismatchWindows`,
-  `stats().routingMismatchWindows`, `RuleProcessingObserver.routingMismatched`).
-
-Rejecting this shape outright would reject shipped content that legitimately
-correlates across sources, so the gate is advisory plus measured instead. That
-also means the split is between Kafka partitions and consumer processes, not
-between in-process shards: with the default `socp.detect.state.shards=1` a
-single-process deployment cannot observe the difference at all, which is why the
-existing checks pass.
-
-Cross-entity grouping requires an explicit repartition or fan-out design,
-including its state ownership, late-event behavior, recovery, and cost limits.
-Until that design is implemented, clients must model the rule on the event's
-routing dimension or keep it stateless.
-
-## Rule hot reload and undeployable rules
-
-A rule document that passes contract validation is compiled once more before it
-is stored (`RuleSpecStore.save` builds the rule with the exact code the engine
-uses and releases it), so a document the engine could not construct is an HTTP
-400 at write time instead of a runtime outage. Engine assembly is still
-per-document defensive: documents are filtered on their lifecycle status first,
-and every remaining document is compiled inside its own guard. A rule that
-cannot be built is skipped, logged, and counted in `stats().isolatedRules`; one
-undeployable rule no longer stops the tenant's detection or pushes its event
-stream to the dead-letter topic.
-
-A reload rebuilds only the editing tenant's engine keys. It marks exactly those
-keys `RECOVERING`, drains the live engines without closing them
-(`socp.detect.reload.drain-timeout-ms`, default 30s) so the replacement reads the
-journal after every accepted completion, and only then swaps. If any step fails,
-nothing is published: the previously live engines keep serving, the failed keys
-are reported in `stateRecovery.engineScopes` / `pendingRebuilds`, and the
-recovery schedule retries them (`socp.detect.recovery.retry-interval-ms`, default
-30s). Process-wide `RECOVERING`/`DEGRADED` remains reserved for startup and a
-full Kafka assignment rebuild, which really does replace every engine. A full
-rebuild that finds no journaled history warms an empty engine and says so
-(`stateRecovery.warmedWithoutHistory`) instead of looking like a
-checkpoint-restored state.
-
-A durable-path rollback discards the candidate alerts each rule had accumulated
-for the failed event as well as its serialized state, so a rolled back event
-cannot deliver its alerts against the next event's result. Storm collapsing in
-the secondary-analysis path is a replica-local heuristic; it is counted
-(`socp.detect.storm.suppressed`), recorded on the durable receipt as
-`SUPPRESSED`, and reports the replica that decided it.
-
-Cross-instance assignment barriers and a three-instance failover proof are
-still required before making a production HA claim; the local Compose
-deployment remains single-node.
+A hot reload drains and rebuilds only the edited tenant's engine keys. The old
+engines remain live until the replacement has replayed durable state and can be
+swapped under the lifecycle lock. A failed reload keeps the previous engines
+serving and leaves the affected keys for scheduled recovery; process-wide
+recovery is reserved for startup and full assignment rebuilds.

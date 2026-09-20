@@ -26,10 +26,17 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * Builds one gateway-level health snapshot instead of making every browser
  * probe every downstream service independently.
+ *
+ * <p>{@link #SERVICE_NAMES} mirrors {@code SOCP_SERVICE_NAMES} in
+ * {@code build/ports.env}, which stays the authoritative process registry.
+ * {@code build/verify-contracts.py} fails when the two drift, so adding or
+ * renaming a service means editing {@code ports.env} first (see
+ * {@code docs/adding-a-service.md}); this list is not an independent choice.</p>
  */
 @Service
 public class HealthSnapshotService {
 
+    /** Must equal {@code SOCP_SERVICE_NAMES} in build/ports.env; enforced by build/verify-contracts.py. */
     public static final List<String> SERVICE_NAMES = List.of(
             "alert-web", "search-config", "detect-web", "soar-web",
             "report-web", "asset-web", "soc-base", "hips-web", "ai-assistant",
@@ -134,8 +141,11 @@ public class HealthSnapshotService {
     private static HealthSnapshot assemble(List<ServiceResult> results) {
         Map<String, String> services = new LinkedHashMap<>();
         results.forEach(result -> services.put(result.name(), result.status()));
-        boolean allUp = services.size() == SERVICE_NAMES.size()
-                && services.values().stream().allMatch(UP::equals);
+        // A missing route already probes as "down" (see probe()), so the aggregate
+        // only needs "is there a snapshot at all" plus "every entry up". Comparing
+        // the map size against SERVICE_NAMES would be tautological: the map is
+        // produced from that same list.
+        boolean allUp = !services.isEmpty() && services.values().stream().allMatch(UP::equals);
         return new HealthSnapshot(allUp ? UP : DOWN, services, Instant.now());
     }
 

@@ -5,11 +5,11 @@ condition reads a canonical field (`source`, `host`, `severity`, `raw`) or any
 normalized/custom field in `event.fields` such as `src_ip`, `user`, `action`,
 or `http_method`.
 
-Stateful rule grouping is partition-local. Use the same field for `groupBy`
-and `routingField` (with `keyField` retained as a compatibility alias). The
-validation endpoint reports cross-entity grouping as invalid, and create/update
-requests return HTTP 400 until an explicit repartition/fan-out plan is
-available.
+Stateful rule grouping is routed by its declared dimension. Use the same field
+for `groupBy` and `routingField` (`keyField` is a compatibility alias). The
+routed-v2 plan fans each source event out once per unique dimension required by
+active rules. A rule whose grouping and routing fields disagree is invalid and
+create/update returns HTTP 400.
 
 ## Alert templates
 

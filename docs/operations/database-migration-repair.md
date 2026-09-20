@@ -4,9 +4,9 @@ Published Flyway migrations in this repository are **append-only**: once a
 version has shipped, its file text is immutable. `build/verify-migrations.py`
 (`check_published_migrations`) enforces this against git history and rejects any
 committed or uncommitted rewrite of a version that already shipped, allowing only
-a byte-for-byte restore to one of the file's own published blobs. This runbook
-explains why that rule exists, the real incidents that triggered it, and how to
-recover an environment whose `flyway_schema_history` checksum has already drifted.
+a byte-for-byte restore to one of the file's published blobs. This runbook
+explains the failure modes and how to recover an environment whose
+`flyway_schema_history` checksum has drifted.
 
 ## The failure mode in one sentence
 
@@ -20,25 +20,18 @@ That second half is the dangerous part: an index or column you "added" inside a
 published `V1` looks present in the repository but does **not** exist in any
 already-migrated production database, because `V1` will never run there again.
 
-## The three historical incidents
+## Drift patterns
 
-| Module | File | What happened | How it was remediated (revert + replay) |
-| --- | --- | --- | --- |
-| alert-web | `db/migration/V1__init.sql` | `source_alert_id` column + `uq_alarm_tenant_source_alert` index appended in place (commit `50ba514a`) | V1 restored to its published text; the idempotency column/index delivered by `V4__alert_source_idempotency.sql` and the `NOT NULL` tightening by `V20__alarm_source_alert_id_not_null.sql` |
-| threat-web | `db/migration/V1__init.sql` | hot-path index appended in place (commit `e351e355`) — and because V1 never re-ran, the index was effectively absent on existing DBs | V1 restored; index delivered by a new `V4__ioc_tenant_value_index.sql` |
-| threat-web | `db/migration/V2__stix_indicator_metadata.sql` | `confidence` rewritten from `DOUBLE` to `DOUBLE PRECISION` (commit `afc86f48`) — a real DDL-text change | V2 restored to its published blob; the type change delivered by a new `V5__stix_confidence_double_precision.sql` |
-
-The same class of drift was caught in detect-web `V2__detection_state.sql` and in
-comment-only edits to soar-web `V6/V10/V20/V22` (Flyway strips comments from the
-checksum only for lines it treats as comments, so even comment churn can move the
-stored checksum — the gate allows a restore, not a rewrite).
+| Change to an applied file | Failure | Required correction |
+| --- | --- | --- |
+| Append a column or index | Existing databases never execute the added DDL | Restore the file and add the change in `V(n+1)` |
+| Rewrite a type or constraint | Validation fails and fleets can diverge | Restore the file and use a new migration |
+| Edit comments or formatting | The stored checksum may change | Restore the published bytes; do not normalize old files |
 
 ## Remediation is always two halves
 
-1. **Restore the file.** Return the edited migration to its published text
-   (`git checkout HEAD -- <path>` when the pending edit is the rewrite, or the
-   pre-rewrite published blob when the rewrite was already committed). This is
-   what makes the gate report it as *restored* rather than *failed*.
+1. **Restore the file.** Return the edited migration to its byte-identical
+   published text from the trusted release artifact or source tag.
 2. **Replay in a new version.** Deliver the intended schema change as a higher
    `V(n+1)` so it actually applies to every fleet, new and existing.
 
@@ -48,8 +41,8 @@ Do **not** fix a missing object by editing the old version, and do **not** treat
 ## When `flyway repair` is the right tool
 
 Run `repair` only to realign the metadata of databases that already applied the
-**drifted** blob (the one that was committed before you reverted it), so their
-stored checksum matches the now-corrected file and validate stops failing. After
+**drifted** blob, so their stored checksum matches the restored file and
+validation stops failing. After
 a revert, existing databases still carry the drifted checksum in
 `flyway_schema_history`; `repair` overwrites the stored checksum to match the
 current file and removes any failed-migration rows. It does **not** re-execute
@@ -75,7 +68,7 @@ flyway \
   -locations=filesystem:services/alert-web/src/main/resources/db/migration \
   -table=flyway_schema_history \
   repair
-# Then start the service; migrate applies the new V(n+1) and validate now passes.
+# Then start the service; migrate applies V(n+1) and validation succeeds.
 ```
 
 `repair` is safe and idempotent for the checksum/failed-row concerns, but read
@@ -85,8 +78,8 @@ rolling start — not as a reflex.
 
 ## When NOT to repair
 
-- **A schema object is genuinely missing on existing DBs** (the threat-web
-  hot-path-index case): the fix is a **new version** that creates the object.
+- **A schema object is genuinely missing on existing DBs**: the fix is a
+  **new version** that creates the object.
   Repairing the checksum of the reverted file will make validate pass but leaves
   the object absent. Repair aligns metadata; only a new migration changes schema.
 - **A failed (partially applied) migration on Postgres DDL** that already

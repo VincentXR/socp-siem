@@ -2,69 +2,53 @@
 
 SOCP is a self-hosted, event-driven SIEM/SOC workbench built with Java 21,
 Spring Boot, Kafka, PostgreSQL, OpenSearch, ClickHouse, Temporal, and Vue 3.
-It demonstrates a complete security-event path: heterogeneous ingestion,
-canonical normalization, stateful detection, alert persistence, investigation,
-case management, and automated response.
+It covers ingestion, canonical normalization, stateful detection, alert
+persistence, investigation, case management, and automated response.
 
-This repository is a local development and verification platform. Docker
-Compose is single-node and is not a production HA deployment.
+This repository is a local development and verification platform. Its Docker
+Compose environment is single-node and is not evidence of production HA or
+capacity.
 
 ## Event path
 
 ```mermaid
 flowchart LR
-  S[Vector / Syslog / EDR / Falco] --> P[search-config<br/>parse + normalize]
+  S[Collectors] --> P[search-config<br/>parse + normalize]
   P --> IO[(Ingestion Outbox)]
-  IO --> K[(Kafka<br/>socp-events)]
-  K --> D[detect-web<br/>stateful rules]
+  IO --> K[(Kafka)]
+  K --> R[Detection router]
+  R --> RK[(Kafka<br/>routed-v2)]
+  RK --> D[detect-web]
   K --> IX[OpenSearch indexer]
-  IX --> OS[(OpenSearch)]
   D --> DO[(Detection Alert Outbox)]
-  DO --> A[alert-web<br/>idempotent create]
+  DO --> A[alert-web]
   A --> AO[(Alert Outbox)]
-  AO --> AK[(Kafka<br/>socp-alarm-events)]
-  AK --> F[Incident / Notify / SOAR / ClickHouse]
-  D --> DM[(Kafka<br/>socp-alarm-original)]
-  DM --> M[detect-web worker<br/>secondary analysis]
+  AO --> F[Incident / Notify / SOAR / ClickHouse]
   UI[Vue Workbench] --> GW[api-gateway]
+  GW --> P
   GW --> D
   GW --> A
-  GW --> OS
   GW --> F
 ```
 
-The ingestion transaction persists the canonical event and its Kafka
-publication intent together. The Detection Alert Outbox is the hand-off
-boundary between the stateful rule engine and Alert Web: journal completion
-and every resulting Outbox row are committed atomically. A scheduled publisher
-retries Alert Web until it acknowledges the deterministic source ID, then
-publishes the optional secondary-analysis event. The same Detection worker
-artifact consumes that event through an independent persistence unit. Alert
-Web has another transactional Outbox for the Kafka fan-out hand-off.
+Durable outboxes separate database commits from Kafka and service delivery.
+Deterministic identities and replay-safe consumers provide at-least-once
+delivery without claiming a distributed exactly-once transaction. See the
+[architecture](docs/architecture.md) and
+[Detection state contract](docs/detection-state-semantics.md) for the detailed
+boundaries.
 
-## Implemented capabilities
+## Capabilities
 
-- JSON, NDJSON, Syslog, CEF, LEEF, KV, Sysmon, auditd, and Falco parsing.
-- Canonical event fields and stable tenant/entity Kafka routing keys.
-- Pattern, threshold, correlation, correlation-set, baseline, and rare rules.
-- A versioned 39-rule Detection-as-Code pack with ATT&CK, data-source, and
-  positive/negative execution metadata.
-- Hot reload, suppression, partition-serial processing lanes, contiguous
-  manual Kafka commits, durable DLQ acknowledgement, event-ID de-duplication,
-  and time-bounded, paginated PostgreSQL/H2 journal replay.
-- Partition-owned state restore after restart and consumer rebalance.
-- Detection Alert Outbox and Alert Web idempotency using `sourceAlertId`.
-- Partition-scoped OpenSearch bulk acknowledgement, offset commits, replay,
-  and stable event document IDs.
-- Shared durable entity-risk projection, alert evidence, IOC enrichment, ATT&CK mapping,
-  incidents, cases, notifications, SOAR playbooks, and reporting.
-- JWT/OIDC, RBAC, logical tenant isolation, audit records, metrics, traces,
-  failure-injection scripts, and demos.
+- JSON, NDJSON, Syslog, CEF, LEEF, KV, Sysmon, auditd, and Falco ingestion.
+- Stateful pattern, threshold, correlation, baseline, and rare-event rules.
+- Durable journal, outbox, replay, DLQ, suppression, and partition-owned state.
+- Alert, incident, asset, threat, notification, SOAR, and reporting workflows.
+- JWT/OIDC, RBAC, logical tenant isolation, audit, metrics, and tracing.
+- Versioned detection content, failure injection, and repeatable verification.
 
-The versioned detection pack is at
+The executable Detection content pack lives at
 `services/detect-web/src/main/resources/detection-content/manifest.json`.
-It is the sole executable source for packaged detections; a fresh Detection
-database installs the manifest rules before user customization.
 
 <!-- detection-summary:start -->
 **Detection content**: `39` rules (`39` ACTIVE), pack `socp-core-detections` version `2026.09.13` (schema `1`).
@@ -72,136 +56,80 @@ Types: baseline=3, correlation=2, correlation-set=1, pattern=18, rare=5, thresho
 ATT&CK techniques: `23`; data sources: `22` (alert, application, audit, auditd, auth, database, dlp, dns, edr, falco, firewall, linux, mail, netflow, nginx, proxy, risk, sshd, sysmon, waf, web, windows).
 Manifest SHA-256: `5db827bd6aedb84e70d1de1082e11629bc8234bb1644e3e970a7b226b18196e0`.
 <!-- detection-summary:end -->
-The exact partition and recovery contract is in
-`docs/detection-state-semantics.md`.
 
 ## Quick start
 
-Requirements: JDK 21, Git Bash or WSL, Node.js 22, Corepack/pnpm 10, and
-Docker Desktop. A full local stack is most comfortable with at least 24 GB RAM.
+Requirements: JDK 21, Git Bash or WSL, Node.js 22, Corepack/pnpm 10, Docker
+Desktop, and preferably 24 GB RAM for the complete stack.
 
 ```bash
-bash build/compose.sh up -d  # uses infra/middleware-images.env
-cd frontend && corepack pnpm install --frozen-lockfile && corepack pnpm build && cd ..
+bash build/compose.sh up -d
 bash build/mvnw.sh -DskipTests package
+cd frontend && corepack pnpm install --frozen-lockfile && corepack pnpm build && cd ..
 bash build/run-all.sh start core
 ```
 
 Open `http://localhost:5173`. The disposable development account is
-`demo / demo123`; never reuse it outside a local development environment.
-
-Useful profiles:
-
-```bash
-bash build/run-all.sh start core   # Golden Demo and core event path
-bash build/run-all.sh start ui     # Workbench business pages
-bash build/run-all.sh start full   # All backend services
-bash build/run-all.sh status
-bash build/run-all.sh stop
-```
-
-To produce a redistributable archive from already-built artifacts - the fat
-jars, the built workbench, the start and verification scripts, and `docs/`:
-
-```bash
-bash build/package-release.sh            # package what is already built
-bash build/package-release.sh --build    # full build first
-```
-
-It writes a timestamped `tar.gz` under the ignored `dist/`, together with a
-generated `RELEASE.md` carrying the start commands and the port map. It refuses
-to package a partially written jar set.
+`demo / demo123`; never reuse it outside local development. See
+[Getting started](docs/getting-started.md) for profiles, port overrides,
+middleware options, and shutdown commands.
 
 ## Verification
 
-```bash
-bash build/mvnw.sh test -Dsurefire.failIfNoSpecifiedTests=false
-cd frontend/apps/workbench && pnpm test && pnpm verify && cd ../../..
-python build/verify-slice.py
-python build/verify-pipeline.py
-python build/validate-detection-content.py
-python build/failure-tests.py
-```
-
-Run the operational checks only against a disposable stack because they stop
-and restart services:
+Run the repository quality gate before merging:
 
 ```bash
-python build/chaos-pipeline.py --scenario alert_web_restart
-python build/chaos-pipeline.py --scenario detect_restart
-python build/chaos-pipeline.py --scenario duplicate_delivery
+bash build/quality-gate.sh
+# Native PowerShell: .\build\quality-gate.ps1
 ```
 
-For the reference multi-instance check, use six `socp-events` partitions and
-start three `detect-web` processes with the `pg` profile, distinct ports, and
-the same `SOCP_KAFKA_GROUP_ID`. Then set
-`DETECTION_INSTANCE_URLS` (the first URL is the instance controlled by
-`run-all.sh`) and run:
-
-```bash
-SOCP_DETECT_PROFILE=pg \
-DETECTION_INSTANCE_URLS=http://127.0.0.1:18082,http://127.0.0.1:28082,http://127.0.0.1:38082 \
-  python build/chaos-pipeline.py --scenario multi_instance --count 30 --rebalance-cycles 3
-```
-
-Throughput and latency measurements are machine-specific. Keep per-run output
-outside source control, and do not claim production throughput from a local run.
+Use the [testing guide](docs/testing.md) to select focused checks and the
+[validation matrix](docs/validation-matrix.md) to understand their evidence
+and cadence. Middleware, chaos, and full-stack checks require the corresponding
+services and must run against a disposable environment.
 
 ## Runtime boundaries
 
-- Delivery is at-least-once. Kafka, database, and downstream services do not
-  form an exactly-once distributed transaction.
-- Alert creation atomically records both the Kafka Outbox event and one durable,
-  idempotent delivery intent per ClickHouse/Incident/Notify/SOAR destination.
-  Each destination is claimed independently and retried with bounded backoff;
-  the Kafka consumer reconciles any missing intents after replay.
-- A stateful rule is strictly partition-local only when its grouping field
-  matches the canonical event routing field.
-- Journal replay is bounded by `SOCP_DETECT_STATE_RETENTION` (24 hours by
-  default) and paginated by `SOCP_DETECT_STATE_REPLAY_PAGE_SIZE`; it is not
-  truncated at a fixed row count.
-- Tenant isolation is logical (`tenant_id` and query filters), not physical
-  database isolation.
-- H2 is a local convenience profile. Use PostgreSQL and `prod` guard checks
-  for production-like validation.
-- The AI assistant uses bounded evidence, a deterministic fallback, and an
-  optional external LLM; it is not yet a RAG platform or autonomous responder.
+- Delivery is at-least-once; durable writes must complete before terminal
+  state or Kafka offsets advance.
+- Stateful Detection correctness is partition-scoped and depends on canonical
+  routing keys matching each rule's grouping field.
+- Tenant isolation is logical (`tenant_id`, authorization, query filters, and
+  production RLS checks), not physical database isolation.
+- H2 and simulation are development conveniences, not production evidence.
+- External connector, HA, capacity, backup/restore, and SLO acceptance remain
+  deployment-specific.
+
+The default local layout has 14 backend processes, but process count is not a
+fixed architecture target. `python build/runtime-topology.py --check` validates
+the executable registry, logical domains, and evidence-gated consolidation
+candidates.
 
 ## Repository layout
 
 ```text
-platform/                 shared auth, tenant, audit, observability, rules
+platform/                 shared auth, tenant, audit, observability, and rules
 services/                 Spring Boot business services
 frontend/apps/workbench/  Vue 3 security operations workbench
-agents/                   Vector and Falco assets
-infra/                    Docker Compose and middleware initialization
-deploy/                   container, Kubernetes, and Helm deployment assets
-build/                    startup, verification, chaos, demos
-docs/                     architecture, operating guides, tests, and ADRs
+agents/                   collection assets
+infra/                    local middleware and initialization
+deploy/                   container and Kubernetes release assets
+build/                    launchers, verification, chaos, and packaging
+docs/                     architecture, contracts, testing, and operations
 ```
 
-The default full deployment currently runs 14 backend processes. The former
-`detect-model` process is embedded in the Detection worker; its database,
-Flyway history, Kafka consumer group, and transaction boundary remain
-independent. There is no fixed target process count. Verify that the executable
-registry, logical ownership domains, and optional consolidation candidates
-have not drifted with:
-
-```bash
-python build/runtime-topology.py --check
-```
-
-The command validates `build/runtime-topology.json`. Logical domains are not
-JVM placement instructions; a registered candidate needs its own failure and
-capacity evidence before launchers may be replaced.
+`bash build/package-release.sh` packages already-built artifacts; add `--build`
+to build first. Generated archives and their `RELEASE.md` stay under the
+ignored `dist/` directory.
 
 ## Documentation
 
 - [Documentation index](docs/README.md)
 - [Architecture](docs/architecture.md)
 - [Getting started](docs/getting-started.md)
+- [Module map](docs/module-map.md)
 - [Testing guide](docs/testing.md)
-- [Validation matrix](docs/validation-matrix.md)
+- [Production readiness](docs/production-readiness.md)
 
 ## License
 

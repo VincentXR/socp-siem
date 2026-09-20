@@ -89,7 +89,7 @@ class PublishedMigrationImmutabilityTest(unittest.TestCase):
         self.assertIn("immutable", errors[0])
 
     def test_restore_to_the_published_blob_is_the_sanctioned_remediation(self):
-        # The afc86f48 shape: the rewrite was committed, so HEAD itself is wrong.
+        # The rewrite was committed, so HEAD itself contains the drift.
         self.write(MIGRATION / "V1__init.sql", POLLUTED)
         self.commit_all("rewrite V1 in place")
 
@@ -163,7 +163,7 @@ class PublishedMigrationImmutabilityTest(unittest.TestCase):
         self.assertEqual([], MODULE.audit_published_history(self.root))
 
     def test_history_audit_names_committed_rewrites_only(self):
-        # The afc86f48 shape: the rewrite is committed, so no pending diff exists.
+        # The rewrite is committed, so no pending diff exists.
         self.write(MIGRATION / "V1__init.sql", POLLUTED)
         self.commit_all("rewrite V1 in place")
         self.write(MIGRATION / "V2__demo_replay.sql", POLLUTED[len(PUBLISHED):])

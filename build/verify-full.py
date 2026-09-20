@@ -392,7 +392,7 @@ prev = _read_marker()
 if prev is None:
     check("持久化基线已写入（首轮：重启后再跑一次本脚本即校验存活）", True, MARKER)
 else:
-    # 上一轮写的 IOC / 案件 / 接入源在服务重启后应仍然存在
+    # 前一次探针写入的 IOC、案件和接入源在服务重启后应仍然存在。
     st, m = call(U["threat-web"] + "/threat-web/api/v1/iocs/match?value=" + prev["ioc"])
     check("重启后 IOC 仍在库（threat-web H2）", st == 200 and bool(m) and m.get("matched", True) is not False,
           prev["ioc"])
@@ -407,18 +407,18 @@ else:
           "before=%s now=%s" % (prev.get("alarmCount"), len(alarms_now)))
     st, cases_now = call(U["incident-web"] + "/incident-web/api/v1/incidents")
     cases_now = unwrap(cases_now) if st == 200 else []
-    # 租户隔离（2026-08-09 修复）：default 租户只看到本租户案件；断言持久化生效（重启后仍有数据）
+    # default 租户只看到本租户案件，并在重启后保持持久化数据。
     check("重启后案件仍在库（incident-web H2）",
           st == 200 and len(cases_now) > 0,
           "now=%s (default 租户隔离视图)" % len(cases_now))
 
-# 写下这一轮的基线，供下次重启后校验
+# 保存持久化探针基线，供重启验证。
 try:
     src_id = "persist-probe-" + str(int(time.time()))
     st_src, created = call(U["search-config"] + "/search-config/api/v1/sources", "POST",
          {"id": src_id, "name": src_id, "type": "FILE", "format": "AUTO",
           "path": "/var/log/persist-probe.log", "env": "verify", "enabled": False})
-    # createFull 忽略请求里的 id、生成 UUID 主键；以响应返回的真实 id 作为基线才查得到
+    # createFull 忽略请求中的 id 并生成 UUID 主键；基线必须使用响应返回的真实 id。
     real_src_id = created.get("id") if (st_src == 200 and isinstance(created, dict) and created.get("id")) else src_id
     cur_alarms = unwrap(call(U["alert-web"] + "/alert-web/api/alarms?size=500")[1]) or []
     cur_cases = unwrap(call(U["incident-web"] + "/incident-web/api/v1/incidents")[1]) or []

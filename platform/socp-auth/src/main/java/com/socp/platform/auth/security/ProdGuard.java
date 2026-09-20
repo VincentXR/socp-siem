@@ -5,6 +5,8 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.env.Environment;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -18,7 +20,8 @@ import java.util.List;
  *   <li>禁止 H2 文件库（spring.datasource.url 含 jdbc:h2）</li>
  *   <li>禁止默认演示 JWT secret（run-all.sh 注入的 demo 值）</li>
  *   <li>禁止 dev-bypass=true（鉴权不得绕过）</li>
- *   <li>禁止默认采集凭据（dev-vector-token）</li>
+ *   <li>禁止默认采集凭据（dev-vector-token），并要求每条采集凭据达到最小强度、
+ *       带未过期的 {@code notAfter} 到期时间（生产采集凭据必须轮换，不允许无限期）</li>
  *   <li>要求 metrics 凭据非默认（ActuatorAuthFilter 在 actuator 路径上消费它）</li>
  *   <li>要求限流后端为共享 redis（正向白名单，非 redis/空/拼错一律拒绝）</li>
  *   <li>要求 prod+pg 下 Flyway 使用独立迁移角色，且 ≠ 运行时角色、非本地默认</li>
@@ -324,15 +327,51 @@ public class ProdGuard {
         }
     }
 
+    /**
+     * Collector credentials are long-lived machine secrets rendered into collector
+     * host configuration, so production demands the same discipline the JWT secret
+     * already has: a minimum strength, an explicit end of validity, and a rotation
+     * window that is actually shorter than the credential's own lifetime.
+     */
     private static void validateCollectorCredentials(String encoded, List<String> violations) {
         for (String entry : encoded.split(";")) {
-            String[] parts = entry.trim().split("\\|", 3);
-            if (parts.length != 3) continue; // CollectorCredentialRegistry reports the shape error.
+            String trimmed = entry.trim();
+            if (trimmed.isEmpty()) continue;
+            String[] parts = trimmed.split("\\|", 4);
+            if (parts.length < 3) continue; // CollectorCredentialRegistry reports the shape error.
+            String id = parts[0].trim();
             String secret = parts[2].trim();
             if (secret.isBlank() || List.of(DEMO_INGEST_TOKEN, DEMO_SERVICE_SECRET,
                     DEMO_JWT_SECRET, "admin", "password", "socp").stream()
                     .anyMatch(secret::equals)) {
                 violations.add("socp.security.collector-credentials contains a known development default");
+            }
+            if (secret.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+                    < CollectorCredentialRegistry.MIN_SECRET_BYTES) {
+                violations.add("collector credential " + id + " is shorter than "
+                        + CollectorCredentialRegistry.MIN_SECRET_BYTES
+                        + " bytes (the same floor as socp.security.jwt-secret)");
+            }
+            if (parts.length < 4 || parts[3].isBlank()) {
+                violations.add("collector credential " + id
+                        + " has no notAfter; production credentials must expire so rotation is enforced");
+                continue;
+            }
+            Instant notAfter;
+            try {
+                notAfter = CollectorCredentialRegistry.parseNotAfter(id, parts[3].trim());
+            } catch (IllegalStateException invalid) {
+                violations.add(invalid.getMessage());
+                continue;
+            }
+            Duration remaining = Duration.between(Instant.now(), notAfter);
+            if (remaining.isNegative() || remaining.isZero()) {
+                violations.add("collector credential " + id + " expired at " + notAfter
+                        + "; it can never authenticate again");
+            } else if (remaining.toDays() > CollectorCredentialRegistry.MAX_VALIDITY_DAYS) {
+                violations.add("collector credential " + id + " is valid for more than "
+                        + CollectorCredentialRegistry.MAX_VALIDITY_DAYS
+                        + " days; issue a shorter lifetime and rotate");
             }
         }
     }
@@ -341,8 +380,8 @@ public class ProdGuard {
         if (candidate == null || candidate.isBlank()) return false;
         byte[] expected = candidate.trim().getBytes(java.nio.charset.StandardCharsets.UTF_8);
         for (String entry : encoded.split(";")) {
-            String[] parts = entry.trim().split("\\|", 3);
-            if (parts.length == 3 && java.security.MessageDigest.isEqual(expected,
+            String[] parts = entry.trim().split("\\|", 4);
+            if (parts.length >= 3 && java.security.MessageDigest.isEqual(expected,
                     parts[2].trim().getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
                 return true;
             }

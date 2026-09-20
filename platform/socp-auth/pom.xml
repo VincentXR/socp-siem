@@ -34,6 +34,16 @@
             <artifactId>nimbus-jose-jwt</artifactId>
         </dependency>
 
+        <!-- 采集凭证到期/使用度指标（CollectorCredentialRegistry）。【必须 optional】与
+             spring-security-oauth2-resource-server 同理：不向 14 个服务传递新依赖。
+             运行期由 spring-boot-starter-actuator 提供（全部服务都已声明），缺失时
+             注册表退化为只记日志（Counter.NULL），鉴权行为不变。 -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- Resource Server：为后续接 Keycloak 做 @PreAuthorize / SecurityFilterChain 预留。
              【必须 optional】否则会传递到全部 14 个服务 → 引入 spring-security-core
              → 触发 Boot 的 SecurityAutoConfiguration → 所有接口被 HTTP Basic 兜底锁死，

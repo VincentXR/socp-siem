@@ -37,7 +37,7 @@ deployment units; preserve the context path and response envelope.
   list contract supports pagination.
 
 SOAR's unversioned compatibility routes retain their historical 0-based
-`page` request parameter. Every paged SOAR response now includes the complete
+`page` request parameter. Every paged SOAR response includes the complete
 `page`, `size`, `total`, `totalPages`, and `items` metadata; callers must use
 `totalPages` rather than inferring continuation from the returned item count.
 

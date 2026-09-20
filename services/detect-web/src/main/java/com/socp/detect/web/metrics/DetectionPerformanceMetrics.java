@@ -69,6 +69,17 @@ public class DetectionPerformanceMetrics implements RuleProcessingObserver {
     static final int MAX_TRACKED_TENANTS = 512;
 
     private final MeterRegistry registry;
+    /** Per-rule evaluation latency histogram name; the ReDoS regression signal. */
+    static final String RULE_EVALUATION = "socp.detection.rule.evaluation";
+    /**
+     * A single rule taking at least this many milliseconds on one event is
+     * counted as slow. It is a runtime observation, not a hard timeout: RE2/J
+     * keeps regex linear, so a "slow" rule points at pathological data volume
+     * or a mis-sized rule rather than a backtracking blow-up.
+     */
+    @org.springframework.beans.factory.annotation.Value("${socp.detect.rule.slow-ms:100}")
+    private long slowRuleMillis = 100;
+    private final Map<String, Timer> ruleTimers = new ConcurrentHashMap<>();
     /**
      * Resolved lazily: {@link DetectEngineService} is constructed with this
      * component as its rule-processing observer, so an eager constructor
@@ -177,6 +188,27 @@ public class DetectionPerformanceMetrics implements RuleProcessingObserver {
                 "declared_field", tagValue(declaredField),
                 "event_field", tagValue(eventRoutingField)).increment();
         if (event != null) trackTenant(event.tenantId());
+    }
+
+    /**
+     * Records per-rule evaluation latency. The rule id is a bounded vocabulary
+     * (the tenant catalogue), so the histogram cardinality tracks the rule count,
+     * not the event rate. A rule that clears static ReDoS validation but still
+     * hogs the worker thread surfaces here as a slow-rule counter.
+     */
+    @Override
+    public void ruleEvaluated(String ruleId, long nanos) {
+        String rule = tagValue(ruleId);
+        long duration = Math.max(0L, nanos);
+        ruleTimers.computeIfAbsent(rule, key -> Timer.builder(RULE_EVALUATION)
+                        .tag("rule", key)
+                        .maximumExpectedValue(Duration.ofSeconds(60))
+                        .publishPercentileHistogram()
+                        .register(registry))
+                .record(duration, TimeUnit.NANOSECONDS);
+        if (slowRuleMillis > 0 && duration >= slowRuleMillis * 1_000_000L) {
+            registry.counter("socp.detection.rule.slow", "rule", rule).increment();
+        }
     }
 
     /** Keeps an unbounded label value out of the registry without throwing on the event path. */

@@ -1,0 +1,15 @@
+# Container-backed tests that do not follow the naming/tag convention yet.
+# Shrink-only: rename the class to *ContainerTest (or add @Tag("container")) and drop
+# the line. New container-backed tests must never be added here.
+# See docs/testing.md and build/verify-package-layout.py.
+platform/socp-auth/src/test/java/com/socp/platform/auth/security/ProductionDatabaseRoleGuardPostgresTest.java
+platform/socp-rule/src/test/java/com/socp/rule/KafkaStreamsBrokerRecoveryComparisonTest.java
+platform/socp-tenant/src/test/java/com/socp/platform/tenant/persistence/TenantRlsPostgresTest.java
+platform/socp-test/src/test/java/com/socp/platform/test/ContainerIdempotencyContractTest.java
+services/alert-web/src/test/java/com/socp/alert/persistence/repository/AlarmEnrichmentPostgresConcurrencyTest.java
+services/detect-web/src/test/java/com/socp/detect/model/persistence/SecondaryAnalysisPostgresMigrationTest.java
+services/detect-web/src/test/java/com/socp/detect/web/persistence/store/DetectJournalPostgresMigrationTest.java
+services/detect-web/src/test/java/com/socp/detect/web/persistence/store/DetectionSnapshotPostgresConcurrencyTest.java
+services/incident-web/src/test/java/com/socp/incident/web/persistence/CaseTimelinePostgresTest.java
+services/search-config/src/test/java/com/socp/search/config/SearchConfigPostgresMigrationTest.java
+services/soar-web/src/test/java/com/socp/soar/web/persistence/SoarPostgresMigrationContractTest.java

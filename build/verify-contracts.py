@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from pathlib import Path
 import re
 import sys
@@ -12,6 +13,29 @@ from runtime_topology import topology_report
 
 ROOT = Path(__file__).resolve().parents[1]
 ENVELOPE_BASELINE = ROOT / "build" / "envelope-error-data-baseline.txt"
+# Each service copies its cross-cutting security/management block into
+# application.yml. Until those blocks converge on a shared classpath fragment,
+# this gate requires key-for-key parity.
+SECURITY_CORE_KEYS = {
+    "jwt-secret", "issuer-uri", "jwk-set-uri", "audience", "dev-bypass", "metrics-token",
+}
+# Keys a specific service legitimately adds on top of the core block. Empty means
+# "no extension allowed"; deleting a service from this map is how a retired extension
+# is noticed.
+SECURITY_EXTENSIONS = {
+    "api-gateway": {"service-secret", "require-gateway"},
+    "hips-web": {
+        "collector-credentials", "allow-global-ingest-token", "ingest-token", "ingest-paths",
+    },
+    "search-config": {"collector-credentials", "allow-global-ingest-token", "ingest-token"},
+}
+MANAGEMENT_EXPOSURE_DEFAULT = "health,info,metrics,prometheus"
+# The gateway deliberately publishes only /actuator/health; its authenticated actuator
+# contract is asserted separately below and by build/verify-actuator-auth.py.
+MANAGEMENT_EXPOSURE = {"api-gateway": "health"}
+# Services that ship no prod overlay: report-web has no datasource to switch and the
+# gateway's production shape is the Compose/Helm env, plus its own dev overlay.
+PROD_OVERLAY_OPTIONAL = {"api-gateway", "report-web"}
 OK_CALL = re.compile(r"ApiResult\.ok\s*\(")
 ENVELOPE_ERROR_LITERAL = re.compile(r'"(?:error|not_found)"')
 NOT_FOUND_SENTINEL = re.compile(r'"not_found"')
@@ -58,6 +82,86 @@ def enclosing_method(text: str, offset: int) -> str:
             continue
         best = tokens[-1]
     return best
+
+
+def config_parity_checks(errors: list[str], modules: list[str]) -> int:
+    """Compare each service's copied security/management block against the others.
+
+    Every service re-declares the same ``socp.security`` and actuator exposure block
+    because no shared classpath fragment exists yet. That is a maintenance cost the
+    repository has already paid (adding one metrics-token key touched 17 files), so
+    the copies are compared key-set-wise instead of being assumed equal.
+    """
+    try:
+        import yaml  # type: ignore
+    except ImportError as error:  # pragma: no cover - environment dependent
+        raise RuntimeError(
+            "PyYAML is required for the service configuration parity gate: "
+            "python -m pip install pyyaml") from error
+
+    def document_of(path: Path) -> dict:
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        return document if isinstance(document, dict) else {}
+
+    def branch(document: dict, *keys: str) -> dict:
+        current: object = document
+        for key in keys:
+            if not isinstance(current, dict):
+                return {}
+            current = current.get(key)
+        return current if isinstance(current, dict) else {}
+
+    observed: dict[str, dict[str, str]] = {}
+    checked = 0
+    for module in modules:
+        path = ROOT / "services" / module / "src/main/resources/application.yml"
+        relative = f"services/{module}/src/main/resources/application.yml"
+        if not path.is_file():
+            errors.append(f"{relative}: missing")
+            continue
+        document = document_of(path)
+        security = branch(document, "socp", "security")
+        if not security:
+            errors.append(f"{relative}: socp.security block disappeared; every service enforces its own auth")
+        missing = sorted(SECURITY_CORE_KEYS - set(security))
+        if missing:
+            errors.append(f"{relative}: socp.security is missing shared keys {missing}")
+        extensions = SECURITY_EXTENSIONS.get(module, set())
+        undeclared = sorted(set(security) - SECURITY_CORE_KEYS - extensions)
+        if undeclared:
+            errors.append(
+                f"{relative}: socp.security adds keys {undeclared} that no other service declares; "
+                "either declare them in SECURITY_EXTENSIONS with a reason or promote them to the core set")
+        vanished = sorted(extensions - set(security))
+        if vanished:
+            errors.append(
+                f"{relative}: SECURITY_EXTENSIONS still lists {vanished} but the service dropped them")
+        observed[module] = {key: str(value) for key, value in security.items()}
+
+        exposure = branch(document, "management", "endpoints", "web", "exposure").get("include")
+        expected_exposure = MANAGEMENT_EXPOSURE.get(module, MANAGEMENT_EXPOSURE_DEFAULT)
+        if str(exposure) != expected_exposure:
+            errors.append(
+                f"{relative}: actuator exposure must be '{expected_exposure}', found '{exposure}'")
+        if module not in PROD_OVERLAY_OPTIONAL and not (path.parent / "application-prod.yml").is_file():
+            errors.append(
+                f"services/{module}: no application-prod.yml overlay; add one or list the service in "
+                "PROD_OVERLAY_OPTIONAL with the reason")
+        checked += 1
+
+    by_key: dict[str, dict[str, str]] = defaultdict(dict)
+    for module, security in observed.items():
+        for key, value in security.items():
+            by_key[key][module] = value
+    for key, renderings in sorted(by_key.items()):
+        variants = sorted(set(renderings.values()))
+        if len(variants) > 1:
+            errors.append(
+                f"socp.security.{key} is rendered {len(variants)} ways across services: "
+                + "; ".join(
+                    f"{value} <- {sorted(module for module, got in renderings.items() if got == value)}"
+                    for value in variants))
+    return checked
 
 
 def envelope_findings() -> set[str]:
@@ -143,6 +247,39 @@ def main() -> int:
     health_names = set(re.findall(r"\{ name: '([a-z0-9-]+)' \}", health_registry))
     if health_names != set(services):
         errors.append(f"frontend health registry drift: missing={sorted(set(services) - health_names)} extra={sorted(health_names - set(services))}")
+
+    # The gateway's snapshot service keeps its own hard-coded name list, which
+    # the overview card renders. Nothing derived it from the registry, so a
+    # renamed or added service silently disappeared from the aggregate.
+    snapshot_source = (
+        ROOT / "services/api-gateway/src/main/java/com/socp/gateway/api/health/"
+        "HealthSnapshotService.java"
+    ).read_text(encoding="utf-8")
+    snapshot_list = re.search(r"SERVICE_NAMES\s*=\s*List\.of\((.*?)\);", snapshot_source, re.DOTALL)
+    if snapshot_list is None:
+        errors.append("gateway health registry: SERVICE_NAMES constant no longer parses as List.of(...)")
+        gateway_names = []
+    else:
+        gateway_names = re.findall(r'"([a-z0-9-]+)"', snapshot_list.group(1))
+    if len(gateway_names) != len(set(gateway_names)):
+        errors.append("gateway health SERVICE_NAMES contains duplicates")
+    if set(gateway_names) != set(services):
+        errors.append(
+            "gateway health registry drift: "
+            f"missing={sorted(set(services) - set(gateway_names))} "
+            f"extra={sorted(set(gateway_names) - set(services))}")
+
+    # The release runbook ships a port table to operators. It must be rendered
+    # from build/ports.env at packaging time; a hand-copied table drifts the
+    # moment a port moves and no gate reads it.
+    release_script = (ROOT / "build/package-release.sh").read_text(encoding="utf-8")
+    if "ports.py" not in release_script or "--markdown-table" not in release_script:
+        errors.append("package-release.sh must render the RELEASE.md port table from build/ports.py")
+    for module in modules:
+        if re.search(rf"{re.escape(module)}\s+1\d{{4}}\b", release_script):
+            errors.append(f"package-release.sh hand-copies the {module} port instead of rendering it")
+
+    parity_checked = config_parity_checks(errors, modules)
 
     runtime = topology_report()
     errors.extend(f"runtime topology: {error}" for error in runtime["errors"])
@@ -470,7 +607,8 @@ def main() -> int:
         f"Contract gate passed: {len(modules)} modules, {len(services)} default processes, "
         f"no fixed process target, {runtime['logicalDomainCount']} logical domains, "
         f"{len(runtime['consolidationCandidates'])} consolidation candidates, "
-        f"{len(route_ids)} gateway routes, envelope debt={len(envelope_debt)}"
+        f"{len(route_ids)} gateway routes, {parity_checked} service config copies compared, "
+        f"envelope debt={len(envelope_debt)}"
     )
     return 0
 

@@ -1,6 +1,6 @@
 # ADR 006: select one production Detection runtime
 
-Status: accepted for incremental migration
+Status: accepted
 
 ## Context
 
@@ -8,10 +8,10 @@ The Detection path needs one authoritative execution model. A second runtime
 would create two interpretations of partition ownership, state recovery,
 late-event policy, result commits, and rule-version promotion.
 
-This remediation compared the existing partition-lane consumer with a narrow
-Kafka Streams topology. The comparison covers out-of-order threshold input,
-live rule configuration, and materialized state. It is intentionally not a
-production topology and does not own SOCP's PostgreSQL result/outbox boundary.
+The decision compares the partition-lane consumer with a narrow Kafka Streams
+reference topology. The reference covers out-of-order threshold input, live
+rule configuration, and materialized state. It is test-scoped and does not own
+SOCP's PostgreSQL result/outbox boundary.
 
 ## Decision
 
@@ -25,9 +25,8 @@ compatibility role.
 
 Kafka Streams remains test-scoped comparison code in `platform/socp-rule`.
 It must not be added to a deployed service, production dependency set, or
-runtime topology. There is no production migration to perform in this round;
-the current runtime is the selected target and its explicit state protocol is
-the contract to operate.
+runtime topology. The partition-lane runtime and its explicit state protocol
+are the production contract.
 
 ## Rationale
 
@@ -50,17 +49,14 @@ concepts, but it does not replace those external commit and fencing semantics.
 Keeping it test-scoped therefore gives a reference without introducing a
 second production meaning of a Detection state unit.
 
-## Rollout and exit evidence
+## Replacement criteria
 
-No dual production run is planned. Operators deploy the API and worker roles
-independently, keep the worker on one Kafka group, and use the existing owner
-lease, snapshot, replay, and Outbox metrics during rollout. A future runtime
-replacement would require an isolated compatibility test, an explicit state
-format migration, replay/result parity, failure recovery, and a reversible
-cutover plan before changing this ADR.
+Operators deploy the API and worker roles independently, keep workers on one
+Kafka group, and observe owner leases, snapshots, replay, and Outbox metrics
+during rollout. Replacing the runtime requires an isolated compatibility test,
+an explicit state-format migration, replay/result parity, failure recovery,
+and a reversible cutover plan before changing this ADR.
 
-The isolated `KafkaStreamsDetectionComparisonTest` passes for the current
-comparison cases. The broker-backed changelog test is opt-in through
-`SOCP_TESTCONTAINERS=true`; it remains pending when Docker/Kafka middleware is
-unavailable. That environment limitation is evidence still required for
-Stage B, not a reason to deploy a second runtime.
+`KafkaStreamsDetectionComparisonTest` is reference evidence only. Its
+broker-backed changelog case requires `SOCP_TESTCONTAINERS=true`; absence of
+that environment does not authorize a second production runtime.

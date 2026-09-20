@@ -1,4 +1,4 @@
-# Event-path observability contract
+# Event-path observability and tracing
 
 The event path exposes bounded, stage-oriented metrics rather than one series
 per event:
@@ -47,7 +47,7 @@ per event:
   (Prometheus `socp_detection_rule_routing_mismatch_total`; Micrometer counters
   export with a `_total` suffix) emits one report per rule
   per window when an event's routing field does not carry the key the rule
-  declared, making the partition-local state contract a falsifiable observation;
+  declared, making the routed-state contract a falsifiable observation;
   its series count is bounded by the rule catalogue and the field vocabulary,
   never by the event rate.
 
@@ -79,7 +79,7 @@ can resolve again.
 | `SocpDetectionOffsetPinned` | `max(socp_detection_offset_pinned) > 10000` for 15m | Normal in-flight processing keeps the pin far below one lane queue; a sustained six-digit pin means a record never finalizes and the commit watermark cannot advance. |
 | Detection retry blocked (`SocpDetectionRetryBlocked`) | blocked partitions `> 0` and oldest block `> 300s` | Five minutes distinguishes ordinary dependency jitter from a recovery path that needs operator attention. Alert on age, not every retry attempt. |
 | `SocpDetectionDlqHandoffGrowth` | `increase(socp_detection_dlq_handoff_total{outcome="committed"}[15m]) > 0` | Dependency outages must leave the committed hand-off flat; growth means poison records reached the dead-letter topic and need the redrive procedure. |
-| `SocpDetectionRoutingMismatchGrowth` | `increase(socp_detection_rule_routing_mismatch_total[30m]) > 0` for 10m | A falsifiable observation of the partition-local state contract; ticket-level content quality, not an outage. |
+| `SocpDetectionRoutingMismatchGrowth` | `increase(socp_detection_rule_routing_mismatch_total[30m]) > 0` for 10m | A routed-state contract mismatch; ticket-level content quality, not an outage. |
 | Search retention lag (`SocpSearchRetentionLag`) | `socp_search_event_retention_lag_seconds > 3600` for two cleanup windows | The worker is designed to catch up in bounded rounds; sustained lag means delete throughput is below ingest/backlog growth or rows are protected by unresolved outbox work. |
 
 Two properties are worth stating because they are easy to get wrong and the
@@ -111,3 +111,50 @@ Multiple API instances use `SKIP LOCKED` batches, so they should make progress
 without serializing on the same event rows. Increasing the per-transaction batch
 without checking database I/O/replication lag is not the first response; adjust
 the bounded run window/catch-up pause only after measuring the database.
+
+## Distributed tracing
+
+The event path crosses HTTP, Kafka, scheduler, and consumer-thread boundaries.
+Putting a `traceId` in the MDC provides log correlation, but it does not create
+a parent/child span tree. W3C `traceparent` carries the wire context;
+`io.opentelemetry.context.Context` is the in-process parent.
+
+| Hop | Carrier | Parent source |
+| --- | --- | --- |
+| Client → gateway | HTTP `traceparent` | inbound request context |
+| Gateway → service | HTTP `traceparent` | gateway SERVER span |
+| Service → Kafka | record header `traceparent` | current or persisted context |
+| Kafka → consumer | record header `traceparent` | context extracted from the record |
+
+`platform/socp-obs` provides transport-neutral extraction, injection, span
+creation, and `traceparent` rendering. `platform/socp-client` provides Kafka
+header adapters and consumer-span lifecycle helpers.
+
+### HTTP and Kafka boundaries
+
+`GatewayFilter` extracts the caller context, opens a SERVER span, overwrites
+the forwarded `traceparent` with that span, and ends it from the WebFlux
+reactive signal. This prevents an inbound header from choosing the parent of a
+downstream service span or leaving a span open on the wrong thread.
+
+Kafka producers inject a PRODUCER span. Consumers extract it and create a
+CONSUMER child span. Transactional outboxes publish later on scheduler threads,
+so the Ingestion and Detection Alert outboxes persist `traceparent` when the
+business transaction is still current and rejoin it when publishing. Copying a
+trace ID without reconstructing the parent context would produce a dangling
+tree and is not sufficient.
+
+### Export and verification
+
+Export is opt-in:
+
+```bash
+SOCP_TRACING_ENABLED=true
+SOCP_OTLP_ENDPOINT=http://localhost:4317
+```
+
+With export disabled, the legacy `X-Trace-Id` path still provides log
+correlation. `KafkaTraceTest` asserts exported span relationships: consumer
+parentage, producer header identity, outbox context rejoin, and clean root
+creation when no valid header exists. Tests must inspect exported span data,
+not merely equal MDC strings.

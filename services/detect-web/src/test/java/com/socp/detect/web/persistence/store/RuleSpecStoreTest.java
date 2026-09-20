@@ -1,8 +1,11 @@
 package com.socp.detect.web.persistence.store;
 
 
+import com.socp.detect.web.persistence.repository.RuleContentConflictRepository;
 import com.socp.detect.web.persistence.repository.RuleRepository;
+import com.socp.detect.web.persistence.repository.RuleRevisionRepository;
 import com.socp.detect.web.persistence.entity.RuleEntity;
+import com.socp.detect.web.persistence.entity.RuleRevisionEntity;
 import com.socp.platform.error.exception.ApiException;
 import com.socp.platform.tenant.context.TenantContext;
 import static org.mockito.Mockito.mock;
@@ -32,7 +35,7 @@ class RuleSpecStoreTest {
         RuleRepository repository = mock(RuleRepository.class);
         when(repository.countByTenantId("default")).thenReturn(0L);
 
-        new RuleSpecStore(repository);
+        new RuleSpecStore(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
 
         verify(repository, org.mockito.Mockito.atLeastOnce()).save(any(RuleEntity.class));
     }
@@ -48,7 +51,7 @@ class RuleSpecStoreTest {
         when(repository.findByRuleIdAndTenantId(any(), any())).thenAnswer(invocation ->
                 "AUTH-BRUTE".equals(invocation.getArgument(0)) ? Optional.of(old) : Optional.empty());
 
-        new RuleSpecStore(repository);
+        new RuleSpecStore(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
 
         ArgumentCaptor<RuleEntity> saved = ArgumentCaptor.forClass(RuleEntity.class);
         verify(repository, org.mockito.Mockito.atLeastOnce()).save(saved.capture());
@@ -65,7 +68,7 @@ class RuleSpecStoreTest {
         when(repository.countByTenantId("default")).thenReturn(1L);
         when(repository.findByRuleIdAndTenantId(any(), any())).thenReturn(Optional.of(userRule));
 
-        new RuleSpecStore(repository);
+        new RuleSpecStore(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
 
         verify(repository, never()).save(any(RuleEntity.class));
     }
@@ -81,7 +84,7 @@ class RuleSpecStoreTest {
         when(repository.countByTenantId("default")).thenReturn(1L);
         when(repository.findByRuleIdAndTenantId(any(), any())).thenReturn(Optional.of(customized));
 
-        new RuleSpecStore(repository);
+        new RuleSpecStore(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
 
         verify(repository, never()).save(any(RuleEntity.class));
     }
@@ -97,7 +100,7 @@ class RuleSpecStoreTest {
                     + "\",\"contentPack\":\"socp-core-detections\","
                     + "\"contentVersion\":\"" + currentPackVersion + "\"}"));
         });
-        RuleSpecStore store = new RuleSpecStore(repository);
+        RuleSpecStore store = new RuleSpecStore(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
         clearInvocations(repository);
 
         @SuppressWarnings("unchecked")
@@ -137,7 +140,7 @@ class RuleSpecStoreTest {
                     + "\",\"contentPack\":\"socp-core-detections\","
                     + "\"contentVersion\":\"" + currentPackVersion + "\"}"));
         });
-        RuleSpecStore store = new RuleSpecStore(repository);
+        RuleSpecStore store = new RuleSpecStore(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
         clearInvocations(repository);
 
         Map<String, Object> user = new LinkedHashMap<>();
@@ -178,7 +181,7 @@ class RuleSpecStoreTest {
         when(repository.save(any(RuleEntity.class)))
                 .thenThrow(new DataIntegrityViolationException("concurrent insert"));
 
-        assertDoesNotThrow(() -> new RuleSpecStore(repository));
+        assertDoesNotThrow(() -> new RuleSpecStore(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class)));
     }
 
     @Test
@@ -186,7 +189,7 @@ class RuleSpecStoreTest {
         RuleRepository repository = mock(RuleRepository.class);
         RuleEntity userRule = entity("user-owned", "{\"id\":\"user-owned\",\"owner\":\"local-user\"}");
         when(repository.findByRuleIdAndTenantId(any(), any())).thenReturn(Optional.of(userRule));
-        RuleSpecStore store = new RuleSpecStore(repository);
+        RuleSpecStore store = new RuleSpecStore(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
 
         Map<String, Object> invalid = new LinkedHashMap<>();
         invalid.put("id", "cross-entity");
@@ -215,7 +218,7 @@ class RuleSpecStoreTest {
         RuleRepository repository = mock(RuleRepository.class);
         when(repository.countByTenantId("default")).thenReturn(1L);
         when(repository.findByRuleIdAndTenantId(any(), any())).thenReturn(Optional.empty());
-        RuleSpecStore store = new RuleSpecStore(repository);
+        RuleSpecStore store = new RuleSpecStore(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
         Map<String, Object> spec = windowRule("1w");
 
         TenantContext.set("default");
@@ -241,7 +244,7 @@ class RuleSpecStoreTest {
         RuleRepository repository = mock(RuleRepository.class);
         when(repository.countByTenantId("default")).thenReturn(1L);
         when(repository.findByRuleIdAndTenantId(any(), any())).thenReturn(Optional.empty());
-        RuleSpecStore store = new RuleSpecStore(repository);
+        RuleSpecStore store = new RuleSpecStore(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
         Map<String, Object> spec = windowRule("60s");
         // groupBy/keyField/routingField agree inside the document, so persistence
         // cannot see the cross-dimension risk; it advises instead of rejecting,
@@ -260,6 +263,88 @@ class RuleSpecStoreTest {
         verify(repository).save(org.mockito.ArgumentMatchers.argThat(row ->
                 String.valueOf(row.getSpec()).contains("\"id\":\"window-rule\"")
                         && String.valueOf(row.getSpec()).contains("\"groupBy\":\"user\"")));
+    }
+
+    @Test
+    void userSaveAppendsVersionChainRow() {
+        RuleRepository repository = mock(RuleRepository.class);
+        RuleRevisionRepository revisionRepository = mock(RuleRevisionRepository.class);
+        when(repository.countByTenantId("default")).thenReturn(1L);
+        when(repository.findByRuleIdAndTenantId(any(), any())).thenReturn(Optional.empty());
+        when(revisionRepository.maxRevision(any(), any())).thenReturn(0L, 1L);
+        RuleSpecStore store = new RuleSpecStore(repository, revisionRepository,
+                mock(RuleContentConflictRepository.class));
+
+        Map<String, Object> rule = new LinkedHashMap<>();
+        rule.put("id", "chain-rule");
+        rule.put("name", "chain-rule");
+        rule.put("type", "pattern");
+        rule.put("severity", "HIGH");
+        rule.put("version", "1");
+        rule.put("owner", "analyst");
+        rule.put("status", "TESTING");
+        rule.put("match", java.util.List.of(Map.of("field", "msg", "op", "contains", "value", "boom")));
+
+        TenantContext.set("default");
+        try {
+            store.save(rule);
+            store.save(rule);
+        } finally {
+            TenantContext.clear();
+        }
+
+        ArgumentCaptor<RuleRevisionEntity> chain = ArgumentCaptor.forClass(RuleRevisionEntity.class);
+        verify(revisionRepository, org.mockito.Mockito.times(2)).save(chain.capture());
+        assertEquals(1L, chain.getAllValues().get(0).getRevision());
+        assertEquals(2L, chain.getAllValues().get(1).getRevision());
+        assertEquals("chain-rule", chain.getAllValues().get(0).getRuleId());
+        assertEquals("ADD", chain.getAllValues().get(0).getSource());
+        assertTrue(chain.getAllValues().get(0).getSpec().contains("\"id\":\"chain-rule\""));
+    }
+
+    @Test
+    void customizedPackagedRuleWithNewerPackRecordsConflictWithoutOverwrite() {
+        String currentPackVersion = String.valueOf(DetectionContentCatalog.manifest().get("version"));
+        RuleRepository repository = mock(RuleRepository.class);
+        RuleContentConflictRepository conflictRepository = mock(RuleContentConflictRepository.class);
+        RuleEntity customized = entity("AUTH-BRUTE", """
+                {"id":"AUTH-BRUTE","contentPack":"socp-core-detections",
+                 "contentVersion":"2026.08.19","contentCustomized":true,
+                 "status":"DISABLED","enabled":false}
+                """);
+        when(repository.countByTenantId("default")).thenReturn(1L);
+        when(repository.findByRuleIdAndTenantId(any(), any())).thenReturn(Optional.of(customized));
+        when(conflictRepository.findByTenantIdAndRuleIdAndContentPackAndPackVersion(
+                any(), any(), any(), any())).thenReturn(Optional.empty());
+
+        new RuleSpecStore(repository, mock(RuleRevisionRepository.class), conflictRepository);
+
+        // Local tuning stays authoritative: the pack never rewrites the row, and
+        // a pending upgrade conflict is recorded so the divergence is visible.
+        verify(repository, never()).save(any(RuleEntity.class));
+        verify(conflictRepository).save(org.mockito.ArgumentMatchers.argThat(conflict ->
+                "AUTH-BRUTE".equals(conflict.getRuleId())
+                        && "PENDING".equals(conflict.getStatus())
+                        && currentPackVersion.equals(conflict.getPackVersion())
+                        && "2026.08.19".equals(conflict.getStoredVersion())));
+    }
+
+    @Test
+    void customizedPackagedRuleAtCurrentVersionRecordsNoConflict() {
+        String currentPackVersion = String.valueOf(DetectionContentCatalog.manifest().get("version"));
+        RuleRepository repository = mock(RuleRepository.class);
+        RuleContentConflictRepository conflictRepository = mock(RuleContentConflictRepository.class);
+        RuleEntity customized = entity("AUTH-BRUTE", """
+                {"id":"AUTH-BRUTE","contentPack":"socp-core-detections",
+                 "contentVersion":"%s","contentCustomized":true}
+                """.formatted(currentPackVersion));
+        when(repository.countByTenantId("default")).thenReturn(1L);
+        when(repository.findByRuleIdAndTenantId(any(), any())).thenReturn(Optional.of(customized));
+
+        new RuleSpecStore(repository, mock(RuleRevisionRepository.class), conflictRepository);
+
+        verify(repository, never()).save(any(RuleEntity.class));
+        verify(conflictRepository, never()).save(any());
     }
 
     private static Map<String, Object> windowRule(String window) {

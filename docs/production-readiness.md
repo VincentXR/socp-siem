@@ -1,9 +1,37 @@
 # Production delivery baseline
 
-The repository now contains a reviewable deployment contract, but the local
+The repository contains a deployment contract, but the local
 Compose stack remains a single-node integration environment. A production
 rollout is complete only after the deployment owner supplies the external
 dependencies and records the evidence listed below.
+
+## Service readiness matrix
+
+Readiness is recorded by dimension. A green local or CI correctness result is
+not a production HA, capacity, or external-integration claim.
+
+| Service group | Correctness evidence | Security boundary | Operational readiness | External acceptance |
+|---|---|---|---|---|
+| Gateway/auth | Unit + browser flows | JWT/JWKS, CSRF-origin checks, distributed login/service-token limits, security headers | Redis-backed limits and production fail-fast | IdP, proxy trust, certificates, and secret rotation |
+| Ingest/search | Pipeline and duplicate/recovery chaos | Collector identity binds source and tenant; validation follows authentication | Durable Ingestion Outbox and Kafka/OpenSearch recovery | Collector inventory, sizing, and backups |
+| Detection | Rule vectors, journal/outbox tests, rebalance oracle | Owning service rechecks mutation and service identity | Durable journal/outbox, partition ownership, lag evidence | Capacity/SLO and broker/database HA |
+| Alert/incident | Idempotency, timeline, and downstream receipt tests | Tenant-scoped queries and negative authorization tests | Durable fan-out receipts, stale-claim recovery, replay | ClickHouse retention, notification vendors, case workflow acceptance |
+| SOAR/notify | Action/dispatch and approval tests | Service-only boundaries; production rejects simulation | Durable execution and dispatch state | Real connector/vendor certification |
+| Assets/HIPS/threat/ATT&CK | CRUD/import/tenant tests | Role-gated mutation and ingest identity | PostgreSQL-backed state | CMDB, agents, feeds, and content lifecycle |
+| Reports | Query/archive tests | Tenant-scoped report paths | ClickHouse and object-store adapters | Retention, object lock, restore, and report SLO |
+| AI assistant | Versioned dataset exercises evidence composition and human approval | Evidence is untrusted; no automatic containment | Deterministic fallback and bounded tools/timeouts | Model quality, privacy, and safety acceptance |
+
+`correctness evidence` means the repository has an executable oracle for the
+named invariant, not that every workload or failure has been explored.
+`operational readiness` covers repository-owned state, recovery, and
+observability. Multi-zone failover, capacity, backup/restore, SLO burn rates,
+and third-party acceptance remain deployment-owned. Until those dimensions
+close, a service is integration-ready or preview rather than generally
+production-ready.
+
+The authoritative commands and cadence live in
+[validation-matrix.md](validation-matrix.md). Evidence is commit-scoped; a
+successful workflow from an older revision is not proof for HEAD.
 
 ## Application packaging
 

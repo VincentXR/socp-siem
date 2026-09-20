@@ -20,10 +20,8 @@ DESTRUCTIVE = re.compile(r"\b(?:DROP\s+(?:DATABASE|SCHEMA)|TRUNCATE\s+TABLE)\b",
 TRACKED_MIGRATION = re.compile(r"(?:^|/)src/main/resources/db/[^/]+/[^/]+\.sql$")
 REMEDIATION = (
     "A published version may be reverted to a blob it already shipped with, never edited: "
-    "restore the untouched published text (git checkout HEAD -- {path} when the pending edit is "
-    "the rewrite, or the pre-rewrite published blob when the rewrite was already committed) and "
-    "deliver the statement in a new higher version, mirroring threat-web V1/V2 revert plus V4/V5 "
-    "replay and alert-web V1 with V4/V20."
+    "restore {path} to byte-identical text from a trusted published revision and deliver the "
+    "intended statement in a new higher version."
 )
 
 
@@ -85,8 +83,8 @@ def check_published_migrations(errors: list[str], root: Path = ROOT) -> list[str
     ``flyway_schema_history``, so every existing database fails validation while
     the edited statements never re-run there -- only new databases get the edited
     text and the two fleets silently diverge. Restoring a file byte-for-byte to
-    one of its own published blobs is the sanctioned remediation half (revert,
-    then replay in a newer version), so it is reported rather than failed.
+    one of its own published blobs is the permitted restore step (restore, then
+    replay in a newer version), so it is reported rather than failed.
     New files are never listed by ``git diff HEAD`` and stay allowed.
     """
     if not git_lines(root, "rev-parse", "HEAD"):
@@ -128,12 +126,10 @@ def check_published_migrations(errors: list[str], root: Path = ROOT) -> list[str
 def audit_published_history(root: Path = ROOT) -> list[str]:
     """Every commit already published on HEAD that rewrote an existing migration.
 
-    The default verdict only inspects pending edits, so it cannot see a rewrite
-    that was committed: afc86f48 edited threat V2 and 50ba514a edited alert/detect
-    migrations, and both stay invisible to a clean working tree. This inventory
-    names every such commit so its owning module can revert the file and replay
-    the statement in a new version. Kept behind --published-history because the
-    published history already contains offenders.
+    The default verdict inspects pending edits and cannot see a rewrite already
+    committed to history. This inventory names each such commit so the owning
+    module can restore the file and replay the statement in a new version. It is
+    opt-in because existing repository history can contain known offenders.
     """
     lines = git_lines(
         root, "log", "--format=commit\t%h\t%s", "--no-renames", "--diff-filter=M",

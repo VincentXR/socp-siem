@@ -29,6 +29,8 @@ correctness and recovery behavior, not a production capacity or HA claim.
 | Search retention PostgreSQL | `SOCP_TESTCONTAINERS=true bash build/mvnw.sh -pl services/search-config -am test -Dtest=SearchConfigPostgresMigrationTest -Dsurefire.failIfNoSpecifiedTests=false` | Actual repository delete SQL migrates cleanly, skips competing row locks, preserves unresolved outbox-linked events, and drains eligible backlog in bounded batches | Search persistence/retention change |
 | Secondary-analysis PostgreSQL upgrade | `SOCP_TESTCONTAINERS=true bash build/mvnw.sh -pl services/detect-web -Dtest=SecondaryAnalysisPostgresMigrationTest test -Dsurefire.failIfNoSpecifiedTests=false` | Existing V1 rows upgrade through V4, tenant backfill is preserved, and receipt identity remains unique after detect-model consolidation | Detection persistence change/CI integration |
 | Routed multi-instance | `SOCP_DETECT_INPUT_TOPIC=socp-detection-routed-v2 SOCP_DETECT_ROUTING_MODE=primary SOCP_DETECT_OUTPUT_MODE=primary SOCP_DETECT_ROUTING_PUBLISHER_ENABLED=true bash build/detection-cluster.sh start && RECOVERY_TOPIC=socp-detection-routed-v2 python build/chaos-pipeline.py --scenario multi_instance --rebalance-cycles 3` | Exactly 3 Detection instances / 6 routed partitions, disjoint ownership before/after repeated rebalance, independent exact alert-ID oracle, same-user correlation across different IP/host, same username isolated across tenants, one canonical source receipt per source position, bounded fan-out <= 5, distinct delivery journal identities, zero routed/source lag, no duplicates, and `pendingEvents == 0` | Weekly/release candidate |
+| Routed migration integrity | `python build/chaos-pipeline.py --scenario routed_migration` (same routed cluster env as above) | Republished canonical events create new source receipts but one delivery identity and one alert; an ACTIVE stateful rule with `routingField != groupBy` is reported UNSUPPORTED per rule, keeps canonical offsets uncommitted, produces no phantom alerts, and removal drains the deferred work to the exact oracle | Weekly/release candidate |
+| Routing rollback | `python build/chaos-pipeline.py --scenario routing_rollback` (same routed cluster env as above) | Legacy-input restart keeps the formal alert path exact, reports `LEGACY_PARTIAL` rather than cross-dimension completeness, and the routed generation restores and drains afterwards | Weekly/release candidate |
 | Full API | `python build/verify-full.py` | Resource CRUD, tenancy, import/export, threat, and response contracts | Scheduled/release candidate |
 | OpenAPI SDK | `python build/verify-openapi-sdk.py` (add `SOAR_OPENAPI_REQUIRE_RUNTIME=true` and runtime URLs for deployment mode) | 71-operation TypeScript SDK generation, strict compilation, runtime `/v3/api-docs` parity, `SOCP_SESSION`, `X-Tenant-Id`, `ApiResult`, ETag/If-Match, status codes, and error envelopes | Every API change/release candidate |
 | Actuator boundary | `python build/verify-actuator-auth.py` | Gateway health remains probeable while info, metrics, and route metadata return 401 without credentials | Full-stack/release candidate |
@@ -84,9 +86,7 @@ profiles. Retain JSON reports with machine profile, commit, rules, instances, pa
 batch-request P50/P95/P99, `alertCreatedAt - triggerIngestedAt` latency sample,
 Kafka lag, Detection stats, expected/observed alert counts, and recovery
 observations. Use the same event shape and a clean test tenant. This is a
-repeatable local baseline, not a production throughput or HA claim. The
-sanitized reference snapshot records 10,000 realistic events and 1,000
-alert-heavy events; larger runs are optional evidence, not a release gate.
+repeatable local baseline, not a production throughput or HA claim.
 
 Do not commit local usernames, absolute paths, hardware identifiers, email
 addresses, tokens, passwords, or machine-specific screenshots.

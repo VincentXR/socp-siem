@@ -11,7 +11,9 @@ flowchart LR
   S[Vector / NDJSON / collectors] --> P[search-config<br/>parse + normalize + enrich]
   P --> IO[(Ingestion Outbox<br/>same DB transaction)]
   IO --> K[(Kafka<br/>socp-events)]
-  K --> D[detect-web-worker<br/>rule engine + UEBA]
+  K --> R[Detection router<br/>durable dimension fan-out]
+  R --> RK[(Kafka<br/>socp-detection-routed-v2)]
+  RK --> D[detect-web-worker<br/>rule engine + UEBA]
   K --> IX[OpenSearch index consumer]
   IX --> OS[(OpenSearch<br/>raw event search)]
   D --> DO[(Detection Alert Outbox<br/>PostgreSQL/H2)]
@@ -35,9 +37,10 @@ flowchart LR
 `search-config` is the normalization boundary. It converts vendor-specific
 input into a canonical event and writes the local event plus an Ingestion
 Outbox row in one transaction. The publisher waits for Kafka acknowledgement
-before marking that row published. Detection and indexing consume the same
-stream independently, so search indexing does not block detection and either
-consumer can process Kafka backlog after recovery.
+before marking that row published. Indexing consumes the canonical stream;
+the Detection router durably fans each source event out once per required
+state dimension before workers evaluate the routed stream. Search indexing
+and Detection recover their Kafka backlogs independently.
 
 Source-bound parsing, the supported filter subset, and the exact Vector
 envelope are documented in [ingestion parsing](ingestion-parsing.md).
@@ -59,7 +62,8 @@ notification, SOAR, and analytics consumers.
 |---|---|---|
 | Ingestion and parsing | Vector, collectors, `search-config` | Vendor formats stay outside detection rules |
 | Ingestion publication | `t_ingestion_outbox` | Event persistence and Kafka publication intent commit atomically |
-| Event transport | Kafka `socp-events`, rule-change, alarm topics | Separates ingestion, detection, indexing, and fan-out |
+| Event transport | Kafka `socp-events`, `socp-detection-routed-v2`, rule-change, and alarm topics | Separates canonical ingestion, dimension routing, detection, indexing, and downstream fan-out |
+| Detection routing | `t_detection_route_source` and routing outbox | Durable, bounded fan-out once per required state dimension |
 | Detection | `socp-rule` and the secondary analyzer embedded in `detect-web-worker` (`detect-web-api` owns management) | Rules, hot reload, suppression, windows, backpressure; secondary analysis uses its own persistence unit |
 | Detection recovery | `t_detection_event` | Event lifecycle, partition ownership, time-bounded paginated replay |
 | Detection alert hand-off | `t_detection_alert_outbox` | Durable Alert Web delivery and retry |
@@ -169,18 +173,20 @@ outbox retry logs provide operational evidence for the event path.
 
 ## Known scaling boundaries
 
-Detection keeps hot rule windows in process, while accepted events and event
-claims are persisted in `t_detection_event`. The producer routes by the stable
-`tenant_id | detection_routing_field | detection_routing_value` key, and a
-consumer restores only journal rows for its assigned partitions.
+Detection keeps hot rule windows in process, while canonical source receipts,
+routing intents, and routed event claims are durable. Routed deliveries use
+the stable `tenant_id | grouping_dimension | grouping_value` key, and a
+consumer restores only journal rows for its assigned routed partitions.
 
 Entity risk is not instance-local hot state. Deterministic alert IDs feed a
 shared risk-event table and a locked profile projection, so a rebalance does
 not change the served risk value.
 
-A stateful rule is strictly partition-local only when its `keyField` matches
-the event routing field. A rule grouped by another entity dimension requires a
-shared state or fan-out design and is explicitly outside the strict guarantee.
+A stateful rule must use the same dimension for `groupBy`, `keyField`, and
+`routingField`. The routed-v2 plan fans a source event out once per unique
+dimension required by active rules; unsupported dimensions or missing values
+fail closed or are recorded explicitly. Legacy canonical-topic mode is a
+migration/rollback path and reports `LEGACY_PARTIAL` for cross-dimension state.
 Journal replay is bounded to the configured retention and read in pages; the
 implementation does not silently truncate at a fixed row count. Kafka,
 OpenSearch, PostgreSQL, and ClickHouse are single-node dependencies in the

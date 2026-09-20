@@ -13,27 +13,22 @@ directory instead of source control.
 - [Module map](module-map.md)
 - [Testing guide](testing.md)
 - [Validation matrix](validation-matrix.md)
-- [Service readiness matrix](maturity-matrix.md)
+- [Production readiness and service matrix](production-readiness.md)
 
 ## Architecture and platform contracts
 
 - [API compatibility](api-contract.md)
-- [Canonical event schema](event-schema.md)
 - [Tenant isolation](tenant-isolation.md)
 - [Hardening and evidence](hardening-evidence.md)
 - [Idempotency](idempotency-contract.md)
-- [Event-path observability](observability-stage-metrics.md)
-- [Distributed tracing](distributed-tracing.md)
-- [Workbench internationalization](frontend-i18n.md)
-- [Form conventions](design/form-conventions.md)
+- [Event-path observability and tracing](observability-stage-metrics.md)
+- [Workbench frontend guidelines](frontend-guidelines.md)
 
 ## Ingestion, search, and detection
 
-- [Ingestion parsing](ingestion-parsing.md)
-- [Search runtime roles](search-runtime-roles.md)
+- [Ingestion, canonical events, and Search runtime](ingestion-parsing.md)
 - [Detection rules](detection-rules.md)
-- [Detection runtime roles](detection-runtime-roles.md)
-- [Detection state semantics](detection-state-semantics.md)
+- [Detection runtime and state semantics](detection-state-semantics.md)
 - [Detection state sharding](detection-state-sharding.md)
 - [Sigma import contract](sigma.md)
 
@@ -42,15 +37,17 @@ directory instead of source control.
 - [SOAR design](soar-design.md)
 - [SOAR OpenAPI](soar-openapi.yaml)
 - [SOAR runbook](soar-runbook.md)
-- [Action connector contract](soar-action-connectors.md)
 
 ## Verification and operations
 
 - [Failure and chaos scenarios](chaos/README.md)
-- [Operational demo checklist](demo-checklist.md)
 - [Production delivery baseline](production-readiness.md)
 - [Kubernetes release contract](operations/kubernetes.md)
 - [Helm release runbook](../deploy/helm/README.md)
+- [Backup and restore](operations/backup-restore.md)
+- [Capacity planning](operations/capacity-planning.md)
+- [DLQ replay](operations/dlq-replay.md)
+- [Incident response](operations/incident-response.md)
 - [Kafka topic provisioning runbook](operations/kafka-topic-provisioning.md)
 - [Flyway checksum drift and repair runbook](operations/database-migration-repair.md)
 

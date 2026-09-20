@@ -53,6 +53,7 @@ CREATE_TOPICS = ROOT / "infra" / "init-sql" / "kafka" / "create-topics.sh"
 # also derives a `<topic>-dlq` dead-letter queue at the consumer's hand-off.
 KAFKA_MAIN_TOPICS = (
     "socp-events",
+    "socp-detection-routed-v2",
     "socp-alarm-events",
     "socp-alarm-original",
     "socp-rule-changes",

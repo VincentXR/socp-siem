@@ -5,7 +5,7 @@ small, semantics-preserving Sigma subset. The endpoint accepts YAML and stores
 the original source in the rule specification so an operator can review the
 conversion before promotion.
 
-Supported today:
+Supported subset:
 
 - scalar selection fields;
 - `and`, `or`, `1 of` and `all of` selection conditions (including `them` and

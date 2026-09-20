@@ -1,9 +1,14 @@
 package com.socp.detect.web.persistence.store;
 
 
+import com.socp.detect.web.persistence.repository.RuleContentConflictRepository;
 import com.socp.detect.web.persistence.repository.RuleRepository;
+import com.socp.detect.web.persistence.repository.RuleRevisionRepository;
+import com.socp.detect.web.persistence.entity.RuleContentConflictEntity;
 import com.socp.detect.web.persistence.entity.RuleEntity;
+import com.socp.detect.web.persistence.entity.RuleRevisionEntity;
 import com.socp.platform.error.exception.ApiException;
+import com.socp.platform.tenant.context.AuthenticatedIdentityContext;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.config.RuleSpec;
 import com.socp.rule.rules.Rule;
@@ -16,6 +21,8 @@ import org.springframework.data.domain.Sort;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -37,10 +44,15 @@ public class RuleSpecStore {
     private static final int MAX_COMPATIBILITY_LIST_SIZE = 500;
 
     private final RuleRepository repo;
+    private final RuleRevisionRepository revisions;
+    private final RuleContentConflictRepository conflicts;
     private final Set<String> initializedTenants = ConcurrentHashMap.newKeySet();
 
-    public RuleSpecStore(RuleRepository repo) {
+    public RuleSpecStore(RuleRepository repo, RuleRevisionRepository revisions,
+                         RuleContentConflictRepository conflicts) {
         this.repo = repo;
+        this.revisions = revisions;
+        this.conflicts = conflicts;
         TenantContext.runWith("default", () -> ensureTenantContent("default"));
     }
 
@@ -78,7 +90,16 @@ public class RuleSpecStore {
             boolean packageOwned = packId.equals(String.valueOf(stored.get("contentPack")));
             boolean customized = Boolean.TRUE.equals(stored.get("contentCustomized"));
             boolean currentVersion = packVersion.equals(String.valueOf(stored.get("contentVersion")));
-            if (packageOwned && !customized && !currentVersion) savePackaged(spec, tenant);
+            if (packageOwned && !customized && !currentVersion) {
+                savePackaged(spec, tenant);
+            } else if (packageOwned && customized && !currentVersion) {
+                // The analyst customized this rule and the running content pack
+                // advertises a newer version. Never overwrite the local tuning;
+                // record the pending upgrade so it surfaces instead of silently
+                // diverging from the pack.
+                recordContentConflict(tenant, id, packId, packVersion,
+                        String.valueOf(stored.get("contentVersion")));
+            }
         }
     }
 
@@ -95,15 +116,15 @@ public class RuleSpecStore {
     }
 
     public Map<String, Object> save(Map<String, Object> spec, String tenant) {
-        return saveInternal(spec, tenant, false);
+        return saveInternal(spec, tenant, false, false);
     }
 
     private Map<String, Object> savePackaged(Map<String, Object> spec, String tenant) {
-        return saveInternal(spec, tenant, true);
+        return saveInternal(spec, tenant, true, false);
     }
 
     private Map<String, Object> saveInternal(Map<String, Object> input, String tenant,
-                                             boolean packagedWrite) {
+                                             boolean packagedWrite, boolean restore) {
         Map<String, Object> spec = DetectionContentCatalog.enrich(input);
         Object requestedId = spec.get("id");
         RuleEntity existing = requestedId == null || String.valueOf(requestedId).isBlank()
@@ -163,14 +184,136 @@ public class RuleSpecStore {
         RuleEntity e = existing == null ? new RuleEntity() : existing;
         e.setId(String.valueOf(spec.get("id")));
         if (e.getStorageId() == null) e.setStorageId(storageId(tenant, ruleId));
+        String specJson;
         try {
-            e.setSpec(Json.mapper().writeValueAsString(spec));
+            specJson = Json.mapper().writeValueAsString(spec);
+            e.setSpec(specJson);
         } catch (Exception ex) {
             throw new IllegalStateException("规则 JSON 序列化失败: " + ex.getMessage(), ex);
         }
         e.setTenantId(tenant);
         repo.save(e);
+        if (!packagedWrite) {
+            // User-facing mutations carry the durable version chain. Packaged
+            // installs are excluded: their source of truth is the manifest and
+            // recording every replica install would only add churn.
+            String source = restore ? "RESTORE" : (existing == null ? "ADD" : "EDIT");
+            appendRevision(tenant, ruleId, specJson, spec.get("status"), source);
+        }
         return spec;
+    }
+
+    /**
+     * Appends one immutable row to the rule's version chain, in the caller's
+     * transaction. Every user mutation (add/edit/activate/restore/delete) writes
+     * the full spec plus the acting identity, so the chain is diffable and a
+     * rollback reuses a prior spec instead of an unrecoverable overwrite.
+     */
+    private void appendRevision(String tenant, String ruleId, String specJson,
+                                Object status, String source) {
+        if (tenant == null || ruleId == null || specJson == null) return;
+        RuleRevisionEntity revision = new RuleRevisionEntity();
+        revision.setId(UUID.randomUUID().toString());
+        revision.setTenantId(tenant);
+        revision.setRuleId(ruleId);
+        revision.setRevision(revisions.maxRevision(tenant, ruleId) + 1);
+        revision.setSpec(specJson);
+        revision.setStatus(truncateStatus(status));
+        revision.setSource(source);
+        revision.setChangedBy(actor());
+        revision.setChangedAt(Instant.now());
+        revisions.save(revision);
+    }
+
+    private void recordContentConflict(String tenant, String ruleId, String packId,
+                                       String packVersion, String storedVersion) {
+        String stored = storedVersion == null || "null".equals(storedVersion) ? null : storedVersion;
+        Optional<RuleContentConflictEntity> existing = conflicts
+                .findByTenantIdAndRuleIdAndContentPackAndPackVersion(tenant, ruleId, packId, packVersion);
+        if (existing.isPresent()) {
+            RuleContentConflictEntity conflict = existing.get();
+            // Reopen a conflict that was resolved but whose local copy is again
+            // behind the running pack version.
+            if ("RESOLVED".equals(conflict.getStatus())) {
+                conflict.setStatus("PENDING");
+                conflict.setStoredVersion(stored);
+                conflict.setDetectedAt(Instant.now());
+                conflict.setResolvedAt(null);
+                conflicts.save(conflict);
+            }
+            return;
+        }
+        RuleContentConflictEntity conflict = new RuleContentConflictEntity();
+        conflict.setId(UUID.randomUUID().toString());
+        conflict.setTenantId(tenant);
+        conflict.setRuleId(ruleId);
+        conflict.setContentPack(packId);
+        conflict.setPackVersion(packVersion);
+        conflict.setStoredVersion(stored);
+        conflict.setStatus("PENDING");
+        conflict.setDetectedAt(Instant.now());
+        try {
+            conflicts.save(conflict);
+        } catch (DataIntegrityViolationException racedRecorder) {
+            // Concurrent replicas both detected the same upgrade; the unique key
+            // keeps a single pending conflict per (rule, pack, version).
+        }
+    }
+
+    /** Bounded, tenant-scoped view of a rule's version chain (oldest first). */
+    public List<Map<String, Object>> revisions(String ruleId) {
+        return revisions(ruleId, tenant());
+    }
+
+    public List<Map<String, Object>> revisions(String ruleId, String tenant) {
+        ensureTenantContent(tenant);
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (RuleRevisionEntity revision : revisions.findByTenantIdAndRuleIdOrderByRevisionAsc(tenant, ruleId)) {
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("revision", revision.getRevision());
+            entry.put("ruleId", revision.getRuleId());
+            entry.put("status", revision.getStatus());
+            entry.put("source", revision.getSource());
+            entry.put("changedBy", revision.getChangedBy());
+            entry.put("changedAt", revision.getChangedAt() == null ? null : revision.getChangedAt().toString());
+            entry.put("spec", Json.parseObject(revision.getSpec()));
+            out.add(entry);
+        }
+        return out;
+    }
+
+    /** Pending "content pack updated, local customized" conflicts for the tenant. */
+    public List<Map<String, Object>> contentConflicts() {
+        String tenant = tenant();
+        ensureTenantContent(tenant);
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (RuleContentConflictEntity conflict : conflicts
+                .findByTenantIdAndStatusOrderByDetectedAtAsc(tenant, "PENDING")) {
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("ruleId", conflict.getRuleId());
+            entry.put("contentPack", conflict.getContentPack());
+            entry.put("packVersion", conflict.getPackVersion());
+            entry.put("storedVersion", conflict.getStoredVersion());
+            entry.put("status", conflict.getStatus());
+            entry.put("detectedAt", conflict.getDetectedAt() == null ? null : conflict.getDetectedAt().toString());
+            out.add(entry);
+        }
+        return out;
+    }
+
+    /**
+     * Re-applies a historical revision as the rule's new head, appending a
+     * RESTORE entry rather than deleting history. Returns the persisted spec, or
+     * null when the rule or revision does not exist for this tenant.
+     */
+    public Map<String, Object> restoreRevision(String ruleId, long revision) {
+        String tenant = tenant();
+        ensureTenantContent(tenant);
+        RuleRevisionEntity target = revisions
+                .findByTenantIdAndRuleIdAndRevision(tenant, ruleId, revision).orElse(null);
+        if (target == null) return null;
+        Map<String, Object> spec = Json.parseObject(target.getSpec());
+        return saveInternal(spec, tenant, false, true);
     }
 
     public List<Map<String, Object>> list() {
@@ -240,8 +383,28 @@ public class RuleSpecStore {
         String tenant = tenant();
         Optional<RuleEntity> e = repo.findByRuleIdAndTenantId(id, tenant);
         if (e.isEmpty()) return false;
+        appendRevision(tenant, id, e.get().getSpec(),
+                Json.parseObject(e.get().getSpec()).get("status"), "DELETE");
         repo.delete(e.get());
         return true;
+    }
+
+    /** Acting principal for the version chain; falls back to "system" outside a request. */
+    private static String actor() {
+        return AuthenticatedIdentityContext.current()
+                .map(identity -> truncateActor(identity.subject()))
+                .orElse("system");
+    }
+
+    private static String truncateActor(String value) {
+        if (value == null || value.isBlank()) return "system";
+        return value.length() <= 128 ? value : value.substring(0, 128);
+    }
+
+    private static String truncateStatus(Object status) {
+        if (status == null) return null;
+        String value = String.valueOf(status);
+        return value.length() <= 32 ? value : value.substring(0, 32);
     }
 
     private static String storageId(String tenant, String ruleId) {

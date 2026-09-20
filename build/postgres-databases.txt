@@ -1,0 +1,33 @@
+# SOCP PostgreSQL application database roster (single machine-readable source).
+#
+# One database per line. This mirrors the CREATE DATABASE list in
+# infra/init-sql/pg/01_databases.sql and the same 16 names hard-coded in
+# infra/init-sql/pg/02_runtime_grants.sh. It is the source that
+# build/backup-postgres-all.sh iterates so "one consistency backup" is a
+# declarable object rather than a manual per-database walk.
+#
+# There are no cross-database foreign keys or cross-database transactions: the
+# split is by service (see docs/adr/002-storage-responsibilities.md), and
+# cross-service consistency is carried by the outbox/Kafka at-least-once paths.
+# So a per-database dump set IS the consistency unit; this file makes it a
+# complete one.
+#
+# Keep this list in sync when a new service database is added. build/verify-
+# backup-toolchain.py fails if this roster drifts from 01_databases.sql or the
+# 02_runtime_grants.sh hard-coded array.
+soc
+asset
+alert
+search
+detect
+hips
+soar
+report
+audit
+ai
+platform
+incident
+threat
+attack
+notify
+detect_model

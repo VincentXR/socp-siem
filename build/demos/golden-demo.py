@@ -632,7 +632,7 @@ def main():
     if not check("report-web exposes downstream analytics", status == 200, report):
         return 1
     print(f"\nTrace IDs: login={login_trace or 'n/a'} search={search_trace or 'n/a'} report={report_headers.get('X-Trace-Id', 'n/a')}")
-    print("\nNow show in Workbench: canonical event -> brute force -> account takeover -> privilege escalation -> multi-stage correlation -> entity risk -> incident/SOAR -> audit/trace.")
+    print("\nWorkbench verification path: canonical event -> brute force -> account takeover -> privilege escalation -> multi-stage correlation -> entity risk -> incident/SOAR -> audit/trace.")
     print("This demo intentionally claims at-least-once + idempotent consumers, not exactly-once delivery.")
     return 0
 

@@ -8,9 +8,11 @@
 Normalize vendor-specific telemetry in `search-config` and publish one
 canonical event contract to Kafka topic `socp-events`. The local event and an
 Ingestion Outbox publication intent commit in one database transaction.
-`detect-web` consumes that contract for rule evaluation, while an independent
-consumer indexes raw events in OpenSearch. Detection alerts cross into Alert
-Web through the durable Detection Alert Outbox rather than a direct remote call.
+An independent consumer indexes raw events in OpenSearch. Detection first
+records a canonical source receipt and durably fans the event out by the state
+dimensions required by active rules; workers consume
+`socp-detection-routed-v2`. Detection alerts cross into Alert Web through the
+durable Detection Alert Outbox rather than a direct remote call.
 
 ## Why
 
@@ -23,9 +25,9 @@ partition offset and uses event ID as document ID for idempotent replay.
 
 ## Trade-offs
 
-The contract, replay path, and outbox add operational complexity. Detection is
-at-least-once: consumers use manual commits and event-ID deduplication, but the
-system does not claim distributed exactly-once processing. The producer routes
-by a stable tenant/entity key and consumers restore partition-owned windows
-from the journal. Rules grouped by another entity dimension still need a
-shared state or fan-out strategy; see `docs/detection-state-semantics.md`.
+The contract, routing path, replay path, and outboxes add operational
+complexity. Detection is at-least-once: consumers use manual commits and
+deterministic source/delivery identities, but the system does not claim
+distributed exactly-once processing. Workers restore partition-owned windows
+from the journal. Missing grouping values and legacy canonical-topic mode are
+explicit non-guarantees; see `docs/detection-state-semantics.md`.

@@ -5,6 +5,35 @@ and the Detection-to-Alert Web hand-off. It deliberately describes
 at-least-once transport with logically idempotent business effects; it does
 not claim distributed exactly-once processing.
 
+## Runtime roles
+
+`SOCP_DETECT_RUNTIME_ROLE` selects one of three roles from the same
+`detect-web` artifact:
+
+| Role | Default | Responsibility |
+| --- | --- | --- |
+| `all` | yes | Local compatibility mode with management API and worker loops |
+| `api` | no | Rule management, validation, dry run, watchlists, operational queries, and Outbox writes |
+| `worker` | no | Kafka consumption, rule-change handling, state recovery, alert delivery, and secondary analysis |
+
+The API role does not own Detection Kafka consumers, rule-change consumers,
+snapshot replay, live rule engines, or Alert Outbox delivery. Its stats report
+`detectionWorkerEnabled=false`. Rule mutations commit
+`t_rule_change_outbox`; workers drain that durable boundary and reload their
+local engines. Worker instances do not register management controllers and
+retain only health, runtime, and internal secondary-analysis endpoints.
+
+Production starts `detect-web-api` and `detect-web-worker` from the same image.
+Gateway and rule-management traffic reaches the API role; the compatibility
+`/detect-model/**` route reaches the worker's internal model endpoint. Workers
+share the Detection database, Kafka group, and owner fencing, so they can scale
+without making API restarts part of partition ownership.
+
+The former `detect-model` capability is embedded in the worker artifact but
+keeps its `detect_model` database, Flyway history, transaction manager, and
+`socp-detect-model` consumer group. The `all` role remains a development
+convenience; it does not weaken the production ownership or recovery contract.
+
 ## Ownership and routing
 
 Canonical ingestion remains on `socp-events`; it is not repartitioned in
@@ -21,7 +50,7 @@ A stateful rule must declare `groupBy`; `keyField` remains a compatibility
 alias and `routingField`, when present, must name the same dimension. ACTIVE
 rules are compiled into one executable routing plan per tenant. Events are
 fanned out once per **unique required dimension**, not once per rule. Shipped
-content currently requires `src_ip`, `host`, `dst_ip`, and `user`, so the
+content requires `src_ip`, `host`, `dst_ip`, and `user`, so the
 bounded maximum is five deliveries per source event: one singleton stateless
 copy plus four stateful copies.
 
@@ -159,7 +188,7 @@ remains retryable and leaves the partition offset pending. A tenant's budget is
 never charged to another tenant.
 
 Rule evaluation has a per-rule circuit breaker. A malformed rule failure
-(currently an `IllegalArgumentException`) is isolated immediately; repeated
+(`IllegalArgumentException`) is isolated immediately; repeated
 other runtime failures open the rule after three attempts. The rule's mutable
 state is restored to its pre-event snapshot before isolation, while healthy
 rules on the same event continue. The circuit is cleared by rule reload or
@@ -290,12 +319,17 @@ At startup and `onPartitionsAssigned`, Detection rebuilds rule windows only
 from `COMPLETED` journal rows belonging to the current assignment. Replayed
 `PENDING` rows are then submitted as live work on their owning partition lane.
 COMPLETED rows used to rebuild rule state are read in bounded pages across the
-configured retention window. PENDING rows are different: startup/rebalance
-prefetch is capped by `SOCP_DETECT_STATE_REPLAY_PENDING_MAX` (default 100)
-so a backlog cannot be materialized into one heap-resident list. This cap is not
-a recovery truncation: rows beyond the prefetched prefix still sit behind
-uncommitted Kafka offsets and are redelivered through the normal consumer path,
-where an existing PENDING claim is processed and then marked COMPLETED.
+configured retention window. The checkpoint-vector replay keeps Kafka offsets as
+its correctness boundary (never completion timestamps, which producer/database
+clock skew can reorder); the `(tenant_id, status, kafka_partition, kafka_offset)`
+composite index added in Flyway V23 lets that partition/offset-ordered scan be
+served in index order instead of fetch-then-sort. PENDING rows are different:
+startup/rebalance prefetch is capped by `SOCP_DETECT_STATE_REPLAY_PENDING_MAX`
+(default 100) and streamed page by page, so a backlog is never materialized into
+one heap-resident list. This cap is not a recovery truncation: rows beyond the
+prefetched prefix still sit behind uncommitted Kafka offsets and are redelivered
+through the normal consumer path, where an existing PENDING claim is processed
+and then marked COMPLETED.
 
 The time window remains an explicit recovery boundary and should be chosen as:
 
@@ -430,7 +464,7 @@ The current design does not claim:
   `LEGACY_PARTIAL`;
 - recovery beyond the configured retention/lateness window;
 - cluster-wide storm collapsing or cluster-wide five-minute window aggregation
-  in the secondary-analysis path; both are per-replica counters today;
+  in the secondary-analysis path; both are per-replica counters;
 - loss-free recovery if the Detection database remains permanently unavailable
   and no external durable Kafka/DLQ capacity remains.
 

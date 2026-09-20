@@ -50,7 +50,10 @@ python build/verify-prod-compose.py
 
 `pnpm verify` runs the workbench type check and Vite build, then verifies the
 expected production artifact structure. `pnpm test` covers frontend API,
-navigation, resource-list, and resource-import contracts. `pnpm test:e2e`
+navigation, resource-list, and resource-import contracts, the URL-synced list
+query composables (`useListQuery`, `useAlarmQuery`), and the keyboard row
+activation cell (`RowActivate`) used by the detail-on-row-click tables.
+`pnpm test:e2e`
 uses Playwright to cover cookie-backed login, viewer navigation denial, deep
 links, browser history, and the SOAR draft/publish, run-inspection,
 approval, and manual-task browser flow (`e2e/soar.spec.ts`).
@@ -224,6 +227,24 @@ checks canonical source receipts, routed delivery identities, source/delivery
 positions, bounded fan-out, repeated rebalance, zero lag and zero pending
 journal work. See the [validation matrix](validation-matrix.md) for the full
 pass criteria.
+
+Two further routed-migration scenarios run against the same cluster:
+
+```bash
+python build/chaos-pipeline.py --scenario routed_migration
+python build/chaos-pipeline.py --scenario routing_rollback
+```
+
+`routed_migration` republishes completed business events at new canonical
+offsets (more source receipts, exactly one delivery identity and one alert),
+then activates an ACTIVE stateful rule whose `routingField` contradicts its
+`groupBy` and proves the router fails closed: `/routing-plan` reports the rule
+as UNSUPPORTED with its reason, canonical offsets stay uncommitted, no alert is
+pretended, and deleting the rule lets the deferred work drain to the correct
+oracle. `routing_rollback` restarts the cluster on the legacy canonical input,
+proves the formal alert path survives there while the deployment reports
+`LEGACY_PARTIAL` (never cross-dimension completeness), and restores the routed
+generation afterwards.
 
 Chaos event injection is a data-plane operation. Set
 `PIPELINE_COLLECTOR_ID`, `PIPELINE_COLLECTOR_TOKEN`, and

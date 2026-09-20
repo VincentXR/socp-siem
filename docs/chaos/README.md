@@ -120,13 +120,3 @@ SOCP_TESTCONTAINERS=true bash build/mvnw.sh -pl services/search-config -am test 
 This suite is failure-semantic evidence, not a throughput or availability
 claim. Random topic/group suffixes and isolated daily indices prevent historic
 test data from being mistaken for loss or duplication.
-
-## Sanitized reference result
-
-The 2026-08-20 local verification used six partitions and three Detection
-instances. Three consecutive stop/restart cycles retained disjoint ownership;
-all 12 deterministic expected alert IDs equaled the observed set and every
-instance reported zero pending events. Separate PostgreSQL, OpenSearch, and
-Detection Outbox replay probes also returned `pass=true`. Machine-specific
-JSON remains under `.cache`; the reproducible commands and acceptance criteria
-are the repository evidence contract.

@@ -73,6 +73,39 @@ public class RuleController {
     }
 
     /**
+     * Pending "content pack updated but the local rule was customized" records:
+     * packaged rules a newer pack version wanted to replace but did not, because
+     * the analyst's tuning is authoritative. The pack is never silently applied
+     * and never silently dropped.
+     */
+    @RequireRole({"admin", "analyst"})
+    @GetMapping("/rules/content-conflicts")
+    public ApiResult<List<Map<String, Object>>> contentConflicts() {
+        return ApiResult.ok(engine.ruleContentConflicts());
+    }
+
+    /** Full immutable spec version chain for one rule, oldest revision first. */
+    @RequireRole({"admin", "analyst"})
+    @GetMapping("/rules/{id}/revisions")
+    public ApiResult<List<Map<String, Object>>> ruleRevisions(@PathVariable String id) {
+        return ApiResult.ok(engine.listRuleRevisions(id));
+    }
+
+    /**
+     * Rolls a rule back to a historical revision by re-applying that spec as the
+     * new head, so the version chain stays append-only. Promotion to ACTIVE is
+     * still gated separately: restoring an ACTIVE revision yields a rule whose
+     * activation is the caller's to re-approve through /activate when needed.
+     */
+    @RequireRole("admin")
+    @com.socp.platform.auth.security.RequirePermission("rule:activate")
+    @PostMapping("/rules/{id}/revisions/{revision}/restore")
+    public ApiResult<Map<String, Object>> restoreRuleRevision(@PathVariable String id,
+                                                              @PathVariable long revision) {
+        return ApiResult.ok(engine.restoreRuleRevision(id, revision));
+    }
+
+    /**
      * Validate a rule without persisting or hot-reloading it.
      *
      * <p>{@code errors} are what persistence would reject. {@code advisories}

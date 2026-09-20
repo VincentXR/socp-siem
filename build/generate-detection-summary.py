@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Generate the review-visible detection content summary from the manifest."""
+"""Generate the README detection-content summary from the manifest."""
 
 import argparse
 import hashlib

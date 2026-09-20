@@ -272,6 +272,26 @@ jobs:
             --rebalance-cycles 3 --run-id "weekly-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --output .cache/chaos/multi-instance.json
 
+      - name: Run routed migration and rollback evidence
+        env:
+          SOCP_DETECT_PROFILE: pg
+          SOCP_KAFKA_GROUP_ID: socp-detect
+          SOCP_DETECT_INPUT_TOPIC: socp-detection-routed-v2
+          SOCP_DETECT_ROUTING_MODE: primary
+          SOCP_DETECT_OUTPUT_MODE: primary
+          SOCP_DETECT_ROUTING_PUBLISHER_ENABLED: "true"
+          SOCP_DETECT_ROUTING_SOURCE_TOPIC: socp-events
+          SOCP_DETECT_ROUTING_SOURCE_GROUP_ID: socp-detect-router-v2
+          RECOVERY_TOPIC: socp-detection-routed-v2
+          DETECTION_INSTANCE_URLS: http://127.0.0.1:18082,http://127.0.0.1:28082,http://127.0.0.1:38082
+        run: |
+          python3 build/chaos-pipeline.py --scenario routed_migration --count 20 \
+            --run-id "weekly-mig-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --output .cache/chaos/routed-migration.json
+          python3 build/chaos-pipeline.py --scenario routing_rollback --count 20 \
+            --run-id "weekly-rrb-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --output .cache/chaos/routing-rollback.json
+
       - name: Run Golden Demo
         run: python3 build/demos/golden-demo.py --transport ingest
 

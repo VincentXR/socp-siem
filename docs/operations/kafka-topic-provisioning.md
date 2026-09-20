@@ -7,7 +7,7 @@ the partition-count choice, and the verification you owe after a first boot.
 ## Why this is a manual step, not an application concern
 
 `infra/init-sql/kafka/create-topics.sh` is the single source that provisions the
-topics the code actually uses: the five main-chain topics plus the
+topics the code actually uses: the six main-chain topics plus the
 `<topic>-dlq` dead-letter queue each consumer derives in code. The names come
 from the producers'/consumers' `@Value` defaults and `*Properties` fields, not
 from an auto-created wildcard.
@@ -42,10 +42,10 @@ safe; the ordering constraint is only "at least once, before first boot."
 
 ## PARTITIONS=6 — align the script with the broker and the detection contract
 
-The script defaults `PARTITIONS=3`, but the broker default
-(`infra/docker-compose.yml`, `KAFKA_NUM_PARTITIONS=6`) and the distributed
-correctness contract want **six partitions across three Detection instances**
-(see [detection-state-sharding.md](../detection-state-sharding.md)). Create the
+The script defaults `PARTITIONS=6` (and `DETECTION_PARTITIONS=6`), matching the
+broker default (`infra/docker-compose.yml`, `KAFKA_NUM_PARTITIONS=6`) and the
+distributed correctness contract, which wants **six partitions across three Detection
+instances** (see [detection-state-sharding.md](../detection-state-sharding.md)). Create the
 topics at six:
 
 ```bash
@@ -87,4 +87,4 @@ docker exec -i socp-kafka kafka-topics.sh --bootstrap-server localhost:9092 --de
 Every main-chain topic and its `-dlq` should be present at the intended partition
 count before the first application container starts. `build/verify-prod-compose.py`
 asserts the production overlay re-states the auto-create key explicitly rather
-than inheriting the demo value, so the off-by-default posture stays honest.
+than inheriting the demo value, so the off-by-default posture remains explicit.

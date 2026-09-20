@@ -1,0 +1,122 @@
+{
+  "uid": "socp-event-path",
+  "title": "SOCP Event Path",
+  "tags": ["soar", "detection", "event-path"],
+  "timezone": "utc",
+  "editable": true,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "text": "SOCP-Prometheus", "value": "socp-prometheus" },
+        "hide": 0
+      }
+    ]
+  },
+  "annotations": { "list": [] },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Kafka consumer lag (SocpDetectionConsumerLag)",
+      "description": "Unprocessed records. absent()/zero reporting is itself the wedge signal. Threshold 10000 for 10m.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "socp-prometheus" },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "socp-prometheus" },
+          "expr": "max(socp_kafka_consumer_lag)", "legendFormat": "max lag" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "socp-prometheus" },
+          "expr": "count(socp_kafka_consumer_lag)", "legendFormat": "reporting consumers" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Outbox oldest pending age (s)",
+      "description": "Ingestion/alert/detection outbox backlog age. > 300s for 10m pages.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "socp-prometheus" },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "socp-prometheus" },
+          "expr": "max by (outbox) (socp_ingestion_outbox_oldest_pending_age_seconds)", "legendFormat": "ingestion" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "socp-prometheus" },
+          "expr": "max(socp_alert_outbox_oldest_pending_age_seconds)", "legendFormat": "alert" },
+        { "refId": "C", "datasource": { "type": "prometheus", "uid": "socp-prometheus" },
+          "expr": "max(socp_detection_outbox_oldest_pending_age_seconds)", "legendFormat": "detection" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Detection wedges: offset pinned / retry blocked / withheld",
+      "description": "Silent-to-health-probe states. pinned > 10000 for 15m; blocked>0 with oldest>300s for 5m; withheld is a rebalance transience read alongside lag, not paged alone.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "socp-prometheus" },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "socp-prometheus" },
+          "expr": "max(socp_detection_offset_pinned)", "legendFormat": "offset pinned" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "socp-prometheus" },
+          "expr": "max(socp_detection_partition_retry_blocked)", "legendFormat": "retry blocked partitions" },
+        { "refId": "C", "datasource": { "type": "prometheus", "uid": "socp-prometheus" },
+          "expr": "max(socp_detection_partition_retry_oldest_seconds)", "legendFormat": "oldest block (s)" },
+        { "refId": "D", "datasource": { "type": "prometheus", "uid": "socp-prometheus" },
+          "expr": "rate(socp_detection_processing_withheld_total[5m])", "legendFormat": "withheld rate" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Rule isolation and routing mismatch",
+      "description": "isolated_count > 0 is silent detection loss (critical); routing_mismatch increase is a content-quality ticket, not an outage.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "socp-prometheus" },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "socp-prometheus" },
+          "expr": "max(socp_detection_rules_isolated_count)", "legendFormat": "isolated rules" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "socp-prometheus" },
+          "expr": "increase(socp_detection_rule_routing_mismatch_total[30m])", "legendFormat": "routing mismatch /30m" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "DLQ inflow (OpenSearch indexer + detection handoff)",
+      "description": "Durable poison-record handoffs. Flat during dependency outage; growth means terminal poison needing docs/operations/dlq-replay.md.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "socp-prometheus" },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "socp-prometheus" },
+          "expr": "increase(socp_opensearch_indexer_records_total{stage=\"dlq\"}[15m])", "legendFormat": "os-indexer dlq /15m" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "socp-prometheus" },
+          "expr": "increase(socp_detection_dlq_handoff_total{outcome=\"committed\"}[15m])", "legendFormat": "detection committed /15m" },
+        { "refId": "C", "datasource": { "type": "prometheus", "uid": "socp-prometheus" },
+          "expr": "increase(socp_detection_dlq_handoff_total{outcome=\"retry_round_exhausted\"}[15m])", "legendFormat": "detection retry-exhausted /15m (pressure only)" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Search retention lag (s)",
+      "description": "Bounded retention worker lag; > 3600 for 2h means delete throughput is below ingest growth.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "socp-prometheus" },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "socp-prometheus" },
+          "expr": "max(socp_search_event_retention_lag_seconds)", "legendFormat": "retention lag" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "socp-prometheus" },
+          "expr": "max(socp_search_event_retention_oldest_eligible_age_seconds)", "legendFormat": "oldest eligible" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Detection processing failure by category",
+      "description": "Low-cardinality failure taxonomy. dependency category should be transient; recovery/ownership_lost need state-owner inspection.",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "socp-prometheus" },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "socp-prometheus" },
+          "expr": "sum by (category) (rate(socp_detection_processing_failure_total[5m]))", "legendFormat": "{{category}}" }
+      ]
+    }
+  ]
+}

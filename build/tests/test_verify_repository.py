@@ -20,6 +20,10 @@ class VerifyRepositoryTest(unittest.TestCase):
         self.assertIn("build/verify-runtime-consolidation.py", arguments)
         self.assertIn("build/verify-prod-compose.py", arguments)
         self.assertIn("build/verify-helm.py", arguments)
+        self.assertIn("build/verify-rls.py", arguments)
+        self.assertIn("build/verify-backup-toolchain.py", arguments)
+        self.assertIn("build/verify-observability-assets.py", arguments)
+        self.assertIn("build/verify-frontend-conventions.py", arguments)
         self.assertIn("unittest", arguments)
 
     def test_helm_is_the_only_optionally_skipped_contract(self):

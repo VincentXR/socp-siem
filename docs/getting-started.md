@@ -120,8 +120,8 @@ python build/failure-tests.py
 ```
 
 See [testing.md](testing.md) for test ownership and the smallest suitable
-check for each type of change. See [demo-checklist.md](demo-checklist.md) for
-the Golden Demo and the Kafka recovery walkthrough.
+check for each type of change. The Golden Demo, recovery scenarios, and their
+acceptance criteria are indexed in the [validation matrix](validation-matrix.md).
 
 ## Multi-instance Detection check
 

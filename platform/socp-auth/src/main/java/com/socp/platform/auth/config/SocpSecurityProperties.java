@@ -45,9 +45,13 @@ public class SocpSecurityProperties {
 
     /**
      * Registered collector credentials in the form
-     * {@code collector-id|tenant-id|secret;...}.  Keep this value injected
-     * through a secret manager/environment variable; it is intentionally not
-     * printed by the application.
+     * {@code collector-id|tenant-id|secret[|notAfter];...}, where {@code notAfter}
+     * is an ISO-8601 instant or date. Keep this value injected through a secret
+     * manager/environment variable; it is intentionally not printed by the
+     * application. One id may appear twice with different secrets and explicit
+     * {@code notAfter} values, which is the rotation grace period; production
+     * additionally demands the secret strength and expiry that
+     * {@link com.socp.platform.auth.security.ProdGuard} asserts.
      */
     private String collectorCredentials;
 

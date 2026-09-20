@@ -91,7 +91,7 @@ class DetectionDeadLetterJournalTest {
     void pendingBeyondPrefetchLimitStaysBoundedAndEventuallyCompletes() throws Exception {
         int prefetchLimit = 2;
         DetectionEventJournal journal = new DetectionEventJournal(
-                repository, "24h", 100, "7d", "90d", 1_000, 10, prefetchLimit);
+                repository, "24h", 100, "7d", "90d", 1_000, 10, prefetchLimit, "socp-events");
         given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))
                 .willReturn(CompletableFuture.completedFuture(null));
         given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), any(), any()))

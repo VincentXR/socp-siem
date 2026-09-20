@@ -339,7 +339,12 @@ public final class RuleEngine implements AutoCloseable {
             if (before == null) before = stateful.snapshotState();
         }
         try {
+            boolean instrumented = observer != RuleProcessingObserver.NOOP;
+            long started = instrumented ? System.nanoTime() : 0L;
             rule.accept(event);
+            if (instrumented) {
+                observer.ruleEvaluated(rule.id(), System.nanoTime() - started);
+            }
             ruleCircuits.computeIfAbsent(rule.id(), ignored -> new RuleCircuitState()).success();
         } catch (RuntimeException failure) {
             if (before != null && rule instanceof StatefulRule stateful) {

@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-SOCP 故障注入测试（P4，2026-08-12）：验证核心中间件故障下服务不崩、行为符合降级设计、恢复后自愈。
+"""SOCP 中间件故障与恢复验证。
 
 场景（每个都「注入 → 断言 → 恢复 → 断言」）：
   1. 断 Kafka   → search-config ingest 仍由本地事务接收并写入 durable outbox → Kafka 恢复后重放到 OpenSearch
-  2. 停 OpenSearch → search-config 检索回退 H2（API 仍返回）→ 恢复
+  2. 停 OpenSearch → search-config 进程保持存活 → 恢复
   3. 停 Temporal → SOAR 仍接受 durable Run 并保持排队，不执行进程内副作用 → 恢复
   4. 停 PostgreSQL → alert-web 查询失败但不崩（进程存活、健康转 DOWN）→ 恢复后查询正常
 

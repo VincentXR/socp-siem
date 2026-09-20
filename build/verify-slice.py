@@ -205,12 +205,12 @@ res_t2 = burst("t2", 3)
 check("t1 被限流不影响 t2（配额按租户隔离）", all(s == 200 for s, _, _ in res_t2),
       "t2 状态=%s" % [s for s, _, _ in res_t2])
 
-# 补充速率：等 1.2s 后应恢复约 10 个令牌（验证 TokenBucket refill 修复）
+# 补充速率：等待 1.2 秒后应恢复约 10 个令牌。
 time.sleep(1.2)
 res2 = burst("t1", 12)
 recovered = sum(1 for s, _, _ in res2 if s == 200)
 check("等待 1.2s 后配额基本回满（refill 速率正确，>=8）", recovered >= 8,
-      "恢复放行 %d 次（修复前每秒只补 1 个令牌）" % recovered)
+      "恢复放行 %d 次" % recovered)
 
 print("\n" + "=" * 68)
 print("通过 %d 项，失败 %d 项" % (len(PASS), len(FAIL)))

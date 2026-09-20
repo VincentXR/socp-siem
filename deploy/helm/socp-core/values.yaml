@@ -141,6 +141,17 @@ workloads:
       # makes logout and the OIDC callback depend on which replica answers.
       SOCP_AUTH_REVOCATION_BACKEND: redis
       SOCP_OIDC_STATE_BACKEND: redis
+      # Control-plane brute-force budget and its detection signals. The limiter
+      # counts attempts per (client, subject) window and raises the
+      # socp_auth_limiter_signal_total shared-account / credential-spray
+      # counters from these thresholds, so they are alert inputs, not tuning
+      # cosmetics. Correlation itself is per-replica and advisory; the counters
+      # are what a rule must aggregate across replicas.
+      SOCP_AUTH_LOGIN_PERMITS: "5"
+      SOCP_AUTH_SERVICE_PERMITS: "10"
+      SOCP_AUTH_WINDOW_SECONDS: "60"
+      SOCP_AUTH_RATE_LIMIT_CORRELATION_PEERS: "5"
+      SOCP_AUTH_RATE_LIMIT_SIGNAL_LOG_BUDGET: "60"
     fieldEnv: {}
     resources:
       requests:

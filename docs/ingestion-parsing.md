@@ -4,6 +4,29 @@
 source-specific parser pipeline and produces the canonical event consumed by
 Detection and OpenSearch.
 
+## Canonical event contract
+
+Kafka events use the versioned envelope in `schemas/canonical-event-1.0.json`.
+`schemaVersion` and `tenantId` are explicit envelope fields;
+`fields.tenant_id` remains only as a compatibility bridge for existing
+Detection rules. During a rolling upgrade, consumers accept envelopes without
+`schemaVersion` as legacy 1.0, but reject explicitly unsupported versions to
+the topic DLQ.
+
+The field registry in `schemas/field-registry.json` is the contract between
+normalization, OpenSearch mappings, aggregation, and Detection content. A
+breaking change must add a new schema file and pass
+`build/verify-event-schema.py`. ECS-style canonical keys remain the internal
+source of truth; OCSF mapping is an export concern, not a second internal event
+model.
+
+```text
+collector → authenticated ingest → canonical envelope 1.0
+         → PostgreSQL + ingestion outbox → Kafka
+         → Detection / OpenSearch indexer
+         → schema failure → socp-events-dlq (reason + original payload)
+```
+
 ```text
 Vector transform
   -> source_id / collector_tag / parse_format / parse_rule_ids / message
@@ -105,3 +128,55 @@ Parsing does not create an alert by itself. It supplies normalized fields such
 as `fields.category`, `fields.src_ip`, `fields.user`, and the corresponding
 `ecs.*` values. The existing Detection `RuleSpec.match` / `steps` conditions
 then evaluate those fields and create alerts through the detection outbox.
+
+## Search runtime roles
+
+`SOCP_SEARCH_RUNTIME_ROLE` selects one of three roles from the same
+`search-config` artifact:
+
+| Role | Default | Responsibility |
+| --- | --- | --- |
+| `all` | yes | Local compatibility mode with API and continuous workers |
+| `api` | no | Management, normalization, queries, and transactional event/outbox writes |
+| `worker` | no | Ingestion Outbox publication and Kafka-to-OpenSearch indexing |
+
+The API and worker exchange events through the database and Ingestion Outbox.
+An API acknowledgement means the event and publication intent committed; it
+does not mean Kafka or OpenSearch completed. Production starts
+`search-config-api` and `search-config-worker` from the same version. Gateway
+traffic reaches only the API role, while Kafka consumer groups and Outbox
+leases protect independently scaled workers. Both roles must share the same
+transaction database and Kafka/OpenSearch contract.
+
+Detection follows an analogous lifecycle boundary documented in
+[Detection state semantics](detection-state-semantics.md#runtime-roles).
+
+### Local hot-cache capacity
+
+The API role keeps only a bounded hot window; PostgreSQL and OpenSearch remain
+durable. `SOCP_SEARCH_CACHE_MAX_BYTES_PER_TENANT` and
+`SOCP_SEARCH_CACHE_MAX_BYTES_TOTAL` are estimated admission weights rather
+than exact retained-heap measurements. Startup fails when the total budget is
+smaller than the per-tenant budget.
+
+An oversized event is persisted but skipped from the cache. Tenant admission
+uses `SOCP_SEARCH_CACHE_MAX_TENANTS`; warm-up is paged and bounded by
+`SOCP_SEARCH_CACHE_WARMUP_BATCH_SIZE`,
+`SOCP_SEARCH_CACHE_WARMUP_MAX_EVENTS`, and
+`SOCP_SEARCH_CACHE_MAX_CONCURRENT_WARMUPS`. JPA/object overhead and an
+individual database row can still exceed their estimates, so these settings
+are not an absolute JVM heap guarantee.
+
+### PostgreSQL event-retention catch-up
+
+Retention uses `t_search_event.created_at`, not the source timestamp. Rows
+linked to `PENDING|PROCESSING|DEAD` Ingestion Outbox work remain protected.
+Cleanup uses ordered `(created_at,id)` batches with `FOR UPDATE SKIP LOCKED`
+and the V11 retention index.
+
+One scheduler invocation may run several bounded rounds, controlled by
+`SOCP_SEARCH_EVENT_CLEANUP_BATCH_SIZE`,
+`SOCP_SEARCH_EVENT_CLEANUP_MAX_BATCHES`,
+`SOCP_SEARCH_EVENT_CLEANUP_MAX_RUN_MS`, and
+`SOCP_SEARCH_EVENT_CLEANUP_CATCHUP_PAUSE_MS`. These bounds keep catch-up from
+turning into one long transaction or a tight loop against live ingest.

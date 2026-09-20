@@ -3,8 +3,8 @@
 This map records runtime responsibilities, ports, persistence, and verification
 ownership. It is intentionally higher-level than a class-by-class index.
 
-See the [service maturity matrix](maturity-matrix.md) for the explicit demo,
-preview, and production-readiness contract of each service.
+See the [service readiness matrix](production-readiness.md#service-readiness-matrix)
+for the explicit repository evidence and deployment-owned acceptance boundary.
 
 ## Repository layout
 
@@ -102,7 +102,7 @@ transaction, failure, and capacity gates in
 |---|---|---|
 | PostgreSQL | alert, incident, SOC base, threat, optional Detection | Transactional facts, event claims, and durable alert hand-off |
 | H2 / Flyway | Configurable stateful services | Low-resource local persistence; PostgreSQL profile for integration/production |
-| Kafka | search, detection, and fan-out consumers | Six-partition default for `socp-events`, plus rule changes, `socp-alarm-original`, and `socp-alarm-events` |
+| Kafka | search, routing, detection, and fan-out consumers | Six-partition defaults for `socp-events` and `socp-detection-routed-v2`, plus rule changes, `socp-alarm-original`, and `socp-alarm-events` |
 | OpenSearch | Event index consumer and search API | Raw event investigation and field search |
 | ClickHouse | Alarm event consumer and reports | Alarm detail analytics and trends |
 | Redis | Docker Compose middleware | Shared production rate-limit counters; local profile can fall back to in-memory counters |
