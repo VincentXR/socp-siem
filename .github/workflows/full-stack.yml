@@ -184,6 +184,23 @@ jobs:
             --cacert .cache/prod-boot/minio-certs/public.crt \
             https://localhost:19443/minio/health/live
           python3 build/verify-prod-boot.py
+          # Assert PostgreSQL's actual type and published migration history,
+          # using the same database that the packaged service just upgraded.
+          bash build/compose.sh exec -T -e "PGPASSWORD=$SOCP_PG_MIGRATION_PASSWORD" \
+            postgres psql -h localhost -U "$SOCP_PG_MIGRATION_USER" -d threat -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 't_ioc'
+                           AND column_name = 'confidence' AND data_type = 'double precision') THEN
+              RAISE EXCEPTION 'confidence did not migrate to double precision';
+            END IF;
+            IF to_regtype('double') IS NOT NULL THEN
+              RAISE EXCEPTION 'migration compatibility domain leaked into the fresh database';
+            END IF;
+            IF (SELECT count(*) FROM flyway_schema_history WHERE success AND version IN ('1','2','3','4','5')) <> 5 THEN
+              RAISE EXCEPTION 'published threat migration history is incomplete';
+            END IF;
+          END $$;
+          SQL
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
