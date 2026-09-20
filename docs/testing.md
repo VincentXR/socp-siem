@@ -286,6 +286,10 @@ The full verifier and Golden Demo use `SOAR_VERIFY_USERNAME/PASSWORD`
 retain the analyst session, and the full verifier also requires analyst
 publishing to return 403. Dependency failure probes inherit `PIPELINE_OS`
 and `PIPELINE_OS_AUTH`; explicit `FAILURE_OS_URL/AUTH` values take precedence.
+The OpenSearch outage check requires Search Config liveness to remain 200
+while readiness returns 503, then verifies actual indexing after recovery.
+The single-consumer recovery demo runs before the routed cluster is started;
+its canonical offset oracle must not be mixed with the routed generation.
 
 ## CI ownership
 

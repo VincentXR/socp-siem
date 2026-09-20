@@ -823,7 +823,13 @@ def scenario_opensearch_outage(token):
             return values if len(values) == 1 else None
 
         alarms = wait_for(matching, timeout=180, interval=2) or []
-        search_alive = service_up("search-config", token)
+        # Dependency failure must remove readiness without killing the
+        # process. Aggregate health intentionally includes OpenSearch.
+        alive_status, _ = request(health_url("search-config") + "/liveness",
+                                  headers=auth_headers(token), timeout=4)
+        readiness_status, _ = request(health_url("search-config") + "/readiness",
+                                      headers=auth_headers(token), timeout=4)
+        search_alive = alive_status == 200
         docker_container("start", "socp-opensearch")
         stopped = False
         # The local OpenSearch endpoint can require TLS/basic authentication;
@@ -853,10 +859,11 @@ def scenario_opensearch_outage(token):
             "acceptedWhileDown": accepted,
             "matchingAlertsWhileDown": len(alarms),
             "searchConfigAliveWhileDown": search_alive,
+            "searchConfigReadinessStatusWhileDown": readiness_status,
             "openSearchRecovered": bool(os_ready),
             "acceptedAfterRecovery": recovery,
             "recoveryEventIndexed": bool(indexed_after_recovery),
-            "pass": len(alarms) == 1 and search_alive and bool(os_ready)
+            "pass": len(alarms) == 1 and search_alive and readiness_status == 503 and bool(os_ready)
                     and bool(indexed_after_recovery),
         }
     finally:

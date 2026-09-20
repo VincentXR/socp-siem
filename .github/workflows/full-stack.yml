@@ -334,6 +334,11 @@ jobs:
             --run-id "weekly-dependency-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --output .cache/chaos/dependency-matrix.json
 
+      # This demo stops the only canonical consumer. Run it before replacing
+      # that generation with three routed consumers and their separate router.
+      - name: Run Detection recovery demo
+        run: python3 build/demos/detection-recovery.py
+
       - name: Start fixed three-instance routed Detection cluster
         env:
           SOCP_DETECT_PROFILE: pg
@@ -386,9 +391,6 @@ jobs:
 
       - name: Run Golden Demo
         run: python3 build/demos/golden-demo.py --transport ingest
-
-      - name: Run Detection recovery demo
-        run: python3 build/demos/detection-recovery.py
 
       - name: Run attack scenario demo
         run: python3 build/demos/attack-scenarios.py
