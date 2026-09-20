@@ -25,13 +25,13 @@ public class DetectionRouteMaintenance {
     public DetectionRouteMaintenance(
             DetectionRouteSourceRepository sources,
             DetectionRouteOutboxRepository outbox,
-            @Value("${socp.detect.routing.published-retention:7d}") String routedRetention,
+            @Value("${socp.detect.routing.source-receipt-retention:30d}") String routedRetention,
             @Value("${socp.detect.routing.dead-retention:90d}") String deadRetention,
             @Value("${socp.detect.routing.cleanup-batch-size:1000}") int batchSize,
             @Value("${socp.detect.routing.cleanup-max-batches:10}") int maxBatches) {
         this.sources = sources;
         this.outbox = outbox;
-        this.routedRetention = parseDuration(routedRetention, Duration.ofDays(7));
+        this.routedRetention = parseDuration(routedRetention, Duration.ofDays(30));
         this.deadRetention = parseDuration(deadRetention, Duration.ofDays(90));
         this.batchSize = Math.max(1, Math.min(10_000, batchSize));
         this.maxBatches = Math.max(1, Math.min(100, maxBatches));
