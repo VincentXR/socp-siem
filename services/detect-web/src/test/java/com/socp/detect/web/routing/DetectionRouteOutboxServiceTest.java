@@ -1,7 +1,9 @@
 package com.socp.detect.web.routing;
 
 import com.socp.detect.web.persistence.entity.DetectionRouteOutboxEntity;
+import com.socp.detect.web.persistence.entity.DetectionRouteTopologyEntity;
 import com.socp.detect.web.persistence.repository.DetectionRouteOutboxRepository;
+import com.socp.detect.web.persistence.repository.DetectionRouteTopologyRepository;
 import com.socp.rule.partition.DetectionDelivery;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -107,6 +109,44 @@ class DetectionRouteOutboxServiceTest {
         assertEquals(1, result.deliveryCount());
         verify(registry, never()).plan(anyString());
         verify(repository, never()).saveAllAndFlush(any());
+    }
+
+    @Test
+    void topologyChangeUnderSameRoutingVersionFailsClosed() {
+        DetectionRouteOutboxRepository repository = mock(DetectionRouteOutboxRepository.class);
+        DetectionRouteTopologyRepository topology = mock(DetectionRouteTopologyRepository.class);
+        DetectionRoutingPlanRegistry registry = mock(DetectionRoutingPlanRegistry.class);
+        DetectionRoutingPlan current = plan(8);
+        when(registry.plan("tenant-a")).thenReturn(current);
+        when(topology.findByTenantIdAndRoutingVersion(
+                "tenant-a", DetectionDelivery.ROUTING_VERSION))
+                .thenReturn(java.util.Optional.of(new DetectionRouteTopologyEntity(
+                        "tenant-a", DetectionDelivery.ROUTING_VERSION,
+                        "route-plan-old", java.time.Instant.EPOCH)));
+        DetectionRouteOutboxService service =
+                new DetectionRouteOutboxService(
+                        repository, registry, topology, "socp-detection-routed-v2");
+
+        var failure = assertThrows(
+                DetectionRoutingPlan.UnsupportedRoutingPlanException.class,
+                () -> service.route("socp-events", 3, 71L, eventJson(true)));
+
+        assertTrue(failure.getMessage().contains("pinnedPlan=route-plan-old"));
+        verify(repository, never()).saveAllAndFlush(any());
+    }
+
+    @Test
+    void malformedCanonicalPayloadCreatesTerminalRouteEvidence() {
+        DetectionRouteOutboxRepository repository = mock(DetectionRouteOutboxRepository.class);
+        DetectionRoutingPlanRegistry registry = mock(DetectionRoutingPlanRegistry.class);
+        DetectionRouteOutboxService service =
+                new DetectionRouteOutboxService(repository, registry, "socp-detection-routed-v2");
+
+        var result = service.route("socp-events", 0, 8L, null);
+
+        assertTrue(result.terminalFailure());
+        verify(repository).saveAndFlush(any(DetectionRouteOutboxEntity.class));
+        verify(registry, never()).plan(anyString());
     }
 
     @Test
