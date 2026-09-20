@@ -132,13 +132,27 @@ public class DetectionRouteOutboxService {
             return result;
         }
 
-        DetectionRoutingPlan plan = plans.plan(context.tenant());
-        if (!plan.supported()) {
-            throw new DetectionRoutingPlan.UnsupportedRoutingPlanException(
-                    String.join("; ", plan.allErrors()));
+        // A producer retry can place the same immutable business event at a
+        // different Kafka offset. The source receipt is the long-lived
+        // idempotency boundary even after published delivery rows are cleaned.
+        if (sourceRepository != null) {
+            var prior = sourceRepository
+                    .findFirstByTenantIdAndSourceEventIdAndStatusInOrderByCreatedAtAsc(
+                            context.tenant(), context.sourceEventId(),
+                            List.of("ROUTED", "DUPLICATE"));
+            if (prior.isPresent()) {
+                List<String> missing = missingDimensions(prior.get().getMissingDimensions());
+                persistSourceReceipt(context, prior.get().getRoutingVersion(),
+                        prior.get().getPlanVersion(), prior.get().getDeliveryCount(),
+                        missing, "DUPLICATE", null);
+                return new RouteResult(context.tenant(), context.sourceEventId(),
+                        prior.get().getPlanVersion(), prior.get().getDeliveryCount(),
+                        missing, false);
+            }
         }
-        pinTopology(context.tenant(), plan);
 
+        // Early v2 rows may predate source receipts; preserve their delivery
+        // identity instead of generating a second fan-out at another offset.
         List<DetectionRouteOutboxEntity> duplicateDeliveries =
                 repository.findByTenantIdAndSourceEventIdOrderByDeliveryIdAsc(
                         context.tenant(), context.sourceEventId());
@@ -149,6 +163,13 @@ public class DetectionRouteOutboxService {
             return new RouteResult(context.tenant(), context.sourceEventId(),
                     first.getPlanVersion(), duplicateDeliveries.size(), List.of(), false);
         }
+
+        DetectionRoutingPlan plan = plans.plan(context.tenant());
+        if (!plan.supported()) {
+            throw new DetectionRoutingPlan.UnsupportedRoutingPlanException(
+                    String.join("; ", plan.allErrors()));
+        }
+        pinTopology(context.tenant(), plan);
 
         List<String> dimensions = plan.dimensionsForSource(context.event().source());
         List<String> missing = new ArrayList<>();
@@ -213,14 +234,16 @@ public class DetectionRouteOutboxService {
     }
 
     private RouteResult receiptResult(DetectionRouteSourceEntity receipt) {
-        List<String> missing = receipt.getMissingDimensions() == null
-                || receipt.getMissingDimensions().isBlank()
-                ? List.of()
-                : java.util.Arrays.stream(receipt.getMissingDimensions().split(","))
-                    .map(String::trim).filter(value -> !value.isBlank()).toList();
+        List<String> missing = missingDimensions(receipt.getMissingDimensions());
         return new RouteResult(receipt.getTenantId(), receipt.getSourceEventId(),
                 receipt.getPlanVersion(), receipt.getDeliveryCount(), missing,
                 "DEAD".equalsIgnoreCase(receipt.getStatus()));
+    }
+
+    private static List<String> missingDimensions(String value) {
+        if (value == null || value.isBlank()) return List.of();
+        return java.util.Arrays.stream(value.split(","))
+                .map(String::trim).filter(item -> !item.isBlank()).toList();
     }
 
     private void pinTopology(String tenant, DetectionRoutingPlan plan) {
