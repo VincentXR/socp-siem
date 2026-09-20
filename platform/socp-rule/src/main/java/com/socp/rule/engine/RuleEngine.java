@@ -4,6 +4,7 @@ import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.rule.partition.DetectionRoutingKey;
+import com.socp.rule.partition.DetectionDelivery;
 import com.socp.rule.rules.Rule;
 import com.socp.rule.state.StatefulRule;
 import org.slf4j.Logger;
@@ -169,8 +170,13 @@ public final class RuleEngine implements AutoCloseable {
         if (history == null || history.isEmpty()) return;
         synchronized (stateLock) {
             for (SecurityEvent event : history) {
-                for (Rule rule : rulesRef.get()) rule.accept(event);
-                for (Rule rule : rulesRef.get()) rule.drain();
+                if (DetectionDelivery.isRouted(event)
+                        && DetectionDelivery.kind(event) != DetectionDelivery.Kind.STATEFUL) {
+                    continue;
+                }
+                List<Rule> selected = rulesFor(event);
+                for (Rule rule : selected) rule.accept(event);
+                for (Rule rule : selected) rule.drain();
             }
         }
         log.info("Detection rule state restored events={}", history.size());
@@ -207,10 +213,12 @@ public final class RuleEngine implements AutoCloseable {
     private void process(WorkItem item) {
         synchronized (stateLock) {
             SecurityEvent event = item.event();
-            Map<StatefulRule, byte[]> before = item.durable() ? snapshotMutableStates() : Map.of();
+            List<Rule> selected = rulesFor(event);
+            Map<StatefulRule, byte[]> before = item.durable()
+                    ? snapshotMutableStates(selected) : Map.of();
             try {
                 try (RuleExecutionScope.Scope ignored = executionScope.open(event)) {
-                    processInScope(item, event, before);
+                    processInScope(item, event, before, selected);
                 }
                 // Position bookkeeping is deliberately inside the same
                 // critical section as state mutation. A checkpoint can
@@ -248,10 +256,10 @@ public final class RuleEngine implements AutoCloseable {
     }
 
     private void processInScope(WorkItem item, SecurityEvent event,
-                                Map<StatefulRule, byte[]> before) {
+                                Map<StatefulRule, byte[]> before,
+                                List<Rule> rules) {
         eventCount.incrementAndGet();
-        observeRoutingDimensions(event);
-        List<Rule> rules = rulesRef.get();
+        if (!DetectionDelivery.isRouted(event)) observeRoutingDimensions(event);
         for (Rule rule : rules) {
             if (ruleCircuitOpen(rule)) {
                 log.warn("Skipping isolated detection rule ruleId={} eventId={}", rule.id(), event.id());
@@ -276,7 +284,8 @@ public final class RuleEngine implements AutoCloseable {
                     batch == null
                             ? DetectionResult.SuppressionDecision.none(candidates, emitted)
                             : DetectionResult.SuppressionDecision.window(candidates, emitted),
-                    event.scopedId());
+                    DetectionDelivery.isRouted(event)
+                            ? DetectionDelivery.deliveryId(event) : event.scopedId());
             boolean delivered = true;
             boolean eventAwareBoundary = false;
             runCommitGuard(item);
@@ -420,12 +429,37 @@ public final class RuleEngine implements AutoCloseable {
         return circuit != null && circuit.open();
     }
 
-    private Map<StatefulRule, byte[]> snapshotMutableStates() {
+    private Map<StatefulRule, byte[]> snapshotMutableStates(List<Rule> rules) {
         Map<StatefulRule, byte[]> before = new java.util.LinkedHashMap<>();
-        for (Rule rule : rulesRef.get()) {
+        for (Rule rule : rules) {
             if (rule instanceof StatefulRule stateful) before.put(stateful, stateful.snapshotState());
         }
         return before;
+    }
+
+    /**
+     * Routed deliveries deliberately split execution classes. Stateless rules
+     * execute only on the singleton STATELESS copy; a STATEFUL copy executes
+     * only rules that own its grouping dimension. Legacy/direct events retain
+     * the original all-rules behavior for migration and focused tests.
+     */
+    private List<Rule> rulesFor(SecurityEvent event) {
+        List<Rule> rules = rulesRef.get();
+        if (!DetectionDelivery.isRouted(event)) return rules;
+        DetectionDelivery.Kind kind = DetectionDelivery.kind(event);
+        if (kind == DetectionDelivery.Kind.STATELESS) {
+            return rules.stream().filter(rule -> !(rule instanceof StatefulRule)).toList();
+        }
+        if (kind != DetectionDelivery.Kind.STATEFUL) return List.of();
+        String dimension = DetectionDelivery.dimension(event);
+        if (dimension == null || dimension.isBlank()) return List.of();
+        return rules.stream()
+                .filter(StatefulRule.class::isInstance)
+                .filter(rule -> {
+                    RoutingDimension declared = routingDimensions.get(rule.id());
+                    return declared != null && dimension.equals(declared.declaredField());
+                })
+                .toList();
     }
 
     private Map<String, String> ruleVersions(List<Rule> rules) {
