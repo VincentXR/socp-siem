@@ -14,7 +14,9 @@ PROFILE="${SOCP_DETECT_PROFILE:-pg}"
 JVM_OPTS="${SOCP_DETECT_WEB_JVM_OPTS:-${SOCP_JVM_OPTS:--Xms32m -Xmx256m}}"
 LOGDIR="$ROOT/.cache/detection-cluster"
 JAR="$ROOT/services/detect-web/target/detect-web-1.0.0-SNAPSHOT.jar"
-TOPIC="${SOCP_KAFKA_TOPIC:-socp-events}"
+TOPIC="${SOCP_DETECT_INPUT_TOPIC:-${SOCP_KAFKA_TOPIC:-socp-events}}"
+ROUTING_MODE="${SOCP_DETECT_ROUTING_MODE:-legacy}"
+OUTPUT_MODE="${SOCP_DETECT_OUTPUT_MODE:-primary}"
 
 csv_ports() {
   printf '%s\n' "$PORTS_RAW" | tr ',' ' '
@@ -101,6 +103,8 @@ write_manifest() {
     printf 'profile=%s\n' "$PROFILE"
     printf 'database=%s\n' "$database"
     printf 'topic=%s\n' "$TOPIC"
+    printf 'routing_mode=%s\n' "$ROUTING_MODE"
+    printf 'output_mode=%s\n' "$OUTPUT_MODE"
     printf 'partitions=%s\n' "$partitions"
     for port in $(csv_ports); do
       index=$((index + 1))
@@ -146,6 +150,9 @@ start_cluster() {
       --server.port="$port" \
       --spring.profiles.active="$PROFILE" \
       --socp.kafka.group-id="$GROUP_ID" \
+      --socp.detect.input-topic="$TOPIC" \
+      --socp.detect.routing.mode="$ROUTING_MODE" \
+      --socp.detect.output-mode="$OUTPUT_MODE" \
       > "$LOGDIR/detect-$port.log" 2>&1 < /dev/null &
     echo $! > "$LOGDIR/detect-$port.pid"
   done
@@ -168,7 +175,7 @@ start_cluster() {
     return 1
   fi
   write_manifest
-  echo "Detection cluster UP: $PORTS_RAW group=$GROUP_ID profile=$PROFILE"
+  echo "Detection cluster UP: $PORTS_RAW group=$GROUP_ID profile=$PROFILE topic=$TOPIC routing=$ROUTING_MODE output=$OUTPUT_MODE"
   echo "Cluster manifest: $LOGDIR/manifest.env"
 }
 
