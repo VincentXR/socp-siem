@@ -90,10 +90,11 @@ class DetectMigrationTest {
         try (var connection = DriverManager.getConnection(url, "sa", "");
              var statement = connection.prepareStatement(
                      "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES "
-                             + "WHERE TABLE_NAME='T_DETECTION_ROUTE_OUTBOX'");
+                             + "WHERE TABLE_NAME IN ('T_DETECTION_ROUTE_OUTBOX',"
+                             + "'T_DETECTION_ROUTE_SOURCE','T_DETECTION_ROUTE_TOPOLOGY')");
              var result = statement.executeQuery()) {
             result.next();
-            assertEquals(1, result.getInt(1));
+            assertEquals(3, result.getInt(1));
         }
     }
 }
