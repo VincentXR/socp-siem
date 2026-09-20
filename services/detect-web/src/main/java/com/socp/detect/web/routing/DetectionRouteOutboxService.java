@@ -85,7 +85,7 @@ public class DetectionRouteOutboxService {
             // The fan-out transaction rolls back on a race. Redelivery observes
             // deterministic delivery ids and cannot expose a partial plan.
             throw raced;
-        } catch (IllegalArgumentException malformed) {
+        } catch (MalformedCanonicalEventException malformed) {
             // Only deterministic source-contract failures are terminal.
             return TenantContext.callWith("default",
                     () -> inTransaction(() -> recordTerminalFailure(
@@ -202,21 +202,21 @@ public class DetectionRouteOutboxService {
         } else if (rawFields.isObject()) {
             fieldsNode = (ObjectNode) rawFields;
         } else {
-            throw new IllegalArgumentException("fields must be an object");
+            throw malformed("fields must be an object");
         }
 
         Map<String, String> fields = new LinkedHashMap<>();
         fieldsNode.fields().forEachRemaining(entry -> fields.put(entry.getKey(), entry.getValue().asText()));
         JsonNode ecs = canonical.get("ecs");
         if (ecs != null && !ecs.isNull()) {
-            if (!ecs.isObject()) throw new IllegalArgumentException("ecs must be an object");
+            if (!ecs.isObject()) throw malformed("ecs must be an object");
             ecs.fields().forEachRemaining(entry -> fields.putIfAbsent(entry.getKey(), entry.getValue().asText()));
         }
 
         String tenant = first(text(canonical, "tenantId"), text(canonical, "tenant_id"),
                 fields.get("tenant_id"), fields.get("tenantId"));
         if (!TenantContext.isValid(tenant)) {
-            throw new IllegalArgumentException("event tenant is required and must be valid");
+            throw malformed("event tenant is required and must be valid");
         }
         fields.put("tenant_id", tenant);
         fieldsNode.put("tenant_id", tenant);
@@ -272,25 +272,25 @@ public class DetectionRouteOutboxService {
         try {
             JsonNode node = Json.mapper().readTree(raw);
             if (!(node instanceof ObjectNode object)) {
-                throw new IllegalArgumentException("canonical event payload must be an object");
+                throw malformed("canonical event payload must be an object");
             }
             return object;
         } catch (RuntimeException runtime) {
             throw runtime;
         } catch (Exception failure) {
-            throw new IllegalArgumentException("invalid canonical event JSON", failure);
+            throw malformed("invalid canonical event JSON", failure);
         }
     }
 
     private static Instant parseTimestamp(ObjectNode payload) {
         String value = first(text(payload, "timestamp"), text(payload, "@timestamp"));
         if (value == null) {
-            throw new IllegalArgumentException("canonical event timestamp is required");
+            throw malformed("canonical event timestamp is required");
         }
         try {
             return Instant.parse(value);
         } catch (Exception failure) {
-            throw new IllegalArgumentException("canonical event timestamp must be ISO-8601", failure);
+            throw malformed("canonical event timestamp must be ISO-8601", failure);
         }
     }
 
@@ -315,9 +315,23 @@ public class DetectionRouteOutboxService {
         return null;
     }
 
+    private static MalformedCanonicalEventException malformed(String message) {
+        return new MalformedCanonicalEventException(message, null);
+    }
+
+    private static MalformedCanonicalEventException malformed(String message, Throwable cause) {
+        return new MalformedCanonicalEventException(message, cause);
+    }
+
     private static String truncate(String value) {
         if (value == null) return "unknown";
         return value.length() <= 1024 ? value : value.substring(0, 1024);
+    }
+
+    private static final class MalformedCanonicalEventException extends IllegalArgumentException {
+        private MalformedCanonicalEventException(String message, Throwable cause) {
+            super(message, cause);
+        }
     }
 
     private record RouteContext(String tenant, String sourceEventId, SecurityEvent event,
