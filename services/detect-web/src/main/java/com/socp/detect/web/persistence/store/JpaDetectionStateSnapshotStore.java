@@ -64,7 +64,7 @@ public class JpaDetectionStateSnapshotStore implements DetectionStateSnapshotSto
         for (DetectionStateSnapshot snapshot : snapshots) {
             if (snapshot == null) throw new IllegalArgumentException("snapshot is required");
             DetectionStateSnapshotEntity row = repository
-                    .findByTenantIdAndRuleIdAndShardId(snapshot.tenantId(), snapshot.ruleId(), snapshot.shardId())
+                    .findByTenantIdAndRuleIdAndShardIdAndInputTopic(snapshot.tenantId(), snapshot.ruleId(), snapshot.shardId(), inputTopic)
                     .orElseGet(() -> {
                         DetectionStateSnapshotEntity created = new DetectionStateSnapshotEntity();
                         created.setId(UUID.randomUUID().toString());
@@ -103,7 +103,7 @@ public class JpaDetectionStateSnapshotStore implements DetectionStateSnapshotSto
     @Override
     @Transactional(readOnly = true)
     public Optional<DetectionStateSnapshot> latest(String tenantId, String ruleId, int shardId) {
-        return repository.findByTenantIdAndRuleIdAndShardId(tenantId, ruleId, shardId)
+        return repository.findByTenantIdAndRuleIdAndShardIdAndInputTopic(tenantId, ruleId, shardId, inputTopic)
                 .map(row -> new DetectionStateSnapshot(row.getRuleId(), row.getRuleVersion(), row.getTenantId(),
                         row.getShardId(), row.getLastProcessedOffset(), decode(row.getSerializedState()),
                         row.getSnapshotTimestamp(), decodeOffsets(row.getPartitionOffsetsJson()),
