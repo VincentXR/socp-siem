@@ -338,6 +338,9 @@ public class DetectionRouteOutboxService {
 
         String sourceEventId = first(text(canonical, "eventId"), text(canonical, "event_id"));
         if (sourceEventId == null) sourceEventId = positionEventId(sourceTopic, sourcePartition, sourceOffset);
+        if (sourceEventId.length() > 255) {
+            throw malformed("eventId exceeds 255 characters");
+        }
         canonical.put("eventId", sourceEventId);
         canonical.put("tenantId", tenant);
 
