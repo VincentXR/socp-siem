@@ -1408,12 +1408,16 @@ def scenario_routed_migration(token, count):
         "window": "5m",
         "threshold": 5,
         "groupBy": "proc_name",
-        "routingField": "service_name",
+        # Valid DSL in TESTING, but activation adds a new dimension to the
+        # pinned topology. A mismatched field would be rejected earlier as 400.
+        "routingField": "proc_name",
         "version": "1",
         "match": [{"field": "source", "op": "eq", "value": "firewall"}],
     }
     status, body = request(f"{instance}/detect-web/api/v1/rules", method="POST",
-                           body=bad_rule, headers=auth_headers(token), timeout=20)
+                           body=json.dumps(bad_rule),
+                           headers={**auth_headers(token), "Content-Type": "application/json"},
+                           timeout=20)
     if status != 200:
         raise RuntimeError(f"could not create incompatible rule: {status} {body}")
     quoted_rule_id = "'" + bad_rule["id"].replace("'", "''") + "'"
@@ -1438,7 +1442,8 @@ def scenario_routed_migration(token, count):
     quoted_spec = "'" + stored_spec.replace("'", "''") + "'"
     injected = psql_scalar(
         "detect", "with injected as (update t_rule set "
-        "spec=jsonb_set(spec::jsonb, '{status}', '\"ACTIVE\"'::jsonb)::text "
+        "spec=(spec::jsonb || '{\"status\":\"ACTIVE\",\"enabled\":true,"
+        "\"routingField\":\"service_name\"}'::jsonb)::text "
         f"where {rule_where} and spec={quoted_spec} returning rule_id) "
         "select rule_id from injected")
     if injected != bad_rule["id"]:

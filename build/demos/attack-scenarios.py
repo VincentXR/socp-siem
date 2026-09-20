@@ -150,11 +150,17 @@ def list_rules(tok):
     return list_items(unwrap(r)) if st == 200 else []
 
 
-def ensure_web_shell_rule(tok):
+def activate_rule(publisher, rule_id):
+    st, result = api(publisher, f"/detect-web/api/v1/rules/{rule_id}/activate", {}, "POST")
+    value = unwrap(result) if st == 200 else {}
+    return st == 200 and value.get("status") == "ACTIVE", f"activate status={st}"
+
+
+def ensure_web_shell_rule(tok, publisher):
     """场景 3 需要 WEB-SHELL 规则——不存在则通过 API 新建（演示规则生命周期 + 热更新广播）。"""
     for r_ in list_rules(tok):
         if r_.get("id") == "WEB-SHELL":
-            return True, "已存在"
+            return (True, "已激活") if r_.get("status") == "ACTIVE" else activate_rule(publisher, "WEB-SHELL")
     body = {
         "id": "WEB-SHELL", "name": "Web Shell 命令执行", "type": "pattern", "severity": "CRITICAL",
         "message": "疑似 Web Shell 命令执行：{msg} @ {host}", "mitre": "T1505.003",
@@ -164,10 +170,10 @@ def ensure_web_shell_rule(tok):
         ],
     }
     st, r = api(tok, "/detect-web/api/v1/rules", body, "POST")
-    return st == 200, r
+    return activate_rule(publisher, "WEB-SHELL") if st == 200 else (False, f"create status={st}")
 
 
-def ensure_exec_rule(tok):
+def ensure_exec_rule(tok, publisher):
     """场景 2：EXEC-SUSPICIOUS-SHELL 旧版 regex（powershell -enc 字面）匹配不到
     'powershell -nop -w hidden -enc ...'——通过 updateRule 修正（演示规则热更新）。"""
     for r_ in list_rules(tok):
@@ -175,19 +181,26 @@ def ensure_exec_rule(tok):
             continue
         m = json.dumps(r_.get("match", []), ensure_ascii=False)
         if "powershell.*" in m:
-            return True, "已是最新"
+            return (True, "已是最新") if r_.get("status") == "ACTIVE" else activate_rule(publisher, r_["id"])
         updated = dict(r_)
+        # Updating a match keeps the persisted lifecycle state. Never send an
+        # ACTIVE transition through the ordinary create/update endpoint.
+        updated.pop("status", None)
         updated["match"] = [
             {"field": "msg", "op": "regex",
              "value": "(?i)powershell.*(-enc|encodedcommand)|certutil -urlcache|invoke-expression|iex\\s*\\("},
         ]
-        st, r = api(tok, "/detect-web/api/v1/rules", updated, "POST")
-        return st == 200, r
+        st, r = api(tok, f"/detect-web/api/v1/rules/{r_['id']}", updated, "PUT")
+        if st != 200:
+            return False, f"update status={st}"
+        return (True, "匹配已更新") if r_.get("status") == "ACTIVE" else activate_rule(publisher, r_["id"])
     return False, "规则不存在"
 
 
 def main():
     tok = login()
+    publisher = login_token(GW, os.environ.get("RULE_VERIFY_USERNAME", "admin"),
+                            os.environ.get("RULE_VERIFY_PASSWORD", "admin123"))
     print("=== SOCP 攻击场景 Demo（日志 → 检测 → 告警 → ATT&CK → 事件） ===\n")
 
     for sc in SCENES:
@@ -199,19 +212,31 @@ def main():
         print("-" * 72)
 
         # 1) 规则就绪（场景 2/3 演示热更新修正/新增）
+        ok = True
         if sc.get("expect_rule") == "WEB-SHELL":
-            ok, detail = ensure_web_shell_rule(tok)
+            ok, detail = ensure_web_shell_rule(tok, publisher)
             check("规则 WEB-SHELL 就绪（API 新建/热更新）", ok, detail if isinstance(detail, str) else "")
         if sc.get("expect_rule") == "EXEC-SUSPICIOUS-SHELL":
-            ok, detail = ensure_exec_rule(tok)
+            ok, detail = ensure_exec_rule(tok, publisher)
             check("规则 EXEC-SUSPICIOUS-SHELL 已修正（热更新）", ok, detail if isinstance(detail, str) else "")
+        if not ok:
+            continue
+
+        baseline_status, baseline = api(tok, "/alert-web/api/alarms?page=1&size=500")
+        check("读取本次注入前的告警基线", baseline_status == 200)
+        if baseline_status != 200:
+            continue
+        previous_ids = {item.get("id") for item in list_items(unwrap(baseline))}
 
         # 2) 注入攻击日志
+        accepted = 0
         for i, log in enumerate(sc["logs"]):
             st, r = api(tok, "/detect-web/api/v1/ingest", log, "POST")
-            if st != 200:
+            if st == 200 and unwrap(r).get("accepted") is True:
+                accepted += 1
+            else:
                 print("  [WARN] 事件 %d 注入 st=%s" % (i, st))
-        print("  已注入 %d 条攻击日志" % len(sc["logs"]))
+        check("本次攻击日志全部接收", accepted == len(sc["logs"]), f"accepted={accepted}")
 
         # 3) 等待告警
         def alarm_hit():
@@ -221,7 +246,8 @@ def main():
             except RuntimeError:
                 return None
             for x in items:
-                if sc["check"](x):
+                if (x.get("id") not in previous_ids
+                        and x.get("ruleId") == sc["expect_rule"] and sc["check"](x)):
                     return x
             return None
 

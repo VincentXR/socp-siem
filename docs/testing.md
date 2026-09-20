@@ -258,8 +258,9 @@ python build/chaos-pipeline.py --scenario routing_rollback
 `routed_migration` republishes completed business events at new canonical
 offsets (more source receipts, unchanged fan-out delivery identities and no
 duplicate alert),
-then verifies activation of an incompatible stateful rule returns 409 without
-changing its persisted specification. In the disposable Compose database, it
+then creates a valid TESTING rule with a new grouping dimension and verifies
+activation conflicts with the pinned topology (409) without changing its
+persisted specification. In the disposable Compose database, it
 administratively injects that probe rule as ACTIVE with a `routingField` that
 contradicts its `groupBy`, modeling a corrupt restore or an out-of-band write.
 It proves the router still fails closed: `/routing-plan` reports the rule
@@ -293,6 +294,11 @@ its canonical offset oracle must not be mixed with the routed generation.
 Both recovery and chaos probes normalize Kafka's unset committed offset (`-1`)
 to zero and sum lag per partition. Empty uncommitted partitions cannot create
 phantom backlog, and one partition's high offset cannot hide another's lag.
+The attack demo also runs before the routed cluster because it uses local
+Detection HTTP ingestion and needs the contacted worker to own every shard.
+It edits rules through PUT and uses the separate `rule:activate` administrator
+transition for new rules. This local HTTP demonstration does not establish
+Kafka transport coverage; the pipeline and routed chaos checks provide that.
 The incompatible-rule activation probe uses `RULE_VERIFY_USERNAME/PASSWORD`
 (local default `admin/admin123`) so its expected 409 tests the topology guard
 after authorization; normal chaos queries retain `DEMO_USER/PASS`.
