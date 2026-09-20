@@ -95,7 +95,7 @@ final class DetectionRecordProcessor {
 
             DetectionEventClaim claim;
             try {
-                claim = stateStore.claim(normalized, partition, offset, routingKey);
+                claim = stateStore.claim(normalized, topic, partition, offset, routingKey);
             } catch (RuntimeException failure) {
                 throw retryable(normalized, FailureStage.CLAIM, failure);
             }
