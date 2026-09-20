@@ -34,7 +34,7 @@ public class JpaDetectionStateSnapshotStore implements DetectionStateSnapshotSto
     @org.springframework.beans.factory.annotation.Autowired
     public JpaDetectionStateSnapshotStore(DetectionStateSnapshotRepository repository,
                                          DetectionStateOwnerRepository ownerRepository,
-                                         @Value("${socp.kafka.topic:socp-events}") String inputTopic) {
+                                         @Value("${socp.detect.input-topic:${socp.kafka.topic:socp-events}}") String inputTopic) {
         this.repository = repository;
         this.ownerRepository = ownerRepository;
         this.inputTopic = inputTopic == null || inputTopic.isBlank() ? "socp-events" : inputTopic;
