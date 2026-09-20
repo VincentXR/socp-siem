@@ -1,8 +1,10 @@
 package com.socp.detect.web.routing;
 
 import com.socp.detect.web.persistence.entity.DetectionRouteOutboxEntity;
+import com.socp.detect.web.persistence.entity.DetectionRouteSourceEntity;
 import com.socp.detect.web.persistence.entity.DetectionRouteTopologyEntity;
 import com.socp.detect.web.persistence.repository.DetectionRouteOutboxRepository;
+import com.socp.detect.web.persistence.repository.DetectionRouteSourceRepository;
 import com.socp.detect.web.persistence.repository.DetectionRouteTopologyRepository;
 import com.socp.rule.partition.DetectionDelivery;
 import org.junit.jupiter.api.Test;
@@ -107,6 +109,55 @@ class DetectionRouteOutboxServiceTest {
 
         assertEquals("route-plan-old", result.planVersion());
         assertEquals(1, result.deliveryCount());
+        verify(registry, never()).plan(anyString());
+        verify(repository, never()).saveAllAndFlush(any());
+    }
+
+    @Test
+    void duplicateBusinessEventAtAnotherKafkaOffsetGetsAReceiptWithoutNewFanOut() {
+        DetectionRouteOutboxRepository repository = mock(DetectionRouteOutboxRepository.class);
+        DetectionRouteSourceRepository sources = mock(DetectionRouteSourceRepository.class);
+        DetectionRoutingPlanRegistry registry = mock(DetectionRoutingPlanRegistry.class);
+        when(registry.plan("tenant-a")).thenReturn(plan(8));
+        DetectionRouteOutboxEntity existing = new DetectionRouteOutboxEntity(
+                "delivery-existing", "tenant-a", "source-41",
+                DetectionDelivery.ROUTING_VERSION, plan(8).version(),
+                "STATEFUL", "user", "alice", "tenant-a|user|alice",
+                "socp-events", 1, 10L, "socp-detection-routed-v2", "{}",
+                java.time.Instant.EPOCH);
+        when(repository.findByTenantIdAndSourceEventIdOrderByDeliveryIdAsc(
+                "tenant-a", "source-41")).thenReturn(List.of(existing));
+        DetectionRouteOutboxService service = new DetectionRouteOutboxService(
+                repository, registry, sources, null,
+                "socp-detection-routed-v2", null);
+
+        var result = service.route("socp-events", 4, 99L, eventJson(true));
+
+        assertEquals(1, result.deliveryCount());
+        verify(repository, never()).saveAllAndFlush(any());
+        verify(sources).saveAndFlush(any(DetectionRouteSourceEntity.class));
+    }
+
+    @Test
+    void exactSourcePositionReceiptSkipsPlanRecomputation() {
+        DetectionRouteOutboxRepository repository = mock(DetectionRouteOutboxRepository.class);
+        DetectionRouteSourceRepository sources = mock(DetectionRouteSourceRepository.class);
+        DetectionRoutingPlanRegistry registry = mock(DetectionRoutingPlanRegistry.class);
+        DetectionRouteSourceEntity receipt = new DetectionRouteSourceEntity(
+                "tenant-a", "socp-events", 2, 41L, "source-41",
+                DetectionDelivery.ROUTING_VERSION, "route-plan-frozen", 3,
+                "user", "ROUTED", null, java.time.Instant.EPOCH);
+        when(sources.findByTenantIdAndSourceTopicAndSourcePartitionAndSourceOffset(
+                "tenant-a", "socp-events", 2, 41L))
+                .thenReturn(java.util.Optional.of(receipt));
+        DetectionRouteOutboxService service = new DetectionRouteOutboxService(
+                repository, registry, sources, null,
+                "socp-detection-routed-v2", null);
+
+        var result = service.route("socp-events", 2, 41L, eventJson(true));
+
+        assertEquals("route-plan-frozen", result.planVersion());
+        assertEquals(List.of("user"), result.missingDimensions());
         verify(registry, never()).plan(anyString());
         verify(repository, never()).saveAllAndFlush(any());
     }
