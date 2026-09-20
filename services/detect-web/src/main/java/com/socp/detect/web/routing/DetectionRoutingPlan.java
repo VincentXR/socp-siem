@@ -45,7 +45,6 @@ public final class DetectionRoutingPlan {
         Map<String, Set<String>> dimensions = new TreeMap<>();
         List<RuleCompatibility> statuses = new ArrayList<>();
         List<String> planErrors = new ArrayList<>();
-        List<Map<String, Object>> fingerprint = new ArrayList<>();
 
         if (documents != null) {
             for (Map<String, Object> document : documents) {
@@ -77,15 +76,6 @@ public final class DetectionRoutingPlan {
                         supported ? "routed by shared dimension copy"
                                 : String.join("; ", reasons)));
 
-                Map<String, Object> item = new LinkedHashMap<>();
-                item.put("id", ruleId);
-                item.put("type", type);
-                item.put("groupBy", grouping);
-                item.put("routingField", routing);
-                item.put("sources", sources);
-                item.put("businessVersion", document.get("version"));
-                item.put("contentVersion", document.get("contentVersion"));
-                fingerprint.add(item);
             }
         }
 
@@ -93,7 +83,7 @@ public final class DetectionRoutingPlan {
             planErrors.add("ACTIVE stateful rule set requires " + dimensions.size()
                     + " routing dimensions but deployment max is " + limit);
         }
-        String version = fingerprint(DetectionDelivery.ROUTING_VERSION, limit, fingerprint);
+        String version = fingerprint(DetectionDelivery.ROUTING_VERSION, dimensions);
         return new DetectionRoutingPlan(version, limit, dimensions, statuses, planErrors);
     }
 
@@ -159,20 +149,30 @@ public final class DetectionRoutingPlan {
         return Map.copyOf(out);
     }
 
-    private static String fingerprint(String routingVersion, int limit,
-                                      List<Map<String, Object>> rules) {
+    /**
+     * Fingerprint only the routing topology. Matcher/threshold/message changes
+     * do not require repartitioning; source->dimension or alias/encoding changes
+     * do. A topology change is therefore an explicit migration boundary rather
+     * than an incidental consequence of normal rule hot reload.
+     */
+    private static String fingerprint(String routingVersion,
+                                      Map<String, Set<String>> dimensions) {
         try {
+            Map<String, Object> topology = new TreeMap<>();
+            dimensions.forEach((dimension, sources) -> topology.put(
+                    dimension, sources.stream().sorted().toList()));
             Map<String, Object> canonical = new LinkedHashMap<>();
+            canonical.put("schemaVersion", DetectionDelivery.SCHEMA_VERSION);
             canonical.put("routingVersion", routingVersion);
-            canonical.put("maxStatefulDimensions", limit);
-            canonical.put("rules", rules);
+            canonical.put("fieldAliases", RoutingDimension.aliases());
+            canonical.put("sourceDimensions", topology);
             byte[] bytes = Json.mapper().writer()
                     .with(com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
                     .writeValueAsBytes(canonical);
             return "route-plan-" + HexFormat.of().formatHex(
                     MessageDigest.getInstance("SHA-256").digest(bytes)).substring(0, 24);
         } catch (Exception failure) {
-            String fallback = routingVersion + "|" + limit + "|" + rules;
+            String fallback = routingVersion + "|" + RoutingDimension.aliases() + "|" + dimensions;
             return "route-plan-" + Integer.toHexString(
                     java.util.Arrays.hashCode(fallback.getBytes(StandardCharsets.UTF_8)));
         }
