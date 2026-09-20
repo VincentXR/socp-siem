@@ -94,6 +94,18 @@ public class DetectionRouteOutboxService {
     }
 
     private RouteResult materialize(ObjectNode canonical, RouteContext context) {
+        List<DetectionRouteOutboxEntity> frozen =
+                repository.findBySourceTopicAndSourcePartitionAndSourceOffsetOrderByDeliveryIdAsc(
+                        context.sourceTopic(), context.sourcePartition(), context.sourceOffset());
+        if (frozen != null && !frozen.isEmpty()) {
+            DetectionRouteOutboxEntity first = frozen.getFirst();
+            boolean terminal = frozen.stream().anyMatch(row ->
+                    "ERROR".equalsIgnoreCase(row.getRouteKind())
+                            || "DEAD".equalsIgnoreCase(row.getStatus()));
+            return new RouteResult(first.getTenantId(), first.getSourceEventId(),
+                    first.getPlanVersion(), frozen.size(), List.of(), terminal);
+        }
+
         DetectionRoutingPlan plan = plans.plan(context.tenant());
         if (!plan.supported()) {
             throw new DetectionRoutingPlan.UnsupportedRoutingPlanException(
@@ -144,7 +156,11 @@ public class DetectionRouteOutboxService {
                     context.sourceTopic(), context.sourcePartition(), context.sourceOffset(),
                     deliveryTopic, payload, now));
         }
-        saveMissingOnly(rows);
+        // One transaction owns the complete fan-out. A concurrent duplicate
+        // may lose on the deterministic delivery ids; source redelivery then
+        // observes the committed frozen rows above instead of exposing a
+        // partially recomputed plan.
+        repository.saveAllAndFlush(rows);
         return new RouteResult(context.tenant(), context.sourceEventId(),
                 plan.version(), routes.size(), List.copyOf(missing), false);
     }
@@ -154,12 +170,6 @@ public class DetectionRouteOutboxService {
         return transactions.execute(status -> work.get());
     }
 
-    private void saveMissingOnly(List<DetectionRouteOutboxEntity> rows) {
-        List<DetectionRouteOutboxEntity> missing = rows.stream()
-                .filter(row -> !repository.existsById(row.getDeliveryId())).toList();
-        if (!missing.isEmpty()) repository.saveAllAndFlush(missing);
-    }
-
     private RouteResult recordTerminalFailure(String sourceTopic, int sourcePartition,
                                               long sourceOffset, String raw,
                                               RuntimeException failure) {
@@ -167,7 +177,7 @@ public class DetectionRouteOutboxService {
         String id = DetectionDelivery.deliveryId("default", sourceEventId,
                 DetectionDelivery.ROUTING_VERSION, DetectionDelivery.Kind.STATELESS,
                 "_route_error", sourceEventId);
-        if (!repository.existsById(id)) {
+        if (repository.findByTenantIdAndDeliveryId("default", id).isEmpty()) {
             Instant now = Instant.now();
             DetectionRouteOutboxEntity row = new DetectionRouteOutboxEntity(
                     id, "default", sourceEventId, DetectionDelivery.ROUTING_VERSION,
