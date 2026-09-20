@@ -940,9 +940,9 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
     baseline = wait_for(
         lambda: (snapshot if (snapshot := kafka_snapshot()) and snapshot["lag"] == 0 else None),
         timeout=240, interval=3)
-    if not baseline or baseline["partitions"] < 6:
+    if not baseline or baseline["partitions"] != 6:
         raise RuntimeError(
-            f"multi_instance requires at least 6 routed Kafka partitions; got {baseline}")
+            f"multi_instance requires exactly 6 routed Kafka partitions; got {baseline}")
     if not all(wait_for(lambda url=url: direct_instance_up(url, token), timeout=30, interval=1)
                for url in urls):
         raise RuntimeError(f"not all Detection instances are healthy: {urls}")
@@ -1182,6 +1182,12 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
             "detect", "select coalesce(max(c),0) from (select source_event_id,count(*) c "
             f"from t_detection_route_outbox where {route_where} group by source_event_id) routed") or 0)
 
+        source_receipt_rows = int(psql_scalar(
+            "detect", f"select count(*) from t_detection_route_source where {route_where}") or 0)
+        source_receipt_positions = int(psql_scalar(
+            "detect", f"select count(distinct source_topic || ':' || source_partition || ':' || source_offset) "
+            f"from t_detection_route_source where {route_where}") or 0)
+
         journal_rows = int(psql_scalar(
             "detect", f"select count(*) from t_detection_event where {route_where}") or 0)
         journal_distinct = int(psql_scalar(
@@ -1219,6 +1225,8 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
             "routeUnfinished": route_unfinished,
             "routeMissingTransportPosition": route_missing_position,
             "maximumObservedFanOut": max_fan_out,
+            "sourceReceiptRows": source_receipt_rows,
+            "sourceReceiptDistinctPositions": source_receipt_positions,
             "journalRows": journal_rows,
             "journalDistinctDeliveries": journal_distinct,
             "journalDistinctSources": journal_sources,
@@ -1250,12 +1258,14 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
                 and forbidden_count == 0
                 and source_after.get("lag") == 0
                 and final_kafka.get("lag") == 0
-                and final_kafka.get("partitions", 0) >= 6
+                and final_kafka.get("partitions", 0) == 6
                 and all(value == 0 for value in pending_values)
                 and route_rows == route_distinct
                 and route_unfinished == 0
                 and route_missing_position == 0
                 and 0 < max_fan_out <= 5
+                and source_receipt_rows == len(source_event_ids)
+                and source_receipt_positions == source_receipt_rows
                 and journal_rows == journal_distinct
                 and journal_sources == len(source_event_ids)
                 and journal_untraceable == 0
