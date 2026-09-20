@@ -299,8 +299,10 @@ public class DetectionRouteOutboxService {
                 throw malformed("canonical event payload must be an object");
             }
             return object;
-        } catch (RuntimeException runtime) {
-            throw runtime;
+        } catch (MalformedCanonicalEventException malformed) {
+            throw malformed;
+        } catch (IllegalArgumentException malformed) {
+            throw malformed("invalid canonical event JSON", malformed);
         } catch (Exception failure) {
             throw malformed("invalid canonical event JSON", failure);
         }
