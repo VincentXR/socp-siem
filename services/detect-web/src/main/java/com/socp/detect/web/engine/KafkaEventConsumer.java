@@ -38,6 +38,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.RejectedExecutionHandler;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
@@ -68,14 +69,16 @@ public class KafkaEventConsumer {
     private boolean enabled;
 
     /**
-     * Bounds repeated execution of a record whose failure is deterministic, and
-     * bounds how long a record waits on a worker-wide failure. A deterministic
-     * record hands off to the durable DLQ once the budget is spent; a record
-     * blocked by global unavailability is withheld instead, so the offset stays
-     * uncommitted and the journal row stays replayable.
+     * Per-round retry budget. Spending the budget never converts a parsed event
+     * into poison and never forgets the record: the partition remains blocked,
+     * the lane keeps retry responsibility, and the consumer thread keeps polling
+     * the other partitions.
      */
     @Value("${socp.kafka.processing-max-attempts:8}")
     private int processingMaxAttempts;
+
+    @Value("${socp.kafka.processing-retry-initial-delay-ms:250}")
+    private long processingRetryInitialDelayMs = 250L;
 
     private final DetectEngineService engine;
     private final DetectionStateStore stateStore;
@@ -89,8 +92,15 @@ public class KafkaEventConsumer {
     private final Map<TopicPartition, ArrayDeque<PendingWork>> deferredWork = new ConcurrentHashMap<>();
     /** In-flight, lane-queued and deferred bytes for each Kafka partition. */
     private final Map<TopicPartition, AtomicLong> pendingBytes = new ConcurrentHashMap<>();
-    /** Partitions paused because their lane or deferred buffer is saturated. */
-    private final Set<TopicPartition> pausedPartitions = ConcurrentHashMap.newKeySet();
+    /** Backpressure and failure retries are independent pause reasons. */
+    private final Set<TopicPartition> backpressureBlockedPartitions = ConcurrentHashMap.newKeySet();
+    private final Set<TopicPartition> retryBlockedPartitions = ConcurrentHashMap.newKeySet();
+    private final Map<TopicPartition, Long> retryBlockedSince = new ConcurrentHashMap<>();
+    private final Map<TopicPartition, String> retryBlockedCategory = new ConcurrentHashMap<>();
+    /** Consumer-thread view of the pauses this component has applied. */
+    private final Set<TopicPartition> appliedPausedPartitions = ConcurrentHashMap.newKeySet();
+    /** Ownership loss requests a clean consumer-session restart/rejoin. */
+    private final AtomicBoolean sessionRestartRequested = new AtomicBoolean();
     private final BlockingQueue<RecordCompletion> completions = new LinkedBlockingQueue<>();
     private final AtomicBoolean running = new AtomicBoolean(true);
 
@@ -165,11 +175,31 @@ public class KafkaEventConsumer {
                     }
                     return pinned;
                 });
+        metrics.gauge("socp.detection.partition.retry.blocked", retryBlockedPartitions,
+                Set::size);
+        metrics.gauge("socp.detection.partition.retry.oldest.seconds", retryBlockedSince,
+                ignored -> oldestRetryBlockedSeconds());
     }
 
     private void count(String name, String outcome) {
         if (metrics == null) return;
         metrics.counter(name, "outcome", outcome).increment();
+    }
+
+    private void countFailure(DetectionRecordProcessor.RetryableDetectionFailure failure) {
+        if (metrics == null || failure == null) return;
+        metrics.counter("socp.detection.processing.failure",
+                "category", failure.category().metricTag(),
+                "stage", failure.stage().metricTag()).increment();
+    }
+
+    private double oldestRetryBlockedSeconds() {
+        long now = System.currentTimeMillis();
+        long oldest = Long.MAX_VALUE;
+        for (Long since : retryBlockedSince.values()) {
+            if (since != null) oldest = Math.min(oldest, since);
+        }
+        return oldest == Long.MAX_VALUE ? 0.0 : Math.max(0L, now - oldest) / 1000.0;
     }
 
     @PreDestroy
@@ -264,7 +294,9 @@ public class KafkaEventConsumer {
                         ArrayDeque<PendingWork> deferred = deferredWork.remove(partition);
                         if (deferred != null) releaseDeferred(deferred);
                         pendingBytes.remove(partition);
-                        pausedPartitions.remove(partition);
+                        backpressureBlockedPartitions.remove(partition);
+                        clearRetryBlocked(partition, false);
+                        appliedPausedPartitions.remove(partition);
                         completionTracker.remove(partition.partition());
                     }
                     engine.releaseForPartitions(partitions.stream()
@@ -286,7 +318,11 @@ public class KafkaEventConsumer {
                 }
             });
             while (running.get() && !Thread.currentThread().isInterrupted()) {
+                if (sessionRestartRequested.getAndSet(false)) {
+                    throw new IllegalStateException("detection ownership epoch changed; rejoining consumer group");
+                }
                 drainDeferred(consumer);
+                applyPauseState(consumer);
                 var records = consumer.poll(Duration.ofMillis(250));
                 for (var record : records) {
                     long epoch = completionTracker.register(record.partition(), record.offset());
@@ -296,6 +332,7 @@ public class KafkaEventConsumer {
                 }
                 drainCompletions(consumer);
                 drainDeferred(consumer);
+                applyPauseState(consumer);
             }
         }
     }
@@ -308,7 +345,12 @@ public class KafkaEventConsumer {
         deferredWork.values().forEach(KafkaEventConsumer::releaseDeferred);
         deferredWork.clear();
         pendingBytes.clear();
-        pausedPartitions.clear();
+        backpressureBlockedPartitions.clear();
+        retryBlockedPartitions.clear();
+        retryBlockedSince.clear();
+        retryBlockedCategory.clear();
+        appliedPausedPartitions.clear();
+        sessionRestartRequested.set(false);
         completions.clear();
         for (Integer partition : completionTracker.partitions()) completionTracker.remove(partition);
         if (owned != null && !owned.isEmpty()) {
@@ -376,8 +418,7 @@ public class KafkaEventConsumer {
         // those records losslessly in the bounded deferred batch, but stop
         // polling the partition so the overshoot cannot continue indefinitely.
         deferredWork.computeIfAbsent(partition, ignored -> new ArrayDeque<>()).addLast(work);
-        pausedPartitions.add(partition);
-        if (consumer != null) consumer.pause(Set.of(partition));
+        backpressureBlockedPartitions.add(partition);
     }
 
     private boolean reserveBytes(AtomicLong current, long bytes) {
@@ -419,19 +460,54 @@ public class KafkaEventConsumer {
 
             if (deferred.isEmpty() && lane.getQueue().size() <= LANE_RESUME_THRESHOLD) {
                 deferredWork.remove(partition, deferred);
-                pausedPartitions.remove(partition);
-                if (consumer != null) consumer.resume(Set.of(partition));
+                backpressureBlockedPartitions.remove(partition);
             } else {
-                pausedPartitions.add(partition);
-                if (consumer != null) consumer.pause(Set.of(partition));
+                backpressureBlockedPartitions.add(partition);
             }
         }
+    }
 
-        // A partition can be paused while its deferred entry is being removed
-        // by a concurrent lifecycle callback. Re-apply the set before poll so
-        // no already-fetched records refill a saturated lane.
-        if (consumer != null && !pausedPartitions.isEmpty()) {
-            consumer.pause(new HashSet<>(pausedPartitions));
+    /**
+     * KafkaConsumer is thread-confined. Worker lanes only mutate desired pause
+     * reasons; the polling thread is the sole caller of pause/resume.
+     */
+    private void applyPauseState(KafkaConsumer<String, String> consumer) {
+        if (consumer == null) return;
+        Set<TopicPartition> assigned = consumer.assignment();
+        Set<TopicPartition> desired = new HashSet<>(backpressureBlockedPartitions);
+        desired.addAll(retryBlockedPartitions);
+        desired.retainAll(assigned);
+
+        Set<TopicPartition> toPause = new HashSet<>(desired);
+        toPause.removeAll(appliedPausedPartitions);
+        if (!toPause.isEmpty()) consumer.pause(toPause);
+
+        Set<TopicPartition> toResume = new HashSet<>(appliedPausedPartitions);
+        toResume.removeAll(desired);
+        toResume.retainAll(assigned);
+        if (!toResume.isEmpty()) consumer.resume(toResume);
+
+        appliedPausedPartitions.clear();
+        appliedPausedPartitions.addAll(desired);
+    }
+
+    private void markRetryBlocked(TopicPartition partition,
+                                  DetectionRecordProcessor.RetryableDetectionFailure failure) {
+        if (partition == null || failure == null) return;
+        retryBlockedPartitions.add(partition);
+        retryBlockedSince.putIfAbsent(partition, System.currentTimeMillis());
+        retryBlockedCategory.put(partition, failure.category().metricTag());
+        countFailure(failure);
+    }
+
+    private void clearRetryBlocked(TopicPartition partition, boolean recovered) {
+        if (partition == null) return;
+        String category = retryBlockedCategory.remove(partition);
+        boolean wasBlocked = retryBlockedPartitions.remove(partition);
+        retryBlockedSince.remove(partition);
+        if (recovered && wasBlocked) {
+            count("socp.detection.processing.recovered",
+                    category == null ? "unknown" : category);
         }
     }
 
@@ -440,7 +516,7 @@ public class KafkaEventConsumer {
                 partitions, configuredReplayWindow());
         for (PendingDetectionEvent row : pending) {
             if (row == null || row.event() == null || row.partition() == null) continue;
-            dispatchOrDefer(null, new TopicPartition(topic, row.partition()),
+            dispatchOrDefer(null, new TopicPartition(configuredTopic(), row.partition()),
                     () -> processPendingWithRetry(row), estimateEventBytes(row.event()));
         }
         if (!pending.isEmpty()) {
@@ -454,6 +530,10 @@ public class KafkaEventConsumer {
         return replayWindow == null ? Duration.ZERO : replayWindow;
     }
 
+    private String configuredTopic() {
+        return topic == null || topic.isBlank() ? "socp-events" : topic;
+    }
+
     /**
      * Package-private so the retry, dead-letter and completion decisions can be
      * driven with a real record; {@link #processRecord(String, String)} bypasses
@@ -462,197 +542,277 @@ public class KafkaEventConsumer {
      */
     void processWithRetry(org.apache.kafka.clients.consumer.ConsumerRecord<String, String> record,
                           long epoch) {
-        long delay = 250;
-        int attempts = 0;
+        TopicPartition partition = new TopicPartition(record.topic(), record.partition());
+        long delay = Math.max(1L, processingRetryInitialDelayMs);
+        int attemptsThisRound = 0;
+        DetectionRecordProcessor.InFlightDetectionTimeout inFlight = null;
+        DetectionRecordProcessor.FinalizationPendingFailure finalization = null;
 
         while (running.get() && !Thread.currentThread().isInterrupted()) {
             try {
-                // Parented to the producer's span, so the Kafka hop joins the
-                // same tree. Mirroring the trace-id into the MDC only made
-                // both sides print one string; no exporter could join them.
+                DetectionRecordProcessor.InFlightDetectionTimeout timedOut = inFlight;
+                DetectionRecordProcessor.FinalizationPendingFailure pendingFinalization = finalization;
                 KafkaTrace.runConsumed("detect " + record.topic() + " receive", record.headers(), () -> {
-                    // The normalized event is the source of truth for tenant
-                    // ownership. DetectionRecordProcessor installs that scope
-                    // after parsing, so a Kafka header can never re-home a row.
-                    processOne(record.topic(), record.partition(), record.offset(), record.key(), record.value());
-                    completions.offer(new RecordCompletion(record.partition(), record.offset(), epoch));
+                    if (timedOut != null) {
+                        recordProcessor.resumeTimedOut(timedOut, Math.min(RETRY_MAX.toMillis(), 30_000L));
+                    } else if (pendingFinalization != null) {
+                        recordProcessor.resumeFinalization(pendingFinalization);
+                    } else {
+                        processOne(record.topic(), record.partition(), record.offset(),
+                                record.key(), record.value());
+                    }
                 });
+                clearRetryBlocked(partition, true);
+                completions.offer(new RecordCompletion(record.partition(), record.offset(), epoch));
                 return;
             } catch (DetectionRecordProcessor.MalformedDetectionRecordException terminal) {
-                // Nothing parsed, so no tenant is known: the store keeps its
-                // locked contract and the Kafka DLQ record is the only evidence.
-                if (handoffToDlqUntilDurable(new DlqHandoff(terminal.eventId(), null, record.key(),
-                        terminal.raw(), record.partition(), record.offset(), terminal.getMessage(),
-                        record.headers()))) {
+                // Parsing/shape validation is the only poison-record boundary.
+                if (handoffToDlqUntilDurable(new DlqHandoff(terminal.eventId(), terminal.tenantId(),
+                        record.key(), terminal.raw(), record.partition(), record.offset(),
+                        terminal.getMessage(), record.headers()))) {
+                    clearRetryBlocked(partition, true);
                     completions.offer(new RecordCompletion(record.partition(), record.offset(), epoch));
                 }
                 return;
-            } catch (Exception failure) {
-                attempts++;
-                int limit = Math.max(1, processingMaxAttempts);
-                boolean unavailable =
-                        failure instanceof DetectionRecordProcessor.DetectionUnavailableException;
-                log.warn("Detection processing failed partition={} offset={} attempt={}/{} "
-                                + "globallyUnavailable={} reason={}",
-                        record.partition(), record.offset(), attempts, limit, unavailable,
-                        failure.getMessage());
-
-                if (attempts >= limit) {
-                    // A worker-wide outage is not this record's fault: withhold
-                    // the completion so the offset stays uncommitted and the
-                    // PENDING journal row is replayed, rather than terminalising
-                    // a live event into the DLQ.
-                    if (unavailable) {
-                        log.error("Detection processing withheld partition={} offset={} after "
-                                        + "{} unavailable attempts; the offset stays uncommitted so the "
-                                        + "record is redelivered once the worker recovers",
-                                record.partition(), record.offset(), attempts);
-                        count("socp.detection.processing.withheld", "globally_unavailable");
-                    } else {
-                        // The normalized event id is the journal identity. A Kafka
-                        // routing key never is, so it is only kept as DLQ metadata.
-                        DetectionRecordProcessor.TerminalDetectionFailure terminal =
-                                failure instanceof DetectionRecordProcessor.TerminalDetectionFailure typed
-                                        ? typed : null;
-                        String eventId = terminal != null ? terminal.eventId()
-                                : "kafka-offset:" + record.partition() + ":" + record.offset();
-                        String tenant = terminal == null ? null : terminal.tenantId();
-                        String reason = "processing attempts exhausted: " + failure.getMessage();
-                        if (handoffToDlqUntilDurable(new DlqHandoff(eventId, tenant, record.key(),
-                                record.value(), record.partition(), record.offset(), reason,
-                                record.headers()))) {
-                            completions.offer(new RecordCompletion(record.partition(), record.offset(), epoch));
-                        }
-                    }
-                    return;
-                }
-
-                // RuleEngine state is instance-wide. Rebuild all currently
-                // owned partitions only once for this failed record; repeated
-                // full rebuilds turn a deterministic poison record into a storm.
-                // A worker-wide outage is never state corruption, so rebuilding
-                // for every withheld record would amplify one outage into a
-                // rebuild per record on every lane.
-                if (attempts == 1 && !unavailable) {
-                    try {
-                        rebuildOwnedState(record.partition());
-                    } catch (Exception rebuildFailure) {
-                        log.warn("Detection state rebuild deferred partition={}: {}",
-                                record.partition(), rebuildFailure.getMessage());
-                    }
-                }
+            } catch (DetectionRecordProcessor.InFlightDetectionTimeout timedOut) {
+                inFlight = timedOut;
+                finalization = null;
+                attemptsThisRound = recordRetryFailure(partition, record, timedOut,
+                        attemptsThisRound, delay);
+                if (ownershipLost(timedOut)) return;
+            } catch (DetectionRecordProcessor.FinalizationPendingFailure pending) {
+                finalization = pending;
+                inFlight = null;
+                attemptsThisRound = recordRetryFailure(partition, record, pending,
+                        attemptsThisRound, delay);
+                if (ownershipLost(pending)) return;
+            } catch (DetectionRecordProcessor.RetryableDetectionFailure retryable) {
+                // If an original timed-out future has now settled exceptionally,
+                // it is safe to evaluate again; otherwise InFlightDetectionTimeout
+                // above retains the exact future and prevents concurrent retries.
+                inFlight = null;
+                finalization = null;
+                attemptsThisRound = recordRetryFailure(partition, record, retryable,
+                        attemptsThisRound, delay);
+                if (ownershipLost(retryable)) return;
+            } catch (Exception unknown) {
+                inFlight = null;
+                finalization = null;
+                DetectionRecordProcessor.RetryableDetectionFailure retryable =
+                        retryableUnknown(record, unknown);
+                attemptsThisRound = recordRetryFailure(partition, record, retryable,
+                        attemptsThisRound, delay);
+                if (ownershipLost(retryable)) return;
             } finally {
                 com.socp.platform.tenant.context.TenantContext.clear();
             }
-            if (!sleepRetry(delay)) return;
-            delay = Math.min(RETRY_MAX.toMillis(), delay * 2);
+
+            if (!sleepRetry(jitteredDelay(delay))) return;
+            delay = Math.min(RETRY_MAX.toMillis(), Math.max(1L, delay * 2));
         }
     }
 
+    private int recordRetryFailure(
+            TopicPartition partition,
+            org.apache.kafka.clients.consumer.ConsumerRecord<String, String> record,
+            DetectionRecordProcessor.RetryableDetectionFailure failure,
+            int attemptsThisRound,
+            long delay) {
+        int attempts = attemptsThisRound + 1;
+        int limit = Math.max(1, processingMaxAttempts);
+        markRetryBlocked(partition, failure);
+        log.warn("Detection processing retry partition={} offset={} attempt={}/{} category={} "
+                        + "stage={} nextDelayMs={} reason={}",
+                record.partition(), record.offset(), attempts, limit,
+                failure.category().metricTag(), failure.stage().metricTag(),
+                jitterCeiling(delay), failure.getMessage());
+        if (failure.category() == DetectionRecordProcessor.FailureCategory.OWNERSHIP_LOST) {
+            sessionRestartRequested.set(true);
+            count("socp.detection.processing.withheld", "ownership_lost");
+            return attempts;
+        }
+        if (attempts >= limit) {
+            count("socp.detection.processing.retry.round", failure.category().metricTag());
+            return 0;
+        }
+        return attempts;
+    }
 
-    /** Package-private hook used by focused tests. */
+    private boolean ownershipLost(DetectionRecordProcessor.RetryableDetectionFailure failure) {
+        return failure != null
+                && failure.category() == DetectionRecordProcessor.FailureCategory.OWNERSHIP_LOST;
+    }
+
+    private DetectionRecordProcessor.RetryableDetectionFailure retryableUnknown(
+            org.apache.kafka.clients.consumer.ConsumerRecord<String, String> record,
+            Throwable failure) {
+        return new DetectionRecordProcessor.RetryableDetectionFailure(
+                "kafka-offset:" + record.partition() + ":" + record.offset(),
+                null,
+                DetectionRecordProcessor.FailureStage.EVALUATION,
+                DetectionRecordProcessor.classifyFailure(failure),
+                "unclassified detection execution failure remains retryable: "
+                        + failure.getClass().getSimpleName() + ": " + failure.getMessage(),
+                failure);
+    }
+
+    /** Package-private hook used by focused tests and bounded PENDING prefetch. */
     void processPendingWithRetry(PendingDetectionEvent row) {
-        long delay = 250;
-        int attempts = 0;
+        TopicPartition partition = new TopicPartition(configuredTopic(), row.partition());
+        long delay = Math.max(1L, processingRetryInitialDelayMs);
+        int attemptsThisRound = 0;
+        DetectionRecordProcessor.InFlightDetectionTimeout inFlight = null;
+        DetectionRecordProcessor.FinalizationPendingFailure finalization = null;
+
         while (running.get() && !Thread.currentThread().isInterrupted()) {
             try {
-                com.socp.platform.tenant.context.TenantContext.runWith(
-                        row.event().requireTenantId(),
-                        () -> recordProcessor.processNormalized(row.partition(), row.offset(),
-                                com.socp.rule.partition.DetectionRoutingKey.forEvent(row.event()),
-                                row.event()));
+                if (inFlight != null) {
+                    recordProcessor.resumeTimedOut(inFlight, Math.min(RETRY_MAX.toMillis(), 30_000L));
+                } else if (finalization != null) {
+                    recordProcessor.resumeFinalization(finalization);
+                } else {
+                    com.socp.platform.tenant.context.TenantContext.runWith(
+                            row.event().requireTenantId(),
+                            () -> recordProcessor.processNormalized(row.partition(), row.offset(),
+                                    com.socp.rule.partition.DetectionRoutingKey.forEvent(row.event()),
+                                    row.event()));
+                }
+                clearRetryBlocked(partition, true);
                 return;
-            } catch (Exception failure) {
-                attempts++;
-                int limit = Math.max(1, processingMaxAttempts);
-                boolean unavailable =
-                        failure instanceof DetectionRecordProcessor.DetectionUnavailableException;
-                log.warn("Pending Detection replay failed partition={} offset={} attempt={}/{} "
-                                + "globallyUnavailable={} reason={}",
-                        row.partition(), row.offset(), attempts, limit, unavailable, failure.getMessage());
-
-                if (attempts >= limit) {
-                    // A journal row replayed while the worker is still unavailable
-                    // stays PENDING; only a deterministic failure terminalises it.
-                    if (unavailable) {
-                        log.error("Pending Detection replay withheld partition={} offset={} after "
-                                        + "{} unavailable attempts; the row stays PENDING for the next "
-                                        + "assignment",
-                                row.partition(), row.offset(), attempts);
-                        count("socp.detection.processing.withheld", "replay_globally_unavailable");
-                    } else {
-                        // A replayed journal row carries no Kafka headers, so the
-                        // hand-off has no originating trace to inherit. The stored
-                        // event supplies both the journal identity and its tenant.
-                        handoffToDlqUntilDurable(new DlqHandoff(row.event().id(),
-                                row.event().requireTenantId(),
-                                routingKeyOf(row.event()), row.event().raw(), row.partition(), row.offset(),
-                                "pending replay attempts exhausted: " + failure.getMessage(), null));
-                    }
-                    return;
-                }
-
-                if (attempts == 1 && !unavailable) {
-                    try {
-                        com.socp.platform.tenant.context.TenantContext.runAsSystem(
-                                () -> rebuildOwnedState(row.partition()));
-                    } catch (Exception rebuildFailure) {
-                        log.warn("Pending Detection state rebuild deferred partition={}: {}",
-                                row.partition(), rebuildFailure.getMessage());
-                    }
-                }
-                if (!sleepRetry(delay)) return;
-                delay = Math.min(RETRY_MAX.toMillis(), delay * 2);
+            } catch (DetectionRecordProcessor.InFlightDetectionTimeout timedOut) {
+                inFlight = timedOut;
+                finalization = null;
+                attemptsThisRound = recordPendingRetryFailure(
+                        partition, row, timedOut, attemptsThisRound, delay);
+                if (ownershipLost(timedOut)) return;
+            } catch (DetectionRecordProcessor.FinalizationPendingFailure pending) {
+                finalization = pending;
+                inFlight = null;
+                attemptsThisRound = recordPendingRetryFailure(
+                        partition, row, pending, attemptsThisRound, delay);
+                if (ownershipLost(pending)) return;
+            } catch (DetectionRecordProcessor.RetryableDetectionFailure retryable) {
+                inFlight = null;
+                finalization = null;
+                attemptsThisRound = recordPendingRetryFailure(
+                        partition, row, retryable, attemptsThisRound, delay);
+                if (ownershipLost(retryable)) return;
+            } catch (Exception unknown) {
+                inFlight = null;
+                finalization = null;
+                DetectionRecordProcessor.RetryableDetectionFailure retryable =
+                        new DetectionRecordProcessor.RetryableDetectionFailure(
+                                row.event().id(), row.event().requireTenantId(),
+                                DetectionRecordProcessor.FailureStage.EVALUATION,
+                                DetectionRecordProcessor.classifyFailure(unknown),
+                                "unclassified PENDING replay failure remains retryable: "
+                                        + unknown.getClass().getSimpleName() + ": " + unknown.getMessage(),
+                                unknown);
+                attemptsThisRound = recordPendingRetryFailure(
+                        partition, row, retryable, attemptsThisRound, delay);
+                if (ownershipLost(retryable)) return;
+            } finally {
+                com.socp.platform.tenant.context.TenantContext.clear();
             }
+
+            if (!sleepRetry(jitteredDelay(delay))) return;
+            delay = Math.min(RETRY_MAX.toMillis(), Math.max(1L, delay * 2));
         }
+    }
+
+    private int recordPendingRetryFailure(
+            TopicPartition partition,
+            PendingDetectionEvent row,
+            DetectionRecordProcessor.RetryableDetectionFailure failure,
+            int attemptsThisRound,
+            long delay) {
+        int attempts = attemptsThisRound + 1;
+        int limit = Math.max(1, processingMaxAttempts);
+        markRetryBlocked(partition, failure);
+        log.warn("Pending Detection retry partition={} offset={} attempt={}/{} category={} "
+                        + "stage={} nextDelayMs={} reason={}",
+                row.partition(), row.offset(), attempts, limit,
+                failure.category().metricTag(), failure.stage().metricTag(),
+                jitterCeiling(delay), failure.getMessage());
+        if (failure.category() == DetectionRecordProcessor.FailureCategory.OWNERSHIP_LOST) {
+            sessionRestartRequested.set(true);
+            return attempts;
+        }
+        if (attempts >= limit) {
+            count("socp.detection.processing.retry.round", failure.category().metricTag());
+            return 0;
+        }
+        return attempts;
     }
 
     /**
-     * Hands a record to the dead-letter topic and to its terminal journal row,
-     * giving up after a bounded wait.
-     * <p>
-     * Both durable writes share one bounded retry because they are one decision:
-     * an offset may only advance when the DLQ entry and the journal's
-     * DEAD_LETTERED row both exist. This used to retry until the write succeeded,
-     * which wedged the lane whenever the broker was unreachable: the record never
-     * completed, no later batch on that partition could commit, and the only
-     * signal was an ERROR log while every health probe stayed green. Returning
-     * false is the safe failure: the caller withholds the completion, so the
-     * offset stays uncommitted and the record is redelivered and re-attempted once
-     * the broker is reachable again. The wait is bounded rather than unbounded
-     * because a stuck lane stops progress on every other record behind it, so a
-     * broker outage longer than the bound leaves this partition's commit pinned
-     * at the gap until the next rebalance or consumer-session restart.
+     * Complete a poison-record hand-off without forgetting it in the current
+     * consumer session. The per-round attempt budget only bounds burst pressure;
+     * a Kafka-backed record retains responsibility and retries with jittered
+     * backoff until both the DLQ publish and applicable terminal journal write
+     * are durable, or until revoke/shutdown interrupts its lane.
      */
     private boolean handoffToDlqUntilDurable(DlqHandoff handoff) {
-        long delay = Math.max(0L, dlqHandoffRetryDelayMs);
+        long delay = Math.max(1L, dlqHandoffRetryDelayMs);
         int limit = Math.max(1, dlqHandoffMaxAttempts);
+        int attemptsThisRound = 0;
         boolean dlqPublished = false;
-        for (int attempt = 1; attempt <= limit; attempt++) {
-            if (!running.get() || Thread.currentThread().isInterrupted()) return false;
+        TopicPartition partition = handoff.partition() == null
+                ? null : new TopicPartition(configuredTopic(), handoff.partition());
+
+        while (running.get() && !Thread.currentThread().isInterrupted()) {
             try {
                 if (!dlqPublished) {
                     publishDlqAndAwait(handoff);
                     dlqPublished = true;
                 }
                 recordTerminalJournalRow(handoff);
+                clearRetryBlocked(partition, true);
                 count("socp.detection.dlq.handoff", "committed");
                 return true;
             } catch (Exception dlqFailure) {
-                log.error("Detection DLQ hand-off unavailable partition={} offset={} attempt={}/{}; "
-                                + "retrying in {}ms: {}",
-                        handoff.partition(), handoff.offset(), attempt, limit, delay,
-                        dlqFailure.getMessage());
-                if (attempt == limit) break;
-                if (!sleepRetry(delay)) return false;
-                delay = Math.min(RETRY_MAX.toMillis(), delay * 2);
+                attemptsThisRound++;
+                DetectionRecordProcessor.RetryableDetectionFailure retryable =
+                        new DetectionRecordProcessor.RetryableDetectionFailure(
+                                handoff.eventId(), handoff.tenant(),
+                                DetectionRecordProcessor.FailureStage.MARK_COMPLETED,
+                                DetectionRecordProcessor.classifyFailure(dlqFailure),
+                                "dead-letter hand-off is not durable yet: "
+                                        + dlqFailure.getClass().getSimpleName() + ": "
+                                        + dlqFailure.getMessage(),
+                                dlqFailure);
+                markRetryBlocked(partition, retryable);
+                log.error("Detection DLQ hand-off retry partition={} offset={} attempt={}/{} "
+                                + "published={} category={} nextDelayMs={} reason={}",
+                        handoff.partition(), handoff.offset(), attemptsThisRound, limit,
+                        dlqPublished, retryable.category().metricTag(),
+                        jitterCeiling(delay), dlqFailure.getMessage());
+
+                if (attemptsThisRound >= limit) {
+                    count("socp.detection.dlq.handoff", "retry_round_exhausted");
+                    attemptsThisRound = 0;
+                    // Compatibility/direct callers carry no Kafka partition and
+                    // therefore have no session-owned scheduling responsibility.
+                    if (partition == null) return false;
+                }
+                if (!sleepRetry(jitteredDelay(delay))) return false;
+                delay = Math.min(RETRY_MAX.toMillis(), Math.max(1L, delay * 2));
             }
         }
-        log.error("Detection DLQ hand-off abandoned partition={} offset={} after {} attempts; "
-                        + "the offset stays uncommitted so the record is redelivered",
-                handoff.partition(), handoff.offset(), limit);
-        count("socp.detection.dlq.handoff", "abandoned");
         return false;
+    }
+
+    private static long jitteredDelay(long baseDelay) {
+        long base = Math.max(1L, baseDelay);
+        long spread = Math.max(1L, base / 5L);
+        long lower = Math.max(1L, base - spread);
+        long upper = Math.min(RETRY_MAX.toMillis(), base + spread);
+        return lower >= upper ? lower : ThreadLocalRandom.current().nextLong(lower, upper + 1L);
+    }
+
+    private static long jitterCeiling(long baseDelay) {
+        long base = Math.max(1L, baseDelay);
+        return Math.min(RETRY_MAX.toMillis(), base + Math.max(1L, base / 5L));
     }
 
     /**
@@ -699,7 +859,7 @@ public class KafkaEventConsumer {
         while ((completion = completions.poll()) != null) {
             completionTracker.complete(completion.partition(), completion.offset(), completion.epoch());
         }
-        Map<TopicPartition, OffsetAndMetadata> ready = completionTracker.ready(topic);
+        Map<TopicPartition, OffsetAndMetadata> ready = completionTracker.ready(configuredTopic());
         if (ready.isEmpty()) return;
         try {
             consumer.commitSync(ready);

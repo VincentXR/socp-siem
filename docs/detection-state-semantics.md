@@ -131,6 +131,38 @@ row. A duplicate claim sees the existing state:
 - `COMPLETED`: skip the event;
 - `DEAD_LETTERED`: skip the event.
 
+### Failure classification and same-session recovery
+
+A successfully parsed canonical event is **not** a poison record merely because
+execution failed. The Kafka boundary classifies failures by explicit cause type
+and stage:
+
+- dependency/transaction/persistence/connectivity failures, runtime recovery,
+  timeouts, backpressure, and unknown execution exceptions remain retryable;
+- stale ownership is retryable but fences the old epoch immediately and forces
+  a consumer-session rejoin so only the current owner can continue;
+- only deterministic input-shape/record parsing failures are eligible for DLQ.
+
+`processing-max-attempts` is a per-round pressure budget, not a terminal retry
+count. Spending a round keeps the partition blocked and the serial lane retains
+responsibility with exponential backoff plus jitter. The consumer thread keeps
+polling, and it alone applies Kafka `pause`/`resume`; backpressure and failure
+retry are independent pause reasons, so clearing one cannot prematurely resume
+the other. Dependency recovery therefore does not require a process restart or
+rebalance.
+
+An evaluation timeout also does not start a second evaluation while the first
+future may still be running. The retry token retains the original completion
+future and waits on it. If durable evaluation already completed but the final
+journal `markCompleted` failed, recovery retries only that finalization step,
+not the rules or durable sinks.
+
+DLQ hand-off has the same scheduling responsibility: a true poison record may
+advance its offset only after the DLQ publish is acknowledged and any applicable
+terminal journal row is durable. A DLQ outage keeps the partition blocked and is
+retried in the same consumer session. Later completed offsets remain pinned
+behind the earliest unfinished offset.
+
 The normal Kafka path is:
 
 ```text

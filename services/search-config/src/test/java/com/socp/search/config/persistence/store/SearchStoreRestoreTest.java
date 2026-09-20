@@ -17,9 +17,14 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.IntStream;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -58,7 +63,7 @@ class SearchStoreRestoreTest {
         assertEquals(1_000_000L, store.realCount());
         ArgumentCaptor<Pageable> page = ArgumentCaptor.forClass(Pageable.class);
         verify(repository).findByTenantIdOrderByTimestampDesc(eq("default"), page.capture());
-        assertEquals(2_000, page.getValue().getPageSize());
+        assertEquals(128, page.getValue().getPageSize());
     }
 
     @Test
@@ -132,20 +137,129 @@ class SearchStoreRestoreTest {
     }
 
     @Test
-    void boundsTenantBufferCardinality() {
+    void boundsTenantBufferCardinalityAtAdmission() {
         SearchEventRepository repository = mock(SearchEventRepository.class);
-        when(repository.findByTenantIdOrderByTimestampDesc(eq("default"), any(Pageable.class))).thenReturn(List.of());
-        when(repository.findByTenantIdOrderByTimestampDesc(eq("tenant-a"), any(Pageable.class))).thenReturn(List.of());
-        when(repository.findByTenantIdOrderByTimestampDesc(eq("tenant-b"), any(Pageable.class))).thenReturn(List.of());
-        SearchStore store = new SearchStore(repository, null);
-        ReflectionTestUtils.setField(store, "maxTenantBuffers", 1);
+        when(repository.findByTenantIdOrderByTimestampDesc(any(), any(Pageable.class)))
+                .thenReturn(List.of());
+        SearchCacheProperties properties = new SearchCacheProperties();
+        properties.setMaxTenants(1);
+        SearchStore store = new SearchStore(repository, properties, false);
 
         TenantContext.set("tenant-a");
         store.all();
         TenantContext.set("tenant-b");
         store.all();
-        store.evictIdleTenantBuffers();
 
+        assertEquals(1, store.cachedTenantBuffers(),
+                "tenant cardinality must be enforced before scheduled cleanup");
+    }
+
+    @Test
+    void oversizedEventIsPersistedButSkippedFromHotCache() {
+        SearchEventRepository repository = mock(SearchEventRepository.class);
+        when(repository.findByTenantIdOrderByTimestampDesc(any(), any(Pageable.class)))
+                .thenReturn(List.of());
+        SearchCacheProperties properties = new SearchCacheProperties();
+        properties.setMaxBytesPerTenant(1_024);
+        properties.setMaxBytesTotal(2_048);
+        SearchStore store = new SearchStore(repository, properties, false);
+        SearchEvent oversized = new SearchEvent("oversized-1", Instant.EPOCH, "auth", "host",
+                "INFO", "x".repeat(8_192), Map.of(), Map.of());
+
+        store.ingest(oversized);
+
+        verify(repository).save(any(SearchEventEntity.class));
+        assertEquals(0, store.size());
+        assertEquals(0L, store.cachedBytes());
+    }
+
+    @Test
+    void rejectsContradictoryTotalAndPerTenantBudgets() {
+        SearchEventRepository repository = mock(SearchEventRepository.class);
+        SearchCacheProperties properties = new SearchCacheProperties();
+        properties.setMaxBytesPerTenant(4_096);
+        properties.setMaxBytesTotal(1_024);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new SearchStore(repository, properties, false));
+    }
+
+    @Test
+    void concurrentTenantWarmupsRespectConfiguredConcurrency() throws Exception {
+        SearchEventRepository repository = mock(SearchEventRepository.class);
+        AtomicInteger active = new AtomicInteger();
+        AtomicInteger peak = new AtomicInteger();
+        when(repository.findByTenantIdOrderByTimestampDesc(any(), any(Pageable.class)))
+                .thenAnswer(invocation -> {
+                    int current = active.incrementAndGet();
+                    peak.accumulateAndGet(current, Math::max);
+                    try {
+                        Thread.sleep(100L);
+                        return List.of();
+                    } finally {
+                        active.decrementAndGet();
+                    }
+                });
+
+        SearchCacheProperties properties = new SearchCacheProperties();
+        properties.setMaxTenants(2);
+        properties.setWarmupMaxEvents(1);
+        properties.setWarmupBatchSize(1);
+        properties.setMaxConcurrentWarmups(1);
+        SearchStore store = new SearchStore(repository, properties, false);
+
+        CountDownLatch start = new CountDownLatch(1);
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var first = executor.submit(() -> {
+                start.await();
+                TenantContext.runWith("tenant-a", store::all);
+                return null;
+            });
+            var second = executor.submit(() -> {
+                start.await();
+                TenantContext.runWith("tenant-b", store::all);
+                return null;
+            });
+            start.countDown();
+            first.get(5, TimeUnit.SECONDS);
+            second.get(5, TimeUnit.SECONDS);
+        }
+
+        assertEquals(1, peak.get());
+        assertEquals(2, store.cachedTenantBuffers());
+    }
+
+    @Test
+    void evictedTenantReloadsFromPersistenceAndReplacementDoesNotDoubleCount() {
+        SearchEventRepository repository = mock(SearchEventRepository.class);
+        SearchEvent persisted = new SearchEvent("replace-1", Instant.EPOCH, "auth", "host",
+                "INFO", "persisted", Map.of(), Map.of());
+        SearchEventEntity persistedEntity = SearchStore.toEntity(persisted);
+        AtomicInteger defaultWarmups = new AtomicInteger();
+        when(repository.findByTenantIdOrderByTimestampDesc(any(), any(Pageable.class)))
+                .thenAnswer(invocation -> {
+                    String tenant = invocation.getArgument(0);
+                    if (!"default".equals(tenant)) return List.of();
+                    return defaultWarmups.incrementAndGet() == 1
+                            ? List.of() : List.of(persistedEntity);
+                });
+
+        SearchCacheProperties properties = new SearchCacheProperties();
+        properties.setMaxTenants(1);
+        SearchStore store = new SearchStore(repository, properties, false);
+
+        SearchEvent replacement = new SearchEvent("replace-1", Instant.EPOCH.plusSeconds(1),
+                "auth", "host", "INFO", "replacement", Map.of(), Map.of());
+        store.rememberBatch(List.of(persisted, replacement));
+        assertEquals(1, store.size());
+        assertEquals("replacement", store.all().getFirst().msg());
+
+        TenantContext.set("tenant-b");
+        store.all();
+        assertEquals(1, store.cachedTenantBuffers());
+
+        TenantContext.set("default");
+        assertEquals("persisted", store.all().getFirst().msg());
         assertEquals(1, store.cachedTenantBuffers());
     }
 }

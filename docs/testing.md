@@ -70,11 +70,14 @@ smoke against a live gateway, set `SOCP_E2E_BACKEND_URL` (for example
   denial, viewer write denial, tenant propagation, and trace headers.
 - `socp-rule` and `detect-web`: rule evaluation, suppression, hot reload,
   routing keys, partition restore, event de-duplication, queue backpressure,
-  malformed events, Detection Alert Outbox retry, and rule API contracts.
+  malformed events, Detection Alert Outbox retry, typed dependency failure
+  classification, same-session retry recovery, contiguous offset gaps,
+  ownership fencing, and bounded PENDING replay.
 - `search-config`: canonical event plus Ingestion Outbox creation, authenticated
   collector identity, optimistic publication claims, broker acknowledgement,
-  stable OpenSearch document IDs, partial bulk failure, and
-  index-before-offset completion semantics.
+  stable OpenSearch document IDs, partial bulk failure,
+  index-before-offset completion semantics, bounded local-cache warm-up, and
+  PostgreSQL retention catch-up/locking semantics.
 - `alert-web`: create validation, source-alert idempotency, paged query
   contracts, transactional Alert Outbox creation, broker-ack publishing,
   optimistic claim/stale recovery, post-commit enrichment scheduling, pending
@@ -124,6 +127,20 @@ python build/chaos-pipeline.py --scenario duplicate_delivery
 python build/chaos-pipeline.py --scenario detection_outbox_replay
 python build/failure-tests.py
 python build/validate-detection-content.py
+
+# Failure/recovery semantics touched by Detection persistence or consumer changes.
+bash build/mvnw.sh -pl services/detect-web -am test \
+  -Dtest=DetectionRecordProcessorTest,KafkaEventConsumerTest,DetectionDeadLetterJournalTest \
+  -Dsurefire.failIfNoSpecifiedTests=false
+
+# Real PostgreSQL syntax/transaction/locking evidence for search retention.
+SOCP_TESTCONTAINERS=true bash build/mvnw.sh -pl services/search-config -am test \
+  -Dtest=SearchConfigPostgresMigrationTest \
+  -Dsurefire.failIfNoSpecifiedTests=false
+
+# Fail-closed dependency-audit response fixtures (success, vulnerability, 401,
+# 429, timeout, missing report, and partial report).
+python3 -m unittest build/tests/test_verify_ossindex_audit.py
 python build/verify-investigation-dataset.py
 python build/eval-investigation.py --results services/ai-assistant/target/investigation-eval-results.json
 ```

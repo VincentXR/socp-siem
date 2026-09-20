@@ -13,6 +13,8 @@ import org.mockito.Mock;
 import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.transaction.CannotCreateTransactionException;
 
 import java.util.AbstractMap;
 import java.util.ArrayList;
@@ -23,6 +25,8 @@ import java.util.Map;
 import java.time.Instant;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -39,6 +43,7 @@ import io.opentelemetry.sdk.OpenTelemetrySdk;
 import io.opentelemetry.sdk.trace.SdkTracerProvider;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
@@ -166,22 +171,27 @@ class KafkaEventConsumerTest {
 
     @Test
     @Timeout(20)
-    void anUnreachableDeadLetterQueueGivesUpWithoutPublishingACompletion() throws Exception {
+    void aPoisonRecordWaitsForDlqRecoveryInTheSameConsumerSession() throws Exception {
         KafkaEventConsumer consumer = new KafkaEventConsumer(engine);
-        ReflectionTestUtils.setField(consumer, "dlqHandoffMaxAttempts", 3);
-        ReflectionTestUtils.setField(consumer, "dlqHandoffRetryDelayMs", 10L);
+        configureFastRetries(consumer);
+        ReflectionTestUtils.setField(consumer, "dlqHandoffMaxAttempts", 1);
+        AtomicInteger publishAttempts = new AtomicInteger();
+        List<Map.Entry<String, String>> dlq = new ArrayList<>();
         consumer.setDlqSink((eventId, raw) -> {
-            throw new IllegalStateException("broker unreachable");
+            if (publishAttempts.incrementAndGet() <= 2) {
+                throw new IllegalStateException("broker unreachable");
+            }
+            dlq.add(new AbstractMap.SimpleEntry<>(eventId, raw));
         });
         ConsumerRecord<String, String> record =
                 new ConsumerRecord<>("socp-events", 3, 9L, "bad-key", "{not-json");
 
         consumer.processWithRetry(record, 3L);
 
-        // Giving up must not publish a completion. That is what keeps the
-        // offset uncommitted, so an unreachable broker costs a retry later
-        // instead of a record silently dropped, or a lane wedged forever.
-        assertEquals(0, completionsOf(consumer).size());
+        assertEquals(3, publishAttempts.get());
+        assertEquals(1, dlq.size());
+        assertEquals(1, completionsOf(consumer).size(),
+                "DLQ recovery must finish the original hand-off without rebalance");
     }
 
     @Test
@@ -221,25 +231,29 @@ class KafkaEventConsumerTest {
 
     @Test
     @Timeout(20)
-    void exhaustedRetriesHandOffThroughTheDeadLetterProducer() throws Exception {
+    void dependencyFailurePastAttemptBudgetRecoversWithoutDeadLettering() throws Exception {
         given(stateStore.claim(any(SecurityEvent.class), any(), any(), anyString()))
                 .willReturn(DetectionEventClaim.NEW);
+        CompletableFuture<Void> rollback1 = CompletableFuture.failedFuture(
+                new CompletionException(new CannotCreateTransactionException("sink transaction rollback")));
+        CompletableFuture<Void> rollback2 = CompletableFuture.failedFuture(
+                new CompletionException(new CannotCreateTransactionException("sink transaction rollback")));
         given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))
-                .willReturn(CompletableFuture.failedFuture(new IllegalStateException("sink unavailable")));
+                .willReturn(rollback1, rollback2, CompletableFuture.completedFuture(null));
         KafkaEventConsumer consumer = new KafkaEventConsumer(engine, stateStore);
-        ReflectionTestUtils.setField(consumer, "processingMaxAttempts", 1);
-        KafkaProducer<String, String> dlq = mock(KafkaProducer.class);
-        given(dlq.send(any(ProducerRecord.class)))
-                .willReturn(CompletableFuture.completedFuture(mock(RecordMetadata.class)));
-        ReflectionTestUtils.setField(consumer, "dlqProducer", dlq);
+        configureFastRetries(consumer);
+        List<Map.Entry<String, String>> dlq = new ArrayList<>();
+        consumer.setDlqSink((eventId, raw) -> dlq.add(new AbstractMap.SimpleEntry<>(eventId, raw)));
         ConsumerRecord<String, String> record = new ConsumerRecord<>("socp-events", 3, 12L, "key-1",
                 "{\"eventId\":\"consumer-test-301\",\"tenantId\":\"default\",\"source\":\"auth\","
                         + "\"host\":\"web-1\",\"msg\":\"login failed\"}");
 
         consumer.processWithRetry(record, 3L);
 
-        // Retries exhausted: the record is dead-lettered rather than retried forever.
-        verify(dlq).send(any(ProducerRecord.class));
+        verify(engine, times(3)).ingestFromKafkaAndAwait(
+                any(SecurityEvent.class), anyString(), any(), any());
+        assertEquals(List.of(), dlq, "dependency failures must never consume the poison budget");
+        verify(stateStore, never()).recordDeadLettered(anyString(), anyString(), any(), any(), anyString());
         assertEquals(1, completionsOf(consumer).size());
     }
 
@@ -256,11 +270,16 @@ class KafkaEventConsumerTest {
     }
 
     @Test
-    void anExhaustedJournalReplayIsDeadLettered() {
+    @Timeout(20)
+    void pendingReplaySurvivesClaimDatabaseFailurePastAttemptBudget() {
         given(stateStore.claim(any(SecurityEvent.class), any(), any(), anyString()))
-                .willThrow(new IllegalStateException("journal unavailable"));
+                .willThrow(new DataAccessResourceFailureException("journal database unavailable"))
+                .willThrow(new DataAccessResourceFailureException("journal database unavailable"))
+                .willReturn(DetectionEventClaim.PENDING);
+        given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), any(), any()))
+                .willReturn(CompletableFuture.completedFuture(null));
         KafkaEventConsumer consumer = new KafkaEventConsumer(engine, stateStore);
-        ReflectionTestUtils.setField(consumer, "processingMaxAttempts", 1);
+        configureFastRetries(consumer);
         List<Map.Entry<String, String>> dlq = new ArrayList<>();
         consumer.setDlqSink((eventId, raw) -> dlq.add(new AbstractMap.SimpleEntry<>(eventId, raw)));
         SecurityEvent event = new SecurityEvent(Instant.now(), "auth", "web-1", "replay target",
@@ -268,73 +287,65 @@ class KafkaEventConsumerTest {
 
         consumer.processPendingWithRetry(new PendingDetectionEvent(event, 3, 21L));
 
-        // A replayed row was already accepted once, so it must not be retried
-        // forever: exhausting the attempts dead-letters it. It carries no Kafka
-        // headers, so unlike the polled path there is no originating trace to
-        // inherit - which is why the hand-off is called with null.
-        assertEquals(1, dlq.size(), "the exhausted replay must be dead-lettered");
+        assertEquals(List.of(), dlq);
+        verify(stateStore, times(3)).claim(any(SecurityEvent.class), eq(3), eq(21L), anyString());
+        verify(engine).ingestFromKafkaAndAwait(any(SecurityEvent.class), eq(3), eq(21L));
+        verify(stateStore).markCompleted(any(SecurityEvent.class));
     }
 
     @Test
     @Timeout(20)
-    void exhaustedRetriesTerminaliseTheNormalizedEventUnderItsOwnTenant() throws Exception {
+    void markCompletedFailureRetriesOnlyFinalizationAndNeverDeadLetters() throws Exception {
         given(stateStore.claim(any(SecurityEvent.class), any(), any(), anyString()))
                 .willReturn(DetectionEventClaim.NEW);
         given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))
-                .willReturn(CompletableFuture.failedFuture(
-                        new IllegalStateException("durable sink rejected this event")));
+                .willReturn(CompletableFuture.completedFuture(null));
+        org.mockito.Mockito.doThrow(new DataAccessResourceFailureException("journal commit failed"))
+                .doNothing()
+                .when(stateStore).markCompleted(any(SecurityEvent.class));
+
         KafkaEventConsumer consumer = new KafkaEventConsumer(engine, stateStore);
-        ReflectionTestUtils.setField(consumer, "processingMaxAttempts", 1);
+        configureFastRetries(consumer);
         List<Map.Entry<String, String>> dlq = new ArrayList<>();
         consumer.setDlqSink((eventId, raw) -> dlq.add(new AbstractMap.SimpleEntry<>(eventId, raw)));
-        AtomicReference<String> tenantDuringHandOff = new AtomicReference<>();
-        org.mockito.Mockito.doAnswer(invocation -> {
-            tenantDuringHandOff.set(com.socp.platform.tenant.context.TenantContext.get());
-            return null;
-        }).when(stateStore).recordDeadLettered(anyString(), anyString(), any(), any(), anyString());
         ConsumerRecord<String, String> record = new ConsumerRecord<>("socp-events", 3, 12L,
                 "default|src_ip|198.51.100.7",
-                "{\"eventId\":\"poison-identity-1\",\"tenantId\":\"default\",\"source\":\"auth\","
+                "{\"eventId\":\"finalize-retry-1\",\"tenantId\":\"default\",\"source\":\"auth\","
                         + "\"host\":\"web-1\",\"msg\":\"login failed\","
                         + "\"fields\":{\"src_ip\":\"198.51.100.7\"}}");
 
         consumer.processWithRetry(record, 3L);
 
-        // The Kafka routing key is shared by every event of one entity, so it can
-        // never be the identity of a terminal record: the DLQ key and the journal
-        // sourceEventId are the normalized event id on both hand-off paths.
-        assertEquals(1, dlq.size());
-        assertEquals("poison-identity-1", dlq.get(0).getKey());
-        assertEquals(record.value(), dlq.get(0).getValue());
-        verify(stateStore).recordDeadLettered(eq("poison-identity-1"), eq(record.value()),
-                eq(3), eq(12L), anyString());
-        // The tenant scope is closed by the time the lane hands off, so the write
-        // only lands in the journal when the hand-off installs it explicitly.
-        assertEquals("default", tenantDuringHandOff.get(),
-                "the terminal journal row must be written in the event's tenant scope");
+        assertEquals(List.of(), dlq);
+        verify(engine, times(1)).ingestFromKafkaAndAwait(
+                any(SecurityEvent.class), anyString(), any(), any());
+        verify(stateStore, times(2)).markCompleted(any(SecurityEvent.class));
         assertEquals(1, completionsOf(consumer).size());
     }
 
     @Test
     @Timeout(30)
-    void aGloballyUnavailableWorkerWithholdsTheOffsetInsteadOfDeadLettering() throws Exception {
-        List<Throwable> globalFailures = List.of(
+    void typedWorkerFailuresRecoverWithoutDlqOrFullStateRebuild() throws Exception {
+        List<Throwable> transientFailures = List.of(
                 new TenantAdmission.RejectedException("default", TenantAdmission.RejectionReason.RATE),
                 new TenantAdmission.RejectedException("default",
                         TenantAdmission.RejectionReason.PENDING_BYTES),
-                new IllegalStateException("detection state recovery is DEGRADED"),
-                new IllegalStateException("detection runtime role is API"),
-                new DetectionStateOwnership.StaleStateOwnerException(
-                        "Kafka partition is no longer assigned: 3"));
-        given(stateStore.claim(any(SecurityEvent.class), any(), any(), anyString()))
-                .willReturn(DetectionEventClaim.NEW);
-        for (Throwable global : globalFailures) {
+                new DetectEngineService.RuntimeUnavailableException(
+                        "detection state recovery is DEGRADED"),
+                new CannotCreateTransactionException("durable database unavailable"));
+
+        for (Throwable transientFailure : transientFailures) {
+            org.mockito.Mockito.reset(engine, stateStore);
+            given(stateStore.claim(any(SecurityEvent.class), any(), any(), anyString()))
+                    .willReturn(DetectionEventClaim.NEW);
+            given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))
+                    .willReturn(CompletableFuture.failedFuture(transientFailure),
+                            CompletableFuture.completedFuture(null));
+
             KafkaEventConsumer consumer = new KafkaEventConsumer(engine, stateStore);
-            ReflectionTestUtils.setField(consumer, "processingMaxAttempts", 2);
+            configureFastRetries(consumer);
             List<Map.Entry<String, String>> dlq = new ArrayList<>();
             consumer.setDlqSink((eventId, raw) -> dlq.add(new AbstractMap.SimpleEntry<>(eventId, raw)));
-            given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))
-                    .willReturn(CompletableFuture.failedFuture(global));
             ConsumerRecord<String, String> record = new ConsumerRecord<>("socp-events", 3, 40L,
                     "default|src_ip|198.51.100.7",
                     "{\"eventId\":\"unavailable-1\",\"tenantId\":\"default\",\"source\":\"auth\","
@@ -343,34 +354,29 @@ class KafkaEventConsumerTest {
 
             consumer.processWithRetry(record, 3L);
 
-            // A worker-wide outage must not be silently converted into a committed
-            // offset over an unevaluated event: no dead-letter, no terminal journal
-            // row, and no completion, so the offset stays pending and redelivery or
-            // the PENDING journal row drives the record again once the worker heals.
-            assertEquals(List.of(), dlq, "unavailable failure " + global + " must not dead-letter");
-            assertEquals(0, completionsOf(consumer).size(),
-                    "unavailable failure " + global + " must not commit an offset");
-            verify(stateStore, never()).recordDeadLettered(anyString(), anyString(), any(), any(),
-                    anyString());
+            assertEquals(List.of(), dlq,
+                    "transient failure " + transientFailure + " must not dead-letter");
+            assertEquals(1, completionsOf(consumer).size());
+            verify(engine, times(2)).ingestFromKafkaAndAwait(
+                    any(SecurityEvent.class), anyString(), any(), any());
+            verify(engine, never()).rebuildForPartitions(any());
+            verify(stateStore, never()).recordDeadLettered(
+                    anyString(), anyString(), any(), any(), anyString());
         }
-        // Two attempts per condition: the budget is spent, then the record is
-        // withheld rather than terminalised.
-        verify(engine, times(globalFailures.size() * 2)).ingestFromKafkaAndAwait(
-                any(SecurityEvent.class), anyString(), any(), any());
-        // A worker-wide outage is not instance state corruption: rebuilding the
-        // whole engine once per withheld record would amplify one outage into a
-        // rebuild storm on every lane.
-        verify(engine, never()).rebuildForPartitions(any());
     }
 
     @Test
     @Timeout(30)
-    void aWithheldJournalReplayStaysPendingAndIsNotTerminalised() {
+    void pendingReplayRecoversInTheSameSessionAfterRuntimeRecovery() {
+        given(stateStore.claim(any(SecurityEvent.class), any(), any(), anyString()))
+                .willReturn(DetectionEventClaim.PENDING);
         given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), any(), any()))
                 .willReturn(CompletableFuture.failedFuture(
-                        new IllegalStateException("detection state recovery is RECOVERING")));
+                                new DetectEngineService.RuntimeUnavailableException(
+                                        "detection state recovery is RECOVERING")),
+                        CompletableFuture.completedFuture(null));
         KafkaEventConsumer consumer = new KafkaEventConsumer(engine, stateStore);
-        ReflectionTestUtils.setField(consumer, "processingMaxAttempts", 2);
+        configureFastRetries(consumer);
         List<Map.Entry<String, String>> dlq = new ArrayList<>();
         consumer.setDlqSink((eventId, raw) -> dlq.add(new AbstractMap.SimpleEntry<>(eventId, raw)));
         SecurityEvent event = new SecurityEvent(Instant.now(), "auth", "web-1", "replay target",
@@ -378,8 +384,107 @@ class KafkaEventConsumerTest {
 
         consumer.processPendingWithRetry(new PendingDetectionEvent(event, 3, 41L));
 
-        assertEquals(List.of(), dlq, "a replay blocked by global unavailability must stay PENDING");
+        assertEquals(List.of(), dlq);
+        verify(engine, times(2)).ingestFromKafkaAndAwait(any(SecurityEvent.class), eq(3), eq(41L));
         verify(stateStore, never()).recordDeadLettered(anyString(), anyString(), any(), any(), anyString());
+        verify(stateStore).markCompleted(any(SecurityEvent.class));
+    }
+
+    @Test
+    @Timeout(20)
+    void liveClaimDatabaseFailureRecoversAfterOriginalDlqWindow() throws Exception {
+        given(stateStore.claim(any(SecurityEvent.class), any(), any(), anyString()))
+                .willThrow(new DataAccessResourceFailureException("postgres unavailable"))
+                .willThrow(new DataAccessResourceFailureException("postgres unavailable"))
+                .willReturn(DetectionEventClaim.NEW);
+        given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))
+                .willReturn(CompletableFuture.completedFuture(null));
+
+        KafkaEventConsumer consumer = new KafkaEventConsumer(engine, stateStore);
+        configureFastRetries(consumer);
+        List<Map.Entry<String, String>> dlq = new ArrayList<>();
+        consumer.setDlqSink((eventId, raw) -> dlq.add(new AbstractMap.SimpleEntry<>(eventId, raw)));
+        ConsumerRecord<String, String> record = new ConsumerRecord<>("socp-events", 2, 50L, "key",
+                "{\"eventId\":\"claim-recovery-1\",\"tenantId\":\"default\","
+                        + "\"source\":\"auth\",\"host\":\"web-1\",\"msg\":\"ok\"}");
+
+        consumer.processWithRetry(record, 8L);
+
+        verify(stateStore, times(3)).claim(any(SecurityEvent.class), eq(2), eq(50L), anyString());
+        verify(engine).ingestFromKafkaAndAwait(
+                any(SecurityEvent.class), anyString(), eq(2), eq(50L));
+        assertEquals(List.of(), dlq);
+        assertEquals(1, completionsOf(consumer).size());
+    }
+
+    @Test
+    @Timeout(20)
+    void ownershipLossStopsOldEpochBeforeJournalCompletion() throws Exception {
+        given(stateStore.claim(any(SecurityEvent.class), any(), any(), anyString()))
+                .willReturn(DetectionEventClaim.NEW);
+        given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))
+                .willReturn(CompletableFuture.completedFuture(null));
+        org.mockito.Mockito.doThrow(new DetectionStateOwnership.StaleStateOwnerException(
+                        "Kafka partition is no longer assigned: 3"))
+                .when(engine).assertCurrentOwner(any(SecurityEvent.class), eq(3));
+
+        KafkaEventConsumer consumer = new KafkaEventConsumer(engine, stateStore);
+        configureFastRetries(consumer);
+        ConsumerRecord<String, String> record = new ConsumerRecord<>("socp-events", 3, 51L, "key",
+                "{\"eventId\":\"stale-owner-1\",\"tenantId\":\"default\","
+                        + "\"source\":\"auth\",\"host\":\"web-1\",\"msg\":\"ok\"}");
+
+        consumer.processWithRetry(record, 9L);
+
+        verify(stateStore, never()).markCompleted(any(SecurityEvent.class));
+        assertEquals(0, completionsOf(consumer).size());
+        assertTrue(((java.util.concurrent.atomic.AtomicBoolean)
+                ReflectionTestUtils.getField(consumer, "sessionRestartRequested")).get());
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void completedLaterOffsetCannotCommitAcrossEarlierGap() throws Exception {
+        given(stateStore.claim(any(SecurityEvent.class), any(), any(), anyString()))
+                .willReturn(DetectionEventClaim.NEW);
+        given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))
+                .willReturn(CompletableFuture.completedFuture(null));
+        KafkaEventConsumer consumer = new KafkaEventConsumer(engine, stateStore);
+        configureFastRetries(consumer);
+
+        Field trackerField = KafkaEventConsumer.class.getDeclaredField("completionTracker");
+        trackerField.setAccessible(true);
+        PartitionCompletionTracker tracker = (PartitionCompletionTracker) trackerField.get(consumer);
+        long gapEpoch = tracker.register(3, 60L);
+        long laterEpoch = tracker.register(3, 61L);
+
+        ConsumerRecord<String, String> later = new ConsumerRecord<>("socp-events", 3, 61L, "key",
+                "{\"eventId\":\"later-61\",\"tenantId\":\"default\","
+                        + "\"source\":\"auth\",\"host\":\"web-1\",\"msg\":\"later\"}");
+        consumer.processWithRetry(later, laterEpoch);
+
+        KafkaConsumer<String, String> kafka = mock(KafkaConsumer.class);
+        Method drain = KafkaEventConsumer.class.getDeclaredMethod("drainCompletions", KafkaConsumer.class);
+        drain.setAccessible(true);
+        drain.invoke(consumer, kafka);
+        verify(kafka, never()).commitSync(any(Map.class));
+
+        ConsumerRecord<String, String> gap = new ConsumerRecord<>("socp-events", 3, 60L, "key",
+                "{\"eventId\":\"gap-60\",\"tenantId\":\"default\","
+                        + "\"source\":\"auth\",\"host\":\"web-1\",\"msg\":\"gap\"}");
+        consumer.processWithRetry(gap, gapEpoch);
+        drain.invoke(consumer, kafka);
+
+        ArgumentCaptor<Map> commits = ArgumentCaptor.forClass(Map.class);
+        verify(kafka).commitSync(commits.capture());
+        Map<TopicPartition, OffsetAndMetadata> committed = commits.getValue();
+        assertEquals(62L, committed.get(new TopicPartition("socp-events", 3)).offset());
+    }
+
+    private static void configureFastRetries(KafkaEventConsumer consumer) {
+        ReflectionTestUtils.setField(consumer, "processingMaxAttempts", 1);
+        ReflectionTestUtils.setField(consumer, "processingRetryInitialDelayMs", 1L);
+        ReflectionTestUtils.setField(consumer, "dlqHandoffRetryDelayMs", 1L);
     }
 
     private static java.util.Queue<?> completionsOf(KafkaEventConsumer consumer) throws Exception {
@@ -448,6 +553,7 @@ class KafkaEventConsumerTest {
         KafkaEventConsumer consumer = new KafkaEventConsumer(engine);
         KafkaConsumer<String, String> kafka = mock(KafkaConsumer.class);
         TopicPartition partition = new TopicPartition("events", 3);
+        given(kafka.assignment()).willReturn(java.util.Set.of(partition));
         CountDownLatch firstStarted = new CountDownLatch(1);
         CountDownLatch releaseFirst = new CountDownLatch(1);
         CountDownLatch secondFinished = new CountDownLatch(1);
@@ -474,6 +580,10 @@ class KafkaEventConsumerTest {
                 "dispatchOrDefer", KafkaConsumer.class, TopicPartition.class, Runnable.class);
         dispatch.setAccessible(true);
         dispatch.invoke(consumer, kafka, partition, (Runnable) secondFinished::countDown);
+        Method applyPauseState = KafkaEventConsumer.class.getDeclaredMethod(
+                "applyPauseState", KafkaConsumer.class);
+        applyPauseState.setAccessible(true);
+        applyPauseState.invoke(consumer, kafka);
         verify(kafka).pause(eq(java.util.Set.of(partition)));
 
         releaseFirst.countDown();
@@ -481,6 +591,7 @@ class KafkaEventConsumerTest {
         Method drain = KafkaEventConsumer.class.getDeclaredMethod("drainDeferred", KafkaConsumer.class);
         drain.setAccessible(true);
         drain.invoke(consumer, kafka);
+        applyPauseState.invoke(consumer, kafka);
 
         verify(kafka).resume(eq(java.util.Set.of(partition)));
         consumer.stop();
@@ -491,6 +602,7 @@ class KafkaEventConsumerTest {
         KafkaEventConsumer consumer = new KafkaEventConsumer(engine);
         KafkaConsumer<String, String> kafka = mock(KafkaConsumer.class);
         TopicPartition partition = new TopicPartition("events", 7);
+        given(kafka.assignment()).willReturn(java.util.Set.of(partition));
         CountDownLatch completed = new CountDownLatch(1);
 
         Field budget = KafkaEventConsumer.class.getDeclaredField("partitionMaxPendingBytes");
@@ -500,6 +612,10 @@ class KafkaEventConsumerTest {
                 "dispatchOrDefer", KafkaConsumer.class, TopicPartition.class, Runnable.class, long.class);
         dispatch.setAccessible(true);
         dispatch.invoke(consumer, kafka, partition, (Runnable) completed::countDown, 32L);
+        Method applyPauseState = KafkaEventConsumer.class.getDeclaredMethod(
+                "applyPauseState", KafkaConsumer.class);
+        applyPauseState.setAccessible(true);
+        applyPauseState.invoke(consumer, kafka);
 
         verify(kafka).pause(eq(java.util.Set.of(partition)));
         assertTrue(!completed.await(100, TimeUnit.MILLISECONDS));
@@ -507,6 +623,7 @@ class KafkaEventConsumerTest {
         Method drain = KafkaEventConsumer.class.getDeclaredMethod("drainDeferred", KafkaConsumer.class);
         drain.setAccessible(true);
         drain.invoke(consumer, kafka);
+        applyPauseState.invoke(consumer, kafka);
 
         assertTrue(completed.await(1, TimeUnit.SECONDS));
         verify(kafka).resume(eq(java.util.Set.of(partition)));

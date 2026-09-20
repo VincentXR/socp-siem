@@ -42,3 +42,42 @@ Detection 使用同样的生命周期边界，详见
 
 该角色开关是逻辑/部署边界，不是数据所有权放宽。事件和 Outbox 的唯一约束、
 发布重试、Kafka offset 以及 OpenSearch 文档幂等仍由各自 owner 负责。
+
+
+## Local hot-cache capacity contract
+
+The API role keeps only a bounded local hot window; PostgreSQL/OpenSearch remain
+the durable sources. `SOCP_SEARCH_CACHE_MAX_BYTES_PER_TENANT` and
+`SOCP_SEARCH_CACHE_MAX_BYTES_TOTAL` are estimated event weights used for cache
+admission, not measurements of exact JVM retained heap. Configuration fails at
+startup when the total byte budget is smaller than the per-tenant budget rather
+than silently widening the total.
+
+A single event whose estimated weight exceeds the tenant budget is still
+persisted but is skipped from the hot cache. Tenant cardinality is enforced at
+admission using `SOCP_SEARCH_CACHE_MAX_TENANTS`. First-access warm-up is paged
+by `SOCP_SEARCH_CACHE_WARMUP_BATCH_SIZE`, capped by
+`SOCP_SEARCH_CACHE_WARMUP_MAX_EVENTS`, and limited to
+`SOCP_SEARCH_CACHE_MAX_CONCURRENT_WARMUPS` tenants at once.
+
+The transient memory envelope is therefore bounded in terms of configured cache
+weights plus a bounded number of JPA warm-up pages. It is not an absolute heap
+bound: one persisted database row can itself be larger than the estimate, and
+JPA/object overhead is implementation-dependent.
+
+## PostgreSQL event-retention catch-up
+
+Retention is based on `t_search_event.created_at`, not the source event
+timestamp. Rows linked to ingestion outbox work in
+`PENDING|PROCESSING|DEAD` remain protected so replay/idempotency evidence is
+not removed early.
+
+Cleanup uses small ordered `(created_at,id)` batches with
+`FOR UPDATE SKIP LOCKED`, matching the V11 retention index. One scheduler
+invocation may execute multiple bounded rounds while backlog remains, but each
+transaction and the total invocation duration stay capped by
+`SOCP_SEARCH_EVENT_CLEANUP_BATCH_SIZE`,
+`SOCP_SEARCH_EVENT_CLEANUP_MAX_BATCHES`, and
+`SOCP_SEARCH_EVENT_CLEANUP_MAX_RUN_MS`. A short
+`SOCP_SEARCH_EVENT_CLEANUP_CATCHUP_PAUSE_MS` prevents a tight catch-up loop
+and reduces pressure on live ingest/outbox transactions.

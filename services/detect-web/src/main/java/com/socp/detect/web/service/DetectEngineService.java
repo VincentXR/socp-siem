@@ -52,6 +52,16 @@ public class DetectEngineService {
         DEGRADED
     }
 
+    /**
+     * Typed runtime gate used by the Kafka boundary. Role mismatch and state
+     * recovery are worker conditions, never poison-record evidence.
+     */
+    public static final class RuntimeUnavailableException extends IllegalStateException {
+        public RuntimeUnavailableException(String message) {
+            super(message);
+        }
+    }
+
     private final RuleSpecStore store;
     private final RecentAlertSink sink;
     private final AlertForwarder forwarder;
@@ -727,6 +737,26 @@ public class DetectEngineService {
     }
 
     /**
+     * Fence the final journal transition with the same state-unit ownership used
+     * by durable rule side effects. A revoked worker may observe an async task
+     * complete, but it must not mark that event completed after the epoch moved.
+     */
+    public void assertCurrentOwner(SecurityEvent event, Integer partition) {
+        if (event == null || partition == null || partition < 0) return;
+        engineLifecycle.readLock().lock();
+        try {
+            if (revokedPartitions.contains(partition)
+                    || !assignedPartitions.get().contains(partition)) {
+                throw new DetectionStateOwnership.StaleStateOwnerException(
+                        "Kafka partition is no longer assigned: " + partition);
+            }
+            durableGuardFor(partition, shardFor(event)).run();
+        } finally {
+            engineLifecycle.readLock().unlock();
+        }
+    }
+
+    /**
      * Build this tenant's replacement engines, restore them from durable state,
      * and only then swap them in.
      *
@@ -1033,11 +1063,11 @@ public class DetectEngineService {
         try {
             if (!workerRole()) {
                 return CompletableFuture.failedFuture(
-                        new IllegalStateException("detection runtime role is " + runtimeRole));
+                        new RuntimeUnavailableException("detection runtime role is " + runtimeRole));
             }
             int shard = shardFor(ev);
             if (!readyFor(ev.requireTenantId(), shard)) {
-                return CompletableFuture.failedFuture(new IllegalStateException(
+                return CompletableFuture.failedFuture(new RuntimeUnavailableException(
                         "detection state recovery is "
                                 + recoveryStatusFor(ev.requireTenantId(), shard).name()));
             }

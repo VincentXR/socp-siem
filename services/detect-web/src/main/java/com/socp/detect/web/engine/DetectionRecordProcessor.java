@@ -40,12 +40,20 @@ final class DetectionRecordProcessor {
     private final DetectEngineService engine;
     private final DetectionStateStore stateStore;
     private final DetectionPerformanceMetrics performanceMetrics;
+    private final long completionTimeoutMillis;
 
     DetectionRecordProcessor(DetectEngineService engine, DetectionStateStore stateStore,
                              DetectionPerformanceMetrics performanceMetrics) {
+        this(engine, stateStore, performanceMetrics, TimeUnit.MINUTES.toMillis(10));
+    }
+
+    DetectionRecordProcessor(DetectEngineService engine, DetectionStateStore stateStore,
+                             DetectionPerformanceMetrics performanceMetrics,
+                             long completionTimeoutMillis) {
         this.engine = engine;
         this.stateStore = stateStore;
         this.performanceMetrics = performanceMetrics;
+        this.completionTimeoutMillis = Math.max(1L, completionTimeoutMillis);
     }
 
     void process(Integer partition, Long offset, String key, String raw) {
@@ -61,15 +69,15 @@ final class DetectionRecordProcessor {
         }
         try {
             processNormalized(topic, partition, offset, record.routingKey(), record.event());
-        } catch (MalformedDetectionRecordException | DetectionUnavailableException
+        } catch (MalformedDetectionRecordException | RetryableDetectionFailure
                  | TerminalDetectionFailure typed) {
             throw typed;
         } catch (RuntimeException failure) {
-            // The record parsed successfully, so the terminal identity and its
-            // tenant travel with the exception instead of being re-derived from
-            // the Kafka routing key when the hand-off runs.
-            throw new TerminalDetectionFailure(record.event().id(), record.event().requireTenantId(),
-                    "detection processing failed: " + failure.getMessage(), failure);
+            // A successfully parsed record is not poison merely because an
+            // execution path threw an unknown RuntimeException. Unknown failures
+            // stay retryable and visible until an operator or a typed boundary
+            // can classify them more narrowly.
+            throw retryable(record.event(), FailureStage.EVALUATION, failure);
         }
     }
 
@@ -84,7 +92,13 @@ final class DetectionRecordProcessor {
         try (com.socp.platform.tenant.context.TenantContext.Scope ignored =
                      com.socp.platform.tenant.context.TenantContext.open(tenant)) {
             if (performanceMetrics != null) performanceMetrics.kafkaReceived(normalized);
-            DetectionEventClaim claim = stateStore.claim(normalized, partition, offset, routingKey);
+
+            DetectionEventClaim claim;
+            try {
+                claim = stateStore.claim(normalized, partition, offset, routingKey);
+            } catch (RuntimeException failure) {
+                throw retryable(normalized, FailureStage.CLAIM, failure);
+            }
             if (performanceMetrics != null) performanceMetrics.journalCommitted(normalized);
             if (claim == DetectionEventClaim.COMPLETED || claim == DetectionEventClaim.DEAD_LETTERED) {
                 if (performanceMetrics != null) {
@@ -94,42 +108,91 @@ final class DetectionRecordProcessor {
                 return;
             }
 
-            // Keep the lightweight/unit ingress path on the legacy overload;
-            // only real Kafka records carry an ownership position that needs
-            // to participate in the checkpoint vector.
             CompletableFuture<Void> completion;
-            if (partition == null || offset == null) {
-                completion = engine.ingestFromKafkaAndAwait(normalized);
-            } else if (topic == null || topic.isBlank()) {
-                completion = engine.ingestFromKafkaAndAwait(normalized, partition, offset);
-            } else {
-                completion = engine.ingestFromKafkaAndAwait(normalized, topic, partition, offset);
-            }
-            if (completion == null) throw new IllegalStateException("detection completion signal is null");
             try {
-                completion.get(10, TimeUnit.MINUTES);
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                throw new IllegalStateException("detection processing interrupted", interrupted);
-            } catch (java.util.concurrent.TimeoutException timeout) {
-                throw new IllegalStateException("detection processing timeout", timeout);
-            } catch (ExecutionException failed) {
-                Throwable cause = failed.getCause() == null ? failed : failed.getCause();
-                if (isGlobalUnavailable(cause)) {
-                    // Admission backpressure, a recovering engine and a revoked
-                    // ownership fence are worker-wide conditions: the durable
-                    // contract keeps them retryable with the offset pending so a
-                    // dependency outage never terminalises live events.
-                    throw new DetectionUnavailableException(tenant, cause);
+                // Keep the lightweight/unit ingress path on the legacy overload;
+                // only real Kafka records carry an ownership position that needs
+                // to participate in the checkpoint vector.
+                if (partition == null || offset == null) {
+                    completion = engine.ingestFromKafkaAndAwait(normalized);
+                } else if (topic == null || topic.isBlank()) {
+                    completion = engine.ingestFromKafkaAndAwait(normalized, partition, offset);
+                } else {
+                    completion = engine.ingestFromKafkaAndAwait(normalized, topic, partition, offset);
                 }
-                throw new TerminalDetectionFailure(normalized.id(), tenant,
-                        "durable detection result failed: " + cause.getMessage(), cause);
+            } catch (RuntimeException failure) {
+                throw retryable(normalized, FailureStage.EVALUATION, failure);
             }
-            // Mark the journal terminal only after the engine's durable sink
-            // and owner-fenced position callback have completed. This also
-            // covers zero-alert events and keeps completion independent of a
-            // particular AlertForwarder implementation.
+            if (completion == null) {
+                throw retryable(normalized, FailureStage.EVALUATION,
+                        new IllegalStateException("detection completion signal is null"));
+            }
+
+            awaitInitialCompletion(normalized, partition, completion);
+            finalizeCompletedEvaluation(normalized, partition);
+        }
+    }
+
+    /**
+     * The ten-minute timeout is an observability/recovery boundary, not permission
+     * to start a second evaluation while the first future may still be running.
+     * The consumer keeps this exact future and resumes waiting on it.
+     */
+    private void awaitInitialCompletion(SecurityEvent normalized, Integer partition,
+                                        CompletableFuture<Void> completion) {
+        try {
+            completion.get(completionTimeoutMillis, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw retryable(normalized, FailureStage.ASYNC_EXECUTION, interrupted);
+        } catch (java.util.concurrent.TimeoutException timeout) {
+            throw new InFlightDetectionTimeout(normalized, partition, completion, timeout);
+        } catch (ExecutionException failed) {
+            Throwable cause = unwrapAsync(failed);
+            throw retryable(normalized, FailureStage.ASYNC_EXECUTION, cause);
+        }
+    }
+
+    /**
+     * Continue waiting on the original timed-out evaluation. A repeated timeout
+     * rethrows the same in-flight token; no rule evaluation, sink write or state
+     * advance is started concurrently.
+     */
+    void resumeTimedOut(InFlightDetectionTimeout timedOut, long waitMillis) {
+        if (timedOut == null) throw new IllegalArgumentException("timedOut is required");
+        try {
+            timedOut.completion().get(Math.max(1L, waitMillis), TimeUnit.MILLISECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw retryable(timedOut.event(), FailureStage.ASYNC_EXECUTION, interrupted);
+        } catch (java.util.concurrent.TimeoutException timeout) {
+            throw timedOut;
+        } catch (ExecutionException failed) {
+            throw retryable(timedOut.event(), FailureStage.ASYNC_EXECUTION, unwrapAsync(failed));
+        }
+        finalizeCompletedEvaluation(timedOut.event(), timedOut.partition());
+    }
+
+    /** Retry only the terminal journal transition; do not execute the rules again. */
+    void resumeFinalization(FinalizationPendingFailure pending) {
+        if (pending == null) throw new IllegalArgumentException("pending is required");
+        finalizeCompletedEvaluation(pending.event(), pending.partition());
+    }
+
+    private void finalizeCompletedEvaluation(SecurityEvent normalized, Integer partition) {
+        try {
+            // Durable sink completion is necessary but not sufficient: the owner
+            // that observed it must still hold the current fencing epoch before
+            // the journal can advance to COMPLETED.
+            if (partition != null) engine.assertCurrentOwner(normalized, partition);
             stateStore.markCompleted(normalized);
+        } catch (RuntimeException failure) {
+            FailureCategory category = classifyFailure(failure);
+            if (category == FailureCategory.OWNERSHIP_LOST) {
+                throw retryable(normalized, FailureStage.MARK_COMPLETED, failure);
+            }
+            throw new FinalizationPendingFailure(normalized, partition,
+                    FailureStage.MARK_COMPLETED, category, failure);
         }
     }
 
@@ -144,16 +207,17 @@ final class DetectionRecordProcessor {
         } catch (JsonProcessingException | IllegalArgumentException malformed) {
             throw new MalformedDetectionRecordException(
                     partition == null || offset == null ? null : normalizeEventId(null, partition, offset),
-                    raw, malformed);
+                    null, raw, malformed);
         }
         if (payload == null || !payload.isObject()) {
             String terminalId = partition == null || offset == null
                     ? null : normalizeEventId(null, partition, offset);
-            throw new MalformedDetectionRecordException(terminalId, raw,
+            throw new MalformedDetectionRecordException(terminalId, null, raw,
                     new IllegalArgumentException("event payload must be an object"));
         }
 
         String suppliedEventId = text(payload, "eventId", null);
+        String tenantHint = tenantHint(payload);
         // The Kafka key is a routing identity, not an event identity. When a
         // producer omits eventId, the immutable record position prevents a
         // redelivery from turning into a fresh UUID and bypassing the journal
@@ -196,7 +260,7 @@ final class DetectionRecordProcessor {
         } catch (IllegalArgumentException malformed) {
             String terminalId = partition == null || offset == null
                     ? eventId : normalizeEventId(null, partition, offset);
-            throw new MalformedDetectionRecordException(terminalId, raw, malformed);
+            throw new MalformedDetectionRecordException(terminalId, tenantHint, raw, malformed);
         }
     }
 
@@ -208,6 +272,18 @@ final class DetectionRecordProcessor {
             return UUID.randomUUID().toString();
         }
         return eventId.trim();
+    }
+
+    private static String tenantHint(JsonNode payload) {
+        if (payload == null || !payload.isObject()) return null;
+        String tenant = text(payload, "tenantId", text(payload, "tenant_id", null));
+        JsonNode fields = payload.get("fields");
+        if ((tenant == null || tenant.isBlank()) && fields != null && fields.isObject()) {
+            tenant = text(fields, "tenant_id", text(fields, "tenantId", null));
+        }
+        return tenant == null || tenant.isBlank()
+                || !com.socp.platform.tenant.context.TenantContext.isValid(tenant)
+                ? null : tenant;
     }
 
     private static String text(JsonNode payload, String field, String fallback) {
@@ -234,41 +310,205 @@ final class DetectionRecordProcessor {
     record NormalizedDetectionRecord(String routingKey, SecurityEvent event) {
     }
 
-    /**
-     * Worker-wide conditions that must stay retryable: admission backpressure, an
-     * engine that is not ready, a non-worker runtime role and a revoked ownership
-     * fence. They never consume the dead-letter budget, so a dependency outage
-     * cannot turn live events into terminal ones. The engine reports the recovery
-     * and role conditions as {@link IllegalStateException} messages, which are the
-     * only signal available at this boundary.
-     */
-    private static boolean isGlobalUnavailable(Throwable failure) {
-        for (Throwable current = failure; current != null;
-             current = current.getCause() == current ? null : current.getCause()) {
-            if (current instanceof TenantAdmission.RejectedException
-                    || current instanceof DetectionStateOwnership.StaleStateOwnerException) {
-                return true;
-            }
-            String message = current.getMessage();
-            if (message != null && (message.startsWith("detection state recovery is ")
-                    || message.startsWith("detection runtime role is "))) {
-                return true;
-            }
+    enum FailureStage {
+        CLAIM("claim"),
+        EVALUATION("evaluation"),
+        ASYNC_EXECUTION("async_execution"),
+        MARK_COMPLETED("mark_completed");
+
+        private final String metricTag;
+
+        FailureStage(String metricTag) {
+            this.metricTag = metricTag;
         }
-        return false;
+
+        String metricTag() {
+            return metricTag;
+        }
     }
 
-    /** A record may not be evaluated while this worker is globally unavailable. */
-    static final class DetectionUnavailableException extends RuntimeException {
-        private final String tenantId;
+    enum FailureCategory {
+        DEPENDENCY("dependency"),
+        RECOVERY("recovery"),
+        TIMEOUT("timeout"),
+        BACKPRESSURE("backpressure"),
+        OWNERSHIP_LOST("ownership_lost"),
+        INTERRUPTED("interrupted"),
+        UNKNOWN("unknown");
 
-        DetectionUnavailableException(String tenantId, Throwable cause) {
-            super("detection is temporarily unavailable: " + cause.getMessage(), cause);
+        private final String metricTag;
+
+        FailureCategory(String metricTag) {
+            this.metricTag = metricTag;
+        }
+
+        String metricTag() {
+            return metricTag;
+        }
+    }
+
+    /**
+     * Classify from explicit exception types across the full cause chain.
+     * IllegalArgumentException is intentionally not a generic poison marker:
+     * after parsing, an unknown execution exception remains retryable.
+     */
+    static FailureCategory classifyFailure(Throwable failure) {
+        for (Throwable current = failure; current != null;
+             current = current.getCause() == current ? null : current.getCause()) {
+            if (current instanceof DetectionStateOwnership.StaleStateOwnerException) {
+                return FailureCategory.OWNERSHIP_LOST;
+            }
+            if (current instanceof TenantAdmission.RejectedException
+                    || current instanceof java.util.concurrent.RejectedExecutionException) {
+                return FailureCategory.BACKPRESSURE;
+            }
+            if (current instanceof DetectEngineService.RuntimeUnavailableException) {
+                return FailureCategory.RECOVERY;
+            }
+            if (current instanceof java.util.concurrent.TimeoutException
+                    || current instanceof java.net.SocketTimeoutException
+                    || current instanceof java.net.http.HttpTimeoutException) {
+                return FailureCategory.TIMEOUT;
+            }
+            if (current instanceof InterruptedException
+                    || current instanceof java.util.concurrent.CancellationException) {
+                return FailureCategory.INTERRUPTED;
+            }
+            if (current instanceof org.springframework.dao.DataAccessException
+                    || current instanceof org.springframework.transaction.TransactionException
+                    || current instanceof jakarta.persistence.PersistenceException
+                    || current instanceof java.sql.SQLException
+                    || current instanceof java.net.ConnectException
+                    || current instanceof org.apache.kafka.common.KafkaException) {
+                return FailureCategory.DEPENDENCY;
+            }
+        }
+        return FailureCategory.UNKNOWN;
+    }
+
+    private static Throwable unwrapAsync(Throwable failure) {
+        Throwable current = failure;
+        while ((current instanceof ExecutionException
+                || current instanceof java.util.concurrent.CompletionException)
+                && current.getCause() != null && current.getCause() != current) {
+            current = current.getCause();
+        }
+        return current;
+    }
+
+    private static RetryableDetectionFailure retryable(SecurityEvent event,
+                                                       FailureStage stage,
+                                                       Throwable cause) {
+        String eventId = event == null ? null : event.id();
+        String tenantId = event == null ? null : event.requireTenantId();
+        FailureCategory category = classifyFailure(cause);
+        String detail = cause == null ? "unknown failure"
+                : cause.getClass().getSimpleName() + ": " + cause.getMessage();
+        return new RetryableDetectionFailure(eventId, tenantId, stage, category,
+                "retryable detection failure stage=" + stage.metricTag()
+                        + " category=" + category.metricTag() + " cause=" + detail,
+                cause);
+    }
+
+    static class RetryableDetectionFailure extends RuntimeException {
+        private final String eventId;
+        private final String tenantId;
+        private final FailureStage stage;
+        private final FailureCategory category;
+
+        RetryableDetectionFailure(String eventId, String tenantId, FailureStage stage,
+                                  FailureCategory category, String message, Throwable cause) {
+            super(message, cause);
+            this.eventId = eventId;
             this.tenantId = tenantId;
+            this.stage = stage;
+            this.category = category;
+        }
+
+        String eventId() {
+            return eventId;
         }
 
         String tenantId() {
             return tenantId;
+        }
+
+        FailureStage stage() {
+            return stage;
+        }
+
+        FailureCategory category() {
+            return category;
+        }
+    }
+
+    static final class InFlightDetectionTimeout extends RetryableDetectionFailure {
+        private final SecurityEvent event;
+        private final Integer partition;
+        private final CompletableFuture<Void> completion;
+
+        InFlightDetectionTimeout(SecurityEvent event, Integer partition,
+                                 CompletableFuture<Void> completion, Throwable cause) {
+            super(event == null ? null : event.id(),
+                    event == null ? null : event.requireTenantId(),
+                    FailureStage.ASYNC_EXECUTION, FailureCategory.TIMEOUT,
+                    "detection evaluation timed out while the original async task is still in flight",
+                    cause);
+            this.event = event;
+            this.partition = partition;
+            this.completion = completion;
+        }
+
+        SecurityEvent event() {
+            return event;
+        }
+
+        Integer partition() {
+            return partition;
+        }
+
+        CompletableFuture<Void> completion() {
+            return completion;
+        }
+    }
+
+    static final class FinalizationPendingFailure extends RetryableDetectionFailure {
+        private final SecurityEvent event;
+        private final Integer partition;
+
+        FinalizationPendingFailure(SecurityEvent event, Integer partition,
+                                   FailureStage stage, FailureCategory category, Throwable cause) {
+            super(event == null ? null : event.id(),
+                    event == null ? null : event.requireTenantId(),
+                    stage, category,
+                    "detection evaluation is durable but journal finalization is pending",
+                    cause);
+            this.event = event;
+            this.partition = partition;
+        }
+
+        SecurityEvent event() {
+            return event;
+        }
+
+        Integer partition() {
+            return partition;
+        }
+    }
+
+    /**
+     * Source-compatible alias for older focused tests/integrations. New code uses
+     * the richer retryable failure with explicit stage/category.
+     */
+    @Deprecated
+    static final class DetectionUnavailableException extends RetryableDetectionFailure {
+        DetectionUnavailableException(String tenantId, Throwable cause) {
+            super(null, tenantId, FailureStage.EVALUATION, classifyFailure(cause),
+                    "detection is temporarily unavailable: " + cause.getMessage(), cause);
+        }
+
+        String tenantId() {
+            return super.tenantId();
         }
     }
 
@@ -299,16 +539,23 @@ final class DetectionRecordProcessor {
 
     static final class MalformedDetectionRecordException extends RuntimeException {
         private final String eventId;
+        private final String tenantId;
         private final String raw;
 
-        MalformedDetectionRecordException(String eventId, String raw, Throwable cause) {
+        MalformedDetectionRecordException(String eventId, String tenantId,
+                                          String raw, Throwable cause) {
             super("terminal record: " + cause.getMessage(), cause);
             this.eventId = eventId;
+            this.tenantId = tenantId;
             this.raw = raw;
         }
 
         String eventId() {
             return eventId;
+        }
+
+        String tenantId() {
+            return tenantId;
         }
 
         String raw() {
