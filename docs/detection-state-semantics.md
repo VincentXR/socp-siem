@@ -7,36 +7,65 @@ not claim distributed exactly-once processing.
 
 ## Ownership and routing
 
-The producer key is:
+Canonical ingestion remains on `socp-events`; it is not repartitioned in
+place. Detection routing v2 adds a separate durable hand-off:
 
 ```text
-tenant_id | detection_routing_field | detection_routing_value
+socp-events
+  -> canonical source receipt + routing outbox
+  -> socp-detection-routed-v2
+       key = tenant_id | grouping_dimension | grouping_value
 ```
 
-The key is stable across retries and does not contain `eventId`. `eventId` is
-the durable event identity; the Kafka key is the state ownership identity.
-Canonical ingestion writes the routing field and value into event fields so
-the decision survives parser changes and remains inspectable in OpenSearch.
+A stateful rule must declare `groupBy`; `keyField` remains a compatibility
+alias and `routingField`, when present, must name the same dimension. ACTIVE
+rules are compiled into one executable routing plan per tenant. Events are
+fanned out once per **unique required dimension**, not once per rule. Shipped
+content currently requires `src_ip`, `host`, `dst_ip`, and `user`, so the
+bounded maximum is five deliveries per source event: one singleton stateless
+copy plus four stateful copies.
 
-The default routing policy is:
+The routed Kafka key is stable across retries and includes the tenant,
+dimension and value. `eventId` remains the source evidence identity and is
+used by business alert identity; each routed copy has a separate deterministic
+`deliveryId` used only for transport/journal idempotency. The journal therefore
+uses `(tenant_id, delivery_id)` while preserving `source_event_id` for
+Evidence/Alert/Case traceability.
 
-- endpoint/audit events: `host` when available;
-- other events: `src_ip`, then `user`, then `host`, then `dst_ip`;
-- an explicit routing field/value takes precedence.
+Aliases such as `username -> user`, `host.name -> host`, and
+`source.ip -> src_ip` are resolved centrally. Composite dimensions use
+`component+component` with bounded, length-prefixed values. Unsupported
+grouping expressions or a deployment whose required dimension count exceeds
+the configured bound fail closed and are exposed by the routing-plan API and
+health contributor.
 
-A stateful rule must declare `groupBy`; inside one document, `groupBy`, the
-compatibility alias `keyField` and the optional `routingField` must name the
-same dimension, and the document must compile into an executable rule. Both are
-HTTP 400 rejections at write time.
+If an event lacks a value required by one stateful dimension, that dimension
+copy is not invented from another field. The durable source receipt and routed
+payload record `missing_dimensions`; other valid dimensions and the singleton
+stateless copy may still proceed. Thus routed-v2 cluster-wide correctness is
+claimed only for supported ACTIVE rules on events that actually provide their
+declared grouping value.
 
-Persistence never sees events, so it cannot compare a declared dimension with
-the one an event resolves to. A rule that groups by a dimension the routing
-policy ranks below another field is therefore accepted and runs with partial,
-per-partition state; that gap is measured rather than promised away (see
-`docs/detection-state-sharding.md`): writing such a rule logs a partition-locality
-advisory per affected data source, and the engine reports an actual mismatch at
-most once per rule window. An explicit repartition or fan-out plan is still
-required before such a rule can be called cluster-wide correct.
+The legacy canonical key policy is retained only for migration/rollback:
+endpoint/audit events prefer `host`; other events prefer `src_ip`, then
+`user`, `host`, and `dst_ip`. A legacy deployment with cross-dimension
+state reports `LEGACY_PARTIAL` rather than presenting partition-local history
+as complete.
+
+Every canonical Kafka position gets a durable `t_detection_route_source`
+receipt. The first business event materializes its bounded routing outbox;
+producer retries that place the same `source_event_id` at another source
+offset create another source receipt but reuse the existing delivery identity.
+Source receipts default to 30-day retention, published route outbox rows to
+seven days, and failed routing evidence to 90 days. These are bounded
+idempotency/evidence horizons rather than unbounded in-memory caches.
+
+The routing topology fingerprint covers dimensions, source coverage, aliases,
+schema and routing version, but not ordinary matcher/threshold/message tuning.
+It is pinned durably per `(tenant, routing_version)`. A topology change under
+the same routing version fails closed; migration requires a new routing-version
+deployment and shadow/prewarm/cutover rather than silently mixing old and new
+state ownership.
 
 Stateful rules also expose an event-time policy:
 
@@ -309,7 +338,11 @@ intentional at-least-once trade-off that permits the shorter happy path.
 
 | Crash point | Recovery result |
 |---|---|
-| Before journal claim | Kafka redelivery claims the event |
+| Before canonical route transaction | Canonical Kafka offset remains uncommitted; source record is retried |
+| After route outbox/source receipt commit, before canonical Kafka commit | Redelivery reads the frozen source receipt and does not recompute the plan |
+| Same source event is produced at another Kafka offset | A new source receipt is written; existing deterministic deliveries are reused |
+| Route outbox publish acknowledged, before `PUBLISHED` update | Publisher may resend; downstream `deliveryId` journal identity absorbs the duplicate |
+| Before routed journal claim | Routed Kafka redelivery claims the delivery |
 | After `PENDING` commit, before rule evaluation | Kafka redelivery or pending replay evaluates it |
 | During RuleEngine processing | The event remains pending; its partition cannot advance |
 | Old worker after partition revoke | Owner fence fails; no new Outbox/checkpoint generation is committed |
@@ -363,8 +396,12 @@ The current design does not claim:
 
 - exactly-once delivery across Kafka, PostgreSQL, and downstream services;
 - strict ordering across different Kafka partitions;
-- strict multi-instance correctness for a rule grouping field different from
-  the event routing field;
+- cluster-wide state contribution from an event that does not contain the
+  grouping value required by that rule; the missing dimension is recorded
+  instead of guessed;
+- cross-dimension correctness while intentionally running the legacy canonical
+  Detection mode; that mode is migration/rollback only and reports
+  `LEGACY_PARTIAL`;
 - recovery beyond the configured retention/lateness window;
 - cluster-wide storm collapsing or cluster-wide five-minute window aggregation
   in the secondary-analysis path; both are per-replica counters today;
