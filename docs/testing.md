@@ -202,11 +202,28 @@ and is configurable with `SOCP_DETECT_STATE_RETENTION`. Terminal cleanup uses
 independent `SOCP_DETECT_STATE_COMPLETED_RETENTION` and
 `SOCP_DETECT_STATE_DEAD_LETTER_RETENTION` clocks; pending rows are retained.
 
-For multi-instance validation, use `bash build/detection-cluster.sh start`; it
-starts exactly three Detection instances against the shared PostgreSQL/Kafka
-group. Then run `python build/chaos-pipeline.py --scenario multi_instance`.
-See the [validation matrix](validation-matrix.md) for pass criteria and
-explicit limits.
+For cross-dimension multi-instance validation, run the Detection cluster on
+the routed topic, not the legacy canonical topic:
+
+```bash
+SOCP_DETECT_INPUT_TOPIC=socp-detection-routed-v2 \
+SOCP_DETECT_ROUTING_MODE=primary \
+SOCP_DETECT_OUTPUT_MODE=primary \
+SOCP_DETECT_ROUTING_PUBLISHER_ENABLED=true \
+SOCP_DETECT_CLUSTER_MIN_PARTITIONS=6 \
+bash build/detection-cluster.sh start
+
+RECOVERY_TOPIC=socp-detection-routed-v2 \
+python build/chaos-pipeline.py --scenario multi_instance --rebalance-cycles 3
+```
+
+The acceptance topology is exactly three Detection instances and six routed
+partitions. The scenario uses an independent expected-alert oracle, exercises
+same-user state across different IP/host values and tenant isolation, and
+checks canonical source receipts, routed delivery identities, source/delivery
+positions, bounded fan-out, repeated rebalance, zero lag and zero pending
+journal work. See the [validation matrix](validation-matrix.md) for the full
+pass criteria.
 
 Chaos event injection is a data-plane operation. Set
 `PIPELINE_COLLECTOR_ID`, `PIPELINE_COLLECTOR_TOKEN`, and
