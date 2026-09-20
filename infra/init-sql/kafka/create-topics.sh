@@ -9,13 +9,15 @@
 set -e
 BOOTSTRAP=${BOOTSTRAP:-localhost:9092}
 PARTITIONS=${PARTITIONS:-3}
+DETECTION_PARTITIONS=${DETECTION_PARTITIONS:-6}
 REPLICATION=${REPLICATION:-1}
 # 主链保留 7 天；死信队列是终态取证证据，保留 30 天。
 RETENTION_MS=${RETENTION_MS:-604800000}
 DLQ_RETENTION_MS=${DLQ_RETENTION_MS:-2592000000}
 
 TOPICS=(
-  socp-events          # search-config 生产 → detect-web KafkaEventConsumer / search-config OsIndexerConsumer 消费
+  socp-events          # canonical source; router and legacy detector consume independently
+  socp-detection-routed-v2 # bounded per-dimension detection deliveries
   socp-alarm-events    # alert-web AlertKafkaPublisher 生产 → AlarmEventConsumer 消费
   socp-alarm-original  # detect-web AlarmKafkaProducer 生产 → AlarmConsumer 消费
   socp-rule-changes    # detect-web RuleChangePublisher 生产 → RuleChangeListener 消费
@@ -24,7 +26,8 @@ TOPICS=(
 
 # 每个 DLQ 都来自代码里的 `topic + "-dlq"`，不是自动创建以外的显式契约。
 DLQ_TOPICS=(
-  socp-events-dlq          # KafkaEventConsumer、OsIndexerConsumer
+  socp-events-dlq          # legacy KafkaEventConsumer、OsIndexerConsumer
+  socp-detection-routed-v2-dlq # routed Detection KafkaEventConsumer
   socp-alarm-events-dlq    # AlarmEventConsumer
   socp-alarm-original-dlq  # AlarmConsumer
   socp-rule-changes-dlq    # RuleChangeListener
@@ -34,16 +37,21 @@ DLQ_TOPICS=(
 ensure_topic() {
   local topic=$1
   local retention=$2
+  local partitions=${3:-$PARTITIONS}
   kafka-topics.sh --bootstrap-server "$BOOTSTRAP" \
     --create --if-not-exists \
-    --partitions "$PARTITIONS" --replication-factor "$REPLICATION" \
+    --partitions "$partitions" --replication-factor "$REPLICATION" \
     --config "retention.ms=$retention" \
     --config "cleanup.policy=delete" \
     --topic "$topic" && echo "ensured: $topic"
 }
 
 for t in "${TOPICS[@]}"; do
-  ensure_topic "$t" "$RETENTION_MS"
+  if [ "$t" = "socp-detection-routed-v2" ]; then
+    ensure_topic "$t" "$RETENTION_MS" "$DETECTION_PARTITIONS"
+  else
+    ensure_topic "$t" "$RETENTION_MS"
+  fi
 done
 
 for t in "${DLQ_TOPICS[@]}"; do
