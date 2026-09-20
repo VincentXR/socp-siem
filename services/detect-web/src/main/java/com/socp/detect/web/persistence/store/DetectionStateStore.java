@@ -3,6 +3,7 @@ package com.socp.detect.web.persistence.store;
 
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.engine.DetectionResult;
+import com.socp.rule.partition.DetectionDelivery;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -31,13 +32,19 @@ public interface DetectionStateStore {
                 ? DetectionEventClaim.NEW : DetectionEventClaim.COMPLETED;
     }
 
+    /** Claim a delivery with its own transport topic; source position stays on the event metadata. */
+    default DetectionEventClaim claim(SecurityEvent event, String deliveryTopic,
+                                      Integer partition, Long offset, String routingKey) {
+        return claim(event, partition, offset, routingKey);
+    }
+
     /** Mark all durable effects for an event as committed. */
     default void markCompleted(String eventId) {
         // In-memory/unit-test implementations may not need a second phase.
     }
 
     default void markCompleted(SecurityEvent event) {
-        if (event != null) markCompleted(event.tenantId(), event.id());
+        if (event != null) markCompleted(event.tenantId(), DetectionDelivery.deliveryId(event));
     }
 
     /** Mark completion and persist the compact calculation result when supported. */
@@ -99,7 +106,7 @@ public interface DetectionStateStore {
     void remove(String eventId);
 
     default void remove(SecurityEvent event) {
-        if (event != null) remove(event.tenantId(), event.id());
+        if (event != null) remove(event.tenantId(), DetectionDelivery.deliveryId(event));
     }
 
     default void remove(String tenantId, String eventId) {
