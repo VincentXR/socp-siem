@@ -22,6 +22,9 @@ public interface DetectionRouteOutboxRepository
 
     long countByTenantIdAndSourceEventId(String tenantId, String sourceEventId);
 
+    List<DetectionRouteOutboxEntity> findBySourceTopicAndSourcePartitionAndSourceOffsetOrderByDeliveryIdAsc(
+            String sourceTopic, int sourcePartition, long sourceOffset);
+
     @Modifying
     @Transactional
     @Query(value = "delete from t_detection_route_outbox where delivery_id in ("
