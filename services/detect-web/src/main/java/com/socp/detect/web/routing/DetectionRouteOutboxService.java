@@ -257,7 +257,8 @@ public class DetectionRouteOutboxService {
                                 + " routingVersion=" + plan.routingVersion()
                                 + " pinnedPlan=" + pinned.get().getPlanVersion()
                                 + " currentPlan=" + plan.version()
-                                + "; use shadow/prewarm/cutover and a new routing-version deployment");
+                                + "; use a new routing version AND a new routed delivery topic, "
+                                + "then shadow/prewarm/cutover");
             }
             return;
         }
