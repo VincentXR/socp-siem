@@ -5,6 +5,7 @@ import com.socp.rule.engine.DetectionResult;
 import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Value;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
@@ -22,20 +23,32 @@ public class RecentAlertSink implements EventAlertSink {
     private final int capacity;
     private final AlertForwarder forwarder;
     private final AlertStreamHub streamHub;
+    private final boolean primaryOutput;
     private final Set<String> publishedIds = new LinkedHashSet<>();
     private final Object viewLock = new Object();
 
     @org.springframework.beans.factory.annotation.Autowired
+    public RecentAlertSink(AlertForwarder forwarder, AlertStreamHub streamHub,
+                           @Value("${socp.detect.output-mode:primary}") String outputMode) {
+        this(500, forwarder, streamHub, outputMode);
+    }
+
+    /** Compatibility constructor defaults to the formal output path. */
     public RecentAlertSink(AlertForwarder forwarder, AlertStreamHub streamHub) {
-        this.capacity = 500;
-        this.forwarder = forwarder;
-        this.streamHub = streamHub;
+        this(500, forwarder, streamHub, "primary");
     }
 
     public RecentAlertSink(int capacity, AlertForwarder forwarder, AlertStreamHub streamHub) {
+        this(capacity, forwarder, streamHub, "primary");
+    }
+
+    public RecentAlertSink(int capacity, AlertForwarder forwarder, AlertStreamHub streamHub,
+                           String outputMode) {
         this.capacity = capacity;
         this.forwarder = forwarder;
         this.streamHub = streamHub;
+        this.primaryOutput = !"shadow".equalsIgnoreCase(
+                outputMode == null ? "primary" : outputMode.trim());
     }
 
     @Override
@@ -53,17 +66,19 @@ public class RecentAlertSink implements EventAlertSink {
         List<Alert> safe = alerts == null ? List.of() : alerts;
         // Durable persistence is deliberately first. A failure propagates to
         // the Kafka completion future and prevents offset advancement.
-        if (forwarder != null) {
+        if (primaryOutput && forwarder != null) {
             if (durableCommitGuard == null) forwarder.forwardAll(event, safe);
             else forwarder.forwardAll(event, safe, durableCommitGuard);
         } else if (durableCommitGuard != null) {
+            // Shadow mode commits journal/checkpoint state but deliberately has
+            // no Alert/Case/SOAR/notification durable side effect.
             durableCommitGuard.run();
         }
         for (Alert alert : safe) {
             if (alert == null || alert.id() == null || !remember(alert)) continue;
             if (streamHub != null) streamHub.broadcast(tenantOf(alert), alert);
         }
-        if (forwarder == null && durableCommitGuard != null) durableCommitGuard.run();
+        // The guard is executed exactly once above or inside the primary forwarder.
     }
 
     /** Preserve the complete calculation envelope for the durable outbox. */
@@ -71,7 +86,7 @@ public class RecentAlertSink implements EventAlertSink {
     public void publish(DetectionResult result, Runnable durableCommitGuard) {
         if (result == null) throw new IllegalArgumentException("detection result is required");
         List<Alert> safe = result.alerts();
-        if (forwarder != null) {
+        if (primaryOutput && forwarder != null) {
             forwarder.forward(result, durableCommitGuard);
         } else if (durableCommitGuard != null) {
             durableCommitGuard.run();
@@ -80,7 +95,7 @@ public class RecentAlertSink implements EventAlertSink {
             if (alert == null || alert.id() == null || !remember(alert)) continue;
             if (streamHub != null) streamHub.broadcast(tenantOf(alert), alert);
         }
-        if (forwarder == null && durableCommitGuard != null) durableCommitGuard.run();
+        // The guard is executed exactly once above or inside the primary forwarder.
     }
 
     public List<Alert> recent() {
