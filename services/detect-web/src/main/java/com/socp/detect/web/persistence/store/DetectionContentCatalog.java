@@ -5,6 +5,7 @@ import com.socp.rule.util.Json;
 import com.socp.rule.config.RuleSpec;
 import com.socp.rule.model.Severity;
 import com.socp.rule.partition.DetectionRoutingKey;
+import com.socp.rule.partition.RoutingDimension;
 import com.socp.rule.regex.SafeRegex;
 import com.socp.rule.time.EventTimePolicy;
 
@@ -142,6 +143,9 @@ public final class DetectionContentCatalog {
         String routingField = text(spec.get("routingField"));
         String grouping = groupBy == null ? keyField : groupBy;
         if (stateful && grouping == null) errors.add("stateful rule requires groupBy");
+        if (stateful && grouping != null) {
+            errors.addAll(RoutingDimension.validationErrors(grouping));
+        }
         if (groupBy != null && keyField != null && !groupBy.equals(keyField)) {
             errors.add("cross-entity grouping is unsupported: groupBy and keyField must match for partition-local state");
         }
