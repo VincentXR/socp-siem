@@ -40,7 +40,9 @@ from middleware_images import image  # noqa: E402
 
 
 BOOTSTRAP = os.environ.get("PIPELINE_KAFKA", "127.0.0.1:9092")
-TOPIC = os.environ.get("RECOVERY_TOPIC", "socp-events")
+CANONICAL_TOPIC = os.environ.get("SOCP_DETECT_ROUTING_SOURCE_TOPIC", "socp-events")
+ROUTED_TOPIC = os.environ.get("SOCP_DETECT_ROUTING_DELIVERY_TOPIC", "socp-detection-routed-v2")
+TOPIC = os.environ.get("RECOVERY_TOPIC", os.environ.get("SOCP_DETECT_INPUT_TOPIC", "socp-events"))
 GROUP = os.environ.get("RECOVERY_GROUP", os.environ.get("SOCP_KAFKA_GROUP_ID", "socp-detect"))
 USER = os.environ.get("DEMO_USER", "demo")
 PASSWORD = os.environ.get("DEMO_PASS", "demo123")
@@ -86,6 +88,14 @@ def run_token(scenario):
 
 
 def start_auto_detection_cluster():
+    global TOPIC
+    os.environ.setdefault("SOCP_DETECT_INPUT_TOPIC", ROUTED_TOPIC)
+    os.environ.setdefault("SOCP_DETECT_ROUTING_MODE", "primary")
+    os.environ.setdefault("SOCP_DETECT_OUTPUT_MODE", "primary")
+    os.environ.setdefault("SOCP_DETECT_ROUTING_PUBLISHER_ENABLED", "true")
+    os.environ.setdefault("SOCP_DETECT_CLUSTER_MIN_PARTITIONS", "6")
+    os.environ.setdefault("RECOVERY_TOPIC", os.environ["SOCP_DETECT_INPUT_TOPIC"])
+    TOPIC = os.environ["RECOVERY_TOPIC"]
     raw_ports = os.environ.get(
         "SOCP_DETECT_CLUSTER_PORTS",
         f"{port_of('detect-web')},28082,38082")
@@ -309,7 +319,7 @@ def delivery_evidence(source_alert_ids):
             "distinctRows": distinct}
 
 
-def publish_detection_event(event):
+def publish_detection_event(event, target_topic=None):
     """Publish a canonical event without depending on the PostgreSQL-backed ingress.
 
     Dependency-outage scenarios must inject work on the upstream durable
@@ -346,7 +356,7 @@ def publish_detection_event(event):
     producer = KafkaProducer(bootstrap_servers=BOOTSTRAP, acks="all", retries=3)
     try:
         metadata = producer.send(
-            TOPIC, key=routing_key.encode("utf-8"),
+            target_topic or TOPIC, key=routing_key.encode("utf-8"),
             value=json.dumps(payload, separators=(",", ":")).encode("utf-8")).get(timeout=30)
         producer.flush(timeout=30)
         return {"published": 1, "topic": metadata.topic,
@@ -517,8 +527,13 @@ def java_name_uuid(value):
 
 
 def expected_alert_id(rule_id, entity, event_ids, tenant="default"):
-    """Match threshold Alert.stableId: tenant, rule, entity, then sorted evidence IDs."""
+    """Match unordered threshold Alert.stableId."""
     return java_name_uuid("|".join([tenant, rule_id, entity, *sorted(event_ids)]))
+
+
+def expected_ordered_alert_id(rule_id, entity, event_ids, tenant="default"):
+    """Match ordered correlation Alert.stableId."""
+    return java_name_uuid("|".join([tenant, rule_id, entity, *event_ids]))
 
 
 def ingest(token, events):
