@@ -274,11 +274,13 @@ public class DetectionRouteOutboxService {
 
     private static Instant parseTimestamp(ObjectNode payload) {
         String value = first(text(payload, "timestamp"), text(payload, "@timestamp"));
-        if (value == null) return Instant.now();
+        if (value == null) {
+            throw new IllegalArgumentException("canonical event timestamp is required");
+        }
         try {
             return Instant.parse(value);
         } catch (Exception failure) {
-            return Instant.now();
+            throw new IllegalArgumentException("canonical event timestamp must be ISO-8601", failure);
         }
     }
 
