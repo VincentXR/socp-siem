@@ -11,6 +11,10 @@ ALTER TABLE t_detection_event ADD COLUMN IF NOT EXISTS delivery_topic VARCHAR(25
 ALTER TABLE t_detection_event ADD COLUMN IF NOT EXISTS delivery_partition INTEGER;
 ALTER TABLE t_detection_event ADD COLUMN IF NOT EXISTS delivery_offset BIGINT;
 
+-- Align persisted evidence fields with the canonical event contract.
+ALTER TABLE t_detection_event ALTER COLUMN source_event_id TYPE VARCHAR(255);
+ALTER TABLE t_detection_event ALTER COLUMN source TYPE VARCHAR(128);
+
 UPDATE t_detection_event
 SET delivery_id = source_event_id
 WHERE delivery_id IS NULL OR delivery_id = '';
@@ -44,7 +48,7 @@ CREATE INDEX IF NOT EXISTS idx_detection_event_source_position
 CREATE TABLE IF NOT EXISTS t_detection_route_outbox (
     delivery_id        VARCHAR(64) PRIMARY KEY,
     tenant_id          VARCHAR(64) NOT NULL,
-    source_event_id    VARCHAR(128) NOT NULL,
+    source_event_id    VARCHAR(255) NOT NULL,
     routing_version    VARCHAR(64) NOT NULL,
     plan_version       VARCHAR(64) NOT NULL,
     route_kind         VARCHAR(16) NOT NULL,
