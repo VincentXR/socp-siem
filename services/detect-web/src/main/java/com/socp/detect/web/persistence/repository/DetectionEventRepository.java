@@ -115,4 +115,68 @@ public interface DetectionEventRepository extends TenantScopedRepository<Detecti
     int deleteDeadLetteredBatchBefore(@Param("status") String status,
                                       @Param("before") Instant before,
                                       @Param("batchSize") int batchSize);
+    java.util.Optional<DetectionEventEntity> findByTenantIdAndDeliveryId(
+            String tenantId, String deliveryId);
+
+    List<DetectionEventEntity> findByTenantIdAndSourceEventIdOrderByOccurredAtAsc(
+            String tenantId, String sourceEventId);
+
+    List<DetectionEventEntity> findByStatusAndDeliveryTopicAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
+            String status, String deliveryTopic, Instant after, Pageable pageable);
+
+    List<DetectionEventEntity> findByTenantIdAndStatusAndDeliveryTopicAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
+            String tenantId, String status, String deliveryTopic, Instant after, Pageable pageable);
+
+    @Query("select e from DetectionEventEntity e "
+            + "where e.status = :status and e.deliveryTopic = :topic "
+            + "and e.kafkaPartition in :partitions and e.occurredAt > :after "
+            + "order by e.kafkaPartition asc, e.kafkaOffset asc, e.occurredAt asc, e.deliveryId asc")
+    List<DetectionEventEntity> findByStatusAndTopicAndKafkaPartitionInAfter(
+            @Param("status") String status, @Param("topic") String deliveryTopic,
+            @Param("partitions") Set<Integer> partitions, @Param("after") Instant after,
+            Pageable pageable);
+
+    @Query("select e from DetectionEventEntity e "
+            + "where e.tenantId = :tenant and e.status = :status and e.deliveryTopic = :topic "
+            + "and e.kafkaPartition in :partitions and e.occurredAt > :after "
+            + "order by e.kafkaPartition asc, e.kafkaOffset asc, e.occurredAt asc, e.deliveryId asc")
+    List<DetectionEventEntity> findByTenantStatusTopicAndKafkaPartitionInAfter(
+            @Param("tenant") String tenantId, @Param("status") String status,
+            @Param("topic") String deliveryTopic, @Param("partitions") Set<Integer> partitions,
+            @Param("after") Instant after, Pageable pageable);
+
+    long countByStatusAndDeliveryTopic(String status, String deliveryTopic);
+
+    long countByTenantIdAndStatusAndDeliveryTopic(String tenantId, String status, String deliveryTopic);
+
+    @Query("select e from DetectionEventEntity e where e.tenantId = :tenant and e.status = :status "
+            + "and e.deliveryTopic = :topic and e.completedAt > :after "
+            + "order by e.completedAt asc, e.deliveryId asc")
+    List<DetectionEventEntity> findByTenantStatusTopicCompletedAfter(
+            @Param("tenant") String tenantId, @Param("status") String status,
+            @Param("topic") String deliveryTopic, @Param("after") Instant after, Pageable pageable);
+
+    @Query("select e from DetectionEventEntity e where e.tenantId = :tenant and e.status = :status "
+            + "and e.deliveryTopic = :topic and e.kafkaPartition in :partitions "
+            + "and e.completedAt > :after order by e.completedAt asc, e.deliveryId asc")
+    List<DetectionEventEntity> findByTenantStatusTopicPartitionsCompletedAfter(
+            @Param("tenant") String tenantId, @Param("status") String status,
+            @Param("topic") String deliveryTopic, @Param("partitions") Set<Integer> partitions,
+            @Param("after") Instant after, Pageable pageable);
+
+    @Query("select e from DetectionEventEntity e where e.tenantId = :tenant and e.status = :status "
+            + "and e.deliveryTopic = :topic and e.kafkaPartition is not null and e.kafkaOffset is not null "
+            + "order by e.kafkaPartition asc, e.kafkaOffset asc, e.completedAt asc, e.deliveryId asc")
+    List<DetectionEventEntity> findByTenantStatusTopicOrderByKafkaPosition(
+            @Param("tenant") String tenantId, @Param("status") String status,
+            @Param("topic") String deliveryTopic, Pageable pageable);
+
+    @Query("select e from DetectionEventEntity e where e.tenantId = :tenant and e.status = :status "
+            + "and e.deliveryTopic = :topic and e.kafkaPartition in :partitions and e.kafkaOffset is not null "
+            + "order by e.kafkaPartition asc, e.kafkaOffset asc, e.completedAt asc, e.deliveryId asc")
+    List<DetectionEventEntity> findByTenantStatusTopicPartitionsOrderByKafkaPosition(
+            @Param("tenant") String tenantId, @Param("status") String status,
+            @Param("topic") String deliveryTopic, @Param("partitions") Set<Integer> partitions,
+            Pageable pageable);
+
 }
