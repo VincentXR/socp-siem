@@ -242,16 +242,28 @@ jobs:
             --run-id "weekly-dependency-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --output .cache/chaos/dependency-matrix.json
 
-      - name: Start fixed three-instance Detection cluster
+      - name: Start fixed three-instance routed Detection cluster
         env:
           SOCP_DETECT_PROFILE: pg
           SOCP_KAFKA_GROUP_ID: socp-detect
+          SOCP_DETECT_INPUT_TOPIC: socp-detection-routed-v2
+          SOCP_DETECT_ROUTING_MODE: primary
+          SOCP_DETECT_OUTPUT_MODE: primary
+          SOCP_DETECT_ROUTING_PUBLISHER_ENABLED: "true"
+          SOCP_DETECT_CLUSTER_MIN_PARTITIONS: "6"
         run: bash build/detection-cluster.sh start
 
-      - name: Run weekly multi-instance chaos evidence
+      - name: Run weekly routed multi-instance chaos evidence
         env:
           SOCP_DETECT_PROFILE: pg
           SOCP_KAFKA_GROUP_ID: socp-detect
+          SOCP_DETECT_INPUT_TOPIC: socp-detection-routed-v2
+          SOCP_DETECT_ROUTING_MODE: primary
+          SOCP_DETECT_OUTPUT_MODE: primary
+          SOCP_DETECT_ROUTING_PUBLISHER_ENABLED: "true"
+          SOCP_DETECT_ROUTING_SOURCE_TOPIC: socp-events
+          SOCP_DETECT_ROUTING_SOURCE_GROUP_ID: socp-detect-router-v2
+          RECOVERY_TOPIC: socp-detection-routed-v2
           SOCP_REQUIRE_DOWNSTREAM_DRAIN: "true"
           DETECTION_INSTANCE_URLS: http://127.0.0.1:18082,http://127.0.0.1:28082,http://127.0.0.1:38082
         run: |
