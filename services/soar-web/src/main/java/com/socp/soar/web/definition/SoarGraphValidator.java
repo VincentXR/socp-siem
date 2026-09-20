@@ -122,6 +122,113 @@ final class SoarGraphValidator {
         return false;
     }
 
+    static void validatePostBuild(Map<String, SoarNodeType> types,
+                                  Map<String, List<String>> graph,
+                                  JsonNode edges,
+                                  Set<String> starts,
+                                  Set<String> ends,
+                                  String entry,
+                                  List<DefinitionIssue> errors) {
+        String start = starts.stream().findFirst().orElse(entry);
+        if (start != null && types.containsKey(start)) {
+            Set<String> reachable = reachable(graph, start);
+            for (String id : types.keySet()) {
+                if (!reachable.contains(id)) {
+                    errors.add(DefinitionIssue.error("NODE_UNREACHABLE", id, "/nodes",
+                            "node is not reachable from START"));
+                }
+            }
+            Set<String> canReachEnd = reverseReachable(graph, ends);
+            for (String id : types.keySet()) {
+                if (types.get(id) != SoarNodeType.END && !canReachEnd.contains(id)) {
+                    errors.add(DefinitionIssue.error("NODE_CANNOT_REACH_END", id, "/nodes",
+                            "node must eventually reach an END node"));
+                }
+            }
+            if (hasUnboundedCycle(graph, types)) {
+                errors.add(DefinitionIssue.error("GRAPH_CYCLE_NOT_ALLOWED", null, "/edges",
+                        "cycles are only supported by a bounded FOREACH construct"));
+            }
+        }
+
+        for (Map.Entry<String, SoarNodeType> node : types.entrySet()) {
+            if (node.getValue() == SoarNodeType.PARALLEL) {
+                List<String> branchStarts = graph.getOrDefault(node.getKey(), List.of());
+                if (branchStarts.size() < 2) continue;
+                String join = commonJoin(types, graph, branchStarts);
+                if (join == null) {
+                    errors.add(DefinitionIssue.error("PARALLEL_JOIN_REQUIRED", node.getKey(), "/edges",
+                            "PARALLEL branches must converge on a JOIN before continuing"));
+                    continue;
+                }
+                for (String gate : humanGatesInside(types, graph, branchStarts, Set.of(join))) {
+                    errors.add(DefinitionIssue.error("HUMAN_GATE_IN_CHILD_WORKFLOW", gate, "/nodes",
+                            "APPROVAL/MANUAL_TASK cannot wait inside a PARALLEL branch; move it after the JOIN"));
+                }
+            }
+            if (node.getValue() == SoarNodeType.FOREACH && edges != null && edges.isArray()) {
+                List<String> bodyStarts = new ArrayList<>();
+                Set<String> doneNodes = new HashSet<>();
+                for (JsonNode edge : edges) {
+                    if (!node.getKey().equals(text(edge, "from"))) continue;
+                    String port = text(edge, "port");
+                    if (port.isBlank()) port = text(edge, "when");
+                    String to = text(edge, "to");
+                    if (to.isBlank()) continue;
+                    if ("body".equalsIgnoreCase(port) || "each".equalsIgnoreCase(port)) bodyStarts.add(to);
+                    if ("done".equalsIgnoreCase(port) || "success".equalsIgnoreCase(port)) doneNodes.add(to);
+                }
+                for (String gate : humanGatesInside(types, graph, bodyStarts, doneNodes)) {
+                    errors.add(DefinitionIssue.error("HUMAN_GATE_IN_CHILD_WORKFLOW", gate, "/nodes",
+                            "APPROVAL/MANUAL_TASK cannot wait inside a FOREACH body; move it after the loop"));
+                }
+            }
+        }
+    }
+
+    private static String commonJoin(Map<String, SoarNodeType> types,
+                                     Map<String, List<String>> graph,
+                                     List<String> starts) {
+        Set<String> candidates = null;
+        for (String start : starts) {
+            Set<String> reachable = new HashSet<>();
+            ArrayDeque<String> queue = new ArrayDeque<>();
+            queue.add(start);
+            while (!queue.isEmpty()) {
+                String id = queue.removeFirst();
+                if (!reachable.add(id)) continue;
+                if (types.get(id) == SoarNodeType.JOIN) continue;
+                queue.addAll(graph.getOrDefault(id, List.of()));
+            }
+            if (candidates == null) candidates = reachable;
+            else candidates.retainAll(reachable);
+        }
+        return candidates == null ? null : candidates.stream()
+                .filter(id -> types.get(id) == SoarNodeType.JOIN)
+                .findFirst()
+                .orElse(null);
+    }
+
+    private static Set<String> humanGatesInside(Map<String, SoarNodeType> types,
+                                                Map<String, List<String>> graph,
+                                                List<String> starts,
+                                                Set<String> stopAt) {
+        Set<String> gates = new HashSet<>();
+        for (String start : starts) {
+            Set<String> visited = new HashSet<>();
+            ArrayDeque<String> queue = new ArrayDeque<>();
+            queue.add(start);
+            while (!queue.isEmpty()) {
+                String id = queue.removeFirst();
+                if (!visited.add(id) || stopAt.contains(id)) continue;
+                SoarNodeType type = types.get(id);
+                if (type == SoarNodeType.APPROVAL || type == SoarNodeType.MANUAL_TASK) gates.add(id);
+                queue.addAll(graph.getOrDefault(id, List.of()));
+            }
+        }
+        return gates;
+    }
+
     private static boolean switchPortDeclared(JsonNode node, String port) {
         if (port.isBlank() || "default".equals(port)) return true;
         JsonNode cases = node == null ? null : node.get("cases");

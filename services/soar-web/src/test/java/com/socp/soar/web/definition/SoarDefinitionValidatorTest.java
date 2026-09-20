@@ -3,6 +3,7 @@ package com.socp.soar.web.definition;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -109,6 +110,47 @@ class SoarDefinitionValidatorTest {
 
         String scalarLimits = retryScalar.replace("\"retry\":\"unbounded\"", "\"limits\":\"unbounded\"");
         assertFalse(validator.validate(scalarLimits).valid());
+    }
+
+
+    @Test
+    void preservesExactPolicyIssueContractForNormalizedNodeIds() {
+        String invalidManualTask = "{\"schemaVersion\":\"soar.playbook\",\"entryNodeId\":\"s\","
+                + "\"nodes\":[{\"id\":\"s\",\"type\":\"START\"},"
+                + "{\"id\":\" m \",\"type\":\"MANUAL_TASK\",\"formSchema\":5},"
+                + "{\"id\":\"e\",\"type\":\"END\",\"outcome\":\"SUCCEEDED\"}],"
+                + "\"edges\":[{\"from\":\"s\",\"to\":\"m\"},{\"from\":\"m\",\"to\":\"e\"}]}";
+        var manualResult = validator.validate(invalidManualTask);
+
+        assertFalse(manualResult.valid());
+        assertEquals("soar.playbook", manualResult.schemaVersion());
+        assertEquals(3, manualResult.nodeCount());
+        assertEquals(0, manualResult.actionCount());
+        assertEquals(0, manualResult.highRiskActionCount());
+        assertEquals(64, manualResult.definitionHash().length());
+        assertEquals(java.util.List.of(
+                new com.socp.soar.web.domain.DefinitionIssue(
+                        "ERROR", "MANUAL_FORM_INVALID", "m", "/nodes/1/formSchema",
+                        "MANUAL_TASK formSchema must be an object")),
+                manualResult.errors());
+        assertTrue(manualResult.warnings().isEmpty());
+
+        String invalidApproval = "{\"schemaVersion\":\"soar.playbook\",\"entryNodeId\":\"s\","
+                + "\"nodes\":[{\"id\":\"s\",\"type\":\"START\"},"
+                + "{\"id\":\" a \",\"type\":\"APPROVAL\",\"policy\":\"all\"},"
+                + "{\"id\":\"e\",\"type\":\"END\",\"outcome\":\"SUCCEEDED\"}],"
+                + "\"edges\":[{\"from\":\"s\",\"to\":\"a\"},"
+                + "{\"from\":\"a\",\"port\":\"approved\",\"to\":\"e\"},"
+                + "{\"from\":\"a\",\"port\":\"rejected\",\"to\":\"e\"}]}";
+        var approvalResult = validator.validate(invalidApproval);
+
+        assertFalse(approvalResult.valid());
+        assertEquals(java.util.List.of(
+                new com.socp.soar.web.domain.DefinitionIssue(
+                        "ERROR", "APPROVAL_POLICY_INVALID", "a", "/nodes/1/policy",
+                        "approval policy must be an object")),
+                approvalResult.errors());
+        assertTrue(approvalResult.warnings().isEmpty());
     }
 
     @Test
