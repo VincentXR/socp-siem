@@ -8,6 +8,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 public interface DetectionRouteSourceRepository
@@ -16,6 +17,10 @@ public interface DetectionRouteSourceRepository
     Optional<DetectionRouteSourceEntity>
     findByTenantIdAndSourceTopicAndSourcePartitionAndSourceOffset(
             String tenantId, String sourceTopic, int sourcePartition, long sourceOffset);
+
+    Optional<DetectionRouteSourceEntity>
+    findFirstByTenantIdAndSourceEventIdAndStatusInOrderByCreatedAtAsc(
+            String tenantId, String sourceEventId, List<String> statuses);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
