@@ -107,11 +107,10 @@ public final class DetectionDelivery {
     }
 
     public static String legacyDeliveryId(SecurityEvent event) {
-        if (event == null) return "legacy:unknown";
-        String tenant = event.tenantId();
-        String source = event.id() == null ? "unknown" : event.id();
-        return UUID.nameUUIDFromBytes((tenant + "\u0000legacy-v1\u0000" + source)
-                .getBytes(StandardCharsets.UTF_8)).toString();
+        if (event == null || event.id() == null || event.id().isBlank()) return "legacy:unknown";
+        // Legacy had exactly one delivery per source event. Reusing that source
+        // id keeps pre-v2 journal rows claim-compatible after migration.
+        return event.id();
     }
 
     private static String text(SecurityEvent event, String name) {
