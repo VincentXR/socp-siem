@@ -117,7 +117,7 @@ public class DetectEngineService {
     @Value("${socp.detect.tenant.entity-idle-ttl-ms:1800000}")
     private long tenantEntityIdleTtlMs = 30 * 60 * 1000L;
 
-    @Value("${socp.kafka.topic:socp-events}")
+    @Value("${socp.detect.input-topic:${socp.kafka.topic:socp-events}}")
     private String inputTopic = "socp-events";
 
     /** Management-only processes must not restore or rebuild detection state. */
