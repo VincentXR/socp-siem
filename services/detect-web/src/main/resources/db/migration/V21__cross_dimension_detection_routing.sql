@@ -76,6 +76,29 @@ CREATE INDEX IF NOT EXISTS idx_detection_route_outbox_delivery
 CREATE INDEX IF NOT EXISTS idx_detection_route_outbox_tenant_source
     ON t_detection_route_outbox (tenant_id, source_event_id);
 
+-- Every canonical Kafka record gets its own durable receipt. This remains
+-- distinct from business-event delivery identity so duplicate source records
+-- at different offsets can be acknowledged without emitting duplicate work.
+CREATE TABLE IF NOT EXISTS t_detection_route_source (
+    id                 VARCHAR(36) PRIMARY KEY,
+    tenant_id          VARCHAR(64) NOT NULL,
+    source_topic       VARCHAR(255) NOT NULL,
+    source_partition   INTEGER NOT NULL,
+    source_offset      BIGINT NOT NULL,
+    source_event_id    VARCHAR(128) NOT NULL,
+    routing_version    VARCHAR(64) NOT NULL,
+    plan_version       VARCHAR(64) NOT NULL,
+    delivery_count     INTEGER NOT NULL,
+    missing_dimensions VARCHAR(2048),
+    status             VARCHAR(16) NOT NULL,
+    status_reason      VARCHAR(1024),
+    created_at         TIMESTAMP(6) WITH TIME ZONE NOT NULL,
+    CONSTRAINT uk_detection_route_source_position
+        UNIQUE (source_topic, source_partition, source_offset)
+);
+CREATE INDEX IF NOT EXISTS idx_detection_route_source_event
+    ON t_detection_route_source (tenant_id, source_event_id);
+
 -- Routing topology is pinned durably per tenant and delivery routing version.
 -- Normal rule tuning may keep the same topology fingerprint; changing grouping
 -- dimensions or source coverage requires a new explicit routing-version cutover.
