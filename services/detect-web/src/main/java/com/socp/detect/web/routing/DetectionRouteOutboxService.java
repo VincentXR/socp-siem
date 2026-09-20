@@ -182,7 +182,8 @@ public class DetectionRouteOutboxService {
         SecurityEvent event = new SecurityEvent(sourceEventId, parseTimestamp(canonical),
                 source, host, first(text(canonical, "msg"), text(canonical, "message"), ""),
                 Map.copyOf(fields), Severity.INFO);
-        return new RouteContext(tenant, sourceEventId, event);
+        return new RouteContext(tenant, sourceEventId, event,
+                sourceTopic, sourcePartition, sourceOffset);
     }
 
     private static String routedPayload(ObjectNode canonical, RouteContext context,
@@ -200,10 +201,11 @@ public class DetectionRouteOutboxService {
             fields.put(DetectionDelivery.ROUTING_VERSION_FIELD, plan.routingVersion());
             fields.put(DetectionDelivery.PLAN_VERSION_FIELD, plan.version());
             fields.put(DetectionDelivery.SCHEMA_VERSION_FIELD, DetectionDelivery.SCHEMA_VERSION);
-            fields.put(DetectionDelivery.SOURCE_TOPIC_FIELD, context.event().fields()
-                    .getOrDefault(DetectionDelivery.SOURCE_TOPIC_FIELD, ""));
-            // Source position is overwritten below by the caller's immutable
-            // record position when the rows are constructed.
+            fields.put(DetectionDelivery.SOURCE_TOPIC_FIELD, context.sourceTopic());
+            fields.put(DetectionDelivery.SOURCE_PARTITION_FIELD,
+                    String.valueOf(context.sourcePartition()));
+            fields.put(DetectionDelivery.SOURCE_OFFSET_FIELD,
+                    String.valueOf(context.sourceOffset()));
             fields.put(DetectionRoutingKey.ROUTING_FIELD, route.dimension());
             fields.put(DetectionRoutingKey.ROUTING_VALUE, route.value());
             if (missing != null && !missing.isEmpty()) {
@@ -267,7 +269,8 @@ public class DetectionRouteOutboxService {
         return value.length() <= 1024 ? value : value.substring(0, 1024);
     }
 
-    private record RouteContext(String tenant, String sourceEventId, SecurityEvent event) {
+    private record RouteContext(String tenant, String sourceEventId, SecurityEvent event,
+                                String sourceTopic, int sourcePartition, long sourceOffset) {
     }
 
     private record ResolvedRoute(DetectionDelivery.Kind kind, String dimension, String value) {
