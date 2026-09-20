@@ -30,13 +30,13 @@ public class DetectionEventEntity {
     @Column(name = "delivery_id", length = 128, nullable = false)
     private String deliveryId;
 
-    @Column(name = "source_event_id", length = 128, nullable = false)
+    @Column(name = "source_event_id", length = 255, nullable = false)
     private String sourceEventId;
 
     @Column(name = "routing_version", length = 64, nullable = false)
     private String routingVersion;
 
-    @Column(nullable = false, length = 64)
+    @Column(nullable = false, length = 128)
     private String source;
 
     @Column(nullable = false, length = 255)
