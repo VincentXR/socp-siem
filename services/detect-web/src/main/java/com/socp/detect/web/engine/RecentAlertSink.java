@@ -76,7 +76,7 @@ public class RecentAlertSink implements EventAlertSink {
         }
         for (Alert alert : safe) {
             if (alert == null || alert.id() == null || !remember(alert)) continue;
-            if (streamHub != null) streamHub.broadcast(tenantOf(alert), alert);
+            if (primaryOutput && streamHub != null) streamHub.broadcast(tenantOf(alert), alert);
         }
         // The guard is executed exactly once above or inside the primary forwarder.
     }
