@@ -13,7 +13,7 @@ import java.time.Instant;
 @Entity
 @Table(name = "t_detection_state_snapshot", uniqueConstraints = @UniqueConstraint(
         name = "uq_detection_state_snapshot_key",
-        columnNames = {"tenant_id", "rule_id", "shard_id"}))
+        columnNames = {"tenant_id", "rule_id", "shard_id", "input_topic"}))
 public class DetectionStateSnapshotEntity {
 
     @Id
@@ -50,7 +50,7 @@ public class DetectionStateSnapshotEntity {
     private String partitionOwnerEpochsJson = "{}";
 
     /** Input topic bound to this checkpoint generation; null means legacy unknown. */
-    @Column(name = "input_topic", length = 255)
+    @Column(name = "input_topic", nullable = false, length = 255)
     private String inputTopic;
 
     /** Optimistic concurrency guard for two detection instances checkpointing the same shard. */
