@@ -63,9 +63,35 @@ idempotency/evidence horizons rather than unbounded in-memory caches.
 The routing topology fingerprint covers dimensions, source coverage, aliases,
 schema and routing version, but not ordinary matcher/threshold/message tuning.
 It is pinned durably per `(tenant, routing_version)`. A topology change under
-the same routing version fails closed; migration requires a new routing-version
-deployment and shadow/prewarm/cutover rather than silently mixing old and new
-state ownership.
+the same routing version fails closed. A new topology requires both a new
+routing version **and a new routed delivery topic**, because journal replay and
+snapshot generations are namespaced by input topic. The new generation must use
+shadow/prewarm/cutover rather than mixing old and new state ownership on one
+topic.
+
+### Migration modes and cutover
+
+The runtime exposes three explicit modes:
+
+- `legacy`: Detection consumes `socp-events` and remains the formal output
+  path; enabling the router in parallel is allowed, but cross-dimension status
+  is `LEGACY_PARTIAL`.
+- `shadow`: Detection consumes the routed topic and builds journal/state, but
+  Alert/Case/SOAR/notification and alert-stream side effects are suppressed.
+  Legacy remains the formal output path.
+- `primary`: Detection consumes the routed topic and becomes the formal output
+  path.
+
+A safe v1 -> v2 cutover first enables canonical -> routed publication while
+legacy output remains active, then runs routed Detection in shadow until source
+and routed lag are zero and the independent oracle passes. Primary routed
+output can then be enabled before or together with retiring legacy output;
+business alert IDs still derive from source evidence, so a short overlap is
+absorbed by downstream source-alert idempotency. Shadow-era deliveries are not
+re-emitted by primary: they were intentionally covered by the still-formal
+legacy path, while their state history prewarms post-cutover windows. Rollback
+returns Detection to the legacy input topic; topic-namespaced snapshots prevent
+the routed generation from being restored as legacy state.
 
 Stateful rules also expose an event-time policy:
 
