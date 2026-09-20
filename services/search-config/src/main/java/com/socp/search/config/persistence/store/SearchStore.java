@@ -20,6 +20,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.locks.ReentrantLock;
 import com.socp.platform.tenant.context.TenantContext;
 
@@ -40,6 +41,9 @@ public class SearchStore {
 
     private final long tenantBufferIdleTtlMs;
     private final int maxTenantBuffers;
+    private final int warmupMaxEvents;
+    private final long maxBytesPerTenant;
+    private final long maxBytesTotal;
 
     /** Source-compatible constructor retained for direct Java integrations; it never seeds. */
     public SearchStore(SearchEventRepository repo, OsEventWriter ignoredWriter) {
@@ -51,7 +55,10 @@ public class SearchStore {
                        boolean demoDataEnabled) {
         this.repo = repo;
         this.tenantBufferIdleTtlMs = properties.getIdleTtlMs();
-        this.maxTenantBuffers = properties.getMaxTenants();
+        this.maxTenantBuffers = Math.max(1, properties.getMaxTenants());
+        this.warmupMaxEvents = Math.max(1, Math.min(CAP, properties.getWarmupMaxEvents()));
+        this.maxBytesPerTenant = Math.max(1L, properties.getMaxBytesPerTenant());
+        this.maxBytesTotal = Math.max(this.maxBytesPerTenant, properties.getMaxBytesTotal());
         if (!demoDataEnabled) return;
         // Demo fixtures are fake security events. They are only ever written while the
         // socp.demo-data.enabled switch is on, which the prod profile pins to false.
@@ -153,7 +160,9 @@ public class SearchStore {
     }
 
     private void remember(SearchEvent event) {
-        events(eventTenant(event)).remember(event);
+        String tenant = eventTenant(event);
+        events(tenant).remember(event);
+        evictOverByteBudget(tenant);
     }
 
     private static SearchEvent ev(Instant ts, String source, String host, String severity, String msg, Map<String, String> fields) {
@@ -211,9 +220,11 @@ public class SearchStore {
     }
 
     private TenantBuffer events(String tenant) {
-        TenantBuffer buffer = eventsByTenant.computeIfAbsent(tenant, ignored -> new TenantBuffer(CAP));
+        TenantBuffer buffer = eventsByTenant.computeIfAbsent(tenant,
+                ignored -> new TenantBuffer(CAP, maxBytesPerTenant, warmupMaxEvents));
         buffer.touch();
         buffer.initialize(tenant, repo);
+        evictOverByteBudget(tenant);
         return buffer;
     }
 
@@ -230,22 +241,49 @@ public class SearchStore {
                     .limit(excess)
                     .forEach(entry -> eventsByTenant.remove(entry.getKey(), entry.getValue()));
         }
+        evictOverByteBudget(null);
+    }
+
+    private synchronized void evictOverByteBudget(String protectedTenant) {
+        long total = cachedBytes();
+        if (total <= maxBytesTotal) return;
+        List<Map.Entry<String, TenantBuffer>> candidates = eventsByTenant.entrySet().stream()
+                .filter(entry -> protectedTenant == null || !protectedTenant.equals(entry.getKey()))
+                .sorted(Map.Entry.comparingByValue(
+                        java.util.Comparator.comparingLong(value -> value.lastAccessMillis)))
+                .toList();
+        for (Map.Entry<String, TenantBuffer> entry : candidates) {
+            if (total <= maxBytesTotal) break;
+            if (eventsByTenant.remove(entry.getKey(), entry.getValue())) {
+                total -= entry.getValue().bytes();
+            }
+        }
     }
 
     int cachedTenantBuffers() {
         return eventsByTenant.size();
     }
 
+    long cachedBytes() {
+        return eventsByTenant.values().stream().mapToLong(TenantBuffer::bytes).sum();
+    }
+
     /** Tenant-local bounded insertion-ordered index; writes no longer block unrelated tenants. */
     private static final class TenantBuffer {
         private final int cap;
+        private final long maxBytes;
+        private final int warmupMaxEvents;
         private final LinkedHashMap<String, SearchEvent> events = new LinkedHashMap<>();
+        private final Map<String, Long> weights = new LinkedHashMap<>();
         private final ReentrantLock lock = new ReentrantLock();
         private volatile boolean initialized;
         private volatile long lastAccessMillis = System.currentTimeMillis();
+        private long currentBytes;
 
-        private TenantBuffer(int cap) {
+        private TenantBuffer(int cap, long maxBytes, int warmupMaxEvents) {
             this.cap = cap;
+            this.maxBytes = maxBytes;
+            this.warmupMaxEvents = warmupMaxEvents;
         }
 
         private void initialize(String tenant, SearchEventRepository repo) {
@@ -253,11 +291,11 @@ public class SearchStore {
             lock.lock();
             try {
                 if (initialized) return;
-                List<SearchEventEntity> recent = repo.findTop20000ByTenantIdOrderByTimestampDesc(tenant);
+                List<SearchEventEntity> recent = repo.findByTenantIdOrderByTimestampDesc(
+                        tenant, org.springframework.data.domain.PageRequest.of(0, warmupMaxEvents));
                 if (recent != null) {
                     for (int i = recent.size() - 1; i >= 0; i--) {
-                        SearchEvent event = fromEntity(recent.get(i));
-                        events.put(event.eventId(), event);
+                        putBounded(fromEntity(recent.get(i)));
                     }
                 }
                 initialized = true;
@@ -270,11 +308,26 @@ public class SearchStore {
             touch();
             lock.lock();
             try {
-                events.remove(event.eventId());
-                events.put(event.eventId(), event);
-                while (events.size() > cap) events.remove(events.keySet().iterator().next());
+                putBounded(event);
             } finally {
                 lock.unlock();
+            }
+        }
+
+        private void putBounded(SearchEvent event) {
+            String id = event.eventId();
+            SearchEvent previous = events.remove(id);
+            Long previousWeight = weights.remove(id);
+            if (previous != null && previousWeight != null) currentBytes -= previousWeight;
+            long weight = estimateEventBytes(event);
+            events.put(id, event);
+            weights.put(id, weight);
+            currentBytes += weight;
+            while (events.size() > cap || (currentBytes > maxBytes && events.size() > 1)) {
+                String oldest = events.keySet().iterator().next();
+                events.remove(oldest);
+                Long removedWeight = weights.remove(oldest);
+                if (removedWeight != null) currentBytes -= removedWeight;
             }
         }
 
@@ -296,6 +349,42 @@ public class SearchStore {
             } finally {
                 lock.unlock();
             }
+        }
+
+        private long bytes() {
+            lock.lock();
+            try {
+                return currentBytes;
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        private static long estimateEventBytes(SearchEvent event) {
+            long bytes = 256L;
+            bytes += utf8(event.eventId());
+            bytes += utf8(event.source());
+            bytes += utf8(event.host());
+            bytes += utf8(event.severity());
+            bytes += utf8(event.msg());
+            bytes += mapBytes(event.fields());
+            bytes += mapBytes(event.ecs());
+            return Math.max(1L, bytes);
+        }
+
+        private static long mapBytes(Map<String, String> values) {
+            if (values == null || values.isEmpty()) return 0L;
+            long bytes = 0L;
+            for (Map.Entry<String, String> entry : values.entrySet()) {
+                bytes += utf8(entry.getKey());
+                bytes += utf8(entry.getValue());
+                bytes += 32L;
+            }
+            return bytes;
+        }
+
+        private static long utf8(String value) {
+            return value == null ? 0L : value.getBytes(StandardCharsets.UTF_8).length;
         }
 
         private void touch() {

@@ -176,6 +176,34 @@ class DetectionContentCatalogTest {
     }
 
     @Test
+    void regexValidationUsesTheSameLinearTimeSubsetAsRuntime() {
+        Map<String, Object> base = new LinkedHashMap<>();
+        base.put("id", "regex-validation");
+        base.put("name", "regex-validation");
+        base.put("type", "pattern");
+        base.put("severity", "HIGH");
+        base.put("version", "1");
+        base.put("owner", "test");
+
+        Map<String, Object> safe = new LinkedHashMap<>(base);
+        safe.put("match", List.of(Map.of(
+                "field", "msg", "op", "regex", "value", "(?i)(useradd|adduser).*(sudo|wheel|admin)")));
+        assertTrue(DetectionContentCatalog.validateSpec(safe).isEmpty());
+
+        Map<String, Object> backreference = new LinkedHashMap<>(base);
+        backreference.put("match", List.of(Map.of(
+                "field", "msg", "op", "regex", "value", "(a+)\\1")));
+        assertTrue(DetectionContentCatalog.validateSpec(backreference).stream()
+                .anyMatch(error -> error.contains("invalid or unsupported regex")));
+
+        Map<String, Object> oversized = new LinkedHashMap<>(base);
+        oversized.put("match", List.of(Map.of(
+                "field", "msg", "op", "regex", "value", "a".repeat(2_049))));
+        assertTrue(DetectionContentCatalog.validateSpec(oversized).stream()
+                .anyMatch(error -> error.contains("exceeds 2048 characters")));
+    }
+
+    @Test
     void partitionLocalAdvisoriesNameTheDimensionThatOutranksTheGrouping() {
         Map<String, Object> userGrouped = new LinkedHashMap<>();
         userGrouped.put("id", "advisory");

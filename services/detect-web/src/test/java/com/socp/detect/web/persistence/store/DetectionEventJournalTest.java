@@ -238,6 +238,29 @@ class DetectionEventJournalTest {
     }
 
     @Test
+    void pendingReplayPrefetchUsesOneBoundedFirstPage() {
+        DetectionEventJournal bounded = new DetectionEventJournal(repository, "24h", 100,
+                "7d", "90d", 1_000, 10, 2);
+        DetectionEventEntity first = row("event-21", "tenant-a", "{}");
+        DetectionEventEntity second = row("event-22", "tenant-a", "{}");
+        when(repository.findByTenantIdAndStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
+                eq("tenant-a"), eq(DetectionEventStatus.PENDING.name()), eq(Set.of(4)),
+                any(Instant.class), any(Pageable.class)))
+                .thenReturn(List.of(first, second));
+
+        List<PendingDetectionEvent> records = bounded.pendingRecordsForPartitions(
+                Set.of(4), Duration.ofMinutes(5));
+
+        assertThat(records).hasSize(2);
+        ArgumentCaptor<Pageable> page = ArgumentCaptor.forClass(Pageable.class);
+        verify(repository).findByTenantIdAndStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
+                eq("tenant-a"), eq(DetectionEventStatus.PENDING.name()), eq(Set.of(4)),
+                any(Instant.class), page.capture());
+        assertThat(page.getValue().getPageNumber()).isZero();
+        assertThat(page.getValue().getPageSize()).isEqualTo(2);
+    }
+
+    @Test
     void systemScopeReadsBothCompletedAndPendingPartitions() {
         DetectionEventEntity completed = row("event-10", "tenant-a", "{}");
         completed.setStatus(DetectionEventStatus.COMPLETED.name());

@@ -116,6 +116,26 @@ class RuleSpecTest {
     }
 
     @Test
+    void regexUsesLinearTimeEngineAndRejectsBackreferences() {
+        Rule safe = new RuleSpec(Json.parseObject("""
+                {"id":"P-RE2","name":"safe-regex","type":"pattern","severity":"HIGH",
+                 "message":"m",
+                 "match":[{"field":"msg","op":"regex","value":"(a+)+$"}]}
+                """)).toRule();
+
+        String hostile = "a".repeat(50_000) + "!";
+        safe.accept(ev("web", hostile, null));
+        assertTrue(safe.drain().isEmpty());
+        safe.close();
+
+        assertThrows(IllegalArgumentException.class, () -> new RuleSpec(Json.parseObject("""
+                {"id":"P-BACKREF","name":"bad-regex","type":"pattern","severity":"HIGH",
+                 "message":"m",
+                 "match":[{"field":"msg","op":"regex","value":"(a+)\\\\1"}]}
+                """)).toRule());
+    }
+
+    @Test
     void numericOpAndGeSeverity() {
         String json = """
                 {"id":"N1","name":"大流量","type":"pattern","severity":"LOW",

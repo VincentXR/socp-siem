@@ -5,6 +5,7 @@ import com.socp.rule.util.Json;
 import com.socp.rule.config.RuleSpec;
 import com.socp.rule.model.Severity;
 import com.socp.rule.partition.DetectionRoutingKey;
+import com.socp.rule.regex.SafeRegex;
 import com.socp.rule.time.EventTimePolicy;
 
 import java.io.InputStream;
@@ -12,7 +13,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Pattern;
 
 /** Versioned, reviewable detection content metadata and contract pack. */
 public final class DetectionContentCatalog {
@@ -258,9 +258,9 @@ public final class DetectionContentCatalog {
             }
             if ("regex".equals(op)) {
                 try {
-                    Pattern.compile(String.valueOf(map.get("value")));
-                } catch (Exception ex) {
-                    errors.add(label + "[" + i + "] invalid regex");
+                    SafeRegex.validateCaseInsensitive(String.valueOf(map.get("value")));
+                } catch (IllegalArgumentException ex) {
+                    errors.add(label + "[" + i + "] invalid or unsupported regex: " + ex.getMessage());
                 }
             }
         }

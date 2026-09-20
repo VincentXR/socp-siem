@@ -444,7 +444,8 @@ public class KafkaEventConsumer {
                     () -> processPendingWithRetry(row), estimateEventBytes(row.event()));
         }
         if (!pending.isEmpty()) {
-            log.info("Queued pending Detection journal rows for replay count={}", pending.size());
+            log.info("Queued bounded PENDING journal prefetch count={}; any remaining rows "
+                    + "stay behind uncommitted Kafka offsets and will be redelivered", pending.size());
         }
     }
 

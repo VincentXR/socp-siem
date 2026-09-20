@@ -132,12 +132,18 @@ public class DetectionRuntimeController {
         PrintWriter output = response.getWriter();
         output.write(": socp connected\n\n");
         output.flush();
+        if (output.checkError()) {
+            return;
+        }
         streamHub.add(TenantContext.require(), output);
         try {
             while (!Thread.currentThread().isInterrupted()) {
                 Thread.sleep(3_000);
                 output.write(": ping\n\n");
                 output.flush();
+                if (output.checkError()) {
+                    break;
+                }
             }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();

@@ -42,6 +42,7 @@
              artifacts until the fixed 2.4.20 line is GA. -->
         <kotlin.version>2.4.10</kotlin.version>
         <commons-lang3.version>3.18.0</commons-lang3.version>
+        <re2j.version>1.8</re2j.version>
         <!-- JWT 校验（socp-auth）：Spring Boot BOM 不管理该坐标，必须自己钉版本 -->
         <nimbus-jose-jwt.version>9.48</nimbus-jose-jwt.version>
         <testcontainers.version>1.21.4</testcontainers.version>
@@ -178,6 +179,11 @@
                 <groupId>org.apache.commons</groupId>
                 <artifactId>commons-lang3</artifactId>
                 <version>${commons-lang3.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.google.re2j</groupId>
+                <artifactId>re2j</artifactId>
+                <version>${re2j.version}</version>
             </dependency>
 
             <!-- 内部平台模块版本（由本仓管理） -->

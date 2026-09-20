@@ -15,7 +15,7 @@ ClickHouse 写入均采用至少一次传输；“没有重复副作用”必须
 | SOAR | `(tenant_id, alarm_id)`，动作键为 `(playbook, alarm, actionIndex)` | evaluation receipt 和动作幂等键 | PROCESSING 超时后才可恢复；已完成返回 cached | DEAD/失败由分析员复核 | evaluation receipt、action execution ID |
 | SOAR schedule | `(tenant_id, playbook_id, scheduled_for)` | 数据库唯一 claim；多实例只有一个执行者 | claim 成功后使用稳定 schedule event/action key | FAILED 保留审计，不自动重放不可逆动作 | schedule run 状态、固定时区与稳定 execution context |
 | ClickHouse alarm detail | `(tenant_id, alarm_id)` | 稳定 `alarm_id` + dedup token；新表 `ReplacingMergeTree` | 允许物理重复，逻辑查询必须去重 | delivery outbox 负责重试，报表不按物理行计数 | `uniqExact(tenant_id, alarm_id)`；物理行数仅诊断 |
-| SEARCH ingest event | `(tenant_id, event_id)` | `t_search_event` 与 ingestion outbox 唯一约束；相同内容重试返回 acknowledged/duplicates | 事务提交后重试只补缺失 Outbox，不重复写事件 | 数据库失败返回 503；仅重试未提交批次 | `payload_fingerprint`、唯一索引、`created/duplicates/acknowledged` 响应 |
+| SEARCH ingest event | `(tenant_id, event_id)` | `t_search_event` 与 ingestion outbox 唯一约束；相同内容重试返回 acknowledged/duplicates | 事务提交后重试只补缺失 Outbox，不重复写事件 | 数据库失败返回 503；仅重试未提交批次；超过事件保留窗口后的重放不再承诺由 PG 身份表去重 | `payload_fingerprint`、唯一索引、`created/duplicates/acknowledged` 响应 |
 
 ## 约束
 
@@ -67,6 +67,12 @@ Outbox 在同一事务中提交；同一租户复用 `eventId` 且内容不同�
 而相同内容只计为 `duplicates`，不会产生新的事件或 Outbox。批次按 200 条提交，
 后续事务失败返回 HTTP 503，客户端只应重试尚未提交的批次；带 key 的完整重试
 也会由 `(tenant_id,event_id)` 唯一约束吸收已提交部分。
+
+PostgreSQL 中的 `t_search_event` 是有界的幂等/降级副本，不是长期检索权威。默认按
+`created_at` 保留 30 天并分批清理；存在 PENDING / PROCESSING / DEAD ingestion outbox
+的事件不会被清理。生产环境必须把 `SOCP_SEARCH_EVENT_RETENTION_MS` 设置为不短于采集端
+最大重试窗口和 Kafka 可重放窗口，否则超过该边界后再次出现同一 `eventId` 会被视为新的
+持久化事实。长期检索历史由 OpenSearch 的索引保留策略负责。
 
 内容指纹使用 canonical payload 计算，JSON 字段顺序变化不改变身份。`ingested_at`
 和 `fields.event_time_generated` 是归一化阶段的运行时元数据，不参与指纹；当采集端
