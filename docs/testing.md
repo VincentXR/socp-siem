@@ -293,6 +293,11 @@ its canonical offset oracle must not be mixed with the routed generation.
 The incompatible-rule activation probe uses `RULE_VERIFY_USERNAME/PASSWORD`
 (local default `admin/admin123`) so its expected 409 tests the topology guard
 after authorization; normal chaos queries retain `DEMO_USER/PASS`.
+The ordered cross-dimension probe waits for the first user-dimension delivery
+to complete in the journal before sending the second step. Their canonical
+keys differ, so Kafka provides no cross-partition ordering guarantee. This
+tests the detector's processing-order contract without claiming event-time
+reordering support.
 
 ## CI ownership
 

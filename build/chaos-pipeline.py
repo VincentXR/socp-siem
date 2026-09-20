@@ -1013,7 +1013,7 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
     cross_user = f"cross-user-{run_id}"
     cross_ids = [f"chaos-cross-user-{run_id}-failed",
                  f"chaos-cross-user-{run_id}-sudo"]
-    events.extend([
+    cross_events = [
         {
             "eventId": cross_ids[0],
             "source": "auth",
@@ -1032,7 +1032,8 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
             "src_ip": f"203.0.113.{1 + digest[3] % 200}",
             "user": cross_user,
         },
-    ])
+    ]
+    events.append(cross_events[0])
     expected_cross = expected_ordered_alert_id(
         "CORR-FAIL-SUDO", cross_user, cross_ids, default_tenant)
     expected_initial.append(expected_cross)
@@ -1040,6 +1041,23 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
     before = alert_total(token) or 0
     ingest_result = ingest(token, events)
     source_event_ids = {item["eventId"] for item in events}
+
+    # CorrelationRule advances in processing order. The two canonical keys
+    # intentionally differ, so Kafka cannot guarantee their relative arrival.
+    # Establish the first user-dimension step durably before sending the next;
+    # this remains a cross-dimension routing proof, not an event-time reorder test.
+    quoted_cross_id = "'" + cross_ids[0].replace("'", "''") + "'"
+    quoted_tenant = "'" + default_tenant.replace("'", "''") + "'"
+    first_step = wait_for(lambda: psql_scalar(
+        "detect", "select count(*) from t_detection_event "
+        f"where tenant_id={quoted_tenant} and source_event_id={quoted_cross_id} "
+        "and status='COMPLETED' and routing_version='detection-routing-v2' "
+        "and fields_json::jsonb->>'detection_delivery_dimension'='user'") == "1",
+        timeout=120, interval=2)
+    if not first_step:
+        raise RuntimeError("first cross-dimension correlation step did not complete on its user delivery")
+    cross_followup = ingest(token, [cross_events[1]])
+    source_event_ids.add(cross_events[1]["eventId"])
 
     # Same username split across two different tenants must never form one
     # correlation. Publish at the canonical Kafka boundary so the proof is not
@@ -1248,6 +1266,8 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
             "initialAssignments": initial,
             "rebalanceCycles": cycle_results,
             "ingest": ingest_result,
+            "crossDimensionFirstStepCompleted": bool(first_step),
+            "crossDimensionFollowupIngest": cross_followup,
             "isolationPublishes": isolation_publish,
             "expectedAlertIds": sorted(expected_ids),
             "actualAlertIds": sorted(actual_ids),
