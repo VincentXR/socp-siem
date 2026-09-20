@@ -4,6 +4,7 @@ import com.socp.rule.engine.Watchlists;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.rule.partition.DetectionRoutingKey;
+import com.socp.rule.partition.DetectionDelivery;
 import com.socp.rule.partition.RoutingDimension;
 import com.socp.rule.regex.SafeRegex;
 import com.socp.rule.rules.BaselineRule;
@@ -179,6 +180,7 @@ public final class RuleSpec {
         Map<String, Object> semantics = new LinkedHashMap<>();
         semantics.put("semanticsVersion", "state-semantics-v1");
         semantics.put("detectionRoutingVersion", DetectionRoutingKey.VERSION);
+        semantics.put("deliveryRoutingVersion", DetectionDelivery.ROUTING_VERSION);
         semantics.put("stateRoutingVersion", StateRoutingKey.VERSION);
         semantics.put("businessVersion", version);
         semantics.put("contentVersion", contentVersion);
