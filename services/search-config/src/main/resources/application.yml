@@ -36,9 +36,13 @@ socp:
     local-cache:
       idle-ttl-ms: ${SOCP_SEARCH_CACHE_IDLE_TTL_MS:1800000}
       max-tenants: ${SOCP_SEARCH_CACHE_MAX_TENANTS:100}
-      # Keep both steady-state cache size and first-request warm-up bounded.
+      # Warm-up is paged and concurrency-limited; byte values are cache-weight
+      # estimates, not exact JVM retained-heap measurements.
       warmup-max-events: ${SOCP_SEARCH_CACHE_WARMUP_MAX_EVENTS:2000}
+      warmup-batch-size: ${SOCP_SEARCH_CACHE_WARMUP_BATCH_SIZE:128}
+      max-concurrent-warmups: ${SOCP_SEARCH_CACHE_MAX_CONCURRENT_WARMUPS:2}
       max-bytes-per-tenant: ${SOCP_SEARCH_CACHE_MAX_BYTES_PER_TENANT:16777216}
+      # Must be >= max-bytes-per-tenant; contradictory budgets fail at startup.
       max-bytes-total: ${SOCP_SEARCH_CACHE_MAX_BYTES_TOTAL:268435456}
       cleanup-interval-ms: ${SOCP_SEARCH_CACHE_CLEANUP_INTERVAL_MS:60000}
     event-retention:
@@ -46,7 +50,10 @@ socp:
       # Keep this >= the maximum producer/Kafka replay horizon expected by the deployment.
       retention-ms: ${SOCP_SEARCH_EVENT_RETENTION_MS:2592000000}
       cleanup-batch-size: ${SOCP_SEARCH_EVENT_CLEANUP_BATCH_SIZE:1000}
+      # Per catch-up round. Backlog can run multiple rounds, each still bounded.
       cleanup-max-batches: ${SOCP_SEARCH_EVENT_CLEANUP_MAX_BATCHES:10}
+      cleanup-max-run-ms: ${SOCP_SEARCH_EVENT_CLEANUP_MAX_RUN_MS:30000}
+      cleanup-catchup-pause-ms: ${SOCP_SEARCH_EVENT_CLEANUP_CATCHUP_PAUSE_MS:100}
       cleanup-interval-ms: ${SOCP_SEARCH_EVENT_CLEANUP_INTERVAL_MS:3600000}
       cleanup-initial-delay-ms: ${SOCP_SEARCH_EVENT_CLEANUP_INITIAL_DELAY_MS:60000}
     config-cache:

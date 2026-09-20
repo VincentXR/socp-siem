@@ -16,10 +16,12 @@ import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.locks.ReentrantLock;
 import com.socp.platform.tenant.context.TenantContext;
@@ -42,6 +44,8 @@ public class SearchStore {
     private final long tenantBufferIdleTtlMs;
     private final int maxTenantBuffers;
     private final int warmupMaxEvents;
+    private final int warmupBatchSize;
+    private final Semaphore warmupPermits;
     private final long maxBytesPerTenant;
     private final long maxBytesTotal;
 
@@ -54,11 +58,14 @@ public class SearchStore {
     public SearchStore(SearchEventRepository repo, SearchCacheProperties properties,
                        boolean demoDataEnabled) {
         this.repo = repo;
+        properties.validate();
         this.tenantBufferIdleTtlMs = properties.getIdleTtlMs();
-        this.maxTenantBuffers = Math.max(1, properties.getMaxTenants());
-        this.warmupMaxEvents = Math.max(1, Math.min(CAP, properties.getWarmupMaxEvents()));
-        this.maxBytesPerTenant = Math.max(1L, properties.getMaxBytesPerTenant());
-        this.maxBytesTotal = Math.max(this.maxBytesPerTenant, properties.getMaxBytesTotal());
+        this.maxTenantBuffers = properties.getMaxTenants();
+        this.warmupMaxEvents = Math.min(CAP, properties.getWarmupMaxEvents());
+        this.warmupBatchSize = Math.min(this.warmupMaxEvents, properties.getWarmupBatchSize());
+        this.warmupPermits = new Semaphore(properties.getMaxConcurrentWarmups(), true);
+        this.maxBytesPerTenant = properties.getMaxBytesPerTenant();
+        this.maxBytesTotal = properties.getMaxBytesTotal();
         if (!demoDataEnabled) return;
         // Demo fixtures are fake security events. They are only ever written while the
         // socp.demo-data.enabled switch is on, which the prod profile pins to false.
@@ -220,12 +227,34 @@ public class SearchStore {
     }
 
     private TenantBuffer events(String tenant) {
-        TenantBuffer buffer = eventsByTenant.computeIfAbsent(tenant,
-                ignored -> new TenantBuffer(CAP, maxBytesPerTenant, warmupMaxEvents));
+        TenantBuffer buffer = eventsByTenant.get(tenant);
+        if (buffer == null) buffer = admitTenantBuffer(tenant);
         buffer.touch();
-        buffer.initialize(tenant, repo);
+        buffer.initialize(tenant, repo, warmupPermits);
         evictOverByteBudget(tenant);
         return buffer;
+    }
+
+    /**
+     * Cardinality is enforced at admission rather than waiting for the periodic
+     * cleanup. The oldest tenant is evicted before a new tenant buffer becomes
+     * visible, so a tenant burst cannot temporarily grow this map without bound.
+     */
+    private synchronized TenantBuffer admitTenantBuffer(String tenant) {
+        TenantBuffer existing = eventsByTenant.get(tenant);
+        if (existing != null) return existing;
+        while (eventsByTenant.size() >= maxTenantBuffers) {
+            Map.Entry<String, TenantBuffer> oldest = eventsByTenant.entrySet().stream()
+                    .min(Map.Entry.comparingByValue(
+                            java.util.Comparator.comparingLong(value -> value.lastAccessMillis)))
+                    .orElse(null);
+            if (oldest == null) break;
+            eventsByTenant.remove(oldest.getKey(), oldest.getValue());
+        }
+        TenantBuffer created =
+                new TenantBuffer(CAP, maxBytesPerTenant, warmupMaxEvents, warmupBatchSize);
+        eventsByTenant.put(tenant, created);
+        return created;
     }
 
     @Scheduled(fixedDelayString = "${socp.search.local-cache.cleanup-interval-ms:60000}")
@@ -264,6 +293,10 @@ public class SearchStore {
         return eventsByTenant.size();
     }
 
+    /**
+     * Estimated serialized/event payload weight used only for cache admission.
+     * This is not a claim about exact JVM heap retained size.
+     */
     long cachedBytes() {
         return eventsByTenant.values().stream().mapToLong(TenantBuffer::bytes).sum();
     }
@@ -273,6 +306,7 @@ public class SearchStore {
         private final int cap;
         private final long maxBytes;
         private final int warmupMaxEvents;
+        private final int warmupBatchSize;
         private final LinkedHashMap<String, SearchEvent> events = new LinkedHashMap<>();
         private final Map<String, Long> weights = new LinkedHashMap<>();
         private final ReentrantLock lock = new ReentrantLock();
@@ -280,27 +314,66 @@ public class SearchStore {
         private volatile long lastAccessMillis = System.currentTimeMillis();
         private long currentBytes;
 
-        private TenantBuffer(int cap, long maxBytes, int warmupMaxEvents) {
+        private TenantBuffer(int cap, long maxBytes, int warmupMaxEvents, int warmupBatchSize) {
             this.cap = cap;
             this.maxBytes = maxBytes;
             this.warmupMaxEvents = warmupMaxEvents;
+            this.warmupBatchSize = warmupBatchSize;
         }
 
-        private void initialize(String tenant, SearchEventRepository repo) {
+        /**
+         * Load JPA rows in small pages. At most maxConcurrentWarmups tenants may
+         * do this at once. Candidate SearchEvent payloads are capped by the
+         * tenant's estimated-byte budget; transient entity memory is therefore
+         * one warmup page plus at most one currently converted row. A single DB
+         * row can still be arbitrarily large, so these estimates are not an
+         * absolute JVM-heap bound.
+         */
+        private void initialize(String tenant, SearchEventRepository repo, Semaphore permits) {
             if (initialized) return;
-            lock.lock();
+            boolean acquired = false;
             try {
-                if (initialized) return;
-                List<SearchEventEntity> recent = repo.findByTenantIdOrderByTimestampDesc(
-                        tenant, org.springframework.data.domain.PageRequest.of(0, warmupMaxEvents));
-                if (recent != null) {
-                    for (int i = recent.size() - 1; i >= 0; i--) {
-                        putBounded(fromEntity(recent.get(i)));
+                permits.acquire();
+                acquired = true;
+                lock.lock();
+                try {
+                    if (initialized) return;
+                    List<SearchEvent> newestFirst = new ArrayList<>();
+                    long candidateBytes = 0L;
+                    int examined = 0;
+                    int page = 0;
+                    boolean budgetFull = false;
+                    while (examined < warmupMaxEvents && !budgetFull) {
+                        int pageSize = Math.min(warmupBatchSize, warmupMaxEvents - examined);
+                        List<SearchEventEntity> recent = repo.findByTenantIdOrderByTimestampDesc(
+                                tenant, org.springframework.data.domain.PageRequest.of(page, pageSize));
+                        if (recent == null || recent.isEmpty()) break;
+                        for (SearchEventEntity entity : recent) {
+                            if (examined++ >= warmupMaxEvents) break;
+                            SearchEvent event = fromEntity(entity);
+                            long weight = estimateEventBytes(event);
+                            if (weight > maxBytes) continue;
+                            if (newestFirst.size() >= cap || candidateBytes + weight > maxBytes) {
+                                budgetFull = true;
+                                break;
+                            }
+                            newestFirst.add(event);
+                            candidateBytes += weight;
+                        }
+                        if (recent.size() < pageSize) break;
+                        page++;
                     }
+                    for (int i = newestFirst.size() - 1; i >= 0; i--) {
+                        putBounded(newestFirst.get(i));
+                    }
+                    initialized = true;
+                } finally {
+                    lock.unlock();
                 }
-                initialized = true;
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
             } finally {
-                lock.unlock();
+                if (acquired) permits.release();
             }
         }
 
@@ -319,11 +392,17 @@ public class SearchStore {
             SearchEvent previous = events.remove(id);
             Long previousWeight = weights.remove(id);
             if (previous != null && previousWeight != null) currentBytes -= previousWeight;
+
             long weight = estimateEventBytes(event);
+            // Persistence already happened before remember(). A single event
+            // larger than the tenant budget is intentionally cold-only rather
+            // than silently breaking the hot-cache budget.
+            if (weight > maxBytes) return;
+
             events.put(id, event);
             weights.put(id, weight);
             currentBytes += weight;
-            while (events.size() > cap || (currentBytes > maxBytes && events.size() > 1)) {
+            while (events.size() > cap || currentBytes > maxBytes) {
                 String oldest = events.keySet().iterator().next();
                 events.remove(oldest);
                 Long removedWeight = weights.remove(oldest);

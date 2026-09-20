@@ -176,6 +176,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Test fail-closed dependency audit gate
+        run: python3 -m unittest build/tests/test_verify_ossindex_audit.py
+
       - name: Review dependency changes with GitHub Dependency Graph
         id: github_review
         continue-on-error: true
@@ -224,24 +227,66 @@ jobs:
           java-version: 21
           cache: maven
 
-      - name: Audit changed Java dependency graph with OSS Index
+      - name: Audit full Java runtime graph with fail-closed OSS Index fallback
         if: steps.changed_dependencies.outputs.java == 'true'
         timeout-minutes: 10
+        env:
+          OSSINDEX_USERNAME: ${{ secrets.OSSINDEX_USERNAME }}
+          OSSINDEX_TOKEN: ${{ secrets.OSSINDEX_TOKEN }}
         run: |
+          set -euo pipefail
+          mkdir -p target
+          rm -f target/ossindex-report.json target/ossindex-audit.log
+
+          AUTH_ARGS=()
+          if [[ -n "${OSSINDEX_USERNAME}" || -n "${OSSINDEX_TOKEN}" ]]; then
+            if [[ -z "${OSSINDEX_USERNAME}" || -z "${OSSINDEX_TOKEN}" ]]; then
+              echo "::error::OSS Index credentials are only partially configured."
+              exit 1
+            fi
+            python3 - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+
+          settings = ET.Element("settings", xmlns="http://maven.apache.org/SETTINGS/1.0.0")
+          servers = ET.SubElement(settings, "servers")
+          server = ET.SubElement(servers, "server")
+          ET.SubElement(server, "id").text = "socp-ossindex"
+          ET.SubElement(server, "username").text = os.environ["OSSINDEX_USERNAME"]
+          ET.SubElement(server, "password").text = os.environ["OSSINDEX_TOKEN"]
+          ET.ElementTree(settings).write("/tmp/socp-ossindex-settings.xml",
+                                         encoding="utf-8", xml_declaration=True)
+          PY
+            chmod 600 /tmp/socp-ossindex-settings.xml
+            export SOCP_MAVEN_SETTINGS=/tmp/socp-ossindex-settings.xml
+            AUTH_ARGS=(-Dossindex.authId=socp-ossindex)
+          fi
+
+          # ossindex.fail controls vulnerability findings only. Plugin 3.2.0 may
+          # warn and exit zero when component-report retrieval fails, so the
+          # repository verifier below is the fail-closed transport/result gate.
           bash build/mvnw.sh \
             org.sonatype.ossindex.maven:ossindex-maven-plugin:3.2.0:audit-aggregate \
             -Dossindex.scope=runtime \
             -Dossindex.cvssScoreThreshold=7.0 \
-            -Dossindex.fail=true \
-            -Dossindex.reportFile=target/ossindex-report.json
+            -Dossindex.fail=false \
+            -Dossindex.reportFile=target/ossindex-report.json \
+            "${AUTH_ARGS[@]}" 2>&1 | tee target/ossindex-audit.log
 
-      - name: Upload OSS Index report
+          python3 build/verify-ossindex-audit.py \
+            --scope runtime \
+            --log target/ossindex-audit.log \
+            --report target/ossindex-report.json
+
+      - name: Upload OSS Index scan evidence
         if: always() && steps.changed_dependencies.outputs.java == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: change-java-ossindex-report
-          path: target/ossindex-report.json
-          if-no-files-found: ignore
+          name: full-java-runtime-ossindex-report
+          path: |
+            target/ossindex-report.json
+            target/ossindex-audit.log
+          if-no-files-found: error
 
       - name: Set up pnpm for frontend fallback audit
         if: steps.changed_dependencies.outputs.frontend == 'true'

@@ -2,6 +2,8 @@ package com.socp.detect.web.engine;
 
 import com.socp.detect.web.service.DetectEngineService;
 import com.socp.detect.web.persistence.store.InMemoryDetectionStateStore;
+import com.socp.detect.web.persistence.store.DetectionStateStore;
+import com.socp.detect.web.persistence.store.DetectionEventClaim;
 import com.socp.rule.model.SecurityEvent;
 import org.junit.jupiter.api.Test;
 
@@ -14,6 +16,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.times;
 
 class DetectionRecordProcessorTest {
 
@@ -88,7 +92,7 @@ class DetectionRecordProcessorTest {
     }
 
     @Test
-    void aDurableResultFailureCarriesTheNormalizedIdentityAndTenant() {
+    void anUnknownDurableResultFailureStaysRetryableWithIdentityAndStage() {
         DetectEngineService engine = mock(DetectEngineService.class);
         given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))
                 .willReturn(CompletableFuture.failedFuture(
@@ -96,19 +100,44 @@ class DetectionRecordProcessorTest {
         DetectionRecordProcessor processor = new DetectionRecordProcessor(
                 engine, new InMemoryDetectionStateStore(), null);
 
-        DetectionRecordProcessor.TerminalDetectionFailure failure = assertThrows(
-                DetectionRecordProcessor.TerminalDetectionFailure.class,
+        DetectionRecordProcessor.RetryableDetectionFailure failure = assertThrows(
+                DetectionRecordProcessor.RetryableDetectionFailure.class,
                 () -> processor.process("socp-events", 2, 42L, "default|src_ip|198.51.100.10",
                         EVENT_PAYLOAD));
 
-        // The Kafka routing key is shared by every event of one entity, so the
-        // terminal identity must come from the event itself.
         assertEquals("evt-terminal", failure.eventId());
         assertEquals("default", failure.tenantId());
+        assertEquals(DetectionRecordProcessor.FailureStage.ASYNC_EXECUTION, failure.stage());
+        assertEquals(DetectionRecordProcessor.FailureCategory.UNKNOWN, failure.category());
     }
 
     @Test
-    void admissionBackpressureIsClassifiedAsGloballyRetryable() {
+    void timeoutResumesTheOriginalAsyncEvaluationInsteadOfStartingAnotherOne() {
+        DetectEngineService engine = mock(DetectEngineService.class);
+        DetectionStateStore stateStore = mock(DetectionStateStore.class);
+        given(stateStore.claim(any(SecurityEvent.class), any(), any(), anyString()))
+                .willReturn(DetectionEventClaim.NEW);
+        CompletableFuture<Void> original = new CompletableFuture<>();
+        given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))
+                .willReturn(original);
+        DetectionRecordProcessor processor = new DetectionRecordProcessor(
+                engine, stateStore, null, 1L);
+
+        DetectionRecordProcessor.InFlightDetectionTimeout timedOut = assertThrows(
+                DetectionRecordProcessor.InFlightDetectionTimeout.class,
+                () -> processor.process("socp-events", 2, 42L,
+                        "default|src_ip|198.51.100.10", EVENT_PAYLOAD));
+
+        original.complete(null);
+        processor.resumeTimedOut(timedOut, 100L);
+
+        verify(engine, times(1)).ingestFromKafkaAndAwait(
+                any(SecurityEvent.class), anyString(), any(), any());
+        verify(stateStore).markCompleted(any(SecurityEvent.class));
+    }
+
+    @Test
+    void admissionBackpressureIsTypedAndRetryable() {
         DetectEngineService engine = mock(DetectEngineService.class);
         given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))
                 .willReturn(CompletableFuture.failedFuture(new TenantAdmission.RejectedException(
@@ -116,10 +145,12 @@ class DetectionRecordProcessorTest {
         DetectionRecordProcessor processor = new DetectionRecordProcessor(
                 engine, new InMemoryDetectionStateStore(), null);
 
-        // A budget rejection is not this record's fault: it must be distinguishable
-        // from a deterministic failure so the consumer never dead-letters it.
-        assertThrows(DetectionRecordProcessor.DetectionUnavailableException.class,
+        DetectionRecordProcessor.RetryableDetectionFailure failure = assertThrows(
+                DetectionRecordProcessor.RetryableDetectionFailure.class,
                 () -> processor.process("socp-events", 2, 42L, "default|src_ip|198.51.100.10",
                         EVENT_PAYLOAD));
+
+        assertEquals(DetectionRecordProcessor.FailureCategory.BACKPRESSURE, failure.category());
+        assertEquals(DetectionRecordProcessor.FailureStage.ASYNC_EXECUTION, failure.stage());
     }
 }
