@@ -11,6 +11,7 @@ import com.socp.detect.web.persistence.store.DetectionEventClaim;
 import com.socp.detect.web.persistence.store.DetectionStateOwnership;
 import com.socp.detect.web.persistence.store.DetectionStateStore;
 import com.socp.rule.partition.DetectionRoutingKey;
+import com.socp.rule.partition.DetectionDelivery;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import org.slf4j.Logger;
@@ -253,7 +254,9 @@ final class DetectionRecordProcessor {
             fields.put("tenant_id", tenant);
             String message = text(payload, "msg", text(payload, "message", ""));
             if (payload.has("msg") && !fields.containsKey("msg")) fields.put("msg", message);
-            SecurityEvent event = new SecurityEvent(normalizeEventId(eventId, partition, offset), parseTimestamp(payload),
+            boolean routed = fields.containsKey(DetectionDelivery.DELIVERY_ID_FIELD);
+            SecurityEvent event = new SecurityEvent(normalizeEventId(eventId, partition, offset),
+                    parseTimestamp(payload, routed),
                     text(payload, "source", "unknown"), text(payload, "host", "unknown"),
                     message, fields, parseSeverity(payload));
             return new NormalizedDetectionRecord(DetectionRoutingKey.forEvent(event), event);
@@ -299,10 +302,18 @@ final class DetectionRecordProcessor {
         }
     }
 
-    private static Instant parseTimestamp(JsonNode payload) {
+    private static Instant parseTimestamp(JsonNode payload, boolean routed) {
+        String value = text(payload, "timestamp", null);
+        if (value == null || value.isBlank()) {
+            if (routed) throw new IllegalArgumentException("routed detection timestamp is required");
+            return Instant.now();
+        }
         try {
-            return Instant.parse(text(payload, "timestamp", Instant.now().toString()));
-        } catch (Exception ignored) {
+            return Instant.parse(value);
+        } catch (Exception failure) {
+            if (routed) {
+                throw new IllegalArgumentException("routed detection timestamp must be ISO-8601", failure);
+            }
             return Instant.now();
         }
     }
