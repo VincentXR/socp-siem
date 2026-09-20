@@ -344,6 +344,7 @@ def publish_detection_event(event, target_topic=None):
                                   "severity", "message", "msg", "timestamp"}
                    and value is not None})
     payload = {
+        "schemaVersion": "1.0",
         "eventId": str(event["eventId"]),
         "tenantId": tenant,
         "source": source,
