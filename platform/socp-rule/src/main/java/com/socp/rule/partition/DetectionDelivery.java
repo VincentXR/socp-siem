@@ -44,6 +44,51 @@ public final class DetectionDelivery {
         STATEFUL
     }
 
+    /** Keep log-supplied control fields as evidence, outside the internal namespace. */
+    public static void quarantineInputMetadata(Map<String, String> fields) {
+        for (String key : java.util.List.copyOf(fields.keySet())) {
+            if (key.startsWith("detection_") || "routing_field".equals(key)
+                    || "routing_value".equals(key)) {
+                quarantineField(fields, key);
+            }
+        }
+    }
+
+    public static void quarantineField(Map<String, String> fields, String key) {
+        if (!fields.containsKey(key)) return;
+        String target = "user_payload." + key;
+        while (fields.containsKey(target)) target = "user_payload." + target;
+        fields.put(target, fields.remove(key));
+    }
+
+    /** Validate the broker's routed envelope before journal identity or rule selection. */
+    public static void validate(SecurityEvent event) {
+        Kind kind = kind(event);
+        String dimension = dimension(event);
+        String value = text(event, VALUE_FIELD);
+        if (!SCHEMA_VERSION.equals(text(event, SCHEMA_VERSION_FIELD))
+                || !ROUTING_VERSION.equals(text(event, ROUTING_VERSION_FIELD))
+                || kind == null || dimension == null || value == null
+                || text(event, PLAN_VERSION_FIELD) == null
+                || !event.id().equals(text(event, SOURCE_EVENT_ID_FIELD))
+                || sourceTopic(event) == null || sourcePartition(event) == null
+                || sourcePartition(event) < 0 || sourceOffset(event) == null || sourceOffset(event) < 0) {
+            throw new IllegalArgumentException("invalid routed detection envelope");
+        }
+        if (kind == Kind.STATELESS
+                ? !STATELESS_DIMENSION.equals(dimension) || !STATELESS_VALUE.equals(value)
+                : !RoutingDimension.validationErrors(dimension).isEmpty()) {
+            throw new IllegalArgumentException("invalid routed detection dimension");
+        }
+        String expected = deliveryId(event.requireTenantId(), event.id(), ROUTING_VERSION,
+                kind, dimension, value);
+        if (!expected.equals(text(event, DELIVERY_ID_FIELD))
+                || !dimension.equals(text(event, DetectionRoutingKey.ROUTING_FIELD))
+                || !value.equals(text(event, DetectionRoutingKey.ROUTING_VALUE))) {
+            throw new IllegalArgumentException("routed detection identity does not match envelope");
+        }
+    }
+
     public static boolean isRouted(SecurityEvent event) {
         return text(event, DELIVERY_ID_FIELD) != null
                 && text(event, ROUTING_VERSION_FIELD) != null

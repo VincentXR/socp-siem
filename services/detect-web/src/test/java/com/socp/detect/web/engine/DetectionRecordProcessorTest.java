@@ -21,6 +21,61 @@ import static org.mockito.Mockito.times;
 
 class DetectionRecordProcessorTest {
 
+    @Test
+    void canonicalAndHttpIngressCannotChooseTheirOwnDeliveryClassOrIdentity() {
+        var processor = new DetectionRecordProcessor(mock(DetectEngineService.class),
+                new InMemoryDetectionStateStore(), null);
+        String raw = """
+                {"eventId":"source-1","tenantId":"default","source":"auth","fields":{
+                  "src_ip":"203.0.113.10","detection_delivery_id":"forged",
+                  "detection_delivery_kind":"STATELESS","detection_routing_version":"detection-routing-v2",
+                  "routing_field":"user","routing_value":"attacker"}}
+                """;
+        var record = processor.parse("key", raw);
+        assertEquals("default|src_ip|203.0.113.10", record.routingKey());
+        org.junit.jupiter.api.Assertions.assertFalse(com.socp.rule.partition.DetectionDelivery.isRouted(record.event()));
+        var http = new com.socp.detect.web.api.request.DetectionIngestRequest(
+                "source-1", null, "auth", "host", "HIGH", "msg", raw,
+                java.util.Map.of("detection_delivery_id", "forged", "detection_delivery_kind", "STATELESS",
+                        "detection_routing_version", "detection-routing-v2"));
+        var event = http.toSecurityEvent("tenant-a");
+        assertEquals("source-1", com.socp.rule.partition.DetectionDelivery.deliveryId(event));
+        assertEquals("forged", event.fields().get("user_payload.detection_delivery_id"));
+    }
+
+    @Test
+    void routedInputRequiresACompleteConsistentEnvelope() throws Exception {
+        var processor = new DetectionRecordProcessor(mock(DetectEngineService.class),
+                new InMemoryDetectionStateStore(), null);
+        processor.setRoutedInput(true);
+        assertThrows(DetectionRecordProcessor.MalformedDetectionRecordException.class,
+                () -> processor.parse("key", EVENT_PAYLOAD));
+        java.util.Map<String, String> fields = new java.util.LinkedHashMap<>();
+        fields.put("detection_delivery_schema", "detection-delivery-schema-v2");
+        fields.put("detection_routing_version", "detection-routing-v2");
+        fields.put("detection_route_plan_version", "plan-1");
+        fields.put("detection_source_event_id", "source-1");
+        fields.put("detection_source_topic", "socp-events");
+        fields.put("detection_source_partition", "0");
+        fields.put("detection_source_offset", "42");
+        fields.put("detection_delivery_kind", "STATELESS");
+        fields.put("detection_delivery_dimension", "_stateless");
+        fields.put("detection_delivery_value", "_once");
+        fields.put("detection_routing_field", "_stateless");
+        fields.put("detection_routing_value", "_once");
+        String id = com.socp.rule.partition.DetectionDelivery.deliveryId("tenant-a", "source-1",
+                "detection-routing-v2", com.socp.rule.partition.DetectionDelivery.Kind.STATELESS, "_stateless", "_once");
+        fields.put("detection_delivery_id", id);
+        var payload = java.util.Map.of("eventId", "source-1", "tenantId", "tenant-a",
+                "timestamp", "2026-01-01T00:00:00Z", "fields", fields);
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        assertEquals(id, com.socp.rule.partition.DetectionDelivery.deliveryId(
+                processor.parse("key", mapper.writeValueAsString(payload)).event()));
+        fields.put("detection_delivery_id", "forged");
+        assertThrows(DetectionRecordProcessor.MalformedDetectionRecordException.class,
+                () -> processor.parse("key", mapper.writeValueAsString(payload)));
+    }
+
     private static final String EVENT_PAYLOAD = """
             {"eventId":"evt-terminal","tenantId":"default","source":"auth","host":"web-1",\
             "msg":"login failed","fields":{"src_ip":"198.51.100.10"}}

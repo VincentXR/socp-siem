@@ -228,6 +228,8 @@ class DetectionRouteOutboxServiceTest {
                 "id", id,
                 "name", id,
                 "type", "threshold",
+                "severity", "HIGH",
+                "threshold", 3,
                 "status", "ACTIVE",
                 "version", "1",
                 "groupBy", dimension,

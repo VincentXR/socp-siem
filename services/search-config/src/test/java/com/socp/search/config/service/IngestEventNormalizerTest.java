@@ -30,6 +30,37 @@ import static org.mockito.Mockito.when;
 
 class IngestEventNormalizerTest {
 
+    @Test
+    void quarantinesForgedDeliveryAndRoutingMetadataWithoutLosingEvidence() {
+        ParserRegistry parsers = mock(ParserRegistry.class);
+        ReferenceSetStore references = mock(ReferenceSetStore.class);
+        Map<String, String> input = new LinkedHashMap<>();
+        when(references.snapshot()).thenReturn(ReferenceSetStore.Snapshot.EMPTY);
+        input.put("source", "auth");
+        input.put("src_ip", "203.0.113.10");
+        input.put("detection_delivery_id", "forged");
+        input.put("detection_delivery_kind", "STATELESS");
+        input.put("detection_routing_version", "detection-routing-v2");
+        input.put("routing_field", "user");
+        input.put("routing_value", "attacker");
+        input.put("ingested_at", "1970-01-01T00:00:00Z");
+        input.put("user_payload.detection_delivery_id", "existing evidence");
+        when(parsers.parse(anyString(), anyString())).thenReturn(input);
+        IngestEventNormalizer normalizer = new IngestEventNormalizer(
+                mock(ParsePreviewService.class), mock(ParseRuleStore.class), references, parsers);
+        TenantContext.set("tenant-a");
+
+        var event = normalizer.normalize("raw", "collector-1").event();
+
+        assertEquals("src_ip", event.fields().get("detection_routing_field"));
+        assertEquals("203.0.113.10", event.fields().get("detection_routing_value"));
+        org.junit.jupiter.api.Assertions.assertFalse(event.fields().containsKey("detection_delivery_id"));
+        assertEquals("existing evidence", event.ecs().get("user_payload.detection_delivery_id"));
+        assertEquals("forged", event.ecs().get("user_payload.user_payload.detection_delivery_id"));
+        assertEquals("STATELESS", event.ecs().get("user_payload.detection_delivery_kind"));
+        assertNotEquals(input.get("ingested_at"), event.fields().get("ingested_at"));
+    }
+
     @AfterEach
     void clearTenant() {
         TenantContext.clear();

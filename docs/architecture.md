@@ -187,6 +187,33 @@ A stateful rule must use the same dimension for `groupBy`, `keyField`, and
 dimension required by active rules; unsupported dimensions or missing values
 fail closed or are recorded explicitly. Legacy canonical-topic mode is a
 migration/rollback path and reports `LEGACY_PARTIAL` for cross-dimension state.
+The first routed event pins a tenant's dimension/source topology. Rule writes
+and that first pin share a database mutex; once pinned, changes that would alter
+the topology return HTTP 409 before updating the rule or its revision history.
+Content tuning that preserves the topology remains available. A new dimension
+or source requires a new routing version and delivery topic with prewarm/cutover;
+changing only the topic or removing the pin is not a supported migration.
+Routing health and the routing-plan API expose persisted topology conflicts.
+The mutex row uses `plan_version=unbound` until the first pin, so initial rule
+configuration is possible before any routed event has been materialized.
+
+External log/HTTP input cannot supply `detection_*`, `routing_field`, or
+`routing_value` control metadata. Input values are retained under `user_payload.`
+(repeated when necessary to preserve a colliding evidence field). Ingestion
+timestamps are assigned at the trusted ingress. Routed consumers require a
+consistent versioned delivery envelope and identity before evaluating rules.
+Kafka completion advances across offsets actually delivered by the broker;
+transaction markers and aborted records do not create artificial pending work.
+
+AI investigation submission persists a queryable `NEW` receipt before returning.
+A scheduled dispatcher scans durable queued or expired work, with
+`socp.ai.investigation.async-workers` concurrent workers (default 2, maximum 16)
+and no in-memory waiting queue. Each attempt uses a distinct claim token.
+`PARTIAL` and `COMPLETED` results are terminal; failed tasks are retried by an
+explicit resubmission. Browser polling may be cancelled without deleting the
+durable task. Persistent queue age and target deployment capacity remain release
+acceptance concerns.
+
 Journal replay is bounded to the configured retention and read in pages; the
 implementation does not silently truncate at a fixed row count. Kafka,
 OpenSearch, PostgreSQL, and ClickHouse are single-node dependencies in the

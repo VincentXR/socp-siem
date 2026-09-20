@@ -12,6 +12,7 @@ import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
 import { aiAsk, appendInvestigationToIncident, investigateAlert, type AiResult, type InvestigationResult } from '../api'
 import { useI18n } from '../composables/useI18n'
+import { useLatestRequest } from '../composables/useLatestRequest'
 import { tOr } from '../utils/i18nLabel'
 
 const { t } = useI18n()
@@ -27,6 +28,7 @@ const investigation = ref<InvestigationResult | null>(null)
 const investigationLoading = ref(false)
 const appendLoading = ref(false)
 const investigationError = ref('')
+const investigationRequest = useLatestRequest()
 
 const contextAlarmId = computed(() => {
   if (typeof route.query.alarmId === 'string') return route.query.alarmId
@@ -69,13 +71,15 @@ async function investigate() {
   if (!id || investigationLoading.value || appendLoading.value) return
   if (route.query.alarmId !== id) void router.replace({ query: { ...route.query, alarmId: id } })
   investigationLoading.value = true
+  const request = investigationRequest.start()
   investigationError.value = ''
   try {
-    investigation.value = await investigateAlert(id)
+    const response = await investigateAlert(id, { signal: request.signal })
+    if (request.isCurrent()) investigation.value = response
   } catch (error) {
-    investigationError.value = error instanceof Error ? error.message : String(error)
+    if (request.isCurrent()) investigationError.value = error instanceof Error ? error.message : String(error)
   } finally {
-    investigationLoading.value = false
+    if (request.isCurrent()) investigationLoading.value = false
   }
 }
 

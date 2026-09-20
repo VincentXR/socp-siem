@@ -33,10 +33,10 @@ class DetectionEventJournalReplayTest {
         DetectionEventRepository repository = mock(DetectionEventRepository.class);
         List<DetectionEventEntity> first = rows(0, 100);
         List<DetectionEventEntity> second = rows(100, 1);
-        when(repository.findByTenantIdAndStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
-                eq("tenant-a"), anyString(), eq(Set.of(2)), any(Instant.class), any(Pageable.class)))
+        when(repository.findByTenantStatusTopicAndKafkaPartitionInAfter(
+                eq("tenant-a"), eq("COMPLETED"), eq("socp-events"), eq(Set.of(2)), any(Instant.class), any(Pageable.class)))
                 .thenAnswer(invocation -> {
-                    Pageable page = invocation.getArgument(4);
+                    Pageable page = invocation.getArgument(5);
                     return page.getPageNumber() == 0 ? first : second;
                 });
 

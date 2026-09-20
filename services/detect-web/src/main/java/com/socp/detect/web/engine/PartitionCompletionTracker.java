@@ -9,9 +9,9 @@ import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Tracks per-partition completed offsets and exposes only contiguous commit
- * candidates. Completion of offset 102 never advances a partition past a
- * still-pending offset 101.
+ * Tracks the completed prefix of records actually delivered by each partition.
+ * Kafka offsets can have gaps (transaction markers and aborted records), but a
+ * delivered, still-pending record must always block later completions.
  */
 public final class PartitionCompletionTracker {
 
@@ -34,8 +34,7 @@ public final class PartitionCompletionTracker {
     public synchronized void complete(int partition, long offset, long epoch) {
         State state = states.get(partition);
         if (state == null || state.epoch != epoch) return;
-        if (state.nextExpected < 0) state.nextExpected = offset;
-        if (offset >= state.nextExpected) state.completed.add(offset);
+        if (state.seen.contains(offset)) state.completed.add(offset);
         advance(state);
     }
 
@@ -83,16 +82,13 @@ public final class PartitionCompletionTracker {
 
     private static void advance(State state) {
         if (state.nextExpected < 0 || state.pendingCommit >= 0) return;
-        long cursor = state.nextExpected;
-        boolean advanced = false;
-        while (state.completed.remove(cursor)) {
-            state.seen.remove(cursor);
-            cursor++;
-            advanced = true;
+        long candidate = -1;
+        while (!state.seen.isEmpty() && state.completed.remove(state.seen.first())) {
+            candidate = state.seen.pollFirst() + 1;
         }
-        if (advanced) {
-            state.nextExpected = cursor;
-            state.pendingCommit = cursor;
+        if (candidate >= 0) {
+            state.nextExpected = candidate;
+            state.pendingCommit = candidate;
         }
     }
 
@@ -100,8 +96,8 @@ public final class PartitionCompletionTracker {
         final long epoch;
         long nextExpected = -1;
         long pendingCommit = -1;
-        Set<Long> seen = new TreeSet<>();
-        Set<Long> completed = new TreeSet<>();
+        final TreeSet<Long> seen = new TreeSet<>();
+        final Set<Long> completed = new TreeSet<>();
 
         State(long epoch) {
             this.epoch = epoch;

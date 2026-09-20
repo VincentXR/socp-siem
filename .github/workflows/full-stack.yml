@@ -1,6 +1,14 @@
 name: Full Stack E2E
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'platform/**'
+      - 'services/detect-web/**'
+      - 'services/search-config/**'
+      - 'services/ai-assistant/**'
+      - '.github/workflows/full-stack.yml'
   workflow_dispatch:
   schedule:
     - cron: "30 2 * * 1"
@@ -9,8 +17,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: full-stack-e2e
-  cancel-in-progress: false
+  group: full-stack-e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # Avoid depending on third-party mirror synchronization in hosted CI.

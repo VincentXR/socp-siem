@@ -49,11 +49,20 @@ public final class TenantRlsDataSource extends DelegatingDataSource {
     }
 
     private static Connection wrap(Connection delegate) throws SQLException {
-        setScope(delegate);
-        InvocationHandler handler = new ConnectionHandler(delegate);
-        return (Connection) Proxy.newProxyInstance(
-                TenantRlsDataSource.class.getClassLoader(),
-                new Class<?>[]{Connection.class}, handler);
+        try {
+            setScope(delegate);
+            InvocationHandler handler = new ConnectionHandler(delegate);
+            return (Connection) Proxy.newProxyInstance(
+                    TenantRlsDataSource.class.getClassLoader(),
+                    new Class<?>[]{Connection.class}, handler);
+        } catch (SQLException | RuntimeException | Error failure) {
+            try {
+                delegate.close();
+            } catch (SQLException | RuntimeException | Error closeFailure) {
+                if (closeFailure != failure) failure.addSuppressed(closeFailure);
+            }
+            throw failure;
+        }
     }
 
     private static void setScope(Connection connection) throws SQLException {

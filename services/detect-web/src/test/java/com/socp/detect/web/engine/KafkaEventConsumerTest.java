@@ -128,7 +128,7 @@ class KafkaEventConsumerTest {
         // overload; stubbing the one-argument form would leave this null, and
         // the resulting failure sends the record down the durable DLQ path,
         // which retries against a broker that no unit test has.
-        given(stateStore.claim(any(SecurityEvent.class), any(), any(), anyString()))
+        given(stateStore.claim(any(SecurityEvent.class), anyString(), any(), any(), anyString()))
                 .willReturn(DetectionEventClaim.NEW);
         given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))
                 .willReturn(CompletableFuture.completedFuture(null));
@@ -232,7 +232,7 @@ class KafkaEventConsumerTest {
     @Test
     @Timeout(20)
     void dependencyFailurePastAttemptBudgetRecoversWithoutDeadLettering() throws Exception {
-        given(stateStore.claim(any(SecurityEvent.class), any(), any(), anyString()))
+        given(stateStore.claim(any(SecurityEvent.class), anyString(), any(), any(), anyString()))
                 .willReturn(DetectionEventClaim.NEW);
         CompletableFuture<Void> rollback1 = CompletableFuture.failedFuture(
                 new CompletionException(new CannotCreateTransactionException("sink transaction rollback")));
@@ -296,7 +296,7 @@ class KafkaEventConsumerTest {
     @Test
     @Timeout(20)
     void markCompletedFailureRetriesOnlyFinalizationAndNeverDeadLetters() throws Exception {
-        given(stateStore.claim(any(SecurityEvent.class), any(), any(), anyString()))
+        given(stateStore.claim(any(SecurityEvent.class), anyString(), any(), any(), anyString()))
                 .willReturn(DetectionEventClaim.NEW);
         given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))
                 .willReturn(CompletableFuture.completedFuture(null));
@@ -336,7 +336,7 @@ class KafkaEventConsumerTest {
 
         for (Throwable transientFailure : transientFailures) {
             org.mockito.Mockito.reset(engine, stateStore);
-            given(stateStore.claim(any(SecurityEvent.class), any(), any(), anyString()))
+            given(stateStore.claim(any(SecurityEvent.class), anyString(), any(), any(), anyString()))
                     .willReturn(DetectionEventClaim.NEW);
             given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))
                     .willReturn(CompletableFuture.failedFuture(transientFailure),
@@ -393,7 +393,7 @@ class KafkaEventConsumerTest {
     @Test
     @Timeout(20)
     void liveClaimDatabaseFailureRecoversAfterOriginalDlqWindow() throws Exception {
-        given(stateStore.claim(any(SecurityEvent.class), any(), any(), anyString()))
+        given(stateStore.claim(any(SecurityEvent.class), anyString(), any(), any(), anyString()))
                 .willThrow(new DataAccessResourceFailureException("postgres unavailable"))
                 .willThrow(new DataAccessResourceFailureException("postgres unavailable"))
                 .willReturn(DetectionEventClaim.NEW);
@@ -410,7 +410,7 @@ class KafkaEventConsumerTest {
 
         consumer.processWithRetry(record, 8L);
 
-        verify(stateStore, times(3)).claim(any(SecurityEvent.class), eq(2), eq(50L), anyString());
+        verify(stateStore, times(3)).claim(any(SecurityEvent.class), eq("socp-events"), eq(2), eq(50L), anyString());
         verify(engine).ingestFromKafkaAndAwait(
                 any(SecurityEvent.class), anyString(), eq(2), eq(50L));
         assertEquals(List.of(), dlq);
@@ -420,7 +420,7 @@ class KafkaEventConsumerTest {
     @Test
     @Timeout(20)
     void ownershipLossStopsOldEpochBeforeJournalCompletion() throws Exception {
-        given(stateStore.claim(any(SecurityEvent.class), any(), any(), anyString()))
+        given(stateStore.claim(any(SecurityEvent.class), anyString(), any(), any(), anyString()))
                 .willReturn(DetectionEventClaim.NEW);
         given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))
                 .willReturn(CompletableFuture.completedFuture(null));
@@ -445,7 +445,7 @@ class KafkaEventConsumerTest {
     @Test
     @SuppressWarnings({"unchecked", "rawtypes"})
     void completedLaterOffsetCannotCommitAcrossEarlierGap() throws Exception {
-        given(stateStore.claim(any(SecurityEvent.class), any(), any(), anyString()))
+        given(stateStore.claim(any(SecurityEvent.class), anyString(), any(), any(), anyString()))
                 .willReturn(DetectionEventClaim.NEW);
         given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))
                 .willReturn(CompletableFuture.completedFuture(null));

@@ -1097,7 +1097,10 @@ public class DetectEngineService {
                 RuleEngine target = engineFor(ev.tenantId(), shard);
                 int statePartition = partition == null ? -1 : partition;
                 Runnable ownershipGuard = durableGuardFor(statePartition, shard);
-                Runnable durablePosition = () -> recordDurablePosition(ev, partition, offset);
+                Runnable durablePosition = () -> {
+                    ownershipGuard.run();
+                    recordDurablePosition(ev, partition, offset);
+                };
                 com.socp.rule.engine.DetectionResult.InputPosition inputPosition =
                         partition == null || offset == null
                                 ? com.socp.rule.engine.DetectionResult.InputPosition.unknown()

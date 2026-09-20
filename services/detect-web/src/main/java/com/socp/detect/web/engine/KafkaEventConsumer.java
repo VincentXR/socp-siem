@@ -155,6 +155,11 @@ public class KafkaEventConsumer {
         this(engine, new InMemoryDetectionStateStore());
     }
 
+    @org.springframework.beans.factory.annotation.Autowired
+    void configureRouting(com.socp.detect.web.routing.DetectionRoutingRuntime runtime) {
+        recordProcessor.setRoutedInput(runtime.routedDetection());
+    }
+
     @PostConstruct
     public void start() {
         if (!enabled) return;

@@ -107,6 +107,25 @@ test('gateway auth endpoint is reachable in a real browser smoke run', async ({ 
   expect(response?.status()).toBeLessThan(500)
 })
 
+test('case deep link loads detail and timeline outside the current page', async ({ page }, testInfo) => {
+  await page.addInitScript(() => localStorage.setItem('socp-locale', 'en-US'))
+  await mockSession(page)
+  const item = { id: 'off-page', caseNo: 'CASE-OFF-PAGE', title: 'Off-page investigation', status: 'OPEN',
+    entity: 'host-a', severity: 'HIGH', assignee: '', alarmIds: [], createdAt: '2026-09-20T00:00:00Z', updatedAt: '2026-09-20T00:00:00Z' }
+  await page.route('**/incident-web/api/v1/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    const body = path.endsWith('/timeline')
+      ? { items: [{ ts: '2026-09-20T00:00:00Z', message: 'Durable case evidence', type: 'NOTE', source: 'analyst' }], total: 1 }
+      : path.endsWith('/off-page') ? { found: true, case: item }
+        : path.endsWith('/stats') ? { total: 1, open: 1, resolved: 0 } : { items: [], total: 0 }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
+  })
+  await page.goto('/cases?caseId=off-page')
+  await expect(page.locator('.el-drawer')).toContainText('Off-page investigation')
+  await expect(page.locator('.el-drawer')).toContainText('Durable case evidence')
+  await page.screenshot({ path: testInfo.outputPath('case-deep-link.png'), fullPage: true })
+})
+
 test('metadata edits stay in a dialog and retain inputs across a failed save', async ({ page }, testInfo) => {
   await page.addInitScript(() => localStorage.setItem('socp-locale', 'en-US'))
   await mockSession(page)
