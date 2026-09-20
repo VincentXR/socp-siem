@@ -59,7 +59,7 @@ public class KafkaEventConsumer {
     @Value("${socp.kafka.bootstrap:localhost:9092}")
     private String bootstrap;
 
-    @Value("${socp.kafka.topic:socp-events}")
+    @Value("${socp.detect.input-topic:${socp.kafka.topic:socp-events}}")
     private String topic;
 
     @Value("${socp.kafka.group-id:socp-detect}")
