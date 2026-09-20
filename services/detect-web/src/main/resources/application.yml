@@ -63,6 +63,7 @@ socp:
       # 0 retries forever; routing publication must not silently turn into loss.
       outbox-max-attempts: ${SOCP_DETECT_ROUTING_OUTBOX_MAX_ATTEMPTS:0}
       published-retention: ${SOCP_DETECT_ROUTING_PUBLISHED_RETENTION:7d}
+      source-receipt-retention: ${SOCP_DETECT_ROUTING_SOURCE_RECEIPT_RETENTION:30d}
       dead-retention: ${SOCP_DETECT_ROUTING_DEAD_RETENTION:90d}
       cleanup-batch-size: ${SOCP_DETECT_ROUTING_CLEANUP_BATCH_SIZE:1000}
       cleanup-max-batches: ${SOCP_DETECT_ROUTING_CLEANUP_MAX_BATCHES:10}
