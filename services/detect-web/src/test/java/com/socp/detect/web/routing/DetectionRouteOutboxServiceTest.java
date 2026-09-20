@@ -87,6 +87,29 @@ class DetectionRouteOutboxServiceTest {
     }
 
     @Test
+    void replayAfterOutboxCommitReusesFrozenPlanEvenIfRulesChanged() {
+        DetectionRouteOutboxRepository repository = mock(DetectionRouteOutboxRepository.class);
+        DetectionRoutingPlanRegistry registry = mock(DetectionRoutingPlanRegistry.class);
+        DetectionRouteOutboxEntity frozen = new DetectionRouteOutboxEntity(
+                "delivery-frozen", "tenant-a", "source-41",
+                DetectionDelivery.ROUTING_VERSION, "route-plan-old",
+                "STATEFUL", "user", "alice", "tenant-a|user|alice",
+                "socp-events", 2, 41L, "socp-detection-routed-v2", "{}", java.time.Instant.now());
+        frozen.setStatus("PUBLISHED");
+        when(repository.findBySourceTopicAndSourcePartitionAndSourceOffsetOrderByDeliveryIdAsc(
+                "socp-events", 2, 41L)).thenReturn(List.of(frozen));
+        DetectionRouteOutboxService service =
+                new DetectionRouteOutboxService(repository, registry, "socp-detection-routed-v2");
+
+        var result = service.route("socp-events", 2, 41L, eventJson(true));
+
+        assertEquals("route-plan-old", result.planVersion());
+        assertEquals(1, result.deliveryCount());
+        verify(registry, never()).plan(anyString());
+        verify(repository, never()).saveAllAndFlush(any());
+    }
+
+    @Test
     void persistenceFailureRemainsRetryableAndIsNotConvertedIntoRouteError() {
         DetectionRouteOutboxRepository repository = mock(DetectionRouteOutboxRepository.class);
         DetectionRoutingPlanRegistry registry = mock(DetectionRoutingPlanRegistry.class);
