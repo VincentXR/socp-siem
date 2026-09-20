@@ -22,6 +22,9 @@ public interface DetectionRouteOutboxRepository
 
     long countByTenantIdAndSourceEventId(String tenantId, String sourceEventId);
 
+    java.util.Optional<DetectionRouteOutboxEntity> findByTenantIdAndDeliveryId(
+            String tenantId, String deliveryId);
+
     List<DetectionRouteOutboxEntity> findBySourceTopicAndSourcePartitionAndSourceOffsetOrderByDeliveryIdAsc(
             String sourceTopic, int sourcePartition, long sourceOffset);
 
