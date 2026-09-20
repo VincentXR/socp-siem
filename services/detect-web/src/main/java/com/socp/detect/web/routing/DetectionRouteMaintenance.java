@@ -5,6 +5,7 @@ import com.socp.detect.web.persistence.repository.DetectionRouteOutboxRepository
 import com.socp.detect.web.persistence.repository.DetectionRouteSourceRepository;
 import com.socp.platform.tenant.persistence.TenantSystemJob;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -37,7 +38,7 @@ public class DetectionRouteMaintenance {
         this.maxBatches = Math.max(1, Math.min(100, maxBatches));
     }
 
-    @org.springframework.scheduling.annotation.Scheduled(
+    @Scheduled(
             fixedDelayString = "${socp.detect.routing.cleanup-interval-ms:3600000}",
             initialDelayString = "${socp.detect.routing.cleanup-initial-delay-ms:60000}")
     @TenantSystemJob

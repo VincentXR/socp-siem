@@ -290,12 +290,17 @@ At startup and `onPartitionsAssigned`, Detection rebuilds rule windows only
 from `COMPLETED` journal rows belonging to the current assignment. Replayed
 `PENDING` rows are then submitted as live work on their owning partition lane.
 COMPLETED rows used to rebuild rule state are read in bounded pages across the
-configured retention window. PENDING rows are different: startup/rebalance
-prefetch is capped by `SOCP_DETECT_STATE_REPLAY_PENDING_MAX` (default 100)
-so a backlog cannot be materialized into one heap-resident list. This cap is not
-a recovery truncation: rows beyond the prefetched prefix still sit behind
-uncommitted Kafka offsets and are redelivered through the normal consumer path,
-where an existing PENDING claim is processed and then marked COMPLETED.
+configured retention window. The checkpoint-vector replay keeps Kafka offsets as
+its correctness boundary (never completion timestamps, which producer/database
+clock skew can reorder); the `(tenant_id, status, kafka_partition, kafka_offset)`
+composite index added in Flyway V23 lets that partition/offset-ordered scan be
+served in index order instead of fetch-then-sort. PENDING rows are different:
+startup/rebalance prefetch is capped by `SOCP_DETECT_STATE_REPLAY_PENDING_MAX`
+(default 100) and streamed page by page, so a backlog is never materialized into
+one heap-resident list. This cap is not a recovery truncation: rows beyond the
+prefetched prefix still sit behind uncommitted Kafka offsets and are redelivered
+through the normal consumer path, where an existing PENDING claim is processed
+and then marked COMPLETED.
 
 The time window remains an explicit recovery boundary and should be chosen as:
 

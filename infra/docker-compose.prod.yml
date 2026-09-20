@@ -107,6 +107,15 @@ services:
       # because a container's localhost is the container itself.
       SOCP_RATELIMIT_BACKEND: redis
       SOCP_RATELIMIT_FAIL_CLOSED: "true"
+      # Brute-force thresholds are declared rather than inherited from the
+      # application default: they are the detection budget for control-plane
+      # authentication, and the limiter also emits the shared-account and
+      # spray signals whose thresholds live next to these keys
+      # (SOCP_AUTH_RATE_LIMIT_CORRELATION_PEERS,
+      # SOCP_AUTH_RATE_LIMIT_SIGNAL_LOG_BUDGET).
+      SOCP_AUTH_LOGIN_PERMITS: "5"
+      SOCP_AUTH_SERVICE_PERMITS: "10"
+      SOCP_AUTH_WINDOW_SECONDS: "60"
       SOCP_AUTH_REVOCATION_BACKEND: redis
       SOCP_OIDC_STATE_BACKEND: redis
       SPRING_DATA_REDIS_HOST: redis

@@ -376,6 +376,45 @@ public class DetectionEventJournal implements DetectionStateStore {
         return rows.stream().map(this::pendingRow).filter(java.util.Objects::nonNull).toList();
     }
 
+    /**
+     * True per-page streaming PENDING replay: hands each bounded page to the
+     * consumer instead of materialising the window, and stops at
+     * {@code maxRecords}. Anything past the cap stays behind uncommitted Kafka
+     * offsets for redelivery, so heap use is one page, not the retention window.
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public void replayPendingPages(Set<Integer> partitions, Duration window, int maxRecords,
+                                   Consumer<List<PendingDetectionEvent>> batchConsumer) {
+        if (partitions == null || partitions.isEmpty() || batchConsumer == null) return;
+        int cap = Math.max(1, Math.min(maxRecords, 10_000));
+        String tenant = TenantContext.isSystemScope() ? null : TenantContext.require();
+        int dispatched = 0;
+        for (int page = 0; dispatched < cap; page++) {
+            org.springframework.data.domain.Pageable request =
+                    org.springframework.data.domain.PageRequest.of(page, replayPageSize);
+            List<DetectionEventEntity> rows = tenant == null
+                    ? repository.findByStatusAndTopicAndKafkaPartitionInAfter(
+                            DetectionEventStatus.PENDING.name(), inputTopic, partitions,
+                            cutoff(window), request)
+                    : repository.findByTenantStatusTopicAndKafkaPartitionInAfter(
+                            tenant, DetectionEventStatus.PENDING.name(), inputTopic, partitions,
+                            cutoff(window), request);
+            List<PendingDetectionEvent> batch = new ArrayList<>();
+            for (DetectionEventEntity row : rows) {
+                PendingDetectionEvent pending = pendingRow(row);
+                if (pending == null) continue;
+                if (dispatched + batch.size() >= cap) break;
+                batch.add(pending);
+            }
+            if (!batch.isEmpty()) {
+                dispatched += batch.size();
+                batchConsumer.accept(batch);
+            }
+            if (rows.size() < replayPageSize) break;
+        }
+    }
+
     @Override
     @Transactional(readOnly = true)
     public long pendingCount() {

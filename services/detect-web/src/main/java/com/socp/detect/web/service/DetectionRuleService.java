@@ -84,4 +84,21 @@ final class DetectionRuleService {
         }
         return removed;
     }
+
+    List<Map<String, Object>> listRevisions(String id) {
+        return store.revisions(id);
+    }
+
+    List<Map<String, Object>> contentConflicts() {
+        return store.contentConflicts();
+    }
+
+    Map<String, Object> restoreRevision(String id, long revision) {
+        Map<String, Object> restored = store.restoreRevision(id, revision);
+        if (restored == null) {
+            throw ApiException.notFound("规则版本不存在: " + id + "#" + revision);
+        }
+        publisher.publish(id, "restore");
+        return restored;
+    }
 }

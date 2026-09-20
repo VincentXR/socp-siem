@@ -1,11 +1,13 @@
 package com.socp.attack.web;
 
+import com.socp.platform.starter.EnableSocpPlatformJpa;
 import com.socp.platform.starter.SocpPlatformAutoConfiguration;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Import;
 
 @SpringBootApplication(scanBasePackages = "com.socp.attack.web")
+@EnableSocpPlatformJpa
 @Import(SocpPlatformAutoConfiguration.class)
 public class AttackWebApplication {
     public static void main(String[] args) {

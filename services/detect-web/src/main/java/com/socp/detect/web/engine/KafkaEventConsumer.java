@@ -126,6 +126,9 @@ public class KafkaEventConsumer {
     @Value("${socp.detect.state.retention}")
     private Duration replayWindow;
 
+    @Value("${socp.detect.state.replay-pending-max:100}")
+    private int pendingReplayMax = 100;
+
     /** Optional: the compatibility constructors and focused tests are wiring-free. */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private io.micrometer.core.instrument.MeterRegistry metrics;
@@ -512,16 +515,20 @@ public class KafkaEventConsumer {
     }
 
     private void replayPending(Set<Integer> partitions) {
-        List<PendingDetectionEvent> pending = stateStore.pendingRecordsForPartitions(
-                partitions, configuredReplayWindow());
-        for (PendingDetectionEvent row : pending) {
-            if (row == null || row.event() == null || row.partition() == null) continue;
-            dispatchOrDefer(null, new TopicPartition(configuredTopic(), row.partition()),
-                    () -> processPendingWithRetry(row), estimateEventBytes(row.event()));
-        }
-        if (!pending.isEmpty()) {
+        int cap = pendingReplayMax <= 0 ? 100 : pendingReplayMax;
+        java.util.concurrent.atomic.AtomicInteger queued =
+                new java.util.concurrent.atomic.AtomicInteger();
+        stateStore.replayPendingPages(partitions, configuredReplayWindow(), cap, batch -> {
+            for (PendingDetectionEvent row : batch) {
+                if (row == null || row.event() == null || row.partition() == null) continue;
+                dispatchOrDefer(null, new TopicPartition(configuredTopic(), row.partition()),
+                        () -> processPendingWithRetry(row), estimateEventBytes(row.event()));
+                queued.incrementAndGet();
+            }
+        });
+        if (queued.get() > 0) {
             log.info("Queued bounded PENDING journal prefetch count={}; any remaining rows "
-                    + "stay behind uncommitted Kafka offsets and will be redelivered", pending.size());
+                    + "stay behind uncommitted Kafka offsets and will be redelivered", queued.get());
         }
     }
 

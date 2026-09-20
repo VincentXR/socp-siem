@@ -7,7 +7,7 @@ the partition-count choice, and the verification you owe after a first boot.
 ## Why this is a manual step, not an application concern
 
 `infra/init-sql/kafka/create-topics.sh` is the single source that provisions the
-topics the code actually uses: the five main-chain topics plus the
+topics the code actually uses: the six main-chain topics plus the
 `<topic>-dlq` dead-letter queue each consumer derives in code. The names come
 from the producers'/consumers' `@Value` defaults and `*Properties` fields, not
 from an auto-created wildcard.
@@ -42,10 +42,10 @@ safe; the ordering constraint is only "at least once, before first boot."
 
 ## PARTITIONS=6 — align the script with the broker and the detection contract
 
-The script defaults `PARTITIONS=3`, but the broker default
-(`infra/docker-compose.yml`, `KAFKA_NUM_PARTITIONS=6`) and the distributed
-correctness contract want **six partitions across three Detection instances**
-(see [detection-state-sharding.md](../detection-state-sharding.md)). Create the
+The script defaults `PARTITIONS=6` (and `DETECTION_PARTITIONS=6`), matching the
+broker default (`infra/docker-compose.yml`, `KAFKA_NUM_PARTITIONS=6`) and the
+distributed correctness contract, which wants **six partitions across three Detection
+instances** (see [detection-state-sharding.md](../detection-state-sharding.md)). Create the
 topics at six:
 
 ```bash

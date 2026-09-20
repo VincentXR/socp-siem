@@ -1,8 +1,8 @@
 # SOCP SOAR 设计书
 
 > 状态：当前架构与验收基线（Current Architecture and Acceptance Baseline）
-> 版本：1.1
-> 日期：2026-09-20
+> 版本：1.2
+> 日期：2026-09-21
 > 适用范围：`services/soar-web`、`frontend/apps/workbench` 及其与 Alert、Incident、Search、Asset、HIPS、Threat、Notify 的集成
 > 读者：后端、前端、测试、安全与平台工程师，以及负责后续实现的 coding agent
 
@@ -337,7 +337,7 @@ P0 不允许任意回边。循环只能通过结构化 `FOREACH` 表达；P1 的
 
 ### 6.5 模板与内容包
 
-P0 随仓库交付第 17.5 节的五个黄金场景模板。模板以版本化 JSON 资源保存，不在应用启动时用临时代码硬编码；每个模板包含说明、适用事件类型、所需连接器、预期输入、风险、ATT&CK 标签和测试样例。安装模板只会创建租户草稿，绝不自动发布、启用规则或执行动作。
+P0 随仓库交付第 17.1 节的五个黄金场景模板。模板以版本化 JSON 资源保存，不在应用启动时用临时代码硬编码；每个模板包含说明、适用事件类型、所需连接器、预期输入、风险、ATT&CK 标签和测试样例。安装模板只会创建租户草稿，绝不自动发布、启用规则或执行动作。
 
 内部 JSON 导入必须经过与 UI 发布相同的 schema、引用、风险和权限校验，不能成为绕过入口。P1 增加 CACAO 2.0 映射：能无损映射的核心节点直接转换，不能映射的扩展保留在 namespaced extension 中并阻止自动发布；导入报告逐项说明降级或不支持内容。
 
@@ -696,119 +696,21 @@ Connection 保存：名称、connectorId、非敏感 `config_json`、`secret_ref
 
 不要修改已经发布的早期 Flyway 迁移。迁移测试必须同时在 H2 和 PostgreSQL 执行，锁、唯一 claim 和并发审批只以 PostgreSQL 测试为准。
 
-## 12. HTTP API 设计
+## 12. HTTP API 契约
 
-### 12.1 通用约束
+SOAR 的机器可读 API 真源是 [soar-openapi.yaml](soar-openapi.yaml)，通用兼容
+规则由 [api-contract.md](api-contract.md) 统一定义。本设计不复制 endpoint
+清单、DTO 字段或稳定错误码，以免实现、OpenAPI 和说明文档形成三套事实源。
 
-- 保持服务 context path `/soar-web`，SOAR 控制面统一使用单一的 `/api` 路径；所有请求都返回统一的 `ApiResult<T>`；
-- 所有 JSON 响应使用 `ApiResult<T>`；
-- 列表统一 `{page,size,total,items}`，`size` 最大 200；
-- 创建返回 `201`；异步触发返回 `202`；乐观锁冲突返回 `409`；
-- 更新使用 `If-Match`/`rowVersion`；重复幂等请求返回原资源；
-- ID 使用 UUID/UUIDv7，不使用短随机 ID；
-- OpenAPI 明确权限、错误、分页、状态 enum 和示例；
-- 错误响应不泄露表达式堆栈、凭据、内部地址或远端原始 body。
+SOAR HTTP 边界仍必须满足以下架构约束：
 
-手工运行请求与接受响应的最小契约：
-
-```http
-POST /soar-web/api/runs
-{
-  "requestId": "client-generated-uuid",
-  "playbookVersionId": "published-version-uuid",
-  "subject": { "type": "alert", "id": "alert-uuid" },
-  "inputs": { "reason": "analyst requested enrichment" }
-}
-```
-
-```http
-HTTP/1.1 202 Accepted
-{
-  "code": 0,
-  "message": "ok",
-  "data": {
-    "runId": "run-uuid",
-    "status": "QUEUED",
-    "duplicate": false,
-    "links": { "self": "/soar-web/api/runs/run-uuid" }
-  },
-  "traceId": "...",
-  "timestamp": "2026-09-03T08:00:00Z"
-}
-```
-
-同一租户重复提交相同 `requestId` 必须返回同一个 Run 并令 `duplicate=true`。Actor、tenant 和权限一律来自认证上下文，不能接受 body 覆盖。
-
-### 12.2 Playbook 与版本
-
-| Method | Path | 用途 |
-|---|---|---|
-| GET | `/api/playbooks` | 分页搜索，按 status/tag/owner/risk 过滤 |
-| POST | `/api/playbooks` | 创建元数据和空草稿 |
-| GET | `/api/playbooks/{id}` | 元数据、最新发布版、草稿摘要 |
-| PATCH | `/api/playbooks/{id}` | 更新名称、描述、owner、tag、archive |
-| POST | `/api/playbooks/{id}/drafts` | 从空白或指定版本克隆草稿 |
-| GET | `/api/playbooks/{id}/versions` | 版本列表 |
-| GET | `/api/playbooks/{id}/versions/{version}` | 定义和 layout |
-| PUT | `/api/playbooks/{id}/versions/{version}` | 保存草稿，乐观锁 |
-| POST | `/api/playbooks/{id}/versions/{version}/validate` | 静态校验、风险和连接检查 |
-| POST | `/api/playbooks/{id}/versions/{version}/publish` | 冻结并发布 |
-| POST | `/api/playbooks/{id}/versions/{version}/deprecate` | 禁止新绑定 |
-| POST | `/api/playbooks/import` | 导入内部 JSON 草稿 |
-| GET | `/api/playbooks/{id}/versions/{version}/export` | 导出内部 JSON；P1 支持 CACAO |
-
-### 12.3 Automation Rule
-
-| Method | Path | 用途 |
-|---|---|---|
-| GET/POST | `/api/automation-rules` | 分页列表/创建 |
-| GET/PATCH | `/api/automation-rules/{id}` | 查看/更新并增加 revision |
-| POST | `/api/automation-rules/{id}/enable` | 启用前重新校验引用和连接 |
-| POST | `/api/automation-rules/{id}/disable` | 停用 |
-| POST | `/api/automation-rules/test` | 用样例事件解释匹配结果，不执行 |
-| POST | `/api/events/evaluate` | 服务身份事件入口，返回 receipts/runs |
-
-服务事件统一调用 `POST /api/events/evaluate`，先规范化为 `alert.created` envelope，再进入同一 application service。
-
-### 12.4 Run、节点和人工交互
-
-| Method | Path | 用途 |
-|---|---|---|
-| POST | `/api/runs` | 手工执行已发布版本，返回 202 |
-| GET | `/api/runs` | 按状态、剧本、来源、时间、发起人分页筛选 |
-| GET | `/api/runs/{id}` | Run 摘要及当前等待项 |
-| GET | `/api/runs/{id}/nodes` | 节点投影和 attempts |
-| GET | `/api/runs/{id}/events` | 游标分页运行事件 |
-| GET | `/api/runs/{id}/stream` | SSE；支持 `Last-Event-ID` 续传 |
-| GET | `/api/runs/{id}/artifacts` | 运行产物元数据列表（按分类和保留策略返回） |
-| POST | `/api/runs/{id}/artifacts` | 上传受限 JSON 产物；绑定节点、媒体类型和数据分类，返回 201 |
-| GET | `/api/artifacts/{id}/content` | 读取经过脱敏和权限检查的产物内容 |
-| POST | `/api/runs/{id}/cancel` | 请求协作式取消，要求 reason |
-| POST | `/api/runs/{id}/retry` | 安全 retry，先返回可续跑分析 |
-| POST | `/api/runs/{id}/rerun` | 明确的新副作用执行，要求确认和 reason |
-| POST | `/api/node-runs/{id}/resolve-unknown` | 提交外部证据并确认未知动作结果 |
-| GET | `/api/approvals` | 待我审批/全部审批分页列表 |
-| POST | `/api/approvals/{id}/decisions` | approve/reject，幂等 decision |
-| GET | `/api/manual-tasks` | 待办分页列表 |
-| POST | `/api/manual-tasks/{id}/complete` | 按 form schema 提交输入 |
-
-### 12.5 Connector 与运维
-
-| Method | Path | 用途 |
-|---|---|---|
-| GET | `/api/connectors` | 连接器和动作目录 |
-| GET | `/api/actions` | 按分类、风险、输入类型搜索动作 |
-| GET/POST | `/api/connections` | 租户连接列表/创建 |
-| GET/PATCH/DELETE | `/api/connections/{id}` | 查看、更新、软删除 |
-| POST | `/api/connections/{id}/test` | 连通性与权限测试 |
-| GET | `/api/operations/dead-dispatches` | DEAD dispatch/signal 列表 |
-| POST | `/api/operations/dead-dispatches/{id}/requeue` | 审计后重放 |
-| POST | `/api/operations/dead-dispatches/{id}/discard` | 填原因后丢弃 |
-| GET | `/api/stats` | 运行、成功率、时延、自动化节省摘要 |
-
-### 12.6 稳定错误码
-
-至少提供：`SOAR_PLAYBOOK_NOT_FOUND`、`SOAR_VERSION_CONFLICT`、`SOAR_DEFINITION_INVALID`、`SOAR_VERSION_IMMUTABLE`、`SOAR_ACTION_NOT_FOUND`、`SOAR_CONNECTION_UNAVAILABLE`、`SOAR_TRIGGER_DUPLICATE`、`SOAR_RUN_NOT_CANCELLABLE`、`SOAR_RUN_NOT_RESUMABLE`、`SOAR_APPROVAL_EXPIRED`、`SOAR_SELF_APPROVAL_DENIED`、`SOAR_ACTION_RESULT_UNKNOWN`、`SOAR_SECRET_RESOLUTION_FAILED`、`SOAR_EGRESS_DENIED`、`SOAR_CAPACITY_EXCEEDED`。
+- 保持服务 context path `/soar-web`，控制面只提供一套 `/api` surface；
+- JSON 使用 `ApiResult<T>`，列表使用受限分页，异步触发返回 `202`；
+- 草稿更新使用 `If-Match`/`rowVersion`，重复幂等请求返回原资源；
+- actor、tenant 和权限来自认证上下文，禁止请求正文覆盖；
+- 同一租户重复提交相同 `requestId` 返回同一个 Run；
+- 错误不泄露表达式堆栈、凭据、内部地址或远端原始 body；
+- OpenAPI 快照、生成 SDK 和运行时 `/v3/api-docs` 必须通过一致性门禁。
 
 ## 13. 权限、安全与审计
 
@@ -965,174 +867,38 @@ HTTP/1.1 202 Accepted
 | 非敏感日志/History 中 secret 泄漏 | 0 |
 
 
-## 17. 测试与验收
+## 17. 验收边界
 
-### 17.1 单元测试
+测试命令、执行频率和证据含义分别由 [testing.md](testing.md) 和
+[validation-matrix.md](validation-matrix.md) 维护。本设计只保留 SOAR
+特有的验收边界：
 
-- Graph schema/编译、可达性、环、端口、parallel/join、foreach bound；
-- CEL 类型、超时、非法函数、恶意输入和数据路径；
-- Playbook/Version/Run/Node/Approval 全状态机；
-- risk policy、self-approval、target scope；
-- idempotency key 稳定性与 retry/rerun 差异；
-- redaction、payload limit、SSRF、redirect/DNS rebinding；
-- 每个 Connector 的 schema、错误映射、回执、reconcile 和 compensate。
+- `build/verify-soar.py` 校验定义、控制面、执行安全和结构预算；
+- PostgreSQL/Temporal 集成测试覆盖迁移、并发 claim、恢复、replay 和
+  History 兼容；
+- API 与浏览器测试覆盖权限、跨租户拒绝、发布和人工交互；
+- live 验证覆盖真实 PostgreSQL/Temporal、重复事件和多实例 capacity
+  fence；
+- secret、SSRF、表达式和未知副作用必须有负例；
+- reference adapter 只能证明契约兼容，不能写成真实厂商认证。
 
-### 17.2 PostgreSQL 集成测试
+### 17.1 端到端黄金场景
 
-- Flyway 从最早迁移升至最新；
-- 每张表的 tenant 隔离/RLS 负例；
-- 并发创建 Trigger Receipt 只产生一个 Run；
-- dispatch/signal claim、stale claim recovery、DEAD/requeue；
-- 并发审批票、防自批、过期和重复提交；
-- 乐观锁保存草稿冲突；
-- Run/Node/Event 分页索引计划与 retention。
-
-### 17.3 Temporal 集成与 replay 测试
-
-- 每种节点和分支组合；
-- Worker 在 Action 前、远端成功后本地写回前、等待审批时重启；
-- Temporal 暂停时 202 后排队，恢复后只启动一次；
-- Signal 重复、乱序、过期及 Workflow 已关闭；
-- Activity retry、unknown、reconcile、cancel、timer、child workflow；
-- 对保存的 History 做 replay，证明新 Worker 兼容旧运行。
-
-### 17.4 API/安全测试
-
-- 每个 endpoint 的正向、401、403、跨租户 404/拒绝、验证错误、409；
-- 普通用户不能调用 service-only event 入口；服务身份不能调用用户管理接口；
-- 所有 mutation 有审计成功/失败记录；
-- 密钥不出现在 API、OpenAPI example、日志、审计、DB snapshot、Temporal History；
-- 通用 HTTP 的 metadata IP、私网、redirect、内嵌 credential 和 header 转发攻击；
-- 表达式注入、模板注入、超大图、深层 JSON、压缩炸弹、恶意 artifact。
-
-### 17.5 端到端黄金场景
-
-至少固化五条可执行剧本：
+验收至少覆盖五条可执行剧本：
 
 1. **高危 IOC 告警**：提取 IOC → TI 查询 → 资产富化 → 建案 → 通知；
 2. **恶意终端**：查询终端 → 审批 → 隔离 → 验证 → 更新案件时间线；
 3. **凭据泄露**：用户/资产富化 → 人工确认 → 通知身份团队 → 案件任务；
 4. **误报路径**：条件不满足 → 给告警加 note/tag → 正常结束，不执行遏制；
-5. **连接器不确定结果**：远端超时 → reconcile 失败 → ACTION_UNKNOWN → 人工确认 → 继续。
+5. **连接器不确定结果**：远端超时 → reconcile 失败 →
+   `ACTION_UNKNOWN` → 人工确认 → 继续。
 
-每条场景验证 UI、API、数据库、Temporal、审计、trace 和业务副作用 receipt，而不是只判断 HTTP 200。
+每条场景必须验证持久状态、审计、trace 和业务副作用 receipt，不能只
+判断 HTTP 200 或界面状态。
 
-### 17.6 必跑命令
+## 18. 数据整理与兼容边界
 
-实现完成后至少通过：
-
-```bash
-bash build/mvnw.sh -pl services/soar-web -am test -Dsurefire.failIfNoSpecifiedTests=false
-bash build/mvnw.sh test -Dsurefire.failIfNoSpecifiedTests=false
-cd frontend && corepack pnpm build
-cd frontend/apps/workbench && pnpm test
-cd frontend/apps/workbench && pnpm verify
-python build/verify-soar.py
-python build/verify-full.py
-python build/failure-tests.py
-```
-
-新增 `build/verify-soar.py` 作为 P0 端到端验收入口；若依赖真实厂商，测试环境使用契约一致的 reference adapter，并在报告中明确标注，不能伪装成厂商认证。
-
-## 18. 历史实施顺序
-
-以下阶段记录本基线形成时采用的实施顺序，不是当前 backlog 或完成度看板。当前能力与准入状态以本文件第 2 节、`maturity-matrix.md`、迁移、OpenAPI 和可执行验证为准；后续变更仍应保持小步、可运行，禁止同时重写所有层。
-
-### 阶段 0：契约冻结与测试脚手架
-
-交付：
-
-- 把本设计中的状态、JSON schema、API DTO、错误码形成测试；
-- 为现有 API 和 golden demo 建契约快照；
-- PostgreSQL + Temporal + WireMock 集成测试 profile；
-- secret leak 扫描和 Temporal History replay 测试工具。
-
-退出条件：旧测试全绿，新 P0 测试可先红但均有明确归属。
-
-### 阶段 1：SOAR 控制面
-
-交付：
-
-- V6 migration，Playbook/Version aggregate、Repository、CRUD、乐观锁；
-- Definition schema、compiler、validator、CEL 封装；
-- Action Catalog 的只读 descriptor，不执行动作；
-- 发布不可变和风险摘要；
-- 旧 Playbook 导入器。
-
-退出条件：可以通过 API 创建图定义、校验、发布、克隆版本；无执行能力也不能绕过发布规则。
-
-### 阶段 2：持久异步运行内核
-
-交付：
-
-- V7/V8 migration；receipt、run、node、attempt、event、dispatch outbox；
-- `202` 手工运行和事件入口；
-- Generic Temporal Workflow；START/END/ACTION/CONDITION/SWITCH/SET_VARIABLE；
-- 运行列表/详情/事件、取消、指标和 health；
-- 移除生产进程内副作用回退。
-
-退出条件：重启/重复投递/Temporal 短时故障下不丢已接受运行，节点状态可解释。
-
-### 阶段 3：连接器与安全动作
-
-交付：
-
-- V9 migration、Connector SDK、Connection/SecretResolver、test connection；
-- SOCP Alert/Incident/Search/Asset/Threat/Notify 内置动作；
-- 受限 HTTP connector；
-- endpoint/firewall reference adapter contract；
-- idempotency、receipt、reconcile、unknown、redaction 和 SSRF 测试。
-
-退出条件：黄金场景 1 可真实闭环；高风险动作未审批绝不调用远端。
-
-### 阶段 4：完整控制流和人工协作
-
-交付：
-
-- PARALLEL/JOIN/FOREACH/DELAY/SUB_PLAYBOOK；
-- V10 migration、Approval/Decision/Manual Task/Signal Outbox；
-- 风险策略、拒绝/过期分支、self-approval 防护；
-- retry/rerun/resolve unknown。
-
-退出条件：黄金场景 2~5、Signal 并发与 Worker replay 测试通过。
-
-### 阶段 5：自动化规则与上下游事件
-
-交付：
-
-- Automation Rule CRUD/test/enable；
-- Alert 全量 envelope 转换；Incident transactional outbox；
-- typed event evaluator、priority、cooldown、groupBy、capacity、loop prevention；
-- 事件评估统一进入 `/events/evaluate`。
-
-退出条件：同一 at-least-once 事件只产生期望的 Run，抑制有 receipt，可解释命中原因。
-
-### 阶段 6：Workbench
-
-交付：
-
-- Playbooks、Rules、Runs、Approvals/Tasks、Connections 五个页面；
-- Vue Flow 编辑器、schema 表单、数据选择器、校验、dry-run、发布；
-- Run 图/时间线/SSE；
-- i18n、权限、可访问性、单测和 Playwright 场景。
-
-退出条件：分析员不借助 curl 即可完成五条黄金场景；视觉变更附截图或人工验证说明。
-
-### 阶段 7：迁移、容量和发布
-
-交付：
-
-- V11、retention/artifact；
-- 历史数据导入报告和逐租户上线记录；
-- chaos、capacity、security 报告；
-- OpenAPI、运行手册、告警规则和 dashboard；
-- prod profile fail-fast 与 Worker 安全部署说明。
-
-退出条件：本设计 P0 DoD 全部通过，历史适配逻辑无流量后再清理。
-
-## 19. 数据整理与兼容边界
-
-### 19.1 历史数据处理
+### 18.1 历史数据处理
 
 - 保留已经发布的 Flyway 迁移文件和编号；它们记录数据库演进，不是 SOAR 产品版本。
 - 历史 t_playbook 数据导入为 LEGACY_IMPORTED 草稿，线性 action 映射为 ACTION 节点。
@@ -1140,7 +906,7 @@ python build/failure-tests.py
 - 导入默认不发布、不创建 Automation Rule，管理员逐项校验并保留迁移报告。
 - 历史 enabled playbook 完成导入、校验、发布和规则绑定后，统一由 SOAR durable path 执行。
 
-### 19.2 API 边界
+### 18.2 API 边界
 
 - SOAR 只提供一套 /api/... HTTP surface；Playbook、Run、审批、人工任务、连接和事件都通过这套控制面访问。
 - Playbook 的 revision 仍然是业务对象的生命周期概念，用于草稿、发布、回滚和审计，不表示 SOAR 产品版本。
@@ -1148,7 +914,7 @@ python build/failure-tests.py
 - SoarClient 调用 /api/events/evaluate；Alert Web 的事件统一规范化后进入同一个 evaluator。
 - 历史数据可通过导入报告和只读投影核对，不能重新引入第二套执行语义。
 
-### 19.2.1 服务内职责拆分
+### 18.2.1 服务内职责拆分
 
 - `SoarService` 保留租户边界、事务和命令编排；查询与响应投影集中在
   `SoarQueryService`，避免读模型和写模型继续互相膨胀。
@@ -1161,7 +927,7 @@ python build/failure-tests.py
   `SoarAutomationRuleMatcher` 统一实现。所有组件均为同一服务内的纯协作者，
   不改变 HTTP、数据库或 Temporal 契约。
 
-### 19.3 Runtime 配置
+### 18.3 Runtime 配置
 
 SOAR 使用以下无版本运行配置：
 
@@ -1179,29 +945,14 @@ SOCP_SOAR_TENANT_ALLOWLIST
 
 execution-tenant-allowlist 为空表示所有租户；非空时只允许列出的租户进入 durable execution。暂停执行只停止新的 dispatch/signal admission，已接受运行仍保留在持久化队列中，等待恢复。
 
-## 20. P0 Definition of Done
+## 19. 当前状态与准入
 
-以下全部满足才能称为“SOAR 达到主流核心基线”：
+仓库能力和准入状态以 [maturity-matrix.md](maturity-matrix.md)、OpenAPI、
+迁移以及当前提交的可执行验证为准，不在设计文档中维护完成度勾选表。
+真实厂商认证、目标环境 HA、容量、备份恢复、密钥轮换和 SLO 仍需部署侧
+证据；reference adapter 或单节点 CI 结果不能替代这些验收。
 
-- [ ] 剧本是版本化图定义，不再以字符串列表作为主模型；
-- [ ] 发布版本不可变，草稿有乐观锁、校验、风险摘要和审计；
-- [ ] Automation Rule 与 Playbook 解耦，typed event/CEL 匹配可解释；
-- [ ] P0 13 类节点都有单元、Temporal 集成和 UI 支持；
-- [ ] 执行 API 异步返回 202，所有已接受运行可恢复；
-- [ ] Run/Node/Attempt/Event 可分页查询并在 UI 排障；
-- [ ] 连接器有 schema、Connection、secret ref、健康和回执；
-- [ ] 至少六个 SOCP 内置连接器形成真实调查/案件/通知闭环；
-- [ ] 高风险动作逐节点审批、防自批、拒绝/过期可控；
-- [ ] unknown、reconcile、compensate、cancel、retry/rerun 语义清晰；
-- [ ] prod 不执行 simulation 或进程内 fallback；
-- [ ] tenant、RBAC、SSRF、表达式、secret redaction 负例全绿；
-- [ ] 告警和案件事件 at-least-once 重放不会重复创建 Run；
-- [ ] 五条黄金场景通过且保留业务回执、审计和 trace 证据；
-- [ ] Maven、前端、PostgreSQL、Temporal replay、chaos 和容量门禁通过；
-- [ ] 文档、OpenAPI、运维手册、指标 dashboard 和告警规则齐备；
-- [ ] 真实厂商动作只有经过目标环境认证后才标记 `PRODUCTION_READY`。
-
-## 21. 实现约束清单
+## 20. 实现约束清单
 
 这是给后续 agent 的硬约束：
 
@@ -1218,7 +969,7 @@ execution-tenant-allowlist 为空表示所有租户；非空时只允许列出�
 11. 不为追求兼容维护两套长期执行语义；legacy 只能是有截止期的适配层。
 12. 每一阶段先补失败测试，再实现；提交保持 Conventional Commit 风格和单一职责。
 
-## 22. 参考资料
+## 21. 参考资料
 
 - [OASIS CACAO Security Playbooks v2.0](https://docs.oasis-open.org/cacao/security-playbooks/v2.0/security-playbooks-v2.0.html)：标准化 playbook、workflow、step、command、agent/target、版本和签名概念。
 - [Microsoft Sentinel：Create and manage playbooks](https://learn.microsoft.com/en-us/azure/sentinel/automation/create-playbooks)：incident/alert/entity 触发、自动/手工运行和运行历史。

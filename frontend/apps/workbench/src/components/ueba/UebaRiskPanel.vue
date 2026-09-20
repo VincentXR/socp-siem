@@ -17,6 +17,7 @@ import { onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import type { ECharts } from 'echarts/core'
 import { loadEcharts } from '../../lib/echarts'
 import SevBadge from '../SevBadge.vue'
+import RowActivate from '../RowActivate.vue'
 import type { RiskEntity, RiskSummary } from '../../api'
 import { useI18n } from '../../composables/useI18n'
 
@@ -111,7 +112,7 @@ onUnmounted(() => {
             </el-table-column>
             <el-table-column :label="t('ueba.entity')" min-width="150" show-overflow-tooltip>
               <template #default="{ row }">
-                <span class="mono">{{ row.entity }}</span>
+                <RowActivate class="mono" :aria-label="row.entity" @activate="emit('select', row as RiskEntity)">{{ row.entity }}</RowActivate>
                 <el-tag v-if="row.critical" size="small" type="danger" effect="dark" style="margin-left:6px">{{ t('ueba.coreAsset') }}</el-tag>
               </template>
             </el-table-column>

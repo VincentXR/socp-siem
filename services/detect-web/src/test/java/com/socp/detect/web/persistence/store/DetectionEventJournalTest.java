@@ -6,6 +6,7 @@ import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.rule.engine.DetectionResult;
+import com.socp.rule.partition.DetectionDelivery;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -32,6 +33,8 @@ import static org.mockito.Mockito.when;
 
 class DetectionEventJournalTest {
 
+    private static final String INPUT_TOPIC = "socp-events";
+
     private DetectionEventRepository repository;
     private DetectionEventJournal journal;
 
@@ -50,7 +53,7 @@ class DetectionEventJournalTest {
     @Test
     void claimsNewEventsAndReturnsExistingLifecycleState() {
         SecurityEvent event = event("event-1", "tenant-a", Instant.now(), Map.of("message", "login"));
-        when(repository.findByTenantIdAndSourceEventId("tenant-a", "event-1"))
+        when(repository.findByTenantIdAndDeliveryId("tenant-a", "event-1"))
                 .thenReturn(Optional.empty());
 
         assertThat(journal.claim(event, 3, 41L, "tenant-a|host|h1"))
@@ -62,9 +65,12 @@ class DetectionEventJournalTest {
         assertThat(saved.getValue().getKafkaPartition()).isEqualTo(3);
         assertThat(saved.getValue().getKafkaOffset()).isEqualTo(41L);
         assertThat(saved.getValue().getStatus()).isEqualTo(DetectionEventStatus.PENDING.name());
+        // Canonical events stay claim-compatible: the delivery id is the id.
+        assertThat(saved.getValue().getDeliveryId()).isEqualTo("event-1");
+        assertThat(saved.getValue().getSourceEventId()).isEqualTo("event-1");
 
         DetectionEventEntity existing = saved.getValue();
-        when(repository.findByTenantIdAndSourceEventId("tenant-a", "event-1"))
+        when(repository.findByTenantIdAndDeliveryId("tenant-a", "event-1"))
                 .thenReturn(Optional.of(existing));
         assertThat(journal.claim(event)).isEqualTo(DetectionEventClaim.PENDING);
 
@@ -72,6 +78,39 @@ class DetectionEventJournalTest {
         assertThat(journal.claim(event)).isEqualTo(DetectionEventClaim.COMPLETED);
         existing.setStatus(DetectionEventStatus.DEAD_LETTERED.name());
         assertThat(journal.claim(event)).isEqualTo(DetectionEventClaim.DEAD_LETTERED);
+    }
+
+    @Test
+    void routedDeliveriesOfOneSourceEventClaimIndependently() {
+        // The journal must never dedupe by tenant+sourceEventId alone: the same
+        // source delivered under two route dimensions is two executions.
+        SecurityEvent userCopy = routed("event-src", "tenant-a", DetectionDelivery.Kind.STATEFUL,
+                "user", "alice", "route-v1");
+        SecurityEvent hostCopy = routed("event-src", "tenant-a", DetectionDelivery.Kind.STATEFUL,
+                "host", "h1", "route-v1");
+        String userDelivery = DetectionDelivery.deliveryId(userCopy);
+        String hostDelivery = DetectionDelivery.deliveryId(hostCopy);
+        assertThat(userDelivery).isNotEqualTo(hostDelivery);
+
+        when(repository.findByTenantIdAndDeliveryId("tenant-a", userDelivery))
+                .thenReturn(Optional.empty());
+        when(repository.findByTenantIdAndDeliveryId("tenant-a", hostDelivery))
+                .thenReturn(Optional.empty());
+
+        assertThat(journal.claim(userCopy, INPUT_TOPIC, 1, 10L, "tenant-a|user|alice"))
+                .isEqualTo(DetectionEventClaim.NEW);
+        assertThat(journal.claim(hostCopy, INPUT_TOPIC, 2, 20L, "tenant-a|host|h1"))
+                .isEqualTo(DetectionEventClaim.NEW);
+
+        ArgumentCaptor<DetectionEventEntity> saved = ArgumentCaptor.forClass(DetectionEventEntity.class);
+        verify(repository, org.mockito.Mockito.times(2)).saveAndFlush(saved.capture());
+        List<DetectionEventEntity> rows = saved.getAllValues();
+        assertThat(rows).extracting(DetectionEventEntity::getDeliveryId)
+                .containsExactly(userDelivery, hostDelivery);
+        assertThat(rows).allSatisfy(row -> {
+            assertThat(row.getSourceEventId()).isEqualTo("event-src");
+            assertThat(row.getDeliveryTopic()).isEqualTo(INPUT_TOPIC);
+        });
     }
 
     @Test
@@ -85,7 +124,7 @@ class DetectionEventJournalTest {
                 .hasMessageContaining("tenant");
 
         SecurityEvent event = event("event-3", "tenant-a", null, Map.of());
-        when(repository.findByTenantIdAndSourceEventId("tenant-a", "event-3"))
+        when(repository.findByTenantIdAndDeliveryId("tenant-a", "event-3"))
                 .thenReturn(Optional.empty());
         when(repository.saveAndFlush(any(DetectionEventEntity.class)))
                 .thenThrow(new RuntimeException("database unavailable"));
@@ -98,7 +137,7 @@ class DetectionEventJournalTest {
     @Test
     void marksCompletedAndDeadLetteredWithoutOverwritingTerminalRows() {
         DetectionEventEntity row = row("event-4", "tenant-a", "{}");
-        when(repository.findByTenantIdAndSourceEventId("tenant-a", "event-4"))
+        when(repository.findByTenantIdAndDeliveryId("tenant-a", "event-4"))
                 .thenReturn(Optional.of(row));
 
         journal.markCompleted("event-4");
@@ -124,11 +163,11 @@ class DetectionEventJournalTest {
     @Test
     void storesTheCalculationSummaryWhenCompletingAZeroAlertEvent() {
         DetectionEventEntity row = row("event-14", "tenant-a", "{}");
-        when(repository.findByTenantIdAndSourceEventId("tenant-a", "event-14"))
+        when(repository.findByTenantIdAndDeliveryId("tenant-a", "event-14"))
                 .thenReturn(Optional.of(row));
         SecurityEvent event = event("event-14", "tenant-a", Instant.now(), Map.of());
         DetectionResult result = new DetectionResult(event,
-                new DetectionResult.InputPosition("socp-events", 4, 9L),
+                new DetectionResult.InputPosition(INPUT_TOPIC, 4, 9L),
                 Map.of("RULE-1", "v1"), List.of(), List.of(), List.of(),
                 DetectionResult.SuppressionDecision.none(List.of(), List.of()),
                 event.scopedId());
@@ -136,13 +175,13 @@ class DetectionEventJournalTest {
         journal.markCompleted(result);
 
         assertThat(row.getStatus()).isEqualTo(DetectionEventStatus.COMPLETED.name());
-        assertThat(row.getResultJson()).contains("event-14", "socp-events", "RULE-1");
+        assertThat(row.getResultJson()).contains("event-14", INPUT_TOPIC, "RULE-1");
         verify(repository).saveAndFlush(row);
     }
 
     @Test
     void recordsDeadLetterRowsIdempotentlyAndRequiresTenantContext() {
-        when(repository.findByTenantIdAndSourceEventId("tenant-a", "event-5"))
+        when(repository.findByTenantIdAndDeliveryId("tenant-a", "event-5"))
                 .thenReturn(Optional.empty());
         journal.recordDeadLettered("event-5", "raw event", 2, 8L, "bad schema");
 
@@ -153,7 +192,7 @@ class DetectionEventJournalTest {
         assertThat(captured.getValue().getKafkaOffset()).isEqualTo(8L);
 
         DetectionEventEntity existing = row("event-6", "tenant-a", "{}");
-        when(repository.findByTenantIdAndSourceEventId("tenant-a", "event-6"))
+        when(repository.findByTenantIdAndDeliveryId("tenant-a", "event-6"))
                 .thenReturn(Optional.of(existing));
         journal.recordDeadLettered("event-6", "ignored", 1, 2L, "duplicate");
         assertThat(existing.getStatusReason()).isEqualTo("duplicate");
@@ -168,7 +207,7 @@ class DetectionEventJournalTest {
     void completedRowsAreNeverRewrittenAsDeadLettered() {
         DetectionEventEntity completed = row("event-15", "tenant-a", "{}");
         completed.setStatus(DetectionEventStatus.COMPLETED.name());
-        when(repository.findByTenantIdAndSourceEventId("tenant-a", "event-15"))
+        when(repository.findByTenantIdAndDeliveryId("tenant-a", "event-15"))
                 .thenReturn(Optional.of(completed));
 
         journal.markDeadLettered("tenant-a", "event-15", "late hand-off from a revoked replica");
@@ -191,8 +230,8 @@ class DetectionEventJournalTest {
         DetectionEventEntity invalid = new DetectionEventEntity(
                 "tenant-a", "event-8", "auth", "host", "raw", "{}", "not-a-severity",
                 Instant.parse("2026-08-21T00:00:00Z"), 4, 8L, "tenant-a|host|host");
-        when(repository.findByTenantIdAndStatusAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
-                eq("tenant-a"), anyString(), any(Instant.class), any(Pageable.class)))
+        when(repository.findByTenantIdAndStatusAndDeliveryTopicAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
+                eq("tenant-a"), anyString(), eq(INPUT_TOPIC), any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(invalid, valid), List.of());
 
         List<SecurityEvent> restored = journal.recent(Duration.ofHours(1));
@@ -209,11 +248,12 @@ class DetectionEventJournalTest {
     @Test
     void replaysPendingRecordsAndExposesCountsAndTenantScopedRemoval() {
         DetectionEventEntity pending = row("event-9", "tenant-a", "{}");
-        when(repository.findByTenantIdAndStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
-                eq("tenant-a"), eq(DetectionEventStatus.PENDING.name()), eq(Set.of(4)),
-                any(Instant.class), any(Pageable.class)))
+        when(repository.findByTenantStatusTopicAndKafkaPartitionInAfter(
+                eq("tenant-a"), eq(DetectionEventStatus.PENDING.name()), eq(INPUT_TOPIC),
+                eq(Set.of(4)), any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(pending));
-        when(repository.countByTenantIdAndStatus("tenant-a", DetectionEventStatus.PENDING.name()))
+        when(repository.countByTenantIdAndStatusAndDeliveryTopic(
+                "tenant-a", DetectionEventStatus.PENDING.name(), INPUT_TOPIC))
                 .thenReturn(3L, 2L);
 
         List<PendingDetectionEvent> records = journal.pendingRecordsForPartitions(
@@ -227,7 +267,7 @@ class DetectionEventJournalTest {
         assertThat(journal.pendingCount()).isEqualTo(3L);
         assertThat(journal.pendingCount("tenant-a")).isEqualTo(2L);
 
-        when(repository.findByTenantIdAndSourceEventId("tenant-a", "event-9"))
+        when(repository.findByTenantIdAndDeliveryId("tenant-a", "event-9"))
                 .thenReturn(Optional.of(pending));
         journal.remove("event-9");
         verify(repository).delete(pending);
@@ -240,12 +280,12 @@ class DetectionEventJournalTest {
     @Test
     void pendingReplayPrefetchUsesOneBoundedFirstPage() {
         DetectionEventJournal bounded = new DetectionEventJournal(repository, "24h", 100,
-                "7d", "90d", 1_000, 10, 2);
+                "7d", "90d", 1_000, 10, 2, INPUT_TOPIC);
         DetectionEventEntity first = row("event-21", "tenant-a", "{}");
         DetectionEventEntity second = row("event-22", "tenant-a", "{}");
-        when(repository.findByTenantIdAndStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
-                eq("tenant-a"), eq(DetectionEventStatus.PENDING.name()), eq(Set.of(4)),
-                any(Instant.class), any(Pageable.class)))
+        when(repository.findByTenantStatusTopicAndKafkaPartitionInAfter(
+                eq("tenant-a"), eq(DetectionEventStatus.PENDING.name()), eq(INPUT_TOPIC),
+                eq(Set.of(4)), any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(first, second));
 
         List<PendingDetectionEvent> records = bounded.pendingRecordsForPartitions(
@@ -253,9 +293,9 @@ class DetectionEventJournalTest {
 
         assertThat(records).hasSize(2);
         ArgumentCaptor<Pageable> page = ArgumentCaptor.forClass(Pageable.class);
-        verify(repository).findByTenantIdAndStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
-                eq("tenant-a"), eq(DetectionEventStatus.PENDING.name()), eq(Set.of(4)),
-                any(Instant.class), page.capture());
+        verify(repository).findByTenantStatusTopicAndKafkaPartitionInAfter(
+                eq("tenant-a"), eq(DetectionEventStatus.PENDING.name()), eq(INPUT_TOPIC),
+                eq(Set.of(4)), any(Instant.class), page.capture());
         assertThat(page.getValue().getPageNumber()).isZero();
         assertThat(page.getValue().getPageSize()).isEqualTo(2);
     }
@@ -265,13 +305,14 @@ class DetectionEventJournalTest {
         DetectionEventEntity completed = row("event-10", "tenant-a", "{}");
         completed.setStatus(DetectionEventStatus.COMPLETED.name());
         DetectionEventEntity pending = row("event-11", "tenant-b", "{}");
-        when(repository.findByStatusAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
-                anyString(), any(Instant.class), any(Pageable.class)))
+        when(repository.findByStatusAndDeliveryTopicAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
+                anyString(), eq(INPUT_TOPIC), any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(completed));
-        when(repository.findByStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
-                anyString(), eq(Set.of(4)), any(Instant.class), any(Pageable.class)))
+        when(repository.findByStatusAndTopicAndKafkaPartitionInAfter(
+                anyString(), eq(INPUT_TOPIC), eq(Set.of(4)), any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(completed));
-        when(repository.countByStatus(DetectionEventStatus.PENDING.name())).thenReturn(4L);
+        when(repository.countByStatusAndDeliveryTopic(DetectionEventStatus.PENDING.name(), INPUT_TOPIC))
+                .thenReturn(4L);
 
         TenantContext.runAsSystem(() -> {
             assertThat(journal.recent(Duration.ofMinutes(5))).hasSize(1);
@@ -283,25 +324,26 @@ class DetectionEventJournalTest {
             assertThat(journal.pendingCount()).isEqualTo(4L);
         });
 
-        when(repository.findByStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
-                eq(DetectionEventStatus.PENDING.name()), eq(Set.of(4)), any(Instant.class), any(Pageable.class)))
+        when(repository.findByStatusAndTopicAndKafkaPartitionInAfter(
+                eq(DetectionEventStatus.PENDING.name()), eq(INPUT_TOPIC), eq(Set.of(4)),
+                any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(pending));
         TenantContext.runAsSystem(() -> {
             assertThat(journal.pendingForPartitions(Set.of(4), Duration.ofMinutes(5))).hasSize(1);
             assertThat(journal.pendingRecordsForPartitions(Set.of(4), Duration.ofMinutes(5)))
                     .singleElement().satisfies(record -> assertThat(record.event().tenantId()).isEqualTo("tenant-b"));
         });
-        verify(repository).countByStatus(DetectionEventStatus.PENDING.name());
+        verify(repository).countByStatusAndDeliveryTopic(DetectionEventStatus.PENDING.name(), INPUT_TOPIC);
     }
 
     @Test
     void replaysCheckpointRowsWithAndWithoutPartitionFilterAndSkipsInvalidArguments() {
         DetectionEventEntity valid = row("event-12", "tenant-a", "{}");
-        when(repository.findByTenantIdAndStatusAndCompletedAtAfterOrderByCompletedAt(
-                eq("tenant-a"), anyString(), any(Instant.class), any(Pageable.class)))
+        when(repository.findByTenantStatusTopicCompletedAfter(
+                eq("tenant-a"), anyString(), eq(INPUT_TOPIC), any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(valid));
-        when(repository.findByTenantIdAndStatusAndKafkaPartitionInAndCompletedAtAfterOrderByCompletedAt(
-                eq("tenant-a"), anyString(), eq(Set.of(2)), any(Instant.class), any(Pageable.class)))
+        when(repository.findByTenantStatusTopicPartitionsCompletedAfter(
+                eq("tenant-a"), anyString(), eq(INPUT_TOPIC), eq(Set.of(2)), any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(valid));
 
         List<List<SecurityEvent>> batches = new java.util.ArrayList<>();
@@ -325,8 +367,9 @@ class DetectionEventJournalTest {
         before.setStatus(DetectionEventStatus.COMPLETED.name());
         included.setStatus(DetectionEventStatus.COMPLETED.name());
         otherPartition.setStatus(DetectionEventStatus.COMPLETED.name());
-        when(repository.findByTenantIdAndStatusAndKafkaPartitionInOrderByKafkaPosition(
-                eq("tenant-a"), eq(DetectionEventStatus.COMPLETED.name()), eq(Set.of(4, 5)), any(Pageable.class)))
+        when(repository.findByTenantStatusTopicPartitionsOrderByKafkaPosition(
+                eq("tenant-a"), eq(DetectionEventStatus.COMPLETED.name()), eq(INPUT_TOPIC),
+                eq(Set.of(4, 5)), any(Pageable.class)))
                 .thenReturn(List.of(before, included, otherPartition));
 
         List<SecurityEvent> replayed = new java.util.ArrayList<>();
@@ -342,8 +385,8 @@ class DetectionEventJournalTest {
                 "0", "not-a-duration");
         assertThat(configured.retention()).isEqualTo(Duration.ofHours(24));
         DetectionEventEntity malformed = row("event-13", "tenant-a", "not-json");
-        when(repository.findByTenantIdAndStatusAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
-                eq("tenant-a"), anyString(), any(Instant.class), any(Pageable.class)))
+        when(repository.findByTenantIdAndStatusAndDeliveryTopicAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
+                eq("tenant-a"), anyString(), eq(INPUT_TOPIC), any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(malformed));
         assertThat(configured.recent(Duration.ZERO)).isEmpty();
     }
@@ -366,6 +409,24 @@ class DetectionEventJournalTest {
         Map<String, String> copy = new java.util.LinkedHashMap<>(fields);
         copy.put("tenant_id", tenant);
         return new SecurityEvent(id, timestamp, "auth", "host", "raw", copy, Severity.HIGH);
+    }
+
+    private static SecurityEvent routed(String sourceEventId, String tenant,
+                                        DetectionDelivery.Kind kind, String dimension,
+                                        String value, String routingVersion) {
+        String deliveryId = DetectionDelivery.deliveryId(tenant, sourceEventId,
+                DetectionDelivery.ROUTING_VERSION, kind, dimension, value);
+        Map<String, String> fields = new java.util.LinkedHashMap<>();
+        fields.put("tenant_id", tenant);
+        fields.put(DetectionDelivery.DELIVERY_ID_FIELD, deliveryId);
+        fields.put(DetectionDelivery.SOURCE_EVENT_ID_FIELD, sourceEventId);
+        fields.put(DetectionDelivery.KIND_FIELD, kind.name());
+        fields.put(DetectionDelivery.DIMENSION_FIELD, dimension);
+        fields.put(DetectionDelivery.VALUE_FIELD, value);
+        fields.put(DetectionDelivery.ROUTING_VERSION_FIELD, routingVersion);
+        fields.put(DetectionDelivery.SOURCE_TOPIC_FIELD, INPUT_TOPIC);
+        return new SecurityEvent(deliveryId, Instant.now(), "auth", "host", "raw",
+                fields, Severity.HIGH);
     }
 
     private static DetectionEventEntity row(String eventId, String tenant, String fields) {

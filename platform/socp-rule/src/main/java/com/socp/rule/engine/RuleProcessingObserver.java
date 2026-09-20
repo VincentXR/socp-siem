@@ -28,4 +28,13 @@ public interface RuleProcessingObserver {
     default void routingMismatched(SecurityEvent event, String ruleId,
                                    String declaredField, String eventRoutingField) {
     }
+
+    /**
+     * Wall-clock cost of evaluating one rule against one event, in nanoseconds.
+     * This is the regression signal behind the ReDoS/complexity budget: a rule
+     * that passes static validation but still dominates the worker thread shows
+     * up here as a slow-rule observation rather than only as a wedged engine.
+     */
+    default void ruleEvaluated(String ruleId, long nanos) {
+    }
 }

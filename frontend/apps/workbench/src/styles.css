@@ -1032,6 +1032,10 @@ body {
 /* Bottom-line focus ring for any generic role=button widget; :where() keeps this
    specificity below every dedicated rule so it never overrides an existing one. */
 :where([role='button']):focus-visible { outline: 2px solid var(--ns-accent); outline-offset: 2px; box-shadow: var(--ns-focus); }
+/* Keyboard-activatable <el-table> cell (RowActivate): keep the surrounding text
+   colour/size but signal the click affordance. The role=button focus ring above
+   already covers it, so only the cursor is added here. */
+.row-activate { cursor: pointer; color: inherit; }
 /* .soar-issue lives in SoarEditor's scoped styles (outline:none + low-contrast
    box-shadow over a translucent fill); strengthen it here with a solid outline. */
 .soar-issue:focus-visible { outline: 2px solid var(--ns-accent) !important; outline-offset: 2px; }

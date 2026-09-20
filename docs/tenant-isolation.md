@@ -41,6 +41,33 @@ tables, and should not need DDL privileges. Operators can apply
 the policy after all service schemas exist. Future seed/data migrations should
 run with the migration role or an explicit `SET socp.tenant_id='*'`.
 
+Because the script is a release step rather than a migration, layer 3 is opt-in
+per deployment and its coverage is asserted statically by
+[../build/verify-rls.py](../build/verify-rls.py): it replays the DDL of every
+Flyway location, requires every tenant-owned JPA entity to land on a real
+`tenant_id` column, and requires a written decision for every other table. The
+same file is the register of global/shared tables that have no database backstop
+at all: [../build/tenant-rls-exemptions.txt](../build/tenant-rls-exemptions.txt).
+The gate proves the repository contract; it cannot observe a live database, so a
+deployment that never ran `build/apply-tenant-rls.sh` still has only layers 1 and
+2. Verifying that is a release check on the target cluster, not a build check:
+
+```bash
+psql "$TARGET" -Atc "select c.relname
+  from pg_class c
+  join pg_namespace n on n.oid = c.relnamespace
+  join information_schema.columns col
+    on col.table_name = c.relname and col.table_schema = n.nspname
+   and col.column_name = 'tenant_id'
+ where n.nspname = 'public' and c.relkind = 'r'
+   and (not c.relrowsecurity or not c.relforcerowsecurity
+        or not exists (select 1 from pg_policies p
+                        where p.schemaname = n.nspname and p.tablename = c.relname
+                          and p.policyname = 'socp_tenant_isolation'))"
+# every row printed here is a tenant table whose database backstop is missing
+# any row printed here is a tenant table whose policy is missing
+```
+
 CI runs a real PostgreSQL proof when `SOCP_TESTCONTAINERS=true`; it verifies
 tenant-filtered reads, denied cross-tenant inserts, missing-scope fail-closed
 behavior, and the explicit system scope.

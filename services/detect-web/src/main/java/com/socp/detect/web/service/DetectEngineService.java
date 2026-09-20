@@ -975,6 +975,22 @@ public class DetectEngineService {
         return removed;
     }
 
+    public java.util.List<Map<String, Object>> listRuleRevisions(String id) {
+        return ruleService.listRevisions(id);
+    }
+
+    public java.util.List<Map<String, Object>> ruleContentConflicts() {
+        return ruleService.contentConflicts();
+    }
+
+    /** Rolls a rule back to a historical revision by re-applying it as a new head. */
+    @org.springframework.transaction.annotation.Transactional
+    public Map<String, Object> restoreRuleRevision(String id, long revision) {
+        Map<String, Object> restored = ruleService.restoreRevision(id, revision);
+        reloadAfterCommit();
+        return restored;
+    }
+
     private void reloadAfterCommit() {
         if (!org.springframework.transaction.support.TransactionSynchronizationManager
                 .isSynchronizationActive()) {

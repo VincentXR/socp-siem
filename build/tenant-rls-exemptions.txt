@@ -1,0 +1,16 @@
+# Exemption register for the PostgreSQL tenant row-level-security backstop.
+#
+# One line per table that lives in a service database but has NO tenant_id column, and
+# therefore cannot be covered by infra/postgres/tenant-rls.sql. Every tenant-owned table
+# (a table with tenant_id) must NOT appear here: the policy script discovers it and
+# installs `socp_tenant_isolation` on it. Adding a table without tenant_id, or adding a
+# tenant_id column to a table listed here, fails build/verify-rls.py until this register
+# is updated by a reviewer, so "isolation is application-layer only" is always a written
+# decision rather than an accident.
+#
+# Format: <module>/<table><TAB><reason the table is legitimately global>
+ai-assistant/t_qa	Seed question/answer knowledge base shipped with the service and shared by every tenant; it holds no tenant-owned rows, so there is nothing for a tenant policy to isolate.
+attack-web/t_tactic	ATT&CK tactic catalogue replicated from the public content pack and identical for every tenant; global read-only reference data with no per-tenant rows.
+attack-web/t_technique	ATT&CK technique catalogue replicated from the public content pack and identical for every tenant; global read-only reference data with no per-tenant rows.
+detect-web/t_detection_state_owner	Detection partition ownership and fencing leases keyed by topic/partition/shard. This is engine coordination state, not tenant content, and only the system-scoped lease path writes it, so a tenant predicate cannot express its access rule.
+soc-base/t_tenant	The tenant directory is the root of the tenant key space, so it cannot carry a tenant_id column. Reads are authorized by RBAC in the owning service; keep the endpoint's audience scoped, because RLS gives no backstop here.

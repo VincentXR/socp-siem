@@ -24,6 +24,19 @@ so sizing that window is what bounds rebuild cost. Snapshot rows are keyed by
 shard)`, so a generation whose offset vector does not cover every partition of
 its predecessor is rejected rather than partially advanced.
 
+The Kafka-position-ordered journal scans (the checkpoint-vector tail and the
+partition-bounded recent/PENDING replays) filter on `(tenant_id, status)` and
+order by `(kafka_partition, kafka_offset)`; the composite index added in Flyway
+`V23__detection_checkpoint_replay_index.sql` serves them in index order instead
+of fetching by one index and sorting by another. That migration is a plain
+`CREATE INDEX`: the in-Pod Flyway runner executes inside a migration transaction
+and cannot use `CONCURRENTLY`, so the build takes a brief write lock on the hot
+`t_detection_event` table. Operators applying V23 on a populated database should
+run it in a maintenance window and set a conservative `lock_timeout` on the
+migration datasource so a long-running writer cannot park the migration (and the
+rollout) behind an unbounded lock wait; the index build itself is short on a
+normal-sized tail.
+
 `socp.detect.state.shards` enables one to 256 in-process shards. Each event is
 routed with the same `tenantId + detectionRoutingField + detectionRoutingValue`
 hash used by the Kafka key, and every shard has its own serial rule engine and

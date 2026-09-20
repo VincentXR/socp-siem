@@ -5,6 +5,7 @@ import com.socp.soar.web.config.SoarRuntimeProperties;
 import com.socp.soar.web.config.TemporalProperties;
 import com.socp.soar.web.config.SoarArtifactProperties;
 import com.socp.soar.web.config.SoarSecretProperties;
+import com.socp.platform.starter.EnableSocpPlatformJpa;
 import com.socp.platform.starter.SocpPlatformAutoConfiguration;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -13,6 +14,7 @@ import org.springframework.context.annotation.Import;
 
 /** Playbook lifecycle and verified response-action execution service. */
 @SpringBootApplication(scanBasePackages = "com.socp.soar.web")
+@EnableSocpPlatformJpa
 @EnableConfigurationProperties({SoarActionConnectorProperties.class, SoarRuntimeProperties.class,
         TemporalProperties.class, SoarArtifactProperties.class, SoarSecretProperties.class})
 @Import(SocpPlatformAutoConfiguration.class)
