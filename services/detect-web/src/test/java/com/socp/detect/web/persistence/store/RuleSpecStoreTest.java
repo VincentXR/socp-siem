@@ -7,6 +7,7 @@ import com.socp.platform.error.exception.ApiException;
 import com.socp.platform.tenant.context.TenantContext;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -67,6 +68,101 @@ class RuleSpecStoreTest {
         new RuleSpecStore(repository);
 
         verify(repository, never()).save(any(RuleEntity.class));
+    }
+
+    @Test
+    void customizedPackagedRuleIsNotOverwrittenByANewerPack() {
+        RuleRepository repository = mock(RuleRepository.class);
+        RuleEntity customized = entity("AUTH-BRUTE", """
+                {"id":"AUTH-BRUTE","contentPack":"socp-core-detections",
+                 "contentVersion":"2026.08.19","contentCustomized":true,
+                 "status":"DISABLED","enabled":false}
+                """);
+        when(repository.countByTenantId("default")).thenReturn(1L);
+        when(repository.findByRuleIdAndTenantId(any(), any())).thenReturn(Optional.of(customized));
+
+        new RuleSpecStore(repository);
+
+        verify(repository, never()).save(any(RuleEntity.class));
+    }
+
+    @Test
+    void userEditOfPackagedRuleOptsOutOfFutureAutomaticReplacement() {
+        String currentPackVersion = String.valueOf(DetectionContentCatalog.manifest().get("version"));
+        RuleRepository repository = mock(RuleRepository.class);
+        when(repository.countByTenantId("default")).thenReturn(1L);
+        when(repository.findByRuleIdAndTenantId(any(), any())).thenAnswer(invocation -> {
+            String id = invocation.getArgument(0);
+            return Optional.of(entity(id, "{\"id\":\"" + id
+                    + "\",\"contentPack\":\"socp-core-detections\","
+                    + "\"contentVersion\":\"" + currentPackVersion + "\"}"));
+        });
+        RuleSpecStore store = new RuleSpecStore(repository);
+        clearInvocations(repository);
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> packaged = (Map<String, Object>) ((java.util.List<Map<String, Object>>)
+                DetectionContentCatalog.manifest().get("rules")).stream()
+                .filter(item -> "AUTH-BRUTE".equals(String.valueOf(item.get("id"))))
+                .findFirst().orElseThrow().get("spec");
+        Map<String, Object> edited = new LinkedHashMap<>(packaged);
+        edited.put("status", "DISABLED");
+        edited.put("enabled", false);
+
+        TenantContext.set("default");
+        try {
+            store.save(edited);
+        } finally {
+            TenantContext.clear();
+        }
+
+        ArgumentCaptor<RuleEntity> saved = ArgumentCaptor.forClass(RuleEntity.class);
+        verify(repository).save(saved.capture());
+        Map<String, Object> persisted = com.socp.rule.util.Json.parseObject(saved.getValue().getSpec());
+        assertEquals(Boolean.TRUE, persisted.get("contentCustomized"));
+        assertEquals("socp-core-detections", persisted.get("contentPack"));
+        assertEquals(currentPackVersion, persisted.get("contentVersion"));
+        assertEquals("DISABLED", persisted.get("status"));
+    }
+
+    @Test
+    void userCreatedRuleWithPackagedIdIsNotClaimedByTheContentPack() {
+        RuleRepository repository = mock(RuleRepository.class);
+        when(repository.countByTenantId("default")).thenReturn(1L);
+        String currentPackVersion = String.valueOf(DetectionContentCatalog.manifest().get("version"));
+        when(repository.findByRuleIdAndTenantId(any(), any())).thenAnswer(invocation -> {
+            String id = invocation.getArgument(0);
+            if ("AUTH-BRUTE".equals(id)) return Optional.empty();
+            return Optional.of(entity(id, "{\"id\":\"" + id
+                    + "\",\"contentPack\":\"socp-core-detections\","
+                    + "\"contentVersion\":\"" + currentPackVersion + "\"}"));
+        });
+        RuleSpecStore store = new RuleSpecStore(repository);
+        clearInvocations(repository);
+
+        Map<String, Object> user = new LinkedHashMap<>();
+        user.put("id", "AUTH-BRUTE");
+        user.put("name", "local collision");
+        user.put("type", "pattern");
+        user.put("severity", "HIGH");
+        user.put("version", "1");
+        user.put("owner", "local-user");
+        user.put("status", "TESTING");
+        user.put("match", java.util.List.of(Map.of("field", "msg", "op", "contains", "value", "local")));
+
+        TenantContext.set("default");
+        try {
+            store.save(user);
+        } finally {
+            TenantContext.clear();
+        }
+
+        ArgumentCaptor<RuleEntity> saved = ArgumentCaptor.forClass(RuleEntity.class);
+        verify(repository).save(saved.capture());
+        Map<String, Object> persisted = com.socp.rule.util.Json.parseObject(saved.getValue().getSpec());
+        assertTrue(!persisted.containsKey("contentPack"));
+        assertTrue(!persisted.containsKey("contentVersion"));
+        assertEquals(Boolean.TRUE, persisted.get("contentCustomized"));
     }
 
     @Test

@@ -48,6 +48,7 @@ public class DetectionEventJournal implements DetectionStateStore {
     private final Duration completedRetention;
     private final Duration deadLetterRetention;
     private final int replayPageSize;
+    private final int replayPendingMax;
     private final int cleanupBatchSize;
     private final int cleanupMaxBatches;
 
@@ -59,7 +60,8 @@ public class DetectionEventJournal implements DetectionStateStore {
                                  @Value("${socp.detect.state.completed-retention:7d}") String completedRetention,
                                  @Value("${socp.detect.state.dead-letter-retention:90d}") String deadLetterRetention,
                                  @Value("${socp.detect.state.cleanup-batch-size:1000}") int cleanupBatchSize,
-                                 @Value("${socp.detect.state.cleanup-max-batches:10}") int cleanupMaxBatches) {
+                                 @Value("${socp.detect.state.cleanup-max-batches:10}") int cleanupMaxBatches,
+                                 @Value("${socp.detect.state.replay-pending-max:100}") int replayPendingMax) {
         this.repository = repository;
         this.retention = parsePositiveDuration(retention, Duration.ofHours(24));
         Duration configuredCompletedRetention = parsePositiveDuration(
@@ -71,6 +73,7 @@ public class DetectionEventJournal implements DetectionStateStore {
                 ? this.retention : configuredCompletedRetention;
         this.deadLetterRetention = parsePositiveDuration(deadLetterRetention, Duration.ofDays(90));
         this.replayPageSize = Math.max(100, Math.min(10_000, replayPageSize));
+        this.replayPendingMax = Math.max(1, Math.min(10_000, replayPendingMax));
         this.cleanupBatchSize = Math.max(1, Math.min(10_000, cleanupBatchSize));
         this.cleanupMaxBatches = Math.max(1, Math.min(100, cleanupMaxBatches));
     }
@@ -78,9 +81,18 @@ public class DetectionEventJournal implements DetectionStateStore {
     /** Compatibility constructor used by focused policy tests. */
     public DetectionEventJournal(DetectionEventRepository repository, String retention,
                                  int replayPageSize, String completedRetention,
+                                 String deadLetterRetention, int cleanupBatchSize,
+                                 int cleanupMaxBatches) {
+        this(repository, retention, replayPageSize, completedRetention, deadLetterRetention,
+                cleanupBatchSize, cleanupMaxBatches, 100);
+    }
+
+    /** Compatibility constructor used by focused policy tests. */
+    public DetectionEventJournal(DetectionEventRepository repository, String retention,
+                                 int replayPageSize, String completedRetention,
                                  String deadLetterRetention) {
         this(repository, retention, replayPageSize, completedRetention, deadLetterRetention,
-                1_000, 10);
+                1_000, 10, 100);
     }
 
     /** Compatibility constructor used by focused unit tests and local callers. */
@@ -337,18 +349,13 @@ public class DetectionEventJournal implements DetectionStateStore {
                                                                     Duration window) {
         if (partitions == null || partitions.isEmpty()) return List.of();
         String tenant = TenantContext.isSystemScope() ? null : TenantContext.require();
-        List<DetectionEventEntity> rows = new ArrayList<>();
-        for (int page = 0; ; page++) {
-            List<DetectionEventEntity> batch = tenant == null
-                    ? repository.findByStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
-                            DetectionEventStatus.PENDING.name(), partitions, cutoff(window),
-                            org.springframework.data.domain.PageRequest.of(page, replayPageSize))
-                    : repository.findByTenantIdAndStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
-                            tenant, DetectionEventStatus.PENDING.name(), partitions, cutoff(window),
-                            org.springframework.data.domain.PageRequest.of(page, replayPageSize));
-            rows.addAll(batch);
-            if (batch.size() < replayPageSize) break;
-        }
+        org.springframework.data.domain.Pageable request =
+                org.springframework.data.domain.PageRequest.of(0, replayPendingMax);
+        List<DetectionEventEntity> rows = tenant == null
+                ? repository.findByStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
+                        DetectionEventStatus.PENDING.name(), partitions, cutoff(window), request)
+                : repository.findByTenantIdAndStatusAndKafkaPartitionInAndOccurredAtAfterOrderByKafkaPosition(
+                        tenant, DetectionEventStatus.PENDING.name(), partitions, cutoff(window), request);
         return rows.stream().map(this::pendingRow).filter(java.util.Objects::nonNull).toList();
     }
 

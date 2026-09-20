@@ -23,10 +23,11 @@ class SearchConfigMigrationTest {
                      "SELECT COUNT(*) FROM INFORMATION_SCHEMA.INDEXES "
                              + "WHERE INDEX_NAME IN "
                              + "('IDX_INGESTION_OUTBOX_DUE_V2',"
-                             + "'IDX_INGESTION_OUTBOX_TENANT_DUE')");
+                             + "'IDX_INGESTION_OUTBOX_TENANT_DUE',"
+                             + "'IDX_SEARCH_EVENT_RETENTION')");
              var result = statement.executeQuery()) {
             result.next();
-            assertEquals(2, result.getInt(1));
+            assertEquals(3, result.getInt(1));
 
             String largeValue = "x".repeat(5_000);
             try (var insert = connection.prepareStatement(

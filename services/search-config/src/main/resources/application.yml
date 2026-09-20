@@ -36,7 +36,19 @@ socp:
     local-cache:
       idle-ttl-ms: ${SOCP_SEARCH_CACHE_IDLE_TTL_MS:1800000}
       max-tenants: ${SOCP_SEARCH_CACHE_MAX_TENANTS:100}
+      # Keep both steady-state cache size and first-request warm-up bounded.
+      warmup-max-events: ${SOCP_SEARCH_CACHE_WARMUP_MAX_EVENTS:2000}
+      max-bytes-per-tenant: ${SOCP_SEARCH_CACHE_MAX_BYTES_PER_TENANT:16777216}
+      max-bytes-total: ${SOCP_SEARCH_CACHE_MAX_BYTES_TOTAL:268435456}
       cleanup-interval-ms: ${SOCP_SEARCH_CACHE_CLEANUP_INTERVAL_MS:60000}
+    event-retention:
+      # PostgreSQL is a bounded idempotency/fallback copy, not the long-term search authority.
+      # Keep this >= the maximum producer/Kafka replay horizon expected by the deployment.
+      retention-ms: ${SOCP_SEARCH_EVENT_RETENTION_MS:2592000000}
+      cleanup-batch-size: ${SOCP_SEARCH_EVENT_CLEANUP_BATCH_SIZE:1000}
+      cleanup-max-batches: ${SOCP_SEARCH_EVENT_CLEANUP_MAX_BATCHES:10}
+      cleanup-interval-ms: ${SOCP_SEARCH_EVENT_CLEANUP_INTERVAL_MS:3600000}
+      cleanup-initial-delay-ms: ${SOCP_SEARCH_EVENT_CLEANUP_INITIAL_DELAY_MS:60000}
     config-cache:
       # 采集链路配置缓存的跨副本收敛窗口：本副本写入即时失效，
       # 其它 SEARCH 副本写入的配置最迟一个 TTL 后对本副本可见。

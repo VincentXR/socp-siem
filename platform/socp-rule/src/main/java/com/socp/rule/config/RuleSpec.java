@@ -4,6 +4,7 @@ import com.socp.rule.engine.Watchlists;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.rule.partition.DetectionRoutingKey;
+import com.socp.rule.regex.SafeRegex;
 import com.socp.rule.rules.BaselineRule;
 import com.socp.rule.rules.CorrelationRule;
 import com.socp.rule.rules.CorrelationSetRule;
@@ -24,7 +25,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.function.Predicate;
-import java.util.regex.Pattern;
 
 /**
  * 规则的可序列化描述（对应 JSON 配置里的一条规则）。
@@ -289,8 +289,10 @@ public final class RuleSpec {
         String field = c.get("field");
         String op = (c.get("op") == null ? "eq" : c.get("op")).toLowerCase();
         String value = c.get("value") == null ? "" : c.get("value");
-        // 正则提前编译一次（toPredicate 在加载期每条件仅调用一次），避免每条事件重编译
-        final Pattern regex = "regex".equals(op) ? Pattern.compile(value, Pattern.CASE_INSENSITIVE) : null;
+        // Detection rules are user-authored and run on the event path. Compile
+        // once with the linear-time engine rather than Java's backtracking regex.
+        final SafeRegex.Compiled regex = "regex".equals(op)
+                ? SafeRegex.compileCaseInsensitive(value) : null;
         return e -> {
             String actual = fieldValue(e, field);
             if (actual == null) actual = "";
@@ -304,7 +306,7 @@ public final class RuleSpec {
                 case "ge" -> e.severity().level() >= Severity.valueOf(value.toUpperCase()).level();
                 case "gtsev" -> e.severity().level() > Severity.valueOf(value.toUpperCase()).level();
                 // 正则匹配（整段包含即命中）
-                case "regex" -> regex != null && regex.matcher(actual).find();
+                case "regex" -> regex != null && regex.find(actual);
                 // 数值比较：双方都能解析为数字才比较，否则视为不命中
                 case "gt", "gte", "lt", "lte" -> numericCompare(op, actual, value);
                 // 观察名单：value 为名单名，运营侧动态维护，规则本身不用改

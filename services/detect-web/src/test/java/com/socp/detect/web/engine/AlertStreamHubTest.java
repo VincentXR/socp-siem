@@ -10,10 +10,10 @@ import java.util.List;
 
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
-import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class AlertStreamHubTest {
 
@@ -33,31 +33,36 @@ class AlertStreamHubTest {
         verify(tenantA).write(contains("event: alert"));
         verify(tenantA).write(contains("alert-stream-1"));
         verify(tenantA).flush();
+        verify(tenantA).checkError();
         verify(tenantB, never()).write(anyString());
         verify(defaultTenant, never()).write(anyString());
 
         hub.broadcast(alert);
         verify(defaultTenant).write(contains("alert-stream-1"));
         verify(defaultTenant).flush();
+        verify(defaultTenant).checkError();
 
         hub.remove(tenantA);
         org.junit.jupiter.api.Assertions.assertEquals(2, hub.subscriberCount());
     }
 
     @Test
-    void removesAWriterWhenItCannotBeFlushedWithoutAffectingOtherSubscribers() {
+    void removesAWriterWhenTheContainerLatchesAnOutputError() {
         AlertStreamHub hub = new AlertStreamHub();
         PrintWriter failing = mock(PrintWriter.class);
         PrintWriter healthy = mock(PrintWriter.class);
-        doThrow(new IllegalStateException("client disconnected"))
-                .when(failing).write(anyString());
+        when(failing.checkError()).thenReturn(true);
         hub.add("tenant-a", failing);
         hub.add("tenant-a", healthy);
 
         hub.broadcast("tenant-a", alert("alert-stream-2"));
 
+        verify(failing).write(contains("alert-stream-2"));
+        verify(failing).flush();
+        verify(failing).checkError();
         verify(healthy).write(contains("alert-stream-2"));
         verify(healthy).flush();
+        verify(healthy).checkError();
         org.junit.jupiter.api.Assertions.assertEquals(1, hub.subscriberCount());
     }
 

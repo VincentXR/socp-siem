@@ -205,14 +205,111 @@ jobs:
   dependency-review:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
+    env:
+      SOCP_MAVEN_SETTINGS: "none"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Reject newly introduced high-severity vulnerable dependencies
+        with:
+          fetch-depth: 0
+
+      - name: Review dependency changes with GitHub Dependency Graph
+        id: github_review
+        continue-on-error: true
         uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
         with:
           fail-on-severity: high
+
+      - name: Decide whether fallback audit is required
+        id: fallback
+        if: steps.github_review.outcome == 'failure'
+        env:
+          VULNERABLE_CHANGES: ${{ steps.github_review.outputs['vulnerable-changes'] }}
+        run: |
+          if [[ -n "${VULNERABLE_CHANGES}" && "${VULNERABLE_CHANGES}" != "[]" && "${VULNERABLE_CHANGES}" != "{}" ]]; then
+            echo "GitHub Dependency Review reported vulnerable dependency changes:"
+            printf '%s\n' "${VULNERABLE_CHANGES}"
+            exit 1
+          fi
+          echo "::notice::GitHub Dependency Graph unavailable; running lightweight repository-native dependency audits."
+          echo "required=true" >> "${GITHUB_OUTPUT}"
+
+      - name: Detect changed dependency manifests
+        id: changed_dependencies
+        if: steps.fallback.outputs.required == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git diff --name-only "${BASE_SHA}" "${HEAD_SHA}" | tee /tmp/dependency-changes.txt
+          if grep -Eq '(^|/)pom\.xml$|^config/dependency-check-suppressions\.xml$' /tmp/dependency-changes.txt; then
+            echo "java=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "java=false" >> "${GITHUB_OUTPUT}"
+          fi
+          if grep -Eq '^frontend/(pnpm-lock\.yaml|pnpm-workspace\.yaml|package\.json|.*/package\.json)$' /tmp/dependency-changes.txt; then
+            echo "frontend=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "frontend=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Set up JDK 21 for Java fallback audit
+        if: steps.changed_dependencies.outputs.java == 'true'
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      - name: Audit changed Java dependency graph with OSS Index
+        if: steps.changed_dependencies.outputs.java == 'true'
+        timeout-minutes: 10
+        run: |
+          bash build/mvnw.sh \
+            org.sonatype.ossindex.maven:ossindex-maven-plugin:3.2.0:audit-aggregate \
+            -Dossindex.scope=runtime \
+            -Dossindex.cvssScoreThreshold=7.0 \
+            -Dossindex.fail=true \
+            -Dossindex.reportFile=target/ossindex-report.json
+
+      - name: Upload OSS Index report
+        if: always() && steps.changed_dependencies.outputs.java == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: change-java-ossindex-report
+          path: target/ossindex-report.json
+          if-no-files-found: ignore
+
+      - name: Set up pnpm for frontend fallback audit
+        if: steps.changed_dependencies.outputs.frontend == 'true'
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.34.5
+
+      - name: Set up Node 22 for frontend fallback audit
+        if: steps.changed_dependencies.outputs.frontend == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Audit changed frontend dependency graph
+        if: steps.changed_dependencies.outputs.frontend == 'true'
+        timeout-minutes: 8
+        working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm audit --registry=https://registry.npmjs.org --audit-level high
+
+      - name: Record fallback with no dependency manifest changes
+        if: >-
+          steps.fallback.outputs.required == 'true' &&
+          steps.changed_dependencies.outputs.java != 'true' &&
+          steps.changed_dependencies.outputs.frontend != 'true'
+        run: echo "Dependency Graph is unavailable, but this PR does not change dependency manifests or lockfiles."
 
   e2e:
     runs-on: ubuntu-latest

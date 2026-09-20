@@ -65,7 +65,7 @@ public class RuleSpecStore {
             Optional<RuleEntity> current = repo.findByRuleIdAndTenantId(id, tenant);
             if (current.isEmpty()) {
                 try {
-                    save(spec, tenant);
+                    savePackaged(spec, tenant);
                 } catch (DataIntegrityViolationException racedInstaller) {
                     // Multiple Detection instances can start against the same
                     // database. Another instance winning this idempotent insert
@@ -76,8 +76,9 @@ public class RuleSpecStore {
             }
             Map<String, Object> stored = Json.parseObject(current.get().getSpec());
             boolean packageOwned = packId.equals(String.valueOf(stored.get("contentPack")));
+            boolean customized = Boolean.TRUE.equals(stored.get("contentCustomized"));
             boolean currentVersion = packVersion.equals(String.valueOf(stored.get("contentVersion")));
-            if (packageOwned && !currentVersion) save(spec, tenant);
+            if (packageOwned && !customized && !currentVersion) savePackaged(spec, tenant);
         }
     }
 
@@ -94,7 +95,43 @@ public class RuleSpecStore {
     }
 
     public Map<String, Object> save(Map<String, Object> spec, String tenant) {
-        spec = DetectionContentCatalog.enrich(spec);
+        return saveInternal(spec, tenant, false);
+    }
+
+    private Map<String, Object> savePackaged(Map<String, Object> spec, String tenant) {
+        return saveInternal(spec, tenant, true);
+    }
+
+    private Map<String, Object> saveInternal(Map<String, Object> input, String tenant,
+                                             boolean packagedWrite) {
+        Map<String, Object> spec = DetectionContentCatalog.enrich(input);
+        Object requestedId = spec.get("id");
+        RuleEntity existing = requestedId == null || String.valueOf(requestedId).isBlank()
+                ? null : repo.findByRuleIdAndTenantId(String.valueOf(requestedId), tenant).orElse(null);
+        if (packagedWrite) {
+            spec.remove("contentCustomized");
+        } else if (existing == null) {
+            // A user-created rule is user-owned even when its id collides with a
+            // packaged rule id. Catalog enrichment supplies display defaults by
+            // id, but ownership must come from the write path, not from the id.
+            spec.remove("contentPack");
+            spec.remove("contentVersion");
+            spec.put("contentCustomized", true);
+        } else {
+            Map<String, Object> stored = Json.parseObject(existing.getSpec());
+            Object originalPack = stored.get("contentPack");
+            if (originalPack != null && !String.valueOf(originalPack).isBlank()) {
+                spec.put("contentPack", originalPack);
+                if (stored.get("contentVersion") != null) {
+                    spec.put("contentVersion", stored.get("contentVersion"));
+                }
+                spec.put("contentCustomized", true);
+            } else {
+                spec.remove("contentPack");
+                spec.remove("contentVersion");
+                spec.put("contentCustomized", true);
+            }
+        }
         // The current workbench still sends the legacy enabled toggle. Keep it
         // compatible with the lifecycle status while preserving explicit
         // TESTING/DRAFT/ARCHIVED states owned by detection engineering.
@@ -123,7 +160,7 @@ public class RuleSpecStore {
             // routing field. The event path counts what actually happens.
             LOG.warn("Rule {} partition-locality advisory: {}", ruleId, advisory);
         }
-        RuleEntity e = repo.findByRuleIdAndTenantId(ruleId, tenant).orElseGet(RuleEntity::new);
+        RuleEntity e = existing == null ? new RuleEntity() : existing;
         e.setId(String.valueOf(spec.get("id")));
         if (e.getStorageId() == null) e.setStorageId(storageId(tenant, ruleId));
         try {

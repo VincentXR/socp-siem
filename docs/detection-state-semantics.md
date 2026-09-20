@@ -202,10 +202,15 @@ silently converted into a committed offset.
 At startup and `onPartitionsAssigned`, Detection rebuilds rule windows only
 from `COMPLETED` journal rows belonging to the current assignment. Replayed
 `PENDING` rows are then submitted as live work on their owning partition lane.
-Rows are read in partition/offset order and the replay is bounded by the
-configured retention window. Queries are paginated; there is no fixed 10,000
-row truncation. The time window remains an explicit recovery boundary and
-should be chosen as:
+COMPLETED rows used to rebuild rule state are read in bounded pages across the
+configured retention window. PENDING rows are different: startup/rebalance
+prefetch is capped by `SOCP_DETECT_STATE_REPLAY_PENDING_MAX` (default 100)
+so a backlog cannot be materialized into one heap-resident list. This cap is not
+a recovery truncation: rows beyond the prefetched prefix still sit behind
+uncommitted Kafka offsets and are redelivered through the normal consumer path,
+where an existing PENDING claim is processed and then marked COMPLETED.
+
+The time window remains an explicit recovery boundary and should be chosen as:
 
 ```text
 longest enabled rule window + allowed lateness + safety margin

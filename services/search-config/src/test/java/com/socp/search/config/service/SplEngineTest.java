@@ -54,8 +54,9 @@ class SplEngineTest {
         @Override public boolean existsById(String s) { return false; }
         @Override public long count() { return 0; }
         @Override public long countByTenantId(String tenantId) { return 0; }
-        @Override public List<SearchEventEntity> findTop20000ByTenantIdOrderByTimestampDesc(String tenantId) { return List.of(); }
+        @Override public List<SearchEventEntity> findByTenantIdOrderByTimestampDesc(String tenantId, Pageable pageable) { return List.of(); }
         @Override public List<SearchEventEntity> findByTenantIdAndEventIdIn(String tenantId, Collection<String> eventIds) { return List.of(); }
+        @Override public int deleteRetainedBatchBefore(java.time.Instant cutoff, int batchSize) { return 0; }
         @Override public void deleteById(String s) { }
         @Override public void delete(SearchEventEntity e) { }
         @Override public void deleteAllById(Iterable<? extends String> ids) { }

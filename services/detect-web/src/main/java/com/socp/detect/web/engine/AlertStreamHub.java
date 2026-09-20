@@ -14,7 +14,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * 实时态势大屏据此即时刷新，无需轮询。
  *
  * <p>实现采用 Servlet 输出流直写（controller 阻塞 + 3s 心跳），规避 SseEmitter 在
- * 本环境异步初始化不生效的问题；客户端断开时写失败自动摘除。
+ * 本环境异步初始化不生效的问题。Tomcat 的 PrintWriter 在写失败后会锁存 error 状态而
+ * 不一定继续抛异常，因此每次 flush 后必须显式检查 {@link PrintWriter#checkError()}。
  * Alert 含 Instant 字段，序列化必须注册 JavaTimeModule（裸 ObjectMapper 会抛异常）。
  */
 @Component
@@ -58,6 +59,9 @@ public class AlertStreamHub {
             try {
                 w.write(frame);
                 w.flush();
+                if (w.checkError()) {
+                    subscribers.remove(subscriber);
+                }
             } catch (Exception e) {
                 subscribers.remove(subscriber);
             }
