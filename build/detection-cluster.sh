@@ -17,6 +17,10 @@ JAR="$ROOT/services/detect-web/target/detect-web-1.0.0-SNAPSHOT.jar"
 TOPIC="${SOCP_DETECT_INPUT_TOPIC:-${SOCP_KAFKA_TOPIC:-socp-events}}"
 ROUTING_MODE="${SOCP_DETECT_ROUTING_MODE:-legacy}"
 OUTPUT_MODE="${SOCP_DETECT_OUTPUT_MODE:-primary}"
+MIN_PARTITIONS="${SOCP_DETECT_CLUSTER_MIN_PARTITIONS:-}"
+if [ -z "$MIN_PARTITIONS" ]; then
+  if [ "$ROUTING_MODE" = "legacy" ]; then MIN_PARTITIONS=3; else MIN_PARTITIONS=6; fi
+fi
 
 csv_ports() {
   printf '%s\n' "$PORTS_RAW" | tr ',' ' '
@@ -87,6 +91,30 @@ kafka_partition_count() {
   fi
 }
 
+ensure_input_topic_partitions() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  local current
+  MSYS_NO_PATHCONV=1 bash "$ROOT/build/compose.sh" exec -T kafka \
+    /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
+    --create --if-not-exists --topic "$TOPIC" --partitions "$MIN_PARTITIONS" \
+    --replication-factor 1 >/dev/null
+  current="$(kafka_partition_count || true)"
+  if [ -z "$current" ]; then
+    echo "Unable to inspect Detection input topic $TOPIC" >&2
+    return 1
+  fi
+  if [ "$current" -lt "$MIN_PARTITIONS" ]; then
+    MSYS_NO_PATHCONV=1 bash "$ROOT/build/compose.sh" exec -T kafka \
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
+      --alter --topic "$TOPIC" --partitions "$MIN_PARTITIONS" >/dev/null
+    current="$(kafka_partition_count || true)"
+  fi
+  if [ -z "$current" ] || [ "$current" -lt "$MIN_PARTITIONS" ]; then
+    echo "Detection input topic $TOPIC requires >=$MIN_PARTITIONS partitions, got ${current:-unknown}" >&2
+    return 1
+  fi
+}
+
 write_manifest() {
   local commit partitions database port index=0 pid
   commit="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || printf unknown)"
@@ -106,6 +134,7 @@ write_manifest() {
     printf 'routing_mode=%s\n' "$ROUTING_MODE"
     printf 'output_mode=%s\n' "$OUTPUT_MODE"
     printf 'partitions=%s\n' "$partitions"
+    printf 'minimum_partitions=%s\n' "$MIN_PARTITIONS"
     for port in $(csv_ports); do
       index=$((index + 1))
       pid="$(pid_on_port "$port" || true)"
@@ -138,6 +167,7 @@ stop_cluster() {
 start_cluster() {
   [ -f "$JAR" ] || { echo "missing Detection jar: $JAR" >&2; exit 1; }
   validate_security_config
+  ensure_input_topic_partitions
   mkdir -p "$LOGDIR"
   # The canonical instance may have been started by run-all.sh. Reconcile all
   # three ports into one known cluster before the evidence run.
