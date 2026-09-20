@@ -123,23 +123,47 @@ jobs:
           bash build/compose.sh --profile extra up -d
           temporal
 
-      - name: Wait for Temporal gRPC endpoint
+      - name: Wait for Temporal namespace and verify database ownership
         run: |
           python3 - <<'PY'
-          import socket
+          import subprocess
           import time
 
-          deadline = time.monotonic() + 90
+          deadline = time.monotonic() + 180
+          last_output = ""
           while time.monotonic() < deadline:
               try:
-                  with socket.create_connection(("127.0.0.1", 7233), timeout=2):
-                      print("Temporal gRPC endpoint is reachable")
+                  probe = subprocess.run([
+                      "bash", "build/compose.sh", "--profile", "extra", "exec", "-T",
+                      "temporal", "temporal", "--address", "127.0.0.1:7233",
+                      "operator", "namespace", "describe", "default",
+                  ], capture_output=True, text=True, timeout=10)
+                  last_output = probe.stdout + probe.stderr
+                  if probe.returncode == 0:
+                      print("Temporal default namespace is reachable through gRPC")
                       break
-              except OSError:
-                  time.sleep(2)
+              except subprocess.TimeoutExpired:
+                  last_output = "Temporal namespace probe timed out"
+              time.sleep(2)
           else:
-              raise SystemExit("Temporal gRPC endpoint did not become reachable")
+              raise SystemExit("Temporal namespace did not become ready: " + last_output)
           PY
+          docker exec -i socp-postgres psql -U socp -d template1 -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$ BEGIN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname IN ('socp_migrator', 'socp_runtime')
+                       AND (rolsuper OR rolcreatedb OR rolbypassrls)) THEN
+              RAISE EXCEPTION 'Temporal bootstrap widened application role privileges';
+            END IF;
+            IF (SELECT count(*) FROM pg_database WHERE datname IN ('temporal', 'temporal_visibility')
+                AND pg_get_userbyid(datdba) = 'socp_migrator') <> 2 THEN
+              RAISE EXCEPTION 'Temporal databases do not have the expected restricted owner';
+            END IF;
+            IF has_database_privilege('socp_runtime', 'temporal', 'CONNECT')
+               OR has_database_privilege('socp_runtime', 'temporal_visibility', 'CONNECT') THEN
+              RAISE EXCEPTION 'application runtime role can access Temporal internal databases';
+            END IF;
+          END $$;
+          SQL
 
       - name: Build backend
         run: bash build/mvnw.sh -DskipTests package
@@ -373,7 +397,7 @@ jobs:
         if: always()
         run: |
           mkdir -p .cache
-          bash build/compose.sh logs --no-color > .cache/compose.log 2>&1 || true
+          bash build/compose.sh --profile extra logs --no-color > .cache/compose.log 2>&1 || true
 
       - name: Collect commit-scoped full-stack evidence
         if: always()
@@ -402,4 +426,4 @@ jobs:
           fi
           bash build/detection-cluster.sh stop || true
           bash build/run-all.sh stop || true
-          bash build/compose.sh down || true
+          bash build/compose.sh --profile extra down || true

@@ -12,8 +12,12 @@ overlay requires all four role/password variables and maps every PostgreSQL
 application service to the runtime account. Do not reuse the bootstrap
 password for either account.
 
-For a fresh volume, `00_roles.sh`, `01_databases.sql`, and
-`02_runtime_grants.sh` run in that order. Existing volumes do not rerun init
+For a fresh volume, `00_roles.sh`, `01_databases.sql`,
+`02_runtime_grants.sh`, and `03_temporal_databases.sh` run in that order.
+The last step creates `temporal` and `temporal_visibility` with the migration
+account as owner. Temporal runs schema setup with `SKIP_DB_CREATE=true`;
+neither application role receives `CREATEDB`, and the runtime account receives
+no access to the Temporal databases. Existing volumes do not rerun init
 files; apply the auditable role/grant step once with an administrator:
 
 ```bash
@@ -24,6 +28,12 @@ SOCP_PG_MIGRATION_USER="$SOCP_PG_MIGRATION_USER" \
 SOCP_PG_MIGRATION_PASSWORD="$SOCP_PG_MIGRATION_PASSWORD" \
   build/apply-postgres-roles.sh
 ```
+
+The role application script also provisions missing Temporal databases. It
+refuses to take over an existing Temporal database owned by another role;
+review that deployment's database and schema ownership before applying an
+explicit administrative ownership transfer. Reapplying the script with the
+expected owner preserves Temporal data and schema history.
 
 Run Flyway with the migration account, not the runtime account. The runtime
 account must not be granted `CREATE` on `public`, `SUPERUSER`, or `BYPASSRLS`.

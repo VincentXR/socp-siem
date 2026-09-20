@@ -318,6 +318,11 @@ services:
       POSTGRES_USER: ${SOCP_PG_MIGRATION_USER:-socp_migrator}
       POSTGRES_PWD: ${SOCP_PG_MIGRATION_PASSWORD:-socp-migrator-local}
       POSTGRES_SEEDS: postgres
+      # Bootstrap creates these databases with the restricted migration owner.
+      # Schema setup still runs; the container never needs CREATEDB privileges.
+      DBNAME: temporal
+      VISIBILITY_DBNAME: temporal_visibility
+      SKIP_DB_CREATE: "true"
       # Temporal starts several internal services, each with its own SQL pool.
       # The image defaults (20/10) can consume ~70 of PostgreSQL's 100 local
       # connections and starve business services during full-stack startup.
@@ -327,7 +332,9 @@ services:
       SQL_VIS_MAX_IDLE_CONNS: 2
     ports:
       - "7233:7233"
-    depends_on: [postgres]
+    depends_on:
+      postgres:
+        condition: service_healthy
     networks: [socp]
     profiles: ["extra"]
     mem_limit: 768m
