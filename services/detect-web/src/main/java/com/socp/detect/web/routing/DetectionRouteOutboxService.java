@@ -3,8 +3,10 @@ package com.socp.detect.web.routing;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.socp.detect.web.persistence.entity.DetectionRouteOutboxEntity;
+import com.socp.detect.web.persistence.entity.DetectionRouteSourceEntity;
 import com.socp.detect.web.persistence.entity.DetectionRouteTopologyEntity;
 import com.socp.detect.web.persistence.repository.DetectionRouteOutboxRepository;
+import com.socp.detect.web.persistence.repository.DetectionRouteSourceRepository;
 import com.socp.detect.web.persistence.repository.DetectionRouteTopologyRepository;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.model.SecurityEvent;
@@ -37,6 +39,7 @@ public class DetectionRouteOutboxService {
 
     private final DetectionRouteOutboxRepository repository;
     private final DetectionRoutingPlanRegistry plans;
+    private final DetectionRouteSourceRepository sourceRepository;
     private final DetectionRouteTopologyRepository topologyRepository;
     private final String deliveryTopic;
     private final TransactionTemplate transactions;
@@ -46,7 +49,7 @@ public class DetectionRouteOutboxService {
             DetectionRouteOutboxRepository repository,
             DetectionRoutingPlanRegistry plans,
             String deliveryTopic) {
-        this(repository, plans, null, deliveryTopic, null);
+        this(repository, plans, null, null, deliveryTopic, null);
     }
 
     /** Focused constructor that also exercises persistent topology pinning. */
@@ -55,18 +58,20 @@ public class DetectionRouteOutboxService {
             DetectionRoutingPlanRegistry plans,
             DetectionRouteTopologyRepository topologyRepository,
             String deliveryTopic) {
-        this(repository, plans, topologyRepository, deliveryTopic, null);
+        this(repository, plans, null, topologyRepository, deliveryTopic, null);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
     public DetectionRouteOutboxService(
             DetectionRouteOutboxRepository repository,
             DetectionRoutingPlanRegistry plans,
+            DetectionRouteSourceRepository sourceRepository,
             DetectionRouteTopologyRepository topologyRepository,
             @Value("${socp.detect.routing.delivery-topic:socp-detection-routed-v2}") String deliveryTopic,
             PlatformTransactionManager transactionManager) {
         this.repository = repository;
         this.plans = plans;
+        this.sourceRepository = sourceRepository;
         this.topologyRepository = topologyRepository;
         this.deliveryTopic = deliveryTopic == null || deliveryTopic.isBlank()
                 ? "socp-detection-routed-v2" : deliveryTopic.trim();
@@ -105,16 +110,26 @@ public class DetectionRouteOutboxService {
     }
 
     private RouteResult materialize(ObjectNode canonical, RouteContext context) {
+        if (sourceRepository != null) {
+            var receipt = sourceRepository
+                    .findByTenantIdAndSourceTopicAndSourcePartitionAndSourceOffset(
+                            context.tenant(), context.sourceTopic(),
+                            context.sourcePartition(), context.sourceOffset());
+            if (receipt.isPresent()) return receiptResult(receipt.get());
+        }
+
+        // Backward-compatible recovery for rows written by an early v2 build
+        // before source receipts existed.
         List<DetectionRouteOutboxEntity> frozen =
                 repository.findBySourceTopicAndSourcePartitionAndSourceOffsetOrderByDeliveryIdAsc(
                         context.sourceTopic(), context.sourcePartition(), context.sourceOffset());
         if (frozen != null && !frozen.isEmpty()) {
             DetectionRouteOutboxEntity first = frozen.getFirst();
-            boolean terminal = frozen.stream().anyMatch(row ->
-                    "ERROR".equalsIgnoreCase(row.getRouteKind())
-                            || "DEAD".equalsIgnoreCase(row.getStatus()));
-            return new RouteResult(first.getTenantId(), first.getSourceEventId(),
-                    first.getPlanVersion(), frozen.size(), List.of(), terminal);
+            RouteResult result = new RouteResult(first.getTenantId(), first.getSourceEventId(),
+                    first.getPlanVersion(), frozen.size(), List.of(), false);
+            persistSourceReceipt(context, first.getRoutingVersion(), first.getPlanVersion(),
+                    frozen.size(), List.of(), "ROUTED", null);
+            return result;
         }
 
         DetectionRoutingPlan plan = plans.plan(context.tenant());
@@ -123,6 +138,17 @@ public class DetectionRouteOutboxService {
                     String.join("; ", plan.allErrors()));
         }
         pinTopology(context.tenant(), plan);
+
+        List<DetectionRouteOutboxEntity> duplicateDeliveries =
+                repository.findByTenantIdAndSourceEventIdOrderByDeliveryIdAsc(
+                        context.tenant(), context.sourceEventId());
+        if (duplicateDeliveries != null && !duplicateDeliveries.isEmpty()) {
+            DetectionRouteOutboxEntity first = duplicateDeliveries.getFirst();
+            persistSourceReceipt(context, first.getRoutingVersion(), first.getPlanVersion(),
+                    duplicateDeliveries.size(), List.of(), "DUPLICATE", null);
+            return new RouteResult(context.tenant(), context.sourceEventId(),
+                    first.getPlanVersion(), duplicateDeliveries.size(), List.of(), false);
+        }
 
         List<String> dimensions = plan.dimensionsForSource(context.event().source());
         List<String> missing = new ArrayList<>();
@@ -166,8 +192,35 @@ public class DetectionRouteOutboxService {
         // observes the committed frozen rows above instead of exposing a
         // partially recomputed plan.
         repository.saveAllAndFlush(rows);
+        persistSourceReceipt(context, plan.routingVersion(), plan.version(),
+                routes.size(), missing, "ROUTED", null);
         return new RouteResult(context.tenant(), context.sourceEventId(),
                 plan.version(), routes.size(), List.copyOf(missing), false);
+    }
+
+    private void persistSourceReceipt(RouteContext context, String routingVersion,
+                                      String planVersion, int deliveryCount,
+                                      List<String> missingDimensions, String status,
+                                      String reason) {
+        if (sourceRepository == null) return;
+        sourceRepository.saveAndFlush(new DetectionRouteSourceEntity(
+                context.tenant(), context.sourceTopic(), context.sourcePartition(),
+                context.sourceOffset(), context.sourceEventId(), routingVersion,
+                planVersion, deliveryCount,
+                missingDimensions == null || missingDimensions.isEmpty()
+                        ? null : String.join(",", missingDimensions),
+                status, reason == null ? null : truncate(reason), Instant.now()));
+    }
+
+    private RouteResult receiptResult(DetectionRouteSourceEntity receipt) {
+        List<String> missing = receipt.getMissingDimensions() == null
+                || receipt.getMissingDimensions().isBlank()
+                ? List.of()
+                : java.util.Arrays.stream(receipt.getMissingDimensions().split(","))
+                    .map(String::trim).filter(value -> !value.isBlank()).toList();
+        return new RouteResult(receipt.getTenantId(), receipt.getSourceEventId(),
+                receipt.getPlanVersion(), receipt.getDeliveryCount(), missing,
+                "DEAD".equalsIgnoreCase(receipt.getStatus()));
     }
 
     private void pinTopology(String tenant, DetectionRoutingPlan plan) {
@@ -201,6 +254,12 @@ public class DetectionRouteOutboxService {
         String id = DetectionDelivery.deliveryId("default", sourceEventId,
                 DetectionDelivery.ROUTING_VERSION, DetectionDelivery.Kind.STATELESS,
                 "_route_error", sourceEventId);
+        if (sourceRepository != null) {
+            var receipt = sourceRepository
+                    .findByTenantIdAndSourceTopicAndSourcePartitionAndSourceOffset(
+                            "default", sourceTopic, sourcePartition, sourceOffset);
+            if (receipt.isPresent()) return receiptResult(receipt.get());
+        }
         if (repository.findByTenantIdAndDeliveryId("default", id).isEmpty()) {
             Instant now = Instant.now();
             DetectionRouteOutboxEntity row = new DetectionRouteOutboxEntity(
@@ -212,6 +271,14 @@ public class DetectionRouteOutboxService {
             row.setStatus("DEAD");
             row.setLastError(truncate(failure.getClass().getSimpleName() + ": " + failure.getMessage()));
             repository.saveAndFlush(row);
+        }
+        if (sourceRepository != null) {
+            sourceRepository.saveAndFlush(new DetectionRouteSourceEntity(
+                    "default", sourceTopic, sourcePartition, sourceOffset,
+                    sourceEventId, DetectionDelivery.ROUTING_VERSION,
+                    "unresolved", 0, null, "DEAD",
+                    failure.getClass().getSimpleName() + ": " + failure.getMessage(),
+                    Instant.now()));
         }
         return new RouteResult("default", sourceEventId, "unresolved", 0,
                 List.of(), true);
