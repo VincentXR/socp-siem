@@ -18,14 +18,20 @@ import java.util.Map;
 public class DetectionRoutingController {
 
     private final DetectionRoutingPlanRegistry plans;
+    private final com.socp.detect.web.routing.DetectionRoutingRuntime runtime;
 
-    public DetectionRoutingController(DetectionRoutingPlanRegistry plans) {
+    public DetectionRoutingController(DetectionRoutingPlanRegistry plans,
+                                      com.socp.detect.web.routing.DetectionRoutingRuntime runtime) {
         this.plans = plans;
+        this.runtime = runtime;
     }
 
     @RequireRole({"admin", "analyst"})
     @GetMapping
     public ApiResult<Map<String, Object>> plan() {
-        return ApiResult.ok(plans.plan(TenantContext.require()).summary());
+        var plan = plans.plan(TenantContext.require());
+        Map<String, Object> response = new java.util.LinkedHashMap<>(plan.summary());
+        response.put("deployment", runtime.summary(plan));
+        return ApiResult.ok(Map.copyOf(response));
     }
 }
