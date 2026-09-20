@@ -28,14 +28,14 @@ public class DetectionRoutingRuntime {
     private final String routerGroupId;
 
     public DetectionRoutingRuntime(
-            @Value("\${socp.detect.routing.mode:legacy}") String mode,
-            @Value("\${socp.detect.routing.source-topic:\${socp.kafka.topic:socp-events}}") String sourceTopic,
-            @Value("\${socp.detect.routing.delivery-topic:socp-detection-routed-v2}") String deliveryTopic,
-            @Value("\${socp.detect.input-topic:\${socp.kafka.topic:socp-events}}") String inputTopic,
-            @Value("\${socp.detect.output-mode:primary}") String outputMode,
-            @Value("\${socp.detect.routing.publisher-enabled:false}") boolean publisherEnabled,
-            @Value("\${socp.kafka.group-id:socp-detect}") String detectionGroupId,
-            @Value("\${socp.detect.routing.source-group-id:socp-detect-router-v2}") String routerGroupId) {
+            @Value("${socp.detect.routing.mode:legacy}") String mode,
+            @Value("${socp.detect.routing.source-topic:${socp.kafka.topic:socp-events}}") String sourceTopic,
+            @Value("${socp.detect.routing.delivery-topic:socp-detection-routed-v2}") String deliveryTopic,
+            @Value("${socp.detect.input-topic:${socp.kafka.topic:socp-events}}") String inputTopic,
+            @Value("${socp.detect.output-mode:primary}") String outputMode,
+            @Value("${socp.detect.routing.publisher-enabled:false}") boolean publisherEnabled,
+            @Value("${socp.kafka.group-id:socp-detect}") String detectionGroupId,
+            @Value("${socp.detect.routing.source-group-id:socp-detect-router-v2}") String routerGroupId) {
         this.mode = parse(mode);
         this.sourceTopic = clean(sourceTopic, "socp-events");
         this.deliveryTopic = clean(deliveryTopic, "socp-detection-routed-v2");
