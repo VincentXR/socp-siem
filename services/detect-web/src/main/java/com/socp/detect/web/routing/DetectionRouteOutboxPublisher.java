@@ -27,18 +27,27 @@ public class DetectionRouteOutboxPublisher {
     private final String bootstrap;
     private final boolean enabled;
     private final int maxAttempts;
+    private final Duration publishedRetention;
+    private final int cleanupBatchSize;
+    private final int cleanupMaxBatches;
     private volatile KafkaProducer<String, String> producer;
 
     public DetectionRouteOutboxPublisher(
             DetectionRouteOutboxRepository repository,
             @Value("${socp.kafka.bootstrap:localhost:9092}") String bootstrap,
             @Value("${socp.detect.routing.publisher-enabled:false}") boolean enabled,
-            @Value("${socp.detect.routing.outbox-max-attempts:0}") int maxAttempts) {
+            @Value("${socp.detect.routing.outbox-max-attempts:0}") int maxAttempts,
+            @Value("${socp.detect.routing.published-retention:7d}") String publishedRetention,
+            @Value("${socp.detect.routing.cleanup-batch-size:1000}") int cleanupBatchSize,
+            @Value("${socp.detect.routing.cleanup-max-batches:10}") int cleanupMaxBatches) {
         this.repository = repository;
         this.bootstrap = bootstrap;
         this.enabled = enabled;
         // 0 means retry forever. Route publication must not become a silent loss.
         this.maxAttempts = Math.max(0, maxAttempts);
+        this.publishedRetention = parseDuration(publishedRetention, Duration.ofDays(7));
+        this.cleanupBatchSize = Math.max(1, Math.min(10_000, cleanupBatchSize));
+        this.cleanupMaxBatches = Math.max(1, Math.min(100, cleanupMaxBatches));
     }
 
     @org.springframework.scheduling.annotation.Scheduled(
@@ -128,6 +137,36 @@ public class DetectionRouteOutboxPublisher {
                 producer = new KafkaProducer<>(props);
             }
             return producer;
+        }
+    }
+
+    @org.springframework.scheduling.annotation.Scheduled(
+            fixedDelayString = "${socp.detect.routing.cleanup-interval-ms:3600000}",
+            initialDelayString = "${socp.detect.routing.cleanup-initial-delay-ms:60000}")
+    @TenantSystemJob
+    void cleanupPublished() {
+        if (!enabled) return;
+        Instant cutoff = Instant.now().minus(publishedRetention);
+        for (int batch = 0; batch < cleanupMaxBatches; batch++) {
+            int deleted = repository.deletePublishedBatchBefore(cutoff, cleanupBatchSize);
+            if (deleted < cleanupBatchSize) break;
+        }
+    }
+
+    private static Duration parseDuration(String raw, Duration fallback) {
+        if (raw == null || raw.isBlank()) return fallback;
+        String value = raw.trim().toLowerCase(java.util.Locale.ROOT);
+        try {
+            Duration parsed;
+            if (value.startsWith("p")) parsed = Duration.parse(raw.trim().toUpperCase(java.util.Locale.ROOT));
+            else if (value.endsWith("d")) parsed = Duration.ofDays(Long.parseLong(value.substring(0, value.length() - 1)));
+            else if (value.endsWith("h")) parsed = Duration.ofHours(Long.parseLong(value.substring(0, value.length() - 1)));
+            else if (value.endsWith("m")) parsed = Duration.ofMinutes(Long.parseLong(value.substring(0, value.length() - 1)));
+            else if (value.endsWith("s")) parsed = Duration.ofSeconds(Long.parseLong(value.substring(0, value.length() - 1)));
+            else parsed = Duration.ofSeconds(Long.parseLong(value));
+            return parsed.isNegative() || parsed.isZero() ? fallback : parsed;
+        } catch (RuntimeException failure) {
+            return fallback;
         }
     }
 
