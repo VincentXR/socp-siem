@@ -14,7 +14,8 @@ import com.socp.rule.util.Json;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -23,6 +24,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 
 /**
  * Transactionally materializes all route copies for one canonical source event.
@@ -34,18 +37,32 @@ public class DetectionRouteOutboxService {
     private final DetectionRouteOutboxRepository repository;
     private final DetectionRoutingPlanRegistry plans;
     private final String deliveryTopic;
+    private final TransactionTemplate transactions;
+    /** Topology changes are a migration boundary, never a silent hot reload. */
+    private final Map<String, String> pinnedPlanVersions = new ConcurrentHashMap<>();
 
+    /** Compatibility constructor used by focused tests. */
     public DetectionRouteOutboxService(
             DetectionRouteOutboxRepository repository,
             DetectionRoutingPlanRegistry plans,
-            @Value("${socp.detect.routing.delivery-topic:socp-detection-routed-v2}") String deliveryTopic) {
+            String deliveryTopic) {
+        this(repository, plans, deliveryTopic, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public DetectionRouteOutboxService(
+            DetectionRouteOutboxRepository repository,
+            DetectionRoutingPlanRegistry plans,
+            @Value("${socp.detect.routing.delivery-topic:socp-detection-routed-v2}") String deliveryTopic,
+            PlatformTransactionManager transactionManager) {
         this.repository = repository;
         this.plans = plans;
         this.deliveryTopic = deliveryTopic == null || deliveryTopic.isBlank()
                 ? "socp-detection-routed-v2" : deliveryTopic.trim();
+        this.transactions = transactionManager == null ? null : new TransactionTemplate(transactionManager);
     }
 
-    @Transactional
+
     public RouteResult route(String sourceTopic, int sourcePartition, long sourceOffset,
                              String raw) {
         if (sourceTopic == null || sourceTopic.isBlank()) {
@@ -55,67 +72,86 @@ public class DetectionRouteOutboxService {
             throw new IllegalArgumentException("source position must be non-negative");
         }
         try {
+            // Parse tenant before opening the transaction. PostgreSQL RLS/session
+            // context must be installed before the transaction obtains a
+            // connection, not midway through a @Transactional method.
             ObjectNode canonical = parseObject(raw);
             RouteContext context = context(canonical, sourceTopic, sourcePartition, sourceOffset);
-            DetectionRoutingPlan plan = plans.plan(context.tenant());
-            if (!plan.supported()) {
-                throw new DetectionRoutingPlan.UnsupportedRoutingPlanException(
-                        String.join("; ", plan.allErrors()));
-            }
-            List<String> dimensions = plan.dimensionsForSource(context.event().source());
-            List<String> missing = new ArrayList<>();
-            List<ResolvedRoute> stateful = new ArrayList<>();
-            for (String dimension : dimensions) {
-                String value = RoutingDimension.value(context.event(), dimension);
-                if (value == null || value.isBlank()) {
-                    missing.add(dimension);
-                    continue;
-                }
-                stateful.add(new ResolvedRoute(DetectionDelivery.Kind.STATEFUL, dimension, value));
-            }
-
-            List<ResolvedRoute> routes = new ArrayList<>(1 + stateful.size());
-            // Spread stateless work by source event while preserving one-copy execution.
-            routes.add(new ResolvedRoute(DetectionDelivery.Kind.STATELESS,
-                    DetectionDelivery.STATELESS_DIMENSION, context.sourceEventId()));
-            routes.addAll(stateful);
-            if (routes.size() > plan.maximumFanOut()) {
-                throw new IllegalStateException("routing fan-out exceeded compiled plan bound");
-            }
-
-            Instant now = Instant.now();
-            List<DetectionRouteOutboxEntity> rows = new ArrayList<>(routes.size());
-            for (ResolvedRoute route : routes) {
-                String deliveryId = DetectionDelivery.deliveryId(
-                        context.tenant(), context.sourceEventId(), plan.routingVersion(),
-                        route.kind(), route.dimension(), route.value());
-                String routingKey = DetectionRoutingKey.forTuple(
-                        context.tenant(), route.dimension(), route.value());
-                String payload = routedPayload(canonical, context, plan, route,
-                        deliveryId, missing);
-                rows.add(new DetectionRouteOutboxEntity(
-                        deliveryId, context.tenant(), context.sourceEventId(),
-                        plan.routingVersion(), plan.version(), route.kind().name(),
-                        route.dimension(), route.value(), routingKey,
-                        sourceTopic, sourcePartition, sourceOffset,
-                        deliveryTopic, payload, now));
-            }
-            saveMissingOnly(rows);
-            return new RouteResult(context.tenant(), context.sourceEventId(),
-                    plan.version(), routes.size(), List.copyOf(missing), false);
+            return TenantContext.callWith(context.tenant(),
+                    () -> inTransaction(() -> materialize(canonical, context)));
         } catch (DetectionRoutingPlan.UnsupportedRoutingPlanException unsupported) {
             throw unsupported;
         } catch (DataIntegrityViolationException raced) {
-            // The whole fan-out transaction rolls back on a race. Redelivery is
-            // intentional: the next attempt observes the deterministic ids and
-            // succeeds without creating a partial plan.
+            // The fan-out transaction rolls back on a race. Redelivery observes
+            // deterministic delivery ids and cannot expose a partial plan.
             throw raced;
         } catch (IllegalArgumentException malformed) {
-            // Only deterministic source-contract failures are terminal. Store,
-            // rule-catalogue and serializer failures remain retryable and keep
-            // the canonical source offset uncommitted.
-            return recordTerminalFailure(sourceTopic, sourcePartition, sourceOffset, raw, malformed);
+            // Only deterministic source-contract failures are terminal.
+            return TenantContext.callWith("default",
+                    () -> inTransaction(() -> recordTerminalFailure(
+                            sourceTopic, sourcePartition, sourceOffset, raw, malformed)));
         }
+    }
+
+    private RouteResult materialize(ObjectNode canonical, RouteContext context) {
+        DetectionRoutingPlan plan = plans.plan(context.tenant());
+        if (!plan.supported()) {
+            throw new DetectionRoutingPlan.UnsupportedRoutingPlanException(
+                    String.join("; ", plan.allErrors()));
+        }
+        String pinned = pinnedPlanVersions.putIfAbsent(context.tenant(), plan.version());
+        if (pinned != null && !pinned.equals(plan.version())) {
+            throw new DetectionRoutingPlan.UnsupportedRoutingPlanException(
+                    "routing topology changed for tenant " + context.tenant()
+                            + " pinnedPlan=" + pinned + " currentPlan=" + plan.version()
+                            + "; use shadow/prewarm/cutover and a new routing-version deployment");
+        }
+
+        List<String> dimensions = plan.dimensionsForSource(context.event().source());
+        List<String> missing = new ArrayList<>();
+        List<ResolvedRoute> stateful = new ArrayList<>();
+        for (String dimension : dimensions) {
+            String value = RoutingDimension.value(context.event(), dimension);
+            if (value == null || value.isBlank()) {
+                missing.add(dimension);
+                continue;
+            }
+            stateful.add(new ResolvedRoute(DetectionDelivery.Kind.STATEFUL, dimension, value));
+        }
+
+        List<ResolvedRoute> routes = new ArrayList<>(1 + stateful.size());
+        routes.add(new ResolvedRoute(DetectionDelivery.Kind.STATELESS,
+                DetectionDelivery.STATELESS_DIMENSION, context.sourceEventId()));
+        routes.addAll(stateful);
+        if (routes.size() > plan.maximumFanOut()) {
+            throw new IllegalStateException("routing fan-out exceeded compiled plan bound");
+        }
+
+        Instant now = Instant.now();
+        List<DetectionRouteOutboxEntity> rows = new ArrayList<>(routes.size());
+        for (ResolvedRoute route : routes) {
+            String deliveryId = DetectionDelivery.deliveryId(
+                    context.tenant(), context.sourceEventId(), plan.routingVersion(),
+                    route.kind(), route.dimension(), route.value());
+            String routingKey = DetectionRoutingKey.forTuple(
+                    context.tenant(), route.dimension(), route.value());
+            String payload = routedPayload(canonical, context, plan, route,
+                    deliveryId, missing);
+            rows.add(new DetectionRouteOutboxEntity(
+                    deliveryId, context.tenant(), context.sourceEventId(),
+                    plan.routingVersion(), plan.version(), route.kind().name(),
+                    route.dimension(), route.value(), routingKey,
+                    context.sourceTopic(), context.sourcePartition(), context.sourceOffset(),
+                    deliveryTopic, payload, now));
+        }
+        saveMissingOnly(rows);
+        return new RouteResult(context.tenant(), context.sourceEventId(),
+                plan.version(), routes.size(), List.copyOf(missing), false);
+    }
+
+    private <T> T inTransaction(Supplier<T> work) {
+        if (transactions == null) return work.get();
+        return transactions.execute(status -> work.get());
     }
 
     private void saveMissingOnly(List<DetectionRouteOutboxEntity> rows) {
