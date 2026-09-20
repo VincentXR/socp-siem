@@ -430,13 +430,13 @@ jobs:
       SOCP_MINIO_SECRET: ci-test-minio-secret-0123456789abcdef
       SOCP_AUTH_USERS: '{"admin":"admin123","demo":"demo123","viewer":"viewer123"}'
       SOCP_AUTH_ROLES: '{"admin":"admin","demo":"analyst","viewer":"viewer"}'
-      SOCP_COLLECTOR_CREDENTIALS: "ci-chaos|default|ci-chaos-collector-secret"
+      SOCP_COLLECTOR_CREDENTIALS: "ci-chaos|default|ci-chaos-collector-secret-0123456789abcdef"
       SOCP_ALLOW_GLOBAL_INGEST_TOKEN: "false"
       SOCP_RUNTIME_PROFILES: pg
       SOCP_OPENSEARCH_DISABLE_SECURITY_PLUGIN: "true"
       PIPELINE_INGEST_URL: http://127.0.0.1:18081/search-config/api/v1/ingest
       PIPELINE_COLLECTOR_ID: ci-chaos
-      PIPELINE_COLLECTOR_TOKEN: ci-chaos-collector-secret
+      PIPELINE_COLLECTOR_TOKEN: ci-chaos-collector-secret-0123456789abcdef
       SOCP_OPENSEARCH_URL: http://localhost:9200
       SOCP_OPENSEARCH_USERNAME: admin
       SOCP_OPENSEARCH_PASSWORD: admin
@@ -503,10 +503,12 @@ jobs:
           SOCP_OPENSEARCH_PASSWORD: ci-prod-smoke-password-0123456789abcdef
           SOCP_OPENSEARCH_INSECURE_SKIP_VERIFY: "false"
           SOCP_MINIO_ENABLED: "false"
-          SOCP_INGEST_TOKEN: ci-chaos-collector-secret
-          SOCP_VECTOR_TOKEN: ci-chaos-collector-secret
-        run: >-
-          python3 build/verify-prod-boot.py --services
+          SOCP_INGEST_TOKEN: ci-chaos-collector-secret-0123456789abcdef
+          SOCP_VECTOR_TOKEN: ci-chaos-collector-secret-0123456789abcdef
+        run: |
+          collector_expiration="$(python3 -c 'from datetime import datetime,timedelta,timezone; print((datetime.now(timezone.utc)+timedelta(days=1)).isoformat())')"
+          export SOCP_COLLECTOR_CREDENTIALS="${SOCP_COLLECTOR_CREDENTIALS}|${collector_expiration}"
+          python3 build/verify-prod-boot.py --services \
           search-config detect-web alert-web report-web api-gateway
 
       - name: Start pipeline services

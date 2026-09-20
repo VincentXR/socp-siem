@@ -275,6 +275,13 @@ Chaos event injection is a data-plane operation. Set
 `PIPELINE_INGEST_URL` to use a registered collector; do not reuse a user JWT
 for `/search-config/api/v1/ingest`.
 
+The full API verifier reads case timelines through their paginated endpoint.
+It publishes an isolated START-to-END SOAR playbook and an automation rule
+matching only its probe entity before ingesting the alert. It checks the
+service-signed alert reaches that version and completes through Temporal,
+then deletes the trigger rule and archives the playbook while preserving run
+evidence. No external response action is part of this fixture.
+
 ## CI ownership
 
 `.github/workflows/ci.yml` runs on pushes and pull requests to `main`, and
