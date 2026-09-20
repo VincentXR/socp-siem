@@ -41,6 +41,27 @@ socp:
     # A JVM-unique id is the fallback identity for the database state-unit
     # lease; set SOCP_DETECT_INSTANCE_ID when operators need a stable label.
     instance-id: ${SOCP_DETECT_INSTANCE_ID:${random.uuid}}
+    # Detection state/checkpoint ownership is bound to this input topic.
+    # legacy -> socp-events; shadow/primary routed v2 -> socp-detection-routed-v2.
+    input-topic: ${SOCP_DETECT_INPUT_TOPIC:${socp.kafka.topic:socp-events}}
+    # primary forwards durable alerts; shadow evaluates/journals only.
+    output-mode: ${SOCP_DETECT_OUTPUT_MODE:primary}
+    routing:
+      # Migration modes: legacy | shadow | primary. The health indicator
+      # validates mode/input/output combinations and exposes LEGACY_PARTIAL
+      # instead of claiming cross-dimension correctness on the canonical topic.
+      mode: ${SOCP_DETECT_ROUTING_MODE:legacy}
+      source-topic: ${SOCP_DETECT_ROUTING_SOURCE_TOPIC:${socp.kafka.topic:socp-events}}
+      delivery-topic: ${SOCP_DETECT_ROUTING_DELIVERY_TOPIC:socp-detection-routed-v2}
+      source-group-id: ${SOCP_DETECT_ROUTING_SOURCE_GROUP_ID:socp-detect-router-v2}
+      publisher-enabled: ${SOCP_DETECT_ROUTING_PUBLISHER_ENABLED:false}
+      max-stateful-dimensions: ${SOCP_DETECT_ROUTING_MAX_STATEFUL_DIMENSIONS:8}
+      plan-cache-max-tenants: ${SOCP_DETECT_ROUTING_PLAN_CACHE_MAX_TENANTS:1000}
+      plan-refresh-ms: ${SOCP_DETECT_ROUTING_PLAN_REFRESH_MS:1000}
+      outbox-poll-ms: ${SOCP_DETECT_ROUTING_OUTBOX_POLL_MS:250}
+      outbox-initial-delay-ms: ${SOCP_DETECT_ROUTING_OUTBOX_INITIAL_DELAY_MS:250}
+      # 0 retries forever; routing publication must not silently turn into loss.
+      outbox-max-attempts: ${SOCP_DETECT_ROUTING_OUTBOX_MAX_ATTEMPTS:0}
     engine:
       idle-ttl-ms: ${SOCP_DETECT_ENGINE_IDLE_TTL_MS:1800000}
       max-tenants: ${SOCP_DETECT_ENGINE_MAX_TENANTS:1000}
@@ -125,6 +146,7 @@ socp:
         password: ${socp.detect.model.datasource.password}
   kafka:
     bootstrap: ${SOCP_KAFKA_BOOTSTRAP:localhost:9092}
+    topic: ${SOCP_KAFKA_TOPIC:socp-events}
     group-id: ${SOCP_KAFKA_GROUP_ID:socp-detect}
     alarm-topic: ${SOCP_KAFKA_ALARM_TOPIC:socp-alarm-original}
     enabled: ${SOCP_KAFKA_ENABLED:true}
@@ -150,4 +172,4 @@ management:
         enabled: true
       group:
         readiness:
-          include: readinessState,db,socpDependencies
+          include: readinessState,db,socpDependencies,detectionRouting
