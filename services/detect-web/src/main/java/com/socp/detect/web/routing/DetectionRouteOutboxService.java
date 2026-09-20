@@ -3,7 +3,9 @@ package com.socp.detect.web.routing;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.socp.detect.web.persistence.entity.DetectionRouteOutboxEntity;
+import com.socp.detect.web.persistence.entity.DetectionRouteTopologyEntity;
 import com.socp.detect.web.persistence.repository.DetectionRouteOutboxRepository;
+import com.socp.detect.web.persistence.repository.DetectionRouteTopologyRepository;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
@@ -24,7 +26,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 
 /**
@@ -36,27 +37,37 @@ public class DetectionRouteOutboxService {
 
     private final DetectionRouteOutboxRepository repository;
     private final DetectionRoutingPlanRegistry plans;
+    private final DetectionRouteTopologyRepository topologyRepository;
     private final String deliveryTopic;
     private final TransactionTemplate transactions;
-    /** Topology changes are a migration boundary, never a silent hot reload. */
-    private final Map<String, String> pinnedPlanVersions = new ConcurrentHashMap<>();
 
     /** Compatibility constructor used by focused tests. */
     public DetectionRouteOutboxService(
             DetectionRouteOutboxRepository repository,
             DetectionRoutingPlanRegistry plans,
             String deliveryTopic) {
-        this(repository, plans, deliveryTopic, null);
+        this(repository, plans, null, deliveryTopic, null);
+    }
+
+    /** Focused constructor that also exercises persistent topology pinning. */
+    DetectionRouteOutboxService(
+            DetectionRouteOutboxRepository repository,
+            DetectionRoutingPlanRegistry plans,
+            DetectionRouteTopologyRepository topologyRepository,
+            String deliveryTopic) {
+        this(repository, plans, topologyRepository, deliveryTopic, null);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
     public DetectionRouteOutboxService(
             DetectionRouteOutboxRepository repository,
             DetectionRoutingPlanRegistry plans,
+            DetectionRouteTopologyRepository topologyRepository,
             @Value("${socp.detect.routing.delivery-topic:socp-detection-routed-v2}") String deliveryTopic,
             PlatformTransactionManager transactionManager) {
         this.repository = repository;
         this.plans = plans;
+        this.topologyRepository = topologyRepository;
         this.deliveryTopic = deliveryTopic == null || deliveryTopic.isBlank()
                 ? "socp-detection-routed-v2" : deliveryTopic.trim();
         this.transactions = transactionManager == null ? null : new TransactionTemplate(transactionManager);
@@ -111,13 +122,7 @@ public class DetectionRouteOutboxService {
             throw new DetectionRoutingPlan.UnsupportedRoutingPlanException(
                     String.join("; ", plan.allErrors()));
         }
-        String pinned = pinnedPlanVersions.putIfAbsent(context.tenant(), plan.version());
-        if (pinned != null && !pinned.equals(plan.version())) {
-            throw new DetectionRoutingPlan.UnsupportedRoutingPlanException(
-                    "routing topology changed for tenant " + context.tenant()
-                            + " pinnedPlan=" + pinned + " currentPlan=" + plan.version()
-                            + "; use shadow/prewarm/cutover and a new routing-version deployment");
-        }
+        pinTopology(context.tenant(), plan);
 
         List<String> dimensions = plan.dimensionsForSource(context.event().source());
         List<String> missing = new ArrayList<>();
@@ -163,6 +168,25 @@ public class DetectionRouteOutboxService {
         repository.saveAllAndFlush(rows);
         return new RouteResult(context.tenant(), context.sourceEventId(),
                 plan.version(), routes.size(), List.copyOf(missing), false);
+    }
+
+    private void pinTopology(String tenant, DetectionRoutingPlan plan) {
+        if (topologyRepository == null) return;
+        var pinned = topologyRepository.findByTenantIdAndRoutingVersion(
+                tenant, plan.routingVersion());
+        if (pinned.isPresent()) {
+            if (!plan.version().equals(pinned.get().getPlanVersion())) {
+                throw new DetectionRoutingPlan.UnsupportedRoutingPlanException(
+                        "routing topology changed for tenant " + tenant
+                                + " routingVersion=" + plan.routingVersion()
+                                + " pinnedPlan=" + pinned.get().getPlanVersion()
+                                + " currentPlan=" + plan.version()
+                                + "; use shadow/prewarm/cutover and a new routing-version deployment");
+            }
+            return;
+        }
+        topologyRepository.saveAndFlush(new DetectionRouteTopologyEntity(
+                tenant, plan.routingVersion(), plan.version(), Instant.now()));
     }
 
     private <T> T inTransaction(Supplier<T> work) {
