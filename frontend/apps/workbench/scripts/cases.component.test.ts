@@ -16,7 +16,8 @@ vi.mock('../src/api/domains', () => ({ caseApi: {
 } }))
 
 afterEach(() => { delete query.caseId; vi.clearAllMocks() })
-const caseInfo = (id: string) => ({ id, title: id, status: 'OPEN', assignee: '', alarmIds: [] }) as unknown as CaseInfo
+const caseInfo = (id: string): CaseInfo => ({ id, title: id, entity: 'host-a', severity: 'HIGH',
+  status: 'OPEN', assignee: '', ruleIds: [], alarmIds: [], timeline: [] })
 type Details = { openCase: (item: CaseInfo) => Promise<void>; timeline: TimelineEvent[]; detail: CaseInfo }
 
 it('ignores an old timeline even when the cancelled transport still resolves', async () => {

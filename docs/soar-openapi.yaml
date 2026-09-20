@@ -7,9 +7,7 @@ servers:
   - url: /soar-web
 security:
   - cookieAuth: []
-    tenantHeader: []
   - bearerAuth: []
-    tenantHeader: []
 tags:
   - name: Playbooks
   - name: Runs
@@ -17,6 +15,12 @@ tags:
   - name: Automation
   - name: Connections
 paths:
+  /health:
+    get:
+      tags: [Operations]
+      security: []
+      description: Runtime dependency health; degraded dependencies return HTTP 503.
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '503': {$ref: '#/components/responses/ApiResult'}}
   /api/definition-schema:
     get:
       tags: [Playbooks]
@@ -120,6 +124,12 @@ paths:
       tags: [Playbooks]
       parameters: [{$ref: '#/components/parameters/PlaybookId'}, {$ref: '#/components/parameters/Version'}]
       responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+  /api/playbooks/{playbookId}/versions/{version}/rollback:
+    post:
+      tags: [Playbooks]
+      description: Restores an earlier revision as a new editable draft; requires soar:edit and preserves published history.
+      parameters: [{$ref: '#/components/parameters/PlaybookId'}, {$ref: '#/components/parameters/Version'}]
+      responses: {'201': {$ref: '#/components/responses/ApiResult'}, '404': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}}
   /api/runs:
     get:
       tags: [Runs]
@@ -413,7 +423,11 @@ components:
   securitySchemes:
     cookieAuth: {type: apiKey, in: cookie, name: SOCP_SESSION}
     bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
-    tenantHeader: {type: apiKey, in: header, name: X-Tenant-Id}
+    tenantHeader:
+      type: apiKey
+      in: header
+      name: X-Tenant-Id
+      description: Informational only. Tenant binding comes from the verified credential; the gateway overwrites caller-supplied values.
   parameters:
     Page: {name: page, in: query, schema: {type: integer, minimum: 0, default: 0}}
     Size: {name: size, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 20}}

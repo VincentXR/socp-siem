@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import type { CaseInfo } from '../src/api/models'
 import { workbenchOrigin } from './helpers'
 
 const WORKBENCH_ORIGIN = workbenchOrigin()
@@ -110,8 +111,8 @@ test('gateway auth endpoint is reachable in a real browser smoke run', async ({ 
 test('case deep link loads detail and timeline outside the current page', async ({ page }, testInfo) => {
   await page.addInitScript(() => localStorage.setItem('socp-locale', 'en-US'))
   await mockSession(page)
-  const item = { id: 'off-page', caseNo: 'CASE-OFF-PAGE', title: 'Off-page investigation', status: 'OPEN',
-    entity: 'host-a', severity: 'HIGH', assignee: '', alarmIds: [], createdAt: '2026-09-20T00:00:00Z', updatedAt: '2026-09-20T00:00:00Z' }
+  const item: CaseInfo = { id: 'off-page', caseNo: 'CASE-OFF-PAGE', title: 'Off-page investigation', status: 'OPEN',
+    entity: 'host-a', severity: 'HIGH', assignee: '', ruleIds: [], alarmIds: [], timeline: [], createdAt: '2026-09-20T00:00:00Z', updatedAt: '2026-09-20T00:00:00Z' }
   await page.route('**/incident-web/api/v1/**', async route => {
     const path = new URL(route.request().url()).pathname
     const body = path.endsWith('/timeline')
