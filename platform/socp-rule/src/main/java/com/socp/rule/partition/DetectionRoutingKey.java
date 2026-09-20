@@ -48,6 +48,11 @@ public final class DetectionRoutingKey {
         return encode(tenant, field, value);
     }
 
+    /** Build a bounded Kafka key for an already resolved routing tuple. */
+    public static String forTuple(String tenant, String field, String value) {
+        return encode(tenant, field, value);
+    }
+
     public static String forSearchEvent(String source, String host,
                                         Map<String, String> fields) {
         String tenant = first(fields, TENANT_FIELD, "tenantId", "tenant");
