@@ -202,7 +202,7 @@ def service_assembly_checks(errors: list[str]) -> int:
                 f"{relative(main_class)}: @ConfigurationPropertiesScan is not the platform convention; "
                 "it silently registers every annotated class it finds (including @Component ones, "
                 "which yields a second bean definition) - list properties on "
-                "@EnableConfigurationProperties instead, see docs/adding-a-service.md")
+                "@EnableConfigurationProperties instead")
         for name, component in entries:
             if component or name in content:
                 continue

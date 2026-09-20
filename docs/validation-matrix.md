@@ -1,21 +1,49 @@
 # Validation Matrix
 
 This matrix defines what SOCP proves on a single-node development stack and
-what must be run explicitly for multi-instance semantics. It is evidence for
-correctness and recovery behavior, not a production capacity or HA claim.
+what must be run explicitly for multi-instance semantics. It defines expected
+evidence, not a claim that checks have passed on the current revision or that
+the system has production capacity or HA certification.
+
+## Local change validation
+
+Select checks by the behavior or contract changed, not just the directory
+touched. Documentation-only edits in a backend or frontend directory do not
+require that component's executable suite. Combine rows for changes spanning
+boundaries; the commands and fixtures are explained in [testing](testing.md).
+
+| Changed boundary | Local verification |
+|---|---|
+| Documentation, AGENTS, Skills, or task prompts only | Check relative links/anchors, referenced paths and commands, and consistency with the owning contracts. For Skills, also check frontmatter, trigger scope, and on-demand references; run changed helper scripts. Runtime application prompts use the owning module's checks. |
+| One backend module | `bash build/mvnw.sh -pl services/soar-web -am test -Dsurefire.failIfNoSpecifiedTests=false` (replace the module with the owner). |
+| Shared platform behavior, cross-module contracts, persistence, or event flow | Full Maven suite plus relevant `build/verify-*.py` contracts; include the affected middleware-backed checks below. |
+| Workbench source or build configuration | `pnpm test`, `pnpm lint`, `pnpm format:check`, and `pnpm verify` in `frontend/apps/workbench`. Run affected Playwright flows for user-flow changes; include a screenshot or concrete manual-verification note for visual changes. |
+| Service boundary or topology | `python build/verify-contracts.py` and `python build/runtime-topology.py --check`. |
+| Production configuration or deployment | `python build/verify-production.py` and affected `prod` guard/boot checks; Compose/Helm checks below when those artifacts change. |
+| Build or verification scripts | Owning `build/tests` tests and the changed command with representative local inputs. |
+
+For middleware-backed behavior, use relevant Testcontainers, pipeline,
+full-stack, or chaos checks when the required local environment is available.
+If it is unavailable, run independent checks and report the missing evidence.
+Live-service and chaos checks need verified disposable targets; see
+[test environments](testing.md#test-environments).
+
+The repository-wide final-diff and completion requirements are in
+[AGENTS.md](../AGENTS.md#completion). This local selection does not replace or
+relax CI/release gates.
 
 ## Automated and operational checks
 
 | Layer | Command | Pass evidence | Cadence |
 |---|---|---|---|
-| Java modules | `bash build/mvnw.sh test -Dsurefire.failIfNoSpecifiedTests=false` | Reactor tests pass, including auth, rules, Detection, Alert, incident, and shared error handling | Every change |
+| Java modules | `bash build/mvnw.sh test -Dsurefire.failIfNoSpecifiedTests=false` | Reactor tests pass, including auth, rules, Detection, Alert, incident, and shared error handling | Change CI; local shared/cross-module/persistence/event-flow change |
 | Quality gate | `bash build/quality-gate.sh` or `powershell -File build/quality-gate.ps1` | Coverage floor, SpotBugs, toolchain policy, the shared `build/verify-repository.py` contract manifest, detection content, and workbench checks | Before merge; Change CI runs the same repository manifest |
 | Dependency audit | PR Dependency Review; fallback `python3 build/verify-ossindex-audit.py` over the full Java runtime graph | High-severity findings fail; 401/429/timeout/missing/partial component reports also fail closed instead of becoming an empty green report | Dependency-manifest PR/weekly/release candidate |
-| Workbench | `cd frontend/apps/workbench && pnpm test && pnpm test:e2e && pnpm verify` | API contracts, cookie login, navigation permissions/history, SOAR draft/publish/run/human-gate flow, type check, production build, artifact assertions | Frontend change |
+| Workbench | `cd frontend/apps/workbench && pnpm test && pnpm lint && pnpm format:check && pnpm test:e2e && pnpm verify` | API contracts, style checks, cookie login, navigation permissions/history, SOAR draft/publish/run/human-gate flow, type check, production build, artifact assertions | Change CI; local selection above |
 | Cross-cutting slice | `python build/verify-slice.py` | Authentication, tenancy, audit, rate limiting, and trace propagation | PR/release candidate |
 | Event pipeline | `python build/verify-pipeline.py` | Canonical event -> Kafka -> Detection -> Alert persistence -> OpenSearch/ClickHouse/report | Middleware change/scheduled |
 | Detection content | `python build/validate-detection-content.py` | Manifest schema, metadata, positive/negative vectors, ATT&CK references | Rule/content change |
-| Investigation dataset | Maven dataset test + `python build/eval-investigation.py --results services/ai-assistant/target/investigation-eval-results.json` | Real evidence composer output satisfies versioned citation, timeline and human-approval oracles | Every change |
+| Investigation dataset | Maven dataset test + `python build/eval-investigation.py --results services/ai-assistant/target/investigation-eval-results.json` | Real evidence composer output satisfies versioned citation, timeline and human-approval oracles | Change CI; local investigation/evidence-composer/dataset change |
 | Golden scenario | `python build/demos/golden-demo.py --transport ingest` | SSH brute force -> successful login -> privilege escalation -> multi-stage correlation -> entity risk -> Incident/Notify/SOAR | Manual/full-stack |
 | Detection restart | `python build/demos/detection-recovery.py` | Kafka backlog grows while Detection is down and catches up after restart | Manual/weekly |
 | Alert Web outage | `python build/chaos-pipeline.py --scenario alert_web_restart` | Detection Alert Outbox survives Alert Web outage and creates one alert after recovery | Manual/weekly |

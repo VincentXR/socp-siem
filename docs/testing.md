@@ -4,6 +4,22 @@ Testing is organized around the event pipeline and the boundaries where a
 failure would be expensive to diagnose. Fast module tests cover local
 behavior; Python checks exercise running services and middleware.
 
+Choose checks with the [local change matrix](validation-matrix.md#local-change-validation).
+The commands below are a catalog, not a sequence to run for every task. CI and
+release gates retain their broader coverage.
+
+## Test environments
+
+Local build/test authorization is defined in
+[AGENTS.md](../AGENTS.md#scope-and-autonomy).
+
+Do not assume every test command is isolated: service probes accept endpoint
+overrides, Compose can reuse persistent volumes, and chaos checks restart
+services or mutate data. Inspect the selected command's target configuration
+and use disposable local fixtures. Testcontainers is appropriate for isolated
+middleware checks when Docker is available. Production/shared targets and
+deletion of persistent data follow the authorization boundary in `AGENTS.md`.
+
 ## Local checks
 
 ```bash
@@ -16,14 +32,18 @@ bash build/quality-gate.sh
 # Native Windows equivalent; both wrappers consume build/verify-repository.py
 powershell -File build/quality-gate.ps1
 
-# Focused backend slice
-bash build/mvnw.sh -pl services/api-gateway,services/alert-web,services/detect-web -am test
+# Owning backend module and its dependencies (replace with the changed module)
+bash build/mvnw.sh -pl services/soar-web -am test -Dsurefire.failIfNoSpecifiedTests=false
 
 # Workbench contracts, type check, production build
-cd frontend/apps/workbench
-pnpm test
-pnpm test:e2e
-pnpm verify
+(
+  cd frontend/apps/workbench
+  pnpm test
+  pnpm lint
+  pnpm format:check
+  pnpm verify
+  pnpm test:e2e  # user-flow changes; full suite in CI
+)
 
 # OpenAPI snapshot -> TypeScript SDK generation and strict compilation
 python build/verify-openapi-sdk.py
