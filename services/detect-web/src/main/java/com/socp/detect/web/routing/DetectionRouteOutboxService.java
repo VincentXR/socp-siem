@@ -110,7 +110,10 @@ public class DetectionRouteOutboxService {
             // intentional: the next attempt observes the deterministic ids and
             // succeeds without creating a partial plan.
             throw raced;
-        } catch (RuntimeException malformed) {
+        } catch (IllegalArgumentException malformed) {
+            // Only deterministic source-contract failures are terminal. Store,
+            // rule-catalogue and serializer failures remain retryable and keep
+            // the canonical source offset uncommitted.
             return recordTerminalFailure(sourceTopic, sourcePartition, sourceOffset, raw, malformed);
         }
     }
