@@ -393,11 +393,20 @@ jobs:
           python3 build/chaos-pipeline.py --scenario routing_rollback --count 20 \
             --run-id "weekly-rrb-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --output .cache/chaos/routing-rollback.json
+          # Retain the exact namespace of the previously failed rollback so
+          # randomized entity/partition placement cannot hide that regression.
+          python3 build/chaos-pipeline.py --scenario routing_rollback --count 20 \
+            --run-id weekly-rrb-35543128202-1 \
+            --output .cache/chaos/routing-rollback-regression.json
 
       - name: Run Golden Demo
+        id: golden_demo
+        env:
+          GOLDEN_DEMO_DB_EVIDENCE: "true"
         run: python3 build/demos/golden-demo.py --transport ingest
 
       - name: Run dependency failure injection
+        if: ${{ !cancelled() && (steps.golden_demo.outcome == 'success' || steps.golden_demo.outcome == 'failure') }}
         run: python3 build/failure-tests.py
 
       - name: Collect logs

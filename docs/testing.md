@@ -274,6 +274,13 @@ Rollback evidence preserves instance logs and the manifest before each
 generation switch, plus the legacy Kafka offsets, journal rows, instance stats
 and matching alerts under `.cache/chaos/rollback-*/`. Cleanup must not overwrite
 the failed generation's diagnostic evidence when restoring routed mode.
+Full-stack CI also repeats the historical failed rollback namespace to retain
+the same entity and partition placement alongside each run's fresh dataset.
+Golden Demo saves its canonical events, matching alerts, rules and runtime
+state in `.cache/golden-demo/` on exit. `GOLDEN_DEMO_DB_EVIDENCE=true` adds a
+read-only journal snapshot from the disposable `socp-postgres` container.
+The independent dependency-failure phase still runs after a Golden Demo
+failure; the failed demo continues to fail the overall job.
 
 Chaos event injection is a data-plane operation. Set
 `PIPELINE_COLLECTOR_ID`, `PIPELINE_COLLECTOR_TOKEN`, and
