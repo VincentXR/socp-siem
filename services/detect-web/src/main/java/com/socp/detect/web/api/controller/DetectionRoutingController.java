@@ -32,6 +32,9 @@ public class DetectionRoutingController {
         var plan = plans.plan(TenantContext.require());
         Map<String, Object> response = new java.util.LinkedHashMap<>(plan.summary());
         response.put("deployment", runtime.summary(plan));
+        boolean compatible = plans.topologyCompatible(TenantContext.require(), plan);
+        response.put("topologyCompatible", compatible);
+        if (!compatible) response.put("capabilityStatus", "TOPOLOGY_CONFLICT");
         return ApiResult.ok(Map.copyOf(response));
     }
 }

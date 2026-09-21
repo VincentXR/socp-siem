@@ -31,7 +31,9 @@ class VerifyOpenApiSdkTest(unittest.TestCase):
 
     def test_generated_client_contains_models_and_all_operations(self):
         source, operations = MODULE.generate_client(self.document)
-        self.assertEqual(len(operations), 71)
+        self.assertEqual(len(operations), 73)
+        self.assertIn("async getHealth(", source)
+        self.assertIn("async postApiPlaybooksPlaybookIdVersionsVersionRollback(", source)
         self.assertIn("export interface SoarApiResult", source)
         self.assertIn("export class GeneratedSoarClient", source)
         self.assertIn("credentials: 'include'", source)

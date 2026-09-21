@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import datetime as dt
 import json
 import os
@@ -255,6 +256,47 @@ def page_items(value):
     return data if isinstance(data, list) else []
 
 
+def capture_evidence(token, host, source_ip):
+    """Retain this run's data before CI tears down the disposable stack."""
+    evidence = {"host": host, "sourceIp": source_ip}
+    canonical_query = urllib.parse.quote(f"host={host}", safe="")
+    probes = {
+        "canonical": lambda: request("search", f"/api/v1/search?q={canonical_query}", token=token)[:2],
+        "alerts": lambda: [item for item in list_alerts(token)[1]
+                           if item.get("entity") in (host, source_ip)],
+        "stats": lambda: request("detect", "/api/v1/stats", token=token)[:2],
+        "rules": lambda: request("detect", "/api/v1/rules", token=token)[:2],
+        "routingPlan": lambda: request("detect", "/api/v1/routing-plan", token=token)[:2],
+    }
+    if os.environ.get("GOLDEN_DEMO_DB_EVIDENCE") == "true":
+        # Opt-in CI diagnostics only: no connection to an arbitrary database.
+        quoted = "'" + host.replace("'", "''") + "'"
+        query = ("select coalesce(json_agg(row_to_json(e)), '[]'::json)::text from "
+                 "(select source_event_id,delivery_id,source,host,raw_event,status,status_reason,"
+                 "occurred_at,source_topic,source_partition,source_offset,delivery_topic,"
+                 "delivery_partition,delivery_offset,fields_json,result_json "
+                 "from t_detection_event where tenant_id='default' and host=" + quoted + ") e")
+
+        def journal():
+            result = subprocess.run(
+                ["docker", "exec", "socp-postgres", "psql", "-U", "socp", "-d", "detect", "-tAc", query],
+                cwd=REPO, capture_output=True, text=True, timeout=30, check=False)
+            if result.returncode:
+                raise RuntimeError(result.stderr[-500:])
+            return json.loads(result.stdout)
+
+        probes["journal"] = journal
+    for name, probe in probes.items():
+        try:
+            evidence[name] = probe()
+        except Exception as error:
+            evidence[name] = {"error": str(error)}
+    destination = REPO / ".cache" / "golden-demo" / f"{host}.json"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(evidence, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"Golden Demo evidence: {destination.relative_to(REPO)}")
+
+
 def ensure_playbook(token):
     status, result, _ = request("soar", "/api/playbooks?page=0&size=100", token=token)
     if status != 200:
@@ -433,8 +475,12 @@ def main():
             return 1
 
     try:
-        playbook = ensure_playbook(token)
-        automation_rule = ensure_automation_rule(token, playbook)
+        # Publishing is a separate permission from the analyst's event and
+        # investigation flow. Use the publisher only to provision SOAR fixtures.
+        publisher_token = login_token(GATEWAY_URL, os.environ.get("SOAR_VERIFY_USERNAME", "admin"),
+                                      os.environ.get("SOAR_VERIFY_PASSWORD", "admin123"))
+        playbook = ensure_playbook(publisher_token)
+        automation_rule = ensure_automation_rule(publisher_token, playbook)
         channel = ensure_channel(token)
     except RuntimeError as error:
         print(f"[FAIL] Demo prerequisites: {error}")
@@ -458,6 +504,7 @@ def main():
     run_id = str(epoch)
     source_ip = f"203.0.113.{10 + epoch % 200}"
     host = f"golden-ssh-{run_id}"
+    atexit.register(capture_evidence, token, host, source_ip)
     failed, accepted, host_session, sudo, execution_line = event_lines(source_ip, host)
     print(f"\nScenario: {len(failed)} failed SSH logins from {source_ip}, then one accepted login")
 

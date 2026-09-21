@@ -129,6 +129,17 @@ as `fields.category`, `fields.src_ip`, `fields.user`, and the corresponding
 `ecs.*` values. The existing Detection `RuleSpec.match` / `steps` conditions
 then evaluate those fields and create alerts through the detection outbox.
 
+Raw syslog and Vector JSON envelopes containing syslog preserve `process.name`
+and normalize known applications into the Detection source vocabulary:
+`sshd`/`sudo`/`su` become `auth`; `auditd`, `linux`, `edr`, and `falco` retain
+their application category. Unknown applications remain `syslog`. RFC sshd
+messages reuse the plain authentication parser for user, source IP and action.
+This lets source-scoped routed rules receive the same dimensions with either
+transport. The transport vendor remains `syslog`, and the authenticated
+collector and tenant remain authoritative. Reprocessing historical records
+with the same producer event IDs must respect the immutable-content contract;
+source normalization changes can intentionally return a conflict on old IDs.
+
 ## Search runtime roles
 
 `SOCP_SEARCH_RUNTIME_ROLE` selects one of three roles from the same

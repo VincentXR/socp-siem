@@ -1,5 +1,6 @@
 package com.socp.threat;
 
+import com.socp.threat.web.config.LegacyConfidenceTypeCallback;
 
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
@@ -40,7 +41,7 @@ class ThreatMigrationTest {
     void everyVersionAppliesInOrderOnAnEmptyDatabase() throws Exception {
         String url = "jdbc:h2:mem:threat_migration_sequence;MODE=PostgreSQL;DB_CLOSE_DELAY=-1";
         Flyway flyway = Flyway.configure().dataSource(url, "sa", "")
-                .locations("classpath:db/migration").load();
+                .locations("classpath:db/migration").callbacks(new LegacyConfidenceTypeCallback()).load();
 
         // V5 (confidence type replay) is the current head of the sequence.
         assertEquals(5, flyway.migrate().migrationsExecuted);

@@ -56,17 +56,19 @@ class DetectJournalPostgresMigrationTest {
                  var statement = connection.createStatement()) {
                 statement.executeUpdate("""
                         INSERT INTO t_detection_event
-                            (event_id, tenant_id, source_event_id, source, host, raw_event,
+                            (event_id, tenant_id, source_event_id, delivery_id, routing_version, source, host, raw_event,
                              fields_json, severity, occurred_at, status)
-                        SELECT 'pending-' || n, 'tenant-a', 'pending-' || n, 'auth', 'host', 'raw',
+                        SELECT 'pending-' || n, 'tenant-a', 'pending-' || n, 'pending-' || n,
+                               'legacy-v1', 'auth', 'host', 'raw',
                                '{}', 'INFO', CURRENT_TIMESTAMP - INTERVAL '120 days', 'PENDING'
                         FROM generate_series(1, 1000) AS n
                         """);
                 statement.executeUpdate("""
                         INSERT INTO t_detection_event
-                            (event_id, tenant_id, source_event_id, source, host, raw_event,
+                            (event_id, tenant_id, source_event_id, delivery_id, routing_version, source, host, raw_event,
                              fields_json, severity, occurred_at, status)
-                        SELECT 'dead-' || n, 'tenant-a', 'dead-' || n, 'auth', 'host', 'raw',
+                        SELECT 'dead-' || n, 'tenant-a', 'dead-' || n, 'dead-' || n,
+                               'legacy-v1', 'auth', 'host', 'raw',
                                '{}', 'INFO', CURRENT_TIMESTAMP - INTERVAL '120 days', 'DEAD_LETTERED'
                         FROM generate_series(1, 100) AS n
                         """);
@@ -74,6 +76,12 @@ class DetectJournalPostgresMigrationTest {
                 assertEquals(100_000, scalar(statement, """
                         SELECT COUNT(*) FROM t_detection_event
                         WHERE status = 'COMPLETED' AND completed_at IS NULL
+                        """));
+                assertEquals(100_000, scalar(statement, """
+                        SELECT COUNT(*) FROM t_detection_event
+                        WHERE status = 'COMPLETED' AND delivery_id = source_event_id
+                          AND routing_version = 'legacy-v1' AND delivery_topic = 'socp-events'
+                          AND delivery_partition = source_partition AND delivery_offset = source_offset
                         """));
                 assertEquals(100, scalar(statement, """
                         SELECT COUNT(*) FROM t_detection_event

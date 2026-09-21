@@ -21,14 +21,17 @@ public class DetectionRoutingHealthIndicator implements HealthIndicator {
     public Health health() {
         DetectionRoutingPlan defaultPlan = plans.plan("default");
         java.util.List<String> deploymentErrors = runtime.validationErrors();
-        if (!deploymentErrors.isEmpty() || !defaultPlan.supported()
+        boolean topologyCompatible = plans.topologyCompatible("default", defaultPlan);
+        if (!deploymentErrors.isEmpty() || !defaultPlan.supported() || !topologyCompatible
                 || plans.hasKnownUnsupportedPlan()) {
             return Health.down()
-                    .withDetail("capabilityStatus", runtime.capabilityStatus(defaultPlan))
+                    .withDetail("capabilityStatus", topologyCompatible
+                            ? runtime.capabilityStatus(defaultPlan) : "TOPOLOGY_CONFLICT")
                     .withDetail("routingVersion", defaultPlan.routingVersion())
                     .withDetail("planVersion", defaultPlan.version())
                     .withDetail("deploymentErrors", deploymentErrors)
                     .withDetail("rulePlanErrors", defaultPlan.allErrors())
+                    .withDetail("topologyCompatible", topologyCompatible)
                     .build();
         }
         return Health.up()

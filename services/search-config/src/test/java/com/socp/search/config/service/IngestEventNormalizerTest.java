@@ -30,6 +30,96 @@ import static org.mockito.Mockito.when;
 
 class IngestEventNormalizerTest {
 
+    @Test
+    void rawAndVectorSyslogPreserveDetectionSourceAndHostDimensions() throws Exception {
+        IngestEventNormalizer normalizer = new IngestEventNormalizer(null, null, null, new ParserRegistry());
+        TenantContext.set("tenant-a");
+        Map<String, String> stages = Map.of(
+                "auditd", "Accepted password session established",
+                "sudo", "sudo: root executed /bin/sh",
+                "edr", "socat reverse shell started");
+        for (var stage : stages.entrySet()) {
+            String raw = "<34>1 2026-09-20T23:58:55Z endpoint-1 " + stage.getKey()
+                    + " 4300 - - " + stage.getValue();
+            String wrapped = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(
+                    Map.of("message", raw, "file", "/var/log/security.log", "offset", 42,
+                            "collector", "spoofed"));
+            for (String input : List.of(raw, wrapped)) {
+                var event = normalizer.normalize(input, "registered-collector").event();
+                assertEquals("sudo".equals(stage.getKey()) ? "auth" : stage.getKey(), event.source());
+                assertEquals("endpoint-1", event.host());
+                assertEquals("host", event.fields().get("detection_routing_field"));
+                assertEquals("endpoint-1", event.fields().get("detection_routing_value"));
+                assertEquals("tenant-a", event.fields().get("tenant_id"));
+                assertEquals("registered-collector", event.fields().get("collector"));
+                org.junit.jupiter.api.Assertions.assertTrue(event.msg().contains(stage.getValue()));
+                assertEquals(stage.getKey(), event.ecs().get(CanonicalEvent.PROCESS_NAME));
+            }
+        }
+    }
+
+    @Test
+    void syslogSshdRetainsAuthenticationFieldsForIpAndUserRouting() {
+        IngestEventNormalizer normalizer = new IngestEventNormalizer(null, null, null, new ParserRegistry());
+        TenantContext.set("tenant-a");
+        for (String header : List.of("<34>1 2026-09-20T23:58:55Z endpoint-1 sshd 4300 - - ",
+                "<34>Sep 20 23:58:55 endpoint-1 sshd[4300]: ",
+                "<34>Sep 20 23:58:55 endpoint-1 sshd: ")) {
+            var event = normalizer.normalize(header
+                    + "Failed password for invalid user alice from 203.0.113.10 port 51234 ssh2",
+                    "collector-1").event();
+            assertEquals("auth", event.source());
+            assertEquals("alice", event.fields().get("user"));
+            assertEquals("login_failed", event.fields().get("action"));
+            assertEquals("src_ip", event.fields().get("detection_routing_field"));
+            assertEquals("203.0.113.10", event.fields().get("detection_routing_value"));
+            assertEquals("syslog", event.fields().get("vendor"));
+        }
+    }
+
+    @Test
+    void unknownSyslogApplicationsStayGenericWithoutInventingSourceCategories() {
+        IngestEventNormalizer normalizer = new IngestEventNormalizer(null, null, null, new ParserRegistry());
+        TenantContext.set("tenant-a");
+        var event = normalizer.normalize(
+                "<34>1 2026-09-20T23:58:55Z endpoint-1 custom-app 4300 - - arbitrary text",
+                "collector-1").event();
+        assertEquals("syslog", event.source());
+        assertEquals("custom-app", event.ecs().get(CanonicalEvent.PROCESS_NAME));
+        assertEquals("endpoint-1", event.host());
+    }
+
+    @Test
+    void quarantinesForgedDeliveryAndRoutingMetadataWithoutLosingEvidence() {
+        ParserRegistry parsers = mock(ParserRegistry.class);
+        ReferenceSetStore references = mock(ReferenceSetStore.class);
+        Map<String, String> input = new LinkedHashMap<>();
+        when(references.snapshot()).thenReturn(ReferenceSetStore.Snapshot.EMPTY);
+        input.put("source", "auth");
+        input.put("src_ip", "203.0.113.10");
+        input.put("detection_delivery_id", "forged");
+        input.put("detection_delivery_kind", "STATELESS");
+        input.put("detection_routing_version", "detection-routing-v2");
+        input.put("routing_field", "user");
+        input.put("routing_value", "attacker");
+        input.put("ingested_at", "1970-01-01T00:00:00Z");
+        input.put("user_payload.detection_delivery_id", "existing evidence");
+        when(parsers.parse(anyString(), anyString())).thenReturn(input);
+        IngestEventNormalizer normalizer = new IngestEventNormalizer(
+                mock(ParsePreviewService.class), mock(ParseRuleStore.class), references, parsers);
+        TenantContext.set("tenant-a");
+
+        var event = normalizer.normalize("raw", "collector-1").event();
+
+        assertEquals("src_ip", event.fields().get("detection_routing_field"));
+        assertEquals("203.0.113.10", event.fields().get("detection_routing_value"));
+        org.junit.jupiter.api.Assertions.assertFalse(event.fields().containsKey("detection_delivery_id"));
+        assertEquals("existing evidence", event.ecs().get("user_payload.detection_delivery_id"));
+        assertEquals("forged", event.ecs().get("user_payload.user_payload.detection_delivery_id"));
+        assertEquals("STATELESS", event.ecs().get("user_payload.detection_delivery_kind"));
+        assertNotEquals(input.get("ingested_at"), event.fields().get("ingested_at"));
+    }
+
     @AfterEach
     void clearTenant() {
         TenantContext.clear();

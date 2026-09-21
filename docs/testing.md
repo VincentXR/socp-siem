@@ -256,22 +256,86 @@ python build/chaos-pipeline.py --scenario routing_rollback
 ```
 
 `routed_migration` republishes completed business events at new canonical
-offsets (more source receipts, exactly one delivery identity and one alert),
-then activates an ACTIVE stateful rule whose `routingField` contradicts its
-`groupBy` and proves the router fails closed: `/routing-plan` reports the rule
+offsets (more source receipts, unchanged fan-out delivery identities and no
+duplicate alert),
+then creates a valid TESTING rule with a new grouping dimension and verifies
+activation conflicts with the pinned topology (409) without changing its
+persisted specification. In the disposable Compose database, it
+administratively injects that probe rule as ACTIVE with a `routingField` that
+contradicts its `groupBy`, modeling a corrupt restore or an out-of-band write.
+It proves the router still fails closed: `/routing-plan` reports the rule
 as UNSUPPORTED with its reason, canonical offsets stay uncommitted, no alert is
 pretended, and deleting the rule lets the deferred work drain to the correct
 oracle. `routing_rollback` restarts the cluster on the legacy canonical input,
 proves the formal alert path survives there while the deployment reports
 `LEGACY_PARTIAL` (never cross-dimension completeness), and restores the routed
 generation afterwards.
+Rollback evidence preserves instance logs and the manifest before each
+generation switch, plus the legacy Kafka offsets, journal rows, instance stats
+and matching alerts under `.cache/chaos/rollback-*/`. Cleanup must not overwrite
+the failed generation's diagnostic evidence when restoring routed mode.
+Full-stack CI also repeats the historical failed rollback namespace to retain
+the same entity and partition placement alongside each run's fresh dataset.
+Golden Demo saves its canonical events, matching alerts, rules and runtime
+state in `.cache/golden-demo/` on exit. `GOLDEN_DEMO_DB_EVIDENCE=true` adds a
+read-only journal snapshot from the disposable `socp-postgres` container.
+The independent dependency-failure phase still runs after a Golden Demo
+failure; the failed demo continues to fail the overall job.
 
 Chaos event injection is a data-plane operation. Set
 `PIPELINE_COLLECTOR_ID`, `PIPELINE_COLLECTOR_TOKEN`, and
 `PIPELINE_INGEST_URL` to use a registered collector; do not reuse a user JWT
 for `/search-config/api/v1/ingest`.
 
+The full API verifier reads case timelines through their paginated endpoint.
+It publishes an isolated START-to-END SOAR playbook and an automation rule
+matching only its probe entity before ingesting the alert. It checks the
+service-signed alert reaches that version and completes through Temporal,
+then deletes the trigger rule and archives the playbook while preserving run
+evidence. No external response action is part of this fixture.
+The full verifier and Golden Demo use `SOAR_VERIFY_USERNAME/PASSWORD`
+(local default `admin/admin123`) only for SOAR provisioning. Business queries
+retain the analyst session, and the full verifier also requires analyst
+publishing to return 403. Dependency failure probes inherit `PIPELINE_OS`
+and `PIPELINE_OS_AUTH`; explicit `FAILURE_OS_URL/AUTH` values take precedence.
+The OpenSearch outage check requires Search Config liveness to remain 200
+while readiness returns 503, then verifies actual indexing after recovery.
+The single-consumer recovery demo runs before the routed cluster is started;
+its canonical offset oracle must not be mixed with the routed generation.
+Both recovery and chaos probes normalize Kafka's unset committed offset (`-1`)
+to zero and sum lag per partition. Empty uncommitted partitions cannot create
+phantom backlog, and one partition's high offset cannot hide another's lag.
+The attack demo also runs before the routed cluster because it uses local
+Detection HTTP ingestion and needs the contacted worker to own every shard.
+It edits rules through PUT and uses the separate `rule:activate` administrator
+transition for new rules. This local HTTP demonstration does not establish
+Kafka transport coverage; the pipeline and routed chaos checks provide that.
+After observing a new alert, it waits for that exact alert ID to appear in an
+automatically created/merged incident. It never uses manual incident creation
+to substitute for the asynchronous fan-out assertion.
+The incompatible-rule activation probe uses `RULE_VERIFY_USERNAME/PASSWORD`
+(local default `admin/admin123`) so its expected 409 tests the topology guard
+after authorization; normal chaos queries retain `DEMO_USER/PASS`.
+The ordered cross-dimension probe waits for the first user-dimension delivery
+to complete in the journal before sending the second step. Their canonical
+keys differ, so Kafka provides no cross-partition ordering guarantee. This
+tests the detector's processing-order contract without claiming event-time
+reordering support.
+
 ## CI ownership
+
+CI jobs generate disposable credentials with `build/prepare-ci-credentials.py`
+immediately after checkout. Values are shared through the runner's `GITHUB_ENV`
+file and masked before later steps run; workflow files contain no fixed job
+passwords or signing/collector secrets. Integration probes use the same
+generated credentials as their services, and collector credentials expire
+after one day. The build-only scope leaves application test user fixtures alone.
+
+The attack demo honors the local Detection API's `503` plus explicit
+`accepted=false`/`queue_full` response during rule reload. It follows
+`Retry-After` with a bounded retry window, preserving the event ID and timestamp.
+Authentication failures, ambiguous errors and persistent rejection still fail
+the check; every scenario must produce a new matching alert and automatic case.
 
 `.github/workflows/ci.yml` runs on pushes and pull requests to `main`, and
 manually. It builds the Java reactor, enables the Testcontainers contract

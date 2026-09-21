@@ -5,6 +5,21 @@ Compose stack remains a single-node integration environment. A production
 rollout is complete only after the deployment owner supplies the external
 dependencies and records the evidence listed below.
 
+The PostgreSQL threat-intelligence migration path retains the published V2
+checksum. A Flyway callback supplies the legacy `DOUBLE` spelling only while
+V2 executes, converts the confidence column to `DOUBLE PRECISION`, and removes
+its own marked compatibility domain without `CASCADE`. Existing operator-owned
+types are preserved. Existing installations run the later V5 type migration
+normally; do not edit V2 or repair its checksum to perform an upgrade. Standalone
+Flyway invocations for `threat-web` must register `LegacyConfidenceTypeCallback`,
+as the Spring application does automatically.
+
+The CI production-context smoke starts a separate TLS-enabled object store,
+trusts its short-lived certificate, and supplies expiring collector credentials
+and projected secret files. This validates application startup and transport
+configuration; production storage retention and backup recovery still require
+deployment-specific verification.
+
 ## Service readiness matrix
 
 Readiness is recorded by dimension. A green local or CI correctness result is
@@ -32,6 +47,18 @@ production-ready.
 The authoritative commands and cadence live in
 [validation-matrix.md](validation-matrix.md). Evidence is commit-scoped; a
 successful workflow from an older revision is not proof for HEAD.
+
+The Compose MinIO fixture is built from upstream commit
+`9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a` (the October 2025 security release),
+using the image catalog's build/runtime bases. This replaces the unavailable
+Docker Hub community image and its September server binary, which predates
+[GHSA-jjjj-jwhf-8rgr](https://github.com/minio/minio/security/advisories/GHSA-jjjj-jwhf-8rgr).
+Compose builds this local image automatically; the first start therefore needs
+GitHub and Go module access. The source revision and original license/notice are
+retained in the image. This is an integration fixture, not a claim of ongoing
+vendor security support: the [upstream community repository](https://github.com/minio/minio)
+is archived. Production object storage still requires a supported provider or
+an explicitly owned patch/scan/rebuild policy, plus retention and restore tests.
 
 ## Application packaging
 

@@ -33,6 +33,10 @@ public record DetectionIngestRequest(
     public SecurityEvent toSecurityEvent(String tenantId, String fallbackEventId) {
         Map<String, String> normalizedFields = new LinkedHashMap<>();
         if (fields != null) normalizedFields.putAll(fields);
+        com.socp.rule.partition.DetectionDelivery.quarantineInputMetadata(normalizedFields);
+        com.socp.rule.partition.DetectionDelivery.quarantineField(normalizedFields, "ingested_at");
+        com.socp.rule.partition.DetectionDelivery.quarantineField(normalizedFields, "event_time_generated");
+        normalizedFields.put("ingested_at", Instant.now().toString());
         if (tenantId != null && !tenantId.isBlank() && !tenantId.equals(normalizedFields.get("tenant_id"))) {
             normalizedFields.put("tenant_id", tenantId);
         }

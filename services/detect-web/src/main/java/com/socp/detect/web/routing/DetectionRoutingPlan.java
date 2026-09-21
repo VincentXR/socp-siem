@@ -90,7 +90,7 @@ public final class DetectionRoutingPlan {
                 }
                 statuses.add(new RuleCompatibility(
                         ruleId == null ? "<missing-id>" : ruleId,
-                        type == null ? "<missing-type>" : type,
+                        type,
                         grouping, sources, supported ? "SUPPORTED" : "UNSUPPORTED",
                         supported ? "routed by shared dimension copy"
                                 : String.join("; ", reasons)));

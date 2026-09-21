@@ -20,6 +20,8 @@ import sys
 import time
 import urllib.request
 import urllib.error
+import uuid
+from datetime import datetime, timezone
 
 # Shared demo helpers live in ``build/`` while this scenario is under
 # ``build/demos/``.  Resolve the parent explicitly so the script works both
@@ -108,7 +110,7 @@ def login():
     return login_token(GW, USER, PASSWD)
 
 
-def api(tok, path, body=None, method=None):
+def api(tok, path, body=None, method=None, *, headers=None, include_headers=False):
     """业务 API 直连服务端口（绕过网关，减少本机高负载下的转发时延）；登录走网关。"""
     port = 18080
     if path.startswith("/detect-web"):
@@ -121,11 +123,45 @@ def api(tok, path, body=None, method=None):
     req = urllib.request.Request(base + path, data=data, method=method)
     req.add_header("Authorization", "Bearer " + tok)
     req.add_header("Content-Type", "application/json")
+    for name, value in (headers or {}).items():
+        req.add_header(name, value)
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
-            return r.status, json.loads(r.read().decode())
+            result = r.status, json.loads(r.read().decode()), dict(r.headers)
     except urllib.error.HTTPError as e:
-        return e.code, {}
+        try:
+            body = json.loads(e.read().decode())
+        except (ValueError, UnicodeError):
+            body = {}
+        result = e.code, body, dict(e.headers)
+    return result if include_headers else result[:2]
+
+
+def ingest_event(tok, log, timeout=30):
+    """Honor explicit non-admission during reload; never retry ambiguous failures."""
+    event = dict(log)
+    event.setdefault("eventId", str(uuid.uuid4()))
+    event.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+    deadline = time.monotonic() + timeout
+    while True:
+        status, body, headers = api(
+            tok, "/detect-web/api/v1/ingest", event, "POST",
+            headers={"Idempotency-Key": event["eventId"]}, include_headers=True)
+        data = body.get("data") if isinstance(body, dict) else None
+        rejected = (status == 503 and isinstance(data, dict)
+                    and data.get("accepted") is False and data.get("error") == "queue_full")
+        if not rejected:
+            return status, body
+        retry_after = next((value for key, value in headers.items()
+                            if key.lower() == "retry-after"), "2")
+        try:
+            delay = max(0.1, float(retry_after))
+        except (TypeError, ValueError):
+            delay = 2.0
+        if time.monotonic() + delay >= deadline:
+            return status, body
+        print("  [RETRY] 检测暂未接收事件，%.1fs 后以同一事件 ID 重试" % delay)
+        time.sleep(delay)
 
 
 def unwrap(value):
@@ -150,11 +186,17 @@ def list_rules(tok):
     return list_items(unwrap(r)) if st == 200 else []
 
 
-def ensure_web_shell_rule(tok):
+def activate_rule(publisher, rule_id):
+    st, result = api(publisher, f"/detect-web/api/v1/rules/{rule_id}/activate", {}, "POST")
+    value = unwrap(result) if st == 200 else {}
+    return st == 200 and value.get("status") == "ACTIVE", f"activate status={st}"
+
+
+def ensure_web_shell_rule(tok, publisher):
     """场景 3 需要 WEB-SHELL 规则——不存在则通过 API 新建（演示规则生命周期 + 热更新广播）。"""
     for r_ in list_rules(tok):
         if r_.get("id") == "WEB-SHELL":
-            return True, "已存在"
+            return (True, "已激活") if r_.get("status") == "ACTIVE" else activate_rule(publisher, "WEB-SHELL")
     body = {
         "id": "WEB-SHELL", "name": "Web Shell 命令执行", "type": "pattern", "severity": "CRITICAL",
         "message": "疑似 Web Shell 命令执行：{msg} @ {host}", "mitre": "T1505.003",
@@ -164,10 +206,10 @@ def ensure_web_shell_rule(tok):
         ],
     }
     st, r = api(tok, "/detect-web/api/v1/rules", body, "POST")
-    return st == 200, r
+    return activate_rule(publisher, "WEB-SHELL") if st == 200 else (False, f"create status={st}")
 
 
-def ensure_exec_rule(tok):
+def ensure_exec_rule(tok, publisher):
     """场景 2：EXEC-SUSPICIOUS-SHELL 旧版 regex（powershell -enc 字面）匹配不到
     'powershell -nop -w hidden -enc ...'——通过 updateRule 修正（演示规则热更新）。"""
     for r_ in list_rules(tok):
@@ -175,19 +217,26 @@ def ensure_exec_rule(tok):
             continue
         m = json.dumps(r_.get("match", []), ensure_ascii=False)
         if "powershell.*" in m:
-            return True, "已是最新"
+            return (True, "已是最新") if r_.get("status") == "ACTIVE" else activate_rule(publisher, r_["id"])
         updated = dict(r_)
+        # Updating a match keeps the persisted lifecycle state. Never send an
+        # ACTIVE transition through the ordinary create/update endpoint.
+        updated.pop("status", None)
         updated["match"] = [
             {"field": "msg", "op": "regex",
              "value": "(?i)powershell.*(-enc|encodedcommand)|certutil -urlcache|invoke-expression|iex\\s*\\("},
         ]
-        st, r = api(tok, "/detect-web/api/v1/rules", updated, "POST")
-        return st == 200, r
+        st, r = api(tok, f"/detect-web/api/v1/rules/{r_['id']}", updated, "PUT")
+        if st != 200:
+            return False, f"update status={st}"
+        return (True, "匹配已更新") if r_.get("status") == "ACTIVE" else activate_rule(publisher, r_["id"])
     return False, "规则不存在"
 
 
 def main():
     tok = login()
+    publisher = login_token(GW, os.environ.get("RULE_VERIFY_USERNAME", "admin"),
+                            os.environ.get("RULE_VERIFY_PASSWORD", "admin123"))
     print("=== SOCP 攻击场景 Demo（日志 → 检测 → 告警 → ATT&CK → 事件） ===\n")
 
     for sc in SCENES:
@@ -199,19 +248,31 @@ def main():
         print("-" * 72)
 
         # 1) 规则就绪（场景 2/3 演示热更新修正/新增）
+        ok = True
         if sc.get("expect_rule") == "WEB-SHELL":
-            ok, detail = ensure_web_shell_rule(tok)
+            ok, detail = ensure_web_shell_rule(tok, publisher)
             check("规则 WEB-SHELL 就绪（API 新建/热更新）", ok, detail if isinstance(detail, str) else "")
         if sc.get("expect_rule") == "EXEC-SUSPICIOUS-SHELL":
-            ok, detail = ensure_exec_rule(tok)
+            ok, detail = ensure_exec_rule(tok, publisher)
             check("规则 EXEC-SUSPICIOUS-SHELL 已修正（热更新）", ok, detail if isinstance(detail, str) else "")
+        if not ok:
+            continue
+
+        baseline_status, baseline = api(tok, "/alert-web/api/alarms?page=1&size=500")
+        check("读取本次注入前的告警基线", baseline_status == 200)
+        if baseline_status != 200:
+            continue
+        previous_ids = {item.get("id") for item in list_items(unwrap(baseline))}
 
         # 2) 注入攻击日志
+        accepted = 0
         for i, log in enumerate(sc["logs"]):
-            st, r = api(tok, "/detect-web/api/v1/ingest", log, "POST")
-            if st != 200:
-                print("  [WARN] 事件 %d 注入 st=%s" % (i, st))
-        print("  已注入 %d 条攻击日志" % len(sc["logs"]))
+            st, r = ingest_event(tok, log)
+            if st == 200 and unwrap(r).get("accepted") is True:
+                accepted += 1
+            else:
+                print("  [WARN] 事件 %d 注入 st=%s response=%s" % (i, st, r))
+        check("本次攻击日志全部接收", accepted == len(sc["logs"]), f"accepted={accepted}")
 
         # 3) 等待告警
         def alarm_hit():
@@ -221,7 +282,8 @@ def main():
             except RuntimeError:
                 return None
             for x in items:
-                if sc["check"](x):
+                if (x.get("id") not in previous_ids
+                        and x.get("ruleId") == sc["expect_rule"] and sc["check"](x)):
                     return x
             return None
 
@@ -233,17 +295,15 @@ def main():
             print("  规则: %s | 实体: %s | MITRE: %s"
                   % (alarm.get("ruleId"), alarm.get("entity"), alarm.get("mitre")))
 
-        # 4) 关联事件（自动建案/归并；若 SOAR 自动触发未就绪则调用 from-alarm 建案兜底）
-        st, cases = api(tok, "/incident-web/api/v1/incidents")
-        cl = list_items(unwrap(cases)) if st == 200 else []
-        related = [c for c in cl
-                   if alarm and str(alarm.get("id", "")) in str(c.get("alarmIds", []))]
-        if not related and alarm:
-            st2, cr = api(tok, "/incident-web/api/v1/incidents/from-alarm",
-                          {"alarmId": alarm.get("id")}, "POST")
-            if st2 == 200:
-                created = unwrap(cr)
-                related = [created] if isinstance(created, dict) else []
+        # 4) Alert persistence precedes asynchronous incident fan-out. Poll for
+        # this exact new alarm; a manual case cannot prove automatic delivery.
+        def related_incidents():
+            st, cases = api(tok, "/incident-web/api/v1/incidents?size=100")
+            cl = list_items(unwrap(cases)) if st == 200 else []
+            return [case for case in cl
+                    if alarm and alarm.get("id") in (case.get("alarmIds") or [])]
+
+        related = (wait_for(related_incidents, timeout=40) or []) if alarm else []
         check("告警关联事件（自动建案/归并）", len(related) >= 1,
               related[0].get("title", "")[:60] if related else "")
         print()

@@ -1,6 +1,21 @@
 name: Full Stack E2E
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'platform/**'
+      - 'services/detect-web/**'
+      - 'services/search-config/**'
+      - 'services/ai-assistant/**'
+      - 'services/api-gateway/**'
+      - 'services/threat-web/**'
+      - 'infra/**'
+      - 'deploy/docker/minio/**'
+      - '.github/workflows/full-stack.yml'
+      - 'build/prepare-ci-credentials.py'
+      - 'build/auth_client.py'
+      - 'build/demos/**'
   workflow_dispatch:
   schedule:
     - cron: "30 2 * * 1"
@@ -9,8 +24,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: full-stack-e2e
-  cancel-in-progress: false
+  group: full-stack-e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # Avoid depending on third-party mirror synchronization in hosted CI.
@@ -21,21 +36,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 70
     env:
-      SOCP_JWT_SECRET: ci-full-stack-jwt-secret-0123456789abcdef0123456789abcdef
-      SOCP_LOGIN_SECRET: ci-full-stack-jwt-secret-0123456789abcdef0123456789abcdef
-      SOCP_SECURITY_SERVICE_SECRET: ci-full-stack-service-secret-0123456789abcdef
-      SOCP_SECURITY_METRICS_TOKEN: ci-full-stack-metrics-token-0123456789abcdef
       SOCP_SECURITY_ALLOW_PROD_HMAC: "true"
-      SOCP_PG_BOOTSTRAP_PASSWORD: ci-full-stack-pg-admin-password-0123456789abcdef
       SOCP_PG_USER: socp_runtime
-      SOCP_PG_PASSWORD: ci-full-stack-pg-runtime-password-0123456789abcdef
       SOCP_PG_RUNTIME_USER: socp_runtime
-      SOCP_PG_RUNTIME_PASSWORD: ci-full-stack-pg-runtime-password-0123456789abcdef
       SOCP_PG_MIGRATION_USER: socp_migrator
-      SOCP_PG_MIGRATION_PASSWORD: ci-full-stack-pg-migration-password-0123456789abcdef
-      SOCP_CK_PASSWORD: ci-full-stack-ck-password-0123456789abcdef
-      SOCP_MINIO_SECRET: ci-full-stack-minio-secret-0123456789abcdef
-      SOCP_OPENSEARCH_PASSWORD: ci-full-stack-os-password-0123456789abcdef
       SOCP_RUNTIME_PROFILES: dev,pg
       # Both the production-context boot smoke and the live dev,pg SOAR
       # instances must target the Temporal service started below.
@@ -54,6 +58,12 @@ jobs:
       # client reinitialization after a broker outage needs more class metadata
       # headroom than the CRUD-oriented services, without increasing all JVMs.
       SOCP_SEARCH_CONFIG_JVM_OPTS: "-Xms16m -Xmx192m -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC"
+      # Detection includes routing, JPA, Kafka and runtime OpenAPI generation;
+      # the generic 128 MiB metadata cap exhausts Metaspace after startup.
+      SOCP_DETECT_WEB_JVM_OPTS: "-Xms16m -Xmx192m -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC"
+      # Alert also loads enrichment, delivery, JPA and OpenAPI. Its first
+      # paginated alarm request exceeds the generic metadata budget.
+      SOCP_ALERT_WEB_JVM_OPTS: "-Xms16m -Xmx192m -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC"
       # SOAR loads the Temporal, connector, auth, and JPA stacks in one JVM.
       # Its steady-state metadata exceeds the generic 128 MiB evidence budget
       # under concurrent alarm evaluation, so keep the override service-local.
@@ -63,18 +73,17 @@ jobs:
       # 15-service startup burst.
       SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "4"
       SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: "1"
-      SOCP_COLLECTOR_CREDENTIALS: "ci-chaos|default|ci-chaos-collector-secret"
       SOCP_ALLOW_GLOBAL_INGEST_TOKEN: "false"
       PIPELINE_INGEST_URL: http://127.0.0.1:18081/search-config/api/v1/ingest
       PIPELINE_COLLECTOR_ID: ci-chaos
-      PIPELINE_COLLECTOR_TOKEN: ci-chaos-collector-secret
       PIPELINE_OS: https://localhost:9200
-      PIPELINE_OS_AUTH: "admin:ci-full-stack-os-password-0123456789abcdef"
       PIPELINE_CK: http://localhost:8123
-      PIPELINE_CK_AUTH: "default:ci-full-stack-ck-password-0123456789abcdef"
       PIPELINE_KAFKA: localhost:9092
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Generate disposable job credentials
+        run: python3 build/prepare-ci-credentials.py --scope integration
 
       - name: Set up JDK 21
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
@@ -100,7 +109,7 @@ jobs:
         # prove durable dispatch rather than silently accepting a queued-only
         # run when the orchestration dependency is absent.
         run: >-
-          bash build/compose.sh up -d
+          bash build/compose.sh up -d --wait --wait-timeout 180
           postgres kafka opensearch redis clickhouse minio
 
       - name: Start Temporal for SOAR evidence
@@ -108,23 +117,47 @@ jobs:
           bash build/compose.sh --profile extra up -d
           temporal
 
-      - name: Wait for Temporal gRPC endpoint
+      - name: Wait for Temporal namespace and verify database ownership
         run: |
           python3 - <<'PY'
-          import socket
+          import subprocess
           import time
 
-          deadline = time.monotonic() + 90
+          deadline = time.monotonic() + 180
+          last_output = ""
           while time.monotonic() < deadline:
               try:
-                  with socket.create_connection(("127.0.0.1", 7233), timeout=2):
-                      print("Temporal gRPC endpoint is reachable")
+                  probe = subprocess.run([
+                      "bash", "build/compose.sh", "--profile", "extra", "exec", "-T",
+                      "temporal", "temporal", "--address", "temporal:7233",
+                      "operator", "namespace", "describe", "-n", "default",
+                  ], capture_output=True, text=True, timeout=10)
+                  last_output = probe.stdout + probe.stderr
+                  if probe.returncode == 0:
+                      print("Temporal default namespace is reachable through gRPC")
                       break
-              except OSError:
-                  time.sleep(2)
+              except subprocess.TimeoutExpired:
+                  last_output = "Temporal namespace probe timed out"
+              time.sleep(2)
           else:
-              raise SystemExit("Temporal gRPC endpoint did not become reachable")
+              raise SystemExit("Temporal namespace did not become ready: " + last_output)
           PY
+          docker exec -i socp-postgres psql -U socp -d template1 -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$ BEGIN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname IN ('socp_migrator', 'socp_runtime')
+                       AND (rolsuper OR rolcreatedb OR rolbypassrls)) THEN
+              RAISE EXCEPTION 'Temporal bootstrap widened application role privileges';
+            END IF;
+            IF (SELECT count(*) FROM pg_database WHERE datname IN ('temporal', 'temporal_visibility')
+                AND pg_get_userbyid(datdba) = 'socp_migrator') <> 2 THEN
+              RAISE EXCEPTION 'Temporal databases do not have the expected restricted owner';
+            END IF;
+            IF has_database_privilege('socp_runtime', 'temporal', 'CONNECT')
+               OR has_database_privilege('socp_runtime', 'temporal_visibility', 'CONNECT') THEN
+              RAISE EXCEPTION 'application runtime role can access Temporal internal databases';
+            END IF;
+          END $$;
+          SQL
 
       - name: Build backend
         run: bash build/mvnw.sh -DskipTests package
@@ -138,9 +171,55 @@ jobs:
           SOCP_OPENSEARCH_ENABLED: "false"
           SOCP_OPENSEARCH_USERNAME: ci-prod-smoke
           SOCP_OPENSEARCH_INSECURE_SKIP_VERIFY: "false"
-          SOCP_INGEST_TOKEN: ci-chaos-collector-secret
-          SOCP_VECTOR_TOKEN: ci-chaos-collector-secret
-        run: python3 build/verify-prod-boot.py
+          SOCP_SOAR_ARTIFACT_S3_ENDPOINT: https://localhost:19443
+          SOCP_SOAR_ARTIFACT_S3_BUCKET: socp-soar-artifacts
+        run: |
+          set -euo pipefail
+          # Use a real TLS endpoint and projected secret files for prod guards.
+          source infra/middleware-images.env
+          cleanup() {
+            docker logs socp-minio-prod-smoke > .cache/prod-boot/minio-tls.log 2>&1 || true
+            docker rm -f socp-minio-prod-smoke >/dev/null 2>&1 || true
+            rm -rf -- .cache/prod-boot/minio-certs .cache/prod-boot/secrets .cache/prod-boot/minio-truststore.p12
+          }
+          trap cleanup EXIT
+          mkdir -p .cache/prod-boot/minio-certs .cache/prod-boot/secrets/platform/soar-artifacts
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -subj '/CN=localhost' -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' \
+            -keyout .cache/prod-boot/minio-certs/private.key \
+            -out .cache/prod-boot/minio-certs/public.crt
+          keytool -importcert -noprompt -alias ci-minio \
+            -file .cache/prod-boot/minio-certs/public.crt \
+            -keystore .cache/prod-boot/minio-truststore.p12 -storepass "$SOCP_CI_TRUSTSTORE_PASSWORD"
+          printf '%s' socp_minio > .cache/prod-boot/secrets/platform/soar-artifacts/access-key
+          printf '%s' "$SOCP_MINIO_SECRET" > .cache/prod-boot/secrets/platform/soar-artifacts/secret-key
+          export SOCP_SOAR_K8S_SECRET_MOUNT_PATH="$PWD/.cache/prod-boot/secrets"
+          export JAVA_TOOL_OPTIONS="-Djavax.net.ssl.trustStore=$PWD/.cache/prod-boot/minio-truststore.p12 -Djavax.net.ssl.trustStorePassword=$SOCP_CI_TRUSTSTORE_PASSWORD"
+          docker run -d --name socp-minio-prod-smoke -p 127.0.0.1:19443:9000 \
+            -v "$PWD/.cache/prod-boot/minio-certs:/certs:ro" \
+            -e MINIO_ROOT_USER=socp_minio -e "MINIO_ROOT_PASSWORD=$SOCP_MINIO_SECRET" \
+            --entrypoint /usr/bin/minio "$SOCP_MINIO_IMAGE" server /data --certs-dir /certs
+          curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 1 \
+            --cacert .cache/prod-boot/minio-certs/public.crt \
+            https://localhost:19443/minio/health/live
+          python3 build/verify-prod-boot.py
+          # Assert PostgreSQL's actual type and published migration history,
+          # using the same database that the packaged service just upgraded.
+          bash build/compose.sh exec -T -e "PGPASSWORD=$SOCP_PG_MIGRATION_PASSWORD" \
+            postgres psql -h localhost -U "$SOCP_PG_MIGRATION_USER" -d threat -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 't_ioc'
+                           AND column_name = 'confidence' AND data_type = 'double precision') THEN
+              RAISE EXCEPTION 'confidence did not migrate to double precision';
+            END IF;
+            IF to_regtype('double') IS NOT NULL THEN
+              RAISE EXCEPTION 'migration compatibility domain leaked into the fresh database';
+            END IF;
+            IF (SELECT count(*) FROM flyway_schema_history WHERE success AND version IN ('1','2','3','4','5')) <> 5 THEN
+              RAISE EXCEPTION 'published threat migration history is incomplete';
+            END IF;
+          END $$;
+          SQL
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
@@ -168,7 +247,6 @@ jobs:
           SOAR_OPENAPI_REQUIRE_RUNTIME: "true"
           SOAR_OPENAPI_OUTPUT: .cache/openapi-sdk
           SOAR_VERIFY_USERNAME: admin
-          SOAR_VERIFY_PASSWORD: admin123
         run: python3 build/verify-openapi-sdk.py
 
       - name: Start a second SOAR instance for admission evidence
@@ -211,7 +289,6 @@ jobs:
           SOAR_REQUIRE_SECONDARY: "true"
           SOAR_LIVE_EVIDENCE_PATH: .cache/soar-live.json
           SOAR_VERIFY_USERNAME: admin
-          SOAR_VERIFY_PASSWORD: admin123
         run: python3 build/verify-soar-live.py
 
       - name: Start persistent webhook verification fixture
@@ -241,6 +318,16 @@ jobs:
           python3 build/chaos-pipeline.py --scenario all \
             --run-id "weekly-dependency-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --output .cache/chaos/dependency-matrix.json
+
+      # This demo stops the only canonical consumer. Run it before replacing
+      # that generation with three routed consumers and their separate router.
+      - name: Run Detection recovery demo
+        run: python3 build/demos/detection-recovery.py
+
+      # This demo uses local HTTP Detection ingestion, whose shard must belong
+      # to the contacted worker. Exercise it while one worker owns all shards.
+      - name: Run attack scenario demo
+        run: python3 build/demos/attack-scenarios.py
 
       - name: Start fixed three-instance routed Detection cluster
         env:
@@ -291,24 +378,31 @@ jobs:
           python3 build/chaos-pipeline.py --scenario routing_rollback --count 20 \
             --run-id "weekly-rrb-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --output .cache/chaos/routing-rollback.json
+          # Retain the exact namespace of the previously failed rollback so
+          # randomized entity/partition placement cannot hide that regression.
+          python3 build/chaos-pipeline.py --scenario routing_rollback --count 20 \
+            --run-id weekly-rrb-35543128202-1 \
+            --output .cache/chaos/routing-rollback-regression.json
+          # Reproduce the later paused-partition failure's exact event placement.
+          python3 build/chaos-pipeline.py --scenario routing_rollback --count 20 \
+            --run-id weekly-rrb-35547751262-1 \
+            --output .cache/chaos/routing-rollback-pause-regression.json
 
       - name: Run Golden Demo
+        id: golden_demo
+        env:
+          GOLDEN_DEMO_DB_EVIDENCE: "true"
         run: python3 build/demos/golden-demo.py --transport ingest
 
-      - name: Run Detection recovery demo
-        run: python3 build/demos/detection-recovery.py
-
-      - name: Run attack scenario demo
-        run: python3 build/demos/attack-scenarios.py
-
       - name: Run dependency failure injection
+        if: ${{ !cancelled() && (steps.golden_demo.outcome == 'success' || steps.golden_demo.outcome == 'failure') }}
         run: python3 build/failure-tests.py
 
       - name: Collect logs
         if: always()
         run: |
           mkdir -p .cache
-          bash build/compose.sh logs --no-color > .cache/compose.log 2>&1 || true
+          bash build/compose.sh --profile extra logs --no-color > .cache/compose.log 2>&1 || true
 
       - name: Collect commit-scoped full-stack evidence
         if: always()
@@ -337,4 +431,4 @@ jobs:
           fi
           bash build/detection-cluster.sh stop || true
           bash build/run-all.sh stop || true
-          bash build/compose.sh down || true
+          bash build/compose.sh --profile extra down || true

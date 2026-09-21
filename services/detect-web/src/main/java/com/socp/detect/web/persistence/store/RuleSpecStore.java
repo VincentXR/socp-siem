@@ -46,13 +46,22 @@ public class RuleSpecStore {
     private final RuleRepository repo;
     private final RuleRevisionRepository revisions;
     private final RuleContentConflictRepository conflicts;
+    private final com.socp.detect.web.routing.DetectionRoutingTopologyGuard topologyGuard;
     private final Set<String> initializedTenants = ConcurrentHashMap.newKeySet();
 
     public RuleSpecStore(RuleRepository repo, RuleRevisionRepository revisions,
                          RuleContentConflictRepository conflicts) {
+        this(repo, revisions, conflicts, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public RuleSpecStore(RuleRepository repo, RuleRevisionRepository revisions,
+                         RuleContentConflictRepository conflicts,
+                         com.socp.detect.web.routing.DetectionRoutingTopologyGuard topologyGuard) {
         this.repo = repo;
         this.revisions = revisions;
         this.conflicts = conflicts;
+        this.topologyGuard = topologyGuard;
         TenantContext.runWith("default", () -> ensureTenantContent("default"));
     }
 
@@ -125,6 +134,12 @@ public class RuleSpecStore {
 
     private Map<String, Object> saveInternal(Map<String, Object> input, String tenant,
                                              boolean packagedWrite, boolean restore) {
+        if (topologyGuard == null) return saveChecked(input, tenant, packagedWrite, restore);
+        return topologyGuard.mutate(tenant, () -> saveChecked(input, tenant, packagedWrite, restore));
+    }
+
+    private Map<String, Object> saveChecked(Map<String, Object> input, String tenant,
+                                            boolean packagedWrite, boolean restore) {
         Map<String, Object> spec = DetectionContentCatalog.enrich(input);
         Object requestedId = spec.get("id");
         RuleEntity existing = requestedId == null || String.valueOf(requestedId).isBlank()
@@ -175,6 +190,7 @@ public class RuleSpecStore {
         }
         compileOrReject(spec);
         String ruleId = String.valueOf(spec.get("id"));
+        if (topologyGuard != null) topologyGuard.validateMutation(tenant, ruleId, spec);
         for (String advisory : DetectionContentCatalog.partitionLocalAdvisories(spec)) {
             // Deliberately not a rejection: the packaged content set contains
             // rules whose grouping dimension can lose to a higher-priority
@@ -381,8 +397,14 @@ public class RuleSpecStore {
 
     public boolean delete(String id) {
         String tenant = tenant();
+        if (topologyGuard == null) return deleteChecked(id, tenant);
+        return topologyGuard.mutate(tenant, () -> deleteChecked(id, tenant));
+    }
+
+    private boolean deleteChecked(String id, String tenant) {
         Optional<RuleEntity> e = repo.findByRuleIdAndTenantId(id, tenant);
         if (e.isEmpty()) return false;
+        if (topologyGuard != null) topologyGuard.validateMutation(tenant, id, null);
         appendRevision(tenant, id, e.get().getSpec(),
                 Json.parseObject(e.get().getSpec()).get("status"), "DELETE");
         repo.delete(e.get());

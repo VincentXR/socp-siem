@@ -43,6 +43,8 @@ public class DetectionRouteOutboxService {
     private final DetectionRouteTopologyRepository topologyRepository;
     private final String deliveryTopic;
     private final TransactionTemplate transactions;
+    @org.springframework.beans.factory.annotation.Autowired
+    private DetectionRoutingTopologyGuard topologyGuard;
 
     /** Compatibility constructor used by focused tests. */
     public DetectionRouteOutboxService(
@@ -94,7 +96,11 @@ public class DetectionRouteOutboxService {
             ObjectNode canonical = parseObject(raw);
             RouteContext context = context(canonical, sourceTopic, sourcePartition, sourceOffset);
             return TenantContext.callWith(context.tenant(),
-                    () -> inTransaction(() -> materialize(canonical, context)));
+                    () -> {
+                        if (topologyGuard != null) topologyGuard.pinIfNeeded(context.tenant(),
+                                () -> plans.freshPlan(context.tenant()));
+                        return inTransaction(() -> materialize(canonical, context));
+                    });
         } catch (DetectionRoutingPlan.UnsupportedRoutingPlanException unsupported) {
             throw unsupported;
         } catch (DataIntegrityViolationException raced) {

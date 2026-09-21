@@ -10,6 +10,8 @@ import java.sql.PreparedStatement;
 import java.sql.SQLException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.doThrow;
@@ -17,6 +19,36 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class TenantRlsDataSourceTest {
+
+    @Test
+    void returnsBorrowedConnectionWhenScopeInitializationFails() throws Exception {
+        DataSource delegate = mock(DataSource.class);
+        Connection connection = mock(Connection.class);
+        SQLException failure = new SQLException("scope unavailable");
+        when(delegate.getConnection()).thenReturn(connection);
+        when(connection.prepareStatement(anyString())).thenThrow(failure);
+
+        assertSame(failure, assertThrows(SQLException.class,
+                () -> new TenantRlsDataSource(delegate).getConnection()));
+        verify(connection).close();
+    }
+
+    @Test
+    void credentialedFailurePreservesInitializationAndCloseErrors() throws Exception {
+        DataSource delegate = mock(DataSource.class);
+        Connection connection = mock(Connection.class);
+        SQLException failure = new SQLException("scope unavailable");
+        SQLException closeFailure = new SQLException("return failed");
+        when(delegate.getConnection("user", "password")).thenReturn(connection);
+        when(connection.prepareStatement(anyString())).thenThrow(failure);
+        doThrow(closeFailure).when(connection).close();
+
+        assertSame(failure, assertThrows(SQLException.class,
+                () -> new TenantRlsDataSource(delegate).getConnection("user", "password")));
+        assertEquals(1, failure.getSuppressed().length);
+        assertSame(closeFailure, failure.getSuppressed()[0]);
+        verify(connection).close();
+    }
 
     @AfterEach
     void clearTenant() {

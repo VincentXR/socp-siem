@@ -11,6 +11,7 @@ import org.springframework.context.annotation.Import;
 
 /** Preview security knowledge and optional LLM assistant service. */
 @SpringBootApplication(scanBasePackages = "com.socp.ai")
+@org.springframework.scheduling.annotation.EnableScheduling
 @EnableSocpPlatformJpa
 @EnableConfigurationProperties({AiRuntimeProperties.class, InvestigationProperties.class})
 @Import(SocpPlatformAutoConfiguration.class)

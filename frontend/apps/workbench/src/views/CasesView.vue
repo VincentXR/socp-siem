@@ -74,6 +74,7 @@ const keyword = listQuery.keyword
 const statusFilter = listQuery.filters.status
 const loading = ref(false)
 const latestRequest = useLatestRequest()
+const detailRequest = useLatestRequest()
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('cases')
 const assigneeOptions = computed(() => Array.from(new Set([
   ...(workbenchState?.operatorOptions.value ?? []),
@@ -106,21 +107,37 @@ async function loadCases() {
 }
 
 async function openCase(item: CaseInfo) {
+  const request = detailRequest.start()
   detail.value = item
   newStatus.value = item.status
   detailAssignee.value = item.assignee ?? ''
   drawerVisible.value = true
   detailGuard.markSaved()
   timeline.value = []; timelineError.value = ''
-  try { timeline.value = (await caseApi.timeline(item.id)).items } catch (failure) { timelineError.value = String(failure) }
+  try {
+    const response = await caseApi.timeline(item.id, 1, 100, { signal: request.signal })
+    if (request.isCurrent()) timeline.value = response.items
+  } catch (failure) {
+    if (request.isCurrent()) timelineError.value = String(failure)
+  }
 }
 function openCaseRow(row: unknown) { openCase(row as CaseInfo) }
 
-function openCaseFromQuery(): void {
+async function openCaseFromQuery(): Promise<void> {
   const id = typeof route.query.caseId === 'string' ? route.query.caseId : ''
   if (!id) return
   const match = cases.value.find(item => item.id === id || item.caseNo === id)
-  if (match && detail.value?.id !== match.id) void openCase(match)
+  if (detail.value?.id === id || (match && detail.value?.id === match.id)) return
+  if (match) { await openCase(match); return }
+  const request = detailRequest.start()
+  try {
+    const response = await caseApi.get(id, { signal: request.signal })
+    if (!request.isCurrent()) return
+    if (response.found) await openCase(response.case)
+    else actionError.value = t('errors.NOT_FOUND')
+  } catch (failure) {
+    if (request.isCurrent()) actionError.value = String(failure)
+  }
 }
 
 function openAlarm(id: string): void {
@@ -183,6 +200,7 @@ useDebouncedWatch([keyword, statusFilter], () => {
 })
 watch(() => route.query.caseId, openCaseFromQuery)
 watch(drawerVisible, visible => {
+  if (!visible) detailRequest.cancel()
   if (!visible && route.query.caseId) {
     const query = { ...route.query }
     delete query.caseId
