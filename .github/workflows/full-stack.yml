@@ -398,6 +398,10 @@ jobs:
           python3 build/chaos-pipeline.py --scenario routing_rollback --count 20 \
             --run-id weekly-rrb-35543128202-1 \
             --output .cache/chaos/routing-rollback-regression.json
+          # Reproduce the later paused-partition failure's exact event placement.
+          python3 build/chaos-pipeline.py --scenario routing_rollback --count 20 \
+            --run-id weekly-rrb-35547751262-1 \
+            --output .cache/chaos/routing-rollback-pause-regression.json
 
       - name: Run Golden Demo
         id: golden_demo

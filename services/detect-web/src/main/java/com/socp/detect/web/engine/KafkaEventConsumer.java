@@ -94,9 +94,7 @@ public class KafkaEventConsumer {
     private final Map<TopicPartition, AtomicLong> pendingBytes = new ConcurrentHashMap<>();
     /** Backpressure and failure retries are independent pause reasons. */
     private final Set<TopicPartition> backpressureBlockedPartitions = ConcurrentHashMap.newKeySet();
-    private final Set<TopicPartition> retryBlockedPartitions = ConcurrentHashMap.newKeySet();
-    private final Map<TopicPartition, Long> retryBlockedSince = new ConcurrentHashMap<>();
-    private final Map<TopicPartition, String> retryBlockedCategory = new ConcurrentHashMap<>();
+    private final PartitionRetryState retryState = new PartitionRetryState();
     /** Consumer-thread view of the pauses this component has applied. */
     private final Set<TopicPartition> appliedPausedPartitions = ConcurrentHashMap.newKeySet();
     /** Ownership loss requests a clean consumer-session restart/rejoin. */
@@ -183,10 +181,10 @@ public class KafkaEventConsumer {
                     }
                     return pinned;
                 });
-        metrics.gauge("socp.detection.partition.retry.blocked", retryBlockedPartitions,
-                Set::size);
-        metrics.gauge("socp.detection.partition.retry.oldest.seconds", retryBlockedSince,
-                ignored -> oldestRetryBlockedSeconds());
+        metrics.gauge("socp.detection.partition.retry.blocked", retryState,
+                state -> state.blockedPartitions().size());
+        metrics.gauge("socp.detection.partition.retry.oldest.seconds", retryState,
+                PartitionRetryState::oldestBlockedSeconds);
     }
 
     private void count(String name, String outcome) {
@@ -199,15 +197,6 @@ public class KafkaEventConsumer {
         metrics.counter("socp.detection.processing.failure",
                 "category", failure.category().metricTag(),
                 "stage", failure.stage().metricTag()).increment();
-    }
-
-    private double oldestRetryBlockedSeconds() {
-        long now = System.currentTimeMillis();
-        long oldest = Long.MAX_VALUE;
-        for (Long since : retryBlockedSince.values()) {
-            if (since != null) oldest = Math.min(oldest, since);
-        }
-        return oldest == Long.MAX_VALUE ? 0.0 : Math.max(0L, now - oldest) / 1000.0;
     }
 
     @PreDestroy
@@ -295,21 +284,7 @@ public class KafkaEventConsumer {
             consumer.subscribe(List.of(topic), new ConsumerRebalanceListener() {
                 @Override
                 public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
-                    log.info("Detection partitions revoked: {}", partitions);
-                    for (TopicPartition partition : partitions) {
-                        ThreadPoolExecutor lane = partitionLanes.remove(partition.partition());
-                        if (lane != null) releaseDropped(lane.shutdownNow());
-                        ArrayDeque<PendingWork> deferred = deferredWork.remove(partition);
-                        if (deferred != null) releaseDeferred(deferred);
-                        pendingBytes.remove(partition);
-                        backpressureBlockedPartitions.remove(partition);
-                        clearRetryBlocked(partition, false);
-                        appliedPausedPartitions.remove(partition);
-                        completionTracker.remove(partition.partition());
-                    }
-                    engine.releaseForPartitions(partitions.stream()
-                            .map(TopicPartition::partition)
-                            .collect(java.util.stream.Collectors.toUnmodifiableSet()));
+                    revokePartitions(partitions);
                 }
 
                 @Override
@@ -335,7 +310,8 @@ public class KafkaEventConsumer {
                 for (var record : records) {
                     long epoch = completionTracker.register(record.partition(), record.offset());
                     TopicPartition partition = new TopicPartition(record.topic(), record.partition());
-                    dispatchOrDefer(consumer, partition, () -> processWithRetry(record, epoch),
+                    PartitionRetryState.Lease lease = retryState.acquire(partition);
+                    dispatchOrDefer(consumer, partition, () -> processWithRetry(record, epoch, lease),
                             estimateRecordBytes(record));
                 }
                 drainCompletions(consumer);
@@ -345,18 +321,35 @@ public class KafkaEventConsumer {
         }
     }
 
+    /** Retire retry ownership before interrupting lanes; late callbacks are fenced. */
+    void revokePartitions(Collection<TopicPartition> partitions) {
+        log.info("Detection partitions revoked: {}", partitions);
+        for (TopicPartition partition : partitions) {
+            retryState.revoke(partition);
+            ThreadPoolExecutor lane = partitionLanes.remove(partition.partition());
+            if (lane != null) releaseDropped(lane.shutdownNow());
+            ArrayDeque<PendingWork> deferred = deferredWork.remove(partition);
+            if (deferred != null) releaseDeferred(deferred);
+            pendingBytes.remove(partition);
+            backpressureBlockedPartitions.remove(partition);
+            appliedPausedPartitions.remove(partition);
+            completionTracker.remove(partition.partition());
+        }
+        engine.releaseForPartitions(partitions.stream()
+                .map(TopicPartition::partition)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet()));
+    }
+
     /** Clear all session-local work and relinquish fencing leases before rejoining. */
     private void cleanupConsumerSession() {
         Set<Integer> owned = engine.assignedPartitions();
+        retryState.clearAll();
         partitionLanes.values().forEach(lane -> releaseDropped(lane.shutdownNow()));
         partitionLanes.clear();
         deferredWork.values().forEach(KafkaEventConsumer::releaseDeferred);
         deferredWork.clear();
         pendingBytes.clear();
         backpressureBlockedPartitions.clear();
-        retryBlockedPartitions.clear();
-        retryBlockedSince.clear();
-        retryBlockedCategory.clear();
         appliedPausedPartitions.clear();
         sessionRestartRequested.set(false);
         completions.clear();
@@ -483,7 +476,7 @@ public class KafkaEventConsumer {
         if (consumer == null) return;
         Set<TopicPartition> assigned = consumer.assignment();
         Set<TopicPartition> desired = new HashSet<>(backpressureBlockedPartitions);
-        desired.addAll(retryBlockedPartitions);
+        desired.addAll(retryState.blockedPartitions());
         desired.retainAll(assigned);
 
         Set<TopicPartition> toPause = new HashSet<>(desired);
@@ -499,23 +492,18 @@ public class KafkaEventConsumer {
         appliedPausedPartitions.addAll(desired);
     }
 
-    private void markRetryBlocked(TopicPartition partition,
-                                  DetectionRecordProcessor.RetryableDetectionFailure failure) {
-        if (partition == null || failure == null) return;
-        retryBlockedPartitions.add(partition);
-        retryBlockedSince.putIfAbsent(partition, System.currentTimeMillis());
-        retryBlockedCategory.put(partition, failure.category().metricTag());
+    private boolean markRetryBlocked(PartitionRetryState.Lease lease,
+                                     DetectionRecordProcessor.RetryableDetectionFailure failure) {
+        if (lease == null) return true;
+        if (failure == null || !retryState.block(lease, failure.category().metricTag())) return false;
         countFailure(failure);
+        return true;
     }
 
-    private void clearRetryBlocked(TopicPartition partition, boolean recovered) {
-        if (partition == null) return;
-        String category = retryBlockedCategory.remove(partition);
-        boolean wasBlocked = retryBlockedPartitions.remove(partition);
-        retryBlockedSince.remove(partition);
-        if (recovered && wasBlocked) {
-            count("socp.detection.processing.recovered",
-                    category == null ? "unknown" : category);
+    private void clearRetryBlocked(PartitionRetryState.Lease lease, boolean recovered) {
+        String category = retryState.clear(lease);
+        if (recovered && category != null) {
+            count("socp.detection.processing.recovered", category);
         }
     }
 
@@ -526,8 +514,10 @@ public class KafkaEventConsumer {
         stateStore.replayPendingPages(partitions, configuredReplayWindow(), cap, batch -> {
             for (PendingDetectionEvent row : batch) {
                 if (row == null || row.event() == null || row.partition() == null) continue;
-                dispatchOrDefer(null, new TopicPartition(configuredTopic(), row.partition()),
-                        () -> processPendingWithRetry(row), estimateEventBytes(row.event()));
+                TopicPartition partition = new TopicPartition(configuredTopic(), row.partition());
+                PartitionRetryState.Lease lease = retryState.acquire(partition);
+                dispatchOrDefer(null, partition,
+                        () -> processPendingWithRetry(row, lease), estimateEventBytes(row.event()));
                 queued.incrementAndGet();
             }
         });
@@ -554,13 +544,17 @@ public class KafkaEventConsumer {
      */
     void processWithRetry(org.apache.kafka.clients.consumer.ConsumerRecord<String, String> record,
                           long epoch) {
-        TopicPartition partition = new TopicPartition(record.topic(), record.partition());
+        processWithRetry(record, epoch, retryState.acquire(new TopicPartition(record.topic(), record.partition())));
+    }
+
+    private void processWithRetry(org.apache.kafka.clients.consumer.ConsumerRecord<String, String> record,
+                                  long epoch, PartitionRetryState.Lease lease) {
         long delay = Math.max(1L, processingRetryInitialDelayMs);
         int attemptsThisRound = 0;
         DetectionRecordProcessor.InFlightDetectionTimeout inFlight = null;
         DetectionRecordProcessor.FinalizationPendingFailure finalization = null;
 
-        while (running.get() && !Thread.currentThread().isInterrupted()) {
+        while (running.get() && !Thread.currentThread().isInterrupted() && retryState.active(lease)) {
             try {
                 DetectionRecordProcessor.InFlightDetectionTimeout timedOut = inFlight;
                 DetectionRecordProcessor.FinalizationPendingFailure pendingFinalization = finalization;
@@ -574,28 +568,29 @@ public class KafkaEventConsumer {
                                 record.key(), record.value());
                     }
                 });
-                clearRetryBlocked(partition, true);
+                if (!retryState.active(lease)) return;
+                clearRetryBlocked(lease, true);
                 completions.offer(new RecordCompletion(record.partition(), record.offset(), epoch));
                 return;
             } catch (DetectionRecordProcessor.MalformedDetectionRecordException terminal) {
                 // Parsing/shape validation is the only poison-record boundary.
                 if (handoffToDlqUntilDurable(new DlqHandoff(terminal.eventId(), terminal.tenantId(),
                         record.key(), terminal.raw(), record.partition(), record.offset(),
-                        terminal.getMessage(), record.headers()))) {
-                    clearRetryBlocked(partition, true);
+                        terminal.getMessage(), record.headers()), lease) && retryState.active(lease)) {
+                    clearRetryBlocked(lease, true);
                     completions.offer(new RecordCompletion(record.partition(), record.offset(), epoch));
                 }
                 return;
             } catch (DetectionRecordProcessor.InFlightDetectionTimeout timedOut) {
                 inFlight = timedOut;
                 finalization = null;
-                attemptsThisRound = recordRetryFailure(partition, record, timedOut,
+                attemptsThisRound = recordRetryFailure(lease, record, timedOut,
                         attemptsThisRound, delay);
                 if (ownershipLost(timedOut)) return;
             } catch (DetectionRecordProcessor.FinalizationPendingFailure pending) {
                 finalization = pending;
                 inFlight = null;
-                attemptsThisRound = recordRetryFailure(partition, record, pending,
+                attemptsThisRound = recordRetryFailure(lease, record, pending,
                         attemptsThisRound, delay);
                 if (ownershipLost(pending)) return;
             } catch (DetectionRecordProcessor.RetryableDetectionFailure retryable) {
@@ -604,7 +599,7 @@ public class KafkaEventConsumer {
                 // above retains the exact future and prevents concurrent retries.
                 inFlight = null;
                 finalization = null;
-                attemptsThisRound = recordRetryFailure(partition, record, retryable,
+                attemptsThisRound = recordRetryFailure(lease, record, retryable,
                         attemptsThisRound, delay);
                 if (ownershipLost(retryable)) return;
             } catch (Exception unknown) {
@@ -612,7 +607,7 @@ public class KafkaEventConsumer {
                 finalization = null;
                 DetectionRecordProcessor.RetryableDetectionFailure retryable =
                         retryableUnknown(record, unknown);
-                attemptsThisRound = recordRetryFailure(partition, record, retryable,
+                attemptsThisRound = recordRetryFailure(lease, record, retryable,
                         attemptsThisRound, delay);
                 if (ownershipLost(retryable)) return;
             } finally {
@@ -625,14 +620,14 @@ public class KafkaEventConsumer {
     }
 
     private int recordRetryFailure(
-            TopicPartition partition,
+            PartitionRetryState.Lease lease,
             org.apache.kafka.clients.consumer.ConsumerRecord<String, String> record,
             DetectionRecordProcessor.RetryableDetectionFailure failure,
             int attemptsThisRound,
             long delay) {
         int attempts = attemptsThisRound + 1;
         int limit = Math.max(1, processingMaxAttempts);
-        markRetryBlocked(partition, failure);
+        if (!markRetryBlocked(lease, failure)) return attempts;
         log.warn("Detection processing retry partition={} offset={} attempt={}/{} category={} "
                         + "stage={} nextDelayMs={} reason={}",
                 record.partition(), record.offset(), attempts, limit,
@@ -670,13 +665,16 @@ public class KafkaEventConsumer {
 
     /** Package-private hook used by focused tests and bounded PENDING prefetch. */
     void processPendingWithRetry(PendingDetectionEvent row) {
-        TopicPartition partition = new TopicPartition(configuredTopic(), row.partition());
+        processPendingWithRetry(row, retryState.acquire(new TopicPartition(configuredTopic(), row.partition())));
+    }
+
+    private void processPendingWithRetry(PendingDetectionEvent row, PartitionRetryState.Lease lease) {
         long delay = Math.max(1L, processingRetryInitialDelayMs);
         int attemptsThisRound = 0;
         DetectionRecordProcessor.InFlightDetectionTimeout inFlight = null;
         DetectionRecordProcessor.FinalizationPendingFailure finalization = null;
 
-        while (running.get() && !Thread.currentThread().isInterrupted()) {
+        while (running.get() && !Thread.currentThread().isInterrupted() && retryState.active(lease)) {
             try {
                 if (inFlight != null) {
                     recordProcessor.resumeTimedOut(inFlight, Math.min(RETRY_MAX.toMillis(), 30_000L));
@@ -689,25 +687,25 @@ public class KafkaEventConsumer {
                                     com.socp.rule.partition.DetectionRoutingKey.forEvent(row.event()),
                                     row.event()));
                 }
-                clearRetryBlocked(partition, true);
+                clearRetryBlocked(lease, true);
                 return;
             } catch (DetectionRecordProcessor.InFlightDetectionTimeout timedOut) {
                 inFlight = timedOut;
                 finalization = null;
                 attemptsThisRound = recordPendingRetryFailure(
-                        partition, row, timedOut, attemptsThisRound, delay);
+                        lease, row, timedOut, attemptsThisRound, delay);
                 if (ownershipLost(timedOut)) return;
             } catch (DetectionRecordProcessor.FinalizationPendingFailure pending) {
                 finalization = pending;
                 inFlight = null;
                 attemptsThisRound = recordPendingRetryFailure(
-                        partition, row, pending, attemptsThisRound, delay);
+                        lease, row, pending, attemptsThisRound, delay);
                 if (ownershipLost(pending)) return;
             } catch (DetectionRecordProcessor.RetryableDetectionFailure retryable) {
                 inFlight = null;
                 finalization = null;
                 attemptsThisRound = recordPendingRetryFailure(
-                        partition, row, retryable, attemptsThisRound, delay);
+                        lease, row, retryable, attemptsThisRound, delay);
                 if (ownershipLost(retryable)) return;
             } catch (Exception unknown) {
                 inFlight = null;
@@ -721,7 +719,7 @@ public class KafkaEventConsumer {
                                         + unknown.getClass().getSimpleName() + ": " + unknown.getMessage(),
                                 unknown);
                 attemptsThisRound = recordPendingRetryFailure(
-                        partition, row, retryable, attemptsThisRound, delay);
+                        lease, row, retryable, attemptsThisRound, delay);
                 if (ownershipLost(retryable)) return;
             } finally {
                 com.socp.platform.tenant.context.TenantContext.clear();
@@ -733,14 +731,14 @@ public class KafkaEventConsumer {
     }
 
     private int recordPendingRetryFailure(
-            TopicPartition partition,
+            PartitionRetryState.Lease lease,
             PendingDetectionEvent row,
             DetectionRecordProcessor.RetryableDetectionFailure failure,
             int attemptsThisRound,
             long delay) {
         int attempts = attemptsThisRound + 1;
         int limit = Math.max(1, processingMaxAttempts);
-        markRetryBlocked(partition, failure);
+        if (!markRetryBlocked(lease, failure)) return attempts;
         log.warn("Pending Detection retry partition={} offset={} attempt={}/{} category={} "
                         + "stage={} nextDelayMs={} reason={}",
                 row.partition(), row.offset(), attempts, limit,
@@ -765,6 +763,12 @@ public class KafkaEventConsumer {
      * are durable, or until revoke/shutdown interrupts its lane.
      */
     private boolean handoffToDlqUntilDurable(DlqHandoff handoff) {
+        PartitionRetryState.Lease lease = handoff.partition() == null ? null
+                : retryState.acquire(new TopicPartition(configuredTopic(), handoff.partition()));
+        return handoffToDlqUntilDurable(handoff, lease);
+    }
+
+    private boolean handoffToDlqUntilDurable(DlqHandoff handoff, PartitionRetryState.Lease lease) {
         long delay = Math.max(1L, dlqHandoffRetryDelayMs);
         int limit = Math.max(1, dlqHandoffMaxAttempts);
         int attemptsThisRound = 0;
@@ -772,14 +776,14 @@ public class KafkaEventConsumer {
         TopicPartition partition = handoff.partition() == null
                 ? null : new TopicPartition(configuredTopic(), handoff.partition());
 
-        while (running.get() && !Thread.currentThread().isInterrupted()) {
+        while (running.get() && !Thread.currentThread().isInterrupted() && retryState.active(lease)) {
             try {
                 if (!dlqPublished) {
                     publishDlqAndAwait(handoff);
                     dlqPublished = true;
                 }
                 recordTerminalJournalRow(handoff);
-                clearRetryBlocked(partition, true);
+                clearRetryBlocked(lease, true);
                 count("socp.detection.dlq.handoff", "committed");
                 return true;
             } catch (Exception dlqFailure) {
@@ -793,7 +797,7 @@ public class KafkaEventConsumer {
                                         + dlqFailure.getClass().getSimpleName() + ": "
                                         + dlqFailure.getMessage(),
                                 dlqFailure);
-                markRetryBlocked(partition, retryable);
+                if (!markRetryBlocked(lease, retryable)) return false;
                 log.error("Detection DLQ hand-off retry partition={} offset={} attempt={}/{} "
                                 + "published={} category={} nextDelayMs={} reason={}",
                         handoff.partition(), handoff.offset(), attemptsThisRound, limit,

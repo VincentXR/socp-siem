@@ -69,6 +69,11 @@ verification reconciles every `(tenant_id, delivery_id)` in the routing outbox
 with a COMPLETED journal row, including all stateless copies; distinct source
 coverage alone cannot establish complete fan-out processing.
 
+Retry pauses are scoped to a local partition assignment. Revocation retires
+that assignment before interrupting its worker lane. Late success, dependency
+failure, PENDING replay, and DLQ callbacks cannot clear or recreate pauses in
+the next assignment. Offset acknowledgement remains separately epoch fenced.
+
 Aliases such as `username -> user`, `host.name -> host`, and
 `source.ip -> src_ip` are resolved centrally. Composite dimensions use
 `component+component` with bounded, length-prefixed values. Unsupported

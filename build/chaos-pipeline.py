@@ -143,7 +143,7 @@ def wait_for(predicate, timeout=120, interval=2):
         if last:
             return last
         time.sleep(interval)
-    return last
+    return None
 
 
 def service_up(service, token=None):
