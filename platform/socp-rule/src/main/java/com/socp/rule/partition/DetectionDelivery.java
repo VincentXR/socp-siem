@@ -76,7 +76,7 @@ public final class DetectionDelivery {
             throw new IllegalArgumentException("invalid routed detection envelope");
         }
         if (kind == Kind.STATELESS
-                ? !STATELESS_DIMENSION.equals(dimension) || !STATELESS_VALUE.equals(value)
+                ? !STATELESS_DIMENSION.equals(dimension) || !event.id().equals(value)
                 : !RoutingDimension.validationErrors(dimension).isEmpty()) {
             throw new IllegalArgumentException("invalid routed detection dimension");
         }

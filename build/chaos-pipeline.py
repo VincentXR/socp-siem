@@ -1207,6 +1207,25 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
             "and (source_topic is null or source_partition is null or source_offset is null "
             "or delivery_topic is null or delivery_partition is null or delivery_offset is null)") or 0)
 
+        # Source coverage alone can hide an entire execution class: a source's
+        # stateful copy may complete while its stateless copy is rejected.
+        # Reconcile every tenant-scoped published delivery against completion.
+        route_missing_completed_journal = int(psql_scalar(
+            "detect", "select count(*) from t_detection_route_outbox r "
+            "left join t_detection_event j on j.tenant_id=r.tenant_id "
+            "and j.delivery_id=r.delivery_id "
+            f"where r.source_event_id in ({quoted_sources}) "
+            "and (j.delivery_id is null or j.status <> 'COMPLETED')") or 0)
+        stateless_routes = int(psql_scalar(
+            "detect", f"select count(*) from t_detection_route_outbox where {route_where} "
+            "and route_kind='STATELESS'") or 0)
+        stateless_completed = int(psql_scalar(
+            "detect", "select count(*) from t_detection_route_outbox r "
+            "join t_detection_event j on j.tenant_id=r.tenant_id "
+            "and j.delivery_id=r.delivery_id "
+            f"where r.source_event_id in ({quoted_sources}) "
+            "and r.route_kind='STATELESS' and j.status='COMPLETED'") or 0)
+
         instance_stats = [direct_instance_stats(url, token) for url in urls]
         pending_values = [item.get("pendingEvents") for item in instance_stats
                           if isinstance(item, dict)]
@@ -1239,6 +1258,9 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
             "journalDistinctDeliveries": journal_distinct,
             "journalDistinctSources": journal_sources,
             "journalUntraceableRows": journal_untraceable,
+            "routeMissingCompletedJournal": route_missing_completed_journal,
+            "statelessRouteRows": stateless_routes,
+            "statelessCompletedJournalRows": stateless_completed,
         }
         return {
             "sourceRouterBaseline": source_baseline,
@@ -1277,6 +1299,10 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
                 and source_receipt_rows == len(source_event_ids)
                 and source_receipt_positions == source_receipt_rows
                 and journal_rows == journal_distinct
+                and journal_rows == route_rows
+                and route_missing_completed_journal == 0
+                and stateless_routes == len(source_event_ids)
+                and stateless_completed == stateless_routes
                 and journal_sources == len(source_event_ids)
                 and journal_untraceable == 0
                 and (not isinstance(delivery, dict) or "unavailable" in delivery

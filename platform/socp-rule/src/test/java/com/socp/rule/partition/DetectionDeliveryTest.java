@@ -65,6 +65,18 @@ class DetectionDeliveryTest {
         assertThrows(IllegalArgumentException.class, () -> DetectionDelivery.validate(event(fields)));
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"_once", "another-event"})
+    void statelessValueMustNameItsOwnSourceEvenWithAConsistentDeliveryId(String value) {
+        Map<String, String> fields = envelope(DetectionDelivery.Kind.STATELESS);
+        fields.put(DetectionDelivery.VALUE_FIELD, value);
+        fields.put(DetectionRoutingKey.ROUTING_VALUE, value);
+        fields.put(DetectionDelivery.DELIVERY_ID_FIELD, DetectionDelivery.deliveryId(
+                "tenant-a", "event-1", DetectionDelivery.ROUTING_VERSION,
+                DetectionDelivery.Kind.STATELESS, DetectionDelivery.STATELESS_DIMENSION, value));
+        assertThrows(IllegalArgumentException.class, () -> DetectionDelivery.validate(event(fields)));
+    }
+
     @Test
     void quarantinesAllReservedInputWithoutOverwritingEvidenceAndIsIdempotent() {
         Map<String, String> fields = new HashMap<>(Map.of(
@@ -92,7 +104,7 @@ class DetectionDeliveryTest {
 
     private static Map<String, String> envelope(DetectionDelivery.Kind kind) {
         String dimension = kind == DetectionDelivery.Kind.STATELESS ? DetectionDelivery.STATELESS_DIMENSION : "user";
-        String value = kind == DetectionDelivery.Kind.STATELESS ? DetectionDelivery.STATELESS_VALUE : "alice";
+        String value = kind == DetectionDelivery.Kind.STATELESS ? "event-1" : "alice";
         Map<String, String> fields = new HashMap<>();
         fields.put("tenant_id", "tenant-a");
         fields.put(DetectionDelivery.SCHEMA_VERSION_FIELD, DetectionDelivery.SCHEMA_VERSION);

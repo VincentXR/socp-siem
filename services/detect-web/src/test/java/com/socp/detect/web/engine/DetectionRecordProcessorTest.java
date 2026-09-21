@@ -60,11 +60,11 @@ class DetectionRecordProcessorTest {
         fields.put("detection_source_offset", "42");
         fields.put("detection_delivery_kind", "STATELESS");
         fields.put("detection_delivery_dimension", "_stateless");
-        fields.put("detection_delivery_value", "_once");
+        fields.put("detection_delivery_value", "source-1");
         fields.put("detection_routing_field", "_stateless");
-        fields.put("detection_routing_value", "_once");
+        fields.put("detection_routing_value", "source-1");
         String id = com.socp.rule.partition.DetectionDelivery.deliveryId("tenant-a", "source-1",
-                "detection-routing-v2", com.socp.rule.partition.DetectionDelivery.Kind.STATELESS, "_stateless", "_once");
+                "detection-routing-v2", com.socp.rule.partition.DetectionDelivery.Kind.STATELESS, "_stateless", "source-1");
         fields.put("detection_delivery_id", id);
         var payload = java.util.Map.of("eventId", "source-1", "tenantId", "tenant-a",
                 "timestamp", "2026-01-01T00:00:00Z", "fields", fields);
@@ -80,6 +80,46 @@ class DetectionRecordProcessorTest {
             {"eventId":"evt-terminal","tenantId":"default","source":"auth","host":"web-1",\
             "msg":"login failed","fields":{"src_ip":"198.51.100.10"}}
             """;
+
+    @Test
+    void actualRouterPayloadsAreAcceptedForEveryExecutionClass() {
+        var repository = mock(com.socp.detect.web.persistence.repository.DetectionRouteOutboxRepository.class);
+        var plans = mock(com.socp.detect.web.routing.DetectionRoutingPlanRegistry.class);
+        java.util.Map<String, Object> rule = java.util.Map.of(
+                "id", "AUTH-THRESHOLD", "name", "Auth threshold", "type", "threshold",
+                "severity", "HIGH", "threshold", 3, "status", "ACTIVE", "version", "1",
+                "groupBy", "src_ip", "routingField", "src_ip", "dataSources", java.util.List.of("auth"));
+        given(plans.plan("default")).willReturn(com.socp.detect.web.routing.DetectionRoutingPlan.compile(
+                java.util.List.of(rule), 8));
+        var router = new com.socp.detect.web.routing.DetectionRouteOutboxService(
+                repository, plans, "socp-detection-routed-v2");
+        java.util.List<com.socp.detect.web.persistence.entity.DetectionRouteOutboxEntity> rows =
+                new java.util.ArrayList<>();
+        org.mockito.Mockito.doAnswer(invocation -> {
+            Iterable<com.socp.detect.web.persistence.entity.DetectionRouteOutboxEntity> saved =
+                    invocation.getArgument(0);
+            saved.forEach(rows::add);
+            return rows;
+        }).when(repository).saveAllAndFlush(any());
+        var routed = router.route("socp-events", 2, 41L, """
+                {"eventId":"evt-terminal","tenantId":"default","timestamp":"2026-01-01T00:00:00Z",
+                 "source":"auth","host":"web-1","msg":"login failed","fields":{"src_ip":"198.51.100.10"}}
+                """);
+        org.junit.jupiter.api.Assertions.assertFalse(routed.terminalFailure());
+        assertEquals(2, rows.size(), "one stateless and one src_ip stateful delivery");
+        var processor = new DetectionRecordProcessor(mock(DetectEngineService.class),
+                new InMemoryDetectionStateStore(), null);
+        processor.setRoutedInput(true);
+        var kinds = java.util.EnumSet.noneOf(com.socp.rule.partition.DetectionDelivery.Kind.class);
+        for (var row : rows) {
+            var parsed = processor.parse(row.getRoutingKey(), row.getPayload());
+            assertEquals(row.getRoutingKey(), parsed.routingKey());
+            assertEquals(row.getDeliveryId(), com.socp.rule.partition.DetectionDelivery.deliveryId(parsed.event()));
+            assertEquals("evt-terminal", parsed.event().id());
+            kinds.add(com.socp.rule.partition.DetectionDelivery.kind(parsed.event()));
+        }
+        assertEquals(java.util.EnumSet.allOf(com.socp.rule.partition.DetectionDelivery.Kind.class), kinds);
+    }
 
     @Test
     void parsesCanonicalFieldsWithoutUncheckedMaps() {
