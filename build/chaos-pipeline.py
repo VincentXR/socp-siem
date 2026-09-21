@@ -21,6 +21,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -37,6 +38,7 @@ sys.path.insert(0, str(BUILD))
 from ports import GATEWAY_URL, health_url, port_of  # noqa: E402
 from auth_client import login_token  # noqa: E402
 from middleware_images import image  # noqa: E402
+from kafka_offsets import offset_snapshot  # noqa: E402
 
 
 BOOTSTRAP = os.environ.get("PIPELINE_KAFKA", "127.0.0.1:9092")
@@ -141,7 +143,7 @@ def wait_for(predicate, timeout=120, interval=2):
         if last:
             return last
         time.sleep(interval)
-    return last
+    return None
 
 
 def service_up(service, token=None):
@@ -447,29 +449,7 @@ def kafka_snapshot(topic=None, group=None):
         consumer.assign(tps)
         ends = consumer.end_offsets(tps)
         committed = admin.list_group_offsets({group: tps}).get(group, {})
-        end_total = sum(ends.values())
-        def committed_value(value):
-            if value is None:
-                return 0
-            if isinstance(value, int):
-                return value
-            return int(getattr(value, "offset", 0))
-
-        per_partition = []
-        committed_total = 0
-        for tp in tps:
-            current = committed_value(committed.get(tp))
-            end = int(ends.get(tp, 0))
-            committed_total += current
-            per_partition.append({"partition": tp.partition,
-                                  "end": end,
-                                  "committed": current,
-                                  "lag": max(0, end - current)})
-        return {"end": end_total, "committed": committed_total,
-                "lag": max(0, end_total - committed_total),
-                "partitions": len(tps),
-                "perPartition": per_partition,
-                "source": "kafka-python"}
+        return offset_snapshot(ends, committed)
     finally:
         if admin is not None:
             admin.close()
@@ -823,7 +803,13 @@ def scenario_opensearch_outage(token):
             return values if len(values) == 1 else None
 
         alarms = wait_for(matching, timeout=180, interval=2) or []
-        search_alive = service_up("search-config", token)
+        # Dependency failure must remove readiness without killing the
+        # process. Aggregate health intentionally includes OpenSearch.
+        alive_status, _ = request(health_url("search-config") + "/liveness",
+                                  headers=auth_headers(token), timeout=4)
+        readiness_status, _ = request(health_url("search-config") + "/readiness",
+                                      headers=auth_headers(token), timeout=4)
+        search_alive = alive_status == 200
         docker_container("start", "socp-opensearch")
         stopped = False
         # The local OpenSearch endpoint can require TLS/basic authentication;
@@ -853,10 +839,11 @@ def scenario_opensearch_outage(token):
             "acceptedWhileDown": accepted,
             "matchingAlertsWhileDown": len(alarms),
             "searchConfigAliveWhileDown": search_alive,
+            "searchConfigReadinessStatusWhileDown": readiness_status,
             "openSearchRecovered": bool(os_ready),
             "acceptedAfterRecovery": recovery,
             "recoveryEventIndexed": bool(indexed_after_recovery),
-            "pass": len(alarms) == 1 and search_alive and bool(os_ready)
+            "pass": len(alarms) == 1 and search_alive and readiness_status == 503 and bool(os_ready)
                     and bool(indexed_after_recovery),
         }
     finally:
@@ -1006,7 +993,7 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
     cross_user = f"cross-user-{run_id}"
     cross_ids = [f"chaos-cross-user-{run_id}-failed",
                  f"chaos-cross-user-{run_id}-sudo"]
-    events.extend([
+    cross_events = [
         {
             "eventId": cross_ids[0],
             "source": "auth",
@@ -1025,7 +1012,8 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
             "src_ip": f"203.0.113.{1 + digest[3] % 200}",
             "user": cross_user,
         },
-    ])
+    ]
+    events.append(cross_events[0])
     expected_cross = expected_ordered_alert_id(
         "CORR-FAIL-SUDO", cross_user, cross_ids, default_tenant)
     expected_initial.append(expected_cross)
@@ -1033,6 +1021,23 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
     before = alert_total(token) or 0
     ingest_result = ingest(token, events)
     source_event_ids = {item["eventId"] for item in events}
+
+    # CorrelationRule advances in processing order. The two canonical keys
+    # intentionally differ, so Kafka cannot guarantee their relative arrival.
+    # Establish the first user-dimension step durably before sending the next;
+    # this remains a cross-dimension routing proof, not an event-time reorder test.
+    quoted_cross_id = "'" + cross_ids[0].replace("'", "''") + "'"
+    quoted_tenant = "'" + default_tenant.replace("'", "''") + "'"
+    first_step = wait_for(lambda: psql_scalar(
+        "detect", "select count(*) from t_detection_event "
+        f"where tenant_id={quoted_tenant} and source_event_id={quoted_cross_id} "
+        "and status='COMPLETED' and routing_version='detection-routing-v2' "
+        "and fields_json::jsonb->>'detection_delivery_dimension'='user'") == "1",
+        timeout=120, interval=2)
+    if not first_step:
+        raise RuntimeError("first cross-dimension correlation step did not complete on its user delivery")
+    cross_followup = ingest(token, [cross_events[1]])
+    source_event_ids.add(cross_events[1]["eventId"])
 
     # Same username split across two different tenants must never form one
     # correlation. Publish at the canonical Kafka boundary so the proof is not
@@ -1202,6 +1207,25 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
             "and (source_topic is null or source_partition is null or source_offset is null "
             "or delivery_topic is null or delivery_partition is null or delivery_offset is null)") or 0)
 
+        # Source coverage alone can hide an entire execution class: a source's
+        # stateful copy may complete while its stateless copy is rejected.
+        # Reconcile every tenant-scoped published delivery against completion.
+        route_missing_completed_journal = int(psql_scalar(
+            "detect", "select count(*) from t_detection_route_outbox r "
+            "left join t_detection_event j on j.tenant_id=r.tenant_id "
+            "and j.delivery_id=r.delivery_id "
+            f"where r.source_event_id in ({quoted_sources}) "
+            "and (j.delivery_id is null or j.status <> 'COMPLETED')") or 0)
+        stateless_routes = int(psql_scalar(
+            "detect", f"select count(*) from t_detection_route_outbox where {route_where} "
+            "and route_kind='STATELESS'") or 0)
+        stateless_completed = int(psql_scalar(
+            "detect", "select count(*) from t_detection_route_outbox r "
+            "join t_detection_event j on j.tenant_id=r.tenant_id "
+            "and j.delivery_id=r.delivery_id "
+            f"where r.source_event_id in ({quoted_sources}) "
+            "and r.route_kind='STATELESS' and j.status='COMPLETED'") or 0)
+
         instance_stats = [direct_instance_stats(url, token) for url in urls]
         pending_values = [item.get("pendingEvents") for item in instance_stats
                           if isinstance(item, dict)]
@@ -1234,6 +1258,9 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
             "journalDistinctDeliveries": journal_distinct,
             "journalDistinctSources": journal_sources,
             "journalUntraceableRows": journal_untraceable,
+            "routeMissingCompletedJournal": route_missing_completed_journal,
+            "statelessRouteRows": stateless_routes,
+            "statelessCompletedJournalRows": stateless_completed,
         }
         return {
             "sourceRouterBaseline": source_baseline,
@@ -1241,6 +1268,8 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
             "initialAssignments": initial,
             "rebalanceCycles": cycle_results,
             "ingest": ingest_result,
+            "crossDimensionFirstStepCompleted": bool(first_step),
+            "crossDimensionFollowupIngest": cross_followup,
             "isolationPublishes": isolation_publish,
             "expectedAlertIds": sorted(expected_ids),
             "actualAlertIds": sorted(actual_ids),
@@ -1270,6 +1299,10 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
                 and source_receipt_rows == len(source_event_ids)
                 and source_receipt_positions == source_receipt_rows
                 and journal_rows == journal_distinct
+                and journal_rows == route_rows
+                and route_missing_completed_journal == 0
+                and stateless_routes == len(source_event_ids)
+                and stateless_completed == stateless_routes
                 and journal_sources == len(source_event_ids)
                 and journal_untraceable == 0
                 and (not isinstance(delivery, dict) or "unavailable" in delivery
@@ -1290,8 +1323,9 @@ def scenario_routed_migration(token, count):
     Three evidence phases demanded by the cross-dimension contract:
       1. duplicate canonical deliveries: republishing the same business events
          at new source offsets must create new source receipts but must not
-         manufacture a second delivery identity or a second alert;
-      2. an unsupported ACTIVE stateful rule must make the router fail closed
+         manufacture new fan-out delivery identities or a second alert;
+      2. the API rejects incompatible activation without persisting a change;
+         an administratively injected unsupported ACTIVE rule then fails closed
          (visible status + uncommitted source), not keep a "healthy detection"
          illusion, and removing the rule must resume exactly the deferred work;
       3. rollback: restarting the cluster on the legacy input topic keeps
@@ -1357,6 +1391,8 @@ def scenario_routed_migration(token, count):
             int(psql_scalar("detect", f"select count(*) from t_detection_route_outbox where {where}") or 0),
             int(psql_scalar("detect",
                             f"select count(distinct delivery_id) from t_detection_route_outbox where {where}") or 0),
+            psql_scalar("detect", "select coalesce(string_agg(delivery_id, ',' order by delivery_id), '') "
+                        f"from t_detection_route_outbox where {where}"),
         )
 
     # -- phase 1: duplicate canonical deliveries --------------------------------
@@ -1374,12 +1410,18 @@ def scenario_routed_migration(token, count):
     settled = wait_for(lambda: observed(entities_a, expected_a), timeout=30, interval=2)
     duplicate_phase = {
         "receiptsBefore": receipts_before[0], "receiptsAfter": receipts_after[0],
-        "deliveryRowsBefore": receipts_after[1], "distinctDeliveriesAfter": receipts_after[2],
+        "deliveryRowsBefore": receipts_before[1], "deliveryRowsAfter": receipts_after[1],
+        "distinctDeliveriesAfter": receipts_after[2],
+        "deliveryIdentitiesUnchanged": receipts_after[3] == receipts_before[3],
         "alertIdsAfter": sorted(expected_a),
     }
     if receipts_after[0] <= receipts_before[0]:
         raise RuntimeError(f"duplicate deliveries did not create new source receipts: {duplicate_phase}")
-    if receipts_after[2] != len(events_a) or receipts_after[1] != receipts_after[2]:
+    # One canonical event can legitimately fan out across several dimensions.
+    # Retries must preserve the entire original identity set, not force one row
+    # per business event or merely keep the same aggregate row count.
+    if (receipts_before[2] < len(events_a) or receipts_after[1:] != receipts_before[1:]
+            or receipts_after[1] != receipts_after[2]):
         raise RuntimeError(f"duplicate deliveries manufactured extra delivery identities: {duplicate_phase}")
     if settled is None:
         raise RuntimeError(f"duplicate deliveries changed the alert set: {duplicate_phase}")
@@ -1393,18 +1435,46 @@ def scenario_routed_migration(token, count):
         "window": "5m",
         "threshold": 5,
         "groupBy": "proc_name",
-        "routingField": "service_name",
+        # Valid DSL in TESTING, but activation adds a new dimension to the
+        # pinned topology. A mismatched field would be rejected earlier as 400.
+        "routingField": "proc_name",
         "version": "1",
         "match": [{"field": "source", "op": "eq", "value": "firewall"}],
     }
     status, body = request(f"{instance}/detect-web/api/v1/rules", method="POST",
-                           body=bad_rule, headers=auth_headers(token), timeout=20)
+                           body=json.dumps(bad_rule),
+                           headers={**auth_headers(token), "Content-Type": "application/json"},
+                           timeout=20)
     if status != 200:
         raise RuntimeError(f"could not create incompatible rule: {status} {body}")
+    quoted_rule_id = "'" + bad_rule["id"].replace("'", "''") + "'"
+    rule_where = f"tenant_id='default' and rule_id={quoted_rule_id}"
+    stored_spec = psql_scalar("detect", f"select spec from t_rule where {rule_where}")
+    if json.loads(stored_spec).get("status") != "TESTING":
+        raise RuntimeError("incompatible rule did not begin in the review queue")
+    # Exercise the topology conflict after the separate activation permission
+    # check; the analyst session used for normal queries cannot activate rules.
+    activation_token = login_token(GATEWAY_URL, os.environ.get("RULE_VERIFY_USERNAME", "admin"),
+                                   os.environ.get("RULE_VERIFY_PASSWORD", "admin123"))
     status, body = request(f"{instance}/detect-web/api/v1/rules/{bad_rule['id']}/activate",
-                           method="POST", headers=auth_headers(token), timeout=20)
-    if status != 200:
-        raise RuntimeError(f"could not activate incompatible rule: {status} {body}")
+                           method="POST", headers=auth_headers(activation_token), timeout=20)
+    if status != 409:
+        raise RuntimeError(f"incompatible activation was not rejected: {status} {body}")
+    if psql_scalar("detect", f"select spec from t_rule where {rule_where}") != stored_spec:
+        raise RuntimeError("rejected activation changed the persisted rule")
+
+    # This scenario already requires disposable Compose infrastructure. Model
+    # a corrupt restore/administrative write so the runtime fail-closed check
+    # remains covered even though normal API writes now prevent this state.
+    quoted_spec = "'" + stored_spec.replace("'", "''") + "'"
+    injected = psql_scalar(
+        "detect", "with injected as (update t_rule set "
+        "spec=(spec::jsonb || '{\"status\":\"ACTIVE\",\"enabled\":true,"
+        "\"routingField\":\"service_name\"}'::jsonb)::text "
+        f"where {rule_where} and spec={quoted_spec} returning rule_id) "
+        "select rule_id from injected")
+    if injected != bad_rule["id"]:
+        raise RuntimeError("could not inject the isolated persisted-rule fault")
 
     def plan_unsupported():
         code, plan_body = request(f"{instance}/detect-web/api/v1/routing-plan",
@@ -1416,24 +1486,26 @@ def scenario_routed_migration(token, count):
                    if rule.get("ruleId") == bad_rule["id"] and rule.get("status") == "UNSUPPORTED"]
         return plan if reasons else None
 
-    plan = wait_for(plan_unsupported, timeout=60, interval=2)
-    if plan is None:
-        raise RuntimeError("routing plan never surfaced the incompatible ACTIVE rule as UNSUPPORTED")
+    try:
+        plan = wait_for(plan_unsupported, timeout=60, interval=2)
+        if plan is None:
+            raise RuntimeError("routing plan never surfaced the incompatible ACTIVE rule as UNSUPPORTED")
 
-    events_b, expected_b, entities_b = batch("blocked", 120)
-    ingest(token, events_b)
-    time.sleep(20)
-    blocked_alerts = observed(entities_b, expected_b)
-    blocked_lag = kafka_snapshot(CANONICAL_TOPIC, ROUTER_GROUP)
-    if blocked_alerts is not None:
-        raise RuntimeError("router kept delivering as if healthy despite the unsupported rule")
-    if blocked_lag["lag"] == 0:
-        raise RuntimeError("router committed canonical offsets despite failing closed")
+        events_b, expected_b, entities_b = batch("blocked", 120)
+        ingest(token, events_b)
+        time.sleep(20)
+        blocked_alerts = observed(entities_b, expected_b)
+        blocked_lag = kafka_snapshot(CANONICAL_TOPIC, ROUTER_GROUP)
+        if blocked_alerts is not None:
+            raise RuntimeError("router kept delivering as if healthy despite the unsupported rule")
+        if blocked_lag["lag"] == 0:
+            raise RuntimeError("router committed canonical offsets despite failing closed")
 
-    status, _ = request(f"{instance}/detect-web/api/v1/rules/{bad_rule['id']}",
-                        method="DELETE", headers=auth_headers(token), timeout=20)
-    if status != 200:
-        raise RuntimeError(f"could not delete incompatible rule: {status}")
+    finally:
+        status, _ = request(f"{instance}/detect-web/api/v1/rules/{bad_rule['id']}",
+                            method="DELETE", headers=auth_headers(token), timeout=20)
+        if status != 200:
+            raise RuntimeError(f"could not delete incompatible rule: {status}")
     def plan_supported():
         code, plan_body = request(f"{instance}/detect-web/api/v1/routing-plan",
                                   headers=auth_headers(token), timeout=10)
@@ -1452,6 +1524,9 @@ def scenario_routed_migration(token, count):
         "phase1DuplicateDeliveries": duplicate_phase,
         "phase2UnsupportedPlan": {
             "ruleId": bad_rule["id"],
+            "apiActivationStatus": 409,
+            "rejectedActivationPreservedSpec": True,
+            "persistedFaultInjected": True,
             "planReason": plan.get("rules"),
             "blockedKafkaLag": blocked_lag,
             "blockedAlertCount": len(blocked_alerts or []),
@@ -1474,6 +1549,8 @@ def scenario_routing_rollback(token, count):
     group_count = max(1, count // max(1, int(dataset.get("groupsPerBatchDivisor", events_per_alert))))
     digest = hashlib.sha256(f"{DATASET_SPEC['seed']}:{RUN_NAMESPACE}:routing-rollback".encode()).digest()
     run_id = run_token("routing-rollback")
+    evidence_dir = REPO / ".cache" / "chaos" / f"rollback-{run_id}"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
 
     def batch(prefix, ip_start):
         events, expected = [], []
@@ -1495,6 +1572,15 @@ def scenario_routing_rollback(token, count):
 
     def restart_cluster(routing_mode, input_topic, publisher_enabled):
         stop_auto_detection_cluster()
+        # The startup helper truncates each instance log. Preserve the previous
+        # generation after shutdown, especially the failed legacy generation
+        # before the mandatory cleanup restores primary mode.
+        log_dir = REPO / ".cache" / "detection-cluster"
+        saved = evidence_dir / f"before-{routing_mode}"
+        saved.mkdir(parents=True, exist_ok=True)
+        for path in [*log_dir.glob("*.log"), log_dir / "manifest.env"]:
+            if path.is_file():
+                shutil.copy2(path, saved / path.name)
         env = dict(os.environ)
         env.update({
             "SOCP_DETECT_INPUT_TOPIC": input_topic,
@@ -1520,6 +1606,33 @@ def scenario_routing_rollback(token, count):
         if ok is None:
             raise RuntimeError(f"detection did not drain after restart in {routing_mode} mode")
 
+    def capture_legacy_evidence(events, expected, entities):
+        evidence = {"expectedAlertIds": sorted(expected), "sourceEvents": events}
+        probes = {
+            "kafka": lambda: kafka_snapshot(CANONICAL_TOPIC, GROUP),
+            "alerts": lambda: [item for item in list_alerts(token)
+                               if item.get("ruleId") == dataset.get("ruleId", "LATERAL-RDP")
+                               and item.get("entity") in entities],
+            "instances": lambda: [direct_instance_stats(url, token) for url in urls],
+            "routingPlan": lambda: request(f"{urls[0]}/detect-web/api/v1/routing-plan",
+                                            headers=auth_headers(token), timeout=10)[1],
+        }
+        quoted = ",".join("'" + item["eventId"].replace("'", "''") + "'" for item in events)
+        probes["journal"] = lambda: json.loads(psql_scalar(
+            "detect", "select coalesce(json_agg(row_to_json(e)), '[]'::json)::text from "
+            "(select source_event_id,delivery_id,status,status_reason,occurred_at,"
+            "source_topic,source_partition,source_offset,delivery_topic,delivery_partition,"
+            "delivery_offset,fields_json,result_json from t_detection_event "
+            f"where tenant_id='default' and source_event_id in ({quoted})) e"))
+        for name, probe in probes.items():
+            try:
+                evidence[name] = probe()
+            except Exception as error:
+                evidence[name] = {"error": str(error)}
+        (evidence_dir / "legacy-state.json").write_text(
+            json.dumps(evidence, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return evidence
+
     restored = False
     try:
         restart_cluster("legacy", CANONICAL_TOPIC, "false")
@@ -1535,8 +1648,14 @@ def scenario_routing_rollback(token, count):
             return values if actual == set(expected) else None
 
         matched = wait_for(legacy_alerts, timeout=240, interval=2)
+        legacy_evidence = capture_legacy_evidence(events, expected, entities)
         if matched is None:
-            raise RuntimeError("rollback to the legacy input topic lost the formal alert path")
+            actual = sorted(str(item.get("sourceAlertId") or "")
+                            for item in legacy_evidence.get("alerts", [])
+                            if isinstance(item, dict))
+            raise RuntimeError("rollback to the legacy input topic lost the formal alert path; "
+                               f"expected={sorted(expected)} actual={actual}; "
+                               f"evidence={evidence_dir.relative_to(REPO)}")
         code, body = request(f"{urls[0]}/detect-web/api/v1/routing-plan",
                              headers=auth_headers(token), timeout=10)
         plan = unwrap(body) if code == 200 else None
@@ -1548,6 +1667,9 @@ def scenario_routing_rollback(token, count):
         restored = True
         return {"legacyFormalOutputRecovered": True,
                 "legacyReportsPartial": True,
+                "legacyExpectedAlertIds": sorted(expected),
+                "legacyActualAlertIds": sorted(item.get("sourceAlertId") for item in matched),
+                "legacyEvidence": str(evidence_dir.relative_to(REPO)),
                 "routedGenerationRestored": True,
                 "pass": True}
     finally:

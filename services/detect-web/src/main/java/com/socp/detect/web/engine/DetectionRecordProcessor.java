@@ -57,6 +57,12 @@ final class DetectionRecordProcessor {
         this.completionTimeoutMillis = Math.max(1L, completionTimeoutMillis);
     }
 
+    private boolean routedInput;
+
+    void setRoutedInput(boolean routedInput) {
+        this.routedInput = routedInput;
+    }
+
     void process(Integer partition, Long offset, String key, String raw) {
         process(null, partition, offset, key, raw);
     }
@@ -96,7 +102,9 @@ final class DetectionRecordProcessor {
 
             DetectionEventClaim claim;
             try {
-                claim = stateStore.claim(normalized, topic, partition, offset, routingKey);
+                claim = topic == null || topic.isBlank()
+                        ? stateStore.claim(normalized, partition, offset, routingKey)
+                        : stateStore.claim(normalized, topic, partition, offset, routingKey);
             } catch (RuntimeException failure) {
                 throw retryable(normalized, FailureStage.CLAIM, failure);
             }
@@ -254,11 +262,12 @@ final class DetectionRecordProcessor {
             fields.put("tenant_id", tenant);
             String message = text(payload, "msg", text(payload, "message", ""));
             if (payload.has("msg") && !fields.containsKey("msg")) fields.put("msg", message);
-            boolean routed = fields.containsKey(DetectionDelivery.DELIVERY_ID_FIELD);
+            if (!routedInput) DetectionDelivery.quarantineInputMetadata(fields);
             SecurityEvent event = new SecurityEvent(normalizeEventId(eventId, partition, offset),
-                    parseTimestamp(payload, routed),
+                    parseTimestamp(payload, routedInput),
                     text(payload, "source", "unknown"), text(payload, "host", "unknown"),
                     message, fields, parseSeverity(payload));
+            if (routedInput) DetectionDelivery.validate(event);
             return new NormalizedDetectionRecord(DetectionRoutingKey.forEvent(event), event);
         } catch (IllegalArgumentException malformed) {
             String terminalId = partition == null || offset == null

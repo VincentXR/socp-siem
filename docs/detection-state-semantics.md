@@ -61,6 +61,19 @@ used by business alert identity; each routed copy has a separate deterministic
 uses `(tenant_id, delivery_id)` while preserving `source_event_id` for
 Evidence/Alert/Case traceability.
 
+The stateless tuple is `(tenant_id, _stateless, source_event_id)`: its routing
+value is the source event ID, so independent events can use different Kafka
+partitions while retries preserve delivery identity. Consumers validate this
+exact contract against real router output; a fixed `_once` value is invalid. Cluster
+verification reconciles every `(tenant_id, delivery_id)` in the routing outbox
+with a COMPLETED journal row, including all stateless copies; distinct source
+coverage alone cannot establish complete fan-out processing.
+
+Retry pauses are scoped to a local partition assignment. Revocation retires
+that assignment before interrupting its worker lane. Late success, dependency
+failure, PENDING replay, and DLQ callbacks cannot clear or recreate pauses in
+the next assignment. Offset acknowledgement remains separately epoch fenced.
+
 Aliases such as `username -> user`, `host.name -> host`, and
 `source.ip -> src_ip` are resolved centrally. Composite dimensions use
 `component+component` with bounded, length-prefixed values. Unsupported

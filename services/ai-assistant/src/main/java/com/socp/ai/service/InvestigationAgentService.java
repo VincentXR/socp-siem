@@ -49,7 +49,6 @@ public class InvestigationAgentService {
     private final LlmChatClient llmClient;
     private final AuditSink auditSink;
     private final InvestigationProperties properties;
-    private final String claimOwner = UUID.randomUUID().toString();
 
     public InvestigationAgentService(InvestigationRepository repository, AlertClient alertClient,
                                      SearchClient searchClient, IncidentClient incidentClient,
@@ -65,8 +64,8 @@ public class InvestigationAgentService {
         this.properties = properties;
     }
 
-    /** The deterministic receipt ID makes repeated clicks return one result. */
-    public Map<String, Object> investigate(String alertId) {
+    /** Persist before acknowledging acceptance; concurrent submissions never overwrite a receipt. */
+    public InvestigationEntity enqueue(String alertId) {
         String tenant = TenantContext.require();
         String normalizedAlertId = normalizeAlertId(alertId);
         String investigationId = idFor(tenant, normalizedAlertId);
@@ -82,13 +81,26 @@ public class InvestigationAgentService {
             receipt.setCreatedAt(Instant.now());
             receipt.setUpdatedAt(Instant.now());
             try {
-                existing = repository.save(receipt);
+                repository.insertReceipt(investigationId, tenant, normalizedAlertId, receipt.getCreatedAt());
+                existing = receipt;
             } catch (DataIntegrityViolationException race) {
                 existing = repository.findByTenantIdAndAlertId(tenant, normalizedAlertId).orElse(null);
                 if (existing == null) throw race;
             }
             if (existing == null) existing = receipt;
         }
+        if ("FAILED".equals(existing.getStatus())) {
+            repository.requeueFailed(investigationId, tenant, Instant.now());
+        }
+        return existing;
+    }
+
+    /** The deterministic receipt ID makes repeated clicks return one result. */
+    public Map<String, Object> investigate(String alertId) {
+        String tenant = TenantContext.require();
+        InvestigationEntity existing = enqueue(alertId);
+        String normalizedAlertId = existing.getAlertId();
+        String investigationId = existing.getId();
         if ("COMPLETED".equals(existing.getStatus()) || "PARTIAL".equals(existing.getStatus())) {
             Map<String, Object> cached = read(existing.getResultJson());
             cached.put("duplicate", true);
@@ -96,8 +108,9 @@ public class InvestigationAgentService {
         }
 
         Instant now = Instant.now();
+        String claimOwner = UUID.randomUUID().toString();
         int claimed = repository.claim(investigationId, tenant, claimOwner, now,
-                now.plusMillis(properties.getClaimLeaseMs()));
+                now.plusMillis(Math.max(properties.getClaimLeaseMs(), properties.getTimeoutMs() + 5_000L)));
         if (claimed != 1) {
             InvestigationEntity current = repository.findByTenantIdAndAlertId(tenant, normalizedAlertId)
                     .orElse(null);
@@ -208,7 +221,7 @@ public class InvestigationAgentService {
         Map<String, Object> result = read(entity.getResultJson());
         result.putIfAbsent("investigationId", entity.getId());
         result.putIfAbsent("alertId", entity.getAlertId());
-        result.putIfAbsent("status", entity.getStatus());
+        result.put("status", entity.getStatus());
         return result;
     }
 
@@ -448,6 +461,7 @@ public class InvestigationAgentService {
     private static String normalizeAlertId(String value) {
         String normalized = blankToNull(value);
         if (normalized == null) throw new IllegalArgumentException("alert id is required");
+        if (normalized.length() > 128) throw new IllegalArgumentException("alert id exceeds 128 characters");
         return normalized;
     }
 

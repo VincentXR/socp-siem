@@ -25,8 +25,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auth_client import login_token  # noqa: E402
 
 GATEWAY = os.environ.get("FAILURE_GATEWAY", "http://localhost:18092")
-OS_URL = os.environ.get("FAILURE_OS_URL", "https://localhost:9200").rstrip("/")
-OS_AUTH = os.environ.get("FAILURE_OS_AUTH", "admin:Socp!Sec2026xK")
+OS_URL = os.environ.get("FAILURE_OS_URL", os.environ.get(
+    "PIPELINE_OS", "https://localhost:9200")).rstrip("/")
+OS_AUTH = os.environ.get("FAILURE_OS_AUTH", os.environ.get(
+    "PIPELINE_OS_AUTH", "admin:Socp!Sec2026xK"))
 # Ingest is a data-plane trust boundary.  It must be exercised with the
 # registered collector credential against search-config directly; the north
 # bound gateway intentionally authenticates user JWTs and will reject a
@@ -234,7 +236,7 @@ def main():
     st, d = ingest(
         {"collector": COLLECTOR_ID, "host": f"fk-{uniq}",
          "message": "sudo: failtest escalation",
-         "src_ip": f"10.99.{uniq[:2]}.{uniq[2:4]}"}
+         "src_ip": f"10.99.{int(uniq[:2])}.{int(uniq[2:4])}"}
     )
     d = api_data(d) if st == 200 else d
     check("Kafka 断开时 ingest 仍 accepted", st == 200 and d.get("accepted") == 1, f"st={st} accepted={d.get('accepted')}")
@@ -248,7 +250,7 @@ def main():
     st, d = ingest(
         {"collector": COLLECTOR_ID, "host": f"fk2-{uniq}",
          "message": "sudo: failtest2",
-         "src_ip": f"10.99.{uniq[:2]}.{uniq[2:4]}"}
+         "src_ip": f"10.99.{int(uniq[:2])}.{int(uniq[2:4])}"}
     )
     d = api_data(d) if st == 200 else d
     check("Kafka 恢复后 ingest 正常", st == 200 and d.get("accepted") == 1, f"st={st}")

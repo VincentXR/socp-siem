@@ -73,10 +73,10 @@ public class ParserRegistry {
             Map<String, String> out = safeParse(p, raw);
             if (out != null) {
                 // Vector sends a JSON envelope whose message field still contains
-                // the raw sshd line. Keep collector metadata, then enrich the
-                // envelope with the parser-specific authentication semantics.
+                // the raw line. Keep collector metadata while resolving the same
+                // authentication/syslog dimensions as direct raw ingestion.
                 if ("json".equals(p.name())) {
-                    Map<String, String> nested = parseEmbeddedSshd(out);
+                    Map<String, String> nested = parseEmbeddedText(out);
                     if (nested != null) {
                         Map<String, String> merged = new LinkedHashMap<>(out);
                         merged.putAll(nested);
@@ -150,10 +150,11 @@ public class ParserRegistry {
         return merged;
     }
 
-    private Map<String, String> parseEmbeddedSshd(Map<String, String> envelope) {
+    private Map<String, String> parseEmbeddedText(Map<String, String> envelope) {
         String message = envelope.get(CanonicalEvent.EVENT_MESSAGE);
         if (message == null || message.isBlank()) return null;
-        return safeParse(new SshdParser(), message);
+        Map<String, String> authentication = safeParse(new SshdParser(), message);
+        return authentication != null ? authentication : safeParse(new SyslogParser(), message);
     }
 
     private Map<String, String> safeParse(EventParser p, String raw) {

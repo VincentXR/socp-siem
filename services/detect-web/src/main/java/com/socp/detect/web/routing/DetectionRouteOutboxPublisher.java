@@ -63,7 +63,7 @@ public class DetectionRouteOutboxPublisher {
                 repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
                         "PENDING", now)) {
             int attemptLimit = maxAttempts == 0 ? Integer.MAX_VALUE : maxAttempts;
-            if (repository.claim(row.getDeliveryId(), now, attemptLimit) != 1) continue;
+            if (repository.claim(row.getDeliveryId(), now, attemptLimit, row.getAttempts()) != 1) continue;
             row.setAttempts(row.getAttempts() + 1);
             row.setStatus("PROCESSING");
             row.setUpdatedAt(now);
@@ -84,40 +84,29 @@ public class DetectionRouteOutboxPublisher {
         }
     }
 
-    @Transactional
     void markPublished(DetectionRouteOutboxEntity row, int partition, long offset) {
-        row.setDeliveryPartition(partition);
-        row.setDeliveryOffset(offset);
-        row.setStatus("PUBLISHED");
-        row.setPublishedAt(Instant.now());
-        row.setUpdatedAt(Instant.now());
-        row.setLastError(null);
-        repository.saveAndFlush(row);
+        repository.completeAttempt(row.getDeliveryId(), row.getAttempts(), partition, offset, Instant.now());
     }
 
-    @Transactional
     void markFailed(DetectionRouteOutboxEntity row, Exception failure) {
         Instant now = Instant.now();
         boolean exhausted = maxAttempts > 0 && row.getAttempts() >= maxAttempts;
-        row.setStatus(exhausted ? "DEAD" : "PENDING");
         long backoff = Math.min(60_000L, 250L << Math.min(8, Math.max(0, row.getAttempts() - 1)));
-        row.setNextAttemptAt(exhausted ? now : now.plusMillis(backoff));
-        row.setUpdatedAt(now);
         String detail = failure == null ? "unknown route publish failure"
                 : failure.getClass().getSimpleName() + ": " + failure.getMessage();
-        row.setLastError(detail.length() <= 1024 ? detail : detail.substring(0, 1024));
-        repository.saveAndFlush(row);
+        repository.failAttempt(row.getDeliveryId(), row.getAttempts(), exhausted ? "DEAD" : "PENDING",
+                exhausted ? now : now.plusMillis(backoff), now,
+                detail.length() <= 1024 ? detail : detail.substring(0, 1024));
     }
 
-    @Transactional
     void recoverStale() {
-        Instant cutoff = Instant.now().minus(Duration.ofMinutes(2));
+        Instant now = Instant.now();
+        Instant cutoff = now.minus(Duration.ofMinutes(2));
         for (DetectionRouteOutboxEntity row :
-                repository.findByStatusAndUpdatedAtBefore("PROCESSING", cutoff)) {
-            row.setStatus("PENDING");
-            row.setNextAttemptAt(Instant.now());
-            row.setUpdatedAt(Instant.now());
-            repository.save(row);
+                repository.findTop100ByStatusAndUpdatedAtBeforeOrderByUpdatedAtAsc("PROCESSING", cutoff)) {
+            boolean exhausted = maxAttempts > 0 && row.getAttempts() >= maxAttempts;
+            repository.recoverAttempt(row.getDeliveryId(), row.getAttempts(),
+                    exhausted ? "DEAD" : "PENDING", now, cutoff);
         }
     }
 

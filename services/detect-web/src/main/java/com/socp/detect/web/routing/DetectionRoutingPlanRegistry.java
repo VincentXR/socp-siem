@@ -18,6 +18,8 @@ public class DetectionRoutingPlanRegistry {
     private final int maxCachedTenants;
     private final long refreshNanos;
     private final ConcurrentHashMap<String, Entry> plans = new ConcurrentHashMap<>();
+    @org.springframework.beans.factory.annotation.Autowired
+    private DetectionRoutingTopologyGuard topologyGuard;
 
     public DetectionRoutingPlanRegistry(
             RuleSpecStore store,
@@ -47,6 +49,16 @@ public class DetectionRoutingPlanRegistry {
         else plans.remove(tenant);
     }
 
+    public DetectionRoutingPlan freshPlan(String tenant) {
+        invalidate(tenant);
+        return plan(tenant);
+    }
+
+    public boolean topologyCompatible(String tenant, DetectionRoutingPlan plan) {
+        return topologyGuard == null || TenantContext.callWith(tenant,
+                () -> topologyGuard.compatible(tenant, plan));
+    }
+
     public Map<String, DetectionRoutingPlan> knownPlans() {
         Map<String, DetectionRoutingPlan> out = new java.util.LinkedHashMap<>();
         plans.forEach((tenant, entry) -> out.put(tenant, entry.plan()));
@@ -54,7 +66,8 @@ public class DetectionRoutingPlanRegistry {
     }
 
     public boolean hasKnownUnsupportedPlan() {
-        return plans.values().stream().map(Entry::plan).anyMatch(plan -> !plan.supported());
+        return plans.entrySet().stream().anyMatch(entry -> !entry.getValue().plan().supported()
+                || !topologyCompatible(entry.getKey(), entry.getValue().plan()));
     }
 
     private void evictIfNeeded(String retainedTenant) {

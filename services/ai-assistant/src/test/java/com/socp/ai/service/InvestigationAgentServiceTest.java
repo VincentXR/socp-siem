@@ -23,6 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -67,7 +68,7 @@ class InvestigationAgentServiceTest {
         assertThat((List<?>) result.get("citations")).extracting(Object::toString)
                 .anyMatch(value -> value.contains("evidence:EV-1"));
         assertThat(result.get("iocValues")).asString().contains("10.1.2.3");
-        verify(repository).save(any(InvestigationEntity.class));
+        verify(repository).insertReceipt(anyString(), eq("tenant-a"), eq("AL-1"), any());
         verify(audit, org.mockito.Mockito.atLeast(3)).publish(any());
     }
 

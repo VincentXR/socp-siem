@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import http.cookies
 import json
+import os
 import urllib.error
 import urllib.request
 
@@ -35,7 +36,7 @@ def _cookie_token(headers) -> str | None:
     return None
 
 
-def login_token(gateway: str, username: str = "demo", password: str = "demo123",
+def login_token(gateway: str, username: str = "demo", password: str | None = None,
                 timeout: float = 15) -> str:
     """Authenticate and return the JWT from the session cookie.
 
@@ -43,6 +44,9 @@ def login_token(gateway: str, username: str = "demo", password: str = "demo123",
     gateways, but failed login is always raised; callers must not silently use
     a fake token because that masks a broken authentication contract.
     """
+    if password is None:
+        users = json.loads(os.environ.get("SOCP_AUTH_USERS", "{}"))
+        password = users.get(username, os.environ.get("DEMO_PASS", "demo123"))
     request = urllib.request.Request(
         gateway.rstrip("/") + "/auth/login",
         data=json.dumps({"username": username, "password": password}).encode(),

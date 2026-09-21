@@ -8,6 +8,7 @@
   verify-slice.py  验证横切能力（鉴权/租户/审计/限流/追踪），只走网关 + alert-web。
   verify-full.py   验证业务全链路 + 新增的 THREAT / ATT&CK / 通知 / 案件 / 查找表 / 合规 能力。
 """
+import atexit
 import json
 import os
 import sys
@@ -62,10 +63,10 @@ def _api_data(body):
     return body
 
 
-def call(url, method="GET", body=None, timeout=10):
+def call(url, method="GET", body=None, timeout=10, auth_token=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("Authorization", "Bearer " + token())
+    req.add_header("Authorization", "Bearer " + (auth_token if auth_token is not None else token()))
     req.add_header("X-Tenant-Id", "default")
     if data:
         req.add_header("Content-Type", "application/json")
@@ -108,6 +109,73 @@ def unwrap(body):
     if isinstance(body, dict) and isinstance(body.get("items"), list) and "total" in body:
         return body["items"]
     return body
+
+
+def list_alarms():
+    status, body = call(U["alert-web"] + "/alert-web/api/alarms?size=200")
+    alarms = unwrap(body)
+    if (status != 200 or not isinstance(alarms, list)
+            or any(not isinstance(alarm, dict) or "id" not in alarm for alarm in alarms)):
+        raise RuntimeError("alarm list failed: HTTP %s, response=%s" % (status, str(body)[:500]))
+    return alarms
+
+
+_SOAR_FIXTURE = {}
+
+
+def cleanup_soar_fixture():
+    rule_id = _SOAR_FIXTURE.get("ruleId")
+    if rule_id:
+        status, body = call(U["soar-web"] + "/soar-web/api/automation-rules/" + rule_id, "DELETE",
+                            auth_token=_SOAR_FIXTURE.get("token"))
+        check("清理 SOAR 探针规则", status in (200, 204), body if status not in (200, 204) else "")
+        if status in (200, 204):
+            _SOAR_FIXTURE.pop("ruleId", None)
+    playbook_id = _SOAR_FIXTURE.get("playbookId")
+    if playbook_id:
+        status, body = call(U["soar-web"] + "/soar-web/api/playbooks/" + playbook_id,
+                            "PATCH", {"status": "ARCHIVED"}, auth_token=_SOAR_FIXTURE.get("token"))
+        check("归档 SOAR 探针剧本并保留运行证据", status == 200, body if status != 200 else "")
+        if status == 200:
+            _SOAR_FIXTURE.pop("playbookId", None)
+
+
+def install_soar_fixture(entity):
+    # Published automation is explicit configuration, never an assumed demo
+    # default. This fixture only matches the probe entity and has no action node.
+    atexit.register(cleanup_soar_fixture)
+    fixture_token = login_token(GATEWAY_URL, os.environ.get("SOAR_VERIFY_USERNAME", "admin"),
+                                os.environ.get("SOAR_VERIFY_PASSWORD", "admin123"), timeout=10)
+    _SOAR_FIXTURE["token"] = fixture_token
+    name = "Full-stack alert probe " + str(time.time_ns())
+    status, draft = call(U["soar-web"] + "/soar-web/api/playbooks/import", "POST", {
+        "name": name, "description": "Isolated event delivery verification", "tags": ["ci"],
+        "definition": {
+            "schemaVersion": "soar.playbook", "entryNodeId": "start",
+            "limits": {"maxNodeExecutions": 20, "maxParallelism": 2},
+            "nodes": [{"id": "start", "type": "START", "name": "Start"},
+                      {"id": "end", "type": "END", "name": "End", "outcome": "SUCCEEDED"}],
+            "edges": [{"from": "start", "to": "end"}],
+        }, "layout": {},
+    }, auth_token=fixture_token)
+    if status not in (200, 201) or not draft.get("playbookId") or not draft.get("id"):
+        raise RuntimeError("SOAR fixture import failed: %s %s" % (status, draft))
+    _SOAR_FIXTURE.update(playbookId=draft["playbookId"], versionId=draft["id"])
+    version_path = "/soar-web/api/playbooks/%s/versions/%s" % (draft["playbookId"], draft["version"])
+    status, _ = call(U["soar-web"] + version_path + "/publish", "POST")
+    check("分析员不能发布 SOAR 剧本", status == 403, status)
+    status, published = call(U["soar-web"] + version_path + "/publish", "POST", auth_token=fixture_token)
+    if status != 200 or published.get("status") != "PUBLISHED":
+        raise RuntimeError("SOAR fixture publish failed: %s %s" % (status, published))
+    status, rule = call(U["soar-web"] + "/soar-web/api/automation-rules", "POST", {
+        "name": name, "triggerType": "alert.created", "priority": 1, "enabled": True,
+        "conditions": {"field": "data.entity", "operator": "equals", "value": entity},
+        "actions": [{"playbookVersionId": draft["id"]}], "suppression": {},
+    }, auth_token=fixture_token)
+    if status not in (200, 201) or not rule.get("id"):
+        raise RuntimeError("SOAR fixture rule failed: %s %s" % (status, rule))
+    _SOAR_FIXTURE["ruleId"] = rule["id"]
+    check("SOAR 已发布探针剧本和限定实体的触发规则", True, name)
 
 
 # ---------------------------------------------------------------- 1. 健康
@@ -165,7 +233,8 @@ check("Webhook verification fixture is ready",
 
 # ---------------------------------------------------------------- 5. 全链路
 print("\n=== 5. 端到端：采集→检测→告警→富化→通知→建案→SOAR ===")
-before_alarms = unwrap(call(U["alert-web"] + "/alert-web/api/alarms?size=200")[1]) or []
+install_soar_fixture(IOC_IP)
+before_alarms = list_alarms()
 before_ids = {a["id"] for a in before_alarms}
 
 st, ing = call(U["detect-web"] + "/detect-web/api/v1/ingest", "POST", {
@@ -187,7 +256,7 @@ def wait_for(fn, timeout=20.0, interval=0.5):
 
 
 def new_alarm_of(entity):
-    cur = unwrap(call(U["alert-web"] + "/alert-web/api/alarms?size=200")[1]) or []
+    cur = list_alarms()
     cand = [a for a in cur if a["id"] not in before_ids and a.get("entity") == entity]
     return cand[0] if cand and cand[0].get("tiHits") else None
 
@@ -232,13 +301,21 @@ if new_alarm:
     mycase = wait_for(my_case)
     check("告警自动归并为案件", mycase is not None, mycase.get("id") if mycase else "未建案")
     if mycase:
-        alarm_evs = [e for e in mycase.get("timeline", []) if e.get("type") == "ALARM"]
+        timeline_status, timeline_body = call(
+            U["incident-web"] + "/incident-web/api/v1/incidents/%s/timeline?page=1&size=100" % mycase["id"])
+        timeline = unwrap(timeline_body)
+        if timeline_status != 200 or not isinstance(timeline, list):
+            raise RuntimeError("case timeline failed: %s %s" % (timeline_status, timeline_body))
+        alarm_evs = [e for e in timeline if e.get("type") == "ALARM"]
         check("案件时间线无重复（幂等：同一告警不重复入链）",
-              len(alarm_evs) == len({e.get("alarmId") for e in alarm_evs}),
+              any(e.get("alarmId") == aid for e in alarm_evs)
+              and len(alarm_evs) == len({e.get("alarmId") for e in alarm_evs}),
               "timeline_alarm=%d distinct_alarmId=%d" % (len(alarm_evs), len({e.get("alarmId") for e in alarm_evs})))
         check("案件时间线含 ATT&CK 标注",
               any("[T" in str(e.get("message", "")) for e in alarm_evs),
               alarm_evs[0].get("message", "")[:100] if alarm_evs else "")
+
+    last_soar_runs = []
 
     def my_execs():
         # SOAR is the production path. A passing full-stack check must prove
@@ -252,13 +329,20 @@ if new_alarm:
         matched = []
         for run in data:
             subject = run.get("subject") if isinstance(run, dict) else None
-            if isinstance(subject, dict) and subject.get("id") == aid:
+            if (isinstance(subject, dict) and subject.get("id") == aid
+                    and run.get("playbookVersionId") == _SOAR_FIXTURE.get("versionId")):
                 matched.append(run)
-        return matched or None
+        last_soar_runs[:] = matched
+        return matched if any(run.get("status") == "SUCCEEDED" and run.get("temporalWorkflowId")
+                              for run in matched) else None
 
     execs = wait_for(my_execs) or []
-    check("SOAR durable Run 已接收", len(execs) > 0,
-          [e.get("status") for e in execs][:3])
+    check("SOAR durable Run 已接收", len(last_soar_runs) > 0,
+          [e.get("status") for e in last_soar_runs][:3])
+    check("告警触发的 SOAR Run 已通过 Temporal 执行完成", len(execs) > 0,
+          [e.get("status") for e in last_soar_runs][:3])
+
+cleanup_soar_fixture()
 
 # ---------------------------------------------------------------- 6. 查找表 / 合规
 print("\n=== 6. 查找表与合规 ===")

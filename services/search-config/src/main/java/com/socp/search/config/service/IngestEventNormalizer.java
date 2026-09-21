@@ -104,6 +104,9 @@ public class IngestEventNormalizer {
             }
         }
 
+        com.socp.rule.partition.DetectionDelivery.quarantineInputMetadata(canonical);
+        com.socp.rule.partition.DetectionDelivery.quarantineField(canonical, "ingested_at");
+        com.socp.rule.partition.DetectionDelivery.quarantineField(canonical, "event_time_generated");
         Map<String, Object> fields = new LinkedHashMap<>();
         Map<String, String> ecs = new LinkedHashMap<>();
         canonical.forEach((key, value) -> {

@@ -19,6 +19,7 @@ export POSTGRES_DB="${PGDATABASE:-postgres}"
 
 "$script_dir/../infra/init-sql/pg/00_roles.sh"
 "$script_dir/../infra/init-sql/pg/02_runtime_grants.sh"
+bash "$script_dir/../infra/init-sql/pg/03_temporal_databases.sh"
 
 printf 'PostgreSQL role contract applied through %s@%s:%s\n' \
   "$PGUSER" "$PGHOST" "$PGPORT"
