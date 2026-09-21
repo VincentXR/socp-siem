@@ -310,6 +310,9 @@ Detection HTTP ingestion and needs the contacted worker to own every shard.
 It edits rules through PUT and uses the separate `rule:activate` administrator
 transition for new rules. This local HTTP demonstration does not establish
 Kafka transport coverage; the pipeline and routed chaos checks provide that.
+After observing a new alert, it waits for that exact alert ID to appear in an
+automatically created/merged incident. It never uses manual incident creation
+to substitute for the asynchronous fan-out assertion.
 The incompatible-rule activation probe uses `RULE_VERIFY_USERNAME/PASSWORD`
 (local default `admin/admin123`) so its expected 409 tests the topology guard
 after authorization; normal chaos queries retain `DEMO_USER/PASS`.

@@ -259,17 +259,15 @@ def main():
             print("  规则: %s | 实体: %s | MITRE: %s"
                   % (alarm.get("ruleId"), alarm.get("entity"), alarm.get("mitre")))
 
-        # 4) 关联事件（自动建案/归并；若 SOAR 自动触发未就绪则调用 from-alarm 建案兜底）
-        st, cases = api(tok, "/incident-web/api/v1/incidents")
-        cl = list_items(unwrap(cases)) if st == 200 else []
-        related = [c for c in cl
-                   if alarm and str(alarm.get("id", "")) in str(c.get("alarmIds", []))]
-        if not related and alarm:
-            st2, cr = api(tok, "/incident-web/api/v1/incidents/from-alarm",
-                          {"alarmId": alarm.get("id")}, "POST")
-            if st2 == 200:
-                created = unwrap(cr)
-                related = [created] if isinstance(created, dict) else []
+        # 4) Alert persistence precedes asynchronous incident fan-out. Poll for
+        # this exact new alarm; a manual case cannot prove automatic delivery.
+        def related_incidents():
+            st, cases = api(tok, "/incident-web/api/v1/incidents?size=100")
+            cl = list_items(unwrap(cases)) if st == 200 else []
+            return [case for case in cl
+                    if alarm and alarm.get("id") in (case.get("alarmIds") or [])]
+
+        related = (wait_for(related_incidents, timeout=40) or []) if alarm else []
         check("告警关联事件（自动建案/归并）", len(related) >= 1,
               related[0].get("title", "")[:60] if related else "")
         print()

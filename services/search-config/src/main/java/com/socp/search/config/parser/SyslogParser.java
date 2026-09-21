@@ -25,7 +25,7 @@ public final class SyslogParser implements EventParser {
     private static final Pattern RFC5424 = Pattern.compile(
             "^<(?<pri>\\d{1,3})>\\s*(?<ver>\\d)\\s+(?<ts>\\S+)\\s+(?<host>\\S+)\\s+(?<app>[^\\s\\[]+)(?:\\s+\\S+){0,2}\\s*(?:\\[(?<pid>\\d+)])?\\s*:?\\s*(?<msg>.*)$");
     private static final Pattern RFC3164 = Pattern.compile(
-            "^<(?<pri>\\d{1,3})>\\s*(?<ts>[A-Z][a-z]{2}\\s+\\d{1,2}\\s+\\d{2}:\\d{2}:\\d{2})\\s+(?<host>\\S+)\\s+(?<app>[^\\s\\[]+)(?:\\[(?<pid>\\d+)])?\\s*:?\\s*(?<msg>.*)$");
+            "^<(?<pri>\\d{1,3})>\\s*(?<ts>[A-Z][a-z]{2}\\s+\\d{1,2}\\s+\\d{2}:\\d{2}:\\d{2})\\s+(?<host>\\S+)\\s+(?<app>[^\\s\\[:]+)(?:\\[(?<pid>\\d+)])?\\s*:?\\s*(?<msg>.*)$");
     private static final DateTimeFormatter RFC3164_FMT = DateTimeFormatter.ofPattern("MMM d HH:mm:ss").withZone(ZoneOffset.UTC);
 
     @Override
@@ -52,6 +52,16 @@ public final class SyslogParser implements EventParser {
             out.put(CanonicalEvent.HOST_NAME, m.group("host"));
         }
         out.put(CanonicalEvent.EVENT_CODE, m.group("app") == null ? "syslog" : m.group("app"));
+        String app = m.group("app");
+        if (app != null) {
+            out.put(CanonicalEvent.PROCESS_NAME, app);
+            String source = switch (app.toLowerCase(java.util.Locale.ROOT)) {
+                case "sshd", "sudo", "su" -> "auth";
+                case "auditd", "linux", "edr", "falco" -> app.toLowerCase(java.util.Locale.ROOT);
+                default -> "syslog";
+            };
+            out.put("source", source);
+        }
         if (m.group("pid") != null) {
             out.put(CanonicalEvent.PROCESS_PID, m.group("pid"));
         }
@@ -65,6 +75,16 @@ public final class SyslogParser implements EventParser {
                 out.put("timestamp", inst.toString());
             } catch (Exception ignored) {
                 out.put("timestamp", ts);
+            }
+        }
+        if ("sshd".equalsIgnoreCase(app)) {
+            // Reuse the authentication parser so RFC syslog and plain auth
+            // files carry the same IP/user/action dimensions into routing.
+            Map<String, String> authentication = new SshdParser().parse(
+                    ts + " " + m.group("host") + " sshd: " + out.get(CanonicalEvent.EVENT_MESSAGE));
+            if (authentication != null) {
+                out.putAll(authentication);
+                out.put("vendor", "syslog");
             }
         }
         return out;
