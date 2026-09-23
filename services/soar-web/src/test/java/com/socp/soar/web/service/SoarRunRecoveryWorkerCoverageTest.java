@@ -1,234 +1,93 @@
 package com.socp.soar.web.service;
 
-import com.socp.platform.tenant.context.TenantContext;
 import com.socp.soar.web.persistence.entity.SoarRunEntity;
-import com.socp.soar.web.persistence.repository.SoarActionAttemptRepository;
 import com.socp.soar.web.persistence.repository.SoarRunRepository;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.Instant;
-import java.util.Collection;
 import java.util.List;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyCollection;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.BDDMockito.given;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class SoarRunRecoveryWorkerCoverageTest {
+    @Mock SoarRunRepository runs;
+    @Mock TemporalExecutor temporal;
+    @Mock SoarRunRecoveryState state;
+    SoarRunRecoveryWorker worker;
+    SoarRunEntity run;
 
-    private static final long STALE_SECONDS = 600L;
-
-    @Mock
-    private SoarRunRepository runs;
-    @Mock
-    private SoarActionAttemptRepository attempts;
-    @Mock
-    private TemporalExecutor temporal;
-
-    private SoarRunRecoveryWorker worker;
-
-    @BeforeEach
-    void setUp() {
-        TenantContext.set("tenant-a");
-        worker = new SoarRunRecoveryWorker(runs, attempts, temporal, STALE_SECONDS);
+    @BeforeEach void setup() {
+        worker = new SoarRunRecoveryWorker(runs, temporal, state, 600);
+        run = new SoarRunEntity();
+        run.setId("run-1"); run.setTenantId("tenant-a"); run.setRowVersion(4L);
+        run.setStatus("CANCELLING"); run.setTemporalWorkflowId("attached-workflow");
+        run.setUpdatedAt(Instant.now().minusSeconds(1200));
     }
 
-    @AfterEach
-    void tearDown() {
-        TenantContext.clear();
+    void poll(List<SoarRunEntity> rows) {
+        when(temporal.isAvailable()).thenReturn(true);
+        when(runs.findRecoveryCandidates(anyCollection(), any(), any(), any())).thenReturn(rows);
     }
 
-    @Test
-    void closedWorkflowWithoutAnInFlightAttemptTerminalizesProjectionAsFailed() {
-        SoarRunEntity run = staleRun("RUNNING", "soar-tenant-a-run-1");
-        given(runs.findTop100ByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAsc(anyCollection(), any()))
-                .willReturn(List.of(run));
-        given(temporal.describeWorkflow("soar-tenant-a-run-1")).willReturn(TemporalExecutor.WorkflowState.CLOSED);
+    void claim() {
+        when(runs.claimRecoveryCheck(eq("tenant-a"), eq("run-1"), eq(4L), any(), any(), any())).thenReturn(1);
+    }
 
+    @Test void unavailableTemporalCannotInventAnOrphanOrTerminalCancellation() {
         worker.tick();
-
-        assertThat(run.getStatus()).isEqualTo("FAILED");
-        assertThat(run.getErrorCode()).isEqualTo("SOAR_PROJECTION_STALE");
-        assertThat(run.getErrorMessage()).contains("no action was in flight");
-        assertThat(run.getCompletedAt()).isNotNull();
-        verify(runs).save(run);
+        verifyNoInteractions(runs, state);
     }
 
-    @Test
-    void closedWorkflowWithAnInFlightAttemptRequiresOperatorResolution() {
-        SoarRunEntity run = staleRun("RUNNING", "soar-tenant-a-run-1b");
-        given(runs.findTop100ByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAsc(anyCollection(), any()))
-                .willReturn(List.of(run));
-        given(temporal.describeWorkflow("soar-tenant-a-run-1b")).willReturn(TemporalExecutor.WorkflowState.CLOSED);
-        given(attempts.existsRunningByTenantIdAndRunId("tenant-a", "run-1")).willReturn(true);
-
+    @Test void observedStateIsPassedWithOriginalVersionToATransactionalRecheck() {
+        poll(List.of(run)); claim();
+        when(temporal.describeWorkflow("attached-workflow")).thenReturn(TemporalExecutor.WorkflowState.CLOSED);
         worker.tick();
-
-        assertThat(run.getStatus()).isEqualTo("ACTION_UNKNOWN");
-        assertThat(run.getErrorCode()).isEqualTo("SOAR_ACTION_RESULT_UNKNOWN");
-        assertThat(run.getErrorMessage()).contains("attempt remained RUNNING");
-        verify(runs).save(run);
+        verify(state).recover(eq(run), eq(TemporalExecutor.WorkflowState.CLOSED),
+                argThat(cutoff -> cutoff.isBefore(Instant.now().minusSeconds(590))), any());
+        verify(runs, never()).save(any());
+        assertEquals("CANCELLING", run.getStatus());
     }
 
-    @Test
-    void openWorkflowKeepsProjectionUntouched() {
-        SoarRunEntity run = staleRun("RUNNING", "soar-tenant-a-run-2");
-        given(runs.findTop100ByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAsc(anyCollection(), any()))
-                .willReturn(List.of(run));
-        given(temporal.describeWorkflow("soar-tenant-a-run-2")).willReturn(TemporalExecutor.WorkflowState.OPEN);
-
+    @Test void missingAttachmentUsesDeterministicWorkflowIdentity() {
+        poll(List.of(run)); claim();
+        run.setTemporalWorkflowId(null);
         worker.tick();
-
-        assertThat(run.getStatus()).isEqualTo("RUNNING");
-        assertThat(run.getCompletedAt()).isNull();
-        verify(runs, never()).save(any(SoarRunEntity.class));
+        verify(temporal).describeWorkflow("soar-tenant-a-run-1");
     }
 
-    @Test
-    void unknownDescribeKeepsProjectionUntouched() {
-        SoarRunEntity run = staleRun("DISPATCHING", "soar-tenant-a-run-3");
-        given(runs.findTop100ByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAsc(anyCollection(), any()))
-                .willReturn(List.of(run));
-        given(temporal.describeWorkflow("soar-tenant-a-run-3")).willReturn(TemporalExecutor.WorkflowState.UNKNOWN);
-
+    @Test void anotherReplicasClaimPreventsDuplicateProbe() {
+        poll(List.of(run));
         worker.tick();
-
-        assertThat(run.getStatus()).isEqualTo("DISPATCHING");
-        verify(runs, never()).save(any(SoarRunEntity.class));
-    }
-
-    @Test
-    void orphanWithoutWorkflowIdIsMarkedTimedOut() {
-        SoarRunEntity run = staleRun("DISPATCHING", null);
-        given(runs.findTop100ByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAsc(anyCollection(), any()))
-                .willReturn(List.of(run));
-
-        worker.tick();
-
-        assertThat(run.getStatus()).isEqualTo("TIMED_OUT");
-        assertThat(run.getErrorCode()).isEqualTo("SOAR_PROJECTION_STALE");
-        assertThat(run.getErrorMessage()).contains("recovery lease");
-        verify(runs).save(run);
         verify(temporal, never()).describeWorkflow(anyString());
+        verifyNoInteractions(state);
     }
 
-    @Test
-    void staleCancellationWithoutWorkflowIsCompletedAsCancelled() {
-        SoarRunEntity run = staleRun("CANCELLING", "   ");
-        given(runs.findTop100ByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAsc(anyCollection(), any()))
-                .willReturn(List.of(run));
-
+    @Test void oneFailedProbeDoesNotAbortTheOtherRecords() {
+        var other = new SoarRunEntity();
+        other.setId("run-2"); other.setTenantId("tenant-b"); other.setRowVersion(1L);
+        other.setTemporalWorkflowId("other-workflow");
+        poll(List.of(run, other)); claim();
+        when(temporal.describeWorkflow("attached-workflow")).thenThrow(new IllegalStateException("probe failed"));
+        when(runs.claimRecoveryCheck(eq("tenant-b"), eq("run-2"), eq(1L), any(), any(), any())).thenReturn(1);
+        when(temporal.describeWorkflow("other-workflow")).thenReturn(TemporalExecutor.WorkflowState.CLOSED);
         worker.tick();
-
-        assertThat(run.getStatus()).isEqualTo("CANCELLED");
-        assertThat(run.getErrorCode()).isEqualTo("SOAR_RUN_CANCELLED");
-        verify(temporal, never()).describeWorkflow(anyString());
+        verify(state).recover(eq(other), eq(TemporalExecutor.WorkflowState.CLOSED), any(), any());
     }
 
-    @Test
-    void staleCancellationAfterClosedWorkflowIsCompletedAsCancelled() {
-        SoarRunEntity run = staleRun("CANCELLING", "soar-tenant-a-run-cancelled");
-        given(runs.findTop100ByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAsc(anyCollection(), any()))
-                .willReturn(List.of(run));
-
+    @Test void boundedScanIncludesAttachedWaitStatesAndUsesDurableRetryTime() {
+        poll(List.of(run)); claim();
         worker.tick();
-
-        assertThat(run.getStatus()).isEqualTo("CANCELLED");
-        assertThat(run.getErrorCode()).isEqualTo("SOAR_RUN_CANCELLED");
-        verify(runs).save(run);
-    }
-
-    @Test
-    void rowTerminalizedAfterTheSnapshotIsSkipped() {
-        SoarRunEntity completed = staleRun("SUCCEEDED", "soar-tenant-a-run-4");
-        SoarRunEntity refreshed = staleRun("RUNNING", "soar-tenant-a-run-5");
-        refreshed.setUpdatedAt(Instant.now());
-        given(runs.findTop100ByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAsc(anyCollection(), any()))
-                .willReturn(List.of(completed, refreshed));
-
-        worker.tick();
-
-        assertThat(completed.getStatus()).isEqualTo("SUCCEEDED");
-        assertThat(refreshed.getStatus()).isEqualTo("RUNNING");
-        verify(runs, never()).save(any(SoarRunEntity.class));
-        verify(temporal, never()).describeWorkflow(anyString());
-    }
-
-    @Test
-    void runWithoutUpdatedAtIsSkipped() {
-        SoarRunEntity run = staleRun("RUNNING", "soar-tenant-a-run-6");
-        run.setUpdatedAt(null);
-        given(runs.findTop100ByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAsc(anyCollection(), any()))
-                .willReturn(List.of(run));
-
-        worker.tick();
-
-        assertThat(run.getStatus()).isEqualTo("RUNNING");
-        verify(runs, never()).save(any(SoarRunEntity.class));
-    }
-
-    @Test
-    void workerWithoutTemporalClientMarksEveryStaleRunTimedOut() {
-        SoarRunRecoveryWorker noTemporal = new SoarRunRecoveryWorker(runs);
-        SoarRunEntity run = staleRun("RUNNING", "soar-tenant-a-run-7");
-        run.setUpdatedAt(Instant.now().minusSeconds(7 * 24 * 3600L));
-        given(runs.findTop100ByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAsc(anyCollection(), any()))
-                .willReturn(List.of(run));
-
-        noTemporal.tick();
-
-        assertThat(run.getStatus()).isEqualTo("TIMED_OUT");
-        verify(runs).save(run);
-    }
-
-    @Test
-    void emptyScanTouchesNothing() {
-        given(runs.findTop100ByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAsc(anyCollection(), any()))
-                .willReturn(List.of());
-
-        worker.tick();
-
-        verify(runs, never()).save(any(SoarRunEntity.class));
-        verify(temporal, never()).describeWorkflow(anyString());
-    }
-
-    @Test
-    void recoveryScansOnlyActiveStatusesWithStaleCutoff() {
-        ArgumentCaptor<Collection> statuses = ArgumentCaptor.forClass(Collection.class);
-        ArgumentCaptor<Instant> cutoff = ArgumentCaptor.forClass(Instant.class);
-        given(runs.findTop100ByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAsc(anyCollection(), any()))
-                .willReturn(List.of());
-
-        Instant before = Instant.now().minusSeconds(STALE_SECONDS + 5);
-        worker.tick();
-        Instant after = Instant.now().minusSeconds(STALE_SECONDS - 5);
-
-        verify(runs).findTop100ByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAsc(statuses.capture(), cutoff.capture());
-        Collection capturedStatuses = statuses.getValue();
-        assertThat(capturedStatuses.containsAll(List.of("DISPATCHING", "RUNNING", "CANCELLING"))).isTrue();
-        assertThat(capturedStatuses.size()).isEqualTo(3);
-        assertThat(cutoff.getValue().isAfter(before)).isTrue();
-        assertThat(cutoff.getValue().isBefore(after)).isTrue();
-    }
-
-    private static SoarRunEntity staleRun(String status, String workflowId) {
-        SoarRunEntity run = new SoarRunEntity();
-        run.setId("run-1");
-        run.setTenantId("tenant-a");
-        run.setStatus(status);
-        run.setTemporalWorkflowId(workflowId);
-        run.setUpdatedAt(Instant.now().minusSeconds(STALE_SECONDS * 2));
-        return run;
+        verify(runs).findRecoveryCandidates(argThat(statuses -> statuses.size() == 5
+                && statuses.containsAll(List.of("RUNNING", "DISPATCHING", "CANCELLING", "WAITING_INPUT", "WAITING_APPROVAL"))),
+                any(), any(), argThat(page -> page.getPageSize() == 100));
+        verify(runs).claimRecoveryCheck(eq("tenant-a"), eq("run-1"), eq(4L), any(), any(),
+                argThat(next -> next.isAfter(Instant.now().plusSeconds(50))));
     }
 }

@@ -5,9 +5,40 @@ Consumers write terminal records to topics derived as `topic + "-dlq"`; see
 automatically reads those records back. This runbook defines triage, safe redrive,
 and recovery verification.
 
-`build/replay-dlq.py` is the tool. It is **idempotent** (re-running is safe) and
-**fail-closed** (it refuses the re-drive cases it cannot do correctly rather than
-silently corrupting routing or state).
+`build/replay-dlq.py` plans and re-produces a bounded batch. It preserves payload
+identities and blocks the detection cases described below, but has no durable
+replay journal. Repeating a command can repeat side effects unless the owning
+consumer deduplicates them; check its contract in
+[idempotency](../idempotency-contract.md) before redriving a topic.
+
+Both broker and offline input default to 100 source records per invocation.
+`--limit` accepts 1–10,000 and applies before deduplication. The byte transport
+preserves null, empty, binary, tab and newline values, including ordered duplicate
+headers available on the DLQ record. It never derives a broker key from `eventId`.
+
+| Input | Replay behavior |
+| --- | --- |
+| Raw record | Preserve the DLQ key/value bytes and headers; let Kafka select the target partition. The DLQ partition does not identify the original partition. |
+| Indexer envelope | Restore its explicit `key` (including null/empty), `originalPayload` and original partition. Require the complete envelope and matching `originalTopic`. Forward available DLQ headers; original headers omitted by the writer cannot be reconstructed. |
+| Null value (tombstone) | Skip unless `--include-tombstones` is explicit; a tombstone may delete a key on a compacted topic. Empty and whitespace values remain unchanged and are eligible for replay. |
+
+Only identical target/key/payload/headers/tenant records at the **same source
+position** are collapsed within a batch: envelope original partition/offset, or
+raw DLQ partition/offset. Null keys are never deduplicated. Two independently
+produced observations remain separate even when their key and payload match.
+`--no-dedup` retains all observations. There is no deduplication across invocations.
+
+Limits are 4 MiB per record and 64 MiB per batch (topic, key, value and header
+bytes), 256 headers per record, 4,096 headers per batch, and 256 UTF-8 bytes per
+header name. Offline files are capped at 96 MiB, binary bridge output at 68 MiB.
+An oversized batch fails before publishing; inspect a smaller batch or a specific
+partition/offset. Kafka/broker message limits may be lower. These checks bound
+accepted data, not the JVM heap used to fetch/decompress a broker record.
+
+Replay uses new Kafka timestamps rather than restoring the source timestamp.
+Exports retain DLQ positions/timestamps
+as evidence; application event-time fields remain unchanged. Broker acknowledgement
+does not establish downstream completion or exactly-once effects.
 
 ## What is actually in a `-dlq` topic
 
@@ -44,33 +75,88 @@ re-driven as its embedded `originalPayload`, a raw record is re-driven as-is.
 
 ## How to run it
 
-Inspect a batch without touching the broker (offline triage from a console export):
+Live capture/replay requires Python 3, Java 21 and Kafka client jars (tested with
+the repository's Kafka 3.9.2 client). `--kafka-bin /opt/kafka/bin` discovers the
+installation's sibling `libs` directory. Alternatively set
+`--kafka-classpath '/opt/kafka/libs/*'` or `SOCP_KAFKA_CLASSPATH`; Java uses the
+platform classpath separator for multiple entries. `--java` selects the executable.
+The bridge runs [DlqTransport.java](../../build/kafka/DlqTransport.java) using
+[Java source-file mode](https://docs.oracle.com/en/java/javase/21/docs/specs/man/java.html).
+No console consumer/producer line protocol or Python Kafka package is used.
 
-```bash
-# export the DLQ first: key<TAB>value per line
-docker exec -i socp-kafka kafka-console-consumer.sh \
-  --bootstrap-server localhost:9092 --topic socp-events-dlq \
-  --property print.key=true --property key.separator=$'\t' \
-  --timeout-ms 5000 > /tmp/socp-events-dlq.tsv
-
-python build/replay-dlq.py --topic socp-events-dlq \
-  --input-file /tmp/socp-events-dlq.tsv --dry-run --limit 50
-```
-
-Re-drive a reviewed batch (idempotent; safe to repeat):
+Capture source records for review without producing or committing offsets:
 
 ```bash
 python build/replay-dlq.py --topic socp-events-dlq --limit 50 \
-  --bootstrap localhost:9092
+  --bootstrap localhost:9092 --kafka-bin /opt/kafka/bin \
+  --export-file /tmp/socp-events-dlq.json
+
+python build/replay-dlq.py --topic socp-events-dlq \
+  --input-file /tmp/socp-events-dlq.json --dry-run --limit 50
 ```
 
-You can also emit an offline replay file instead of writing to the broker
-(`--output-file replay.tsv`), which keeps a change record for the audit trail.
+Re-drive a reviewed non-detection batch after confirming its consumer's
+deduplication behavior:
+
+```bash
+python build/replay-dlq.py --topic socp-alarm-events-dlq --limit 50 \
+  --bootstrap localhost:9092 --kafka-bin /opt/kafka/bin
+```
+
+`--bootstrap` defaults to `SOCP_KAFKA_BOOTSTRAP`, then `localhost:9092`; verify it
+before use. `--consumer-config` and `--producer-config` accept Kafka properties
+files (up to 1 MiB), including TLS/SASL credentials. Transport settings override
+serializers, interceptors, commits, timeouts, transactions and producer reliability
+settings in those files; authentication is retained. Protect these files and
+payload exports as sensitive data. Kafka stderr is drained with a bounded retained
+prefix and is not echoed because client diagnostics can contain credentials.
+
+The [consumer](https://kafka.apache.org/39/javadoc/org/apache/kafka/clients/consumer/KafkaConsumer.html)
+manually assigns partitions, disables auto-commit and group membership, and reads
+only committed records up to an initial end-offset snapshot. It starts at the
+earliest retained offsets unless both `--partition N --offset N` are supplied.
+The supplied offset is inclusive and must lie in the retained snapshot. Exports
+carry positions for the next review batch; the tool does not save a cursor or
+delete DLQ records. Empty topics succeed; metadata, authorization and read failures
+fail rather than becoming an empty success. No topic is auto-created by inspection
+or by the producer's initial target lookup.
+
+`--timeout-ms` is a 1,000–120,000 ms deadline for each Kafka read or publish
+operation (default 10,000). Each Java subprocess also has a 30-second startup
+allowance and bounded cleanup. Both output streams are drained; timeout, excess
+output, nonzero exit and incomplete frames fail and reap the child process.
+
+Offline input is a single versioned `socp-dlq-batch/v1` JSON object with
+`format`, `sourceTopic` and `records`. Each record has `topic`, `partition`,
+`offset`, `timestamp`, `keyBase64`, `valueBase64` and ordered `headers` entries
+(`key`, `valueBase64`). JSON null and empty Base64 strings are distinct. Malformed,
+truncated, duplicate-field, wrong-topic or oversized files fail. **Legacy console
+TSV exports are unsupported**: nulls, newlines and binary content already lost in
+that format cannot be recovered; capture again from Kafka. Offline inspection
+does not need Java or Kafka jars.
+
+`--export-file capture.json` saves all inspected source records, including blocked
+records, without replay planning. `--output-file selected.json` saves only eligible
+original source records after planning and guards. Both refuse to overwrite an
+existing file. Selected records retain their envelope until replay so re-import
+does not unwrap the embedded event twice. `--dry-run` still reads Kafka unless
+`--input-file` is supplied. Dry runs and selected output print the plan and exit
+3 if blocked; inspecting the plan needs no override. The plan shows escaped key
+previews, byte counts and payload hashes, not payload bodies.
+
+The [producer](https://kafka.apache.org/39/javadoc/org/apache/kafka/clients/producer/KafkaProducer.html)
+uses byte serializers, `acks=all`, idempotence and one in-flight request, and waits
+for every send acknowledgement. This protects transport retries in that producer
+session; it does not make an operator's repeated invocation idempotent. A failed
+publish may already have acknowledged a prefix of the batch. Inspect the target
+and consumer receipts before retrying; the tool does not promise atomic batches.
 
 ## What the tool will refuse, and why
 
-`build/replay-dlq.py` exits non-zero and sends nothing in two situations. Both are
-correctness, not convenience:
+The whole plan is blocked before any publish for malformed/incomplete indexer
+envelopes, mismatched `originalTopic`, and these detection cases. `--force` only
+overrides the terminal-journal guard; it never overrides missing routing metadata
+or invalid envelopes:
 
 * **Detect-path topics (`socp-events`, `socp-detection-routed-v2`) without `--force`.**
   `DetectionEventJournal` treats a repeat of a `DEAD_LETTERED` id as a permanent skip
@@ -87,24 +173,29 @@ correctness, not convenience:
 
 ## Detection-path terminal rows
 
-The detection DLQ is genuinely one-way at the *code* level, not merely undocumented:
+The detection DLQ is one-way at the application level:
 the terminal row and the journal's mutual-exclusion invariant keep a re-delivery from
 being re-evaluated, and payload retention is inverted (DLQ payloads are kept 30 days,
 the `DEAD_LETTERED` journal rows 90 days) so the payload evidence can expire while the
 blocking row remains. Until an admin reset exists, recovery of a detection poison
 record is:
 
-1. Confirm the record is fixed at the source (rule/schema/dependency).
-2. Re-drive to `socp-events` with `--force` to recover the **OpenSearch** copy.
-3. For the **detection** copy, the event must enter under an id the journal has not
-   terminalised, or an operator with DBA rights removes the `DEAD_LETTERED` journal
-   row for `(tenant_id, event_id)` and lets the re-drive re-evaluate it. Removing a
-   journal row is a manual, audited, DBA-only step and must be logged against the
-   incident.
+1. Fix the source cause and export the payload, tenant and original identity.
+2. Re-driving `socp-events` with `--force` can restore the **OpenSearch** copy;
+   separately verify the indexer result. This does not reset detection state.
+3. For **detection**, record an incident-specific recovery plan covering the active
+   runtime generation, source receipts, routing outbox/delivery identities,
+   terminal journal and any downstream effects. Re-ingesting the same event under
+   another Kafka offset can reuse an existing routed delivery and remain skipped.
+   Deleting a journal row alone is not a general recovery procedure. A corrected
+   source event with a new identity is new work and can repeat earlier effects;
+   authorize and reconcile that choice explicitly.
 
 Detect Web does not expose an administrative reset endpoint for a terminal
-journal row. Consequently, the DBA procedure above is an exceptional recovery
-path, not a normal redrive workflow.
+journal row. Direct database intervention requires separate operational authority,
+coordinated writers and an audited restore/reconciliation plan; this tool performs
+none. See [detection state semantics](../detection-state-semantics.md) for the
+durable boundaries that must stay consistent.
 
 ## Verify the pipeline recovered
 

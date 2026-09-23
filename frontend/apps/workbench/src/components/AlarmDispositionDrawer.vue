@@ -33,7 +33,7 @@ const props = withDefaults(defineProps<{
   modelValue: boolean
   alarm: Alarm | null
   goCase: (caseId?: string) => void
-  goSearch: () => void
+  goSearch: (query?: string) => void
   goAi?: (alarmId: string) => void
   goSoar?: (alarmId: string) => void
   assigneeOptions?: string[]
@@ -215,9 +215,7 @@ async function createCase(): Promise<void> {
 function openEvidenceSearch() {
   const query = evidence.value?.query
   if (!query) return
-  window.sessionStorage.setItem('socp.search.query', query)
-  drawerVisible.value = false
-  props.goSearch()
+  props.goSearch(query)
 }
 </script>
 
@@ -247,7 +245,7 @@ function openEvidenceSearch() {
 
       <div class="alarm-context-actions">
         <span>{{ t('drawer.nextActions') }}</span>
-        <el-button v-if="props.goAi" size="small" type="primary" plain @click="props.goAi(props.alarm.id)">{{ t('drawer.openAiInvestigation') }}</el-button>
+        <el-button v-if="props.goAi && props.canWrite" size="small" type="primary" plain @click="props.goAi(props.alarm.id)">{{ t('drawer.openAiInvestigation') }}</el-button>
         <el-button v-if="props.goSoar" size="small" type="warning" plain @click="props.goSoar(props.alarm.id)">{{ t('drawer.openSoarResponse') }}</el-button>
       </div>
 

@@ -19,20 +19,20 @@ public interface SoarDispatchOutboxRepository extends TenantScopedRepository<Soa
             String status, Instant now);
     long countByStatus(String status);
     long countByTenantIdAndStatusAndNextAttemptAtLessThanEqual(String tenantId, String status, Instant now);
-    @Modifying
+    /** Caller owns the transaction, including the run projection update. */
+    @Query(value = "select * from t_soar_dispatch_outbox where tenant_id = :tenantId and id = :id "
+            + "for update skip locked", nativeQuery = true)
+    Optional<SoarDispatchOutboxEntity> findByTenantIdAndIdForUpdateSkipLocked(
+            @Param("tenantId") String tenantId, @Param("id") String id);
+
+    /** Bounded candidates only; the coordinator rechecks each version in its own transaction. */
     @Transactional
-    @Query("update SoarDispatchOutboxEntity o set o.status = 'DISPATCHING', o.claimedBy = :worker, "
-            + "o.claimedAt = :now, o.updatedAt = :now where o.tenantId = :tenantId and o.id = :id "
-            + "and o.status = 'PENDING' "
-            + "and o.nextAttemptAt <= :now")
-    int claim(@Param("tenantId") String tenantId, @Param("id") String id,
-              @Param("worker") String worker, @Param("now") Instant now);
-    @Modifying
-    @Transactional
-    @Query("update SoarDispatchOutboxEntity o set o.status = 'PENDING', o.claimedBy = null, "
-            + "o.claimedAt = null, o.nextAttemptAt = :now, o.updatedAt = :now "
-            + "where o.status = 'DISPATCHING' and o.claimedAt < :staleBefore")
-    int recoverStaleClaims(@Param("staleBefore") Instant staleBefore, @Param("now") Instant now);
+    @Query(value = "select * from t_soar_dispatch_outbox where "
+            + "(status = 'DISPATCHING' and claimed_at < :staleBefore) "
+            + "or (status = 'PENDING' and attempts >= :maxAttempts) "
+            + "order by updated_at, id limit :batchSize for update skip locked", nativeQuery = true)
+    List<SoarDispatchOutboxEntity> findRecoveryCandidates(@Param("staleBefore") Instant staleBefore,
+            @Param("maxAttempts") int maxAttempts, @Param("batchSize") int batchSize);
     List<SoarDispatchOutboxEntity> findByTenantIdAndStatusOrderByUpdatedAtAsc(String tenantId, String status);
 
     /** System-scope retention purge; call only after the owning run is selected. */

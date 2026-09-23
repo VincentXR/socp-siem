@@ -1,113 +1,88 @@
 #!/usr/bin/env python3
-"""Workbench frontend convention gate.
+"""Check that each Element Plus table with static custom sorting binds its handler.
 
-Enforces two durable UI/query invariants:
-
-1. Sorting: every table that opts a column into server/client hand-off via
-   `sortable="custom"` must actually take over the sort by binding
-   `@sort-change`. A `sortable="custom"` with no handler is a dead sort
-   affordance; remove the attribute or add the handler.
-
-2. Route-query sync: list-query composables that read `route.query` and write
-   `router.replace({ query })` share a locked contract (see the must-read header
-   in useListQuery.ts). A divergent copy re-introduces the 500-on-bad-page /
-   alarmId-erase / echo-clobber bugs. Any file matching the sync pattern must
-   keep all four guards.
+This is a template wiring check, not proof that the handler sorts correctly.
+URL-query behavior is exercised by scripts/useListQuery.test.ts and
+scripts/useAlarmQuery.component.test.ts under the workbench `pnpm test` gate.
+Source-token presence cannot prove those runtime contracts.
 """
 
+from html.parser import HTMLParser
 from pathlib import Path
-import re
 import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "frontend" / "apps" / "workbench" / "src"
-COMPOSABLES = SRC / "composables"
-
-SORTABLE_CUSTOM = re.compile(r'sortable\s*=\s*["\']custom["\']')
-SORT_CHANGE_BINDING = re.compile(r'@sort-change\s*=')
-
-# A file becomes a "URL-synced list-query composable" when it both reads the
-# live query and pushes an object-form replace. This deliberately excludes
-# useWorkbenchRoute.ts (router.replace(path)) so only the list-query family is
-# held to the contract.
-SYNC_READ = re.compile(r'route\.query')
-SYNC_WRITE = re.compile(r'\.replace\(\{\s*query')
-
-REQUIRED_CONTRACT = {
-    "integer page token (Number.isInteger)": re.compile(r'Number\.isInteger'),
-    "nextTick echo reset": re.compile(r'nextTick'),
-    "preserve unmanaged keys ({ ...route.query })": re.compile(r'\.\.\.route\.query'),
-    "routeName scope guard": re.compile(r'route\.name\s*!=='),
-}
-FORBIDDEN_TOKEN = {
-    "isFinite page guard leaks '2.5' to @RequestParam Integer -> 500": re.compile(r'Number\.isFinite'),
-}
+TABLE_TAGS = {"el-table", "eltable"}
+COLUMN_TAGS = {"el-table-column", "eltablecolumn"}
 
 
-def vue_files():
-    yield from sorted(SRC.rglob("*.vue"))
+class Table:
+    def __init__(self, has_handler: bool):
+        self.has_handler = has_handler
+        self.has_custom_sort = False
 
 
-def composable_files():
-    yield from sorted(COMPOSABLES.glob("*.ts"))
+class SortableParser(HTMLParser):
+    def __init__(self, path: Path, errors: list[str]):
+        super().__init__(convert_charrefs=True)
+        self.path = path
+        self.errors = errors
+        self.tables: list[Table] = []
+        self.checked = 0
 
+    def handle_starttag(self, tag, attributes):
+        attrs = dict(attributes)
+        if tag in TABLE_TAGS:
+            has_handler = any(
+                name.split(".", 1)[0] in {"@sort-change", "v-on:sort-change"}
+                and value is not None and bool(value.strip())
+                for name, value in attributes
+            )
+            self.tables.append(Table(has_handler))
+        elif tag in COLUMN_TAGS:
+            custom = attrs.get("sortable") == "custom" or any(
+                (attrs.get(name) or "").strip() in {"'custom'", '"custom"'}
+                for name in (":sortable", "v-bind:sortable")
+            )
+            if not custom:
+                return
+            table = self.tables[-1] if self.tables else None
+            if table is not None and not table.has_custom_sort:
+                table.has_custom_sort = True
+                self.checked += 1
+            if table is None or not table.has_handler:
+                self.errors.append(
+                    f'{self.path}:{self.getpos()[0]}: sortable="custom" without '
+                    "a sort-change handler on its owning table"
+                    " (remove the attribute or bind the sort takeover)"
+                )
 
-def line_of(content: str, index: int) -> int:
-    return content.count("\n", 0, index) + 1
+    def handle_endtag(self, tag):
+        if tag in TABLE_TAGS and self.tables:
+            self.tables.pop()
 
 
 def check_sortable(errors: list[str]) -> int:
     checked = 0
-    for path in vue_files():
-        content = path.read_text(encoding="utf-8")
-        match = SORTABLE_CUSTOM.search(content)
-        if not match:
-            continue
-        checked += 1
-        if not SORT_CHANGE_BINDING.search(content):
-            rel = path.relative_to(ROOT).as_posix()
-            ln = line_of(content, match.start())
-            errors.append(
-                f"{rel}:{ln}: sortable=\"custom\" without @sort-change handler"
-                " (remove the attribute or bind the sort takeover)"
-            )
-    return checked
-
-
-def check_composable_sync(errors: list[str]) -> int:
-    checked = 0
-    for path in composable_files():
-        content = path.read_text(encoding="utf-8")
-        if not (SYNC_READ.search(content) and SYNC_WRITE.search(content)):
-            continue
-        checked += 1
-        rel = path.relative_to(ROOT).as_posix()
-        for label, pattern in REQUIRED_CONTRACT.items():
-            if not pattern.search(content):
-                errors.append(f"{rel}: route-query sync composable missing contract guard: {label}")
-        for label, pattern in FORBIDDEN_TOKEN.items():
-            match = pattern.search(content)
-            if match:
-                ln = line_of(content, match.start())
-                errors.append(f"{rel}:{ln}: route-query sync composable must not use isFinite — {label}")
+    for path in sorted(SRC.rglob("*.vue")):
+        parser = SortableParser(path.relative_to(ROOT), errors)
+        parser.feed(path.read_text(encoding="utf-8"))
+        parser.close()
+        checked += parser.checked
     return checked
 
 
 def main() -> int:
     errors: list[str] = []
-    sortable_files = check_sortable(errors)
-    sync_files = check_composable_sync(errors)
+    tables = check_sortable(errors)
     if errors:
         print("Frontend conventions gate failed:", file=sys.stderr)
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         return 1
-    print(
-        "Frontend conventions gate passed:"
-        f" {sortable_files} sortable-table file(s) with @sort-change;"
-        f" {sync_files} route-query sync composable(s) holding the locked contract"
-    )
+    print(f"Frontend conventions gate passed: {tables} custom-sort table(s) with their own handler")
     return 0
 
 

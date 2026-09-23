@@ -114,7 +114,10 @@ onMounted(async () => {
   // failure later can arm its own single reload.
   try { window.sessionStorage.removeItem(CHUNK_RELOAD_KEY) } catch { /* storage unavailable */ }
   if (!await auth.initAuth()) return
-  onMenuChange(activeMenu.value)
+  // Authentication must retain an allowed editor/deep link and its query.
+  // Menu navigation intentionally goes to the list, so use it only when the
+  // restored session cannot access the current menu.
+  if (!routeMenuAllowed.value) onMenuChange(activeMenu.value)
 })
 </script>
 

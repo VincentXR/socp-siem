@@ -2,6 +2,7 @@ package com.socp.detect.web.api.controller;
 
 
 import com.socp.detect.web.config.DetectRuntimeRole;
+import com.socp.detect.web.api.request.CreateWatchlistRequest;
 import com.socp.detect.web.persistence.store.WatchlistStore;
 import com.socp.detect.web.service.EntityRiskStore;
 import com.socp.platform.error.api.ApiResult;
@@ -97,8 +98,9 @@ public class UebaController {
     // ---------- 观察名单 ----------
 
     @GetMapping("/watchlists")
-    public ApiResult<List<Map<String, Object>>> listWatchlists() {
-        return ApiResult.ok(watchlists.list());
+    public ApiResult<List<Map<String, Object>>> listWatchlists(
+            @RequestParam(defaultValue = "true") boolean includeValues) {
+        return ApiResult.ok(watchlists.list(includeValues));
     }
 
     @GetMapping("/watchlists/{name}")
@@ -113,6 +115,13 @@ public class UebaController {
                                             @Valid @RequestBody @Size(max = 10000)
                                             List<@Size(max = 256) String> values) {
         return ApiResult.ok(watchlists.put(name, values));
+    }
+
+    /** 新建名单；同名有效名单已存在时返回 409，不覆盖其他分析师的内容。 */
+    @RequireRole({"admin", "analyst"})
+    @PostMapping("/watchlists")
+    public ApiResult<Map<String, Object>> createWatchlist(@Valid @RequestBody CreateWatchlistRequest request) {
+        return ApiResult.ok(watchlists.create(request.name(), request.values()));
     }
 
     /** 追加若干值到名单 */

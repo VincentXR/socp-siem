@@ -137,7 +137,7 @@ public class CaseStore {
         String tenant = tenant();
         if (timelineRepo == null) return Page.empty(PageRequest.of(Math.max(0, page), Math.max(1, size)));
         return timelineRepo.findByTenantIdAndCaseIdOrderByTsAsc(tenant, caseId,
-                PageRequest.of(Math.max(0, page), Math.max(1, Math.min(500, size))));
+                PageRequest.of(Math.max(0, page), Math.max(1, Math.min(500, size)), Sort.by("id")));
     }
 
     private static String tenant() {
@@ -172,8 +172,7 @@ public class CaseStore {
         List<TimelineEvent> timeline = List.of();
         if (includeTimeline) {
             timeline = timelineRepo == null ? null : timelineRepo
-                    .findByTenantIdAndCaseIdOrderByTsAsc(entity.getTenantId(), entity.getId()).stream()
-                    .limit(500)
+                    .findTop500ByTenantIdAndCaseIdOrderByTsAscIdAsc(entity.getTenantId(), entity.getId()).stream()
                     .map(CaseStore::fromTimelineEntity)
                     .toList();
             if (timeline == null || timeline.isEmpty()) {

@@ -66,4 +66,17 @@ describe('useAlarmQuery route query contract', () => {
     expect(written.page).toBeUndefined()
     expect(written.size).toBeUndefined()
   })
+
+  it('ignores another route query and does not write or fetch from its watchers', async () => {
+    const { route, replace, fetchPage, alarmPageNum, alarmKeyword } = harness({ q: 'original', page: '2' })
+    route.name = 'search'
+    route.query = { q: 'unrelated', page: '9' }
+    await nextTick()
+    expect(alarmPageNum.value).toBe(2)
+    expect(alarmKeyword.value).toBe('original')
+    alarmPageNum.value = 3
+    await nextTick()
+    expect(replace).not.toHaveBeenCalled()
+    expect(fetchPage).not.toHaveBeenCalled()
+  })
 })

@@ -26,6 +26,7 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -34,6 +35,147 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc(addFilters = false)
 @TestPropertySource(properties = {"socp.security.dev-bypass=true"})
 class RuleControllerTest {
+
+    @Test void ruleReadsExposeTheSpecificValidatorAndMissingPreconditionsNeverReachTheEngine() throws Exception {
+        var current = Map.<String, Object>of("id", "custom", "revisionToken", "a".repeat(64));
+        given(engine.getRule("custom")).willReturn(current);
+        mvc.perform(get("/api/v1/rules/custom").header("Authorization", BEARER).header("X-Role", "analyst"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.revisionToken").value("a".repeat(64)))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("ETag", "\"" + "a".repeat(64) + "\""))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("Cache-Control", "no-store"));
+        org.mockito.Mockito.clearInvocations(engine);
+        for (var request : java.util.List.of(
+                put("/api/v1/rules/custom").contentType(MediaType.APPLICATION_JSON).content("{\"name\":\"rule\",\"type\":\"pattern\",\"severity\":\"HIGH\"}"),
+                org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/api/v1/rules/custom"),
+                post("/api/v1/rules/custom/activate"), post("/api/v1/rules/custom/revisions/1/restore"))) {
+            mvc.perform(request.header("Authorization", BEARER).header("X-Role", "admin"))
+                    .andExpect(status().is(428)).andExpect(jsonPath("$.code").value(428))
+                    .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("Cache-Control", "no-store"));
+        }
+        org.mockito.Mockito.verifyNoInteractions(engine);
+    }
+
+    @Test void restoreForwardsAnExplicitAbsenceCheckAndStaleUpdatesKeepTheErrorEnvelope() throws Exception {
+        given(engine.restoreRuleRevision(org.mockito.ArgumentMatchers.eq("custom"), org.mockito.ArgumentMatchers.eq(1L), any()))
+                .willAnswer(invocation -> {
+                    assertEquals(true, ((com.socp.detect.web.model.RuleWriteCondition) invocation.getArgument(2)).absent());
+                    return Map.of("id", "custom", "revisionToken", "b".repeat(64));
+                });
+        mvc.perform(post("/api/v1/rules/custom/revisions/1/restore").header("Authorization", BEARER)
+                        .header("X-Role", "admin").header("If-None-Match", "*"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.revisionToken").value("b".repeat(64)));
+        given(engine.updateRule(any(), any())).willThrow(com.socp.platform.error.exception.ApiException.of(412, "changed"));
+        mvc.perform(put("/api/v1/rules/custom").header("Authorization", BEARER).header("X-Role", "analyst")
+                        .header("If-Match", "\"old\"").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"rule\",\"type\":\"pattern\",\"severity\":\"HIGH\"}"))
+                .andExpect(status().is(412)).andExpect(jsonPath("$.code").value(412));
+    }
+
+    @Test
+    void historyRoutesExposePagedMetadataAndSeparateFullDetails() throws Exception {
+        var summary = Map.<String, Object>of("ruleId", "custom", "revision", 101L, "source", "EDIT");
+        given(engine.ruleRevisionPage("custom", 2, 20)).willReturn(new org.springframework.data.domain.PageImpl<>(
+                java.util.List.of(summary), org.springframework.data.domain.PageRequest.of(1, 20), 121));
+        given(engine.ruleRevision("custom", 101)).willReturn(Map.of("revision", 101L, "spec", Map.of("name", "old")));
+        given(engine.ruleContentConflictPage(1, 20)).willReturn(new org.springframework.data.domain.PageImpl<>(
+                java.util.List.of(Map.of("ruleId", "custom"))));
+        mvc.perform(get("/api/v1/rules/custom/revisions?page=2&size=20").header("Authorization", BEARER).header("X-Role", "analyst"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(121))
+                .andExpect(jsonPath("$.data.page").value(2)).andExpect(jsonPath("$.data.items[0].revision").value(101))
+                .andExpect(jsonPath("$.data.items[0].spec").doesNotExist());
+        mvc.perform(get("/api/v1/rules/custom/revisions/101").header("Authorization", BEARER).header("X-Role", "analyst"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.spec.name").value("old"));
+        mvc.perform(get("/api/v1/rules/content-conflicts?page=1").header("Authorization", BEARER).header("X-Role", "analyst"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].ruleId").value("custom"));
+        given(engine.ruleRevision("custom", 102)).willThrow(com.socp.platform.error.exception.ApiException.notFound("missing revision"));
+        mvc.perform(get("/api/v1/rules/custom/revisions/102").header("Authorization", BEARER).header("X-Role", "analyst"))
+                .andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value(404));
+    }
+
+    @Test
+    void historyRetainsLegacyArraysAndPropagatesExplicitOverflow() throws Exception {
+        given(engine.listRuleRevisions("custom")).willReturn(java.util.List.of(Map.of("revision", 1, "spec", Map.of("name", "old"))));
+        given(engine.ruleContentConflicts()).willReturn(java.util.List.of(Map.of("ruleId", "custom")));
+        mvc.perform(get("/api/v1/rules/custom/revisions").header("Authorization", BEARER).header("X-Role", "analyst"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].spec.name").value("old"));
+        mvc.perform(get("/api/v1/rules/content-conflicts").header("Authorization", BEARER).header("X-Role", "analyst"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].ruleId").value("custom"));
+        given(engine.listRuleRevisions("large")).willThrow(com.socp.platform.error.exception.ApiException.badRequest("use page and size"));
+        mvc.perform(get("/api/v1/rules/large/revisions").header("Authorization", BEARER).header("X-Role", "analyst"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
+    }
+
+    @Test
+    void historyRejectsInvalidBoundsAndViewerAccessBeforeCallingEngine() throws Exception {
+        for (String route : java.util.List.of("/api/v1/rules/custom/revisions", "/api/v1/rules/content-conflicts")) {
+            for (String query : java.util.List.of("?page=0", "?size=20", "?page=1&size=0", "?page=1&size=101")) {
+                mvc.perform(get(route + query).header("Authorization", BEARER).header("X-Role", "analyst"))
+                        .andExpect(status().isBadRequest());
+            }
+            mvc.perform(get(route + "?page=1").header("Authorization", BEARER).header("X-Role", "viewer"))
+                    .andExpect(status().isForbidden());
+        }
+        mvc.perform(get("/api/v1/rules/custom/revisions/0").header("Authorization", BEARER).header("X-Role", "analyst"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(get("/api/v1/rules/custom/revisions/1").header("Authorization", BEARER).header("X-Role", "viewer"))
+                .andExpect(status().isForbidden());
+        org.mockito.Mockito.verifyNoInteractions(engine);
+    }
+
+    @Test
+    void catalogFiltersAreAppliedBeforePagination() throws Exception {
+        var row = Map.<String, Object>of("id", "rule-501", "name", "Unicode 异常");
+        given(engine.searchRules(2, 20, "异常_%", "DISABLED", "users_%", "alias"))
+                .willReturn(new org.springframework.data.domain.PageImpl<>(java.util.List.of(row),
+                        org.springframework.data.domain.PageRequest.of(1, 20), 21));
+        mvc.perform(get("/api/v1/rules").header("Authorization", BEARER).header("X-Role", "analyst").param("page", "2").param("size", "20")
+                        .param("q", " 异常_% ").param("status", "disabled")
+                        .param("reference", "users_%").param("referenceAlias", "alias"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].id").value("rule-501"))
+                .andExpect(jsonPath("$.data.total").value(21))
+                .andExpect(jsonPath("$.data.page").value(2));
+    }
+
+    @Test
+    void compactCatalogRoutesDoNotResolveAsRuleIds() throws Exception {
+        var row = Map.<String, Object>of("id", "rule-501", "name", "Late rule", "status", "ACTIVE");
+        given(engine.ruleOptions(1, 50, "late")).willReturn(new org.springframework.data.domain.PageImpl<>(java.util.List.of(row)));
+        given(engine.activeRuleTechniques()).willReturn(java.util.List.of("T1110"));
+        given(engine.lookupRules(java.util.List.of("rule-501"))).willReturn(java.util.List.of(row));
+        mvc.perform(get("/api/v1/rules/options").header("Authorization", BEARER).header("X-Role", "analyst").param("q", "late"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].id").value("rule-501"));
+        mvc.perform(get("/api/v1/rules/active-techniques").header("Authorization", BEARER).header("X-Role", "analyst"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data[0]").value("T1110"));
+        mvc.perform(post("/api/v1/rules/lookup").header("Authorization", BEARER).header("X-Role", "analyst").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"ids\":[\"rule-501\",\"rule-501\"]}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].id").value("rule-501"));
+        verify(engine, org.mockito.Mockito.never()).getRule(any());
+    }
+
+    @Test
+    void catalogRejectsOversizedOrInvalidQueriesBeforeCallingEngine() throws Exception {
+        for (String path : java.util.List.of("/api/v1/rules?page=0", "/api/v1/rules?page=1&size=501",
+                "/api/v1/rules?status=unknown", "/api/v1/rules/options?size=101", "/api/v1/rules/options?page=0")) {
+            mvc.perform(get(path).header("Authorization", BEARER).header("X-Role", "analyst")).andExpect(status().isBadRequest());
+        }
+        mvc.perform(get("/api/v1/rules").header("Authorization", BEARER).header("X-Role", "analyst").param("q", "q".repeat(257))).andExpect(status().isBadRequest());
+        mvc.perform(get("/api/v1/rules").header("Authorization", BEARER).header("X-Role", "analyst").param("reference", "r".repeat(4097))).andExpect(status().isBadRequest());
+        for (Object ids : java.util.List.of(java.util.List.of(), java.util.List.of(" "),
+                java.util.List.of("r".repeat(129)), java.util.Collections.nCopies(101, "rule"))) {
+            mvc.perform(post("/api/v1/rules/lookup").header("Authorization", BEARER).header("X-Role", "analyst").contentType(MediaType.APPLICATION_JSON)
+                            .content(json.writeValueAsString(Map.of("ids", ids))))
+                    .andExpect(status().isBadRequest());
+        }
+        org.mockito.Mockito.verifyNoInteractions(engine);
+    }
+
+    @Test
+    void directRuleLookupPreservesNotFoundEnvelope() throws Exception {
+        given(engine.getRule("absent")).willThrow(com.socp.platform.error.exception.ApiException.notFound("rule not found"));
+        mvc.perform(get("/api/v1/rules/absent").header("Authorization", BEARER).header("X-Role", "analyst"))
+                .andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value(404));
+    }
 
     private static final String BEARER = "Bearer test-token";
 
@@ -61,9 +203,13 @@ class RuleControllerTest {
 
     @Test
     void updateInjectsPathIdBeforeDelegating() throws Exception {
-        given(engine.updateRule(any())).willAnswer(invocation -> invocation.getArgument(0));
+        given(engine.updateRule(any(), any())).willAnswer(invocation -> {
+            var spec = new LinkedHashMap<String, Object>(invocation.getArgument(0));
+            spec.put("revisionToken", "a".repeat(64));
+            return spec;
+        });
 
-        mvc.perform(put("/api/v1/rules/{id}", "AUTH-BRUTE")
+        mvc.perform(put("/api/v1/rules/{id}", "AUTH-BRUTE").header("If-Match", "\"" + "a".repeat(64) + "\"")
                         .header("Authorization", BEARER)
                         .header("X-Role", "analyst")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -77,13 +223,17 @@ class RuleControllerTest {
                 .andExpect(jsonPath("$.data.name").value("SSH brute force"));
 
         verify(engine).updateRule(org.mockito.ArgumentMatchers.argThat(rule ->
-                "AUTH-BRUTE".equals(rule.get("id"))));
+                "AUTH-BRUTE".equals(rule.get("id"))), any());
     }
 
     @Test
     void updatePreservesNestedExtensionMetadataAndConditionWhitespace() throws Exception {
-        given(engine.updateRule(any())).willAnswer(invocation -> invocation.getArgument(0));
-        mvc.perform(put("/api/v1/rules/{id}", "preserved")
+        given(engine.updateRule(any(), any())).willAnswer(invocation -> {
+            var spec = new LinkedHashMap<String, Object>(invocation.getArgument(0));
+            spec.put("revisionToken", "a".repeat(64));
+            return spec;
+        });
+        mvc.perform(put("/api/v1/rules/{id}", "preserved").header("If-Match", "\"" + "a".repeat(64) + "\"")
                         .header("Authorization", BEARER).header("X-Role", "analyst")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
@@ -137,6 +287,26 @@ class RuleControllerTest {
                 .andExpect(jsonPath("$.data.queueLoad").value(2));
 
         verify(engine, times(2)).ingest(any());
+    }
+
+    @Test
+    void manualIngressRejectsOversizedBytesBeforeParsingOrEngineAdmission() throws Exception {
+        mvc.perform(post("/api/v1/ingest").header("Authorization", BEARER).header("X-Role", "analyst")
+                        .contentType(MediaType.APPLICATION_JSON).content("{".repeat(256 * 1024 + 1)))
+                .andExpect(status().isPayloadTooLarge()).andExpect(jsonPath("$.code").value(413));
+        mvc.perform(post("/api/v1/ingest/bulk").header("Authorization", BEARER).header("X-Role", "analyst")
+                        .contentType(MediaType.APPLICATION_NDJSON)
+                        .content("\u00e9".repeat(8 * 1024 * 1024 + 1).getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                .andExpect(status().isPayloadTooLarge()).andExpect(jsonPath("$.code").value(413));
+        org.mockito.Mockito.verifyNoInteractions(engine);
+    }
+
+    @Test
+    void manualIngressKeepsRoleChecksAheadOfBodyConversion() throws Exception {
+        mvc.perform(post("/api/v1/ingest").header("Authorization", BEARER).header("X-Role", "viewer")
+                        .contentType(MediaType.APPLICATION_JSON).content("{".repeat(256 * 1024 + 1)))
+                .andExpect(status().isForbidden());
+        org.mockito.Mockito.verifyNoInteractions(engine);
     }
 
     @Test

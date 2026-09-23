@@ -14,7 +14,7 @@ import { normalizeRole } from './roles.ts'
 /** Navigation is kept outside the shell so views do not own layout concerns. */
 // Configuration pages are available to operators who can manage detections
 // and ingestion. Viewer remains intentionally read-only.
-const MENU_VIEWER_HIDDEN = new Set(['ingest', 'meta', 'detect', 'soar', 'notify', 'refset'])
+const MENU_VIEWER_HIDDEN = new Set(['ingest', 'meta', 'detect', 'soar', 'notify', 'refset', 'ai'])
 const MENU_APPROVER_HIDDEN = new Set([...MENU_VIEWER_HIDDEN].filter(key => key !== 'soar'))
 const defaultTranslate = (key: string): string => key
 

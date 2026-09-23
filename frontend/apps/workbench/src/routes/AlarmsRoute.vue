@@ -27,8 +27,11 @@ function goCase(caseId?: string) {
   if (caseId) void router.push({ name: 'case', query: { caseId } })
   else state.navigate('case')
 }
-function goSearch() { state.navigate('search') }
+function goSearch(q?: string) {
+  void router.push({ name: 'search', query: q ? { q, range: 'all' } : {} })
+}
 function goAi(alarmId: string) {
+  if (!canWrite.value) return
   void router.push({ name: 'ai', query: { alarmId } })
 }
 function goSoar(alarmId: string) {

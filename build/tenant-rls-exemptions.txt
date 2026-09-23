@@ -13,4 +13,5 @@ ai-assistant/t_qa	Seed question/answer knowledge base shipped with the service a
 attack-web/t_tactic	ATT&CK tactic catalogue replicated from the public content pack and identical for every tenant; global read-only reference data with no per-tenant rows.
 attack-web/t_technique	ATT&CK technique catalogue replicated from the public content pack and identical for every tenant; global read-only reference data with no per-tenant rows.
 detect-web/t_detection_state_owner	Detection partition ownership and fencing leases keyed by topic/partition/shard. This is engine coordination state, not tenant content, and only the system-scoped lease path writes it, so a tenant predicate cannot express its access rule.
+hips-web/t_endpoint_forwarding_admission	One fixed row containing only id=1 serializes cross-tenant backlog admission. It holds no tenant data or receipt metadata; tenant-owned forwarding rows remain covered by RLS.
 soc-base/t_tenant	The tenant directory is the root of the tenant key space, so it cannot carry a tenant_id column. Reads are authorized by RBAC in the owning service; keep the endpoint's audience scoped, because RLS gives no backstop here.

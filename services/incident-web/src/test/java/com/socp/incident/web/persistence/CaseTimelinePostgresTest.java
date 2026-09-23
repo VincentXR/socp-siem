@@ -3,6 +3,8 @@ package com.socp.incident.web.persistence;
 import com.socp.incident.web.domain.Case;
 import com.socp.incident.web.domain.TimelineEvent;
 import com.socp.incident.web.persistence.store.CaseStore;
+import com.socp.incident.web.persistence.repository.CaseTimelineRepository;
+import jakarta.persistence.EntityManagerFactory;
 import com.socp.platform.test.MiddlewareImages;
 import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.AfterEach;
@@ -50,6 +52,16 @@ class CaseTimelinePostgresTest {
 
     @Autowired
     private CaseStore store;
+
+    @Autowired private CaseTimelineRepository timelineRepository;
+    @Autowired private EntityManagerFactory entityManagerFactory;
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void timelinePreviewIsDatabaseBoundedAndPagesHaveStableTimestampTies() {
+        TenantContext.set("bounded-timeline-tenant");
+        CaseTimelineReadAssertions.verify(store, timelineRepository, entityManagerFactory);
+    }
 
     @BeforeEach
     void setTenant() {

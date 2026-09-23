@@ -9,6 +9,13 @@ import com.socp.detect.web.persistence.store.PendingDetectionEvent;
 import com.socp.detect.web.service.DetectEngineService;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.model.SecurityEvent;
+import com.socp.rule.model.Alert;
+import com.socp.rule.model.Severity;
+import com.socp.rule.engine.AlertSink;
+import com.socp.rule.engine.RuleEngine;
+import com.socp.rule.engine.Watchlists;
+import com.socp.rule.engine.WatchlistStateStore;
+import com.socp.rule.rules.PatternRule;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -33,6 +40,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.BDDMockito.given;
@@ -53,6 +61,53 @@ class DetectionDeadLetterJournalTest {
     private DetectionEventRepository repository;
 
     private final DetectEngineService engine = mock(DetectEngineService.class);
+
+    @Test
+    @Timeout(30)
+    void watchlistOutageBeyondRuleFuseThresholdLeavesJournalPendingUntilRealEvaluationRecovers() {
+        DetectionEventJournal journal = new DetectionEventJournal(repository, "24h", 100);
+        WatchlistStateStore watchlistStore = mock(WatchlistStateStore.class);
+        given(watchlistStore.find("default", "accounts"))
+                .willThrow(new CannotCreateTransactionException("watchlist database unavailable"));
+        Watchlists.installStateStore(watchlistStore);
+        List<Alert> delivered = new java.util.concurrent.CopyOnWriteArrayList<>();
+        AlertSink sink = new AlertSink() {
+            @Override public void publish(Alert alert) { delivered.add(alert); }
+            @Override public void close() { }
+        };
+        PatternRule rule = new PatternRule("WATCHLIST", "watchlist",
+                event -> Watchlists.contains(event.tenantId(), "accounts", "alice"),
+                Severity.HIGH, "membership", "membership");
+        ConsumerRecord<String, String> record = validRecord(3, 60L, "watchlist-retry-h2", "198.51.100.9");
+        try (RuleEngine evaluator = new RuleEngine(List.of(rule), List.of(sink))) {
+            evaluator.start();
+            given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))
+                    .willAnswer(invocation -> evaluator.ingestAndAwait(invocation.getArgument(0)));
+            DetectionRecordProcessor processor = new DetectionRecordProcessor(engine, journal, null);
+            for (int attempt = 0; attempt < 10; attempt++) {
+                var failure = assertThrows(DetectionRecordProcessor.RetryableDetectionFailure.class,
+                        () -> processor.process(record.topic(), record.partition(), record.offset(),
+                                record.key(), record.value()));
+                assertThat(failure.category()).isEqualTo(DetectionRecordProcessor.FailureCategory.DEPENDENCY);
+                DetectionEventEntity pending = row("default", "watchlist-retry-h2");
+                assertThat(pending.getStatus()).isEqualTo(DetectionEventStatus.PENDING.name());
+                assertThat(pending.getKafkaPartition()).isEqualTo(3);
+                assertThat(pending.getKafkaOffset()).isEqualTo(60L);
+                assertThat(delivered).isEmpty();
+            }
+            org.mockito.Mockito.doReturn(new WatchlistStateStore.State(Set.of("alice"), false))
+                    .when(watchlistStore).find("default", "accounts");
+            processor.process(record.topic(), record.partition(), record.offset(), record.key(), record.value());
+            assertThat(row("default", "watchlist-retry-h2").getStatus())
+                    .isEqualTo(DetectionEventStatus.COMPLETED.name());
+            assertThat(delivered).hasSize(1);
+            assertThat(delivered.getFirst().evidence().getFirst().id()).isEqualTo("watchlist-retry-h2");
+            verify(watchlistStore, times(11)).find("default", "accounts");
+        } finally {
+            Watchlists.clear();
+            TenantContext.runWith("default", () -> journal.remove("default", "watchlist-retry-h2"));
+        }
+    }
 
     @Test
     @Timeout(30)

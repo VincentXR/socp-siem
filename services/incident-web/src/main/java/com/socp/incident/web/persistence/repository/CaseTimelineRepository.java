@@ -11,7 +11,7 @@ import java.util.Optional;
 public interface CaseTimelineRepository extends TenantScopedRepository<CaseTimelineEntity, String> {
     List<CaseTimelineEntity> findByTenantId(String tenantId);
     Optional<CaseTimelineEntity> findByIdAndTenantId(String id, String tenantId);
-    List<CaseTimelineEntity> findByTenantIdAndCaseIdOrderByTsAsc(String tenantId, String caseId);
+    List<CaseTimelineEntity> findTop500ByTenantIdAndCaseIdOrderByTsAscIdAsc(String tenantId, String caseId);
     Page<CaseTimelineEntity> findByTenantIdAndCaseIdOrderByTsAsc(String tenantId, String caseId, Pageable pageable);
     Optional<CaseTimelineEntity> findByTenantIdAndCaseIdAndEventKey(String tenantId, String caseId, String eventKey);
 }

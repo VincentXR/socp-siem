@@ -16,12 +16,9 @@ import org.springframework.data.domain.Pageable;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 日志源存储——本地切片用 H2 文件库（重启不丢）；生产由独立 search 库 PG 承载。
@@ -33,7 +30,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public class LogSourceStore {
 
     private final LogSourceRepository repo;
-    private final Map<String, AtomicLong> revisions = new ConcurrentHashMap<>();
+    private final TenantRevisionTracker revisions = new TenantRevisionTracker();
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public LogSourceStore(LogSourceRepository repo) {
@@ -77,6 +74,12 @@ public class LogSourceStore {
         return repo.findByTenantId(tenant(), pageable).map(LogSourceStore::fromEntity);
     }
 
+    /** Bounded, tenant-scoped name search for source selectors. */
+    public Page<LogSource> pageByName(String name, Pageable pageable) {
+        return repo.findByTenantIdAndNameContainingIgnoreCase(tenant(), name, pageable)
+                .map(LogSourceStore::fromEntity);
+    }
+
     public List<LogSource> enabled() {
         List<LogSource> out = new ArrayList<>();
         for (LogSourceEntity e : repo.findByTenantIdAndEnabledTrue(tenant())) out.add(fromEntity(e));
@@ -117,12 +120,11 @@ public class LogSourceStore {
      * counter let one tenant's write flush every other tenant's source/pipeline cache.
      */
     public long revision(String tenantId) {
-        AtomicLong token = tenantId == null ? null : revisions.get(tenantId);
-        return token == null ? 0L : token.get();
+        return revisions.revision(tenantId);
     }
 
     private void bumpRevision() {
-        revisions.computeIfAbsent(tenant(), ignored -> new AtomicLong()).incrementAndGet();
+        revisions.bump(tenant());
     }
 
     // ---- 互转 ----

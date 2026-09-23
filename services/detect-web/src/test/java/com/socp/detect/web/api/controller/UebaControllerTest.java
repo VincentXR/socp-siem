@@ -51,7 +51,7 @@ class UebaControllerTest {
         List<Map<String, Object>> listed = List.of(Map.of("name", "blocked_ips"));
         Map<String, Object> described = Map.of("name", "blocked_ips", "size", 1);
         Map<String, Object> replaced = Map.of("name", "blocked_ips", "size", 2);
-        when(watchlists.list()).thenReturn(listed);
+        when(watchlists.list(true)).thenReturn(listed);
         when(watchlists.describe("blocked_ips")).thenReturn(described);
         when(watchlists.put("blocked_ips", List.of("203.0.113.66"))).thenReturn(replaced);
         when(watchlists.append("blocked_ips", List.of("198.51.100.23"))).thenReturn(replaced);
@@ -61,7 +61,7 @@ class UebaControllerTest {
 
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> controller.entity("missing"))
                 .isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
-        assertThat(controller.listWatchlists().data()).isSameAs(listed);
+        assertThat(controller.listWatchlists(true).data()).isSameAs(listed);
         assertThat(controller.getWatchlist("blocked_ips").data()).isSameAs(described);
         assertThat(controller.putWatchlist("blocked_ips", List.of("203.0.113.66")).data())
                 .isSameAs(replaced);
@@ -69,7 +69,7 @@ class UebaControllerTest {
                 .isSameAs(replaced);
         assertThat(controller.deleteWatchlist("blocked_ips").data()).containsEntry("removed", true);
 
-        verify(watchlists).list();
+        verify(watchlists).list(true);
         verify(watchlists).describe("blocked_ips");
         verify(watchlists).delete("blocked_ips");
     }

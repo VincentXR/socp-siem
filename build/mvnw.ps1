@@ -24,7 +24,18 @@ if ($settings -and $settings -ne 'none' -and (Test-Path -LiteralPath $settings))
 }
 $arguments += @('-f', (Join-Path $repositoryRoot 'pom.xml'))
 $arguments += $MavenArguments
-& $maven.Source @arguments
-if ($LASTEXITCODE -ne 0) {
-    throw "Maven exited with code $LASTEXITCODE"
+# Windows PowerShell 5.1 promotes redirected native stderr to error records.
+# JVM warnings must remain visible without aborting a successful Maven run;
+# only the native exit code determines success. Restore the caller preference.
+$previousErrorActionPreference = $ErrorActionPreference
+try {
+    $ErrorActionPreference = 'Continue'
+    & $maven.Source @arguments
+    $mavenExitCode = $LASTEXITCODE
+}
+finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+}
+if ($mavenExitCode -ne 0) {
+    throw "Maven exited with code $mavenExitCode"
 }

@@ -32,7 +32,7 @@ public class NotificationDeliveryEntity {
     @Column(name = "result_json", nullable = false, columnDefinition = "TEXT")
     private String resultJson;
 
-    @Column(name = "delivered_at", nullable = false)
+    @Column(name = "delivered_at")
     private Instant deliveredAt;
 
     public String getId() { return id; }

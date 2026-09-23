@@ -27,10 +27,16 @@ source says `status: stable`. This is an intentional lifecycle boundary:
 import -> TESTING -> test vectors/review -> POST /rules/{id}/activate -> ACTIVE
 ```
 
-Only an administrator with `rule:activate` can perform the final transition.
+Only an administrator with `rule:activate` can perform the final transition,
+using `If-Match` with the current rule's quoted `revisionToken`. Imports create
+rules only: an existing ID returns 409 instead of overwriting the rule. Review
+the existing rule and use a conditional update when an edit is intended; see
+[conditional rule authoring](detection-rules.md#conditional-rule-authoring).
+
 Editing or creating a rule cannot directly activate it. The persisted JSON
 retains `sigmaSource`, `sigmaVersion`, `sigmaStatus`, `sigmaLogsource`,
-`contentPack`, `contentVersion`, and the normalized RuleSpec fields. Detection
+and the normalized RuleSpec fields. Imported rules are user-owned; supplied
+`contentPack` and `contentVersion` do not grant packaged-content ownership. Detection
 execution uses only the normalized fields; the source metadata is evidence and
 is not interpreted as executable instructions.
 

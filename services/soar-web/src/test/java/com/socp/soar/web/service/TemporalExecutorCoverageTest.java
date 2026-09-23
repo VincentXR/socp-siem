@@ -7,9 +7,17 @@ import com.socp.soar.web.temporal.request.SoarWorkflowRequest;
 import com.socp.soar.web.temporal.SoarWorkflow;
 import io.temporal.api.enums.v1.WorkflowExecutionStatus;
 import io.temporal.client.WorkflowClient;
-import io.temporal.client.WorkflowExecutionDescription;
 import io.temporal.client.WorkflowOptions;
-import io.temporal.client.WorkflowStub;
+import io.temporal.client.WorkflowClientOptions;
+import io.temporal.api.workflowservice.v1.WorkflowServiceGrpc;
+import io.temporal.api.workflowservice.v1.DescribeWorkflowExecutionResponse;
+import io.temporal.api.workflowservice.v1.SignalWorkflowExecutionRequest;
+import io.temporal.api.workflow.v1.WorkflowExecutionInfo;
+import io.temporal.serviceclient.WorkflowServiceStubs;
+import io.temporal.serviceclient.StatusUtils;
+import io.temporal.api.errordetails.v1.NotFoundFailure;
+import io.temporal.api.errordetails.v1.NamespaceNotFoundFailure;
+import io.grpc.Status;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -31,9 +39,8 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
 /**
- * Unit coverage for the Temporal dual-mode dispatcher: availability probe,
- *  signal routing and describe mapping. WorkflowClient/WorkflowStub are
- * Mockito mocks, so no Temporal server is required.
+ * Availability, signal routing and fail-closed recovery observations.
+ * The client is mocked here; TemporalWorkflowIdentityTest covers the real SDK.
  */
 @ExtendWith(MockitoExtension.class)
 class TemporalExecutorCoverageTest {
@@ -43,7 +50,7 @@ class TemporalExecutorCoverageTest {
     @Mock
     private SoarWorkflow workflowStub;
     @Mock
-    private WorkflowStub untypedStub;
+    private WorkflowServiceGrpc.WorkflowServiceBlockingStub rpc;
 
     @BeforeEach
     void setUp() {
@@ -104,22 +111,28 @@ class TemporalExecutorCoverageTest {
         verify(workflowClient).newWorkflowStub(eq(SoarWorkflow.class), options.capture());
         assertThat(options.getValue().getWorkflowId()).isEqualTo("soar-tenant-a-run-1");
         assertThat(options.getValue().getTaskQueue()).isEqualTo(SoarWorkflow.TASK_QUEUE);
+        assertThat(options.getValue().getWorkflowIdReusePolicy()).isEqualTo(
+                io.temporal.api.enums.v1.WorkflowIdReusePolicy.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE);
     }
 
     @Test
     void cancelWorkflowSendsCancellationSignalWithStableWorkflowId() {
-        given(workflowClient.newWorkflowStub(eq(SoarWorkflow.class), any(WorkflowOptions.class)))
-                .willReturn(workflowStub);
+        configureRpc();
 
         executor().cancelWorkflow("wf-cancel");
 
-        verify(workflowStub).cancel();
-        assertThat(capturedOptions().getWorkflowId()).isEqualTo("wf-cancel");
+        var request = ArgumentCaptor.forClass(SignalWorkflowExecutionRequest.class);
+        verify(rpc).signalWorkflowExecution(request.capture());
+        assertThat(request.getValue().getWorkflowExecution().getWorkflowId()).isEqualTo("wf-cancel");
+        assertThat(request.getValue().getSignalName()).isEqualTo("cancel");
+        assertThat(request.getValue().getNamespace()).isEqualTo("recovery-test");
+        assertThat(request.getValue().getRequestId()).isNotBlank();
+        verify(rpc).withDeadlineAfter(3, java.util.concurrent.TimeUnit.SECONDS);
     }
 
     @Test
     void decideRoutesApprovalAndRejectionSignals() {
-        given(workflowClient.newWorkflowStub(eq(SoarWorkflow.class), any(WorkflowOptions.class)))
+        given(workflowClient.newWorkflowStub(eq(SoarWorkflow.class), org.mockito.ArgumentMatchers.anyString()))
                 .willReturn(workflowStub);
 
         executor().decide("wf-decide", true);
@@ -131,7 +144,7 @@ class TemporalExecutorCoverageTest {
 
     @Test
     void decideGateRoutesGateScopedSignalsIncludingExpiry() {
-        given(workflowClient.newWorkflowStub(eq(SoarWorkflow.class), any(WorkflowOptions.class)))
+        given(workflowClient.newWorkflowStub(eq(SoarWorkflow.class), org.mockito.ArgumentMatchers.anyString()))
                 .willReturn(workflowStub);
 
         executor().decideGate("wf-gate", true, "gate-1", false);
@@ -145,7 +158,7 @@ class TemporalExecutorCoverageTest {
 
     @Test
     void completeManualTaskDefaultsNullInputToEmptyJson() {
-        given(workflowClient.newWorkflowStub(eq(SoarWorkflow.class), any(WorkflowOptions.class)))
+        given(workflowClient.newWorkflowStub(eq(SoarWorkflow.class), org.mockito.ArgumentMatchers.anyString()))
                 .willReturn(workflowStub);
 
         executor().completeManualTask("wf-task", null);
@@ -157,7 +170,7 @@ class TemporalExecutorCoverageTest {
 
     @Test
     void completeManualTaskForNodeSendsNodeScopedCompletion() {
-        given(workflowClient.newWorkflowStub(eq(SoarWorkflow.class), any(WorkflowOptions.class)))
+        given(workflowClient.newWorkflowStub(eq(SoarWorkflow.class), org.mockito.ArgumentMatchers.anyString()))
                 .willReturn(workflowStub);
 
         executor().completeManualTaskForNode("wf-task", "node-7", null);
@@ -167,7 +180,7 @@ class TemporalExecutorCoverageTest {
 
     @Test
     void resolveUnknownSendsResolutionSignal() {
-        given(workflowClient.newWorkflowStub(eq(SoarWorkflow.class), any(WorkflowOptions.class)))
+        given(workflowClient.newWorkflowStub(eq(SoarWorkflow.class), org.mockito.ArgumentMatchers.anyString()))
                 .willReturn(workflowStub);
 
         executor().resolveUnknown("wf-unknown", "node-2", "SUCCEEDED", "evidence-json", "operator proof");
@@ -185,8 +198,8 @@ class TemporalExecutorCoverageTest {
     }
 
     @Test
-    void describeWorkflowMapsRunningAndPausedToOpenAndEverythingElseToClosed() {
-        given(workflowClient.newUntypedWorkflowStub("wf-open")).willReturn(untypedStub);
+    void describeWorkflowClosesOnlyExplicitTerminalStatuses() {
+        configureRpc();
         assertThat(describe(WorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_RUNNING))
                 .isEqualTo(TemporalExecutor.WorkflowState.OPEN);
         assertThat(describe(WorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_PAUSED))
@@ -195,17 +208,37 @@ class TemporalExecutorCoverageTest {
                 .isEqualTo(TemporalExecutor.WorkflowState.CLOSED);
         assertThat(describe(WorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_TERMINATED))
                 .isEqualTo(TemporalExecutor.WorkflowState.CLOSED);
-        // A missing status is treated as CLOSED, never as a false "still open".
-        assertThat(describe(null)).isEqualTo(TemporalExecutor.WorkflowState.CLOSED);
+        assertThat(describe(WorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW))
+                .isEqualTo(TemporalExecutor.WorkflowState.OPEN);
+        assertThat(describe(WorkflowExecutionStatus.WORKFLOW_EXECUTION_STATUS_UNSPECIFIED))
+                .isEqualTo(TemporalExecutor.WorkflowState.UNKNOWN);
+        assertThat(describe(WorkflowExecutionStatus.UNRECOGNIZED)).isEqualTo(TemporalExecutor.WorkflowState.UNKNOWN);
     }
 
     @Test
     void describeWorkflowStaysUnknownWhenDescribeFails() {
-        given(workflowClient.newUntypedWorkflowStub("wf-broken")).willReturn(untypedStub);
-        given(untypedStub.describe()).willThrow(new IllegalStateException("temporal down"));
+        configureRpc();
+        given(rpc.describeWorkflowExecution(any())).willThrow(new IllegalStateException("temporal down"));
 
         assertThat(executor().describeWorkflow("wf-broken"))
                 .isEqualTo(TemporalExecutor.WorkflowState.UNKNOWN);
+    }
+
+    @Test
+    void onlyTypedAuthoritativeWorkflowAbsenceIsNotFound() {
+        configureRpc();
+        var missing = StatusUtils.newException(Status.NOT_FOUND.withDescription("workflow absent"),
+                NotFoundFailure.getDefaultInstance(), NotFoundFailure.getDescriptor());
+        var namespaceMissing = StatusUtils.newException(Status.NOT_FOUND.withDescription("namespace absent"),
+                NamespaceNotFoundFailure.getDefaultInstance(), NamespaceNotFoundFailure.getDescriptor());
+        var standbyMissing = StatusUtils.newException(Status.NOT_FOUND.withDescription("standby has no history"),
+                NotFoundFailure.newBuilder().setCurrentCluster("standby").setActiveCluster("primary").build(),
+                NotFoundFailure.getDescriptor());
+        given(rpc.describeWorkflowExecution(any())).willThrow(missing, namespaceMissing, standbyMissing,
+                Status.NOT_FOUND.asRuntimeException(), Status.DEADLINE_EXCEEDED.asRuntimeException());
+        var executor = executor();
+        assertThat(executor.describeWorkflow("wf")).isEqualTo(TemporalExecutor.WorkflowState.NOT_FOUND);
+        for (int i = 0; i < 4; i++) assertThat(executor.describeWorkflow("wf")).isEqualTo(TemporalExecutor.WorkflowState.UNKNOWN);
     }
 
     @Test
@@ -234,15 +267,21 @@ class TemporalExecutorCoverageTest {
     }
 
     private TemporalExecutor.WorkflowState describe(WorkflowExecutionStatus status) {
-        WorkflowExecutionDescription description = mock(WorkflowExecutionDescription.class);
-        given(description.getStatus()).willReturn(status);
-        given(untypedStub.describe()).willReturn(description);
+        var info = WorkflowExecutionInfo.newBuilder().setStatusValue(status == WorkflowExecutionStatus.UNRECOGNIZED
+                ? 9999 : status.getNumber());
+        given(rpc.describeWorkflowExecution(any())).willReturn(DescribeWorkflowExecutionResponse.newBuilder()
+                .setWorkflowExecutionInfo(info).build());
         return executor().describeWorkflow("wf-open");
     }
 
-    private WorkflowOptions capturedOptions() {
-        ArgumentCaptor<WorkflowOptions> options = ArgumentCaptor.forClass(WorkflowOptions.class);
-        verify(workflowClient).newWorkflowStub(eq(SoarWorkflow.class), options.capture());
-        return options.getValue();
+    private void configureRpc() {
+        var service = mock(WorkflowServiceStubs.class);
+        given(workflowClient.getWorkflowServiceStubs()).willReturn(service);
+        given(service.blockingStub()).willReturn(rpc);
+        given(rpc.withDeadlineAfter(3, java.util.concurrent.TimeUnit.SECONDS)).willReturn(rpc);
+        given(workflowClient.getOptions()).willReturn(WorkflowClientOptions.newBuilder()
+                .setNamespace("recovery-test").setIdentity("test-worker").build());
     }
+
+
 }

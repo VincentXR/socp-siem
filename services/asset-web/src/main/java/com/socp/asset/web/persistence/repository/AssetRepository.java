@@ -33,6 +33,14 @@ public interface AssetRepository extends TenantScopedRepository<AssetEntity, Str
                                        @Param("query") String query,
                                        Pageable pageable);
 
+    @Query("""
+            select a from AssetEntity a where a.tenantId = :tenantId
+              and ((:ip <> '' and lower(trim(a.ip)) = lower(:ip))
+                   or (:name <> '' and lower(trim(a.name)) = lower(:name)))
+            """)
+    Page<AssetEntity> findRelated(@Param("tenantId") String tenantId, @Param("ip") String ip,
+                                  @Param("name") String name, Pageable pageable);
+
     Optional<AssetEntity> findByIdAndTenantId(String id, String tenantId);
 
     List<AssetEntity> findByIpAndTenantId(String ip, String tenantId);

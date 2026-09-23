@@ -9,16 +9,19 @@ import com.socp.soar.web.persistence.repository.SoarRunRepository;
 import com.socp.soar.web.config.SoarRuntimeProperties;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 /** Durable dispatcher for approval/manual-task Temporal signals. */
 @Component
 public class SoarSignalWorker {
+    private static final Logger log = LoggerFactory.getLogger(SoarSignalWorker.class);
     private static final int MAX_ATTEMPTS = 10;
+    private static final int BATCH_SIZE = 100;
     private final SoarSignalOutboxRepository signals;
     private final SoarRunRepository runs;
     private final TemporalExecutor temporal;
@@ -41,17 +44,28 @@ public class SoarSignalWorker {
     @TenantSystemJob
     public void tick() {
         Instant now = Instant.now();
-        signals.recoverStaleClaims(now.minusSeconds(120), now);
+        signals.recoverStaleClaims(now.minusSeconds(120), now, MAX_ATTEMPTS, BATCH_SIZE);
+        signals.markExhausted(now, MAX_ATTEMPTS, BATCH_SIZE);
         if (runtimeProperties != null && !runtimeProperties.isExecutionEnabled()) return;
         if (!temporal.isAvailable()) return;
         List<SoarSignalOutboxEntity> pending = signals
                 .findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc("PENDING", now);
-        for (SoarSignalOutboxEntity signal : pending) deliver(signal);
+        for (SoarSignalOutboxEntity signal : pending) {
+            try { deliver(signal); }
+            catch (RuntimeException failure) {
+                // A persistence failure leaves the claim for bounded recovery;
+                // it must not block every other tenant in this batch.
+                log.warn("SOAR signal delivery failed id={}: {}", signal.getId(), redactFreeText(failure.getMessage(), 2048));
+            }
+        }
     }
 
     private void deliver(SoarSignalOutboxEntity signal) {
         Instant claimedAt = Instant.now();
-        if (signals.claim(signal.getTenantId(), signal.getId(), workerId, claimedAt) != 1) return;
+        long version = java.util.Objects.requireNonNull(signal.getRowVersion(), "persisted signal version");
+        if (signals.claim(signal.getTenantId(), signal.getId(), workerId, claimedAt, version, MAX_ATTEMPTS) != 1) return;
+        signal.setRowVersion(version + 1);
+        signal.setAttempts(signal.getAttempts() + 1);
         signal.setStatus("SENDING");
         TenantContext.runAsSystem(() -> {
             try {
@@ -66,62 +80,49 @@ public class SoarSignalWorker {
                     signal.setLastError("signal skipped for run status " + run.getStatus());
                     signal.setClaimedAt(Instant.now());
                     signal.setUpdatedAt(Instant.now());
-                    signals.save(signal);
+                    complete(signal);
                     return;
                 }
-                if (run == null || run.getTemporalWorkflowId() == null || run.getTemporalWorkflowId().isBlank()) {
-                    // Approval before dispatch is represented by the dispatch outbox;
-                    // no Temporal signal is needed yet.
-                    signal.setStatus("SENT"); signal.setUpdatedAt(Instant.now()); signals.save(signal); return;
+                if (run == null) throw new SoarSignalPayload.Invalid("signal owner run is missing");
+                SoarSignalPayload payload = SoarSignalPayload.parse(mapper, signal.getSignalType(),
+                        signal.getSignalKey(), signal.getPayloadJson());
+                if (run.getTemporalWorkflowId() == null || run.getTemporalWorkflowId().isBlank()) {
+                    throw new IllegalStateException("signal owner has no attached workflow yet");
                 }
-                Map<String, Object> payload = read(signal.getPayloadJson());
-                if ("APPROVAL".equals(signal.getSignalType())) {
-                    Object rawApprovalKey = payload.get("approvalKey");
-                    String approvalKey = rawApprovalKey == null ? "" : String.valueOf(rawApprovalKey).trim();
-                    boolean expired = Boolean.TRUE.equals(payload.get("expired"));
-                    if (approvalKey.isBlank()) {
+                if ("APPROVAL".equals(payload.type())) {
+                    if (payload.key().isBlank()) {
                         // Compatibility with signals written by pre-gate-key
                         // workers. New rows always carry approvalKey.
-                        temporal.decide(run.getTemporalWorkflowId(), Boolean.TRUE.equals(payload.get("approve")));
+                        temporal.decide(run.getTemporalWorkflowId(), payload.approve());
                     } else {
                         temporal.decideGate(run.getTemporalWorkflowId(),
-                                Boolean.TRUE.equals(payload.get("approve")), approvalKey, expired);
+                                payload.approve(), payload.key(), payload.expired());
                     }
-                } else if ("MANUAL_TASK".equals(signal.getSignalType())) {
-                    Object rawNodeId = payload.get("nodeId");
-                    String nodeId = rawNodeId == null ? "" : String.valueOf(rawNodeId).trim();
-                    if (nodeId.isBlank()) {
-                        temporal.completeManualTask(run.getTemporalWorkflowId(), json(payload.getOrDefault("input", Map.of())));
+                } else if ("MANUAL_TASK".equals(payload.type())) {
+                    if (payload.key().isBlank()) {
+                        temporal.completeManualTask(run.getTemporalWorkflowId(), payload.inputJson());
                     } else {
-                        temporal.completeManualTaskForNode(run.getTemporalWorkflowId(), nodeId,
-                                json(payload.getOrDefault("input", Map.of())));
+                        temporal.completeManualTaskForNode(run.getTemporalWorkflowId(), payload.key(), payload.inputJson());
                     }
-                } else if ("UNKNOWN_RESOLUTION".equals(signal.getSignalType())) {
+                } else if ("UNKNOWN_RESOLUTION".equals(payload.type())) {
                     temporal.resolveUnknown(run.getTemporalWorkflowId(),
-                            String.valueOf(payload.getOrDefault("nodeId", "")),
-                            String.valueOf(payload.getOrDefault("resolution", "")),
-                            String.valueOf(payload.getOrDefault("evidence", "")),
-                            String.valueOf(payload.getOrDefault("reason", "")));
+                            payload.key(), payload.resolution(), payload.evidence(), payload.reason());
                 }
-                signal.setStatus("SENT"); signal.setClaimedAt(Instant.now()); signal.setUpdatedAt(Instant.now()); signals.save(signal);
+                signal.setStatus("SENT"); signal.setLastError(null); complete(signal);
             } catch (RuntimeException failure) {
-                int attempts = signal.getAttempts() + 1; signal.setAttempts(attempts);
+                int attempts = signal.getAttempts();
                 signal.setLastError(redactFreeText(failure.getMessage(), 2048)); signal.setUpdatedAt(Instant.now());
-                if (attempts >= MAX_ATTEMPTS) signal.setStatus("DEAD");
+                if (failure instanceof SoarSignalPayload.Invalid || attempts >= MAX_ATTEMPTS) signal.setStatus("DEAD");
                 else { signal.setStatus("PENDING"); signal.setNextAttemptAt(Instant.now().plusSeconds(Math.min(300, 1L << Math.min(8, attempts)))); }
-                signals.save(signal);
+                complete(signal);
             }
         });
     }
 
-    private Map<String, Object> read(String json) {
-        try { Map<String, Object> value = mapper.readValue(json == null ? "{}" : json, Map.class); return value == null ? Map.of() : value; }
-        catch (Exception ignored) { return Map.of(); }
-    }
-
-    private String json(Object value) {
-        try { return mapper.writeValueAsString(value == null ? Map.of() : value); }
-        catch (Exception ignored) { return "{}"; }
+    private void complete(SoarSignalOutboxEntity signal) {
+        int changed = signals.completeClaim(signal.getTenantId(), signal.getId(), signal.getRowVersion(), workerId,
+                signal.getStatus(), signal.getNextAttemptAt(), signal.getLastError(), Instant.now());
+        if (changed != 1) log.debug("Ignoring stale SOAR signal result id={}", signal.getId());
     }
 
     private static boolean terminalRun(com.socp.soar.web.persistence.entity.SoarRunEntity run) {

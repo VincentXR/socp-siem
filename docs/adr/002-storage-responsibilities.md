@@ -6,7 +6,7 @@
 ## Decision
 
 Use PostgreSQL for alert, incident, tenant, threat-intelligence, audit, and
-optional Detection journal/alert-outbox facts; OpenSearch for raw event
+Detection journal/alert-outbox facts; OpenSearch for raw event
 investigation; and ClickHouse for alarm detail aggregation and reporting.
 File-backed H2 remains a local convenience profile for lower-resource
 services.

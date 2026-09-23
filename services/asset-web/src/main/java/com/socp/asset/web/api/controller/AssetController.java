@@ -56,6 +56,32 @@ public class AssetController {
     }
 
     @RequireRole({"admin", "analyst"})
+    @GetMapping("/related")
+    public ApiResult<PageResponse<Asset>> related(@RequestParam(defaultValue = "") String ip,
+                                                  @RequestParam(defaultValue = "") String name,
+                                                  @RequestParam(defaultValue = "1") int page,
+                                                  @RequestParam(defaultValue = "20") int size) {
+        requireValidRange(page, size);
+        String normalizedIp = ip.trim();
+        String normalizedName = name.trim();
+        if (normalizedIp.length() > 64 || normalizedName.length() > 128
+                || (normalizedIp.isEmpty() && normalizedName.isEmpty())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "provide an IP (up to 64 characters) or name (up to 128 characters)");
+        }
+        Page<Asset> result = store.related(page, size, normalizedIp, normalizedName);
+        return ApiResult.ok(PageResponse.of(result.getContent(), result.getTotalElements(),
+                result.getNumber() + 1, result.getSize(), result.getTotalPages()));
+    }
+
+    @RequireRole({"admin", "analyst"})
+    @GetMapping("/{id}")
+    public ApiResult<Asset> get(@PathVariable String id) {
+        Asset asset = store.get(id);
+        if (asset == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "资产不存在");
+        return ApiResult.ok(asset);
+    }
+
+    @RequireRole({"admin", "analyst"})
     @PostMapping
     public ApiResult<Asset> create(@Valid @RequestBody CreateAssetRequest req) {
         return ApiResult.ok(store.save(Asset.create(req.name(), req.type(), req.ip(), req.os(), req.owner(), req.criticality())));

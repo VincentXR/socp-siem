@@ -8,8 +8,6 @@ import 'element-plus/es/components/drawer/style/css.mjs'
 import 'element-plus/es/components/loading/style/css.mjs'
 import 'element-plus/es/components/table/style/css.mjs'
 import DataTableCard from '../components/DataTableCard.vue'
-import { useRouter } from 'vue-router'
-const router = useRouter()
 
 import { useMutation } from '../composables/useMutation'
 import { useConfirm } from '../composables/useConfirm'
@@ -35,12 +33,13 @@ import { ElForm, ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import ElMessage from 'element-plus/es/components/message/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useRequest } from '../composables/useRequest'
 import PageHeader from '../components/PageHeader.vue'
 import FormField from '../components/FormField.vue'
 import FormGrid from '../components/FormGrid.vue'
 import FormSection from '../components/FormSection.vue'
-import { listRules, deleteRefEntry, type RuleSpec, addRefEntry, createRefSet, deleteRefSet, listRefSets, type ReferenceSet } from '../api'
+import { deleteRefEntry, addRefEntry, createRefSet, deleteRefSet, listRefSets, type ReferenceSet } from '../api'
 import { useI18n } from '../composables/useI18n'
 import { useWriteAccess } from '../composables/useWriteAccess'
 
@@ -48,10 +47,12 @@ const { t } = useI18n()
 const canWrite = useWriteAccess()
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('refsets')
 
-const refSets = ref<ReferenceSet[]>([])
+const listRequest = useRequest<ReferenceSet[]>()
+const refSets = computed(() => listRequest.data.value ?? [])
+let disposed = false
 const entryText = ref<Record<string, string>>({})
 const dialogVisible = ref(false)
-const loading = ref(false)
+const loading = listRequest.loading
 const selectedId = ref('')
 const keyword = ref('')
 const entrySearch = ref('')
@@ -60,10 +61,8 @@ const entrySize = ref(20)
 const entrySelection = ref<string[]>([])
 const importText = ref('')
 const importing = ref(false)
-const ruleCatalog = ref<RuleSpec[]>([])
-const referencesError = ref('')
 /** Background load, list actions, and each dialog keep their own error surface. */
-const loadError = ref('')
+const loadError = computed(() => listRequest.error.value?.message || '')
 const entryError = ref('')
 const importError = ref('')
 const createError = ref('')
@@ -73,17 +72,10 @@ const filteredSets = computed(() => refSets.value.filter(item => `${item.name} $
 const filteredEntries = computed(() => (selected.value?.entries ?? []).filter(value => value.toLowerCase().includes(entrySearch.value.toLowerCase())))
 const pagedEntries = computed(() => filteredEntries.value.slice((entryPage.value - 1) * entrySize.value, entryPage.value * entrySize.value).map(value => ({ value })))
 const visibleEntryValues = computed(() => pagedEntries.value.map(entry => entry.value))
-function references(value: unknown, names: string[]): boolean {
-  if (!value || typeof value !== 'object') return false
-  const row = value as Record<string, unknown>
-  if (['inlist', 'notinlist'].includes(String(row.op)) && names.includes(String(row.value))) return true
-  return Object.values(row).some(item => references(item, names))
-}
-const referencingRules = computed(() => selected.value ? ruleCatalog.value.filter(rule => references(rule, [selected.value!.name, selected.value!.id])) : [])
 async function openSet(id: string) {
+  if (actionBusy.value) { ElMessage.info(t('common.busySaving')); return }
   selectedId.value = id; entrySearch.value = ''; entryPage.value = 1; entrySelection.value = []
-  referencesError.value = ''; entryError.value = ''; importError.value = ''; actionError.value = ''
-  try { ruleCatalog.value = await listRules() } catch (failure) { referencesError.value = String(failure) }
+  entryError.value = ''; importError.value = ''; actionError.value = ''
 }
 
 /** Moves a failure out of the shared action slot into the surface that owns it. */
@@ -95,9 +87,11 @@ function isolateError(target: { value: string }, completed: boolean): void {
 
 async function removeEntry(value: string) {
   if (!canWrite.value) return
+  const id = selectedId.value
+  if (!id) return
   if (!await confirmDanger(t('refset.confirmDeleteItem', { value }))) return
   entryError.value = ''
-  isolateError(entryError, await mutation.run(async () => { await deleteRefEntry(selectedId.value, value); entrySelection.value = entrySelection.value.filter(item => item !== value); await loadRefSets() }))
+  isolateError(entryError, await mutation.run(async () => { await deleteRefEntry(id, value); if (selectedId.value === id) entrySelection.value = entrySelection.value.filter(item => item !== value); await loadRefSets() }))
 }
 function toggleEntrySelection(value: string, checked: boolean): void {
   if (checked) entrySelection.value = [...new Set([...entrySelection.value, value])]
@@ -112,6 +106,8 @@ function clearVisible(): void {
 }
 async function removeSelected(): Promise<void> {
   if (!canWrite.value) return
+  const id = selectedId.value
+  if (!id) return
   const values = [...entrySelection.value]
   if (!values.length) return
   if (!await confirmDanger(t('refset.confirmDeleteSelected', { count: values.length }))) return
@@ -119,11 +115,11 @@ async function removeSelected(): Promise<void> {
   const failedValues: string[] = []
   isolateError(entryError, await mutation.run(async () => {
     for (const value of values) {
-      try { await deleteRefEntry(selectedId.value, value) } catch { failedValues.push(value) }
+      try { await deleteRefEntry(id, value) } catch { failedValues.push(value) }
     }
     // Keep the rejected rows selected so the operator can retry them, the same
     // way a partial import leaves the failed values in the textarea.
-    entrySelection.value = failedValues
+    if (selectedId.value === id) entrySelection.value = failedValues
     await loadRefSets()
     if (failedValues.length) throw new Error(`${t('refset.partialDelete', { removed: values.length - failedValues.length, failed: failedValues.length })}: ${failedValues.join(' · ')}`)
     ElMessage.success(t('refset.itemsDeleted', { count: values.length }))
@@ -131,13 +127,15 @@ async function removeSelected(): Promise<void> {
 }
 async function importEntries() {
   if (!canWrite.value) return
+  const id = selectedId.value
+  if (!id) return
   importError.value = ''
   isolateError(importError, await mutation.run(async () => {
     const values = [...new Set(importText.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean))]
     if (!values.length) throw new Error(t('forms.fieldRequired', { field: t('refset.initialEntries') }))
     const failedValues: string[] = []
     for (const value of values) {
-      try { await addRefEntry(selectedId.value, value) } catch { failedValues.push(value) }
+      try { await addRefEntry(id, value) } catch { failedValues.push(value) }
     }
     await loadRefSets()
     if (failedValues.length) {
@@ -158,11 +156,8 @@ function validateSetForm(): boolean {
 }
 
 async function loadRefSets() {
-  loading.value = true
-  loadError.value = ''
-  try { refSets.value = await listRefSets() }
-  catch (failure) { loadError.value = String(failure) }
-  finally { loading.value = false }
+  if (disposed) return
+  await listRequest.execute(signal => listRefSets({ signal }))
 }
 async function addRefSet() {
   if (!canWrite.value || !validateSetForm()) return
@@ -181,7 +176,7 @@ async function removeRefSet(id: string) {
   entryError.value = ''
   isolateError(entryError, await mutation.run(async () => {
   await deleteRefSet(id)
-  selectedId.value = ''
+  if (selectedId.value === id) selectedId.value = ''
   await loadRefSets()
   }))
 }
@@ -204,6 +199,11 @@ function openImport(): void {
   importing.value = true
 }
 
+function beforeEntriesClose(done: () => void): void {
+  if (actionBusy.value) { ElMessage.info(t('common.busySaving')); return }
+  done()
+}
+
 function openCreateSet(): void {
   if (!canWrite.value) return
   createError.value = ''
@@ -215,6 +215,7 @@ function openCreateSet(): void {
 const importGuard = useFormDialog(importing, () => importText.value, () => actionBusy.value)
 const dialogVisibleGuard = useFormDialog(dialogVisible, () => form.value, () => actionBusy.value)
 onMounted(loadRefSets)
+onUnmounted(() => { disposed = true; listRequest.cancel() })
 </script>
 
 <template>
@@ -234,19 +235,17 @@ onMounted(loadRefSets)
       <el-table-column :label="t('common.actions')" width="120" :resizable="false"><template #default="{ row }"><el-button link @click="openSet(row.id)">{{ t('forms.entries') }}</el-button></template></el-table-column>
     </el-table>
     <el-empty v-if="!loading && !loadError && !actionError && !filteredSets.length" :description="t('refset.empty')" />
-    <el-drawer :model-value="Boolean(selectedId)" :title="selected?.name || t('forms.entries')" size="min(760px, 96vw)" @update:model-value="value => { if (!value) selectedId = '' }">
+    <el-drawer :model-value="Boolean(selectedId)" :before-close="beforeEntriesClose" :title="selected?.name || t('forms.entries')" size="min(760px, 96vw)" @update:model-value="value => { if (!value) selectedId = '' }">
       <template v-if="selected">
         <ActionFeedback :error="entryError" /><el-input v-model="entrySearch" :placeholder="t('forms.search')" clearable @input="entryPage = 1" />
         <div v-if="canWrite" class="section-toolbar"><el-input v-model="entryText[selected.id]" :placeholder="t('refset.addItem')" @keyup.enter="addEntry(selected.id)" /><el-button :loading="actionBusy" @click="addEntry(selected.id)">{{ t('common.add') }}</el-button><el-button @click="openImport">{{ t('forms.import') }}</el-button></div>
         <div class="refset-selection-toolbar"><span>{{ t('refset.visibleCount', { count: filteredEntries.length }) }} · {{ t('refset.selectedCount', { count: entrySelection.length }) }}</span><el-button v-if="canWrite" link size="small" :disabled="!visibleEntryValues.length" @click="selectVisible">{{ t('refset.selectVisible') }}</el-button><el-button v-if="canWrite" link size="small" :disabled="!visibleEntryValues.length" @click="clearVisible">{{ t('refset.clearVisible') }}</el-button><el-button v-if="canWrite && entrySelection.length" link type="danger" size="small" :disabled="actionBusy" @click="removeSelected">{{ t('refset.deleteSelected', { count: entrySelection.length }) }}</el-button></div>
         <DataTableCard v-model:current-page="entryPage" v-model:page-size="entrySize" :total="filteredEntries.length" :loading="loading"><el-table :data="pagedEntries"><el-table-column v-if="canWrite" width="48"><template #default="{ row }"><el-checkbox :model-value="entrySelection.includes(row.value)" @update:model-value="value => toggleEntrySelection(row.value, Boolean(value))" /></template></el-table-column><el-table-column prop="value" :label="t('refset.entryValue')" /><el-table-column v-if="canWrite" width="100"><template #default="{ row }"><el-button link type="danger" :disabled="actionBusy" @click="removeEntry(row.value)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table></DataTableCard>
-        <h3>{{ t('forms.references') }}</h3><ActionFeedback :error="referencesError" />
-        <p v-for="rule in referencingRules" :key="String(rule.id)"><el-button link @click="router.push({ name: 'rule-edit', params: { ruleId: String(rule.id) } })">{{ rule.name }}</el-button></p>
-        <p v-if="!referencesError && !referencingRules.length">{{ t('forms.empty') }}</p>
-        <el-button v-if="canWrite" type="danger" plain :disabled="Boolean(referencesError) || referencingRules.length > 0 || actionBusy" @click="removeRefSet(selected.id)">{{ t('common.delete') }}</el-button>
+        <p class="form-hint">{{ t('refset.ingestionOnly') }}</p>
+        <el-button v-if="canWrite" type="danger" plain :disabled="actionBusy" @click="removeRefSet(selected.id)">{{ t('common.delete') }}</el-button>
       </template>
     </el-drawer>
-    <el-dialog v-model="importing" :before-close="importGuard.beforeClose" :title="t('forms.import')" width="640px" append-to-body :close-on-click-modal="false"><ActionFeedback :error="importError" /><el-input v-model="importText" type="textarea" :rows="10" :placeholder="t('refset.initialEntriesPlaceholder')" /><template #footer><el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="importEntries">{{ t('forms.import') }}</el-button></template></el-dialog>
+    <el-dialog v-model="importing" :before-close="importGuard.beforeClose" :title="t('forms.import')" width="640px" append-to-body :close-on-click-modal="false"><ActionFeedback :error="importError" /><el-input v-model="importText" type="textarea" :disabled="actionBusy" :rows="10" :placeholder="t('refset.initialEntriesPlaceholder')" /><template #footer><el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="importEntries">{{ t('forms.import') }}</el-button></template></el-dialog>
 
     <el-dialog v-model="dialogVisible" :before-close="dialogVisibleGuard.beforeClose" :title="t('refset.createSet')" width="520px"><ActionFeedback :error="createError" />
       <el-form :disabled="actionBusy || !canWrite" label-position="top">

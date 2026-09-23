@@ -55,6 +55,12 @@ public class OutboxEvent {
     @Column(name = "updated_at")
     private Instant updatedAt;
 
+    @Column(name = "claim_token", length = 36)
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private String claimToken;
+
+    public String getClaimToken() { return claimToken; }
+
     @Column(name = "last_error", length = 1024)
     private String lastError;
 

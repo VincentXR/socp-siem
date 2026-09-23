@@ -37,7 +37,7 @@ class EndpointEventStoreTest {
                 "tenant-a".equals(event.getTenantId())
                         && event.getPayloadJson().contains("tenant-a")));
         TenantContext.set("tenant-b");
-        given(repository.findTop200ByTenantIdOrderByReceivedAtDesc("tenant-b")).willReturn(List.of());
+        given(repository.findTop200ByTenantIdOrderByReceivedAtDescEventIdAsc("tenant-b")).willReturn(List.of());
         assertThat(store.list()).isEmpty();
     }
 }

@@ -63,6 +63,12 @@ public class SoarRunEntity implements Persistable<String> {
     private Instant completedAt;
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
+    // Owned by bounded maintenance claims, never by a workflow entity save.
+    // These retry hints do not represent workflow progress or alter row_version.
+    @Column(name = "cancel_next_attempt_at", insertable = false, updatable = false)
+    private Instant cancelNextAttemptAt;
+    @Column(name = "recovery_next_check_at", insertable = false, updatable = false)
+    private Instant recoveryNextCheckAt;
     /** Atomically incremented by the Temporal Activity budget gate. */
     @Column(name = "execution_node_count", nullable = false)
     private Integer executionNodeCount = 0;
@@ -116,6 +122,8 @@ public class SoarRunEntity implements Persistable<String> {
     public Instant getCompletedAt() { return completedAt; }
     public void setCompletedAt(Instant completedAt) { this.completedAt = completedAt; }
     public Instant getUpdatedAt() { return updatedAt; }
+    public Instant getCancelNextAttemptAt() { return cancelNextAttemptAt; }
+    public Instant getRecoveryNextCheckAt() { return recoveryNextCheckAt; }
     public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
     public Integer getExecutionNodeCount() { return executionNodeCount; }
     public void setExecutionNodeCount(Integer executionNodeCount) { this.executionNodeCount = executionNodeCount; }

@@ -4,11 +4,13 @@ import com.socp.search.config.domain.ParseRule;
 import com.socp.search.config.parser.ParserRegistry;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ParseRuleExecutorTest {
@@ -106,5 +108,36 @@ class ParseRuleExecutorTest {
                 List.of(), List.of(), true, 1);
         ParseRuleExecutor.Result result = executor.execute(rule, large);
         assertEquals("REGEX input exceeds 262144 characters", result.error());
+    }
+
+    @Test
+    void adjacentQuantifiersMatchWithinLinearRuntimeBudget() {
+        ParseRule rule = ParseRule.create("linear", null, "REGEX", "a*a*b",
+                List.of(), List.of(new ParseRule.FieldMapping("match", "event.action", "found")),
+                true, 1);
+        ParseRuleExecutor.CompiledRule compiled = executor.compile(rule);
+
+        assertTimeoutPreemptively(Duration.ofSeconds(2), () -> {
+            ParseRuleExecutor.Result result = executor.execute(compiled, "a".repeat(16_384) + "x");
+            assertEquals(false, result.matched());
+        });
+    }
+
+    @Test
+    void rejectsUnsupportedBacktrackingSyntaxAtCompileTime() {
+        assertThrows(IllegalArgumentException.class, () -> executor.compile(ParseRule.create(
+                "atomic", null, "REGEX", "(?>a+)b", List.of(), List.of(), true, 1)));
+    }
+
+    @Test
+    void literalNamedGroupTextDoesNotBecomeAGroupLookup() {
+        ParseRule rule = ParseRule.create("literal", null, "REGEX", "[(?<foo>]",
+                List.of(), List.of(new ParseRule.FieldMapping("action", "event.action", "found")),
+                true, 1);
+
+        ParseRuleExecutor.Result result = executor.execute(rule, "(");
+
+        assertTrue(result.matched());
+        assertEquals("found", result.fields().get("event.action"));
     }
 }

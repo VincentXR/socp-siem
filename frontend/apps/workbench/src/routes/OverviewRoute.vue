@@ -37,6 +37,8 @@ function goCases(): void {
     :filtered-alarms="alarms"
     :healths="healths"
     :loading="overviewLoading"
+    :refreshing="overview.refreshing.value"
+    :updated-at="overview.updatedAt.value"
     :error="overviewError"
     :go-alarms="goAlarms"
     :open-alarm="openAlarm"

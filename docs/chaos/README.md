@@ -45,19 +45,25 @@ starting extra JVMs:
 - the `pg` profile and the same Detection PostgreSQL database;
 - distinct server ports;
 - the same `SOCP_KAFKA_GROUP_ID` (default `socp-detect`);
-- a Kafka topic with at least as many partitions as instances.
+- primary routing and output, with the routing publisher enabled;
+- exactly six partitions in the routed delivery topic (`socp-detection-routed-v2`
+  by default), plus the separate canonical router group.
 
-Start the fixed cluster after building the backend and starting middleware:
+Build the backend, start disposable middleware and export the complete routed
+fixture environment from [the testing guide](../testing.md#integration-checks).
+Those exported variables must remain set for launcher and recovery calls. With
+that environment, the scenario command is:
 
 ```bash
-export SOCP_JWT_SECRET='<same secret used by the running stack>'
-bash build/detection-cluster.sh start
-DETECTION_INSTANCE_URLS=http://127.0.0.1:18082,http://127.0.0.1:28082,http://127.0.0.1:38082 \
-  python build/chaos-pipeline.py --scenario multi_instance --count 30 \
+python build/chaos-pipeline.py --scenario multi_instance --count 30 \
   --rebalance-cycles 3 --run-id local-multi-instance \
   --output .cache/chaos/local-multi-instance.json
 bash build/detection-cluster.sh stop
 ```
+
+The launcher defaults to the legacy topology when those variables are absent.
+It enforces a minimum partition count, while this scenario requires exactly six;
+a topic already expanded beyond six is not suitable for this acceptance fixture.
 
 Startup fails before changing the running topology if no JWT/JWK/issuer
 configuration is present. A successful start writes the commit, Kafka group,

@@ -475,6 +475,13 @@ public class SoarService {
         if (signals == null) return;
         Instant now = Instant.now();
         String signalKey = signalKey(type, payload);
+        String encoded = write(payload);
+        try { SoarSignalPayload.parse(mapper, type, signalKey, encoded); }
+        catch (SoarSignalPayload.Invalid invalid) {
+            // Approval expiry deliberately commits ResponseStatusException;
+            // invalid signal creation must instead roll back the decision too.
+            throw com.socp.platform.error.exception.ApiException.badRequest("SOAR_INVALID_SIGNAL: " + invalid.getMessage());
+        }
         java.util.Optional<SoarSignalOutboxEntity> existing = signals
                 .findByTenantIdAndRunIdAndSignalTypeAndSignalKey(
                         run.getTenantId(), run.getId(), type, signalKey);
@@ -492,7 +499,7 @@ public class SoarService {
                     created.setAttempts(0);
                     created.setCreatedAt(now); return created;
                 });
-        signal.setPayloadJson(write(payload)); signal.setStatus("PENDING");
+        signal.setPayloadJson(encoded); signal.setStatus("PENDING");
         signal.setNextAttemptAt(now); signal.setUpdatedAt(now); signals.save(signal);
     }
 

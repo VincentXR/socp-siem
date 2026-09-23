@@ -58,7 +58,7 @@ managed_pid() {
 }
 
 stop_port() {
-  local port pid pid_file launcher_pid_file
+  local port pid pid_file launcher_pid_file listener elapsed
   port="$1"
   pid_file="$LOGDIR/detect-$port.pid"
   launcher_pid_file=""
@@ -75,6 +75,27 @@ stop_port() {
     else
       kill "$pid" >/dev/null 2>&1 || true
     fi
+  fi
+  # SIGTERM can return while Spring is still shutting down. Do not start the
+  # next generation until its listener has actually released the port.
+  elapsed=0
+  while [ "$elapsed" -lt 15 ]; do
+    listener="$(pid_on_port "$port" || true)"
+    [ -z "$listener" ] && break
+    if [ -z "$pid" ] || [ "$listener" != "$pid" ]; then
+      echo "Detection port $port is still held by unexpected PID $listener" >&2
+      return 1
+    fi
+    if [ "$elapsed" -eq 10 ] && ! command -v taskkill >/dev/null 2>&1; then
+      kill -KILL "$pid" >/dev/null 2>&1 || true
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  listener="$(pid_on_port "$port" || true)"
+  if [ -n "$listener" ]; then
+    echo "Detection port $port did not close after stopping PID $pid" >&2
+    return 1
   fi
   rm -f "$pid_file"
   if [ -n "$launcher_pid_file" ]; then
@@ -160,8 +181,9 @@ validate_security_config() {
 }
 
 stop_cluster() {
-  local port
-  for port in $(csv_ports); do stop_port "$port"; done
+  local port status=0
+  for port in $(csv_ports); do stop_port "$port" || status=1; done
+  return "$status"
 }
 
 start_cluster() {

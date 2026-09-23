@@ -29,7 +29,15 @@ class SoarMigrationTest {
                     "SELECT MAX(\"installed_rank\") FROM \"flyway_schema_history\"");
                  var migrationResult = migration.executeQuery()) {
                 migrationResult.next();
-                assertEquals(22, migrationResult.getInt(1));
+                assertEquals(25, migrationResult.getInt(1));
+            }
+            try (var recoveryIndexes = connection.prepareStatement(
+                    "SELECT COUNT(*) FROM information_schema.indexes WHERE index_name IN "
+                            + "('IDX_SOAR_SIGNAL_STALE_CLAIM', 'IDX_SOAR_DISPATCH_CLAIM_RECOVERY',"
+                            + "'IDX_SOAR_RUN_CANCEL_DUE', 'IDX_SOAR_RUN_RECOVERY_DUE')");
+                 var indexResult = recoveryIndexes.executeQuery()) {
+                indexResult.next();
+                assertEquals(4, indexResult.getInt(1));
             }
             try (var policyColumn = connection.prepareStatement(
                     "SELECT COUNT(*) FROM information_schema.columns "

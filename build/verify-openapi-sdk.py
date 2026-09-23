@@ -43,7 +43,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import urllib.error
 import urllib.request
 from typing import Any, Iterable
@@ -115,19 +114,24 @@ def json_pointer(document: dict[str, Any], reference: str) -> Any:
 
 
 def resolve(document: dict[str, Any], value: Any) -> Any:
-    if isinstance(value, dict) and "$ref" in value:
-        target = resolve(document, json_pointer(document, str(value["$ref"])))
-        siblings = {key: item for key, item in value.items() if key != "$ref"}
-        if siblings and isinstance(target, dict):
-            merged = dict(target)
-            merged.update(siblings)
-            return merged
-        return target
+    seen: set[str] = set()
+    overlays: list[dict[str, Any]] = []
+    while isinstance(value, dict) and "$ref" in value:
+        reference = str(value["$ref"])
+        if reference in seen:
+            raise ValueError(f"circular OpenAPI reference alias: {reference}")
+        seen.add(reference)
+        overlays.append({key: item for key, item in value.items() if key != "$ref"})
+        value = json_pointer(document, reference)
+    if isinstance(value, dict):
+        value = dict(value)
+        for overlay in reversed(overlays):
+            value.update(overlay)
     return value
 
 
 def ref_name(reference: str) -> str:
-    return reference.rsplit("/", 1)[-1]
+    return reference.rsplit("/", 1)[-1].replace("~1", "/").replace("~0", "~")
 
 
 def ts_identifier(value: str, lower_camel: bool = False) -> str:
@@ -139,6 +143,21 @@ def ts_identifier(value: str, lower_camel: bool = False) -> str:
         result = "Value" + result
     if lower_camel:
         result = result[:1].lower() + result[1:]
+    return result
+
+
+def model_names(document: dict[str, Any]) -> dict[str, str]:
+    schemas = document.get("components", {}).get("schemas", {})
+    if not isinstance(schemas, dict):
+        return {}
+    result: dict[str, str] = {}
+    used: dict[str, str] = {}
+    for name in schemas:
+        generated = "Soar" + ts_identifier(name)
+        if generated in used:
+            raise ValueError(f"ambiguous generated model {generated}: {used[generated]} and {name}")
+        result[name] = generated
+        used[generated] = name
     return result
 
 
@@ -178,28 +197,34 @@ def iter_operations(document: dict[str, Any]) -> Iterable[tuple[str, str, dict[s
 def operation_parameters(document: dict[str, Any], path: str,
                          operation: dict[str, Any]) -> tuple[Parameter, ...]:
     item = document.get("paths", {}).get(path, {})
-    raw_parameters: list[Any] = []
-    if isinstance(item, dict):
-        raw_parameters.extend(item.get("parameters", []) or [])
-    raw_parameters.extend(operation.get("parameters", []) or [])
-    parameters: list[Parameter] = []
-    seen: set[tuple[str, str]] = set()
-    for raw in raw_parameters:
-        parameter = resolve(document, raw)
-        if not isinstance(parameter, dict):
-            continue
-        name = str(parameter.get("name", ""))
-        location = str(parameter.get("in", ""))
-        if not name or location not in {"path", "query", "header", "cookie"}:
-            continue
-        key = (name.lower(), location)
-        if key in seen:
-            continue
-        seen.add(key)
-        schema = resolve(document, parameter.get("schema", {}))
-        parameters.append(Parameter(name, location, bool(parameter.get("required", False)),
-                                    schema if isinstance(schema, dict) else {}))
-    return tuple(parameters)
+    parameters: dict[tuple[str, str], Parameter] = {}
+    # OAS 3.1.1 Path Item/Operation: an operation overrides inherited parameters;
+    # duplicates within either individual list are invalid. Only header names
+    # are case-insensitive; distinct query/path/cookie names must survive.
+    for owner in (item, operation):
+        raw_parameters = owner.get("parameters", []) if isinstance(owner, dict) else []
+        if not isinstance(raw_parameters, list):
+            raise ValueError(f"{path}: parameters must be an array")
+        seen: set[tuple[str, str]] = set()
+        for raw in raw_parameters:
+            parameter = resolve(document, raw)
+            if not isinstance(parameter, dict):
+                raise ValueError(f"{path}: parameter must be an object")
+            name = parameter.get("name")
+            location = parameter.get("in")
+            if not isinstance(name, str) or not name or location not in {"path", "query", "header", "cookie"}:
+                raise ValueError(f"{path}: parameter requires a name and valid location")
+            key = (name.lower() if location == "header" else name, location)
+            if key in seen:
+                raise ValueError(f"{path}: duplicate {location} parameter {name}")
+            seen.add(key)
+            required = parameter.get("required", False)
+            if not isinstance(required, bool):
+                raise ValueError(f"{path}: parameter {name} required must be boolean")
+            schema = resolve(document, parameter.get("schema", {}))
+            parameters[key] = Parameter(name, location, required,
+                                        schema if isinstance(schema, dict) else {})
+    return tuple(parameters.values())
 
 
 def media_schema(document: dict[str, Any], content: Any) -> dict[str, Any] | None:
@@ -310,8 +335,16 @@ def validate_document(document: dict[str, Any], label: str = "OpenAPI") -> list[
     if not isinstance(tenant_auth, dict) or tenant_auth.get("type") != "apiKey" \
             or tenant_auth.get("in") != "header" or tenant_auth.get("name") != "X-Tenant-Id":
         errors.append(f"{label}: tenantHeader must be apiKey header X-Tenant-Id")
+    bearer_auth = schemes.get("bearerAuth") if isinstance(schemes, dict) else None
+    if not isinstance(bearer_auth, dict) or bearer_auth.get("type") != "http" \
+            or str(bearer_auth.get("scheme", "")).lower() != "bearer":
+        errors.append(f"{label}: bearerAuth must describe HTTP bearer authentication")
     if envelope_schema(document) is None:
         errors.append(f"{label}: no ApiResult-like schema with code/message/timestamp")
+    try:
+        model_names(document)
+    except ValueError as error:
+        errors.append(f"{label}: {error}")
 
     for reference in sorted(set(collect_refs(document))):
         try:
@@ -326,7 +359,19 @@ def validate_document(document: dict[str, Any], label: str = "OpenAPI") -> list[
             errors.append(f"{label}: duplicate generated operation name {name}")
         names.add(name)
         placeholders = set(PATH_PARAMETER_RE.findall(path))
-        parameters = operation_parameters(document, path, operation)
+        try:
+            parameters = operation_parameters(document, path, operation)
+        except ValueError as error:
+            errors.append(f"{label}: {method.upper()} {error}")
+            continue
+        generated_names: set[str] = {"body"} if operation.get("requestBody") is not None else set()
+        for parameter in parameters:
+            if parameter.location == "cookie":
+                errors.append(f"{label}: {method.upper()} {path}: explicit cookie parameters are unsupported; "
+                              "use browser credentials or the Node client's Cookie header")
+            if parameter.ts_name in generated_names:
+                errors.append(f"{label}: {method.upper()} {path} has ambiguous generated parameter {parameter.ts_name}")
+            generated_names.add(parameter.ts_name)
         path_params = {parameter.name for parameter in parameters if parameter.location == "path"}
         missing = placeholders - path_params
         if missing:
@@ -426,33 +471,43 @@ def compare_runtime(snapshot: dict[str, Any], runtime: dict[str, Any]) -> list[s
 
 
 def ts_type(document: dict[str, Any], schema: Any, generic_api_result: bool = True) -> str:
-    schema = resolve(document, schema)
+    if isinstance(schema, bool):
+        return "unknown" if schema else "never"
     if not isinstance(schema, dict):
         return "unknown"
+    if schema.get("nullable"):
+        return f"({ts_type(document, {**schema, 'nullable': False}, generic_api_result)}) | null"
     reference = schema.get("$ref")
-    if isinstance(reference, str):
+    if isinstance(reference, str) and reference.startswith("#/components/schemas/") \
+            and reference.count("/") == 3:
+        json_pointer(document, reference)
         name = ref_name(reference)
-        if generic_api_result and name == "ApiResult":
-            return "SoarApiResult<unknown>"
-        return "Soar" + ts_identifier(name)
+        result = "SoarApiResult<unknown>" if generic_api_result and name == "ApiResult" else "Soar" + ts_identifier(name)
+        assertions = {key: value for key, value in schema.items() if key not in {
+            "$ref", "title", "summary", "description", "example", "examples", "deprecated",
+            "readOnly", "writeOnly", "nullable", "$comment",
+        }}
+        if assertions:
+            result = f"({result}) & ({ts_type(document, assertions)})"
+        return result
+    schema = resolve(document, schema)
+    if not isinstance(schema, dict):
+        return ts_type(document, schema)
     if "const" in schema:
         return json.dumps(schema["const"])
     if "oneOf" in schema or "anyOf" in schema:
         values = schema.get("oneOf", schema.get("anyOf", []))
         return " | ".join(ts_type(document, item) for item in values) or "unknown"
     if "allOf" in schema:
-        return " & ".join(ts_type(document, item) for item in schema["allOf"]) or "unknown"
+        return " & ".join(f"({ts_type(document, item)})" for item in schema["allOf"]) or "unknown"
     schema_type = schema.get("type")
     if isinstance(schema_type, list):
-        types = [item for item in schema_type if item != "null"]
-        result = ts_type(document, {**schema, "type": types[0]} if types else {})
-        if "null" in schema_type:
-            result += " | null"
-        return result
+        return " | ".join(dict.fromkeys(ts_type(document, {**schema, "type": item, "nullable": False})
+                                        for item in schema_type)) or "unknown"
     if "enum" in schema:
         values = [json.dumps(item) for item in schema.get("enum", [])]
         result = " | ".join(values) or "string"
-        return result + (" | null" if schema.get("nullable") else "")
+        return result
     if schema_type == "array":
         result = f"Array<{ts_type(document, schema.get('items', {}))}>"
     elif schema_type == "object" or "properties" in schema:
@@ -474,19 +529,24 @@ def ts_type(document: dict[str, Any], schema: Any, generic_api_result: bool = Tr
         result = "boolean"
     elif schema_type == "string":
         result = "string"
+    elif schema_type == "null":
+        result = "null"
     else:
         result = "unknown"
-    return result + (" | null" if schema.get("nullable") and "null" not in result else "")
+    return result
 
 
 def generate_models(document: dict[str, Any]) -> list[str]:
     schemas = document.get("components", {}).get("schemas", {})
     if not isinstance(schemas, dict):
         return []
+    names = model_names(document)
     lines: list[str] = []
     for name in sorted(schemas):
-        schema = resolve(document, schemas[name])
-        type_name = "Soar" + ts_identifier(name)
+        # Reject alias-only cycles, but keep named references and their schema
+        # siblings intact when emitting recursive object/array definitions.
+        resolve(document, schemas[name])
+        type_name = names[name]
         if name == "ApiResult":
             lines.extend([
                 "export interface SoarApiResult<T = unknown> {",
@@ -499,21 +559,7 @@ def generate_models(document: dict[str, Any]) -> list[str]:
                 "",
             ])
             continue
-        if isinstance(schema, dict) and (schema.get("type") == "object" or "properties" in schema) \
-                and not schema.get("allOf"):
-            lines.append(f"export interface {type_name} {{")
-            properties = schema.get("properties", {})
-            required = set(schema.get("required", []))
-            if isinstance(properties, dict):
-                for property_name in sorted(properties):
-                    key = json.dumps(property_name) if not re.match(r"^[A-Za-z_$][A-Za-z0-9_$]*$", property_name) else property_name
-                    optional = "" if property_name in required else "?"
-                    lines.append(f"  {key}{optional}: {ts_type(document, properties[property_name])};")
-            if not properties:
-                lines.append("  [key: string]: unknown;")
-            lines.extend(["}", ""])
-        else:
-            lines.extend([f"export type {type_name} = {ts_type(document, schema)};", ""])
+        lines.extend([f"export type {type_name} = {ts_type(document, schemas[name])};", ""])
     return lines
 
 
@@ -537,6 +583,8 @@ def extract_operations(document: dict[str, Any]) -> list[Operation]:
 
 def generate_client(document: dict[str, Any]) -> tuple[str, list[Operation]]:
     operations = extract_operations(document)
+    if any(parameter.location == "cookie" for operation in operations for parameter in operation.parameters):
+        raise ValueError("explicit cookie parameters cannot be emitted as HTTP headers")
     lines = [
         "/* eslint-disable */",
         "/** Generated by build/verify-openapi-sdk.py; do not edit by hand. */",
@@ -624,7 +672,7 @@ def generate_client(document: dict[str, Any]) -> tuple[str, list[Operation]]:
         ])
         path_params = [parameter for parameter in operation.parameters if parameter.location == "path"]
         query_params = [parameter for parameter in operation.parameters if parameter.location == "query"]
-        header_params = [parameter for parameter in operation.parameters if parameter.location in {"header", "cookie"}]
+        header_params = [parameter for parameter in operation.parameters if parameter.location == "header"]
         if path_params:
             lines.append("      path: {" + ", ".join(f"{json.dumps(p.name)}: params.{p.ts_name}" for p in path_params) + "},")
         if query_params:
@@ -636,219 +684,6 @@ def generate_client(document: dict[str, Any]) -> tuple[str, list[Operation]]:
         lines.extend(["    });", "  }", ""])
     lines.append("}")
     return "\n".join(lines) + "\n", operations
-
-
-JAVA_RESERVED = {
-    "abstract", "assert", "boolean", "break", "byte", "case", "catch",
-    "char", "class", "const", "continue", "default", "do", "double",
-    "else", "enum", "extends", "final", "finally", "float", "for", "goto",
-    "if", "implements", "import", "instanceof", "int", "interface", "long",
-    "native", "new", "package", "private", "protected", "public", "return",
-    "short", "static", "strictfp", "super", "switch", "synchronized", "this",
-    "throw", "throws", "transient", "try", "void", "volatile", "while",
-    "true", "false", "null", "record", "sealed", "permits", "non-sealed",
-}
-
-
-def java_field_name(value: str) -> str:
-    name = ts_identifier(value, lower_camel=True)
-    return name + "_" if name in JAVA_RESERVED else name
-
-
-def java_type(document: dict[str, Any], schema: Any) -> str:
-    schema = resolve(document, schema)
-    if not isinstance(schema, dict):
-        return "Object"
-    reference = schema.get("$ref")
-    if isinstance(reference, str):
-        name = ref_name(reference)
-        return "SoarApiResult<Object>" if name == "ApiResult" else "Soar" + ts_identifier(name)
-    if "oneOf" in schema or "anyOf" in schema or "allOf" in schema:
-        return "Object"
-    schema_type = schema.get("type")
-    if isinstance(schema_type, list):
-        schema_type = next((item for item in schema_type if item != "null"), None)
-    if schema_type == "array":
-        return f"java.util.List<{java_type(document, schema.get('items', {}))}>"
-    if schema_type in {"object", None}:
-        return "java.util.Map<String, Object>"
-    if schema_type == "integer":
-        return "Long" if schema.get("format") == "int64" else "Integer"
-    if schema_type == "number":
-        return "Double"
-    if schema_type == "boolean":
-        return "Boolean"
-    if schema_type == "string":
-        return "String"
-    return "Object"
-
-
-def generate_java_models(document: dict[str, Any]) -> list[str]:
-    schemas = document.get("components", {}).get("schemas", {})
-    if not isinstance(schemas, dict):
-        return []
-    lines: list[str] = []
-    for name in sorted(schemas):
-        schema = resolve(document, schemas[name])
-        type_name = "Soar" + ts_identifier(name)
-        if name == "ApiResult":
-            lines.extend([
-                "    /** Standard SOCP response envelope. */",
-                "    public static final class SoarApiResult<T> {",
-                "        public Integer code;",
-                "        public String message;",
-                "        public T data;",
-                "        public String traceId;",
-                "        public String timestamp;",
-                "    }",
-                "",
-            ])
-            continue
-        lines.extend([f"    public static final class {type_name} {{"])
-        properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
-        if isinstance(properties, dict) and properties:
-            for property_name in sorted(properties):
-                lines.append(f"        public {java_type(document, properties[property_name])} "
-                             f"{java_field_name(property_name)};")
-        else:
-            lines.append("        public java.util.Map<String, Object> values;")
-        lines.extend(["    }", ""])
-    return lines
-
-
-def generate_java_client(document: dict[str, Any]) -> tuple[str, list[Operation]]:
-    """Generate a dependency-free Java 21 client from the same operation model.
-
-    This is intentionally a small wire client rather than a second product
-    implementation: generated methods preserve paths, parameters and headers,
-    while returning the raw JSON body so the smoke runner can assert the
-    deployment's real envelope without introducing a JSON runtime dependency.
-    """
-    operations = extract_operations(document)
-    lines = [
-        "package com.socp.generated;",
-        "",
-        "import java.io.IOException;",
-        "import java.net.URI;",
-        "import java.net.URLEncoder;",
-        "import java.net.http.HttpClient;",
-        "import java.net.http.HttpRequest;",
-        "import java.net.http.HttpResponse;",
-        "import java.nio.charset.StandardCharsets;",
-        "import java.time.Duration;",
-        "import java.util.ArrayList;",
-        "import java.util.LinkedHashMap;",
-        "import java.util.List;",
-        "import java.util.Map;",
-        "import java.util.Set;",
-        "import java.util.regex.Matcher;",
-        "import java.util.regex.Pattern;",
-        "",
-        "/** Generated by build/verify-openapi-sdk.py; do not edit by hand. */",
-        "public final class SoarClient {",
-        "    private static final Pattern PATH_PARAMETER = Pattern.compile(\"\\\\{([^}]+)}\");",
-        "    private final String baseUrl;",
-        "    private final HttpClient httpClient;",
-        "    private final Map<String, String> defaultHeaders;",
-        "",
-        "    public record SoarSdkResponse(int status, Map<String, List<String>> headers, String body) {",
-        "        public String header(String name) {",
-        "            for (Map.Entry<String, List<String>> entry : headers.entrySet()) {",
-        "                if (entry.getKey().equalsIgnoreCase(name) && !entry.getValue().isEmpty())",
-        "                    return entry.getValue().get(0);",
-        "            }",
-        "            return null;",
-        "        }",
-        "    }",
-        "",
-        "    public SoarClient(String baseUrl, String sessionCookie, String tenant) {",
-        "        this.baseUrl = baseUrl.replaceAll(\"/+$\", \"\");",
-        "        this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();",
-        "        this.defaultHeaders = new LinkedHashMap<>();",
-        "        this.defaultHeaders.put(\"Accept\", \"application/json\");",
-        "        if (sessionCookie != null && !sessionCookie.isBlank())",
-        "            this.defaultHeaders.put(\"Cookie\", \"SOCP_SESSION=\" + sessionCookie);",
-        "        if (tenant != null && !tenant.isBlank()) this.defaultHeaders.put(\"X-Tenant-Id\", tenant);",
-        "    }",
-        "",
-        "    public SoarSdkResponse request(String method, String template, Map<String, Object> params,",
-        "                                    Map<String, String> headers, String body, Set<String> pathNames)",
-        "            throws IOException, InterruptedException {",
-        "        Map<String, Object> values = params == null ? Map.of() : params;",
-        "        String rendered = renderPath(template, values, pathNames);",
-        "        StringBuilder query = new StringBuilder();",
-        "        for (Map.Entry<String, Object> entry : values.entrySet()) {",
-        "            if (pathNames.contains(entry.getKey()) || entry.getValue() == null) continue;",
-        "            query.append(query.length() == 0 ? '?' : '&')",
-        "                    .append(encode(entry.getKey())).append('=')",
-        "                    .append(encode(String.valueOf(entry.getValue())));",
-        "        }",
-        "        HttpRequest.Builder request = HttpRequest.newBuilder()",
-        "                .uri(URI.create(baseUrl + rendered + query))",
-        "                .timeout(Duration.ofSeconds(30));",
-        "        defaultHeaders.forEach(request::header);",
-        "        if (headers != null) headers.forEach(request::header);",
-        "        if (body == null) request.method(method, HttpRequest.BodyPublishers.noBody());",
-        "        else {",
-        "            request.header(\"Content-Type\", \"application/json\");",
-        "            request.method(method, HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8));",
-        "        }",
-        "        HttpResponse<String> response = httpClient.send(request.build(),",
-        "                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));",
-        "        return new SoarSdkResponse(response.statusCode(), response.headers().map(), response.body());",
-        "    }",
-        "",
-        "    private static String renderPath(String template, Map<String, Object> values, Set<String> pathNames) {",
-        "        Matcher matcher = PATH_PARAMETER.matcher(template);",
-        "        StringBuffer result = new StringBuffer();",
-        "        while (matcher.find()) {",
-        "            String name = matcher.group(1);",
-        "            if (!pathNames.contains(name) || values.get(name) == null)",
-        "                throw new IllegalArgumentException(\"missing path parameter \" + name);",
-        "            matcher.appendReplacement(result, Matcher.quoteReplacement(encode(String.valueOf(values.get(name)))));",
-        "        }",
-        "        matcher.appendTail(result);",
-        "        return result.toString();",
-        "    }",
-        "",
-        "    private static String encode(String value) {",
-        "        return URLEncoder.encode(value, StandardCharsets.UTF_8).replace(\"+\", \"%20\");",
-        "    }",
-        "",
-    ]
-    for operation in operations:
-        path_params = [parameter for parameter in operation.parameters if parameter.location == "path"]
-        path_names = ", ".join(json.dumps(parameter.name) for parameter in path_params)
-        lines.extend([
-            f"    public SoarSdkResponse {operation.name}(Map<String, Object> params, "
-            "Map<String, String> headers, String body) throws IOException, InterruptedException {",
-            f"        return request({json.dumps(operation.method)}, {json.dumps(operation.path)}, params, headers, body, Set.of({path_names}));",
-            "    }",
-            "",
-        ])
-    lines.extend(generate_java_models(document))
-    lines.append("}")
-    return "\n".join(lines) + "\n", operations
-
-
-def find_java() -> str | None:
-    return shutil.which("java") or shutil.which("java.exe")
-
-
-def find_javac() -> str | None:
-    return shutil.which("javac") or shutil.which("javac.exe")
-
-
-def compile_java(sources: list[Path], output: Path) -> tuple[bool, str]:
-    compiler = find_javac()
-    if compiler is None:
-        return False, "javac not found; install JDK 21 first"
-    output.mkdir(parents=True, exist_ok=True)
-    command = [compiler, "--release", "21", "-encoding", "UTF-8", "-d", str(output)]
-    command.extend(str(source) for source in sources)
-    process = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
-    detail = (process.stdout + process.stderr).strip()
-    return process.returncode == 0, detail[-4000:]
 
 
 def find_node() -> str | None:
@@ -1139,11 +974,16 @@ def main() -> int:
     warnings: list[str] = []
     output = (ROOT / args.output).resolve() if not Path(args.output).is_absolute() else Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
+    snapshot: dict[str, Any] | None = None
+    runtime_document: dict[str, Any] | None = None
+    operations: list[Operation] = []
+    snapshot_path = Path(args.spec).resolve()
     try:
-        snapshot = load_yaml(Path(args.spec).resolve())
+        snapshot = load_yaml(snapshot_path)
         errors = validate_document(snapshot, "snapshot")
         if errors:
             failures.extend(errors)
+            raise ValueError("snapshot validation failed; generation and runtime smoke skipped")
         else:
             passed.append("static OpenAPI document and references")
         anchor_passed, anchor_errors = service_document_anchor()
@@ -1164,7 +1004,6 @@ def main() -> int:
                 failures.append("generated TypeScript client compilation: " + (detail or "unknown error"))
 
         runtime_base = normalize_base(args.runtime_url) if args.runtime_url.strip() else ""
-        runtime_document: dict[str, Any] | None = None
         session: str | None = None
         if runtime_base:
             gateway = os.environ.get("SOCP_GATEWAY_URL", runtime_base)
@@ -1181,7 +1020,7 @@ def main() -> int:
                 if runtime_errors:
                     failures.extend(runtime_errors)
                 else:
-                    passed.append("runtime OpenAPI matches snapshot and auth/concurrency contract")
+                    passed.append("runtime OpenAPI operation set and selected auth/concurrency declarations checked")
             except Exception as error:
                 failures.append(str(error))
             if session:
@@ -1235,12 +1074,18 @@ def main() -> int:
             else:
                 warnings.append("per-service /v3/api-docs smoke skipped; set SOCP_GATEWAY_URL")
 
+    except Exception as error:
+        failures.append(str(error))
+
+    # Also replace an old PASS after parsing/validation/generation exceptions.
+    # Consumers must check this invocation's exit status and manifest together.
+    try:
         manifest = {
             "schemaVersion": "soar.openapi-sdk-evidence",
             "generatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "snapshot": str(Path(args.spec).resolve().relative_to(ROOT)),
-            "snapshotSha256": document_hash(snapshot),
-            "runtimeConfigured": bool(runtime_base),
+            "snapshot": str(snapshot_path.relative_to(ROOT)) if snapshot_path.is_relative_to(ROOT) else str(snapshot_path),
+            "snapshotSha256": document_hash(snapshot) if snapshot is not None else None,
+            "runtimeConfigured": bool(args.runtime_url.strip()),
             "runtimeSha256": document_hash(runtime_document) if runtime_document else None,
             "operations": [operation.name for operation in operations],
             "passed": passed,
@@ -1252,7 +1097,7 @@ def main() -> int:
         temporary.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         temporary.replace(output / "manifest.json")
     except Exception as error:
-        failures.append(str(error))
+        failures.append("cannot write current SDK evidence: " + str(error))
 
     for item in passed:
         print(f"[PASS] {item}")

@@ -9,10 +9,11 @@ import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.StringSerializer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -24,6 +25,9 @@ import java.util.concurrent.TimeUnit;
 @DetectRuntimeRole(DetectRuntimeRole.Role.WORKER)
 public class DetectionRouteOutboxPublisher {
 
+    private static final Logger log = LoggerFactory.getLogger(DetectionRouteOutboxPublisher.class);
+    private static final int RECOVERY_BATCH_SIZE = 100;
+    private static final long DRAIN_BUDGET_NANOS = Duration.ofSeconds(10).toNanos();
     private final DetectionRouteOutboxRepository repository;
     private final String bootstrap;
     private final boolean enabled;
@@ -58,12 +62,14 @@ public class DetectionRouteOutboxPublisher {
     public void publishDue() {
         if (!enabled) return;
         recoverStale();
-        Instant now = Instant.now();
+        long started = System.nanoTime();
         for (DetectionRouteOutboxEntity row :
                 repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
-                        "PENDING", now)) {
+                        "PENDING", Instant.now())) {
+            if (Thread.currentThread().isInterrupted() || System.nanoTime() - started >= DRAIN_BUDGET_NANOS) break;
             int attemptLimit = maxAttempts == 0 ? Integer.MAX_VALUE : maxAttempts;
-            if (repository.claim(row.getDeliveryId(), now, attemptLimit, row.getAttempts()) != 1) continue;
+            Instant now = Instant.now();
+            if (repository.claim(row.getDeliveryId(), now, row.getAttempts(), attemptLimit) != 1) continue;
             row.setAttempts(row.getAttempts() + 1);
             row.setStatus("PROCESSING");
             row.setUpdatedAt(now);
@@ -79,13 +85,19 @@ public class DetectionRouteOutboxPublisher {
                     row.getDeliveryId().getBytes(java.nio.charset.StandardCharsets.UTF_8));
             var metadata = producer().send(record).get(10, TimeUnit.SECONDS);
             markPublished(row, metadata.partition(), metadata.offset());
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            markFailed(row, interrupted);
         } catch (Exception failure) {
             markFailed(row, failure);
         }
     }
 
     void markPublished(DetectionRouteOutboxEntity row, int partition, long offset) {
-        repository.completeAttempt(row.getDeliveryId(), row.getAttempts(), partition, offset, Instant.now());
+        if (repository.markPublished(row.getDeliveryId(), row.getAttempts(), partition, offset, Instant.now()) != 1) {
+            log.warn("Route publish acknowledgement lost its claim deliveryId={} attempt={}",
+                    row.getDeliveryId(), row.getAttempts());
+        }
     }
 
     void markFailed(DetectionRouteOutboxEntity row, Exception failure) {
@@ -94,19 +106,21 @@ public class DetectionRouteOutboxPublisher {
         long backoff = Math.min(60_000L, 250L << Math.min(8, Math.max(0, row.getAttempts() - 1)));
         String detail = failure == null ? "unknown route publish failure"
                 : failure.getClass().getSimpleName() + ": " + failure.getMessage();
-        repository.failAttempt(row.getDeliveryId(), row.getAttempts(), exhausted ? "DEAD" : "PENDING",
-                exhausted ? now : now.plusMillis(backoff), now,
-                detail.length() <= 1024 ? detail : detail.substring(0, 1024));
+        int changed = repository.markFailed(row.getDeliveryId(), row.getAttempts(), exhausted ? "DEAD" : "PENDING",
+                exhausted ? now : now.plusMillis(backoff),
+                detail.length() <= 1024 ? detail : detail.substring(0, 1024), now);
+        if (changed == 1) {
+            log.warn("Route publish failed deliveryId={} attempt={} exhausted={}",
+                    row.getDeliveryId(), row.getAttempts(), exhausted);
+        }
     }
 
     void recoverStale() {
         Instant now = Instant.now();
-        Instant cutoff = now.minus(Duration.ofMinutes(2));
-        for (DetectionRouteOutboxEntity row :
-                repository.findTop100ByStatusAndUpdatedAtBeforeOrderByUpdatedAtAsc("PROCESSING", cutoff)) {
-            boolean exhausted = maxAttempts > 0 && row.getAttempts() >= maxAttempts;
-            repository.recoverAttempt(row.getDeliveryId(), row.getAttempts(),
-                    exhausted ? "DEAD" : "PENDING", now, cutoff);
+        int limit = maxAttempts == 0 ? Integer.MAX_VALUE : maxAttempts;
+        repository.recoverStaleBatch(now.minus(Duration.ofMinutes(2)), now, limit, RECOVERY_BATCH_SIZE);
+        if (maxAttempts > 0) {
+            repository.markExhaustedBatch(maxAttempts, now, RECOVERY_BATCH_SIZE);
         }
     }
 
@@ -124,6 +138,7 @@ public class DetectionRouteOutboxPublisher {
                 props.put(ProducerConfig.RETRIES_CONFIG, Integer.MAX_VALUE);
                 props.put(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, 5);
                 props.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 30_000);
+                props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 10_000);
                 producer = new KafkaProducer<>(props);
             }
             return producer;

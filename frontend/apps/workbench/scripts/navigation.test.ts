@@ -11,6 +11,7 @@ test('viewer navigation keeps operational pages and hides configuration pages', 
   assert.ok(keys.includes('threat-intel'))
   assert.ok(!keys.includes('ingest'))
   assert.ok(!keys.includes('detect'))
+  assert.ok(!keys.includes('ai'))
   assert.ok(!keys.includes('soar'))
   assert.ok(!keys.includes('notify'))
 })
@@ -20,6 +21,7 @@ test('analyst navigation exposes ingestion and detection management', () => {
 
   assert.ok(keys.includes('ingest'))
   assert.ok(keys.includes('detect'))
+  assert.ok(keys.includes('ai'))
   assert.ok(keys.includes('soar'))
   assert.ok(keys.includes('notify'))
 })
@@ -33,12 +35,14 @@ test('role-prefixed viewer fails closed and approver keeps only approval surface
   assert.ok(approverKeys.includes('soar'))
   assert.ok(!approverKeys.includes('detect'))
   assert.ok(!approverKeys.includes('notify'))
+  assert.ok(!approverKeys.includes('ai'))
 })
 
 test('unknown roles fail closed like viewers', () => {
   const keys = getVisibleMenuGroups('external-unknown').flatMap(group => group.items.map(item => item.key))
 
   assert.ok(!keys.includes('detect'))
+  assert.ok(!keys.includes('ai'))
   assert.ok(!keys.includes('soar'))
 })
 
@@ -47,6 +51,7 @@ test('admin navigation exposes the same operator pages', () => {
 
   assert.ok(keys.includes('ingest'))
   assert.ok(keys.includes('detect'))
+  assert.ok(keys.includes('ai'))
 })
 
 test('navigation removes groups that have no visible items', () => {

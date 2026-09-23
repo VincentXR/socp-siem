@@ -93,7 +93,29 @@ def main() -> int:
         print(f"[FAIL] changed-line coverage base is unavailable: {args.base}", file=sys.stderr)
         return 1
     changed = diff_lines(base)
-    reports = jacoco_lines()
+    try:
+        reports = jacoco_lines()
+    except (OSError, ValueError, ET.ParseError) as failure:
+        print(f"[FAIL] unable to read JaCoCo reports: {failure}", file=sys.stderr)
+        return 1
+    missing_evidence: list[str] = []
+    for path, lines in changed.items():
+        # These Java metadata files have no executable methods and need not
+        # produce bytecode/source entries in JaCoCo. Pure deletions add no lines.
+        if not lines or Path(path).name in {"package-info.java", "module-info.java"}:
+            continue
+        if path not in reports:
+            missing_evidence.append(f"{path}: no source entry in a JaCoCo report")
+            continue
+        source = ROOT / path
+        report = ROOT.joinpath(*Path(path).parts[:2], "target/site/jacoco/jacoco.xml")
+        if not source.is_file() or report.stat().st_mtime_ns < source.stat().st_mtime_ns:
+            missing_evidence.append(f"{path}: source is missing or newer than its JaCoCo report")
+    if missing_evidence:
+        for problem in missing_evidence:
+            print(f"[FAIL] {problem}", file=sys.stderr)
+        print("Regenerate coverage with Maven -Pcoverage before checking changed lines.", file=sys.stderr)
+        return 1
     executable = 0
     covered = 0
     missed: list[str] = []

@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { workbenchOrigin } from './helpers'
+import { isWorkbenchBackendUrl } from './helpers'
 
 const SIMPLE_DEFINITION = {
   schemaVersion: 'soar.playbook',
@@ -72,7 +72,7 @@ async function installSoarMocks(page: Page, role: 'analyst' | 'admin' = 'analyst
   await page.route('**/*', async route => {
     const request = route.request()
     const url = new URL(request.url())
-    if (url.origin !== workbenchOrigin()) {
+    if (!isWorkbenchBackendUrl(url)) {
       await route.continue()
       return
     }
@@ -80,8 +80,13 @@ async function installSoarMocks(page: Page, role: 'analyst' | 'admin' = 'analyst
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ username: role, role, tenant: 'default' }) })
       return
     }
+    if (url.pathname === '/auth/operators') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [{ id: role }] }) })
+      return
+    }
     if (!url.pathname.startsWith('/soar-web/')) {
-      await route.continue()
+      state.unknown.push(`${request.method()} ${url.pathname}`)
+      await route.abort()
       return
     }
 

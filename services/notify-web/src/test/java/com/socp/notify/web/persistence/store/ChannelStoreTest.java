@@ -31,6 +31,13 @@ class ChannelStoreTest {
     @Mock
     private ChannelRepository repository;
 
+    @Mock private ChannelCoordinator coordinator;
+
+    @org.junit.jupiter.api.BeforeEach void coordinate() {
+        org.mockito.Mockito.lenient().when(coordinator.mutate(any())).thenAnswer(call ->
+                ((java.util.function.Supplier<?>) call.getArgument(0)).get());
+    }
+
     @AfterEach
     void clearTenant() {
         TenantContext.clear();
@@ -38,57 +45,58 @@ class ChannelStoreTest {
 
     @Test
     void seedsConfiguredDefaultChannelsInsideDefaultTenantScope() {
-        when(repository.findByTenantId("default")).thenReturn(List.of());
-        ChannelStore store = new ChannelStore(repository, true);
+        when(repository.countByTenantId("default")).thenReturn(0L);
+        ChannelStore store = new ChannelStore(repository, coordinator, true);
 
         store.seed();
 
-        verify(repository).findByTenantId("default");
-        verify(repository, times(3)).save(any(ChannelEntity.class));
+        verify(repository, times(4)).countByTenantId("default");
+        verify(repository, times(3)).saveAndFlush(any(ChannelEntity.class));
     }
 
     @Test
     void disabledDemoDataDoesNotTouchRepositoryDuringSeed() {
-        ChannelStore store = new ChannelStore(repository, false);
+        ChannelStore store = new ChannelStore(repository, coordinator, false);
 
         store.seed();
 
         verify(repository, times(0)).findByTenantId(any());
-        verify(repository, times(0)).save(any());
+        verify(repository, times(0)).saveAndFlush(any());
     }
 
     @Test
     void existingDefaultChannelsAreNotSeededTwice() {
-        when(repository.findByTenantId("default"))
-                .thenReturn(List.of(new ChannelEntity("CH-1", "Ops", "LOG", "local", true, "")));
-        ChannelStore store = new ChannelStore(repository, true);
+        when(repository.countByTenantId("default")).thenReturn(1L);
+        ChannelStore store = new ChannelStore(repository, coordinator, true);
 
         store.seed();
 
-        verify(repository).findByTenantId("default");
-        verify(repository, times(0)).save(any());
+        verify(repository).countByTenantId("default");
+        verify(repository, times(0)).saveAndFlush(any());
     }
 
     @Test
     void addListGetDeleteAndEnabledRespectCurrentTenant() {
         TenantContext.set("tenant-a");
-        ChannelStore store = new ChannelStore(repository, false);
+        ChannelStore store = new ChannelStore(repository, coordinator, false);
         Channel channel = new Channel("CH-1", "Ops", "LOG", "local", true, "notes");
         ArgumentCaptor<ChannelEntity> saved = ArgumentCaptor.forClass(ChannelEntity.class);
-        given(repository.findByTenantId("tenant-a")).willReturn(List.of(
+        given(repository.findByTenantIdOrderByNameAscIdAsc(eq("tenant-a"), any())).willReturn(new org.springframework.data.domain.PageImpl<>(List.of(
                 new ChannelEntity("CH-1", "Ops", "LOG", "local", true, "notes"),
-                new ChannelEntity("CH-2", "Mail", "EMAIL", "mail", false, "")));
+                new ChannelEntity("CH-2", "Mail", "EMAIL", "mail", false, ""))));
+        given(repository.findByTenantIdAndEnabledTrueOrderByIdAsc(eq("tenant-a"), any()))
+                .willReturn(List.of(new ChannelEntity("CH-1", "Ops", "LOG", "local", true, "notes")));
         given(repository.findByIdAndTenantId("CH-1", "tenant-a"))
                 .willReturn(Optional.of(new ChannelEntity("CH-1", "Ops", "LOG", "local", true, "notes")));
         given(repository.findByIdAndTenantId("missing", "tenant-a"))
                 .willReturn(Optional.empty());
 
         assertSame(channel, store.add(channel));
-        verify(repository).save(saved.capture());
+        verify(repository).saveAndFlush(saved.capture());
         assertEquals("tenant-a", saved.getValue().getTenantId());
         assertEquals("CH-1", saved.getValue().getId());
 
-        assertEquals(2, store.list().size());
+        assertEquals(2, store.list(1, 500).getContent().size());
         assertEquals("Ops", store.get("CH-1").name());
         assertEquals(1, store.enabled().size());
         assertFalse(store.delete("missing"));

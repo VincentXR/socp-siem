@@ -24,7 +24,8 @@ import PagerBar from '../components/PagerBar.vue'
 import SevBadge from '../components/SevBadge.vue'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { relTime } from '../lib/ui'
-import { listRules, SEVERITIES, type Alarm, type RuleSpec } from '../api'
+import { listRuleOptions, SEVERITIES, type Alarm, type RuleOption } from '../api'
+import { useLatestRequest } from '../composables/useLatestRequest'
 import { batchUpdateAlarmDisposition } from '../api/alarms'
 import { useI18n } from '../composables/useI18n'
 import { tOr } from '../utils/i18nLabel'
@@ -41,7 +42,7 @@ const props = defineProps<{
   exportCsv: () => Promise<void>
   exportJson: () => Promise<void>
   goCase: () => void
-  goSearch: () => void
+  goSearch: (query?: string) => void
   goAi?: (alarmId: string) => void
   goSoar?: (alarmId: string) => void
   assigneeOptions?: string[]
@@ -66,7 +67,9 @@ const batchBusy = ref(false)
 const batchError = ref('')
 const exporting = ref('')
 const exportError = ref('')
-const ruleOptions = ref<RuleSpec[]>([])
+const ruleOptions = ref<RuleOption[]>([])
+const ruleOptionRequests = useLatestRequest()
+const ruleOptionsTotal = ref(0)
 const ruleCatalogLoading = ref(false)
 const ruleCatalogError = ref('')
 const route = useRoute()
@@ -74,15 +77,22 @@ const router = useRouter()
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('alarms')
 const DISP_STATUSES = ['OPEN', 'INVESTIGATING', 'RESOLVED', 'CLOSED']
 
-async function loadRuleOptions(): Promise<void> {
+async function loadRuleOptions(keyword = ''): Promise<void> {
+  const request = ruleOptionRequests.start()
   ruleCatalogLoading.value = true
   ruleCatalogError.value = ''
   try {
-    ruleOptions.value = await listRules()
+    const result = await listRuleOptions(keyword, { signal: request.signal })
+    if (!request.isCurrent()) return
+    ruleOptions.value = result.items
+    ruleOptionsTotal.value = result.total
   } catch (error) {
+    if (!request.isCurrent()) return
+    ruleOptions.value = []
+    ruleOptionsTotal.value = 0
     ruleCatalogError.value = error instanceof Error ? error.message : String(error)
   } finally {
-    ruleCatalogLoading.value = false
+    if (request.isCurrent()) ruleCatalogLoading.value = false
   }
 }
 
@@ -173,7 +183,7 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
     <div class="alarm-toolbar">
       <div class="alarm-filter-controls">
         <el-input v-model="keyword" class="alarm-keyword-input" :placeholder="t('alarms.keywordPlaceholder')" clearable @keyup.enter="props.onSearch" @clear="props.onSearch" />
-        <el-select v-model="rule" class="alarm-rule-input" filterable clearable :loading="ruleCatalogLoading" :placeholder="t('alarms.ruleFilter')" @change="props.onSearch">
+        <el-select v-model="rule" class="alarm-rule-input" filterable remote :remote-method="loadRuleOptions" clearable :loading="ruleCatalogLoading" :placeholder="t('alarms.ruleFilter')" @change="props.onSearch">
           <el-option v-if="rule && !ruleOptions.some(item => item.id === rule)" :label="rule" :value="rule" />
           <el-option v-for="item in ruleOptions" :key="item.id" :label="item.name" :value="item.id">
             <div class="alarm-rule-option"><b>{{ item.name }}</b><small>{{ item.id }}</small></div>
@@ -187,6 +197,7 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
         </el-select>
         <el-button size="small" @click="props.onSearch">{{ t('common.search') }}</el-button>
         <small v-if="ruleCatalogError" class="alarm-catalog-hint" :title="ruleCatalogError">{{ t('alarms.ruleCatalogUnavailable') }}</small>
+        <small v-else-if="ruleOptionsTotal > ruleOptions.length" class="alarm-catalog-hint">{{ t('detect.refineRuleSearch', { total: ruleOptionsTotal }) }}</small>
       </div>
       <div class="alarm-toolbar-actions">
         <span class="toolbar-count">{{ t('common.total', { total: props.alarmPageData.total }) }}</span>

@@ -1,7 +1,6 @@
 package com.socp.soar.web.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.socp.platform.tenant.context.TenantContext;
 import com.socp.soar.web.persistence.entity.PlaybookVersionEntity;
 import com.socp.soar.web.persistence.entity.SoarDispatchOutboxEntity;
 import com.socp.soar.web.persistence.entity.SoarRunEntity;
@@ -10,10 +9,12 @@ import com.socp.soar.web.persistence.repository.SoarDispatchOutboxRepository;
 import com.socp.soar.web.persistence.repository.SoarRunRepository;
 import com.socp.soar.web.temporal.request.SoarWorkflowRequest;
 import io.temporal.api.common.v1.WorkflowExecution;
-import org.junit.jupiter.api.AfterEach;
+import io.temporal.client.WorkflowExecutionAlreadyStarted;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -22,304 +23,168 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.BDDMockito.given;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class SoarDispatchWorkerCoverageTest {
+    @Mock SoarDispatchOutboxRepository dispatches;
+    @Mock SoarRunRepository runs;
+    @Mock PlaybookVersionRepository versions;
+    @Mock SoarDispatchState state;
+    @Mock TemporalExecutor temporal;
+    SoarDispatchWorker worker;
+    SoarDispatchOutboxEntity candidate;
+    SoarRunEntity run;
+    PlaybookVersionEntity version;
+    SoarDispatchState.Claim claim;
 
-    @Mock
-    private SoarDispatchOutboxRepository dispatches;
-    @Mock
-    private SoarRunRepository runs;
-    @Mock
-    private PlaybookVersionRepository versions;
-    @Mock
-    private TemporalExecutor temporal;
-
-    private SoarDispatchWorker worker;
-
-    @BeforeEach
-    void setUp() {
-        TenantContext.set("tenant-a");
-        worker = new SoarDispatchWorker(dispatches, runs, versions, temporal, new ObjectMapper());
-    }
-
-    @AfterEach
-    void tearDown() {
-        TenantContext.clear();
-    }
-
-    @Test
-    void claimedPendingRowStartsTemporalWithStableWorkflowId() {
-        SoarDispatchOutboxEntity outbox = outbox(0, "PENDING");
-        SoarRunEntity run = run("QUEUED");
-        given(temporal.isAvailable()).willReturn(true);
-        given(dispatches.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(eq("PENDING"), any()))
-                .willReturn(List.of(outbox));
-        given(dispatches.claim(eq("tenant-a"), eq("out-1"), anyString(), any())).willReturn(1);
-        given(runs.findByTenantIdAndId("tenant-a", "run-1")).willReturn(Optional.of(run));
-        given(versions.findByTenantIdAndId("tenant-a", "ver-1")).willReturn(Optional.of(version()));
-        given(temporal.startWorkflow(any(SoarWorkflowRequest.class), anyString()))
-                .willReturn(WorkflowExecution.newBuilder().setRunId("temporal-run-1").build());
-
-        worker.tick();
-
-        ArgumentCaptor<SoarWorkflowRequest> request = ArgumentCaptor.forClass(SoarWorkflowRequest.class);
-        ArgumentCaptor<String> workflowId = ArgumentCaptor.forClass(String.class);
-        verify(temporal).startWorkflow(request.capture(), workflowId.capture());
-        assertThat(workflowId.getValue()).isEqualTo("soar-tenant-a-run-1");
-        assertThat(request.getValue().tenantId()).isEqualTo("tenant-a");
-        assertThat(request.getValue().runId()).isEqualTo("run-1");
-        assertThat(request.getValue().resumeFromNodeId()).isEqualTo("node-7");
-        assertThat(run.getTemporalWorkflowId()).isEqualTo("soar-tenant-a-run-1");
-        assertThat(run.getTemporalRunId()).isEqualTo("temporal-run-1");
-        assertThat(outbox.getStatus()).isEqualTo("DISPATCHED");
-        assertThat(outbox.getClaimedBy()).startsWith("soar-");
-        verify(dispatches).save(outbox);
-    }
-
-    @Test
-    void alreadyStartedWorkflowIsTreatedAsDispatched() {
-        SoarDispatchOutboxEntity outbox = outbox(2, "PENDING");
-        given(temporal.isAvailable()).willReturn(true);
-        given(dispatches.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(eq("PENDING"), any()))
-                .willReturn(List.of(outbox));
-        given(dispatches.claim(eq("tenant-a"), eq("out-1"), anyString(), any())).willReturn(1);
-        given(runs.findByTenantIdAndId("tenant-a", "run-1")).willReturn(Optional.of(run("QUEUED")));
-        given(versions.findByTenantIdAndId("tenant-a", "ver-1")).willReturn(Optional.of(version()));
-        given(temporal.startWorkflow(any(SoarWorkflowRequest.class), anyString()))
-                .willThrow(new RuntimeException("io.temporal.internal.sync.WorkflowExecutionAlreadyStarted: already started"));
-
-        worker.tick();
-
-        assertThat(outbox.getStatus()).isEqualTo("DISPATCHED");
-        assertThat(outbox.getAttempts()).isEqualTo(2);
-        verify(dispatches).save(outbox);
-    }
-
-    @Test
-    void unclaimedRowIsLeftForAnotherWorker() {
-        SoarDispatchOutboxEntity outbox = outbox(0, "PENDING");
-        given(temporal.isAvailable()).willReturn(true);
-        given(dispatches.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(eq("PENDING"), any()))
-                .willReturn(List.of(outbox));
-        given(dispatches.claim(eq("tenant-a"), eq("out-1"), anyString(), any())).willReturn(0);
-
-        worker.tick();
-
-        assertThat(outbox.getStatus()).isEqualTo("PENDING");
-        verify(temporal, never()).startWorkflow(any(SoarWorkflowRequest.class), anyString());
-        verify(dispatches, never()).save(any(SoarDispatchOutboxEntity.class));
-    }
-
-    @Test
-    void unavailableTemporalKeepsRowQueued() {
-        SoarDispatchOutboxEntity outbox = outbox(0, "PENDING");
-        given(temporal.isAvailable()).willReturn(false);
-        given(dispatches.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(eq("PENDING"), any()))
-                .willReturn(List.of(outbox));
-
-        worker.tick();
-
-        assertThat(outbox.getStatus()).isEqualTo("PENDING");
-        verify(dispatches, never()).claim(anyString(), anyString(), anyString(), any());
-        verify(temporal, never()).startWorkflow(any(SoarWorkflowRequest.class), anyString());
-    }
-
-    @Test
-    void holdRunAwaitingApprovalIsNotDispatched() {
-        SoarDispatchOutboxEntity outbox = outbox(0, "PENDING");
-        given(temporal.isAvailable()).willReturn(true);
-        given(dispatches.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(eq("PENDING"), any()))
-                .willReturn(List.of(outbox));
-        given(dispatches.claim(eq("tenant-a"), eq("out-1"), anyString(), any())).willReturn(1);
-        given(runs.findByTenantIdAndId("tenant-a", "run-1")).willReturn(Optional.of(run("HOLD")));
-
-        worker.tick();
-
-        assertThat(outbox.getStatus()).isEqualTo("CANCELLED");
-        assertThat(outbox.getLastError()).contains("dispatch skipped for run status HOLD");
-        verify(dispatches).save(outbox);
-        verify(temporal, never()).startWorkflow(any(SoarWorkflowRequest.class), anyString());
-    }
-
-    @Test
-    void cancellationWonAfterClaimIsRecheckedBeforeTemporalStart() {
-        SoarDispatchOutboxEntity outbox = outbox(0, "PENDING");
-        SoarRunEntity queued = run("QUEUED");
-        SoarRunEntity cancelling = run("CANCELLING");
-        given(temporal.isAvailable()).willReturn(true);
-        given(dispatches.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(eq("PENDING"), any()))
-                .willReturn(List.of(outbox));
-        given(dispatches.claim(eq("tenant-a"), eq("out-1"), anyString(), any())).willReturn(1);
-        given(runs.findByTenantIdAndId("tenant-a", "run-1"))
-                .willReturn(Optional.of(queued), Optional.of(cancelling));
-        given(versions.findByTenantIdAndId("tenant-a", "ver-1")).willReturn(Optional.of(version()));
-
-        worker.tick();
-
-        assertThat(outbox.getStatus()).isEqualTo("CANCELLED");
-        assertThat(outbox.getLastError()).contains("CANCELLING");
-        verify(temporal, never()).startWorkflow(any(SoarWorkflowRequest.class), anyString());
-    }
-
-    @Test
-    void cancellationWonImmediatelyAfterTemporalStartIsDeliveredToStartedWorkflow() {
-        SoarDispatchOutboxEntity outbox = outbox(0, "PENDING");
-        SoarRunEntity queued = run("QUEUED");
-        SoarRunEntity dispatching = run("DISPATCHING");
-        SoarRunEntity cancelling = run("CANCELLING");
-        given(temporal.isAvailable()).willReturn(true);
-        given(dispatches.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(eq("PENDING"), any()))
-                .willReturn(List.of(outbox));
-        given(dispatches.claim(eq("tenant-a"), eq("out-1"), anyString(), any())).willReturn(1);
-        given(runs.findByTenantIdAndId("tenant-a", "run-1"))
-                .willReturn(Optional.of(queued), Optional.of(dispatching), Optional.of(cancelling));
-        given(versions.findByTenantIdAndId("tenant-a", "ver-1")).willReturn(Optional.of(version()));
-        given(temporal.startWorkflow(any(SoarWorkflowRequest.class), anyString()))
-                .willReturn(WorkflowExecution.newBuilder().setRunId("temporal-run-late-cancel").build());
-
-        worker.tick();
-
-        verify(temporal).cancelWorkflow("soar-tenant-a-run-1");
-        assertThat(outbox.getStatus()).isEqualTo("DISPATCHED");
-    }
-
-    @Test
-    void transientFailureRequeuesAndRestoresQueuedProjection() {
-        SoarDispatchOutboxEntity outbox = outbox(0, "PENDING");
-        SoarRunEntity run = run("QUEUED");
-        given(temporal.isAvailable()).willReturn(true);
-        given(dispatches.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(eq("PENDING"), any()))
-                .willReturn(List.of(outbox));
-        given(dispatches.claim(eq("tenant-a"), eq("out-1"), anyString(), any())).willReturn(1);
-        given(runs.findByTenantIdAndId("tenant-a", "run-1")).willReturn(Optional.of(run));
-        given(versions.findByTenantIdAndId("tenant-a", "ver-1")).willReturn(Optional.of(version()));
-        given(temporal.startWorkflow(any(SoarWorkflowRequest.class), anyString()))
-                .willThrow(new IllegalStateException("temporal start timed out"));
-
-        worker.tick();
-
-        assertThat(outbox.getAttempts()).isEqualTo(1);
-        assertThat(outbox.getStatus()).isEqualTo("PENDING");
-        assertThat(outbox.getLastError()).isEqualTo("temporal start timed out");
-        assertThat(outbox.getNextAttemptAt()).isAfter(Instant.now());
-        assertThat(run.getStatus()).isEqualTo("QUEUED");
-        verify(dispatches).save(outbox);
-    }
-
-    @Test
-    void exhaustedRetryBudgetMovesOutboxAndRunToDead() {
-        SoarDispatchOutboxEntity outbox = outbox(9, "PENDING");
-        SoarRunEntity run = run("QUEUED");
-        given(temporal.isAvailable()).willReturn(true);
-        given(dispatches.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(eq("PENDING"), any()))
-                .willReturn(List.of(outbox));
-        given(dispatches.claim(eq("tenant-a"), eq("out-1"), anyString(), any())).willReturn(1);
-        given(runs.findByTenantIdAndId("tenant-a", "run-1")).willReturn(Optional.of(run));
-        given(versions.findByTenantIdAndId("tenant-a", "ver-1")).willReturn(Optional.of(version()));
-        given(temporal.startWorkflow(any(SoarWorkflowRequest.class), anyString()))
-                .willThrow(new IllegalStateException("temporal start timed out"));
-
-        worker.tick();
-
-        assertThat(outbox.getAttempts()).isEqualTo(10);
-        assertThat(outbox.getStatus()).isEqualTo("DEAD");
-        assertThat(run.getStatus()).isEqualTo("DEAD");
-        assertThat(run.getErrorCode()).isEqualTo("DISPATCH_DEAD_LETTER");
-        assertThat(run.getErrorMessage()).isEqualTo("Temporal dispatch exhausted retries");
-    }
-
-    @Test
-    void exhaustedRetryBudgetDoesNotOverwriteAnAlreadyTerminalRun() {
-        SoarDispatchOutboxEntity outbox = outbox(9, "PENDING");
-        SoarRunEntity run = run("PARTIALLY_SUCCEEDED");
-        given(temporal.isAvailable()).willReturn(true);
-        given(dispatches.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(eq("PENDING"), any()))
-                .willReturn(List.of(outbox));
-        given(dispatches.claim(eq("tenant-a"), eq("out-1"), anyString(), any())).willReturn(1);
-        given(runs.findByTenantIdAndId("tenant-a", "run-1")).willReturn(Optional.of(run));
-
-        worker.tick();
-
-        assertThat(outbox.getStatus()).isEqualTo("CANCELLED");
-        assertThat(run.getStatus()).isEqualTo("PARTIALLY_SUCCEEDED");
-        assertThat(run.getErrorCode()).isNull();
-    }
-
-    @Test
-    void missingRunProjectionIsRecordedAsRetryableFailure() {
-        SoarDispatchOutboxEntity outbox = outbox(0, "PENDING");
-        given(temporal.isAvailable()).willReturn(true);
-        given(dispatches.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(eq("PENDING"), any()))
-                .willReturn(List.of(outbox));
-        given(dispatches.claim(eq("tenant-a"), eq("out-1"), anyString(), any())).willReturn(1);
-        given(runs.findByTenantIdAndId("tenant-a", "run-1")).willReturn(Optional.empty());
-
-        worker.tick();
-
-        assertThat(outbox.getAttempts()).isEqualTo(1);
-        assertThat(outbox.getStatus()).isEqualTo("PENDING");
-        assertThat(outbox.getLastError()).contains("run not found: run-1");
-        verify(temporal, never()).startWorkflow(any(SoarWorkflowRequest.class), anyString());
-    }
-
-    @Test
-    void missingVersionIsRecordedAsRetryableFailure() {
-        SoarDispatchOutboxEntity outbox = outbox(0, "PENDING");
-        given(temporal.isAvailable()).willReturn(true);
-        given(dispatches.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(eq("PENDING"), any()))
-                .willReturn(List.of(outbox));
-        given(dispatches.claim(eq("tenant-a"), eq("out-1"), anyString(), any())).willReturn(1);
-        given(runs.findByTenantIdAndId("tenant-a", "run-1")).willReturn(Optional.of(run("QUEUED")));
-        given(versions.findByTenantIdAndId("tenant-a", "ver-1")).willReturn(Optional.empty());
-
-        worker.tick();
-
-        assertThat(outbox.getAttempts()).isEqualTo(1);
-        assertThat(outbox.getLastError()).contains("version not found: ver-1");
-        verify(temporal, never()).startWorkflow(any(SoarWorkflowRequest.class), anyString());
-    }
-
-    private static SoarDispatchOutboxEntity outbox(int attempts, String status) {
-        SoarDispatchOutboxEntity outbox = new SoarDispatchOutboxEntity();
-        outbox.setId("out-1");
-        outbox.setTenantId("tenant-a");
-        outbox.setRunId("run-1");
-        outbox.setStatus(status);
-        outbox.setAttempts(attempts);
-        outbox.setNextAttemptAt(Instant.now().minusSeconds(1));
-        outbox.setCreatedAt(Instant.now().minusSeconds(10));
-        outbox.setUpdatedAt(Instant.now().minusSeconds(10));
-        return outbox;
-    }
-
-    private static SoarRunEntity run(String status) {
-        SoarRunEntity run = new SoarRunEntity();
-        run.setId("run-1");
-        run.setTenantId("tenant-a");
-        run.setRequestId("req-1");
-        run.setExecutionSeriesId("series-1");
-        run.setPlaybookId("pb-1");
-        run.setPlaybookVersionId("ver-1");
-        run.setStatus(status);
+    @BeforeEach void setup() {
+        worker = new SoarDispatchWorker(dispatches, runs, versions, state, temporal, new ObjectMapper());
+        candidate = new SoarDispatchOutboxEntity();
+        candidate.setId("out-1"); candidate.setTenantId("tenant-a"); candidate.setRunId("run-1");
+        run = new SoarRunEntity();
+        run.setId("run-1"); run.setTenantId("tenant-a"); run.setPlaybookVersionId("ver-1");
         run.setInputJson("{\"_soar\":{\"resumeFromNodeId\":\"node-7\"}}");
-        run.setUpdatedAt(Instant.now());
-        return run;
+        version = new PlaybookVersionEntity();
+        version.setId("ver-1"); version.setDefinitionJson("{\"limits\":{\"maxNodeExecutions\":12}}");
+        claim = new SoarDispatchState.Claim("tenant-a", "out-1", "run-1", 1, "worker", run);
     }
 
-    private static PlaybookVersionEntity version() {
-        PlaybookVersionEntity version = new PlaybookVersionEntity();
-        version.setId("ver-1");
-        version.setTenantId("tenant-a");
-        version.setPlaybookId("pb-1");
-        version.setDefinitionJson("{\"nodes\":[]}");
-        return version;
+    void poll() {
+        when(temporal.isAvailable()).thenReturn(true);
+        when(dispatches.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(eq("PENDING"), any()))
+                .thenReturn(List.of(candidate));
+    }
+
+    void claimed() {
+        poll();
+        when(state.claim(eq(candidate), anyString(), any())).thenReturn(Optional.of(claim));
+        when(versions.findByTenantIdAndId("tenant-a", "ver-1")).thenReturn(Optional.of(version));
+    }
+
+    void ready() {
+        claimed();
+        when(state.beforeStart(eq(claim), any())).thenReturn(true);
+    }
+
+    @Test void claimedPendingRowStartsTemporalWithStableWorkflowIdAndResumeBudget() {
+        ready();
+        when(temporal.startWorkflow(any(), eq(claim.workflowId())))
+                .thenReturn(WorkflowExecution.newBuilder().setRunId("remote-1").build());
+        worker.tick();
+        var request = ArgumentCaptor.forClass(SoarWorkflowRequest.class);
+        verify(temporal).startWorkflow(request.capture(), eq("soar-tenant-a-run-1"));
+        assertEquals("tenant-a", request.getValue().tenantId());
+        assertEquals("run-1", request.getValue().runId());
+        assertEquals("node-7", request.getValue().resumeFromNodeId());
+        assertEquals(12, request.getValue().executionBudgetLimit());
+        verify(state).complete(eq(claim), eq("remote-1"), any());
+        verify(dispatches, never()).save(any());
+        verify(runs, never()).save(any());
+    }
+
+    @Test void typedMatchingDuplicateAcknowledgesOriginalExecution() {
+        ready();
+        when(temporal.startWorkflow(any(), anyString())).thenThrow(new WorkflowExecutionAlreadyStarted(
+                WorkflowExecution.newBuilder().setWorkflowId(claim.workflowId()).setRunId("original").build(), "SoarWorkflow", null));
+        worker.tick();
+        verify(state).complete(eq(claim), eq("original"), any());
+        verify(state, never()).fail(any(), any(), anyBoolean(), any());
+    }
+
+    @ParameterizedTest @ValueSource(booleans = {false, true})
+    void arbitraryErrorTextAndAnotherWorkflowsDuplicateCannotAcknowledge(boolean wrongWorkflow) {
+        ready();
+        RuntimeException failure = wrongWorkflow ? new WorkflowExecutionAlreadyStarted(
+                WorkflowExecution.newBuilder().setWorkflowId("other").build(), "SoarWorkflow", null)
+                : new IllegalStateException("not already started; token=secret");
+        when(temporal.startWorkflow(any(), anyString())).thenThrow(failure);
+        worker.tick();
+        verify(state).fail(eq(claim), argThat(text -> !text.contains("token=secret")), eq(false), any());
+        verify(state, never()).complete(any(), any(), any());
+    }
+
+    @Test void unclaimedRowDoesNotCrossRemoteBoundary() {
+        poll();
+        worker.tick();
+        verifyNoInteractions(versions);
+        verify(temporal, never()).startWorkflow(any(), anyString());
+    }
+
+    @Test void unavailableTemporalDoesNotConsumeAnAttempt() {
+        worker.tick();
+        verify(state, never()).claim(any(), anyString(), any());
+        verify(dispatches, never()).findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(any(), any());
+    }
+
+    @Test void cancellationBeforeStartSkipsRemoteExecution() {
+        claimed();
+        worker.tick();
+        verify(temporal, never()).startWorkflow(any(), anyString());
+        verify(state, never()).complete(any(), any(), any());
+    }
+
+    @Test void cancellationAfterStartIsDeliveredEvenIfCompletionLosesOwnership() {
+        ready();
+        when(temporal.startWorkflow(any(), anyString())).thenReturn(WorkflowExecution.newBuilder().setRunId("remote").build());
+        run.setStatus("CANCELLING");
+        when(runs.findByTenantIdAndId("tenant-a", "run-1")).thenReturn(Optional.of(run));
+        doThrow(new IllegalStateException("offline")).when(temporal).cancelWorkflow(claim.workflowId());
+        worker.tick();
+        verify(temporal).cancelWorkflow(claim.workflowId());
+        verify(state, never()).fail(any(), any(), anyBoolean(), any());
+    }
+
+    @Test void persistenceFailureAfterAcceptanceDoesNotBecomeRemoteFailure() {
+        ready();
+        when(temporal.startWorkflow(any(), anyString())).thenReturn(WorkflowExecution.newBuilder().setRunId("remote").build());
+        when(state.complete(eq(claim), anyString(), any())).thenThrow(new IllegalStateException("database offline"));
+        worker.tick();
+        verify(state, never()).fail(any(), any(), anyBoolean(), any());
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"{broken", "null", "[]", "{} {}", "{\"_soar\":4}",
+            "{\"_soar\":{\"resumeFromNodeId\":7}}", "{\"_soar\":{},\"_soar\":{}}"})
+    void corruptResumeInputIsDeadLetteredWithoutStartingFromTheBeginning(String input) {
+        claimed();
+        run.setInputJson(input);
+        worker.tick();
+        verify(state).fail(eq(claim), startsWith("dispatch "), eq(true), any());
+        verify(temporal, never()).startWorkflow(any(), anyString());
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"null", "{", "{\"limits\":null}",
+            "{\"limits\":{\"maxNodeExecutions\":\"7\"}}", "{\"limits\":{\"maxNodeExecutions\":0}}",
+            "{\"limits\":{\"maxNodeExecutions\":501}}", "{\"limits\":{\"maxNodeExecutions\":2.5}}"})
+    void corruptDefinitionCannotSilentlyUseDefaultExecutionBudget(String definition) {
+        claimed();
+        version.setDefinitionJson(definition);
+        worker.tick();
+        verify(state).fail(eq(claim), startsWith("dispatch "), eq(true), any());
+        verify(temporal, never()).startWorkflow(any(), anyString());
+    }
+
+    @Test void fullRerunWithEmptyResumeMetadataUsesDefaultBudget() {
+        ready();
+        run.setInputJson("{\"_soar\":{\"resumeFromNodeId\":\"\"}}");
+        version.setDefinitionJson("{}");
+        when(temporal.startWorkflow(any(), anyString())).thenReturn(WorkflowExecution.newBuilder().build());
+        worker.tick();
+        var request = ArgumentCaptor.forClass(SoarWorkflowRequest.class);
+        verify(temporal).startWorkflow(request.capture(), anyString());
+        assertNull(request.getValue().resumeFromNodeId());
+        assertEquals(500, request.getValue().executionBudgetLimit());
+    }
+
+    @Test void failureOfOneRecordDoesNotPreventClaimingTheNext() {
+        when(temporal.isAvailable()).thenReturn(true);
+        var other = new SoarDispatchOutboxEntity();
+        when(dispatches.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(eq("PENDING"), any()))
+                .thenReturn(List.of(candidate, other));
+        when(state.claim(eq(candidate), anyString(), any())).thenThrow(new IllegalStateException("database unavailable"));
+        worker.tick();
+        verify(state).claim(eq(other), anyString(), any());
     }
 }

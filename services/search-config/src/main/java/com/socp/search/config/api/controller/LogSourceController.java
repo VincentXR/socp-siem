@@ -20,6 +20,10 @@ import com.socp.platform.tenant.context.TenantContext;
 import com.socp.platform.auth.security.RequireIngestIdentity;
 import com.socp.platform.ratelimit.api.RateLimit;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
+import org.springframework.core.env.StandardEnvironment;
 import jakarta.annotation.PostConstruct;
 import jakarta.validation.Valid;
 import jakarta.servlet.http.HttpServletRequest;
@@ -70,6 +74,7 @@ public class LogSourceController {
     private final com.socp.search.config.service.IngestPipeline pipeline;
     private final IngestLimitsProperties ingestLimits;
     private final String vectorToken;
+    private final Environment environment;
 
     public LogSourceController(LogSourceStore store, SinkTargetStore sinkStore,
                                com.socp.search.config.service.IngestPipeline pipeline,
@@ -77,22 +82,34 @@ public class LogSourceController {
         this(store, sinkStore, pipeline, ingestLimits, new VectorProperties());
     }
 
-    @Autowired
     public LogSourceController(LogSourceStore store, SinkTargetStore sinkStore,
                                com.socp.search.config.service.IngestPipeline pipeline,
                                IngestLimitsProperties ingestLimits,
                                VectorProperties vectorProperties) {
+        this(store, sinkStore, pipeline, ingestLimits, vectorProperties, new StandardEnvironment());
+    }
+
+    @Autowired
+    public LogSourceController(LogSourceStore store, SinkTargetStore sinkStore,
+                               com.socp.search.config.service.IngestPipeline pipeline,
+                               IngestLimitsProperties ingestLimits,
+                               VectorProperties vectorProperties, Environment environment) {
         this.store = store;
         this.sinkStore = sinkStore;
         this.pipeline = pipeline;
         this.ingestLimits = ingestLimits;
         this.vectorToken = vectorProperties.getToken();
+        this.environment = environment;
         this.renderer = new VectorConfigRenderer(this.vectorToken);
     }
 
     @PostConstruct
     void seed() {
-        // Bootstrap data is deliberately scoped to the default tenant. Request paths remain fail-closed.
+        // Production sources are operator-owned; never activate demo file or syslog inputs on boot.
+        if (environment.acceptsProfiles(Profiles.of("prod"))) {
+            return;
+        }
+        // Development bootstrap is scoped to the default tenant.
         String previousTenant = TenantContext.get();
         TenantContext.set("default");
         try {
@@ -123,24 +140,42 @@ public class LogSourceController {
 
     @GetMapping("/sources")
     public ApiResult<?> list(@org.springframework.web.bind.annotation.RequestParam(required = false) Integer page,
-                             @org.springframework.web.bind.annotation.RequestParam(required = false) Integer size) {
+                             @org.springframework.web.bind.annotation.RequestParam(required = false) Integer size,
+                             @org.springframework.web.bind.annotation.RequestParam(required = false) String q) {
         int safeSize = size == null || size <= 0 ? 100 : Math.min(500, size);
+        String query = q == null ? "" : q.trim();
+        if (query.length() > 128) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST, "q must be at most 128 characters");
+        }
         if (page == null) {
-            return ApiResult.ok(store.page(PageRequest.of(0, safeSize)).getContent());
+            return ApiResult.ok(sourcePage(query, PageRequest.of(0, safeSize,
+                    Sort.by("sourceId").ascending())).getContent());
         }
         if (page < 1 || size != null && (size < 1 || size > 500)) {
             throw new org.springframework.web.server.ResponseStatusException(
                     org.springframework.http.HttpStatus.BAD_REQUEST,
                     "page must be >= 1 and size must be between 1 and 500");
         }
-        var result = store.page(PageRequest.of(page - 1, safeSize));
+        var result = sourcePage(query, PageRequest.of(page - 1, safeSize,
+                Sort.by("sourceId").ascending()));
         return ApiResult.ok(PageResponse.of(result.getContent(), result.getTotalElements(),
                 page, safeSize, result.getTotalPages()));
     }
 
+    private org.springframework.data.domain.Page<LogSource> sourcePage(String query, PageRequest pageable) {
+        return query.isEmpty() ? store.page(pageable) : store.pageByName(query, pageable);
+    }
+
+    /** Source-compatible Java entry point for pre-search callers. */
+    public ApiResult<?> list(Integer page, Integer size) {
+        return list(page, size, null);
+    }
+
     /** Source-compatible Java entry point for pre-pagination callers. */
     public ApiResult<List<LogSource>> list() {
-        return ApiResult.ok(store.page(PageRequest.of(0, 500)).getContent());
+        return ApiResult.ok(store.page(PageRequest.of(0, 500,
+                Sort.by("sourceId").ascending())).getContent());
     }
 
     @RequireRole({"admin", "analyst"})
@@ -205,8 +240,8 @@ public class LogSourceController {
     }
 
     /**
-     * 接收 Vector NDJSON 批量投递：经采集管线做解析/归一化/富化，写入检索事件库，
-     * 并 best-effort 转发归一化事件给 DETECT 规则引擎检测。
+     * 接收 Vector NDJSON 批量投递：解析、归一化和富化后，
+     * 在同一事务中持久化事件与 Kafka 发布意图，由下游消费者完成检测和索引。
      * 匹配 Vector 契约：json codec + newline_delimited 投递时 Content-Type 为 application/x-ndjson。
      */
     @RequireIngestIdentity
@@ -220,7 +255,7 @@ public class LogSourceController {
             @RequestBody String body,
             HttpServletRequest request,
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
-        // 采集器可用请求头显式声明身份；未声明则按每行的 collector 字段归属运行指标
+        // Collector/service identity comes from the authentication interceptor, not event fields.
         validateIngestBody(body);
         String trustedCollector = (String) request.getAttribute(
                 com.socp.platform.auth.security.CollectorCredentialRegistry.COLLECTOR_ID_ATTRIBUTE);

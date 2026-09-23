@@ -63,6 +63,27 @@ public class AlarmStatisticsService {
         return result;
     }
 
+    /** Fixed seven-day window and caller-bounded groups; no tenant-wide object list. */
+    @org.springframework.transaction.annotation.Transactional(readOnly = true, timeout = 5)
+    public TechniqueCounts techniqueCounts(List<String> techniques) {
+        if (techniques == null || techniques.isEmpty() || techniques.size() > 100
+                || techniques.stream().anyMatch(id -> id == null || id.isBlank() || id.length() > 32)) {
+            throw com.socp.platform.error.exception.ApiException.badRequest(
+                    "Provide between 1 and 100 nonblank technique IDs of at most 32 characters");
+        }
+        String tenant = AlarmQueryService.tenant();
+        Instant until = Instant.now();
+        Instant since = until.minus(java.time.Duration.ofDays(7));
+        Map<String, Long> counts = new LinkedHashMap<>();
+        techniques.forEach(id -> counts.put(id, 0L));
+        for (var count : repository.countByTechniqueInWindow(tenant, List.copyOf(counts.keySet()), since, until)) {
+            counts.put(count.technique(), count.count());
+        }
+        return new TechniqueCounts(since.toString(), until.toString(), java.util.Collections.unmodifiableMap(counts));
+    }
+
+    public record TechniqueCounts(String from, String until, Map<String, Long> counts) { }
+
     private Map<String, Long> lastSevenDays(String tenant) {
         Map<String, Long> days = new LinkedHashMap<>();
         LocalDate today = LocalDate.now(ZoneOffset.UTC);

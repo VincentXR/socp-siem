@@ -134,7 +134,7 @@ class DetectEngineServiceTest {
     void addingRuleReloadsEngineAndEvaluatesNewEvents() throws Exception {
         List<Map<String, Object>> persisted = new ArrayList<>();
         when(store.list("default")).thenAnswer(invocation -> List.copyOf(persisted));
-        when(store.save(org.mockito.ArgumentMatchers.anyMap())).thenAnswer(invocation -> {
+        when(store.create(org.mockito.ArgumentMatchers.anyMap())).thenAnswer(invocation -> {
             Map<String, Object> spec = new LinkedHashMap<>(invocation.getArgument(0));
             persisted.add(spec);
             return spec;
@@ -469,14 +469,21 @@ class DetectEngineServiceTest {
             public void release(Lease current) {
             }
         };
+        // The event-aware sink owns the in-transaction fence checks. Use the
+        // actual forwarder so a Mockito no-op cannot bypass that boundary.
+        InMemoryDetectionStateStore durableState = new InMemoryDetectionStateStore();
+        AlertForwarder durableForwarder = new AlertForwarder(store, null, null, durableState);
         DetectEngineService service = new DetectEngineService(
-                store, new RecentAlertSink(10, null, null), forwarder, rulePublisher,
-                new InMemoryDetectionStateStore(), performanceMetrics, null, ownership);
+                store, new RecentAlertSink(10, durableForwarder, null), durableForwarder, rulePublisher,
+                durableState, performanceMetrics, null, ownership);
         try {
-            service.ingestFromKafkaAndAwait(event("tenant-a", "fenced-event"), 4, 12L)
-                    .get(3, TimeUnit.SECONDS);
+            SecurityEvent input = event("tenant-a", "fenced-event");
+            durableState.claim(input);
+            service.ingestFromKafkaAndAwait(input, 4, 12L).get(3, TimeUnit.SECONDS);
             assertTrue(guardCalls.get() >= 3,
-                    "ownership must be checked before sink, after sink and before position completion");
+                    "ownership must be checked before the sink and inside the forwarder before durable completion");
+            assertEquals(com.socp.detect.web.persistence.store.DetectionEventClaim.COMPLETED,
+                    durableState.claim(input));
         } finally {
             service.stop();
         }
@@ -577,41 +584,34 @@ class DetectEngineServiceTest {
     }
 
     @Test
-    void updateAndActivatePreserveLifecycleAndPublishChanges() {
-        Map<String, Object> active = new LinkedHashMap<>(patternRule());
-        active.put("id", "R1");
-        active.put("status", "ACTIVE");
-        active.put("enabled", true);
-        when(store.get("missing")).thenReturn(null);
-        when(store.get("R1")).thenReturn(active);
-        when(store.save(org.mockito.ArgumentMatchers.anyMap())).thenAnswer(invocation ->
-                new LinkedHashMap<>(invocation.getArgument(0)));
+    void ruleMutationsDelegateAtomicStateChangesAndPublishOnlyAfterSuccess() {
+        Map<String, Object> saved = new LinkedHashMap<>(patternRule());
+        saved.put("id", "R1");
+        when(store.update(org.mockito.ArgumentMatchers.anyMap(), org.mockito.ArgumentMatchers.isNull()))
+                .thenAnswer(invocation -> {
+                    Map<String, Object> spec = invocation.getArgument(0);
+                    if ("missing".equals(spec.get("id"))) throw com.socp.platform.error.exception.ApiException.notFound("missing");
+                    return saved;
+                });
+        when(store.activate("R1", null)).thenReturn(saved);
+        when(store.activate("missing", null)).thenThrow(com.socp.platform.error.exception.ApiException.notFound("missing"));
         when(store.list(org.mockito.ArgumentMatchers.anyString())).thenReturn(List.of());
         when(store.delete("R1")).thenReturn(true);
 
-        DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null),
-                forwarder, rulePublisher);
+        DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null), forwarder, rulePublisher);
         try {
-            org.junit.jupiter.api.Assertions.assertThrows(
-                    com.socp.platform.error.exception.ApiException.class,
+            org.junit.jupiter.api.Assertions.assertThrows(com.socp.platform.error.exception.ApiException.class,
                     () -> service.updateRule(Map.of("id", "missing")));
-            Map<String, Object> disabled = new LinkedHashMap<>(active);
-            disabled.remove("status");
-            disabled.put("enabled", false);
-            service.updateRule(disabled);
-            verify(store).save(org.mockito.ArgumentMatchers.argThat(value ->
-                    "DISABLED".equals(value.get("status"))));
-
+            service.updateRule(saved);
             service.activateRule("R1");
-            verify(rulePublisher, org.mockito.Mockito.atLeastOnce()).publish("R1", "update");
+            verify(rulePublisher, org.mockito.Mockito.times(2)).publish("R1", "update");
             org.junit.jupiter.api.Assertions.assertTrue(service.deleteRule("R1"));
             verify(rulePublisher).publish("R1", "delete");
-            org.junit.jupiter.api.Assertions.assertThrows(
-                    com.socp.platform.error.exception.ApiException.class,
+            org.junit.jupiter.api.Assertions.assertThrows(com.socp.platform.error.exception.ApiException.class,
                     () -> service.activateRule("missing"));
-        } finally {
-            service.stop();
-        }
+            verify(rulePublisher, org.mockito.Mockito.never()).publish(org.mockito.ArgumentMatchers.eq("missing"), org.mockito.ArgumentMatchers.anyString());
+            verify(store, org.mockito.Mockito.never()).get(org.mockito.ArgumentMatchers.anyString());
+        } finally { service.stop(); }
     }
 
     @Test

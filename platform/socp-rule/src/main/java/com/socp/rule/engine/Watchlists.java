@@ -38,25 +38,52 @@ public final class Watchlists {
         TEMPLATES.put(normalizedName, normalizedValues(values));
     }
 
-    public static void put(String tenantId, String name, Collection<String> values) {
+    public static Set<String> put(String tenantId, String name, Collection<String> values) {
+        return write(tenantId, name, values, false);
+    }
+
+    /** Create only when the effective list is absent, including inherited templates. */
+    public static Set<String> create(String tenantId, String name, Collection<String> values) {
+        return write(tenantId, name, values, true);
+    }
+
+    private static Set<String> write(String tenantId, String name, Collection<String> values, boolean createOnly) {
         String tenant = normalizeTenant(tenantId);
         String normalizedName = normalizeName(name);
-        if (normalizedName == null) return;
-        stateStore.save(tenant, normalizedName, normalizedValues(values));
+        WatchlistLimits.name(normalizedName);
+        Set<String> normalized = normalizedValues(values);
+        WatchlistLimits.values(normalized);
+        return stateStore.update(tenant, normalizedName, current -> {
+            if (createOnly && (current == null ? hasTemplate(normalizedName) : !current.deleted())) {
+                throw new AlreadyExistsException();
+            }
+            return new WatchlistStateStore.State(normalized, false);
+        }).values();
+    }
+
+    public static final class AlreadyExistsException extends RuntimeException {
+        public AlreadyExistsException() { super("watchlist already exists"); }
     }
 
     public static void put(String name, Collection<String> values) {
         put(DEFAULT_TENANT, name, values);
     }
 
-    public static void add(String tenantId, String name, Collection<String> values) {
-        if (values == null) return;
+    public static Set<String> add(String tenantId, String name, Collection<String> values) {
+        if (values == null) return values(tenantId, name);
         String tenant = normalizeTenant(tenantId);
         String normalizedName = normalizeName(name);
-        if (normalizedName == null) return;
-        Set<String> result = new LinkedHashSet<>(values(tenant, normalizedName));
-        result.addAll(normalizedValues(values));
-        stateStore.save(tenant, normalizedName, result);
+        WatchlistLimits.name(normalizedName);
+        Set<String> additions = normalizedValues(values);
+        WatchlistLimits.values(additions);
+        return stateStore.update(tenant, normalizedName, current -> {
+            Set<String> inherited = TEMPLATES.getOrDefault(normalizedName, Set.of());
+            Set<String> result = new LinkedHashSet<>(current == null ? inherited
+                    : current.deleted() ? Set.of() : current.values());
+            result.addAll(additions);
+            WatchlistLimits.values(result);
+            return new WatchlistStateStore.State(result, false);
+        }).values();
     }
 
     public static void add(String name, Collection<String> values) {
@@ -66,10 +93,13 @@ public final class Watchlists {
     public static boolean delete(String tenantId, String name) {
         String tenant = normalizeTenant(tenantId);
         String normalizedName = normalizeName(name);
-        if (normalizedName == null) return false;
-        boolean existed = names(tenant).contains(normalizedName);
-        stateStore.delete(tenant, normalizedName);
-        return existed;
+        WatchlistLimits.name(normalizedName);
+        java.util.concurrent.atomic.AtomicBoolean existed = new java.util.concurrent.atomic.AtomicBoolean();
+        stateStore.update(tenant, normalizedName, current -> {
+            existed.set(current == null ? TEMPLATES.containsKey(normalizedName) : !current.deleted());
+            return new WatchlistStateStore.State(Set.of(), true);
+        });
+        return existed.get();
     }
 
     public static boolean delete(String name) {
@@ -78,7 +108,7 @@ public final class Watchlists {
 
     public static boolean contains(String tenantId, String name, String value) {
         if (value == null) return false;
-        return values(tenantId, name).contains(value.trim().toLowerCase());
+        return values(tenantId, name).contains(value.trim().toLowerCase(java.util.Locale.ROOT));
     }
 
     public static boolean contains(String name, String value) {
@@ -100,18 +130,30 @@ public final class Watchlists {
         return names(DEFAULT_TENANT);
     }
 
+    public static boolean hasTemplate(String name) {
+        return TEMPLATES.containsKey(name);
+    }
+
     public static Set<String> values(String tenantId, String name) {
         String tenant = normalizeTenant(tenantId);
         String normalizedName = normalizeName(name);
         if (normalizedName == null) return Set.of();
-        WatchlistStateStore.State state = stateStore.find(tenant, normalizedName);
+        WatchlistStateStore.State state;
+        try {
+            state = stateStore.find(tenant, normalizedName);
+        } catch (RuleDependencyException failure) {
+            throw failure;
+        } catch (RuntimeException failure) {
+            // Includes transaction-proxy failures and unreadable persisted data.
+            // Neither is evidence that the evaluating rule itself is invalid.
+            throw new RuleDependencyException("Unable to read required watchlist state", failure);
+        }
         if (state != null) {
             if (state.deleted()) return Set.of();
-            return Collections.unmodifiableSet(new LinkedHashSet<>(state.values()));
+            return state.values();
         }
         Set<String> values = TEMPLATES.get(normalizedName);
-        return values == null ? Set.of()
-                : Collections.unmodifiableSet(new LinkedHashSet<>(values));
+        return values == null ? Set.of() : values;
     }
 
     public static Set<String> values(String name) {
@@ -140,14 +182,15 @@ public final class Watchlists {
     }
 
     private static String normalizeName(String name) {
-        return name == null || name.isBlank() ? null : name.trim().toLowerCase();
+        return name == null || name.isBlank() ? null : name.trim().toLowerCase(java.util.Locale.ROOT);
     }
 
     private static Set<String> normalizedValues(Collection<String> values) {
+        if (values != null) WatchlistLimits.values(values);
         Set<String> result = new LinkedHashSet<>();
         if (values != null) {
             for (String value : values) {
-                if (value != null && !value.isBlank()) result.add(value.trim().toLowerCase());
+                if (value != null && !value.isBlank()) result.add(value.trim().toLowerCase(java.util.Locale.ROOT));
             }
         }
         return Collections.unmodifiableSet(result);
@@ -167,15 +210,21 @@ public final class Watchlists {
         }
 
         @Override
-        public void save(String tenantId, String name, Set<String> values) {
-            states.computeIfAbsent(tenantId, ignored -> new ConcurrentHashMap<>())
-                    .put(name, new State(values, false));
-        }
-
-        @Override
-        public void delete(String tenantId, String name) {
-            states.computeIfAbsent(tenantId, ignored -> new ConcurrentHashMap<>())
-                    .put(name, new State(Set.of(), true));
+        public State update(String tenantId, String name, java.util.function.UnaryOperator<State> mutation) {
+            Map<String, State> tenant = states.computeIfAbsent(tenantId, ignored -> new ConcurrentHashMap<>());
+            synchronized (tenant) {
+                State next = mutation.apply(tenant.get(name));
+                WatchlistLimits.values(next.values());
+                if (next.deleted() && !hasTemplate(name)) {
+                    tenant.remove(name);
+                    return next;
+                }
+                if (!tenant.containsKey(name) && tenant.size() >= WatchlistLimits.MAX_LISTS) {
+                    throw new IllegalArgumentException("watchlist namespace limit reached");
+                }
+                tenant.put(name, next);
+                return next;
+            }
         }
 
         @Override

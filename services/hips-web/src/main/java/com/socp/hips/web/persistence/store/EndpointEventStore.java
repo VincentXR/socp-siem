@@ -57,7 +57,7 @@ public class EndpointEventStore {
 
     @Transactional(readOnly = true)
     public List<Map<String, Object>> list() {
-        return repository.findTop200ByTenantIdOrderByReceivedAtDesc(tenant()).stream()
+        return repository.findTop200ByTenantIdOrderByReceivedAtDescEventIdAsc(tenant()).stream()
                 .map(this::readRecord)
                 .toList();
     }
@@ -66,6 +66,14 @@ public class EndpointEventStore {
     public Page<Map<String, Object>> page(int page, int size) {
         return repository.findByTenantId(tenant(), PageRequest.of(page - 1, size,
                         Sort.by(Sort.Order.desc("receivedAt"), Sort.Order.asc("eventId"))))
+                .map(this::readRecord);
+    }
+
+    /** Hostname association is not an immutable endpoint identity. Never broaden it to shared IPs. */
+    @Transactional(readOnly = true)
+    public Page<Map<String, Object>> forHostname(String hostname, int page, int size) {
+        return repository.findByHostname(tenant(), hostname == null ? "" : hostname.trim(),
+                PageRequest.of(page - 1, size, Sort.by(Sort.Order.desc("receivedAt"), Sort.Order.asc("eventId"))))
                 .map(this::readRecord);
     }
 

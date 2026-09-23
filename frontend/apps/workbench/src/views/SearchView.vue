@@ -5,6 +5,7 @@ import 'element-plus/es/components/card/style/css.mjs'
 import 'element-plus/es/components/dialog/style/css.mjs'
 import 'element-plus/es/components/drawer/style/css.mjs'
 import 'element-plus/es/components/input/style/css.mjs'
+import 'element-plus/es/components/form/style/css.mjs'
 import 'element-plus/es/components/message/style/css.mjs'
 import 'element-plus/es/components/select/style/css.mjs'
 import 'element-plus/es/components/table/style/css.mjs'
@@ -16,12 +17,13 @@ import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElDialog from 'element-plus/es/components/dialog/index.mjs'
 import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
+import { ElForm } from 'element-plus/es/components/form/index.mjs'
 import ElMessage from 'element-plus/es/components/message/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import ElTooltip from 'element-plus/es/components/tooltip/index.mjs'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import EmptyState from '../components/EmptyState.vue'
 import PageHeader from '../components/PageHeader.vue'
@@ -32,6 +34,7 @@ import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { exportSearch, listAlarmsByEvent, listFields, splSearch, type Alarm, type FieldDef, type SearchEvent, type SearchResult } from '../api'
 import { useI18n } from '../composables/useI18n'
 import { tOr } from '../utils/i18nLabel'
+import { appendSearchFilter, splitPipeline } from '../lib/search-query'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -39,27 +42,22 @@ const router = useRouter()
 type TimeRangeKey = '15m' | '30m' | '1h' | '6h' | '24h' | 'all'
 type EventSortOrder = 'ascending' | 'descending'
 
-const pendingQuery = typeof window === 'undefined' ? null : window.sessionStorage.getItem('socp.search.query')
 const routeQuery = typeof route.query.q === 'string' ? route.query.q : ''
 const routeRange = typeof route.query.range === 'string' ? route.query.range : ''
 const eventSortFields = ['timestamp', 'source', 'host', 'severity', 'msg'] as const
 const routeSort = typeof route.query.sort === 'string' && eventSortFields.includes(route.query.sort as typeof eventSortFields[number]) ? route.query.sort : ''
 const routeOrder = route.query.order === 'ascending' || route.query.order === 'descending' ? route.query.order as EventSortOrder : null
 const validTimeRanges: TimeRangeKey[] = ['15m', '30m', '1h', '6h', '24h', 'all']
-const query = ref(routeQuery || pendingQuery || '*')
+const query = ref(routeQuery || '*')
 const result = ref<SearchResult | null>(null)
 const loading = ref(false)
 const error = ref('')
 const currentPage = ref(1)
-const pageSize = ref(50)
+const pageSize = ref([25, 50, 100].includes(Number(route.query.size)) ? Number(route.query.size) : 50)
 const pageCursors = ref<Array<string | null>>([null])
 const pageSizes = [25, 50, 100]
 const MAX_BROWSE_ROWS = 10_000
 const MAX_DEEP_LINK_PAGE = 20
-const requestedPage = (() => {
-  const value = Number(route.query.page)
-  return Number.isInteger(value) && value >= 1 && value <= MAX_DEEP_LINK_PAGE ? value : 1
-})()
 const timeRangeOptions: Array<{ key: TimeRangeKey; label: string; durationMs?: number }> = [
   { key: '15m', label: 'search.timeRanges.last15Minutes', durationMs: 15 * 60_000 },
   { key: '30m', label: 'search.timeRanges.last30Minutes', durationMs: 30 * 60_000 },
@@ -71,6 +69,10 @@ const timeRangeOptions: Array<{ key: TimeRangeKey; label: string; durationMs?: n
 const selectedTimeRange = ref<TimeRangeKey>(validTimeRanges.includes(routeRange as TimeRangeKey) ? routeRange as TimeRangeKey : '30m')
 const activeTimeRange = ref<TimeRangeKey>(selectedTimeRange.value)
 const activeQuery = ref('')
+const activeRawQuery = ref(query.value.trim() || '*')
+const activeEndAt = ref(Date.now())
+const queryInput = ref<InstanceType<typeof ElInput>>()
+const hasDraftChanges = computed(() => (query.value.trim() || '*') !== activeRawQuery.value)
 const eventSortProp = ref<string>(routeSort)
 const eventSortOrder = ref<EventSortOrder | null>(routeOrder)
 const fieldDefs = ref<FieldDef[]>([])
@@ -89,7 +91,9 @@ const savedQueryName = ref('')
 const SAVED_QUERY_KEY = 'socp.search.saved-queries'
 let requestSequence = 0
 let cancelled = false
-onBeforeUnmount(() => { cancelled = true; requestSequence += 1 })
+let requestController: AbortController | undefined
+let syncedRouteKey = ''
+onBeforeUnmount(() => { cancelled = true; requestSequence += 1; requestController?.abort(); eventLineageToken += 1 })
 const examples = [
   'source=auth severity=HIGH',
   'msg contains "blocked" | top src_ip 5',
@@ -118,26 +122,6 @@ const visibleFields = computed(() => {
   return availableFields.value.filter(field => [field.fieldName, field.fieldLabel, field.description].some(value => String(value ?? '').toLowerCase().includes(keyword)))
 })
 
-function splitPipeline(rawQuery: string): { filter: string; pipeline: string } {
-  let quote: string | null = null
-  let escaped = false
-  let depth = 0
-  for (let index = 0; index < rawQuery.length; index += 1) {
-    const character = rawQuery[index]
-    if (quote) {
-      if (escaped) escaped = false
-      else if (character === '\\') escaped = true
-      else if (character === quote) quote = null
-      continue
-    }
-    if (character === '"' || character === "'") quote = character
-    else if (character === '(') depth += 1
-    else if (character === ')') depth = Math.max(0, depth - 1)
-    else if (character === '|' && depth === 0) return { filter: rawQuery.slice(0, index), pipeline: rawQuery.slice(index).trim() }
-  }
-  return { filter: rawQuery, pipeline: '' }
-}
-
 function buildScopedQuery(rawQuery: string, range: TimeRangeKey, endAt = Date.now()): string {
   const normalized = rawQuery.trim() || '*'
   const option = timeRangeOptions.find(candidate => candidate.key === range)
@@ -159,10 +143,48 @@ function sourceLabel(source: string | null | undefined): string {
   return tOr(t, `search.sources.${source ?? 'unspecified'}`, source ?? '—')
 }
 
-function syncUrl(page = 1): void {
-  if (route.name !== 'search') return
-  void router.replace({ query: { ...route.query, q: query.value.trim() || '*', range: selectedTimeRange.value, sort: eventSortProp.value || undefined, order: eventSortOrder.value || undefined, page: page > 1 ? String(page) : undefined } })
+// Only applied state belongs in a result link; drafts never alter its query.
+function routeKey(params: Record<string, unknown>): string {
+  return JSON.stringify(['q', 'range', 'to', 'page', 'size', 'sort', 'order'].map(key => params[key] ?? null))
 }
+
+async function syncUrl(page = 1, history: 'push' | 'replace' = 'replace'): Promise<void> {
+  if (route.name !== 'search') return
+  const params = {
+    ...route.query,
+    q: activeRawQuery.value,
+    range: activeTimeRange.value,
+    to: activeTimeRange.value === 'all' ? undefined : new Date(activeEndAt.value).toISOString(),
+    size: pageSize.value !== 50 ? String(pageSize.value) : undefined,
+    sort: eventSortProp.value || undefined,
+    order: eventSortOrder.value || undefined,
+    page: page > 1 ? String(page) : undefined,
+  }
+  syncedRouteKey = routeKey(params)
+  await router[history]({ query: params })
+}
+
+function readRoute(): void {
+  query.value = typeof route.query.q === 'string' ? route.query.q : '*'
+  selectedTimeRange.value = validTimeRanges.includes(route.query.range as TimeRangeKey) ? route.query.range as TimeRangeKey : '30m'
+  pageSize.value = pageSizes.includes(Number(route.query.size)) ? Number(route.query.size) : 50
+  eventSortProp.value = eventSortFields.includes(route.query.sort as typeof eventSortFields[number]) ? String(route.query.sort) : ''
+  eventSortOrder.value = route.query.order === 'ascending' || route.query.order === 'descending' ? route.query.order : null
+}
+
+function restoreSearch(): void {
+  const page = Number(route.query.page)
+  const targetPage = Number.isInteger(page) && page >= 1 && page <= MAX_DEEP_LINK_PAGE ? page : 1
+  const endAt = typeof route.query.to === 'string' ? Date.parse(route.query.to) : NaN
+  void search(targetPage, Number.isFinite(endAt) ? endAt : Date.now(), 'replace')
+}
+
+watch(() => route.query, () => {
+  if (route.name !== 'search' || routeKey(route.query) === syncedRouteKey) return
+  readRoute()
+  closeEvent()
+  restoreSearch()
+})
 
 function eventSortValue(event: SearchEvent, prop: string): string {
   if (prop === 'timestamp' || prop === 'source' || prop === 'host' || prop === 'severity' || prop === 'msg') {
@@ -190,7 +212,10 @@ function onEventSortChange(change: { prop: string | null; order: string | null }
 function readSavedQueries(): void {
   try {
     const raw = localStorage.getItem(SAVED_QUERY_KEY)
-    if (raw) savedQueries.value = JSON.parse(raw) as Array<{ id: string; name: string; query: string; range: TimeRangeKey }>
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw)
+      savedQueries.value = Array.isArray(parsed) ? parsed.filter(item => item && typeof item.id === 'string' && typeof item.name === 'string' && typeof item.query === 'string' && validTimeRanges.includes(item.range)).slice(0, 20) : []
+    }
   } catch { savedQueries.value = [] }
 }
 
@@ -207,14 +232,9 @@ async function loadFields(): Promise<void> {
 }
 
 function appendFilter(field: string, value?: string): void {
-  const normalizedField = field.trim()
-  if (!normalizedField) return
-  const clause = value === undefined ? `${normalizedField}=` : `${normalizedField}="${value.replaceAll('"', '\\"')}"`
-  const current = query.value.trim() || '*'
-  const { filter, pipeline } = splitPipeline(current)
-  const base = filter.trim() === '*' ? '' : filter.trim()
-  query.value = `${base ? `${base} AND ` : ''}${clause}${pipeline ? ` ${pipeline}` : ''}`.trim()
-  syncUrl()
+  query.value = appendSearchFilter(query.value, field, value)
+  closeEvent()
+  void nextTick(() => queryInput.value?.focus())
 }
 
 async function openEvent(event: SearchEvent): Promise<void> {
@@ -222,6 +242,7 @@ async function openEvent(event: SearchEvent): Promise<void> {
   relatedAlarms.value = []
   relatedAlarmsError.value = ''
   const token = ++eventLineageToken
+  relatedAlarmsLoading.value = false
   if (!event.eventId?.trim()) return
   relatedAlarmsLoading.value = true
   try {
@@ -291,11 +312,12 @@ function removeSavedQuery(id: string): void {
   persistSavedQueries()
 }
 
-async function fetchSilently(page: number, pageCursor: string | null, previousResult: SearchResult | null): Promise<SearchResult> {
+async function fetchSilently(page: number, pageCursor: string | null, previousResult: SearchResult | null, signal: AbortSignal): Promise<SearchResult> {
   const nextResult = await splSearch(activeQuery.value || buildScopedQuery(query.value, activeTimeRange.value), {
     cursor: pageCursor,
     limit: pageSize.value,
     timeline: page === 1,
+    signal,
   })
   if (page > 1 && !nextResult.timeline?.length && previousResult?.timeline?.length) {
     nextResult.timeline = previousResult.timeline
@@ -305,11 +327,14 @@ async function fetchSilently(page: number, pageCursor: string | null, previousRe
 }
 
 async function fetchPage(page: number, pageCursor: string | null): Promise<void> {
-  const sequence = requestSequence
+  const sequence = ++requestSequence
+  requestController?.abort()
+  const controller = new AbortController()
+  requestController = controller
   loading.value = true
   error.value = ''
   try {
-    const nextResult = await fetchSilently(page, pageCursor, result.value)
+    const nextResult = await fetchSilently(page, pageCursor, result.value, controller.signal)
     if (sequence !== requestSequence || cancelled || route.name !== 'search') return
     result.value = nextResult
     currentPage.value = page
@@ -325,30 +350,36 @@ async function fetchPage(page: number, pageCursor: string | null): Promise<void>
   }
 }
 
-async function search(targetPage = 1): Promise<void> {
+async function search(targetPage = 1, endAt = Date.now(), history: 'push' | 'replace' = 'push', rawQuery = query.value): Promise<void> {
   const sequence = ++requestSequence
+  requestController?.abort()
+  const controller = new AbortController()
+  requestController = controller
+  activeRawQuery.value = rawQuery.trim() || '*'
+  activeEndAt.value = endAt
   activeTimeRange.value = selectedTimeRange.value
-  activeQuery.value = buildScopedQuery(query.value, activeTimeRange.value)
+  activeQuery.value = buildScopedQuery(activeRawQuery.value, activeTimeRange.value, activeEndAt.value)
   currentPage.value = 1
   pageCursors.value = [null]
   result.value = null
   error.value = ''
   loading.value = true
+  await syncUrl(targetPage, history)
   // Cursor pagination cannot jump to an arbitrary page directly, so a shared
   // deep link replays a bounded chain of cursors. Every intermediate page stays
-  // private: result, currentPage and the URL are landed once, at the terminal
+  // private: result and currentPage are landed once, at the terminal
   // state, and a failed or exhausted replay stops immediately instead of
   // continuing with a stale cursor while keeping the error visible.
   const cursors: Array<string | null> = [null]
   let landed: SearchResult | null = null
   let landedPage = 1
   for (let page = 1; page <= targetPage; page += 1) {
-    if (requestSequence !== sequence || cancelled || route.name !== 'search') { loading.value = false; return }
+    if (requestSequence !== sequence || cancelled || route.name !== 'search') return
     try {
-      landed = await fetchSilently(page, cursors[page - 1] ?? null, landed)
+      landed = await fetchSilently(page, cursors[page - 1] ?? null, landed, controller.signal)
       landedPage = page
     } catch (cause) {
-      if (requestSequence !== sequence || cancelled || route.name !== 'search') { loading.value = false; return }
+      if (requestSequence !== sequence || cancelled || route.name !== 'search') return
       error.value = `${t('search.failed')}${cause instanceof Error ? cause.message : String(cause)}`
       break
     }
@@ -357,7 +388,7 @@ async function search(targetPage = 1): Promise<void> {
     cursors[page] = nextCursor
     if (!nextCursor) break
   }
-  if (requestSequence !== sequence || cancelled || route.name !== 'search') { loading.value = false; return }
+  if (requestSequence !== sequence || cancelled || route.name !== 'search') return
   if (landed) {
     result.value = landed
     currentPage.value = landedPage
@@ -382,9 +413,15 @@ async function nextPage(): Promise<void> {
   await fetchPage(currentPage.value + 1, nextCursor)
 }
 
-async function changePageSize(): Promise<void> { await search() }
+async function changePageSize(): Promise<void> { await search(1, activeEndAt.value, 'replace', activeRawQuery.value) }
 function runExample(example: string): void { query.value = example; void search() }
 function setTimeRange(range: TimeRangeKey): void { selectedTimeRange.value = range; void search() }
+
+function onQueryEnter(event: Event | KeyboardEvent): void {
+  if (!(event instanceof KeyboardEvent) || event.isComposing || event.shiftKey) return
+  event.preventDefault()
+  void search()
+}
 
 async function exportCurrent(format: 'json' | 'csv'): Promise<void> {
   const scoped = activeQuery.value || buildScopedQuery(query.value, selectedTimeRange.value)
@@ -405,9 +442,9 @@ const showPagination = computed(() => Boolean(result.value && (result.value.next
 const browseLimitVisible = computed(() => Boolean(result.value && result.value.total > MAX_BROWSE_ROWS))
 
 onMounted(() => {
-  if (pendingQuery) window.sessionStorage.removeItem('socp.search.query')
   readSavedQueries()
-  void Promise.allSettled([loadFields(), search(requestedPage)])
+  void loadFields()
+  restoreSearch()
 })
 </script>
 
@@ -434,11 +471,13 @@ onMounted(() => {
       <section class="search-main-column">
         <el-card shadow="never" class="search-toolbar">
           <div class="search-query-row">
-            <el-input v-model="query" :placeholder="t('search.queryPlaceholder')" clearable @keyup.enter="() => search()" />
+            <el-input ref="queryInput" v-model="query" type="textarea" :autosize="{ minRows: 2, maxRows: 6 }" resize="none" :aria-label="t('search.queryLabel')" :placeholder="t('search.queryPlaceholder')" @keydown.enter="onQueryEnter" />
             <el-tooltip :content="t('search.queryLimitHint')" placement="top"><el-button type="primary" :loading="loading" @click="() => search()">{{ t('search.runQuery') }}</el-button></el-tooltip>
             <el-tooltip :content="t('search.exportLimitHint')" placement="top"><el-button size="small" :disabled="!result" @click="exportCurrent('json')">{{ t('common.exportJson') }}</el-button></el-tooltip>
             <el-tooltip :content="t('search.exportLimitHint')" placement="top"><el-button size="small" :disabled="!result" @click="exportCurrent('csv')">{{ t('common.exportCsv') }}</el-button></el-tooltip>
           </div>
+          <div class="search-query-help">{{ t('search.queryKeyboardHint') }}</div>
+          <div v-if="hasDraftChanges" class="search-result-hint" role="status">{{ t('search.draftHint') }}</div>
           <div class="search-saved-row">
             <el-select v-model="selectedSavedQueryId" size="small" clearable :placeholder="t('search.savedQueries')" @change="applySavedQuery">
               <el-option v-for="saved in savedQueries" :key="saved.id" :label="saved.name" :value="saved.id" />
@@ -451,7 +490,7 @@ onMounted(() => {
             <div class="search-time-filter-buttons">
               <el-button v-for="option in timeRangeOptions" :key="option.key" size="small" :type="selectedTimeRange === option.key ? 'primary' : ''" :aria-pressed="selectedTimeRange === option.key" @click="setTimeRange(option.key)">{{ t(option.label) }}</el-button>
             </div>
-            <span class="search-time-filter-applied">{{ t('search.timeRangeApplied', { range: activeTimeRangeLabel }) }}</span>
+            <span class="search-time-filter-applied">{{ t('search.timeRangeApplied', { range: activeTimeRangeLabel }) }}<span v-if="activeTimeRange !== 'all'"> · {{ t('search.rangeEndingAt', { time: new Date(activeEndAt).toISOString() }) }}</span></span>
           </div>
           <div class="search-examples"><el-tag v-for="example in examples" :key="example" size="small" role="button" tabindex="0" :aria-label="example" @click="runExample(example)" @keydown.enter.space.prevent="runExample(example)">{{ example }}</el-tag></div>
         </el-card>
@@ -471,7 +510,7 @@ onMounted(() => {
             </div>
             <div v-if="result.events.length" class="search-result-hint">{{ t('search.eventDetailHint') }} · {{ t('search.currentPageSortHint') }}</div>
             <EmptyState v-if="!result.events.length" :title="t('search.noResults')" :description="t('search.noResultsHint')" />
-            <el-table v-else class="search-events-table" :data="visibleEvents" size="small" border allow-drag-last-column max-height="560" @header-dragend="onHeaderDragEnd" @sort-change="onEventSortChange" @row-click="openEvent">
+            <el-table v-else class="search-events-table" :data="visibleEvents" :default-sort="eventSortProp && eventSortOrder ? { prop: eventSortProp, order: eventSortOrder } : undefined" size="small" border allow-drag-last-column max-height="560" @header-dragend="onHeaderDragEnd" @sort-change="onEventSortChange" @row-click="openEvent">
               <el-table-column prop="timestamp" column-key="timestamp" sortable="custom" :label="t('common.timestamp')" :width="columnWidth('timestamp', 150)"><template #default="{ row }">{{ row.timestamp.slice(0, 19).replace('T', ' ') }}</template></el-table-column>
               <el-table-column prop="source" column-key="source" sortable="custom" :label="t('common.source')" :width="columnWidth('source', 90)" />
               <el-table-column prop="host" column-key="host" sortable="custom" :label="t('common.host')" :width="columnWidth('host', 90)" />

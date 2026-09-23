@@ -16,4 +16,6 @@ public interface TenantCatalogEntryRepository extends TenantScopedRepository<Ten
             String catalogType, String tenantId, String itemId);
 
     List<TenantCatalogEntry> findByCatalogTypeAndTenantId(String catalogType, String tenantId);
+    List<TenantCatalogEntry> findByCatalogTypeAndTenantIdAndItemIdIn(
+            String catalogType, String tenantId, java.util.Collection<String> itemIds);
 }

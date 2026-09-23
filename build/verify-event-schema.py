@@ -9,6 +9,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_DIR = ROOT / "schemas"
 VERSIONED = re.compile(r"canonical-event-(\d+)\.(\d+)\.json$")
+ANNOTATIONS = {"$id", "$comment", "title", "description", "default", "examples", "deprecated"}
+SUPPORTED = {
+    "$schema", "type", "const", "enum", "required", "properties", "additionalProperties", "items",
+    "minLength", "maxLength", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
+    "minItems", "maxItems", "minProperties", "maxProperties", "uniqueItems", "pattern", "format",
+}
 
 
 def load_schemas():
@@ -21,7 +27,105 @@ def load_schemas():
                        json.loads(path.read_text(encoding="utf-8"))))
     if not result:
         raise ValueError("no canonical event schema found")
-    return result
+    return sorted(result, key=lambda entry: (entry[0], entry[1]))
+
+
+def validate_compatible(old, new, location="$"):
+    """Conservatively prove old-valid instances remain accepted by the new schema.
+
+    This is not a general JSON Schema implication solver. Changed structures
+    involving unsupported keywords fail closed instead of claiming compatibility.
+    """
+    def fail(reason):
+        raise ValueError(f"{location}: {reason}")
+
+    for schema in (old, new):
+        if not isinstance(schema, (dict, bool)):
+            fail("schema must be an object or boolean")
+    if old is False or new is True:
+        return
+    if old is True:
+        old = {}
+    if new is False:
+        fail("new schema rejects previously accepted values")
+
+    def references(value):
+        if isinstance(value, dict):
+            return bool(value.keys() & {"$ref", "$dynamicRef", "$recursiveRef"}) or any(
+                references(item) for item in value.values())
+        return isinstance(value, list) and any(references(item) for item in value)
+
+    if old.get("$id") != new.get("$id") and (references(old) or references(new)):
+        fail("schema ID changed the base URI of a reference")
+    old = {key: value for key, value in old.items() if key not in ANNOTATIONS}
+    new = {key: value for key, value in new.items() if key not in ANNOTATIONS}
+    if json.dumps(old, sort_keys=True) == json.dumps(new, sort_keys=True) or not new:
+        return
+    unknown = (old.keys() | new.keys()) - SUPPORTED
+    if unknown:
+        fail(f"cannot prove compatibility with keywords {sorted(unknown)}")
+    if old.get("$schema") != new.get("$schema"):
+        fail("schema dialect changed")
+
+    def types(schema):
+        value = schema.get("type", ["null", "boolean", "object", "array", "number", "integer", "string"])
+        values = [value] if isinstance(value, str) else value
+        allowed = {"null", "boolean", "object", "array", "number", "integer", "string"}
+        if not isinstance(values, list) or not values or any(not isinstance(item, str) or item not in allowed for item in values):
+            fail("invalid type declaration")
+        result = set(values)
+        if "number" in result:
+            result.add("integer")
+        return result
+
+    if not types(old) <= types(new):
+        fail("accepted types were narrowed")
+
+    def same_value(left, right):
+        # Python equates True with 1; JSON Schema does not.
+        return json.dumps(left, sort_keys=True) == json.dumps(right, sort_keys=True)
+
+    if "const" in new:
+        old_values = [old["const"]] if "const" in old else old.get("enum")
+        if not isinstance(old_values, list) or not old_values or any(
+                not same_value(value, new["const"]) for value in old_values):
+            fail("const was introduced or changed")
+    if "enum" in new:
+        old_values = [old["const"]] if "const" in old else old.get("enum")
+        if not isinstance(new["enum"], list) or not isinstance(old_values, list) or any(
+                not any(same_value(value, candidate) for candidate in new["enum"]) for value in old_values):
+            fail("enum was introduced or narrowed")
+
+    for keyword in ("minLength", "minimum", "exclusiveMinimum", "minItems", "minProperties"):
+        if keyword in new and (keyword not in old or new[keyword] > old[keyword]):
+            fail(f"{keyword} was introduced or tightened")
+    for keyword in ("maxLength", "maximum", "exclusiveMaximum", "maxItems", "maxProperties"):
+        if keyword in new and (keyword not in old or new[keyword] < old[keyword]):
+            fail(f"{keyword} was introduced or tightened")
+    for keyword in ("pattern", "format"):
+        if keyword in new and old.get(keyword) != new[keyword]:
+            fail(f"{keyword} was introduced or changed")
+    if new.get("uniqueItems") is True and old.get("uniqueItems") is not True:
+        fail("array uniqueness was introduced")
+
+    def required(schema):
+        value = schema.get("required", [])
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            fail("required must be a list of property names")
+        return set(value)
+
+    added = required(new) - required(old)
+    if added:
+        fail(f"added required fields: {sorted(added)}")
+    old_properties, new_properties = old.get("properties", {}), new.get("properties", {})
+    if not isinstance(old_properties, dict) or not isinstance(new_properties, dict):
+        fail("properties must be an object")
+    old_extra, new_extra = old.get("additionalProperties", True), new.get("additionalProperties", True)
+    for field in old_properties.keys() | new_properties.keys():
+        validate_compatible(old_properties.get(field, old_extra), new_properties.get(field, new_extra),
+                            f"{location}.{field}")
+    validate_compatible(old_extra, new_extra, f"{location}.*")
+    validate_compatible(old.get("items", True), new.get("items", True), f"{location}[]")
 
 
 def validate_current(data):
@@ -68,25 +172,11 @@ def main():
         for _, _, _, data in versions:
             validate_current(data)
         for old, new in zip(versions, versions[1:]):
-            old_data, new_data = old[3], new[3]
-            old_required = set(old_data.get("required", []))
-            new_required = set(new_data.get("required", []))
-            # A new consumer must continue to accept messages written by the
-            # old producer. Adding a required field is therefore breaking;
-            # removing one is additive and safe. (The old implementation had
-            # this relation reversed and could approve breaking schemas.)
-            if not new_required <= old_required:
-                added = sorted(new_required - old_required)
-                raise ValueError(f"schema {new[2].name} added required fields: {added}")
-            for field in old_data.get("properties", {}):
-                old_property = old_data.get("properties", {}).get(field, {})
-                new_property = new_data.get("properties", {}).get(field, {})
-                if old_property.get("type") != new_property.get("type"):
-                    raise ValueError(f"schema {new[2].name} changed type of {field}")
+            validate_compatible(old[3], new[3], new[2].name)
         validate_detection_delivery()
-        print(f"canonical event schemas valid: {len(versions)} version(s); routed detection delivery valid")
+        print(f"canonical event contract checks passed: {len(versions)} version(s); routed delivery markers passed")
         return 0
-    except (OSError, ValueError, json.JSONDecodeError) as failure:
+    except (OSError, ValueError, TypeError, KeyError) as failure:
         print(f"canonical event schema validation failed: {failure}", file=sys.stderr)
         return 1
 

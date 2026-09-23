@@ -1,6 +1,7 @@
 package com.socp.alert.service;
 
 import com.socp.platform.data.outbox.OutboxRetryPolicy;
+import com.socp.platform.data.outbox.OutboxDeliveryExecutor;
 
 import com.socp.alert.config.AlertOutboxProperties;
 import com.socp.alert.domain.OutboxEvent;
@@ -19,7 +20,6 @@ import org.springframework.stereotype.Component;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -49,7 +49,7 @@ public class OutboxPublisher {
     private final OutboxRepository outboxRepo;
     private final AlertKafkaPublisher kafkaPublisher;
     private final AlertPerformanceMetrics performanceMetrics;
-    private final ExecutorService deliveryExecutor;
+    private final OutboxDeliveryExecutor deliveryExecutor;
     private final ExecutorService triggerExecutor;
     private final int maxAttempts;
     private final long retentionMs;
@@ -95,8 +95,7 @@ public class OutboxPublisher {
         this.kafkaPublisher = kafkaPublisher;
         this.performanceMetrics = performanceMetrics;
         int bounded = Math.max(1, Math.min(32, concurrency));
-        this.deliveryExecutor = Executors.newFixedThreadPool(bounded,
-                Thread.ofVirtual().name("alert-outbox-delivery-", 0).factory());
+        this.deliveryExecutor = new OutboxDeliveryExecutor("alert-outbox-delivery-", bounded);
         this.triggerExecutor = Executors.newSingleThreadExecutor(
                 Thread.ofVirtual().name("alert-outbox-trigger-", 0).factory());
         this.maxAttempts = Math.max(1, maxAttempts);
@@ -108,6 +107,7 @@ public class OutboxPublisher {
         this.cleanupMaxBatches = Math.max(1, Math.min(100, cleanupMaxBatches));
     }
 
+    private final java.util.concurrent.atomic.AtomicBoolean activeDrain = new java.util.concurrent.atomic.AtomicBoolean(false);
     private final java.util.concurrent.atomic.AtomicBoolean activeTrigger = new java.util.concurrent.atomic.AtomicBoolean(false);
 
     /** Unit-test/source compatibility constructor. */
@@ -136,6 +136,7 @@ public class OutboxPublisher {
             initialDelayString = "${socp.alert.outbox.initial-delay-ms:1000}")
     @TenantSystemJob
     public void publish() {
+        if (!activeDrain.compareAndSet(false, true)) return;
         long started = System.nanoTime();
         int rounds = 0;
         try {
@@ -145,7 +146,7 @@ public class OutboxPublisher {
                 log.warn("Recovered stale Alert outbox claims count={}", recovered);
                 lifecycle("recovered", recovered);
             }
-            int exhausted = outboxRepo.markExhausted(maxAttempts, "retry limit reached", now);
+            int exhausted = outboxRepo.markExhaustedBatch(maxAttempts, "retry limit reached", now, 100);
             if (exhausted > 0) {
                 log.error("Alert outbox rows moved to DEAD after retry limit count={}", exhausted);
                 lifecycle("dead", exhausted);
@@ -160,17 +161,14 @@ public class OutboxPublisher {
                     break;
                 }
                 rounds++;
-                List<CompletableFuture<Void>> deliveries = pending.stream()
-                        .map(event -> CompletableFuture.runAsync(
-                                () -> TenantContext.runWith(event.getTenantId(), () -> deliver(event)),
-                                deliveryExecutor))
-                        .toList();
-                CompletableFuture.allOf(deliveries.toArray(CompletableFuture[]::new)).join();
+                deliveryExecutor.deliver(pending, started + maxDrainDurationNanos,
+                        event -> TenantContext.runWith(event.getTenantId(), () -> deliver(event)));
                 if (pending.size() < 100) break;
             }
         } catch (Exception failure) {
             log.warn("Alert outbox scan failed; next scan will retry: {}", failure.toString());
         } finally {
+            activeDrain.set(false);
             if (performanceMetrics != null) {
                 performanceMetrics.outboxDrain("alarm_event", rounds, System.nanoTime() - started);
                 refreshBacklog();
@@ -192,45 +190,46 @@ public class OutboxPublisher {
 
     private int recoverStaleIfDue(Instant now) {
         if (now.isBefore(nextRecoveryAt)) return 0;
-        int recovered = outboxRepo.recoverStale(now.minus(Duration.ofMinutes(2)), now);
+        int recovered = outboxRepo.recoverStaleBatch(now.minus(Duration.ofMinutes(2)), now, 100);
         nextRecoveryAt = now.plus(Duration.ofSeconds(30));
         return recovered;
     }
 
     private void deliver(OutboxEvent event) {
+        String token = java.util.UUID.randomUUID().toString();
         boolean claimed = false;
         try {
-            if (outboxRepo.claim(event.getId(), Instant.now(), maxAttempts) != 1) return;
+            if (outboxRepo.claim(event.getId(), Instant.now(), maxAttempts, event.getAttempts(), token) != 1) return;
             claimed = true;
             if (!kafkaPublisher.sendAlarmEventAndAwait(event.getAggregateId(), event.getPayload())) {
-                scheduleRetry(event, "Kafka broker did not acknowledge the event");
+                scheduleRetry(event, token, "Kafka broker did not acknowledge the event");
                 return;
             }
-            if (outboxRepo.markPublished(event.getId(), Instant.now()) != 1) {
+            if (outboxRepo.markPublished(event.getId(), Instant.now(), token) != 1) {
                 log.warn("Alert outbox publish state changed unexpectedly id={}", event.getId());
             }
         } catch (Exception failure) {
             if (claimed) {
-                scheduleRetry(event, failure.getClass().getSimpleName() + ": " + failure.getMessage());
+                scheduleRetry(event, token, failure.getClass().getSimpleName() + ": " + failure.getMessage());
             }
             log.warn("Alert outbox delivery failed id={}: {}", event.getId(), failure.getMessage());
         }
     }
 
-    private void scheduleRetry(OutboxEvent event, String error) {
+    private void scheduleRetry(OutboxEvent event, String token, String error) {
         Instant now = Instant.now();
         var decision = OutboxRetryPolicy.afterClaim(
                 event.getAttempts() + 1, maxAttempts, now, error, 900);
         try {
             if (decision.exhausted()) {
-                if (outboxRepo.markDead(event.getId(), decision.error(), now) == 1) {
+                if (outboxRepo.markDead(event.getId(), decision.error(), now, token) == 1) {
                     log.error("Alert outbox moved to DEAD id={} aggregateId={} attempts={} reason={}",
                             event.getId(), event.getAggregateId(), decision.attempts(), decision.error());
                     lifecycle("dead", 1);
                 }
                 return;
             }
-            if (outboxRepo.scheduleRetry(event.getId(), decision.nextAttemptAt(), decision.error(), now) == 1) {
+            if (outboxRepo.scheduleRetry(event.getId(), decision.nextAttemptAt(), decision.error(), now, token) == 1) {
                 log.warn("Alert outbox retry scheduled id={} aggregateId={} attempts={} next={} reason={}",
                         event.getId(), event.getAggregateId(), decision.attempts(),
                         decision.nextAttemptAt(), decision.error());
@@ -287,6 +286,6 @@ public class OutboxPublisher {
     @PreDestroy
     void stop() {
         triggerExecutor.shutdownNow();
-        deliveryExecutor.shutdownNow();
+        deliveryExecutor.close();
     }
 }

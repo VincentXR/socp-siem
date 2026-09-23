@@ -520,7 +520,12 @@ final class SoarRunCommandService {
         Map<String, Object> snapshot = resumeVariables(original.getOutputJson());
         if (!snapshot.isEmpty()) input.putAll(snapshot);
         input.put("_soar", Map.of("reason", safeReason, "resumeFromNodeId", resumeNode == null ? "" : resumeNode));
-        clone.setInputJson(write(redact(input))); clone.setRequestedBy(actor());
+        String inputJson = write(redact(input));
+        if (inputJson.getBytes(StandardCharsets.UTF_8).length > SoarDefinitionValidator.MAX_BYTES) {
+            throw error(HttpStatus.PAYLOAD_TOO_LARGE, "SOAR_INPUT_TOO_LARGE",
+                    "restored run input exceeds 256 KiB");
+        }
+        clone.setInputJson(inputJson); clone.setRequestedBy(actor());
         ApprovalContext approvalContext = approvalRequired
                 ? buildApprovalContext(sourceVersion.getDefinitionJson(), clone.getInputJson())
                 : ApprovalContext.empty(clone.getInputJson());

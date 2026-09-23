@@ -61,7 +61,7 @@ class SoarSignalWorkerCoverageTest {
 
         verify(temporal).decideGate("soar-tenant-a-run-1", true, "gate-1", false);
         assertThat(signal.getStatus()).isEqualTo("SENT");
-        verify(signals).save(signal);
+        verifyCompletion(signal);
     }
 
     @Test
@@ -113,25 +113,25 @@ class SoarSignalWorkerCoverageTest {
     @Test
     void unknownResolutionSignalForwardsEvidenceAndReason() {
         SoarSignalOutboxEntity signal = signal("UNKNOWN_RESOLUTION", "node-9",
-                "{\"nodeId\":\"node-9\",\"resolution\":\"SUCCEEDED\",\"evidence\":\"ev\",\"reason\":\"why\"}", 0);
+                "{\"nodeId\":\"node-9\",\"resolution\":\"CONFIRMED_SUCCEEDED\",\"evidence\":\"ev\",\"reason\":\"why\"}", 0);
         givenPending(signal, run("RUNNING", "soar-tenant-a-run-1"));
 
         worker.tick();
 
-        verify(temporal).resolveUnknown("soar-tenant-a-run-1", "node-9", "SUCCEEDED", "ev", "why");
+        verify(temporal).resolveUnknown("soar-tenant-a-run-1", "node-9", "CONFIRMED_SUCCEEDED", "ev", "why");
         assertThat(signal.getStatus()).isEqualTo("SENT");
     }
 
     @Test
     void unknownResolutionSignalCanResumeAnActionUnknownRun() {
         SoarSignalOutboxEntity signal = signal("UNKNOWN_RESOLUTION", "node-unknown",
-                "{\"nodeId\":\"node-unknown\",\"resolution\":\"SUCCEEDED\",\"evidence\":\"receipt\",\"reason\":\"verified\"}", 0);
+                "{\"nodeId\":\"node-unknown\",\"resolution\":\"CONFIRMED_SUCCEEDED\",\"evidence\":\"receipt\",\"reason\":\"verified\"}", 0);
         givenPending(signal, run("ACTION_UNKNOWN", "soar-tenant-a-run-1"));
 
         worker.tick();
 
         verify(temporal).resolveUnknown("soar-tenant-a-run-1", "node-unknown",
-                "SUCCEEDED", "receipt", "verified");
+                "CONFIRMED_SUCCEEDED", "receipt", "verified");
         assertThat(signal.getStatus()).isEqualTo("SENT");
     }
 
@@ -145,7 +145,7 @@ class SoarSignalWorkerCoverageTest {
 
         assertThat(signal.getStatus()).isEqualTo("CANCELLED");
         assertThat(signal.getLastError()).contains("PARTIALLY_SUCCEEDED");
-        verify(signals).save(signal);
+        verifyCompletion(signal);
         verify(temporal).isAvailable();
         verifyNoMoreInteractions(temporal);
     }
@@ -158,7 +158,7 @@ class SoarSignalWorkerCoverageTest {
         worker.tick();
 
         assertThat(signal.getStatus()).isEqualTo("CANCELLED");
-        verify(signals).save(signal);
+        verifyCompletion(signal);
         verify(temporal).isAvailable();
         verifyNoMoreInteractions(temporal);
     }
@@ -171,36 +171,38 @@ class SoarSignalWorkerCoverageTest {
         worker.tick();
 
         assertThat(signal.getStatus()).isEqualTo("CANCELLED");
-        verify(signals).save(signal);
+        verifyCompletion(signal);
         verify(temporal).isAvailable();
         verifyNoMoreInteractions(temporal);
     }
 
     @Test
-    void signalBeforeDispatchIsClosedWithoutTouchingTemporal() {
+    void signalBeforeDispatchRemainsRetryableWithoutTouchingTemporal() {
         SoarSignalOutboxEntity signal = signal("APPROVAL", "gate-1",
                 "{\"approve\":true,\"approvalKey\":\"gate-1\"}", 0);
         givenPending(signal, run("WAITING_APPROVAL", "  "));
 
         worker.tick();
 
-        assertThat(signal.getStatus()).isEqualTo("SENT");
+        assertThat(signal.getStatus()).isEqualTo("PENDING");
+        assertThat(signal.getAttempts()).isEqualTo(1);
+        assertThat(signal.getNextAttemptAt()).isAfter(Instant.now());
         verify(temporal).isAvailable();
         verifyNoMoreInteractions(temporal);
     }
 
     @Test
-    void signalForMissingRunIsClosedWithoutTouchingTemporal() {
+    void signalForMissingRunFailsInsteadOfClaimingDelivery() {
         SoarSignalOutboxEntity signal = signal("APPROVAL", "gate-1", "{\"approve\":true}", 0);
         given(temporal.isAvailable()).willReturn(true);
         given(signals.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(eq("PENDING"), any()))
                 .willReturn(List.of(signal));
-        given(signals.claim(eq("tenant-a"), eq("sig-1"), anyString(), any())).willReturn(1);
+        given(signals.claim(eq("tenant-a"), eq("sig-1"), anyString(), any(), eq(0L), eq(10))).willReturn(1);
         given(runs.findByTenantIdAndId("tenant-a", "run-1")).willReturn(Optional.empty());
 
         worker.tick();
 
-        assertThat(signal.getStatus()).isEqualTo("SENT");
+        assertThat(signal.getStatus()).isEqualTo("DEAD");
         verify(temporal).isAvailable();
         verifyNoMoreInteractions(temporal);
     }
@@ -219,7 +221,7 @@ class SoarSignalWorkerCoverageTest {
         assertThat(signal.getStatus()).isEqualTo("PENDING");
         assertThat(signal.getLastError()).isEqualTo("temporal signal failed");
         assertThat(signal.getNextAttemptAt()).isAfter(Instant.now());
-        verify(signals).save(signal);
+        verifyCompletion(signal);
     }
 
     @Test
@@ -243,7 +245,7 @@ class SoarSignalWorkerCoverageTest {
         given(temporal.isAvailable()).willReturn(true);
         given(signals.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(eq("PENDING"), any()))
                 .willReturn(List.of(signal));
-        given(signals.claim(eq("tenant-a"), eq("sig-1"), anyString(), any())).willReturn(0);
+        given(signals.claim(eq("tenant-a"), eq("sig-1"), anyString(), any(), eq(0L), eq(10))).willReturn(0);
 
         worker.tick();
 
@@ -259,20 +261,80 @@ class SoarSignalWorkerCoverageTest {
 
         verify(signals, never())
                 .findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(anyString(), any());
-        verify(signals, never()).claim(anyString(), anyString(), anyString(), any());
+        verify(signals, never()).claim(anyString(), anyString(), anyString(), any(), org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyInt());
     }
 
     private void givenPending(SoarSignalOutboxEntity signal, SoarRunEntity run) {
         given(temporal.isAvailable()).willReturn(true);
         given(signals.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(eq("PENDING"), any()))
                 .willReturn(List.of(signal));
-        given(signals.claim(eq("tenant-a"), eq("sig-1"), anyString(), any())).willReturn(1);
+        given(signals.claim(eq("tenant-a"), eq("sig-1"), anyString(), any(), eq(0L), eq(10))).willReturn(1);
         given(runs.findByTenantIdAndId("tenant-a", "run-1")).willReturn(Optional.of(run));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.MethodSource("invalidSignals")
+    void invalidPersistedSignalsBecomeDeadWithoutAWorkflowSideEffect(String type, String key, String payload) {
+        var signal = signal(type, key, payload, 0);
+        givenPending(signal, run("RUNNING", "soar-tenant-a-run-1"));
+        worker.tick();
+        assertThat(signal.getStatus()).isEqualTo("DEAD");
+        assertThat(signal.getAttempts()).isEqualTo(1);
+        assertThat(signal.getLastError()).doesNotContain("PRIVATE");
+        verifyCompletion(signal);
+        verify(temporal).isAvailable();
+        verifyNoMoreInteractions(temporal);
+    }
+
+    static java.util.stream.Stream<org.junit.jupiter.params.provider.Arguments> invalidSignals() {
+        return java.util.stream.Stream.of(
+                org.junit.jupiter.params.provider.Arguments.of("APPROVAL", "", "{PRIVATE"),
+                org.junit.jupiter.params.provider.Arguments.of("APPROVAL", "", "null"),
+                org.junit.jupiter.params.provider.Arguments.of("APPROVAL", "", "[]"),
+                org.junit.jupiter.params.provider.Arguments.of("APPROVAL", "", "{}"),
+                org.junit.jupiter.params.provider.Arguments.of("APPROVAL", "", "{\"approve\":\"true\"}"),
+                org.junit.jupiter.params.provider.Arguments.of("APPROVAL", "", "{\"approve\":true,\"approve\":false}"),
+                org.junit.jupiter.params.provider.Arguments.of("APPROVAL", "", "{\"approve\":true} {}"),
+                org.junit.jupiter.params.provider.Arguments.of("APPROVAL", "gate-a", "{\"approve\":true,\"approvalKey\":\"gate-b\"}"),
+                org.junit.jupiter.params.provider.Arguments.of("APPROVAL", "", "{\"approve\":false,\"expired\":true}"),
+                org.junit.jupiter.params.provider.Arguments.of("APPROVAL", "", "{\"approve\":true,\"expired\":\"false\"}"),
+                org.junit.jupiter.params.provider.Arguments.of("MANUAL_TASK", "", "{\"input\":null}"),
+                org.junit.jupiter.params.provider.Arguments.of("MANUAL_TASK", "", "{\"input\":[]}"),
+                org.junit.jupiter.params.provider.Arguments.of("UNSUPPORTED", "", "{}"),
+                org.junit.jupiter.params.provider.Arguments.of("UNKNOWN_RESOLUTION", "node", "{\"nodeId\":\"node\",\"resolution\":\"SUCCEEDED\",\"evidence\":\"receipt\",\"reason\":\"reviewed\"}"));
+    }
+
+    @Test
+    void failedReceiptPersistenceDoesNotBlockTheNextSignal() {
+        var first = signal("APPROVAL", "", "{\"approve\":true}", 0);
+        var second = signal("APPROVAL", "", "{\"approve\":false}", 0);
+        second.setId("sig-2");
+        given(temporal.isAvailable()).willReturn(true);
+        given(signals.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(eq("PENDING"), any()))
+                .willReturn(List.of(first, second));
+        given(signals.claim(anyString(), anyString(), anyString(), any(), eq(0L), eq(10))).willReturn(1);
+        given(runs.findByTenantIdAndId("tenant-a", "run-1")).willReturn(Optional.of(run("RUNNING", "workflow")));
+        given(signals.completeClaim(anyString(), eq("sig-1"), eq(1L), anyString(), anyString(), any(),
+                org.mockito.ArgumentMatchers.nullable(String.class), any())).willThrow(new IllegalStateException("database unavailable"));
+
+        worker.tick();
+
+        verify(temporal).decide("workflow", true);
+        verify(temporal).decide("workflow", false);
+        verifyCompletion(second);
+        assertThat(second.getStatus()).isEqualTo("SENT");
+    }
+
+    private void verifyCompletion(SoarSignalOutboxEntity signal) {
+        verify(signals).completeClaim(eq(signal.getTenantId()), eq(signal.getId()), eq(1L), anyString(),
+                eq(signal.getStatus()), eq(signal.getNextAttemptAt()), eq(signal.getLastError()), any());
+        verify(signals, never()).save(any(SoarSignalOutboxEntity.class));
     }
 
     private static SoarSignalOutboxEntity signal(String type, String key, String payload, int attempts) {
         SoarSignalOutboxEntity signal = new SoarSignalOutboxEntity();
         signal.setId("sig-1");
+        signal.setRowVersion(0L);
         signal.setTenantId("tenant-a");
         signal.setRunId("run-1");
         signal.setSignalType(type);

@@ -56,3 +56,10 @@ class AttackRetryTest(unittest.TestCase):
             self.assertEqual(attack.api("token", "/detect-web/api/v1/ingest", {},
                                         include_headers=True),
                              (503, REJECTED, {"Retry-After": "2"}))
+        self.assertTrue(error.closed)
+
+    def test_http_error_closes_malformed_response_without_retry_evidence(self):
+        error = HTTPError("http://localhost", 503, "unavailable", {}, io.BytesIO(b"not JSON"))
+        with patch.object(attack.urllib.request, "urlopen", side_effect=error):
+            self.assertEqual(attack.api("token", "/detect-web/api/v1/ingest", {}), (503, {}))
+        self.assertTrue(error.closed)

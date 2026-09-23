@@ -73,9 +73,10 @@ def main() -> int:
         failures.append(str(error))
     else:
         # Health is the sole public management probe.  It can legitimately be
-        # 200 (UP) or 503 (dependency-aware DOWN/DEGRADED), but never 401.
-        if health == 401:
-            failures.append("/actuator/health: public health probe unexpectedly requires credentials")
+        # 200 (UP) or 503 (dependency-aware DOWN/DEGRADED). A missing route,
+        # permission error, or generic server failure does not prove probeability.
+        if health not in (200, 503):
+            failures.append(f"/actuator/health: expected HTTP 200 or 503, got {health}")
         else:
             print(f"[PASS] /actuator/health: HTTP {health} (public probe)")
 

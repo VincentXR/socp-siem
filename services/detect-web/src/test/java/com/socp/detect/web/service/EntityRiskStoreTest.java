@@ -12,8 +12,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
-import org.springframework.data.domain.PageImpl;
-import org.springframework.data.domain.Pageable;
 
 import java.time.Instant;
 import java.util.List;
@@ -23,6 +21,8 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -35,6 +35,7 @@ class EntityRiskStoreTest {
     private EntityRiskProfileRepository profiles;
     private EntityRiskAlertRepository appliedAlerts;
     private EntityRiskStore store;
+    private EntityRiskCounterStore counters;
 
     @BeforeEach
     void setUp() {
@@ -42,7 +43,8 @@ class EntityRiskStoreTest {
         Watchlists.clear();
         profiles = mock(EntityRiskProfileRepository.class);
         appliedAlerts = mock(EntityRiskAlertRepository.class);
-        store = new EntityRiskStore(profiles, appliedAlerts);
+        counters = mock(EntityRiskCounterStore.class);
+        store = new EntityRiskStore(profiles, appliedAlerts, counters);
     }
 
     @AfterEach
@@ -64,13 +66,15 @@ class EntityRiskStoreTest {
 
         assertThat(score.score()).isGreaterThan(0);
         ArgumentCaptor<EntityRiskProfileEntity> profile = ArgumentCaptor.forClass(EntityRiskProfileEntity.class);
-        verify(profiles).save(profile.capture());
+        verify(profiles).saveAndFlush(profile.capture());
         assertThat(profile.getValue().getTenantId()).isEqualTo("tenant-risk");
         assertThat(profile.getValue().getEntity()).isEqualTo("admin");
         assertThat(profile.getValue().getAlerts()).isEqualTo(1);
         assertThat(profile.getValue().getMaxSeverity()).isEqualTo("HIGH");
-        assertThat(profile.getValue().getMitreJson()).contains("T1110");
-        assertThat(profile.getValue().getRulesJson()).contains("Privilege escalation");
+        assertThat(profile.getValue().getMitreJson()).isEqualTo("{}");
+        verify(counters).increment("tenant-risk", profile.getValue().getStorageId(), "MITRE", "T1110");
+        assertThat(profile.getValue().getRulesJson()).isEqualTo("{}");
+        verify(counters).increment("tenant-risk", profile.getValue().getStorageId(), "RULE", "Privilege escalation");
 
         ArgumentCaptor<EntityRiskAlertEntity> applied = ArgumentCaptor.forClass(EntityRiskAlertEntity.class);
         verify(appliedAlerts).save(applied.capture());
@@ -106,9 +110,11 @@ class EntityRiskStoreTest {
         Watchlists.putTemplate("crown_jewels", List.of("db-core"));
         EntityRiskProfileEntity high = profile("db-core", 90, 2, "CRITICAL");
         EntityRiskProfileEntity medium = profile("web-1", 45, 1, "MEDIUM");
-        when(profiles.findByTenantId(eq("tenant-risk"), any(Pageable.class)))
-                .thenReturn(new PageImpl<>(List.of(medium, high)));
-        when(profiles.findByTenantId("tenant-risk")).thenReturn(List.of(medium, high));
+        when(profiles.topAt(eq("tenant-risk"), anyLong(), anyInt())).thenReturn(List.of(high));
+        var summary = mock(EntityRiskProfileRepository.RiskSummary.class);
+        when(summary.getEntities()).thenReturn(2L);
+        when(summary.getCritical()).thenReturn(1L);
+        when(profiles.summarizeAt(eq("tenant-risk"), anyLong())).thenReturn(summary);
         when(profiles.findByTenantIdAndEntity("tenant-risk", "db-core"))
                 .thenReturn(Optional.of(high));
 
@@ -119,10 +125,10 @@ class EntityRiskStoreTest {
         assertThat((Map<String, Object>) store.get("db-core"))
                 .containsEntry("level", "CRITICAL")
                 .containsEntry("maxSeverity", "CRITICAL");
-        assertThat((Map<String, Object>) store.summary()).containsEntry("entities", 2);
+        assertThat((Map<String, Object>) store.summary()).containsEntry("entities", 2L);
         @SuppressWarnings("unchecked")
-        Map<String, Integer> byLevel = (Map<String, Integer>) store.summary().get("byLevel");
-        assertThat(byLevel).containsEntry("CRITICAL", 1);
+        Map<String, Long> byLevel = (Map<String, Long>) store.summary().get("byLevel");
+        assertThat(byLevel).containsEntry("CRITICAL", 1L);
     }
 
     @Test

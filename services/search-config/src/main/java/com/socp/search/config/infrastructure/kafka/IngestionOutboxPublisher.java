@@ -1,6 +1,7 @@
 package com.socp.search.config.infrastructure.kafka;
 
 import com.socp.platform.data.outbox.OutboxRetryPolicy;
+import com.socp.platform.data.outbox.OutboxDeliveryExecutor;
 
 import jakarta.annotation.PreDestroy;
 import com.socp.search.config.config.IngestRuntimeProperties;
@@ -20,7 +21,6 @@ import org.springframework.stereotype.Component;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -42,7 +42,7 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
     private final IngestionOutboxRepository repository;
     private final KafkaEventProducer producer;
     private final MeterRegistry meterRegistry;
-    private final ExecutorService executor;
+    private final OutboxDeliveryExecutor executor;
     private final ExecutorService triggerExecutor;
     private final int maxAttempts;
     private final long retentionMs;
@@ -94,8 +94,7 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
         this.producer = producer;
         this.meterRegistry = meterRegistry;
         int bounded = Math.max(1, Math.min(32, concurrency));
-        this.executor = Executors.newFixedThreadPool(bounded,
-                Thread.ofVirtual().name("ingestion-outbox-", 0).factory());
+        this.executor = new OutboxDeliveryExecutor("ingestion-outbox-", bounded);
         this.triggerExecutor = Executors.newSingleThreadExecutor(
                 Thread.ofVirtual().name("ingestion-outbox-trigger-", 0).factory());
         this.maxAttempts = Math.max(1, maxAttempts);
@@ -123,6 +122,7 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
         }
     }
 
+    private final java.util.concurrent.atomic.AtomicBoolean activeDrain = new java.util.concurrent.atomic.AtomicBoolean(false);
     private final java.util.concurrent.atomic.AtomicBoolean activeTrigger = new java.util.concurrent.atomic.AtomicBoolean(false);
 
     IngestionOutboxPublisher(IngestionOutboxRepository repository, KafkaEventProducer producer) {
@@ -153,6 +153,7 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
             updateBacklogMetrics(0, Instant.now());
             return;
         }
+        if (!activeDrain.compareAndSet(false, true)) return;
         long started = System.nanoTime();
         int rounds = 0;
         int lastBatchSize = 0;
@@ -160,7 +161,7 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
             Instant now = Instant.now();
             int recovered = recoverStaleIfDue(now);
             if (recovered > 0) lifecycle("recovered", recovered);
-            int exhausted = repository.markExhausted(maxAttempts, "retry limit reached", now);
+            int exhausted = repository.markExhaustedBatch(maxAttempts, "retry limit reached", now, 100);
             if (exhausted > 0) {
                 log.error("Ingestion outbox rows moved to DEAD after retry limit count={}", exhausted);
                 lifecycle("dead", exhausted);
@@ -173,17 +174,14 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
                 lastBatchSize = pending.size();
                 if (pending.isEmpty()) break;
                 rounds++;
-                List<CompletableFuture<Void>> deliveries = pending.stream()
-                        .map(event -> CompletableFuture.runAsync(
-                                () -> TenantContext.runWith(event.getTenantId(), () -> deliver(event)),
-                                executor))
-                        .toList();
-                CompletableFuture.allOf(deliveries.toArray(CompletableFuture[]::new)).join();
+                executor.deliver(pending, started + maxDrainDurationNanos,
+                        event -> TenantContext.runWith(event.getTenantId(), () -> deliver(event)));
                 if (pending.size() < 200) break;
             }
         } catch (Exception failure) {
             log.warn("Ingestion outbox scan failed; next scan will retry: {}", failure.toString());
         } finally {
+            activeDrain.set(false);
             updateBacklogMetrics(lastBatchSize, Instant.now());
             recordDrain(rounds, System.nanoTime() - started);
         }
@@ -214,45 +212,46 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
 
     private int recoverStaleIfDue(Instant now) {
         if (now.isBefore(nextRecoveryAt)) return 0;
-        int recovered = repository.recoverStale(now.minus(Duration.ofMinutes(2)), now);
+        int recovered = repository.recoverStaleBatch(now.minus(Duration.ofMinutes(2)), now, 100);
         nextRecoveryAt = now.plus(Duration.ofSeconds(30));
         return recovered;
     }
 
     private void deliver(IngestionOutboxEvent event) {
+        String token = java.util.UUID.randomUUID().toString();
         boolean claimed = false;
         try {
-            if (repository.claim(event.getId(), Instant.now(), maxAttempts) != 1) return;
+            if (repository.claim(event.getId(), Instant.now(), maxAttempts, event.getAttempts(), token) != 1) return;
             claimed = true;
             if (!producer.sendAndAwait(event.getRoutingKey(), event.getPayload(), event.getTraceparent())) {
-                scheduleRetry(event, "Kafka broker did not acknowledge the event");
+                scheduleRetry(event, token, "Kafka broker did not acknowledge the event");
                 return;
             }
-            if (repository.markPublished(event.getId(), Instant.now()) != 1) {
+            if (repository.markPublished(event.getId(), Instant.now(), token) != 1) {
                 log.warn("Ingestion outbox state changed after broker acknowledgement id={}", event.getId());
             }
         } catch (Exception failure) {
             if (claimed) {
-                scheduleRetry(event, failure.getClass().getSimpleName() + ": " + failure.getMessage());
+                scheduleRetry(event, token, failure.getClass().getSimpleName() + ": " + failure.getMessage());
             }
             log.warn("Ingestion outbox delivery failed id={}: {}", event.getId(), failure.getMessage());
         }
     }
 
-    private void scheduleRetry(IngestionOutboxEvent event, String error) {
+    private void scheduleRetry(IngestionOutboxEvent event, String token, String error) {
         Instant now = Instant.now();
         var decision = OutboxRetryPolicy.afterClaim(
                 event.getAttempts() + 1, maxAttempts, now, error, 900);
         try {
             if (decision.exhausted()) {
-                if (repository.markDead(event.getId(), decision.error(), now) == 1) {
+                if (repository.markDead(event.getId(), decision.error(), now, token) == 1) {
                     log.error("Ingestion outbox moved to DEAD id={} eventId={} attempts={} reason={}",
                             event.getId(), event.getEventId(), decision.attempts(), decision.error());
                     lifecycle("dead", 1);
                 }
                 return;
             }
-            if (repository.scheduleRetry(event.getId(), decision.nextAttemptAt(), decision.error(), now) == 1) {
+            if (repository.scheduleRetry(event.getId(), decision.nextAttemptAt(), decision.error(), now, token) == 1) {
                 log.warn("Ingestion outbox retry scheduled id={} eventId={} attempts={} next={} reason={}",
                         event.getId(), event.getEventId(), decision.attempts(),
                         decision.nextAttemptAt(), decision.error());
@@ -312,6 +311,6 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
     @PreDestroy
     void stop() {
         triggerExecutor.shutdownNow();
-        executor.shutdownNow();
+        executor.close();
     }
 }

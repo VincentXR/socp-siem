@@ -58,6 +58,11 @@ export function useOverview(enabled: Ref<boolean>) {
     online: Object.values(healths.value).filter(status => status === 'up').length,
   }))
   const loading = computed(() => alarmsQuery.isPending.value || healthQuery.isPending.value || statsQuery.isPending.value || casesQuery.isPending.value)
+  const refreshing = computed(() => alarmsQuery.isFetching.value || healthQuery.isFetching.value || statsQuery.isFetching.value || casesQuery.isFetching.value)
+  // Sources refresh independently. Report the oldest successful fetch, never
+  // a click time or a failed attempt, and wait until every source has data.
+  const updatedAt = computed(() => Math.min(alarmsQuery.dataUpdatedAt.value, healthQuery.dataUpdatedAt.value,
+    statsQuery.dataUpdatedAt.value, casesQuery.dataUpdatedAt.value))
   const error = computed(() => {
     const failure = alarmsQuery.error.value ?? healthQuery.error.value ?? statsQuery.error.value ?? casesQuery.error.value
     return failure instanceof Error ? failure.message : failure ? String(failure) : ''
@@ -71,5 +76,5 @@ export function useOverview(enabled: Ref<boolean>) {
     await statsQuery.refetch().catch(() => undefined)
   }
 
-  return { alarms, healths, sitStats, stat, loading, error, refreshOverview, loadOverviewStats }
+  return { alarms, healths, sitStats, stat, loading, refreshing, updatedAt, error, refreshOverview, loadOverviewStats }
 }

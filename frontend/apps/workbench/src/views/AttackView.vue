@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useWriteAccess } from '../composables/useWriteAccess'
 const canWrite = useWriteAccess()
+import { useRequest } from '../composables/useRequest'
 import { useFormDialog } from '../composables/useFormDialog'
 import ActionFeedback from '../components/ActionFeedback.vue'
 import 'element-plus/es/components/button/style/css.mjs'
@@ -18,64 +19,95 @@ import ElDialog from 'element-plus/es/components/dialog/index.mjs'
 import { ElForm, ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import ElMessage from 'element-plus/es/components/message/index.mjs'
+import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
-import { attackCoverage, listRules, listTactics, listTechniques, type Alarm, type Tactic, type Technique, getTechniqueNote, saveTechniqueNote } from '../api'
+import { attackCoverage, activeRuleTechniques, listTactics, listTechniques, alarmTechniqueCounts, type Tactic, type Technique, getTechniqueNote, saveTechniqueNote } from '../api'
 import { useI18n } from '../composables/useI18n'
 
-const props = defineProps<{ alarms: Alarm[] }>()
-const { t } = useI18n()
+const { t, locale } = useI18n()
 type AttackCov = Awaited<ReturnType<typeof attackCoverage>>
 
-const loadError = ref('')
-const noteLoaded = ref(false)
-const tactics = ref<Tactic[]>([])
-const techniques = ref<Technique[]>([])
+const tacticsRequest = useRequest<Tactic[]>()
+const techniquesRequest = useRequest<Technique[]>()
+const coverageRequest = useRequest<{ result: AttackCov; activeTechniques: string[] }>()
+const tactics = computed(() => tacticsRequest.data.value ?? [])
+const techniques = computed(() => techniquesRequest.data.value ?? [])
+const loadError = computed(() => tacticsRequest.error.value?.message || techniquesRequest.error.value?.message || '')
+const coverageError = computed(() => coverageRequest.error.value?.message || '')
+const attackCov = computed(() => coverageRequest.data.value?.result ?? null)
+const activeTechniqueIds = computed(() => new Set(coverageRequest.data.value?.activeTechniques ?? []))
+const activityRequest = useRequest<{ counts: Record<string, number>; until: string }>()
+const activityLoading = activityRequest.loading
+const activityError = computed(() => activityRequest.error.value?.message || '')
+const activityTime = computed(() => {
+  const instant = activityRequest.data.value?.until
+  return instant ? new Date(instant).toLocaleString(locale.value) : t('time.notAvailable')
+})
+const attackLoading = coverageRequest.loading
+const catalogLoading = techniquesRequest.loading
 const attackTech = ref('')
-const attackCov = ref<AttackCov | null>(null)
-const attackLoading = ref(false)
+const noteRequest = useRequest<{ note: string }>()
+const noteLoaded = ref(false)
+const noteSaving = ref(false)
 const techniqueDialogVisible = ref(false)
 const noteText = ref('')
-const noteLoading = ref(false)
-const noteError = ref('')
+const noteLoading = computed(() => noteRequest.loading.value || noteSaving.value)
+const noteSaveError = ref('')
+const noteError = computed(() => noteRequest.error.value?.message || noteSaveError.value)
 const editingTechniqueId = ref('')
 const techniqueForm = ref({ name: '', tactic: '', url: '', description: '' })
+let disposed = false
 
+async function loadTechniques() {
+  if (disposed) return
+  const tactic = attackTech.value || undefined
+  const result = await techniquesRequest.execute(async signal => (await listTechniques(tactic, { signal })).items)
+  if (result) await loadActivity()
+}
 async function loadAttack() {
-  loadError.value = ''
-  try {
-    const [catalogTactics, catalogTechniques] = await Promise.all([listTactics(), listTechniques(attackTech.value || undefined)])
-    tactics.value = catalogTactics.items
-    techniques.value = catalogTechniques.items
-    await computeAttackCov()
-  } catch (failure) { loadError.value = String(failure) }
+  if (disposed) return
+  await Promise.all([
+    tacticsRequest.execute(async signal => (await listTactics({ signal })).items),
+    loadTechniques(),
+  ])
 }
-
 async function computeAttackCov() {
-  attackLoading.value = true
-  try {
-    const rules = await listRules()
-    const techs = rules.map(rule => String(rule.mitre ?? '')).filter(Boolean)
-    attackCov.value = await attackCoverage(techs)
-  } catch (failure) { attackCov.value = null; loadError.value = String(failure) }
-  finally { attackLoading.value = false }
+  if (disposed) return
+  await coverageRequest.execute(async signal => {
+    const techs = await activeRuleTechniques({ signal })
+    signal.throwIfAborted()
+    const result = await attackCoverage(techs, { signal })
+    return { result, activeTechniques: techs }
+  })
 }
+watch(attackTech, () => { techniquesRequest.reset(); activityRequest.reset(); void loadTechniques() }, { flush: 'sync' })
 
-const mitreCounts = computed<Record<string, number>>(() => {
-  const counts: Record<string, number> = {}
-  for (const alarm of props.alarms) if (alarm.mitre) counts[alarm.mitre] = (counts[alarm.mitre] || 0) + 1
-  return counts
-})
-const uncoveredSet = computed(() => new Set(attackCov.value?.uncovered ?? []))
+async function loadActivity() {
+  if (disposed || !techniques.value.length) return
+  const ids = [...new Set(techniques.value.map(technique => technique.id))]
+  await activityRequest.execute(async signal => {
+    const counts: Record<string, number> = Object.create(null)
+    let until = ''
+    for (let index = 0; index < ids.length; index += 100) {
+      const result = await alarmTechniqueCounts(ids.slice(index, index + 100), { signal })
+      signal.throwIfAborted()
+      Object.assign(counts, result.counts)
+      if (!until || Date.parse(result.until) < Date.parse(until)) until = result.until
+    }
+    return { counts, until }
+  })
+}
+const mitreCounts = computed(() => activityRequest.data.value?.counts ?? Object.create(null) as Record<string, number>)
 const attackMatrix = computed(() => {
   const byTactic: Record<string, Array<Technique & { covered: boolean; count: number }>> = {}
   for (const technique of techniques.value) {
     const key = technique.tactic || ''
-    ;(byTactic[key] ||= []).push({ ...technique, covered: Boolean(attackCov.value) && !uncoveredSet.value.has(technique.id), count: mitreCounts.value[technique.id] || 0 })
+    ;(byTactic[key] ||= []).push({ ...technique, covered: Boolean(attackCov.value) && activeTechniqueIds.value.has(technique.id), count: mitreCounts.value[technique.id] || 0 })
   }
-  return tactics.value.map(tactic => {
+  return tactics.value.filter(tactic => !attackTech.value || tactic.id === attackTech.value).map(tactic => {
     const techs = byTactic[tactic.id] || byTactic[tactic.name] || []
     return { tac: tactic, techs, total: techs.length, covered: techs.filter(technique => technique.covered).length }
   })
@@ -104,52 +136,68 @@ function cellAria(technique: { id: string; name: string; count: number }): strin
     : `${technique.id} ${technique.name}`
 }
 
+async function loadTechniqueNote() {
+  if (disposed || !techniqueDialogVisible.value || noteSaving.value) return
+  const id = editingTechniqueId.value
+  const result = await noteRequest.execute(signal => getTechniqueNote(id, { signal }))
+  if (disposed || !techniqueDialogVisible.value || editingTechniqueId.value !== id || !result) return
+  noteText.value = result.note
+  noteLoaded.value = true
+  noteGuard.markSaved()
+}
 async function openTechniqueEdit(technique: Technique) {
+  if (disposed || noteSaving.value) return
+  if (techniqueDialogVisible.value && !await noteGuard.canLeave()) return
+  if (disposed) return
+  noteRequest.reset()
   editingTechniqueId.value = technique.id
   techniqueForm.value = { name: technique.name, tactic: technique.tactic, url: technique.url, description: technique.description }
-  noteLoading.value = true
-  noteError.value = ''
+  noteSaveError.value = ''
   noteText.value = ''
   noteLoaded.value = false
   techniqueDialogVisible.value = true
-  try { noteText.value = (await getTechniqueNote(technique.id)).note; noteLoaded.value = true; noteGuard.markSaved() }
-  catch (failure) { noteError.value = String(failure) }
-  finally { noteLoading.value = false }
+  noteGuard.markSaved()
+  await loadTechniqueNote()
 }
-
 async function saveTechnique() {
-  if (noteLoading.value || !noteLoaded.value) return
-  if (!techniqueForm.value.name.trim()) {
-    ElMessage.warning(t('attack.enterName'))
-    return
-  }
-  noteLoading.value = true
+  if (disposed || !canWrite.value || noteLoading.value || !noteLoaded.value) return
+  const id = editingTechniqueId.value, note = noteText.value
+  noteSaving.value = true
+  noteSaveError.value = ''
   try {
-    await saveTechniqueNote(editingTechniqueId.value, noteText.value)
+    await saveTechniqueNote(id, note)
+    if (disposed) return
+    noteGuard.markSaved()
     techniqueDialogVisible.value = false
     ElMessage.success(t('attack.updated'))
-    await loadAttack()
   } catch (error) {
-    noteError.value = String(error)
-    ElMessage.error(error instanceof Error ? error.message : t('attack.updateFailed'))
-  } finally { noteLoading.value = false }
+    if (!disposed) noteSaveError.value = error instanceof Error ? error.message : t('attack.updateFailed')
+  } finally { if (!disposed) noteSaving.value = false }
 }
-
-const noteGuard = useFormDialog(techniqueDialogVisible, () => noteText.value, () => noteLoading.value)
-onMounted(loadAttack)
+const noteGuard = useFormDialog(techniqueDialogVisible, () => noteText.value, () => noteSaving.value)
+watch(techniqueDialogVisible, visible => {
+  if (!visible) { noteRequest.reset(); noteLoaded.value = false }
+}, { flush: 'sync' })
+onMounted(() => { void loadAttack(); void computeAttackCov() })
+onUnmounted(() => {
+  disposed = true
+  tacticsRequest.cancel(); techniquesRequest.cancel(); coverageRequest.cancel(); activityRequest.cancel(); noteRequest.cancel()
+})
 </script>
 
 <template>
   <div class="page-pad view-enter">
     <ActionFeedback :error="loadError" />
+    <el-button v-if="loadError" link @click="loadAttack">{{ t('common.retry') }}</el-button>
+    <ActionFeedback :error="coverageError ? `${attackCov ? t('attack.staleCoverage') : t('attack.coverageUnavailable')} ${coverageError}` : ''" />
     <PageHeader :title="t('attack.title')" :description="t('attack.description')">
-      <template #actions><el-button :loading="attackLoading" @click="computeAttackCov">{{ t('attack.refreshCoverage') }}</el-button></template>
+      <template #actions><el-button :loading="activityLoading" :disabled="!techniques.length" @click="loadActivity">{{ t('attack.refreshActivity') }}</el-button><el-button :loading="attackLoading" @click="computeAttackCov">{{ t('attack.refreshCoverage') }}</el-button></template>
     </PageHeader>
     <el-card shadow="never" style="margin-bottom:14px">
       <div style="display:flex;gap:20px;align-items:center;flex-wrap:wrap">
-        <div><div style="font-size:12px;color:var(--ns-text-3)">{{ t('attack.detectionCoverage') }}</div><div style="font-size:30px;font-weight:700;color:var(--ns-accent-fg)">{{ attackCov ? attackCov.coverage : t('time.notAvailable') }}%</div></div>
+        <div><div style="font-size:12px;color:var(--ns-text-3)">{{ t('attack.detectionCoverage') }}</div><div style="font-size:30px;font-weight:700;color:var(--ns-accent-fg)">{{ attackCov ? attackCov.coverage : t('time.notAvailable') }}<span v-if="attackCov">%</span></div></div>
         <div><div style="font-size:12px;color:var(--ns-text-3)">{{ t('attack.coveredTotal') }}</div><div style="font-size:18px;font-weight:600">{{ attackCov ? attackCov.coveredTechniques : t('time.notAvailable') }} / {{ attackCov ? attackCov.totalTechniques : t('time.notAvailable') }}</div></div>
-        <el-select v-model="attackTech" :placeholder="t('attack.allTactics')" clearable style="width:170px" @change="loadAttack">
+        <el-select v-model="attackTech" :placeholder="t('attack.allTactics')" clearable style="width:170px">
           <el-option v-for="tactic in tactics" :key="tactic.id" :label="tactic.name" :value="tactic.id" />
         </el-select>
       </div>
@@ -160,9 +208,12 @@ onMounted(loadAttack)
     </el-card>
     <el-card shadow="never" style="margin-bottom:14px">
       <template #header>{{ t('attack.matrixTitle') }}</template>
+      <p v-if="catalogLoading" role="status">{{ t('common.loading') }}</p>
+      <p v-if="techniques.length" class="attack-activity-scope">{{ t('attack.activityScope') }} {{ t('attack.activityCalculated', { value: activityTime }) }}</p>
+      <ActionFeedback :error="activityError ? `${activityRequest.data.value ? t('attack.staleActivity') : t('attack.activityUnavailable')} ${activityError}` : ''" />
       <div class="attack-matrix">
         <div v-for="column in attackMatrix" :key="column.tac.id" class="am-col">
-          <div class="am-head">{{ column.tac.name }}<span class="am-cov">{{ column.covered }}/{{ column.total }}</span></div>
+          <div class="am-head">{{ column.tac.name }}<span class="am-cov">{{ attackCov ? column.covered : t('time.notAvailable') }}/{{ column.total }}</span></div>
           <div v-for="technique in column.techs" :key="technique.id" class="am-cell" :style="techStyle(technique)" role="button" :tabindex="technique.url ? 0 : -1" :aria-disabled="technique.url ? undefined : 'true'" @click="openUrl(technique.url)" @keydown.enter.space.prevent="openUrl(technique.url)" :title="technique.id + ' ' + technique.name" :aria-label="cellAria(technique)">
             <span class="am-id">{{ technique.id }}</span><span v-if="technique.count" class="am-badge">{{ technique.count }}</span>
           </div>
@@ -179,12 +230,12 @@ onMounted(loadAttack)
     </el-card>
 
     <el-dialog v-model="techniqueDialogVisible" :before-close="noteGuard.beforeClose" :title="t('attack.editTitle', { id: editingTechniqueId })" width="640px">
-      <p>{{ t('forms.standardReadOnly') }}</p><p v-if="noteError" role="alert">{{ noteError }}</p><el-form label-position="top">
+      <p>{{ t('forms.standardReadOnly') }}</p><p v-if="noteError" role="alert">{{ noteError }}</p><el-button v-if="!noteLoaded && noteError" link :loading="noteLoading" @click="loadTechniqueNote">{{ t('common.retry') }}</el-button><el-form label-position="top">
         <el-form-item :label="t('attack.name')" required><el-input disabled v-model="techniqueForm.name" /></el-form-item>
         <el-form-item :label="t('attack.tactic')"><el-select disabled v-model="techniqueForm.tactic" style="width: 240px"><el-option v-for="tactic in tactics" :key="tactic.id" :label="tactic.name" :value="tactic.id" /></el-select></el-form-item>
         <el-form-item :label="t('attack.detailUrl')"><el-input disabled v-model="techniqueForm.url" /></el-form-item>
         <el-form-item :label="t('common.description')"><el-input disabled v-model="techniqueForm.description" type="textarea" :rows="4" /></el-form-item>
-        <el-form-item :label="t('forms.note')"><el-input :readonly="!canWrite" v-model="noteText" type="textarea" :rows="5" maxlength="4000" :disabled="noteLoading || Boolean(noteError)" /></el-form-item>
+        <el-form-item :label="t('forms.note')"><el-input :readonly="!canWrite" v-model="noteText" type="textarea" :rows="5" maxlength="4000" :disabled="noteLoading || !noteLoaded" /></el-form-item>
       </el-form>
       <template #footer><el-button @click="noteGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="primary" :loading="noteLoading" :disabled="!noteLoaded" @click="saveTechnique">{{ t('common.save') }}</el-button></template>
     </el-dialog>

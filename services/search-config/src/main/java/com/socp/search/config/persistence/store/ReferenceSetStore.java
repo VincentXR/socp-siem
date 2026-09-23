@@ -27,6 +27,7 @@ public class ReferenceSetStore {
     public static final int MAX_SETS_PER_TENANT = 200;
 
     private final TenantCatalog<ReferenceSet> catalog;
+    private final TenantCatalogPersistence persistence;
     private boolean seeding = true;
 
     public ReferenceSetStore() {
@@ -35,6 +36,7 @@ public class ReferenceSetStore {
 
     @Autowired
     public ReferenceSetStore(TenantCatalogPersistence persistence, ObjectMapper objectMapper) {
+        this.persistence = persistence;
         this.catalog = persistence == null
                 ? new TenantCatalog<>(ReferenceSet::id)
                 : new TenantCatalog<>(ReferenceSet::id, "reference_set", ReferenceSet.class,
@@ -44,23 +46,25 @@ public class ReferenceSetStore {
     }
 
     private void seed() {
-        add(ReferenceSet.of("核心资产(critical_assets)", "需重点保护的核心服务器/网段",
+        add(new ReferenceSet("REF-BUILTIN-CRITICAL_ASSETS", "核心资产(critical_assets)", "需重点保护的核心服务器/网段",
                 List.of("web01", "db-prod", "10.0.0.1", "10.0.0.10")));
-        add(ReferenceSet.of("关键人员(vip_users)", "高管/管理员账号",
+        add(new ReferenceSet("REF-BUILTIN-VIP_USERS", "关键人员(vip_users)", "高管/管理员账号",
                 List.of("admin", "root", "ceo", "cfo")));
-        add(ReferenceSet.of("封禁名单(blocked_ips)", "已确认恶意/失陷的 IP",
+        add(new ReferenceSet("REF-BUILTIN-BLOCKED_IPS", "封禁名单(blocked_ips)", "已确认恶意/失陷的 IP",
                 List.of("10.0.0.66", "45.146.165.37", "185.220.101.1")));
-        add(ReferenceSet.of("威胁组织(threat_actors)", "已知 APT/攻击组织",
+        add(new ReferenceSet("REF-BUILTIN-THREAT_ACTORS", "威胁组织(threat_actors)", "已知 APT/攻击组织",
                 List.of("APT28", "Lazarus")));
     }
 
-    public synchronized ReferenceSet add(ReferenceSet rs) {
+    public ReferenceSet add(ReferenceSet rs) {
         if (seeding) {
             catalog.registerTemplate(rs);
             return rs;
         }
-        requireWithinBounds(rs);
-        return catalog.save(rs);
+        return mutate(() -> {
+            requireWithinBounds(rs);
+            return catalog.save(rs);
+        });
     }
 
     /**
@@ -73,25 +77,54 @@ public class ReferenceSetStore {
     }
 
     public List<ReferenceSet> list() {
-        return catalog.list();
+        List<ReferenceSet> effective = catalog.list();
+        // Old releases assigned random IDs to packaged sets. Preserve their tenant
+        // overlays and old links while avoiding a duplicate visible packaged row.
+        java.util.Set<String> legacyNames = effective.stream()
+                .filter(set -> !set.id().startsWith("REF-BUILTIN-"))
+                .map(ReferenceSet::name).collect(java.util.stream.Collectors.toSet());
+        return effective.stream()
+                .filter(set -> !set.id().startsWith("REF-BUILTIN-") || !legacyNames.contains(set.name()))
+                .toList();
     }
 
     public ReferenceSet get(String id) {
         return catalog.get(id);
     }
 
-    public synchronized ReferenceSet removeEntry(String id, String value) {
-        ReferenceSet existing = get(id);
-        if (existing == null) return null;
-        return add(new ReferenceSet(existing.id(), existing.name(), existing.description(),
-                existing.entries().stream().filter(entry -> !entry.equals(value)).toList()));
+    public ReferenceSet addEntry(String id, String value) {
+        return mutate(() -> {
+            ReferenceSet existing = get(id);
+            if (existing == null) return null;
+            List<String> entries = new ArrayList<>(existing.entries());
+            if (!entries.contains(value)) entries.add(value);
+            ReferenceSet updated = new ReferenceSet(existing.id(), existing.name(), existing.description(), List.copyOf(entries));
+            requireWithinBounds(updated);
+            return catalog.save(updated);
+        });
+    }
+
+    public ReferenceSet removeEntry(String id, String value) {
+        return mutate(() -> {
+            ReferenceSet existing = get(id);
+            if (existing == null) return null;
+            ReferenceSet updated = new ReferenceSet(existing.id(), existing.name(), existing.description(),
+                    existing.entries().stream().filter(entry -> !entry.equals(value)).toList());
+            requireWithinBounds(updated);
+            return catalog.save(updated);
+        });
     }
 
     public boolean delete(String id) {
-        return catalog.delete(id);
+        return mutate(() -> catalog.delete(id));
     }
 
-    /** 判断某值是否属于某查找表（大小写不敏感）。 */
+    private <T> T mutate(java.util.function.Supplier<T> operation) {
+        if (persistence != null) return persistence.mutate(operation);
+        // Only the explicit in-memory test store relies on a process-local monitor.
+        synchronized (this) { return operation.get(); }
+    }
+
     public boolean contains(String setName, String value) {
         return snapshot().contains(setName, value);
     }

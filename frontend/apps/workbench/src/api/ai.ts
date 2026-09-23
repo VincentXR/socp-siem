@@ -2,7 +2,8 @@ import { ApiError, get, post, type ApiRequestOptions } from './core'
 import type { AiResult, InvestigationResult } from './models'
 import { translate } from '../i18n/index'
 
-export const aiAsk = (question: string) => post<AiResult>('/ai-assistant/api/v1/ai/ask', { question })
+export const aiAsk = (question: string, options: ApiRequestOptions = {}) =>
+  post<AiResult>('/ai-assistant/api/v1/ai/ask', { question }, options)
 export async function investigateAlert(alertId: string, options: ApiRequestOptions = {}): Promise<InvestigationResult> {
   const receipt = await post<{ jobId: string }>('/ai-assistant/api/v1/ai/investigations/async', { alertId }, options)
   const deadline = Date.now() + 180_000

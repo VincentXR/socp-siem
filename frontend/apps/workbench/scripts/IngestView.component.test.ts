@@ -7,9 +7,10 @@ import { WORKBENCH_STATE } from '../src/app/workbenchState'
 import { ApiError } from '../src/api/core'
 
 const mocks = vi.hoisted(() => ({
-  listSources: vi.fn().mockResolvedValue([]),
+  listSourcesPage: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, size: 20, totalPages: 0 }),
   listOutputs: vi.fn().mockResolvedValue([]),
-  listParseRules: vi.fn().mockResolvedValue([]),
+  listParseRulesPage: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, size: 20, totalPages: 0 }),
+  resolveParseRules: vi.fn().mockResolvedValue([]),
   listIngestTasks: vi.fn().mockResolvedValue([]),
   ingestSummary: vi.fn().mockResolvedValue({}),
   listCategories: vi.fn().mockResolvedValue([]),
@@ -40,9 +41,10 @@ async function clickRender(wrapper: ReturnType<typeof mountView>) {
 describe('IngestView vector.toml render failures', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mocks.listSources.mockResolvedValue([])
+    mocks.listSourcesPage.mockResolvedValue({ items: [], total: 0, page: 1, size: 20, totalPages: 0 })
     mocks.listOutputs.mockResolvedValue([])
-    mocks.listParseRules.mockResolvedValue([])
+    mocks.listParseRulesPage.mockResolvedValue({ items: [], total: 0, page: 1, size: 20, totalPages: 0 })
+    mocks.resolveParseRules.mockResolvedValue([])
     mocks.listIngestTasks.mockResolvedValue([])
     mocks.ingestSummary.mockResolvedValue({})
     mocks.listCategories.mockResolvedValue([])

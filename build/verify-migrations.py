@@ -11,13 +11,13 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSIONED = re.compile(r"^V(?P<version>[0-9]+(?:_[0-9]+)*)__[a-z0-9][a-z0-9_]*\.sql$")
+VERSIONED = re.compile(r"^V(?P<version>[0-9]+(?:_[0-9]+)*)__[a-z0-9][a-z0-9_]*\.(?:sql|java)$")
 REPEATABLE = re.compile(r"^R__[a-z0-9][a-z0-9_]*\.sql$")
 TABLE = re.compile(r"@Table\s*\([^)]*name\s*=\s*\"([^\"]+)\"", re.DOTALL)
 DESTRUCTIVE = re.compile(r"\b(?:DROP\s+(?:DATABASE|SCHEMA)|TRUNCATE\s+TABLE)\b", re.IGNORECASE)
 # Any tracked SQL under a Flyway location, in any module and any location name
 # (db/migration, db/secondary-analysis, ...).
-TRACKED_MIGRATION = re.compile(r"(?:^|/)src/main/resources/db/[^/]+/[^/]+\.sql$")
+TRACKED_MIGRATION = re.compile(r"(?:^|/)src/main/(?:resources/db/[^/]+/[^/]+\.sql|java/db/[^/]+/(?:[^/]+/)*V[^/]+\.java)$")
 REMEDIATION = (
     "A published version may be reverted to a blob it already shipped with, never edited: "
     "restore {path} to byte-identical text from a trusted published revision and deliver the "
@@ -92,7 +92,7 @@ def check_published_migrations(errors: list[str], root: Path = ROOT) -> list[str
         return []
     restored: list[str] = []
     pending = git_lines(
-        root, "diff", "--name-only", "--no-renames", "--diff-filter=MD", "HEAD", "--", "*.sql"
+        root, "diff", "--name-only", "--no-renames", "--diff-filter=MD", "HEAD", "--", "*.sql", "*.java"
     )
     for path in pending:
         if not TRACKED_MIGRATION.search(path):
@@ -133,7 +133,7 @@ def audit_published_history(root: Path = ROOT) -> list[str]:
     """
     lines = git_lines(
         root, "log", "--format=commit\t%h\t%s", "--no-renames", "--diff-filter=M",
-        "--name-only", "HEAD", "--", "*.sql",
+        "--name-only", "HEAD", "--", "*.sql", "*.java",
     )
     offenders: list[str] = []
     origin = ""
@@ -146,6 +146,23 @@ def audit_published_history(root: Path = ROOT) -> list[str]:
             # Repeatable R__ migrations are meant to be edited; see the pending check.
             offenders.append(f"{origin} -> {line}")
     return offenders
+
+
+def migration_locations(root: Path) -> dict[Path, dict[str, list[Path]]]:
+    """SQL and Java migrations in one db location share a version history."""
+    modules: dict[Path, dict[str, list[Path]]] = {}
+    for module in sorted(root.glob("services/*")):
+        for source, pattern in (("resources", "*.sql"), ("java", "**/V*.java")):
+            for directory in sorted((module / f"src/main/{source}/db").glob("*")):
+                if not directory.is_dir():
+                    continue
+                # SQL locations reject unknown files as before; Java locations
+                # contain packages/classes and only versioned migrations count.
+                files = (sorted(path for path in directory.iterdir() if path.is_file()) if source == "resources"
+                         else sorted(directory.glob(pattern)))
+                if files:
+                    modules.setdefault(module, {}).setdefault(directory.name, []).extend(files)
+    return modules
 
 
 def main() -> int:
@@ -172,26 +189,15 @@ def main() -> int:
 
     errors: list[str] = []
     restored = check_published_migrations(errors)
-    module_migrations: dict[Path, list[Path]] = {}
+    module_migrations = migration_locations(ROOT)
     files = 0
     # A bounded context may own more than one independent Flyway location.
     # Detection keeps secondary analysis in a separate database and therefore
     # stores its migrations under db/secondary-analysis rather than merging
     # them into the primary db/migration history.
-    for migration_dir in sorted(ROOT.glob("services/*/src/main/resources/db/*")):
-        if not migration_dir.is_dir():
-            continue
-        module = migration_dir.parents[4]
-        if not any(path.is_file() for path in migration_dir.iterdir()):
-            # Empty directories are not represented in Git. Ignore stale local
-            # build directories so they cannot change the repository result.
-            continue
-        module_migrations.setdefault(module, []).append(migration_dir)
-
     for module, migration_dirs in sorted(module_migrations.items()):
         module_sql: list[str] = []
-        for migration_dir in migration_dirs:
-            migrations = sorted(path for path in migration_dir.iterdir() if path.is_file())
+        for location, migrations in sorted(migration_dirs.items()):
             versions: dict[tuple[int, ...], str] = {}
             combined_sql: list[str] = []
             for migration in migrations:
@@ -209,12 +215,12 @@ def main() -> int:
                 if match:
                     version = tuple(int(part) for part in match.group("version").split("_"))
                     if version in versions:
-                        fail(errors, f"{module.name}/{migration_dir.name}: duplicate version {version}: {versions[version]} and {migration.name}")
+                        fail(errors, f"{module.name}/{location}: duplicate version {version}: {versions[version]} and {migration.name}")
                     versions[version] = migration.name
 
             major_versions = sorted(version[0] for version in versions if len(version) == 1)
             if major_versions and major_versions != list(range(1, max(major_versions) + 1)):
-                fail(errors, f"{module.name}/{migration_dir.name}: non-consecutive major versions {major_versions}")
+                fail(errors, f"{module.name}/{location}: non-consecutive major versions {major_versions}")
             module_sql.extend(combined_sql)
 
         pom = (module / "pom.xml").read_text(encoding="utf-8")

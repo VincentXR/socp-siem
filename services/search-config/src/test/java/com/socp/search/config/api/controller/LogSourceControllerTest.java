@@ -46,6 +46,25 @@ import static org.mockito.Mockito.when;
 
 class LogSourceControllerTest {
 
+    @Test
+    void rawHttpLimitRejectsBeforePipelineAndUsesConfiguredSearchBudget() throws Exception {
+        IngestPipeline pipeline = mock(IngestPipeline.class);
+        var controller = new LogSourceController(new LogSourceStore(mock(LogSourceRepository.class)),
+                mock(SinkTargetStore.class), pipeline, new IngestLimitsProperties(), vectorProperties());
+        var advice = new com.socp.platform.auth.security.IngestBodyLimitAdvice(
+                new org.springframework.mock.env.MockEnvironment()
+                        .withProperty("socp.ingest.limits.max-body-bytes", "32"));
+        var mvc = org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller)
+                .setControllerAdvice(advice).build();
+        for (String type : List.of("application/json", "application/x-ndjson", "text/plain")) {
+            mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                            .post("/api/v1/ingest").contentType(type).content("x".repeat(33)))
+                    .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                            .status().isPayloadTooLarge());
+        }
+        org.mockito.Mockito.verifyNoInteractions(pipeline);
+    }
+
     @AfterEach
     void clearTenant() {
         TenantContext.clear();
@@ -65,6 +84,22 @@ class LogSourceControllerTest {
         verify(repository, atLeastOnce()).save(saved.capture());
         saved.getAllValues().forEach(entity -> assertEquals("default", entity.getTenantId()));
         assertNull(TenantContext.get());
+    }
+
+    @Test
+    void productionBootDoesNotReadOrCreateDemoSources() {
+        LogSourceRepository repository = mock(LogSourceRepository.class);
+        var environment = new org.springframework.mock.env.MockEnvironment();
+        environment.setActiveProfiles("prod");
+        TenantContext.set("operator-tenant");
+        var controller = new LogSourceController(new LogSourceStore(repository),
+                mock(SinkTargetStore.class), mock(IngestPipeline.class),
+                new IngestLimitsProperties(), vectorProperties(), environment);
+
+        controller.seed();
+
+        org.mockito.Mockito.verifyNoInteractions(repository);
+        assertEquals("operator-tenant", TenantContext.get());
     }
 
     @Test
@@ -137,8 +172,10 @@ class LogSourceControllerTest {
         entity.setPath("/var/log/auth.log");
         entity.setEnabled(true);
         LogSourceRepository repository = mock(LogSourceRepository.class);
-        when(repository.findByTenantId("tenant-a", Pageable.ofSize(1)))
-                .thenReturn(new PageImpl<>(List.of(entity), Pageable.ofSize(1), 2));
+        Pageable ordered = org.springframework.data.domain.PageRequest.of(0, 1,
+                org.springframework.data.domain.Sort.by("sourceId").ascending());
+        when(repository.findByTenantId("tenant-a", ordered))
+                .thenReturn(new PageImpl<>(List.of(entity), ordered, 2));
         LogSourceController controller = controller(repository);
 
         @SuppressWarnings("unchecked")
@@ -149,6 +186,48 @@ class LogSourceControllerTest {
         assertEquals(2, result.total());
         assertEquals(1, result.page());
         assertEquals(1, result.size());
+    }
+
+    @Test
+    void pagedNameSearchIsTenantScopedOrderedAndBounded() {
+        TenantContext.set("tenant-a");
+        LogSourceRepository repository = mock(LogSourceRepository.class);
+        Pageable ordered = org.springframework.data.domain.PageRequest.of(0, 10,
+                org.springframework.data.domain.Sort.by("sourceId").ascending());
+        when(repository.findByTenantIdAndNameContainingIgnoreCase("tenant-a", "Auth", ordered))
+                .thenReturn(new PageImpl<>(List.of(), ordered, 0));
+        LogSourceController controller = controller(repository);
+
+        @SuppressWarnings("unchecked")
+        PageResponse<LogSource> result = (PageResponse<LogSource>) controller.list(1, 10, " Auth ").data();
+
+        assertEquals(0, result.total());
+        verify(repository).findByTenantIdAndNameContainingIgnoreCase("tenant-a", "Auth", ordered);
+        var error = assertThrows(org.springframework.web.server.ResponseStatusException.class,
+                () -> controller.list(1, 10, "x".repeat(129)));
+        assertEquals(400, error.getStatusCode().value());
+    }
+
+    @Test
+    void sourceSearchHttpRouteKeepsThePagedEnvelope() throws Exception {
+        TenantContext.set("tenant-a");
+        LogSourceRepository repository = mock(LogSourceRepository.class);
+        Pageable ordered = org.springframework.data.domain.PageRequest.of(0, 20,
+                org.springframework.data.domain.Sort.by("sourceId").ascending());
+        when(repository.findByTenantIdAndNameContainingIgnoreCase("tenant-a", "Deep", ordered))
+                .thenReturn(new PageImpl<>(List.of(), ordered, 501));
+        var mvc = org.springframework.test.web.servlet.setup.MockMvcBuilders
+                .standaloneSetup(controller(repository)).build();
+
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .get("/api/v1/sources").param("page", "1").param("size", "20")
+                        .param("q", "Deep"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .jsonPath("$.data.total").value(501))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .jsonPath("$.data.page").value(1));
+        verify(repository).findByTenantIdAndNameContainingIgnoreCase("tenant-a", "Deep", ordered);
     }
 
     @Test

@@ -72,6 +72,12 @@ public class AssetStore {
         return result.map(AssetStore::fromEntity);
     }
 
+    public Page<Asset> related(int page, int size, String ip, String name) {
+        return repo.findRelated(tenant(), ip == null ? "" : ip.trim(), name == null ? "" : name.trim(),
+                PageRequest.of(page - 1, size, Sort.by(Sort.Order.asc("name"), Sort.Order.asc("id"))))
+                .map(AssetStore::fromEntity);
+    }
+
     public long count() {
         return repo.countByTenantId(tenant());
     }

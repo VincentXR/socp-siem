@@ -28,6 +28,7 @@ and sections needed for the current change.
 - [Tenant isolation](tenant-isolation.md)
 - [Hardening and evidence](hardening-evidence.md)
 - [Idempotency](idempotency-contract.md)
+- [Endpoint forwarding and recovery](operations/endpoint-forwarding.md)
 - [Event-path observability and tracing](observability-stage-metrics.md)
 - [Workbench frontend guidelines](frontend-guidelines.md)
 
@@ -54,6 +55,7 @@ and sections needed for the current change.
 - [Backup and restore](operations/backup-restore.md)
 - [Capacity planning](operations/capacity-planning.md)
 - [DLQ replay](operations/dlq-replay.md)
+- [Notification delivery and recovery](operations/notification-delivery.md)
 - [Incident response](operations/incident-response.md)
 - [Kafka topic provisioning runbook](operations/kafka-topic-provisioning.md)
 - [Flyway checksum drift and repair runbook](operations/database-migration-repair.md)

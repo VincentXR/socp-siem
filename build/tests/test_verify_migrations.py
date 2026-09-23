@@ -68,6 +68,35 @@ class PublishedMigrationImmutabilityTest(unittest.TestCase):
         self.assertEqual([], errors)
         self.assertEqual([], restored)
 
+    def test_sql_and_nested_java_share_one_location(self):
+        java = Path("services/demo/src/main/java/db/migration/demo/catalog/V2__catalog.java")
+        secondary = Path("services/demo/src/main/resources/db/secondary-analysis/V1__init.sql")
+        self.write(java, "class V2__catalog {}\n")
+        self.write(secondary, PUBLISHED)
+        locations = MODULE.migration_locations(self.root)[self.root / "services/demo"]
+        self.assertEqual({self.root / MIGRATION / "V1__init.sql", self.root / java}, set(locations["migration"]))
+        self.assertEqual([self.root / secondary], locations["secondary-analysis"])
+        self.assertEqual("2", MODULE.VERSIONED.fullmatch(java.name).group("version"))
+
+    def test_java_migrations_are_immutable_and_history_audited(self):
+        java = Path("services/demo/src/main/java/db/migration/demo/catalog/V2__catalog.java")
+        self.write(java, "class V2__catalog {}\n")
+        self.commit_all("publish Java V2")
+        self.write(java, "class V2__catalog { int drift; }\n")
+        errors, restored = self.check()
+        self.assertEqual(1, len(errors))
+        self.assertIn("immutable", errors[0])
+        self.assertEqual([], restored)
+        self.commit_all("rewrite Java V2")
+        self.assertEqual(1, len(MODULE.audit_published_history(self.root)))
+
+    def test_non_migration_java_is_out_of_scope(self):
+        java = Path("services/demo/src/main/java/com/demo/Service.java")
+        self.write(java, "class Service {}\n")
+        self.commit_all("add service")
+        self.write(java, "class Service { int change; }\n")
+        self.assertEqual(([], []), self.check())
+
     def test_pending_in_place_rewrite_fails(self):
         self.write(MIGRATION / "V1__init.sql", POLLUTED)
 

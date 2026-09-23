@@ -1,20 +1,10 @@
 import { computed, nextTick, ref, type Ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-// NEW-FILE MUST-READ. URL-synced list-query composables (this file and
-// useAlarmQuery.ts) share a locked contract, guarded by
-// build/verify-frontend-conventions.py (a standalone gate the review
-// consolidator wires into verify-repository). Any new composable that reads
-// route.query and calls router.replace({ query }) must satisfy all four:
-//   1. page token parsed with Number.isInteger (never isFinite) so '2.5'
-//      cannot reach the backend @RequestParam Integer and surface as a 500;
-//   2. the applyingRouteQuery echo guard is reset on nextTick, so the
-//      pre-flush page/size watcher cannot re-issue a replace() that clobbers
-//      the route it just applied;
-//   3. the URL write starts from `{ ...route.query }` to preserve unmanaged
-//      but functionally-consumed keys (alarmId deep links in particular);
-//   4. every read/write is scoped by `route.name !== <routeName>` so a global
-//      watcher cannot leak a page reset onto an unrelated route.
+// URL state must reject invalid pages, preserve unmanaged keys, suppress echo
+// writes while applying navigation, and stay scoped to its owning route.
+// scripts/useListQuery.test.ts exercises these behaviors; useAlarmQuery has
+// corresponding component tests for its automatic watchers.
 
 // Structural stand-ins for the vue-router objects so the composable can be
 // exercised with plain fakes in tests while the call sites keep the real hooks.

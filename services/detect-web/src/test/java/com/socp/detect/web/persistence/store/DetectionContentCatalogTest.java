@@ -22,6 +22,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /** Contract tests for the versioned content pack and its positive/negative vectors. */
 class DetectionContentCatalogTest {
 
+    @Test
+    void displayDefaultsDoNotClaimPackageOwnershipForUserRulesOrCollidingIds() {
+        for (String id : List.of("custom-rule", "AUTH-BRUTE")) {
+            Map<String, Object> enriched = DetectionContentCatalog.enrich(Map.of("id", id, "type", "pattern"));
+            assertFalse(enriched.containsKey("contentPack"));
+            assertFalse(enriched.containsKey("contentVersion"));
+        }
+        Map<String, Object> persisted = DetectionContentCatalog.enrich(Map.of("id", "AUTH-BRUTE", "type", "pattern",
+                "contentPack", "socp-core-detections", "contentVersion", "2026.01.01"));
+        assertEquals("socp-core-detections", persisted.get("contentPack"));
+        assertEquals("2026.01.01", persisted.get("contentVersion"));
+    }
+
     @BeforeEach
     void seedContentWatchlists() {
         Watchlists.put("blocked_ips", List.of("10.0.0.66"));

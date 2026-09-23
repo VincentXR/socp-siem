@@ -34,6 +34,8 @@ public class EntityRiskProfileEntity {
     private String mitreJson;
     @Column(name = "rules_json", length = 8192, nullable = false)
     private String rulesJson;
+    @Column(name = "counters_migrated", nullable = false)
+    private boolean countersMigrated;
     @Version
     @Column(name = "row_version", nullable = false)
     private long version;
@@ -60,4 +62,6 @@ public class EntityRiskProfileEntity {
     public void setMitreJson(String mitreJson) { this.mitreJson = mitreJson; }
     public String getRulesJson() { return rulesJson; }
     public void setRulesJson(String rulesJson) { this.rulesJson = rulesJson; }
+    public boolean isCountersMigrated() { return countersMigrated; }
+    public void setCountersMigrated(boolean countersMigrated) { this.countersMigrated = countersMigrated; }
 }

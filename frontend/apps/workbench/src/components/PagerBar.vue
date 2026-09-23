@@ -13,9 +13,15 @@ const size = defineModel<number>('pageSize', { default: 10 })
 </script>
 
 <template>
-  <div style="display:flex;justify-content:flex-end;margin-top:12px">
+  <div class="pager-bar">
     <el-pagination v-model:current-page="page" v-model:page-size="size" :total="total"
       :page-sizes="props.pageSizes" layout="total, sizes, prev, pager, next"
       @size-change="() => { page = 1 }" />
   </div>
 </template>
+
+<style scoped>
+.pager-bar { display:flex; justify-content:flex-end; min-width:0; margin-top:12px; }
+.pager-bar :deep(.el-pagination) { max-width:100%; height:auto; flex-wrap:wrap; justify-content:flex-end; row-gap:8px; }
+@media(max-width:600px) { .pager-bar :deep(.el-pagination) { justify-content:flex-start; } }
+</style>

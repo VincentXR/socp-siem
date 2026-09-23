@@ -4,17 +4,25 @@ package com.socp.search.config.infrastructure.opensearch;
 import com.sun.net.httpserver.HttpServer;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.search.config.config.OpenSearchProperties;
+import com.socp.search.config.api.controller.SearchController;
+import com.socp.search.config.persistence.store.SearchStore;
+import com.socp.search.config.service.SplEngine;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class OsEventReaderTest {
 
@@ -22,12 +30,14 @@ class OsEventReaderTest {
     private OsEventReader reader;
     private int responseStatus;
     private String responseBody;
+    private String requestQuery;
 
     @BeforeEach
     void setUp() throws Exception {
         TenantContext.clear();
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", exchange -> {
+            requestQuery = exchange.getRequestURI().getQuery();
             byte[] body = responseBody == null ? new byte[0] : responseBody.getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(responseStatus, body.length);
             if (body.length > 0) {
@@ -59,11 +69,57 @@ class OsEventReaderTest {
         assertNull(reader.search("source=auth", 50));
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "\"timed_out\":true,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}",
+            "\"timed_out\":false,\"_shards\":{\"total\":2,\"successful\":1,\"failed\":1}",
+            "\"timed_out\":false,\"_shards\":{\"total\":2,\"successful\":1,\"failed\":0}",
+            "\"timed_out\":false,\"terminated_early\":true,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}",
+            "\"timed_out\":false,\"_shards\":{}"
+    })
+    void incompleteSuccessResponsesUseAnExplicitlyDegradedFallback(String metadata) {
+        responseStatus = 200;
+        responseBody = "{" + metadata + ",\"hits\":{\"total\":{\"value\":0},\"hits\":[]}}";
+        var store = mock(SearchStore.class);
+        when(store.all()).thenReturn(List.of());
+        var controller = new SearchController(new SplEngine(), store, reader);
+
+        var result = TenantContext.callWith("tenant-a", () -> controller.searchQuery("*", 10, null, true));
+
+        assertThat(result.source()).isEqualTo("local-cache");
+        assertThat(result.degraded()).isTrue();
+        assertThat(result.nextCursor()).isNull();
+        var exported = TenantContext.callWith("tenant-a", () -> controller.export("*", "json", 10, null));
+        assertThat(exported.getHeaders().getFirst("X-SOCP-Search-Degraded")).isEqualTo("true");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"{}", "null", "[]",
+            "{\"timed_out\":false,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}}"})
+    void malformedSuccessResponsesCannotMasqueradeAsAnEmptySearch(String body) {
+        responseStatus = 200;
+        responseBody = body;
+        assertNull(TenantContext.callWith("tenant-a", () -> reader.search("*", 10)));
+    }
+
+    @Test
+    void completeEmptySearchRemainsAuthoritativeIncludingSkippedShards() {
+        responseStatus = 200;
+        responseBody = """
+                {"timed_out":false,"_shards":{"total":2,"successful":2,"skipped":1,"failed":0},
+                 "hits":{"total":{"value":0,"relation":"eq"},"hits":[]}}
+                """;
+        var result = TenantContext.callWith("tenant-a", () -> reader.search("*", 10));
+        assertThat(result).isNotNull();
+        assertThat(result.degraded()).isFalse();
+        assertThat(result.events()).isEmpty();
+    }
+
     @Test
     void parsesEventsStatsAndSearchAfterCursor() {
         responseStatus = 200;
         responseBody = """
-                {"took":7,"hits":{"total":{"value":5},"hits":[
+                {"timed_out":false,"_shards":{"total":2,"successful":2,"failed":0},"took":7,"hits":{"total":{"value":5},"hits":[
                   {"_source":{"eventId":"e1","timestamp":"2026-08-01T00:00:00Z","source":"auth","host":"h1","severity":"HIGH","msg":"failed","fields":{"src_ip":"10.0.0.1"},"ecs":{"event.code":"login"}},"sort":["2026-08-01T00:00:00Z","e1"]},
                   {"_source":{"eventId":"e2","timestamp":"not-a-time","source":"web","host":"h2","severity":"INFO","msg":"bad"}},
                   {"_source":{"eventId":"e3","timestamp":"2026-08-02T00:00:00Z","source":"web","host":"h3","severity":"LOW","msg":"ok","fields":{"src_ip":"10.0.0.2"}},"sort":["2026-08-02T00:00:00Z","e3"]},
@@ -75,6 +131,7 @@ class OsEventReaderTest {
         var result = TenantContext.callWith("tenant-a", () -> reader.search("* | top src_ip 5", 2));
 
         assertNotNull(result);
+        assertThat(requestQuery).isEqualTo("allow_partial_search_results=false");
         assertThat(result.total()).isEqualTo(5);
         assertThat(result.events()).hasSize(2);
         assertThat(result.events().get(0).eventId()).isEqualTo("e1");
@@ -93,7 +150,7 @@ class OsEventReaderTest {
     @Test
     void parsesCountAndTimechartAggregationsAndHandlesMalformedJson() {
         responseStatus = 200;
-        responseBody = "{" +
+        responseBody = "{\"timed_out\":false,\"_shards\":{\"total\":1,\"successful\":1,\"failed\":0}," +
                 "\"hits\":{\"total\":{\"value\":1},\"hits\":[{" +
                 "\"_source\":{\"eventId\":\"e1\",\"timestamp\":\"2026-08-01T00:00:00Z\",\"source\":\"auth\",\"host\":\"h\",\"severity\":\"INFO\",\"msg\":\"ok\"}}]}," +
                 "\"aggregations\":{\"count_by\":{\"buckets\":[{\"key\":\"auth\",\"doc_count\":1}]}," +
@@ -113,7 +170,7 @@ class OsEventReaderTest {
     void parsesOptionalTimelineAggregation() {
         responseStatus = 200;
         responseBody = """
-                {"took":3,"hits":{"total":{"value":2},"hits":[
+                {"timed_out":false,"_shards":{"total":1,"successful":1,"failed":0},"took":3,"hits":{"total":{"value":2},"hits":[
                   {"_source":{"eventId":"e1","timestamp":"2026-08-01T00:00:00Z","source":"auth","host":"h","severity":"INFO","msg":"one"}},
                   {"_source":{"eventId":"e2","timestamp":"2026-08-02T00:00:00Z","source":"auth","host":"h","severity":"INFO","msg":"two"}}
                 ]},"aggregations":{"timeline":{"buckets":[

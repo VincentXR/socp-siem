@@ -122,6 +122,19 @@ class DetectionRecordProcessorTest {
     }
 
     @Test
+    @org.junit.jupiter.api.Timeout(5)
+    void failureClassificationTerminatesForCyclicCauses() {
+        RuntimeException first = new RuntimeException("first");
+        RuntimeException second = new RuntimeException("second", first);
+        first.initCause(second);
+        assertEquals(DetectionRecordProcessor.FailureCategory.UNKNOWN,
+                DetectionRecordProcessor.classifyFailure(first));
+        assertEquals(DetectionRecordProcessor.FailureCategory.DEPENDENCY,
+                DetectionRecordProcessor.classifyFailure(new IllegalArgumentException("adapter",
+                        new com.socp.rule.engine.RuleDependencyException("unavailable", first))));
+    }
+
+    @Test
     void parsesCanonicalFieldsWithoutUncheckedMaps() {
         DetectionRecordProcessor processor = new DetectionRecordProcessor(
                 mock(DetectEngineService.class), new InMemoryDetectionStateStore(), null);
@@ -210,7 +223,7 @@ class DetectionRecordProcessorTest {
     void timeoutResumesTheOriginalAsyncEvaluationInsteadOfStartingAnotherOne() {
         DetectEngineService engine = mock(DetectEngineService.class);
         DetectionStateStore stateStore = mock(DetectionStateStore.class);
-        given(stateStore.claim(any(SecurityEvent.class), any(), any(), anyString()))
+        given(stateStore.claim(any(SecurityEvent.class), any(), any(), any(), anyString()))
                 .willReturn(DetectionEventClaim.NEW);
         CompletableFuture<Void> original = new CompletableFuture<>();
         given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))

@@ -18,20 +18,22 @@ vi.mock('../src/api/domains', () => ({ caseApi: {
 afterEach(() => { delete query.caseId; vi.clearAllMocks() })
 const caseInfo = (id: string): CaseInfo => ({ id, title: id, entity: 'host-a', severity: 'HIGH',
   status: 'OPEN', assignee: '', ruleIds: [], alarmIds: [], timeline: [] })
-type Details = { openCase: (item: CaseInfo) => Promise<void>; timeline: TimelineEvent[]; detail: CaseInfo }
+type Details = { timeline: TimelineEvent[]; detail: CaseInfo }
 
 it('ignores an old timeline even when the cancelled transport still resolves', async () => {
   const pending = new Map<string, (value: unknown) => void>()
   vi.mocked(caseApi.timeline).mockImplementation(id => new Promise(resolve => pending.set(id, resolve as (value: unknown) => void)))
+  vi.mocked(caseApi.get).mockImplementation(async id => ({ found: true, case: caseInfo(id) }))
+  query.caseId = 'A'
   const wrapper = shallowMount(CasesView)
   await flushPromises()
   const view = wrapper.vm as unknown as Details
-  const first = view.openCase(caseInfo('A'))
-  const second = view.openCase(caseInfo('B'))
+  reactive(query).caseId = 'B'
+  await flushPromises()
   pending.get('B')!({ items: [{ message: 'B evidence' }] })
-  await second
+  await flushPromises()
   pending.get('A')!({ items: [{ message: 'A evidence' }] })
-  await first
+  await flushPromises()
   expect(view.detail.id).toBe('B')
   expect(view.timeline).toEqual([{ message: 'B evidence' }])
   wrapper.unmount()

@@ -11,13 +11,14 @@ import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
 import ElProgress from 'element-plus/es/components/progress/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
+import ActionFeedback from '../ActionFeedback.vue'
 import SevBadge from '../SevBadge.vue'
 import type { RiskEntity } from '../../api'
 import { useI18n } from '../../composables/useI18n'
 import { tOr } from '../../utils/i18nLabel'
 
-defineProps<{ modelValue: boolean; entity: RiskEntity | null }>()
-const emit = defineEmits<{ 'update:modelValue': [value: boolean]; 'go-alarms': [] }>()
+defineProps<{ modelValue: boolean; entity: RiskEntity | null; loading?: boolean; error?: string }>()
+const emit = defineEmits<{ 'update:modelValue': [value: boolean]; 'go-alarms': []; retry: [] }>()
 const { t, d } = useI18n()
 
 function formatTime(value: string | null) { return value ? d(value, 'dateTime') : t('time.notAvailable') }
@@ -25,7 +26,10 @@ function formatTime(value: string | null) { return value ? d(value, 'dateTime') 
 
 <template>
   <el-drawer :model-value="modelValue" size="min(480px, 96vw)" :title="entity?.entity ?? t('ueba.entityProfile')" @update:model-value="emit('update:modelValue', $event)">
-    <div v-if="entity">
+    <div v-if="loading" role="status">{{ t('common.loading') }}</div>
+    <ActionFeedback :error="error" />
+    <el-button v-if="error" @click="emit('retry')">{{ t('common.retry') }}</el-button>
+    <div v-if="entity" :aria-busy="loading">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
         <span class="risk-pill lg" :class="`risk-${String(entity.level || 'INFO').toLowerCase()}`">{{ entity.risk }}</span>
         <div>

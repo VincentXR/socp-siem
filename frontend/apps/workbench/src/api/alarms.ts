@@ -52,3 +52,7 @@ export const exportAlarms = (format = 'csv', filters: AlarmExportFilters = {}) =
     withQuery('/alert-web/api/alarms/export', { format, ...filters }),
     `alarms.${format}`,
   )
+
+/** Exact per-technique counts within the server's rolling seven-day window. */
+export const alarmTechniqueCounts = (techniqueIds: string[], options?: ApiRequestOptions) =>
+  post<{ from: string; until: string; counts: Record<string, number> }>('/alert-web/api/alarms/technique-counts', { techniqueIds }, options)

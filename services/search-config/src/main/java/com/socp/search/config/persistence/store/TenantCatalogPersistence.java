@@ -18,9 +18,53 @@ import java.util.List;
 public class TenantCatalogPersistence {
 
     private final TenantCatalogEntryRepository repository;
+    private final org.springframework.transaction.support.TransactionTemplate mutationTransaction;
 
-    TenantCatalogPersistence(TenantCatalogEntryRepository repository) {
+    TenantCatalogPersistence(TenantCatalogEntryRepository repository,
+                             org.springframework.transaction.PlatformTransactionManager transactionManager) {
         this.repository = repository;
+        mutationTransaction = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+        mutationTransaction.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        mutationTransaction.setIsolationLevel(org.springframework.transaction.TransactionDefinition.ISOLATION_SERIALIZABLE);
+        mutationTransaction.setTimeout(5);
+    }
+
+    /** Retry the entire read/validate/write operation, never a stale serialized payload. */
+    <T> T mutate(java.util.function.Supplier<T> operation) {
+        for (int attempt = 0; attempt < 5; attempt++) {
+            try {
+                return mutationTransaction.execute(status -> operation.get());
+            } catch (RuntimeException failure) {
+                if (!retryable(failure)) throw failure;
+                if (attempt < 4) pauseBeforeRetry(attempt);
+            }
+        }
+        throw new com.socp.platform.error.exception.ApiException(503,
+                "Tenant catalog changed concurrently; retry the operation");
+    }
+
+    private static void pauseBeforeRetry(int attempt) {
+        // An immediate retry can repeatedly collide with the still-running
+        // winner of the first SERIALIZABLE conflict. Bound and jitter the delay.
+        long floorMillis = 20L << attempt;
+        long delayMillis = java.util.concurrent.ThreadLocalRandom.current()
+                .nextLong(floorMillis, floorMillis * 2 + 1);
+        try {
+            Thread.sleep(delayMillis);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new com.socp.platform.error.exception.ApiException(503,
+                    "Tenant catalog mutation interrupted");
+        }
+    }
+
+    private static boolean retryable(Throwable failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof java.sql.SQLException sql
+                    && ("40001".equals(sql.getSQLState()) || "40P01".equals(sql.getSQLState())
+                        || "23505".equals(sql.getSQLState()))) return true;
+        }
+        return false;
     }
 
     @Transactional(readOnly = true)
@@ -37,6 +81,13 @@ public class TenantCatalogPersistence {
                 .toList();
     }
 
+    @Transactional(readOnly = true)
+    List<StoredEntry> findMany(String catalogType, String tenantId, java.util.Collection<String> itemIds) {
+        return repository.findByCatalogTypeAndTenantIdAndItemIdIn(catalogType, tenantId, itemIds)
+                .stream().map(entry -> new StoredEntry(entry.getItemId(), entry.getPayload(), entry.isDeleted()))
+                .toList();
+    }
+
     @Transactional
     void save(String catalogType, String tenantId, String itemId, String payload) {
         TenantCatalogEntry entry = repository.findByCatalogTypeAndTenantIdAndItemId(catalogType, tenantId, itemId)
@@ -46,9 +97,14 @@ public class TenantCatalogPersistence {
     }
 
     @Transactional
-    void delete(String catalogType, String tenantId, String itemId) {
+    void delete(String catalogType, String tenantId, String itemId, boolean template) {
         TenantCatalogEntry entry = repository.findByCatalogTypeAndTenantIdAndItemId(catalogType, tenantId, itemId)
-                .orElseGet(() -> new TenantCatalogEntry(catalogType, tenantId, itemId));
+                .orElse(null);
+        if (!template) {
+            if (entry != null) repository.delete(entry);
+            return;
+        }
+        if (entry == null) entry = new TenantCatalogEntry(catalogType, tenantId, itemId);
         entry.markDeleted();
         repository.save(entry);
     }

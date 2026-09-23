@@ -15,6 +15,7 @@ import java.util.Optional;
 public interface LogSourceRepository extends TenantScopedRepository<LogSourceEntity, String> {
     List<LogSourceEntity> findByTenantId(String tenantId);
     Page<LogSourceEntity> findByTenantId(String tenantId, Pageable pageable);
+    Page<LogSourceEntity> findByTenantIdAndNameContainingIgnoreCase(String tenantId, String name, Pageable pageable);
     Optional<LogSourceEntity> findByTenantIdAndSourceId(String tenantId, String sourceId);
     List<LogSourceEntity> findByTenantIdAndEnabledTrue(String tenantId);
 

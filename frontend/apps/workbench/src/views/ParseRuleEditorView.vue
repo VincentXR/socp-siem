@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import { ElForm, ElFormItem } from 'element-plus/es/components/form/index.mjs'
@@ -17,13 +17,22 @@ import { useI18n } from '../composables/useI18n'
 import { useMutation } from '../composables/useMutation'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges'
 import { useWriteAccess } from '../composables/useWriteAccess'
-import { createParseRule, updateParseRule, previewParseDraft, listParseRules, listSources, listFields, type ParseRule, type LogSource, type FieldDef } from '../api'
+import { createParseRule, updateParseRule, previewParseDraft, getParseRule, listSourcesPage, getSource, listFields, type ParseRule, type LogSource, type FieldDef } from '../api'
 
 const { t } = useI18n()
 const canWrite = useWriteAccess()
 const route = useRoute()
 const router = useRouter()
 const sources = ref<LogSource[]>([])
+const sourceTotal = ref(0)
+const selectedSource = ref<LogSource | null>(null)
+const sourceLoading = ref(false)
+const sourceError = ref('')
+const selectedSourceError = ref('')
+let sourceController: AbortController | null = null
+let editorController: AbortController | null = null
+let sourceTimer: number | null = null
+let disposed = false
 const fields = ref<FieldDef[]>([])
 function emptyForm(): Partial<ParseRule> { return { name: '', format: 'REGEX', pattern: '', sourceId: null, enabled: false, order: 10, mapping: [], setFields: [], filters: [] } }
 const form = ref<Partial<ParseRule>>(emptyForm())
@@ -39,6 +48,40 @@ const { busy, error } = mutation
 const changes = useUnsavedChanges(() => ({ form: form.value, filters: filtersText.value }), () => !loading.value)
 const previewStale = ref(false)
 watch([form, filtersText, sample], () => { if (preview.value) previewStale.value = true }, { deep: true, flush: 'sync' })
+
+async function fetchSources(query: string) {
+  if (disposed) return
+  sourceController?.abort()
+  const controller = new AbortController()
+  sourceController = controller
+  sourceLoading.value = true
+  sourceError.value = ''
+  try {
+    const page = await listSourcesPage(1, 50, query, { signal: controller.signal })
+    if (disposed || sourceController !== controller || controller.signal.aborted) return
+    sources.value = page.items
+    sourceTotal.value = page.total
+  } catch (failure) {
+    if (!disposed && sourceController === controller && !controller.signal.aborted) sourceError.value = String(failure)
+  } finally {
+    if (sourceController === controller) { sourceController = null; sourceLoading.value = false }
+  }
+}
+function searchSources(query: string) {
+  if (sourceTimer !== null) window.clearTimeout(sourceTimer)
+  sourceController?.abort()
+  sourceController = null
+  sources.value = []
+  sourceTotal.value = 0
+  sourceLoading.value = true
+  sourceError.value = ''
+  sourceTimer = window.setTimeout(() => { sourceTimer = null; void fetchSources(query) }, 250)
+}
+function onSourceChange(id: string | null) {
+  selectedSource.value = sources.value.find(source => source.id === id)
+    ?? (selectedSource.value?.id === id ? selectedSource.value : null)
+  selectedSourceError.value = ''
+}
 
 function payload(): Partial<ParseRule> {
   if (!form.value.name?.trim()) throw new Error(t('forms.fieldRequired', { field: t('common.name') }))
@@ -78,6 +121,9 @@ function addMapping(fixed = false) {
 async function loadEditor() {
   const id = String(route.params.parserId || '')
   const generation = ++loadGeneration
+  editorController?.abort()
+  const controller = new AbortController()
+  editorController = controller
   loading.value = true
   loadError.value = ''
   loadedId = null
@@ -85,24 +131,48 @@ async function loadEditor() {
   filtersText.value = '[]'
   preview.value = null
   previewStale.value = false
+  sources.value = []
+  selectedSource.value = null
+  selectedSourceError.value = ''
+  sourceTotal.value = 0
+  if (sourceTimer !== null) { window.clearTimeout(sourceTimer); sourceTimer = null }
+  void fetchSources('')
   try {
-    const [rules, availableSources, availableFields] = await Promise.all([listParseRules(), listSources(), listFields()])
-    if (generation !== loadGeneration) return
-    sources.value = availableSources
+    const [rule, availableFields] = await Promise.all([
+      id ? getParseRule(id, { signal: controller.signal }) : Promise.resolve(null),
+      listFields({ signal: controller.signal }),
+    ])
+    if (generation !== loadGeneration || controller.signal.aborted) return
     fields.value = availableFields
     if (id) {
-      const rule = rules.find(item => item.id === id)
       if (!rule) throw new Error('Parse rule not found')
+      if (rule.sourceId) {
+        try {
+          const result = await getSource(rule.sourceId, { signal: controller.signal, timeoutMs: 3_000 })
+          if (generation !== loadGeneration || controller.signal.aborted) return
+          selectedSource.value = result.source
+        } catch (failure) {
+          if (generation === loadGeneration && !controller.signal.aborted) selectedSourceError.value = String(failure)
+        }
+      }
+      if (generation !== loadGeneration || controller.signal.aborted) return
       form.value = structuredClone(rule)
       filtersText.value = JSON.stringify(rule.filters ?? [], null, 2)
     }
     loadedId = id
-  } catch (failure) { if (generation === loadGeneration) loadError.value = String(failure) }
+  } catch (failure) { if (generation === loadGeneration && !controller.signal.aborted) loadError.value = String(failure) }
   finally { if (generation === loadGeneration) { loading.value = false; changes.markSaved() } }
 }
 watch(() => String(route.params.parserId || ''), id => {
   if (id !== loadedId) void loadEditor()
 }, { immediate: true })
+onUnmounted(() => {
+  disposed = true
+  loadGeneration++
+  editorController?.abort()
+  sourceController?.abort()
+  if (sourceTimer !== null) window.clearTimeout(sourceTimer)
+})
 </script>
 <template>
   <div class="page-pad editor-page">
@@ -117,7 +187,7 @@ watch(() => String(route.params.parserId || ''), id => {
       <el-form label-position="top" :disabled="busy || !canWrite">
         <el-form-item :label="t('common.name')" required><el-input v-model="form.name" maxlength="128" /></el-form-item>
         <el-form-item :label="t('ingest.parseFormat')"><el-select v-model="form.format"><el-option v-for="format in ['REGEX','JSON','KV','SYSLOG','CEF','LEEF','AUTO']" :key="format" :value="format" :label="format" /></el-select></el-form-item>
-        <el-form-item :label="t('common.source')"><el-select v-model="form.sourceId" filterable clearable><el-option v-for="source in sources" :key="source.id" :value="source.id" :label="source.name" /><el-option v-if="form.sourceId && !sources.some(source => source.id === form.sourceId)" :value="form.sourceId" :label="form.sourceId" /></el-select></el-form-item>
+        <el-form-item :label="t('common.source')"><el-select v-model="form.sourceId" filterable remote clearable :remote-method="searchSources" :loading="sourceLoading" @change="onSourceChange"><el-option v-for="source in sources" :key="source.id" :value="source.id" :label="source.name" /><el-option v-if="form.sourceId && !sources.some(source => source.id === form.sourceId)" :value="form.sourceId" :label="selectedSource?.id === form.sourceId ? selectedSource.name : form.sourceId" /><el-option v-if="sourceTotal > 50" value="__more_sources__" :label="t('ingest.sourceSearchMore', { count: sourceTotal })" disabled /></el-select><small v-if="sourceTotal > 50" class="source-search-hint">{{ t('ingest.sourceSearchMore', { count: sourceTotal }) }}</small><ActionFeedback :error="sourceError || selectedSourceError" /></el-form-item>
         <el-form-item v-if="form.format === 'REGEX'" :label="t('ingest.patternDescription')"><el-input v-model="form.pattern" type="textarea" :rows="4" spellcheck="false" /></el-form-item>
         <section v-for="key in (['mapping', 'setFields'] as const)" :key="key" class="editor-section">
           <div class="section-toolbar"><b>{{ t(key === 'mapping' ? 'forms.fields' : 'forms.fixedFields') }}</b><el-button v-if="canWrite" size="small" @click="addMapping(key === 'setFields')">{{ t('common.add') }}</el-button></div>
@@ -149,5 +219,6 @@ watch(() => String(route.params.parserId || ''), id => {
 .mapping-row { display:flex; gap:8px; margin:8px 0; }
 .preview-fields { display:grid; grid-template-columns:minmax(120px,1fr) 2fr; gap:12px; overflow-wrap:anywhere; }
 .preview-fields dd { margin:0; }
+.source-search-hint { display:block; color:var(--ns-text-3); margin-top:4px; }
 @media(max-width:1000px) { .parser-workspace { grid-template-columns:1fr; }.parser-preview { padding:0;border:0; } }
 </style>

@@ -43,8 +43,11 @@ def line_counter(report: Path) -> tuple[int, int]:
     root = ET.parse(report).getroot()
     counter = next((item for item in root.findall("counter") if item.get("type") == "LINE"), None)
     if counter is None:
-        return 0, 0
-    return int(counter.get("missed", "0")), int(counter.get("covered", "0"))
+        raise ValueError("missing report-level LINE counter")
+    missed, covered = int(counter.attrib["missed"]), int(counter.attrib["covered"])
+    if missed < 0 or covered < 0 or missed + covered == 0:
+        raise ValueError("LINE counter must contain non-negative counts and measurable lines")
+    return missed, covered
 
 
 def main() -> int:
@@ -98,18 +101,31 @@ def main() -> int:
         print(f"[FAIL] production modules without coverage reports: {names}", file=sys.stderr)
         return 1
 
+    # Reports left behind by a removed module cannot inflate current coverage.
+    reports = [report for report in reports if report.parents[3] in production_modules]
+
     total_missed = 0
     total_covered = 0
     measured = 0
     module_failures: list[str] = []
     for report in reports:
-        missed, covered = line_counter(report)
-        if missed + covered == 0:
-            continue
+        module_path = report.parents[3]
+        module = module_path.relative_to(ROOT).as_posix()
+        newer_sources = [source.relative_to(ROOT).as_posix()
+                         for source in (module_path / "src/main/java").rglob("*.java")
+                         if source.stat().st_mtime_ns > report.stat().st_mtime_ns]
+        if newer_sources:
+            print(f"[FAIL] stale JaCoCo report for {module}; source changed: {newer_sources[0]}",
+                  file=sys.stderr)
+            return 1
+        try:
+            missed, covered = line_counter(report)
+        except (OSError, ValueError, KeyError, ET.ParseError) as failure:
+            print(f"[FAIL] invalid JaCoCo report for {module}: {failure}", file=sys.stderr)
+            return 1
         measured += 1
         total_missed += missed
         total_covered += covered
-        module = report.parents[3].relative_to(ROOT).as_posix()
         ratio = covered / (missed + covered)
         required = DEFAULT_MODULE_FLOORS.get(
             module,
@@ -117,7 +133,12 @@ def main() -> int:
         )
         env_name = "SOCP_MIN_" + module.replace("/", "_").replace("-", "_").upper() + "_LINE_COVERAGE"
         if os.environ.get(env_name):
-            required = float(os.environ[env_name])
+            try:
+                required = float(os.environ[env_name])
+            except ValueError:
+                parser.error(f"{env_name} must be a number between 0 and 1")
+            if not 0 <= required <= 1:
+                parser.error(f"{env_name} must be between 0 and 1")
         print(f"  {module:<32} {ratio:>7.2%}  ({covered}/{missed + covered}; required {required:.2%})")
         if ratio < required:
             module_failures.append(f"{module}={ratio:.2%} < {required:.2%}")

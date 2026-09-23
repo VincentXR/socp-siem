@@ -8,7 +8,12 @@ import com.socp.soar.web.temporal.request.SoarWorkflowRequest;
 import com.socp.soar.web.temporal.PlaybookWorkflow;
 import com.socp.soar.web.temporal.SoarWorkflow;
 import io.temporal.client.WorkflowClient;
-import io.temporal.client.WorkflowExecutionDescription;
+import io.temporal.api.workflowservice.v1.DescribeWorkflowExecutionRequest;
+import io.temporal.api.workflowservice.v1.SignalWorkflowExecutionRequest;
+import io.temporal.api.errordetails.v1.NotFoundFailure;
+import io.temporal.serviceclient.StatusUtils;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.temporal.client.WorkflowOptions;
 import io.temporal.api.common.v1.WorkflowExecution;
 import org.slf4j.Logger;
@@ -21,10 +26,8 @@ import java.util.LinkedHashMap;
 import java.util.UUID;
 
 /**
- * Temporal 双模式分发器（2026-08-12）。
- *
- * <p>项目双模式铁律：Temporal 可达（7233 能列 namespace）就用 Workflow 编排；
- * 不可达（容器没起/重启中）自动回退进程内执行器，绝不因编排中间件故障拖垮告警响应。
+ * Temporal 工作流分发器。SOAR 在中间件不可用时保留 durable outbox，
+ * 不回退到进程内副作用执行；历史 playbook 调用保留独立的兼容入口。
  */
 @Component
 public class TemporalExecutor {
@@ -42,7 +45,7 @@ public class TemporalExecutor {
     private volatile Boolean cachedAvailable;
     private volatile long cachedAt;
 
-    public enum WorkflowState { OPEN, CLOSED, UNKNOWN }
+    public enum WorkflowState { OPEN, CLOSED, NOT_FOUND, UNKNOWN }
 
     @org.springframework.beans.factory.annotation.Autowired
     public TemporalExecutor(WorkflowClient workflowClient,
@@ -123,6 +126,7 @@ public class TemporalExecutor {
         SoarWorkflow stub = workflowClient.newWorkflowStub(SoarWorkflow.class,
                 WorkflowOptions.newBuilder()
                         .setWorkflowId(workflowId)
+                        .setWorkflowIdReusePolicy(io.temporal.api.enums.v1.WorkflowIdReusePolicy.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE)
                         .setTaskQueue(SoarWorkflow.TASK_QUEUE)
                         // The published definition enforces a deterministic
                         // 1 second..30 day execution deadline.  Temporal's
@@ -137,16 +141,17 @@ public class TemporalExecutor {
 
     /** Send a durable cancellation signal to a running SOAR workflow. */
     public void cancelWorkflow(String workflowId) {
-        SoarWorkflow stub = workflowClient.newWorkflowStub(SoarWorkflow.class,
-                WorkflowOptions.newBuilder().setWorkflowId(workflowId)
-                        .setTaskQueue(SoarWorkflow.TASK_QUEUE).build());
-        stub.cancel();
+        workflowClient.getWorkflowServiceStubs().blockingStub()
+                .withDeadlineAfter(3, java.util.concurrent.TimeUnit.SECONDS)
+                .signalWorkflowExecution(SignalWorkflowExecutionRequest.newBuilder()
+                        .setNamespace(workflowClient.getOptions().getNamespace())
+                        .setIdentity(workflowClient.getOptions().getIdentity())
+                        .setWorkflowExecution(WorkflowExecution.newBuilder().setWorkflowId(workflowId))
+                        .setRequestId(UUID.randomUUID().toString()).setSignalName("cancel").build());
     }
 
     public void decide(String workflowId, boolean approve) {
-        SoarWorkflow stub = workflowClient.newWorkflowStub(SoarWorkflow.class,
-                WorkflowOptions.newBuilder().setWorkflowId(workflowId)
-                        .setTaskQueue(SoarWorkflow.TASK_QUEUE).build());
+        SoarWorkflow stub = workflowClient.newWorkflowStub(SoarWorkflow.class, workflowId);
         if (approve) stub.approve();
         else stub.reject();
     }
@@ -154,33 +159,25 @@ public class TemporalExecutor {
     /** Deliver a gate-scoped decision; stale signals for a prior node are
      * ignored by the workflow instead of changing the next gate's outcome. */
     public void decideGate(String workflowId, boolean approve, String approvalKey, boolean expired) {
-        SoarWorkflow stub = workflowClient.newWorkflowStub(SoarWorkflow.class,
-                WorkflowOptions.newBuilder().setWorkflowId(workflowId)
-                        .setTaskQueue(SoarWorkflow.TASK_QUEUE).build());
+        SoarWorkflow stub = workflowClient.newWorkflowStub(SoarWorkflow.class, workflowId);
         if (expired) stub.expireGate(approvalKey);
         else if (approve) stub.approveGate(approvalKey);
         else stub.rejectGate(approvalKey);
     }
 
     public void completeManualTask(String workflowId, String inputJson) {
-        SoarWorkflow stub = workflowClient.newWorkflowStub(SoarWorkflow.class,
-                WorkflowOptions.newBuilder().setWorkflowId(workflowId)
-                        .setTaskQueue(SoarWorkflow.TASK_QUEUE).build());
+        SoarWorkflow stub = workflowClient.newWorkflowStub(SoarWorkflow.class, workflowId);
         stub.completeManualTask(inputJson == null ? "{}" : inputJson);
     }
 
     public void completeManualTaskForNode(String workflowId, String nodeId, String inputJson) {
-        SoarWorkflow stub = workflowClient.newWorkflowStub(SoarWorkflow.class,
-                WorkflowOptions.newBuilder().setWorkflowId(workflowId)
-                        .setTaskQueue(SoarWorkflow.TASK_QUEUE).build());
+        SoarWorkflow stub = workflowClient.newWorkflowStub(SoarWorkflow.class, workflowId);
         stub.completeManualTaskForNode(nodeId, inputJson == null ? "{}" : inputJson);
     }
 
     public void resolveUnknown(String workflowId, String nodeId, String resolution,
                                String evidence, String reason) {
-        SoarWorkflow stub = workflowClient.newWorkflowStub(SoarWorkflow.class,
-                WorkflowOptions.newBuilder().setWorkflowId(workflowId)
-                        .setTaskQueue(SoarWorkflow.TASK_QUEUE).build());
+        SoarWorkflow stub = workflowClient.newWorkflowStub(SoarWorkflow.class, workflowId);
         stub.resolveUnknown(nodeId, resolution, evidence, reason);
     }
 
@@ -192,12 +189,29 @@ public class TemporalExecutor {
     public WorkflowState describeWorkflow(String workflowId) {
         if (workflowId == null || workflowId.isBlank() || !enabled) return WorkflowState.UNKNOWN;
         try {
-            WorkflowExecutionDescription description = workflowClient
-                    .newUntypedWorkflowStub(workflowId).describe();
-            String status = description.getStatus() == null ? "" : description.getStatus().name();
-            return "WORKFLOW_EXECUTION_STATUS_RUNNING".equals(status)
-                    || "WORKFLOW_EXECUTION_STATUS_PAUSED".equals(status)
-                    ? WorkflowState.OPEN : WorkflowState.CLOSED;
+            var description = workflowClient.getWorkflowServiceStubs().blockingStub()
+                    .withDeadlineAfter(3, java.util.concurrent.TimeUnit.SECONDS)
+                    .describeWorkflowExecution(DescribeWorkflowExecutionRequest.newBuilder()
+                            .setNamespace(workflowClient.getOptions().getNamespace())
+                            .setExecution(WorkflowExecution.newBuilder().setWorkflowId(workflowId)).build());
+            return switch (description.getWorkflowExecutionInfo().getStatus()) {
+                case WORKFLOW_EXECUTION_STATUS_RUNNING, WORKFLOW_EXECUTION_STATUS_PAUSED,
+                     WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW -> WorkflowState.OPEN;
+                case WORKFLOW_EXECUTION_STATUS_COMPLETED, WORKFLOW_EXECUTION_STATUS_FAILED,
+                     WORKFLOW_EXECUTION_STATUS_CANCELED, WORKFLOW_EXECUTION_STATUS_TERMINATED,
+                     WORKFLOW_EXECUTION_STATUS_TIMED_OUT -> WorkflowState.CLOSED;
+                default -> WorkflowState.UNKNOWN;
+            };
+        } catch (StatusRuntimeException failure) {
+            // Namespace errors, transport failures and untyped NOT_FOUND are
+            // not evidence that this workflow is absent. A standby cluster's
+            // negative response is likewise not authoritative during failover.
+            NotFoundFailure missing = StatusUtils.getFailure(failure, NotFoundFailure.class);
+            if (failure.getStatus().getCode() == Status.Code.NOT_FOUND && missing != null
+                    && missing.getCurrentCluster().equals(missing.getActiveCluster())) {
+                return WorkflowState.NOT_FOUND;
+            }
+            return WorkflowState.UNKNOWN;
         } catch (RuntimeException failure) {
             log.debug("Unable to describe Temporal workflow {} during projection recovery: {}",
                     workflowId, failure.getMessage());

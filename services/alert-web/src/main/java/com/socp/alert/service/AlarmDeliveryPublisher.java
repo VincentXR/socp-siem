@@ -1,6 +1,7 @@
 package com.socp.alert.service;
 
 import com.socp.platform.data.outbox.OutboxRetryPolicy;
+import com.socp.platform.data.outbox.OutboxDeliveryExecutor;
 
 import com.socp.alert.config.AlertDeliveryProperties;
 import com.socp.alert.domain.Alarm;
@@ -27,7 +28,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -50,7 +50,7 @@ public class AlarmDeliveryPublisher {
     private final IncidentClient incidentClient;
     private final SoarClient soarClient;
     private final AlertPerformanceMetrics performanceMetrics;
-    private final ExecutorService executor;
+    private final OutboxDeliveryExecutor executor;
     private final ExecutorService triggerExecutor;
     private final int maxAttempts;
     private final long retentionMs;
@@ -105,8 +105,7 @@ public class AlarmDeliveryPublisher {
         this.soarClient = soarClient;
         this.performanceMetrics = performanceMetrics;
         int bounded = Math.max(1, Math.min(32, concurrency));
-        this.executor = Executors.newFixedThreadPool(bounded,
-                Thread.ofVirtual().name("alarm-delivery-", 0).factory());
+        this.executor = new OutboxDeliveryExecutor("alarm-delivery-", bounded);
         this.triggerExecutor = Executors.newSingleThreadExecutor(
                 Thread.ofVirtual().name("alarm-delivery-trigger-", 0).factory());
         this.maxAttempts = Math.max(1, maxAttempts);
@@ -118,6 +117,7 @@ public class AlarmDeliveryPublisher {
         this.cleanupMaxBatches = Math.max(1, Math.min(100, cleanupMaxBatches));
     }
 
+    private final java.util.concurrent.atomic.AtomicBoolean activeDrain = new java.util.concurrent.atomic.AtomicBoolean(false);
     private final java.util.concurrent.atomic.AtomicBoolean activeTrigger = new java.util.concurrent.atomic.AtomicBoolean(false);
 
     AlarmDeliveryPublisher(AlarmDeliveryRepository repository, CkReporter ckReporter,
@@ -145,12 +145,13 @@ public class AlarmDeliveryPublisher {
             initialDelayString = "${socp.alert.delivery.initial-delay-ms:1000}")
     @TenantSystemJob
     public void publish() {
+        if (!activeDrain.compareAndSet(false, true)) return;
         long started = System.nanoTime();
         int rounds = 0;
         try {
             Instant now = Instant.now();
             recoverStaleIfDue(now);
-            int exhausted = repository.markExhausted(maxAttempts, "retry limit reached", now);
+            int exhausted = repository.markExhaustedBatch(maxAttempts, "retry limit reached", now, 100);
             if (exhausted > 0) {
                 log.error("Alarm deliveries moved to DEAD after retry limit count={}", exhausted);
                 lifecycle("dead", exhausted);
@@ -161,15 +162,14 @@ public class AlarmDeliveryPublisher {
                         .findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc("PENDING", now);
                 if (pending.isEmpty()) break;
                 rounds++;
-                List<CompletableFuture<Void>> work = pending.stream()
-                        .map(delivery -> CompletableFuture.runAsync(() -> deliver(delivery), executor))
-                        .toList();
-                CompletableFuture.allOf(work.toArray(CompletableFuture[]::new)).join();
+                executor.deliver(pending, started + maxDrainDurationNanos,
+                        this::deliver);
                 if (pending.size() < 100) break;
             }
         } catch (RuntimeException failure) {
             log.warn("Alarm delivery scan failed; next scan will retry: {}", failure.toString());
         } finally {
+            activeDrain.set(false);
             if (performanceMetrics != null) {
                 performanceMetrics.outboxDrain("alarm_delivery", rounds, System.nanoTime() - started);
                 refreshBacklog();
@@ -191,7 +191,7 @@ public class AlarmDeliveryPublisher {
 
     private void recoverStaleIfDue(Instant now) {
         if (now.isBefore(nextRecoveryAt)) return;
-        int recovered = repository.recoverStale(now.minus(Duration.ofMinutes(2)), now);
+        int recovered = repository.recoverStaleBatch(now.minus(Duration.ofMinutes(2)), now, 100);
         if (recovered > 0) {
             log.warn("Recovered stale alarm deliveries count={}", recovered);
             lifecycle("recovered", recovered);
@@ -200,23 +200,26 @@ public class AlarmDeliveryPublisher {
     }
 
     private void deliver(AlarmDelivery delivery) {
-        boolean claimed = false;
+        String token = java.util.UUID.randomUUID().toString();
         String previousTrace = MDC.get("traceId");
         try (TenantContext.Scope ignored = TenantContext.open(delivery.getTenantId())) {
-            Instant now = Instant.now();
-            if (repository.claim(delivery.getId(), now, maxAttempts) != 1) return;
-            claimed = true;
-            if (delivery.getTraceId() != null) MDC.put("traceId", delivery.getTraceId());
-            DeliveryResult result = dispatch(delivery);
-            if (result.delivered()) {
-                if (repository.markDelivered(delivery.getId(), Instant.now()) != 1) {
-                    log.warn("Alarm delivery state changed before acknowledgement id={}", delivery.getId());
+            boolean claimed = false;
+            try {
+                Instant now = Instant.now();
+                if (repository.claim(delivery.getId(), now, maxAttempts, delivery.getAttempts(), token) != 1) return;
+                claimed = true;
+                if (delivery.getTraceId() != null) MDC.put("traceId", delivery.getTraceId());
+                DeliveryResult result = dispatch(delivery);
+                if (result.delivered()) {
+                    if (repository.markDelivered(delivery.getId(), Instant.now(), token) != 1) {
+                        log.warn("Alarm delivery state changed before acknowledgement id={}", delivery.getId());
+                    }
+                } else {
+                    scheduleRetry(delivery, token, result.error());
                 }
-            } else {
-                scheduleRetry(delivery, result.error());
+            } catch (RuntimeException failure) {
+                if (claimed) scheduleRetry(delivery, token, failure.getClass().getSimpleName() + ": " + failure.getMessage());
             }
-        } catch (RuntimeException failure) {
-            if (claimed) scheduleRetry(delivery, failure.getClass().getSimpleName() + ": " + failure.getMessage());
         } finally {
             if (previousTrace == null) MDC.remove("traceId");
             else MDC.put("traceId", previousTrace);
@@ -244,13 +247,13 @@ public class AlarmDeliveryPublisher {
         return call.ok() ? DeliveryResult.success() : DeliveryResult.failure(call.failureReason());
     }
 
-    private void scheduleRetry(AlarmDelivery delivery, String error) {
+    private void scheduleRetry(AlarmDelivery delivery, String token, String error) {
         Instant now = Instant.now();
         var decision = OutboxRetryPolicy.afterClaim(
                 delivery.getAttempts() + 1, maxAttempts, now, error, 900);
         try {
             if (decision.exhausted()) {
-                if (repository.markDead(delivery.getId(), decision.error(), now) == 1) {
+                if (repository.markDead(delivery.getId(), decision.error(), now, token) == 1) {
                     log.error("Alarm delivery moved to DEAD alarmId={} destination={} attempts={} reason={}",
                             delivery.getAlarmId(), delivery.getDestination(),
                             decision.attempts(), decision.error());
@@ -258,7 +261,7 @@ public class AlarmDeliveryPublisher {
                 }
                 return;
             }
-            if (repository.scheduleRetry(delivery.getId(), decision.nextAttemptAt(), decision.error(), now) == 1) {
+            if (repository.scheduleRetry(delivery.getId(), decision.nextAttemptAt(), decision.error(), now, token) == 1) {
                 log.warn("Alarm delivery retry scheduled alarmId={} destination={} attempts={} next={} reason={}",
                         delivery.getAlarmId(), delivery.getDestination(), decision.attempts(),
                         decision.nextAttemptAt(), decision.error());
@@ -310,7 +313,7 @@ public class AlarmDeliveryPublisher {
     @PreDestroy
     void stop() {
         triggerExecutor.shutdownNow();
-        executor.shutdownNow();
+        executor.close();
     }
 
     private record DeliveryResult(boolean delivered, String error) {
